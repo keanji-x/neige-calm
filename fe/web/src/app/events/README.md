@@ -67,6 +67,8 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['waves','cove',id]` | `queryKeys.wavesInCove(id)` = `['waves', id]` | shape differs; this is the only place that knows |
 | `['wave', id]` | `queryKeys.waveDetail(id)` | |
 | `['overlays','wave'\|'card']` | `queryKeys.overlaysByKind(kind)` | |
+| `['harness-items', cardId]` | `queryKeys.harnessItems(cardId)` | fe conversation history is query-backed |
+| `['spec-run', cardId]` | `queryKeys.specRun(cardId)` | fe current harness phase is query-backed |
 | `['wave-files', …]` | — | **no-op**: no wave-files query is built yet (stub) |
 | `['waves-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
 | `['wave-backlinks']` | — | **no-op**: no backlinks query is built yet (stub) |
@@ -85,7 +87,9 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning wave detail | |
 | `wave.report_edited` | **no-op here** | its plan is `wave-files` + `wave-report` + `wave-backlinks`, all stubs |
 | `terminal.deleted`, `codex.hook`, `claude.hook`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | **no-op here** | each plans `wave-files` + `wave-report`, both stub queries |
-| `harness.*`, `plugin.*`, `workflow.registered`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` already declares these as `noop(reason)` — no query consumes them; card-topic report consumers read them directly |
+| `harness.item.added` / `harness.phase.changed` | invalidate harness items / spec run respectively | fe has live query consumers and no card-topic consumer |
+| `harness.transcript.cleared` / `harness.user_message.enqueued` | invalidate harness items + spec run | reset and enqueue cross the transcript/run boundary |
+| `plugin.*`, `workflow.registered`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
 | unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
 
 Control frames: `replay-complete` → invalidate everything (`keys: null`) plus a

@@ -113,10 +113,14 @@ function policies(): PolicyMap {
     const waveId = context.findWaveOwningCard(event.data.card_id);
     return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
   }),
-  'harness.item.added': noop('Card-topic report consumers handle harness items directly.'),
-  'harness.phase.changed': noop('Card-topic report consumers handle phase changes directly.'),
-  'harness.transcript.cleared': noop('Report consumers reset transcript state directly.'),
-  'harness.user_message.enqueued': noop('Report consumers observe queued messages directly.'),
+  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
+  'harness.phase.changed': plan((event) => result([['spec-run', event.data.card_id]])),
+  'harness.transcript.cleared': plan((event) => result([
+    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
+  ])),
+  'harness.user_message.enqueued': plan((event) => result([
+    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
+  ])),
   'wave.report_edited': plan((event) => result([
     ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],
   ])),
