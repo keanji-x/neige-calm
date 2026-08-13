@@ -34,6 +34,8 @@ export function breakpointMismatches(source, path = '<css>') {
     const definition = /^--[\w-]+\s+([\s\S]+)$/.exec(rule.params);
     if (!definition) return;
     for (const match of definition[1].matchAll(/(?:min-|max-)?width\s*:\s*(calc\([^)]*\)|[^;)]+)/gi)) checkWidthExpression(match[1]);
+    for (const match of definition[1].matchAll(/(\d+(?:\.\d+)?[a-z%]+)\s*(?:<=|<|>=|>)\s*width/gi)) checkWidthExpression(match[1]);
+    for (const match of definition[1].matchAll(/width\s*(?:<=|<|>=|>)\s*(\d+(?:\.\d+)?[a-z%]+)/gi)) checkWidthExpression(match[1]);
   });
   ast.walkAtRules(/^(media|container)$/i, (rule) => {
     const params = rule.params.replace(/(['"])(?:\\.|(?!\1).)*\1/g, '');

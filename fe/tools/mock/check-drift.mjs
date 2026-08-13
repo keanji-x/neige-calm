@@ -19,7 +19,8 @@ const tracked = trackedOutput()
 const openApiPath = resolve(repositoryRoot, 'web/src/api/openapi.json');
 if (!existsSync(openApiPath)) throw new Error(`mock drift input is missing: ${openApiPath}; restore or relocate the legacy OpenAPI document and update tools/mock/generate.mjs plus check-drift.mjs`);
 const openApi = JSON.parse(readFileSync(openApiPath, 'utf8'));
-const wireSource = readFileSync(resolve(feRoot, 'core/api/generated/wire.ts'), 'utf8');
+const wireSource = ['core/api/generated/wire.ts', 'tools/mock/response-wire.ts']
+  .map((path) => readFileSync(resolve(feRoot, path), 'utf8')).join('\n');
 /** @type {Array<{path: string, content: string}>} */
 const generated = generateMockFiles(openApi, wireSource);
 generated.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);

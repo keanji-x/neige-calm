@@ -164,6 +164,15 @@
     "why_more_than_one": "The parser's exhaustive public-mode contract and invalid-persistence fallback independently turn red; any third failure would expose coupling outside mode validation."
   },
   {
+    "mutation_id": "app-theme-swap-light-dark-bg",
+    "defends": ["oracle:E2E-CAP-AXE-005"],
+    "target": "web/src/styles/tokens.css",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** — see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
+    "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
+    "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
+    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
+  },
+  {
     "mutation_id": "app-theme-freeze-dataset-mirror-after-mount",
     "defends": ["oracle:E2E-CAP-THEME-011"],
     "target": "web/src/app/theme/public.tsx",

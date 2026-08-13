@@ -172,7 +172,7 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
           if (typeof value.$ref === 'string' && value.$ref.startsWith('#/components/schemas/')) {
             const name = value.$ref.slice(21);
             responseSchemaRefs.add(name);
-            if (!Object.hasOwn(RESPONSE_WIRE_TYPE_EXEMPTIONS, name) && !visitedRefs.has(value.$ref)) {
+            if (!visitedRefs.has(value.$ref)) {
               visitedRefs.add(value.$ref);
               collectResponseRefs(resolveLocalRef(document, value.$ref));
             }

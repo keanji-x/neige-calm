@@ -7,11 +7,19 @@ import { DEV_MOCK_ROUTES, handleDevMockRequest } from './server.mjs';
 import { DEV_MOCK_ROUTE_EXEMPTIONS } from './route-exemptions.mjs';
 
 const openapi = JSON.parse(readFileSync(resolve(import.meta.dirname, '../../../web/src/api/openapi.json'), 'utf8'));
+const serverSource = readFileSync(resolve(import.meta.dirname, 'server.mjs'), 'utf8');
 const openApiRoutes = new Set(Object.entries(openapi.paths).flatMap(([path, item]) =>
   Object.keys(item).filter((method) => ['get', 'post', 'put', 'patch', 'delete'].includes(method))
     .map((method) => `${method.toUpperCase()} ${path}`)));
 const declared = new Set(DEV_MOCK_ROUTES.map(([method, path]) => `${method} ${path}`));
 const exempted = new Set(DEV_MOCK_ROUTE_EXEMPTIONS.map(({ route }) => route));
+const inventoryPaths = new Set(DEV_MOCK_ROUTES.map(([, path]) => path));
+const nonRoutePaths = new Set(['/api/', '/api/auth/whoami', '/api/auth/logout']);
+const literalImplementationPaths = new Set(Array.from(serverSource.matchAll(/(['"])(\/api\/[^'"`$]*)\1/g), (match) => match[2]));
+const wildImplementationPaths = [...literalImplementationPaths].filter((path) => !inventoryPaths.has(path) && !nonRoutePaths.has(path));
+if (wildImplementationPaths.length) {
+  console.error(`dev-mock-contract: implemented paths absent from inventory: ${wildImplementationPaths.join(', ')}`); process.exitCode = 1;
+}
 if (DEV_MOCK_ROUTE_EXEMPTIONS.some(({ reason, expiry }) => reason.trim() === '' || expiry < new Date().toISOString().slice(0, 10))
   || new Set(DEV_MOCK_ROUTE_EXEMPTIONS.map(({ reason }) => reason)).size !== DEV_MOCK_ROUTE_EXEMPTIONS.length
   || exempted.size !== DEV_MOCK_ROUTE_EXEMPTIONS.length) {

@@ -187,6 +187,7 @@ describe('architecture fixtures', () => {
     expect(breakpointMismatches('@media (width >= 60rem) and (max-height: 40rem) {}')).toEqual([]);
     expect(breakpointMismatches('@media (min-width: calc(60rem + 1px)) {}')).toHaveLength(1);
     expect(breakpointMismatches('@custom-media --narrow (max-width: 30em); @media (--narrow) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@custom-media --wide (width >= 30em); @media (--wide) {}')).toHaveLength(1);
   });
   const expectedViolation = new Map<string, string>([
     ['dup-inv-001', 'INV-DUP-001'],
@@ -224,6 +225,7 @@ describe('architecture fixtures', () => {
     ['cards-registry-no-jsx', 'registry.tsx'],
     ['react-state-hook-import', 'web/src/ui/state/public.ts'],
     ['eslint-config-root-only', 'nested/eslint.config.js'],
+    ['eslint-architecture-production-scope', 'missing production error rule architecture/no-class-dom-query'],
     ['eslint-no-off-shims', 'example/rule'],
     ['source-layout', 'core/helpers.js'],
     ['source-layout-dir', 'web/src/features/inbox/shared'],
