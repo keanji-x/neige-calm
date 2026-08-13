@@ -657,7 +657,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 wave。
     没有 wave 被加载时，用户根本看不到那个 wave 的 card overlay 变化，等下次 wave detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:123-140
+  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:127-146
   authoritative_test: fe/web/src/app/events/wave-lookup.test.ts:7
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -711,7 +711,7 @@
   why: >
     策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
     所以反链只能整片失效，不能按 wave 收窄。
-  source: fe/core/events/invalidation-plan.ts:120-122
+  source: fe/core/events/invalidation-plan.ts:124-126
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:20
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
