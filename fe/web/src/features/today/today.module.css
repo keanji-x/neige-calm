@@ -19,6 +19,8 @@
 
   .mainColumn {
     display: grid;
+    /* The terminal is an intentional anchor, but its unwired placeholder must
+       follow its content instead of reserving a full terminal-height track. */
     grid-auto-rows: min-content;
     gap: var(--space-8);
     min-inline-size: 0;
@@ -98,6 +100,22 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .terminalSlot {
+    display: grid;
+    place-items: center;
+    padding-block: var(--space-4);
+    border: 1px dashed var(--hairline);
+    border-radius: var(--radius-md);
+  }
+
+  .slotNote,
+  .inlineEmpty {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
   .inlineEmpty {
     display: flex;
     align-items: center;
@@ -105,10 +123,6 @@
     padding-inline: var(--space-4);
     border: 1px dashed var(--hairline);
     border-radius: var(--radius-sm);
-    font-size: var(--text-xs);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    color: var(--text-3);
   }
 
   .emptyPage {

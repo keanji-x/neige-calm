@@ -163,14 +163,18 @@ export function TodayPage({
         now={now}
       />
       <div className={styles.content}>
-        {/* Decision first, ambience after: the two attention sections take as
-            much height as they need, the terminal takes a fixed 240 slot, and
-            RECENT absorbs whatever is left. */}
+        {/* Decision first, ambience after. Every row follows its content while
+            the unwired terminal keeps its route anchor without reserving a
+            full terminal-height track. */}
         <div className={styles.mainColumn}>
           {/* An empty section renders nothing at all — no label, no dashed box.
               The absence is the message. */}
           <Section title="Waiting on you" waves={waiting} render={renderWaveRow} />
           <Section title="Running" waves={running} render={renderWaveRow} />
+
+          <section className={styles.terminalSlot} aria-label="Today terminal">
+            <p className={styles.slotNote}>Terminal is not wired up yet.</p>
+          </section>
 
           <Section title="Recent" waves={recent} render={renderWaveRow} />
         </div>
