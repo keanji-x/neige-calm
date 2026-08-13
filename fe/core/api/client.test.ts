@@ -69,6 +69,18 @@ describe('core/api client behavior', () => {
     });
   });
 
+  it('identifies a transport timeout for actionable user feedback', async () => {
+    const cause = Object.assign(new Error('Request timed out.'), { name: 'TimeoutError' });
+    const result = await performApiRequest(
+      { send: () => Promise.reject(cause) },
+      { method: 'DELETE', path: '/api/waves/w1', responseSchema: z.void() },
+    );
+    expect(result).toEqual({
+      status: 'failed',
+      error: { kind: 'transport', message: 'Request timed out.', cause },
+    });
+  });
+
   it('reports response schema drift as decode data instead of throwing', async () => {
     const result = await performApiRequest(
       { send: () => Promise.resolve({ status: 200, statusText: 'OK', body: { value: '7' } }) },

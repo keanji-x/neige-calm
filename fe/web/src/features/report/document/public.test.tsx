@@ -28,6 +28,15 @@ describe('ReportDocument', () => {
     expect(screen.getByText('Nothing yet.')).toBeTruthy();
   });
 
+  it('renders a summary-only legacy report instead of the empty state', () => {
+    render(<ReportDocument
+      report={{ summary: 'Agent finished the migration.', body: '', blocks: null }}
+      empty={EMPTY}
+    />);
+    expect(screen.getByText('Agent finished the migration.')).toBeTruthy();
+    expect(screen.queryByText('Nothing yet.')).toBeNull();
+  });
+
   it('renders H1 as a section heading below the page title, never as an h1', () => {
     // The page title is the wave's name in the header. A document that emitted
     // its own h1 would give the page two, which is the heading-order failure

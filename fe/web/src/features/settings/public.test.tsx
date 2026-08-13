@@ -16,6 +16,7 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     saveError: null,
     savedAt: null,
     onSave: vi.fn(),
+    onRetryLoad: vi.fn(),
     onOpenToday: vi.fn(),
     themeMode: 'system',
     onThemeModeChange: vi.fn(),
@@ -81,6 +82,20 @@ describe('Settings network form', () => {
     view.rerender(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box' } })} />);
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://typed');
   });
+
+  it('preserves a field edited during an in-flight save when the response updates another field', async () => {
+    const view = render(<SettingsPage {...props({
+      settings: { [HTTP_PROXY_KEY]: 'http://old-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
+      saving: true,
+    })} />);
+    await userEvent.clear(screen.getByLabelText('HTTPS proxy'));
+    await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://typed-during-save');
+    view.rerender(<SettingsPage {...props({
+      settings: { [HTTP_PROXY_KEY]: 'http://saved-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
+      saving: false, savedAt: 123,
+    })} />);
+    expect(screen.getByLabelText<HTMLInputElement>('HTTPS proxy').value).toBe('http://typed-during-save');
+  });
 });
 
 describe('Settings appearance', () => {
@@ -105,7 +120,16 @@ describe('Settings appearance', () => {
 describe('Settings states', () => {
   it('surfaces a load failure as an alert', () => {
     render(<SettingsPage {...props({ settings: undefined, loadError: 'settings unreachable' })} />);
-    expect(screen.getByRole('alert').textContent).toBe('settings unreachable');
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByText('settings unreachable')).toBeTruthy();
+    expect(screen.queryByText('Loading settings…')).toBeNull();
+  });
+
+  it('retries a failed settings read from the in-place error', async () => {
+    const onRetryLoad = vi.fn();
+    render(<SettingsPage {...props({ settings: undefined, loadError: 'settings unreachable', onRetryLoad })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetryLoad).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces a save failure as an alert', () => {

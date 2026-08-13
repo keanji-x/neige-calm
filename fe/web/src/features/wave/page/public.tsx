@@ -21,8 +21,8 @@ import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
+import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
-import { useState } from '../../../ui/state/public.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
 import styles from './page.module.css';
 
@@ -40,7 +40,7 @@ export type WavePageProps = Readonly<{
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameWave: (title: string) => void | Promise<void>;
-  onDeleteWave: () => void | Promise<void>;
+  onDeleteWave: (signal: AbortSignal) => void | Promise<void>;
 }>;
 
 
@@ -48,31 +48,7 @@ export function WavePage({
   wave, cards, report, backlinks, conversationList, conversationAction, pageTitleRef,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-
-  /**
-   * The confirm stays mounted for the whole round trip — Confirm busy, Cancel
-   * still live — and `finally` clears both flags. A rejected `onDeleteWave`
-   * must not strand the dialog open around a dead Confirm button, which is what
-   * a `then`-only reset would do.
-   *
-   * Deleting a wave is a plain confirm, not a typed one: it is not the
-   * catastrophic, cascading operation that earns the third rung (§4.3).
-   */
-  const confirmDelete = () => {
-    setDeleting(true);
-    void Promise.resolve()
-      .then(() => onDeleteWave())
-      .catch(() => {
-        // The caller owns error surfacing; the dialog's job is to get out of the way.
-      })
-      .finally(() => {
-        setDeleting(false);
-        setConfirmOpen(false);
-      });
-  };
+  const deletion = useDeleteConfirm((_id, signal) => onDeleteWave(signal));
 
   return (
     <section className={styles.page} data-nc-wave-page="">
@@ -126,7 +102,7 @@ export function WavePage({
             className={styles.headerDelete}
             aria-label={`Delete wave ${waveDisplayTitle(wave.title)}`}
             title="Delete wave"
-            onClick={() => setConfirmOpen(true)}
+            onClick={() => deletion.request(wave.id)}
           >
             ×
           </button>
@@ -215,16 +191,17 @@ export function WavePage({
       </div>
 
       <ConfirmDialog
-        open={confirmOpen}
+        open={deletion.open}
         title={DELETE_WAVE_COPY.title}
         description={DELETE_WAVE_COPY.description}
         confirmLabel={DELETE_WAVE_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
-        confirmState={deleting ? 'busy' : 'ready'}
+        confirmState={deletion.pending ? 'busy' : 'ready'}
         restoreFocusRef={pageTitleRef}
-        onConfirm={confirmDelete}
-        onCancel={() => setConfirmOpen(false)}
+        onConfirm={deletion.confirm}
+        onCancel={deletion.cancel}
       />
+      <OperationFeedback feedback={deletion.feedback} />
     </section>
   );
 }

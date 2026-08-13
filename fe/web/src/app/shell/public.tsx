@@ -30,6 +30,8 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
   const waveMutations = useWaveMutations(transport);
   const currentPath = useCurrentPath();
   const go = useGo();
+  const readError = workspace.covesError
+    ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
   /*
    * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
@@ -57,18 +59,26 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
         wavesByCove={workspace.wavesByCove}
         waves={workspace.waves}
         currentPath={currentPath}
+        readError={readError?.message ?? null}
+        readLoading={workspace.covesLoading || workspace.overlaysLoading
+          || [...workspace.wavesLoadingByCove.values()].some(Boolean)}
+        activityError={workspace.overlaysError?.message ?? null}
+        onRetryRead={() => {
+          workspace.retryCoves(); workspace.retryOverlays();
+          for (const cove of workspace.coves) workspace.retryWaves(cove.id);
+        }}
         onGo={go}
         onCreateCove={async (name, color) => { await coveMutations.create({ name, color }); }}
-        onDeleteCove={(coveId) => coveMutations.remove(coveId)}
+        onDeleteCove={(coveId, signal) => coveMutations.remove(coveId, signal)}
         onSetPinned={async (waveId, pinned) => {
           const coveId = coveIdOf(waveId);
           if (coveId === undefined) return;
           await waveMutations.setPinned(waveId, coveId, pinned, nowMs ?? Date.now());
         }}
-        onDeleteWave={async (waveId) => {
+        onDeleteWave={async (waveId, signal) => {
           const coveId = coveIdOf(waveId);
           if (coveId === undefined) return;
-          await waveMutations.remove(waveId, coveId);
+          await waveMutations.remove(waveId, coveId, signal);
         }}
         onOpenSettings={onOpenSettings}
         onSignOut={onSignOut}

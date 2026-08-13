@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import {
-  activeWavesOn, isRunning, needsUserAttention, type Wave,
+  activeWavesOn, isRunning, needsUserAttention, visibleWaves, type Wave,
 } from '../../../../core/domain/wave.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
@@ -129,14 +129,15 @@ export function TodayPage({
     return start;
   }, [now]);
 
-  const waiting = waves.filter(needsUserAttention);
-  const running = waves.filter((wave) => isRunning(wave.lifecycle) && !needsUserAttention(wave));
+  const shownWaves = visibleWaves(waves);
+  const waiting = shownWaves.filter(needsUserAttention);
+  const running = shownWaves.filter((wave) => isRunning(wave.lifecycle) && !needsUserAttention(wave));
   // RECENT shares the same wave list — no second request — and excludes anything
   // already shown above: one wave appearing twice on a page distorts both the
   // counts and the scan.
   const shown = new Set([...waiting, ...running].map((wave) => wave.id));
-  const recent = waves
-    .filter((wave) => wave.archivedAt === null && !shown.has(wave.id))
+  const recent = shownWaves
+    .filter((wave) => !shown.has(wave.id))
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, RECENT_LIMIT);
 
@@ -190,7 +191,7 @@ export function TodayPage({
             <PanelModule title="Calendar">
               <Calendar
                 today={today}
-                waves={waves}
+                waves={shownWaves}
                 coves={coves}
                 scheduledEvents={scheduledEvents}
                 renderWaveRow={renderWaveRow}

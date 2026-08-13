@@ -107,6 +107,8 @@
 - { path: fe/web/src/ui/calm-select, type: directory, owner: ui/calm-select, readonly: true, basis: "INV-DUP-002" }
 - { path: fe/web/src/ui/editable-title, type: directory, owner: ui/editable-title, readonly: true, basis: "INV-DUP-008" }
 - { path: fe/web/src/ui/confirm-dialog, type: directory, owner: ui/confirm-dialog, readonly: true, basis: "INV-DUP-010" }
+- { path: fe/web/src/ui/error-box, type: directory, owner: ui/error-box, readonly: false, basis: "shared non-blocking and blocking read failure surface" }
+- { path: fe/web/src/ui/operation-feedback, type: directory, owner: ui/operation-feedback, readonly: false, basis: "shared asynchronous mutation feedback surface" }
 - { path: fe/web/src/ui/page-header, type: directory, owner: ui/page-header, readonly: false, basis: "design §6.4/§6.14" }
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
 - { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }

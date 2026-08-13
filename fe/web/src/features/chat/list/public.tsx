@@ -28,7 +28,6 @@ export function ChatList({
   conversations, activeId = null, showWave = true, onOpen,
 }: ChatListProps) {
   if (conversations.length === 0) {
-    // No endpoint serves these yet — see the note in core/domain/conversation.ts.
     // One short sentence, no slice name, no apology (§5.3).
     return <PanelEmpty>No conversations yet.</PanelEmpty>;
   }

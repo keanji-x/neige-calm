@@ -60,9 +60,9 @@ line, watch the named test go red) before landing.
   contract test proves only that the control is in the accessibility tree with
   its `aria-pressed` state in both cases. **The visual half is a `browser`-tier
   concern and is not covered here.**
-- **INV-CONFIRM-001** — both destructive confirms stay mounted for the whole
-  await: Confirm disabled, Cancel enabled, and a `finally` clears pending and
-  target so a rejected mutation cannot strand the dialog.
+- **INV-CONFIRM-001** — both destructive confirms always keep Cancel enabled.
+  Closing during the await aborts the request, dismisses its owning dialog and
+  releases pending immediately.
 
 ## Deliberate gaps
 
