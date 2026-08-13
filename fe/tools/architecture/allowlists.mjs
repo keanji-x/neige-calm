@@ -14,6 +14,8 @@ export const moduleRuntimeStateAllowlist = [
 
 /** @type {ReadonlyArray<string>} */
 export const createContextAllowlist = [
+  // Conversations span route lifetimes, so their provider owns one visit-scoped registry above the outlet.
+  'web/src/app/conversations/public.tsx',
   // App theme is a cross-route concern whose single provider intentionally owns the document dataset mirror.
   'web/src/app/theme/public.tsx',
   // Reason: issue #997 §4/§6 allow context in a primitive's own directory; consumers remain in ui, so no primitive-to-business reverse dependency is introduced.
