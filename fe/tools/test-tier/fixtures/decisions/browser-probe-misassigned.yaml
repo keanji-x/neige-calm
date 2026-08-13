@@ -1,0 +1,6 @@
+trackedTest: tools/test-tier/layout.browser.test.ts
+projects:
+  - name: platform-independent
+    include: [tools/test-tier/layout.browser.test.ts]
+    exclude: []
+expected: tools/test-tier/layout.browser.test.ts must be tracked and mapped to the browser project

@@ -583,14 +583,14 @@
     实测有时 refetch 成功但 Sidebar 不刷新。write-through 让观察者
     （Sidebar 的 useCovesQuery）在下一次渲染就看到新名字，不依赖 HTTP。
     朴素的 `setQueryData([updated])` 会静默丢掉其他 cove，所以"保留其他行"必须一起锁。
-  source: web/src/app/invalidationPolicies.ts:120-133
-  authoritative_test: web/src/app/eventBridge.test.tsx:220
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:69-79
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:100
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-031
   kind: invariant
@@ -601,14 +601,14 @@
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 cove，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: web/src/app/invalidationPolicies.ts:123-130
-  authoritative_test: web/src/app/eventBridge.test.tsx:285
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:74-76
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:120
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: CAP-APP-032
   kind: capability
@@ -657,32 +657,33 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 wave。
     没有 wave 被加载时，用户根本看不到那个 wave 的 card overlay 变化，等下次 wave detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: web/src/app/eventBridge.tsx:29-36,256-269; web/src/app/invalidationPolicies.ts:45-52
-  authoritative_test: NONE
+  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:123-140
+  authoritative_test: fe/web/src/app/events/wave-lookup.test.ts:7
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-035
   kind: invariant
   family: app-invalidation-policy
   statement: >
-    `waveFilesDerivedEventKeys` 的降级链必须是：优先用 payload 的 `wave_id` →
-    否则用 `card_id` 反查所属 wave → 都没有则失效**全部** `['wave-files']` 前缀。
+    wave 文件与报告派生事件的降级链必须是：优先用 payload 的 `wave_id` →
+    否则用 `card_id` 反查所属 wave → 都没有则同时失效**全部** `['wave-files']`
+    与 `['wave-report']` 前缀。
   why: >
     runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 wave 文件派生；反查失败时宁可
     宽失效也不能静默不失效（否则报告侧栏永远看不到新产物）。
-  source: web/src/app/invalidationPolicies.ts:67-96
-  authoritative_test: web/src/app/eventBridge.test.tsx:619,728
+  source: fe/core/events/invalidation-plan.ts:46-73
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:67; fe/core/events/invalidation-plan.contract.test.ts:36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: jsdom
-  migration: pending
+  test_tier: static
+  migration: migrated
 
 - id: CAP-APP-036
   kind: capability
@@ -692,14 +693,14 @@
     所属 wave detail、`['overlays','card']` 与该 wave 的 wave-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: web/src/app/invalidationPolicies.ts:59-65,98-106,160-173
-  authoritative_test: web/src/app/eventBridge.test.tsx:390,418,445
+  source: fe/core/events/invalidation-plan.ts:104-118; fe/web/src/app/events/wave-lookup.ts:7-17
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:44
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: jsdom
-  migration: pending
+  test_tier: static
+  migration: migrated
 
 - id: CAP-APP-037
   kind: capability
@@ -710,14 +711,14 @@
   why: >
     策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
     所以反链只能整片失效，不能按 wave 收窄。
-  source: web/src/app/invalidationPolicies.ts:189-197
-  authoritative_test: web/src/app/eventBridge.test.tsx:689-723
+  source: fe/core/events/invalidation-plan.ts:120-122
+  authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:20
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: jsdom
-  migration: pending
+  test_tier: static
+  migration: migrated
 
 - id: CAP-APP-038
   kind: capability

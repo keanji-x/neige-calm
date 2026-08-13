@@ -1,0 +1,12 @@
+trackedTest: e2e/overlap.spec.ts
+projects:
+  - name: browser
+    include: [tools/test-tier/layout.browser.test.ts]
+    exclude: []
+  - name: platform-independent
+    include: [e2e/overlap.spec.ts]
+    exclude: []
+  - name: playwright
+    include: [e2e/**/*.spec.ts]
+    exclude: []
+expected: tracked tests in multiple test projects

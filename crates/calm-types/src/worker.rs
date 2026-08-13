@@ -25,7 +25,7 @@ use crate::runtime::TimestampMs;
 /// wire shape a bare string.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WorkerSessionId(pub String);
 
 impl WorkerSessionId {
@@ -334,7 +334,7 @@ impl TryFrom<String> for WorkerProviderKind {
 /// Single runtime/session state vocabulary (`worker_sessions.state`, issue #679 §1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum WorkerSessionState {
     Starting,
     Running,

@@ -31,7 +31,7 @@ thiserror = "1"
 
 # WS event TS bindings — same pin + features as calm-server had before the
 # move; the export tests (`cargo test -p calm-types export_bindings_`) write
-# `web/src/api/generated-events.ts` via the workspace-root TS_RS_EXPORT_DIR
+# `fe/core/api/generated/wire.ts` via the workspace-root TS_RS_EXPORT_DIR
 # (.cargo/config.toml).
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 

@@ -17,7 +17,13 @@ function git(...args) {
 
 try {
   const feRoot = join(import.meta.dirname, '../..');
-  const base = resolveOwnershipBase(join(feRoot, '..'));
+  const base = resolveOwnershipBase(
+    join(feRoot, '..'),
+    process.env.OWNERSHIP_BASE_SHA ?? '',
+    process.env.OWNERSHIP_HEAD_SHA ?? 'HEAD',
+    process.env.OWNERSHIP_EVENT_NAME,
+    process.env.OWNERSHIP_PUSH_FORCED === 'true',
+  );
   const commits = ownershipCommitsForEvent(process.env.OWNERSHIP_EVENT_NAME,
     () => gitOwnershipCommits(join(feRoot, '..'), base));
   const repositoryViolations = validateOwnership(
@@ -57,6 +63,37 @@ try {
     throw new Error('ownership checker failed to reject a readonly change without a trailer');
   }
 
+  const pushHead = git('rev-parse', 'HEAD').trim();
+  const pushBase = resolveOwnershipBase(repository, fixtureBase, pushHead, 'push');
+  const pushViolations = validateOwnership(
+    [{ path: 'frozen.txt', type: 'file', owner: 'fixture', readonly: true }], [],
+    gitOwnershipCommits(repository, pushBase, pushHead),
+  );
+  if (pushViolations.length !== 1 || pushViolations[0]?.rule !== 'readonly-change-trailer') {
+    throw new Error('push fixture silently allowed a readonly change without a trailer');
+  }
+  git('commit', '--amend', '-m', 'change\n\nOWNERSHIP-CHANGE: frozen.txt — approved fixture change (#1062)');
+  const approvedPushHead = git('rev-parse', 'HEAD').trim();
+  const approvedPushViolations = validateOwnership(
+    [{ path: 'frozen.txt', type: 'file', owner: 'fixture', readonly: true }], [],
+    gitOwnershipCommits(repository, resolveOwnershipBase(repository, fixtureBase, approvedPushHead, 'push'), approvedPushHead),
+  );
+  if (approvedPushViolations.length !== 0) throw new Error('push fixture rejected a valid ownership trailer');
+
+  for (const [label, baseSha, afterSha, forced] of [
+    ['zero before', '0'.repeat(40), approvedPushHead, false],
+    ['zero after', fixtureBase, '0'.repeat(40), false],
+    ['forced push', fixtureBase, approvedPushHead, true],
+    ['unavailable history', 'f'.repeat(40), approvedPushHead, false],
+  ]) {
+    try {
+      resolveOwnershipBase(repository, baseSha, afterSha, 'push', forced);
+      throw new Error(`ownership checker silently accepted ${label}`);
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.includes('cannot audit ownership')) throw error;
+    }
+  }
+
   const headParent = git('rev-parse', 'HEAD~1').trim();
   if (resolveOwnershipBase(repository, '0'.repeat(40)) !== headParent) throw new Error('zero base did not fall back to HEAD~1');
   if (resolveOwnershipBase(repository, 'f'.repeat(40)) !== headParent) throw new Error('missing injected base did not fall back to HEAD~1');
@@ -82,6 +119,9 @@ try {
     if (!(error instanceof Error) || !error.message.includes('git fetch origin main')) throw error;
   }
   console.log(`ownership readonly trailer alarm: ${violations[0].message}`);
+  console.log(`ownership push readonly negative: RED (${pushViolations[0].message})`);
+  console.log('ownership push readonly approved: GREEN');
+  console.log('ownership push invalid ranges: fail-closed for zero before/after, forced push, unavailable history');
   console.log('ownership injected-base fallback: zero or unavailable SHA resolves to HEAD~1');
   console.log(`ownership non-ancestor base: ${advancedTarget} -> merge-base ${divergentBase}; range contains feature ${featureHead} only`);
   console.log('ownership single-commit fallback: fail-closed with a two-commit diagnostic');
