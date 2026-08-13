@@ -14,7 +14,7 @@
 // is no `<a href>` anywhere on this page, and `public.contract.test.tsx` holds
 // that line for the whole subtree.
 
-import type { ReactNode, RefObject } from 'react';
+import type { ReactNode } from 'react';
 
 import { waveDisplayTitle, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
@@ -38,14 +38,13 @@ export type WavePageProps = Readonly<{
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
-  pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameWave: (title: string) => void | Promise<void>;
   onDeleteWave: (signal: AbortSignal) => void | Promise<void>;
 }>;
 
 
 export function WavePage({
-  wave, cards, report, backlinks, conversationList, conversationAction, pageTitleRef,
+  wave, cards, report, backlinks, conversationList, conversationAction,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteWave(signal));
@@ -68,14 +67,14 @@ export function WavePage({
       <PageHeader
         align="document"
         title={
-          <EditableTitle
+          <h1 className={styles.titleHeading}><EditableTitle
             value={waveDisplayTitle(wave.title)}
             onCommit={onRenameWave}
             editLabel="Rename wave"
             inputLabel="Wave title"
             className={styles.title}
             isPageTitle
-          />
+          /></h1>
         }
         meta={
           <>
@@ -197,7 +196,6 @@ export function WavePage({
         confirmLabel={DELETE_WAVE_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
         confirmState={deletion.pending ? 'busy' : 'ready'}
-        restoreFocusRef={pageTitleRef}
         onConfirm={deletion.confirm}
         onCancel={deletion.cancel}
       />

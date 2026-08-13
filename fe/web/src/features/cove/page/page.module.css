@@ -30,6 +30,8 @@
     color: var(--text);
   }
 
+  .titleHeading { min-inline-size: 0; }
+
   /* Chrome icon button: 28px box, 16px glyph — the one pairing (§4.4). */
   .headerAction {
     display: grid;

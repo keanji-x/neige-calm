@@ -44,8 +44,6 @@ export type SidebarProps = Readonly<{
   /** Owned by the shell: collapsing changes the shell grid, not just the rail. */
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  /** CR-8 — where focus lands once a delete removes the trigger element. */
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   userLabel?: string;
   nowMs?: number;
   readError?: string | null;
@@ -86,7 +84,7 @@ function randomCoveColor(): string {
 export function Sidebar({
   coves, wavesByCove, waves, currentPath, onGo,
   onCreateCove, onDeleteCove, onSetPinned, onDeleteWave,
-  onOpenSettings, onSignOut, collapsed, onToggleCollapsed, pageTitleRef,
+  onOpenSettings, onSignOut, collapsed, onToggleCollapsed,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
@@ -299,7 +297,10 @@ export function Sidebar({
             )}
           </div>
 
-          <div className={styles.userRow}>
+        </>
+      )}
+
+      <div className={styles.userRow}>
             <Menu
               items={[
                 { label: `Theme: ${mode} (${resolved})`, onSelect: () => setMode(NEXT_THEME_MODE[mode]) },
@@ -321,9 +322,7 @@ export function Sidebar({
                 </button>
               )}
             />
-          </div>
-        </>
-      )}
+      </div>
 
       <ConfirmDialog
         open={waveConfirm.open}
@@ -332,7 +331,6 @@ export function Sidebar({
         confirmLabel={DELETE_WAVE_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
         confirmState={waveConfirm.pending ? 'busy' : 'ready'}
-        restoreFocusRef={pageTitleRef}
         onConfirm={waveConfirm.confirm}
         onCancel={waveConfirm.cancel}
       />
@@ -356,7 +354,6 @@ export function Sidebar({
         confirmBusyLabel="Deleting…"
         confirmState={coveConfirm.pending ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
         initialFocusRef={typed.inputRef}
-        restoreFocusRef={pageTitleRef}
         onConfirm={coveConfirm.confirm}
         onCancel={coveConfirm.cancel}
       />

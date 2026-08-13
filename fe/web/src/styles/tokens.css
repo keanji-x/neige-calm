@@ -37,10 +37,9 @@
      * eye actually sees. The shipped 1.25 step measures 1.251 rail → ground
      * and 1.261 ground → paper in light, then 1.252 for both steps in dark.
      *
-     * The text scale's alignment with M3 created the headroom for 1.25: the
-     * audit script's worst foreground/surface pair across both themes is 4.80,
-     * above AA's 4.5 requirement. The number is a knob with a measured wall,
-     * not a guess.
+     * `tools/styles/check-contrast.mjs` is intentionally only a point check for
+     * explicitly listed semantic fill recipes. It does not infer inherited
+     * foregrounds or ancestor backgrounds from CSS.
      *
      * Each theme is anchored at its outer end and walked inward — light from
      * `--paper` at the 99.9 ceiling, dark from `--surface-rail` at 12 — because
@@ -91,7 +90,7 @@
      * so all three are alpha.
      */
     --accent-soft: oklch(49% 0.10 267 / 0.14);
-    --warn: oklch(52% 0.14 30);
+    --warn: oklch(49% 0.14 30);
     --warn-soft: oklch(52% 0.14 30 / 0.12);
 
     --surface-rail: oklch(85.1% 0.004 240);
@@ -280,7 +279,7 @@
     --motion-pulse: 2.2s;
 
     --success: oklch(54% 0.14 145);
-    --error: oklch(56% 0.14 25);
+    --error: oklch(51% 0.14 25);
     --overlay-scrim: rgba(20, 30, 55, 0.32);
     --cal-event-waiting-bg: oklch(97% 0.018 30);
     --error-text: oklch(42% 0.17 25);
@@ -381,7 +380,7 @@
     --text-4: oklch(50% 0.012 245);
     --accent: oklch(80% 0.11 267);
     --accent-soft: oklch(74% 0.11 267 / 0.18);
-    --warn: oklch(72% 0.15 30);
+    --warn: oklch(74% 0.15 30);
     --warn-soft: oklch(72% 0.15 30 / 0.18);
     --surface-rail: oklch(12% 0.008 245);
     --surface-card: oklch(31.4% 0.009 245);
@@ -402,10 +401,10 @@
     --error: oklch(74% 0.14 25);
     --overlay-scrim: rgba(0, 0, 0, 0.55);
     --cal-event-waiting-bg: oklch(24% 0.03 30);
-    --error-text: oklch(74% 0.14 25);
+    --error-text: oklch(85% 0.07 25);
     --warn-border: oklch(40% 0.05 30);
 
-    --warn-text: oklch(82% 0.13 30);
+    --warn-text: oklch(85% 0.07 30);
     --success-text: oklch(82% 0.13 145);
     --error-soft: oklch(76% 0.13 25 / 0.18);
     --error-border: oklch(40% 0.05 25);

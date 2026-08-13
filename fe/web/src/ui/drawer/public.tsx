@@ -41,6 +41,8 @@ export function Drawer({ open, title, onClose, children, footer }: {
   const [scrolled, setScrolled] = useState(false);
   const [closing, setClosing] = useState(false);
   const wasOpen = useRef(open);
+  const shouldRestoreFocus = useRef(false);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   /*
    * What a retracting drawer shows.
@@ -75,20 +77,37 @@ export function Drawer({ open, title, onClose, children, footer }: {
     // Only a true → false edge retracts; mounting closed does not.
     const retracts = wasOpen.current && !open
       && !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    shouldRestoreFocus.current = wasOpen.current && !open;
     wasOpen.current = open;
     setClosing(retracts);
   }
 
   useEffect(() => {
     if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
+      if (layers.item(layers.length - 1) === panelRef.current) onClose();
+    };
     document.addEventListener('keydown', onKeyDown);
     return () => { document.removeEventListener('keydown', onKeyDown); };
   }, [open, onClose]);
 
   // Focus moves in, because the drawer is what the click asked for; it is not
   // held there, because the drawer is not modal.
-  useEffect(() => { if (open) panelRef.current?.focus(); }, [open]);
+  useEffect(() => {
+    if (open) {
+      previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+      panelRef.current?.focus();
+      return;
+    }
+    if (!shouldRestoreFocus.current) return;
+    shouldRestoreFocus.current = false;
+    const target = previouslyFocusedRef.current;
+    const fallback = document.querySelector<HTMLElement>('[data-nc-page-title]');
+    const destination = target && document.contains(target) ? target : fallback;
+    if (destination && document.contains(destination)) destination.focus();
+  }, [open]);
 
   /*
    * The drawer **retracts**; it does not vanish.
@@ -111,6 +130,7 @@ export function Drawer({ open, title, onClose, children, footer }: {
       ref={panelRef}
       className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
       role="complementary"
+      data-nc-escape-layer={open ? '' : undefined}
       aria-label={frame.title}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}

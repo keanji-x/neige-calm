@@ -44,9 +44,11 @@ export function EditableTitle({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLInputElement | null>(null);
+  const localTitleRef = useRef<HTMLButtonElement | null>(null);
   const suppressClickUntil = useRef(0);
   const pending = useRef(false);
   const feedback = useOperationFeedback();
+  const restoreTitleFocus = useCallback(() => requestAnimationFrame(() => localTitleRef.current?.focus()), []);
 
   useEffect(() => { if (editing) inputRef.current?.select(); }, [editing]);
 
@@ -56,23 +58,30 @@ export function EditableTitle({
     setEditing(true);
   }, [value]);
 
-  const commit = useCallback((viaKeyboard: boolean) => {
+  const commit = useCallback((restoreFocus: boolean) => {
     if (pending.current) return;
     const next = draft.trim();
-    if (next === '' || next === value) { setEditing(false); return; }
+    if (restoreFocus) suppressClickUntil.current = Date.now() + CLICK_SUPPRESS_MS;
+    if (next === '' || next === value) {
+      setEditing(false);
+      if (restoreFocus) restoreTitleFocus();
+      return;
+    }
     pending.current = true;
-    if (viaKeyboard) suppressClickUntil.current = Date.now() + CLICK_SUPPRESS_MS;
     void feedback.run(Promise.resolve().then(() => onCommit(next)), 'Could not rename this item.').then((saved) => {
-      if (saved) setEditing(false);
+      if (saved) {
+        setEditing(false);
+        if (restoreFocus && inputRef.current?.contains(document.activeElement)) restoreTitleFocus();
+      }
     }).finally(() => {
       pending.current = false;
     });
-  }, [draft, feedback, onCommit, value]);
+  }, [draft, feedback, onCommit, restoreTitleFocus, value]);
 
   if (!editing) {
     return (
       <button
-        ref={titleRef}
+        ref={(node) => { localTitleRef.current = node; if (titleRef) titleRef.current = node; }}
         type="button"
         data-nc-role="row"
         data-nc-page-title={isPageTitle ? '' : undefined}
@@ -100,7 +109,7 @@ export function EditableTitle({
       onBlur={() => { if (feedback.error === null) commit(false); else setEditing(false); }}
       onKeyDown={(event) => {
         if (event.key === 'Enter') { event.preventDefault(); commit(true); }
-        else if (event.key === 'Escape') { event.preventDefault(); setEditing(false); }
+        else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setEditing(false); restoreTitleFocus(); }
       }}
     /><OperationFeedback feedback={feedback} /></>
   );

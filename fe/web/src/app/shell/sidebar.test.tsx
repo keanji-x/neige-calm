@@ -339,6 +339,7 @@ describe('collapse toggle', () => {
     // this surface greyscale apart from the current location and "waiting".
     const item = screen.getByRole('button', { name: 'Work' });
     expect(item.textContent).toBe('W');
+    expect(screen.getByRole('button', { name: 'Account menu for You' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Expand sidebar' }).getAttribute('aria-expanded')).toBe('false');
 
     update({ collapsed: false });

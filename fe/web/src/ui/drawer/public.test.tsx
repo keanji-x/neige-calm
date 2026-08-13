@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Drawer } from './public.tsx';
+import { Dialog } from '../dialog/public.tsx';
+import { useState } from '../state/public.ts';
 
 afterEach(cleanup);
 
@@ -21,8 +23,14 @@ function open(props: Partial<Parameters<typeof Drawer>[0]> = {}) {
 
 describe('Drawer', () => {
   it('is not in the tree before it opens', () => {
+    const railButton = document.body.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    railButton.focus();
     render(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
     expect(screen.queryByRole('complementary')).toBeNull();
+    expect(document.activeElement).toBe(railButton);
+    railButton.remove(); pageTitle.remove();
   });
 
   /*
@@ -63,5 +71,83 @@ describe('Drawer', () => {
     open({ footer: <form aria-label="composer" /> });
     const body = screen.getByText('the transcript').parentElement;
     expect(body?.contains(screen.getByLabelText('composer'))).toBe(false);
+  });
+
+  it('restores focus to the opener when it closes', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    opener.focus();
+    const view = open();
+    expect(document.activeElement).toBe(screen.getByRole('complementary'));
+    view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+    expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('closes a real topmost dialog without closing the drawer below it', () => {
+    const onDrawerClose = vi.fn();
+    function Layers() {
+      const [dialogOpen, setDialogOpen] = useState(true);
+      return <><Drawer open title="Drawer" onClose={onDrawerClose}>body</Drawer>
+        <Dialog open={dialogOpen} title="Confirm" onClose={() => setDialogOpen(false)} /></>;
+    }
+    render(<Layers />);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onDrawerClose).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog', { name: 'Confirm' })).toBeNull();
+  });
+
+  it('closes the drawer when it is above a dialog', () => {
+    const onDrawerClose = vi.fn();
+    render(<Dialog open title="Confirm" onClose={vi.fn()} />);
+    open({ title: 'Drawer', onClose: onDrawerClose });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onDrawerClose).toHaveBeenCalledOnce();
+    expect(screen.getByRole('dialog', { name: 'Confirm' })).toBeTruthy();
+  });
+
+  it('closes on Escape when it is the topmost layer', () => {
+    const onClose = vi.fn();
+    open({ onClose });
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('does not consume Escape already handled by an inner menu', () => {
+    const onClose = vi.fn();
+    open({ onClose });
+    const event = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    event.preventDefault();
+    document.dispatchEvent(event);
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('leaves the Escape layer stack while its closing frame retracts', () => {
+    const view = open();
+    view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+    expect(screen.getByRole('complementary').hasAttribute('data-nc-escape-layer')).toBe(false);
+  });
+
+  it('falls back to the page title when the opener has been removed', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1;
+    pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+    const view = open();
+    opener.remove();
+    view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+    expect(document.activeElement).toBe(pageTitle);
+    pageTitle.remove();
+  });
+
+  it('prefers a surviving opener over the page-title fallback', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+    const view = open();
+    view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+    expect(document.activeElement).toBe(opener);
+    opener.remove(); pageTitle.remove();
   });
 });

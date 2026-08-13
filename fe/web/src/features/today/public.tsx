@@ -67,7 +67,6 @@ export type TodayPageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   /** Tests pin "now" so assertions cannot drift across midnight or DST. */
   nowMs?: number;
 }>;
@@ -110,7 +109,7 @@ function formatHour(hour: number): string {
 
 export function TodayPage({
   waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
-  pageTitleRef, nowMs,
+  nowMs,
 }: TodayPageProps) {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
 
@@ -148,7 +147,7 @@ export function TodayPage({
       <div className={styles.page}>
         <TodayHeader
           today={today} waiting={waiting.length} running={running.length}
-          pageTitleRef={pageTitleRef} now={now}
+          now={now}
         />
         <div className={styles.emptyPage}>
           <p className={styles.hero}>Nothing here yet.</p>
@@ -161,7 +160,7 @@ export function TodayPage({
     <div className={styles.page}>
       <TodayHeader
         today={today} waiting={waiting.length} running={running.length}
-        pageTitleRef={pageTitleRef} now={now}
+        now={now}
       />
       <div className={styles.content}>
         {/* Decision first, ambience after: the two attention sections take as
@@ -172,10 +171,6 @@ export function TodayPage({
               The absence is the message. */}
           <Section title="Waiting on you" waves={waiting} render={renderWaveRow} />
           <Section title="Running" waves={running} render={renderWaveRow} />
-
-          <section className={styles.terminalSlot} aria-label="Today terminal">
-            <p className={styles.slotNote}>Terminal is not wired up yet.</p>
-          </section>
 
           <Section title="Recent" waves={recent} render={renderWaveRow} />
         </div>
@@ -206,11 +201,10 @@ export function TodayPage({
   );
 }
 
-function TodayHeader({ today, waiting, running, pageTitleRef, now }: {
+function TodayHeader({ today, waiting, running, now }: {
   today: Date;
   waiting: number;
   running: number;
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   now: Date;
 }) {
   return (
@@ -218,7 +212,7 @@ function TodayHeader({ today, waiting, running, pageTitleRef, now }: {
       // One row only: Today is the root, so there is no breadcrumb, and it has
       // no machine identifier. --header-h is 32.
       title={
-        <PageTitle titleRef={pageTitleRef as React.RefObject<HTMLHeadingElement | null>}>
+        <PageTitle>
           {today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
         </PageTitle>
       }

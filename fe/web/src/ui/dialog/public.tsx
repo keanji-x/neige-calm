@@ -8,7 +8,7 @@ export interface DialogProps {
   open: boolean; onClose: () => void; title?: string; hideTitleRow?: boolean; children?: ReactNode; wide?: boolean;
   /** CR-3 — drop the `×` while keeping the title. `hideTitleRow` can only remove both. */
   hideClose?: boolean;
-  initialFocusRef?: RefObject<HTMLElement | null>; restoreFocusRef?: RefObject<HTMLElement | null>;
+  initialFocusRef?: RefObject<HTMLElement | null>;
 }
 /**
  * CR-6 — three mutually exclusive Confirm states. `blocked` is a genuine
@@ -23,8 +23,6 @@ export interface ConfirmDialogProps {
   confirmBusyLabel?: string;
   /** CR-1 — override the initial focus target; defaults to Cancel. */
   initialFocusRef?: RefObject<HTMLElement | null>;
-  /** CR-8 — where focus goes on close when the trigger has been unmounted. */
-  restoreFocusRef?: RefObject<HTMLElement | null>;
 }
 
 const DialogViewContext = createContext<DialogViewController | null>(null);
@@ -44,7 +42,7 @@ function isVisibleWithin(element: HTMLElement, panel: HTMLElement): boolean {
   return true;
 }
 
-export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef, restoreFocusRef }: DialogProps) {
+export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children, wide, initialFocusRef }: DialogProps) {
   const [views, setViews] = useState<readonly (DialogChildView & { id: number })[]>([]);
   const nextViewId = useRef(0);
   const titleId = `${useId()}-title`;
@@ -62,6 +60,8 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
+      if (layers.item(layers.length - 1) !== panelRef.current) return;
       if (view) { if (view.onEscape) view.onEscape(); else popView(); }
       else onClose();
     };
@@ -70,6 +70,11 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     document.addEventListener('keydown', onKeyDown);
     return () => { document.removeEventListener('keydown', onKeyDown); document.body.style.overflow = overflow; };
   }, [onClose, open, popView, view]);
+
+  // Capture before inert: browsers run unfocusing steps when inert is applied.
+  useEffect(() => {
+    if (open) previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+  }, [open]);
 
   // Load-bearing declaration order: remove inert before the following focus-restore cleanup runs.
   useEffect(() => {
@@ -90,7 +95,6 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
 
   useEffect(() => {
     if (!open) return;
-    previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
     const frame = requestAnimationFrame(() => {
       const panel = panelRef.current;
       if (!panel) return;
@@ -98,11 +102,12 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     });
     return () => {
       cancelAnimationFrame(frame);
-      // eslint-disable-next-line react-hooks/exhaustive-deps -- cleanup must consume the caller's latest override, not the mount-time node.
-      const target = restoreFocusRef?.current ?? previouslyFocusedRef.current;
+      const prior = previouslyFocusedRef.current;
+      const target = (prior && document.contains(prior) ? prior : null)
+        ?? document.querySelector<HTMLElement>('[data-nc-page-title]');
       if (target && document.contains(target)) target.focus();
     };
-  }, [initialFocusRef, open, restoreFocusRef]);
+  }, [initialFocusRef, open]);
 
   const controller = useMemo<DialogViewController>(() => ({ pushView, popView }), [popView, pushView]);
   if (!open) return null;
@@ -122,7 +127,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     className={showingView || wide ? 'dialog-overlay dialog-overlay-wide' : 'dialog-overlay'} role="presentation"
     onMouseDown={(event) => { if (!showingView && event.target === event.currentTarget) onClose(); }}>
     {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- the dialog panel owns its required focus trap and click-through guard. */}
-    <div ref={panelRef} className={showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'}
+    <div ref={panelRef} className={showingView || wide ? 'dialog-panel dialog-panel-wide' : 'dialog-panel'} data-nc-escape-layer=""
       role="dialog" aria-modal="true" aria-label={typeof headerTitle === 'string' ? headerTitle : undefined}
       aria-labelledby={headerTitle && typeof headerTitle !== 'string' ? titleId : undefined}
       tabIndex={-1} onMouseDown={(event) => event.stopPropagation()} onKeyDown={onPanelKeyDown}>
@@ -136,7 +141,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
   </div></DialogViewContext.Provider>, document.body);
 }
 
-export function ConfirmDialog({ open, title, description, confirmLabel = 'Confirm', cancelLabel = 'Cancel', onConfirm, onCancel, destructive = true, confirmState = 'ready', confirmBusyLabel, initialFocusRef, restoreFocusRef }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, description, confirmLabel = 'Confirm', cancelLabel = 'Cancel', onConfirm, onCancel, destructive = true, confirmState = 'ready', confirmBusyLabel, initialFocusRef }: ConfirmDialogProps) {
   const cancelRef = useRef<HTMLButtonElement | null>(null);
   const confirmRef = useRef<HTMLButtonElement | null>(null);
 
@@ -157,7 +162,7 @@ export function ConfirmDialog({ open, title, description, confirmLabel = 'Confir
     </span>
   );
   return <Dialog open={open} title={title} onClose={onCancel} hideClose
-    initialFocusRef={initialFocusRef ?? cancelRef} restoreFocusRef={restoreFocusRef}>
+    initialFocusRef={initialFocusRef ?? cancelRef}>
     {description}{busy && <p>Closing this dialog cancels the delete request.</p>}
     <div className="confirm-dialog-actions"><button ref={cancelRef} type="button" data-nc-action="secondary"
       onClick={onCancel}>{cancelLabel}</button>
