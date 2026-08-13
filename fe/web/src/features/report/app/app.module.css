@@ -1,0 +1,49 @@
+@layer features {
+  .figure {
+    margin: 0;
+  }
+
+  /*
+   * The tint alone, and **no border** — §6.5 is explicit that one boundary may
+   * not be drawn twice, and a hairline *plus* a surface change is exactly that.
+   * In dark mode it was also visibly wrong rather than merely redundant:
+   * `--surface-code` is a white overlay there, so a fill lighter than the page
+   * wearing an edge lighter still read as a highlight around the block.
+   *
+   * The border was carrying "this is an outsider in a sandbox". The caption
+   * underneath carries it instead — and the page inside, which arrives with its
+   * own layout and its own colours, is not subtle about being foreign.
+   *
+   * There is no title bar either. Stacking a mono header and an uppercase badge
+   * on content that already brings its own type gave the block two foreign
+   * voices and made it read as an advert.
+   */
+  .iframe {
+    display: block;
+    inline-size: 100%;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+  }
+
+  /* Same caption register as the chart's: this is a figure in a document, and
+     figures are named underneath. */
+  .caption {
+    margin-block-start: var(--space-3);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  /* A payload that claims a foreign origin. It says what it refused, in the
+     machine register, and loads nothing. */
+  .refused {
+    padding: var(--space-4);
+    border: 1px solid var(--error-border);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--error-text);
+  }
+}

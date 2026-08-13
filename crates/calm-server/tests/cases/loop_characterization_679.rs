@@ -37,7 +37,7 @@ use calm_exec::WorkerProvider;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
-    SqlxRepo, card_create_with_id_tx, session_insert_tx, session_start_runtime_tx, task_insert_tx,
+    SqlxRepo, card_create_with_id_tx, session_insert_tx, session_start_runtime_tx,
 };
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::{CalmError, Result as CalmResult};
@@ -708,15 +708,14 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
     };
     let pool = repo.sqlite_pool().expect("sqlite-backed repo");
-    let mut tx = pool.begin().await.unwrap();
-    task_insert_tx(&mut tx, &task).await.unwrap();
-    tx.commit().await.unwrap();
+    crate::support::task::project_task(&pool, &task)
+        .await
+        .unwrap();
 
     // The dead worker's card exists in the wave (the projection a real
     // spawn would have left behind) — it just never reports anything.

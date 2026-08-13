@@ -29,13 +29,40 @@
    * drawn. The shadow *is* the colour.
    */
   .drawer {
+    /*
+     * **It covers exactly the column it replaces, plus that column's gutter.**
+     *
+     * `--drawer-w` (396) came from §7.6 before there was anything in the
+     * drawer to look at. Built and filled, a 396-wide slab of `--paper` running
+     * the full height of the window is the heaviest object on the page — for a
+     * conversation that is usually four short turns. Sized to the panel column
+     * it slides over, it reads as that column being replaced rather than as a
+     * second page arriving. The token stays as it is: this is a fact about
+     * *this* drawer's relationship to *this* page's trailing column, not a new
+     * global width.
+     */
+    --nc-drawer-w: calc(var(--panel-w) + var(--space-10));
+
     position: fixed;
     inset-block: 0;
-    inset-inline-end: 0;
+
+    /*
+     * Aligned to the *page's* trailing edge, not the window's, so the drawer's
+     * leading edge lands exactly on the panel column's. Welded to the window it
+     * would have to be 396 wide just to reach across the slack between the
+     * content and the window — which is where that number came from — and it
+     * would still cover the card by a different amount at every window size.
+     *
+     * `max(0px, …)` is the narrow case: once the window is smaller than the
+     * page's own maximum there is no slack, the expression goes negative, and
+     * the drawer welds to the window edge as before. `--rail-w` follows the
+     * shell's actual column so wider collapsed layouts keep this edge aligned.
+     */
+    inset-inline-end: max(0px, calc(100vw - var(--rail-w) - var(--measure-page)));
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;
-    inline-size: var(--drawer-w);
+    inline-size: var(--nc-drawer-w);
     max-inline-size: 100%;
     background: var(--paper);
     box-shadow: var(--shadow-float);
@@ -195,15 +222,17 @@
    * welded to an edge: retracting says "still there, off-screen", vanishing
    * says "destroyed". See the note in public.tsx.
    */
+  /* The custom property resolves against the animating element, so both
+     keyframes travel exactly the drawer's own width. */
   @keyframes drawer-in {
     from {
-      translate: var(--drawer-w) 0;
+      translate: var(--nc-drawer-w) 0;
     }
   }
 
   @keyframes drawer-out {
     to {
-      translate: var(--drawer-w) 0;
+      translate: var(--nc-drawer-w) 0;
     }
   }
 

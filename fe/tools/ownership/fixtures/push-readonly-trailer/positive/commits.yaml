@@ -1,0 +1,7 @@
+- sha: push-positive
+  message: |-
+    change frozen tokens with approval
+
+    OWNERSHIP-CHANGE: fe/web/src/styles/tokens.css — approved token update (#1062)
+  paths:
+    - fe/web/src/styles/tokens.css

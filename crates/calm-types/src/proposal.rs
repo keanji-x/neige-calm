@@ -19,7 +19,7 @@ use utoipa::ToSchema;
 /// event-payload enum conventions, e.g. `EditAuthor`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ProposalDecision {
     /// User accepted; the report change (Batch apply) commits in the
     /// SAME write transaction as the decision event (design §5.6).
@@ -60,7 +60,7 @@ impl ProposalDecision {
 /// `temp:<temp_id>` form.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ProposalAnchor {
     /// Place directly after the referenced block (`b_xxxx`, or
     /// `temp:<temp_id>` for a block minted earlier in the batch).
@@ -85,7 +85,7 @@ pub enum ProposalAnchor {
 /// only where two legal shapes share a variant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, ToSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ProposalOp {
     /// Replace an existing block (`block_id` + mandatory `if_rev`) or
     /// create a new one (`temp_id` + mandatory `anchor`; the durable

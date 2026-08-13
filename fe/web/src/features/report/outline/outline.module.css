@@ -1,0 +1,144 @@
+@layer features {
+  /*
+   * The outline lives in the document's leading margin — the same margin the
+   * section numbers hang in — and it is **not a card**.
+   *
+   * A surface is what you need when a layer covers something; this one never
+   * does. It is the width of the margin, it stops at the margin's trailing
+   * edge, and the only thing it ever paints over is those numbers, which step
+   * aside for it (see `document.module.css`). So it is exactly what it looks
+   * like: a list of words in a margin.
+   *
+   * The whole margin is the hover zone. Six 6px dots would have been a poor
+   * target, and the margin has nothing else to do.
+   */
+  /*
+   * Absolute, not a grid item. `grid-row: 1 / -1` spans the *explicit* grid,
+   * and this document's rows are all implicit — the rail came out one block
+   * tall and the rest of the margin was not hoverable. Taking it out of the
+   * flow gives it the margin's full height, and its sticky child still tracks
+   * the scroll container above it.
+   */
+  .rail {
+    position: absolute;
+    inset-block: 0;
+    inset-inline-start: 0;
+    inline-size: var(--document-start);
+
+    /* The margin is not the target — the dots are. The whole margin opening the
+       outline meant it fired on any pointer that crossed the page's left half,
+       which is most of them. The list takes its events back below. */
+    pointer-events: none;
+  }
+
+  .list {
+    position: sticky;
+    inset-block-start: calc(var(--header-band) + var(--header-h) + var(--space-8));
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+
+    /* Stops short of the prose, but only just: the margin is 130 wide and the
+       titles need every pixel of it. */
+    padding-inline-end: var(--space-4);
+    pointer-events: auto;
+  }
+
+  /*
+   * §6.0's small row, in the margin's register. No fill at rest: the list is
+   * text, and a background per row would rebuild the card this deliberately is
+   * not.
+   */
+  .row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+    /* At rest the row is the width of its dot, so the list's box — and with it
+       the hover target — is the dot column and nothing more. */
+    inline-size: var(--control-h);
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-1);
+    transition: inline-size var(--motion-snappy) ease-out;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .row:hover,
+  .row:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  /*
+   * At rest the row is its dot and nothing else. The words are in the DOM the
+   * whole time — it is their opacity that changes — so the outline is never
+   * hidden from anything that is not a mouse, and the accessible names do not
+   * come and go with a hover.
+   */
+  /* Its own element, so a long section name ends in an ellipsis rather than at
+     the margin's edge mid-word. A bare text node cannot be clipped. */
+  .text {
+    overflow: hidden;
+    opacity: 0;
+    transition: opacity var(--motion-snappy) ease-out;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /*
+   * **Every dot is on one vertical line.** The two levels are told by the dot's
+   * size and by the label's indent, never by moving the dot: a column of dots
+   * that stepped in and out read as a ragged edge in a margin whose whole job
+   * is to be a quiet one.
+   */
+  .child .text {
+    padding-inline-start: var(--space-6);
+  }
+
+  .list:hover .row,
+  .list:focus-within .row {
+    inline-size: 100%;
+  }
+
+  .list:hover .text,
+  .list:focus-within .text {
+    opacity: 1;
+  }
+
+  /* The dot: §6.3's marker at its quietest. It has to read as texture at rest
+     — a louder dot would be a control nobody asked for, in a margin. */
+  .dot {
+    flex: none;
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--text-4);
+    transition: background-color var(--motion-quick) ease-out;
+  }
+
+  /* A child block's dot is smaller: the outline's two levels, legible at rest
+     as well as expanded. */
+  .child .dot {
+    inline-size: var(--space-2);
+    block-size: var(--space-2);
+    background: var(--hairline-strong);
+  }
+
+  .list:hover .dot,
+  .list:focus-within .dot {
+    background: var(--accent);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .row,
+    .text,
+    .dot {
+      transition: none;
+    }
+  }
+}

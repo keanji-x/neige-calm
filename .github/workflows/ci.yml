@@ -499,6 +499,7 @@ jobs:
     timeout-minutes: 10
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+      HEAD_SHA: ${{ github.event.after || github.sha }}
     defaults:
       run:
         working-directory: fe
@@ -523,7 +524,9 @@ jobs:
       - name: npm run lint
         env:
           OWNERSHIP_BASE_SHA: ${{ env.BASE_SHA }}
+          OWNERSHIP_HEAD_SHA: ${{ env.HEAD_SHA }}
           OWNERSHIP_EVENT_NAME: ${{ github.event_name }}
+          OWNERSHIP_PUSH_FORCED: ${{ github.event.forced || false }}
         run: npm run lint
 
       - name: npm run build
@@ -982,6 +985,9 @@ jobs:
         working-directory: web
         run: npm run gen:api
 
-      - name: fail if committed spec / types are stale
+      - name: regenerate fe OpenAPI spec
+        run: cargo run --quiet --manifest-path Cargo.toml --bin emit-openapi > fe/core/api/generated/openapi.json
+
+      - name: fail if committed web / fe spec or types are stale
         run: |
-          git diff --exit-code -- web/src/api/openapi.json web/src/api/generated.ts web/src/api/generated-terminal.ts web/src/api/generated-events.ts web/src/editor/types/
+          git diff --exit-code -- web/src/api/openapi.json web/src/api/generated.ts web/src/api/generated-terminal.ts web/src/api/generated-events.ts web/src/editor/types/ fe/core/api/generated/wire.ts fe/core/api/generated/openapi.json

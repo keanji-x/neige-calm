@@ -1,4 +1,4 @@
-// 由 tools/mock/generate.mjs 根据 web/src/api/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。
+// 由 tools/mock/generate.mjs 根据 core/api/generated/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。
 export const mockOperations = [
   {
     "method": "GET",

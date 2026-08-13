@@ -19,7 +19,7 @@ use crate::model::*;
 pub(super) const TASK_COLUMNS: &str = "id, wave_id, key, kind, goal, context_json, acceptance_criteria, \
      cwd, depends_on_json, priority, gate_json, status, status_detail, worker_card_id, \
      gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id, \
-     running_deadline_ms, context_stale_at_ms, declared_by, spawn, origin, created_at_ms, updated_at_ms, \
+     running_deadline_ms, context_stale_at_ms, declared_by, spawn, created_at_ms, updated_at_ms, \
      finished_at_ms";
 
 /// In-tx read of a wave's full plan, in scheduler order
@@ -39,56 +39,6 @@ pub async fn tasks_by_wave_tx(
         .fetch_all(&mut **tx)
         .await?;
     Ok(rows)
-}
-
-/// Insert one fresh plan row (`status = 'pending'`). The caller
-/// (`calm.plan.upsert`) has already validated key shape + per-wave
-/// uniqueness inside the same tx; the `UNIQUE (wave_id, key)`
-/// constraint backs that check, so a violation here is surfaced as a
-/// conflict rather than swallowed.
-pub async fn task_insert_tx(tx: &mut Transaction<'_, Sqlite>, t: &Task) -> Result<()> {
-    let res = sqlx::query(
-        r#"INSERT INTO tasks
-           (id, wave_id, key, kind, goal, context_json, acceptance_criteria, cwd,
-                depends_on_json, priority, gate_json, status, status_detail, worker_card_id,
-                gate_result_json, gate_attempt, gate_pid, gate_pid_starttime, gate_pid_boot_id,
-                running_deadline_ms, spawn, created_at_ms, updated_at_ms, finished_at_ms)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
-                   ?18, ?19, ?20, ?21, ?22, ?23, ?24)"#,
-    )
-    .bind(&t.id)
-    .bind(&t.wave_id)
-    .bind(&t.key)
-    .bind(t.kind)
-    .bind(&t.goal)
-    .bind(&t.context_json)
-    .bind(&t.acceptance_criteria)
-    .bind(&t.cwd)
-    .bind(&t.depends_on_json)
-    .bind(t.priority)
-    .bind(&t.gate_json)
-    .bind(t.status)
-    .bind(&t.status_detail)
-    .bind(&t.worker_card_id)
-    .bind(&t.gate_result_json)
-    .bind(t.gate_attempt)
-    .bind(t.gate_pid)
-    .bind(t.gate_pid_starttime)
-    .bind(&t.gate_pid_boot_id)
-    .bind(t.running_deadline_ms)
-    .bind(&t.spawn)
-    .bind(t.created_at_ms)
-    .bind(t.updated_at_ms)
-    .bind(t.finished_at_ms)
-    .execute(&mut **tx)
-    .await;
-    match res {
-        Ok(_) => Ok(()),
-        Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
-            CalmError::Conflict(format!("tasks ({}, {}) already exists", t.wave_id, t.key)),
-        ),
-        Err(e) => Err(e.into()),
-    }
 }
 
 /// Revise a still-`pending` plan row. Only the spec-revisable payload

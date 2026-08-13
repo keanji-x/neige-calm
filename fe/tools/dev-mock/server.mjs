@@ -55,15 +55,38 @@ export const devMockOverlays = [{
   kind: 'any_card_needs_input', payload: { value: true }, updated_at: now - 60_000,
 }];
 
-// A written report, in the shape the kernel persists (`WaveReportPayload`:
-// schemaVersion / docRev / summary / body, body being Markdown whose H1s the
-// frontend splits into sections). w-2 keeps an empty payload on purpose — the
-// empty state is a state worth being able to look at.
-const w1Report = {
-  schemaVersion: 3,
-  docRev: 7,
-  summary: 'Reference resolution now runs off the frozen index; two call sites still bypass it.',
-  body: [
+// A deterministic candle series. Dev fixtures must look the same on every
+// reload — a chart that redraws differently each time is impossible to review
+// a layout against, and impossible to screenshot twice.
+function candleSeries(startMs, days, startPrice) {
+  const candles = [];
+  let price = startPrice;
+  for (let day = 0; day < days; day += 1) {
+    const drift = Math.sin(day / 9) * 1.6 + Math.sin(day / 2.3) * 0.7 + (day % 7 === 0 ? -1.2 : 0.25);
+    const open = price;
+    const close = Math.max(1, open + drift);
+    const high = Math.max(open, close) + Math.abs(drift) * 0.6;
+    const low = Math.min(open, close) - Math.abs(drift) * 0.5;
+    const volume = 900_000 + Math.abs(drift) * 620_000 + (day % 5) * 90_000;
+    candles.push([
+      startMs + day * DAY,
+      Number(open.toFixed(2)), Number(high.toFixed(2)),
+      Number(low.toFixed(2)), Number(close.toFixed(2)), Math.round(volume),
+    ]);
+    price = close;
+  }
+  return candles;
+}
+
+// A written report, in the shape the kernel persists (`WaveReportPayload`).
+//
+// Since schema v2 the authoritative layout is `blocks[]` and `body` is its
+// flat projection; both are seeded, and they agree, because that is the
+// invariant the kernel maintains and the frontend reads `blocks` first. The
+// fixture carries **one block of every kind this build knows plus one it does
+// not**, because the states worth being able to look at are exactly the ones
+// the spec legislates — including the degraded one.
+const w1Body = [
     '# What this wave is for',
     '',
     'Reference resolution was walking the card graph on every read. On a workspace',
@@ -109,7 +132,137 @@ const w1Report = {
     '- [x] Frozen reverse index',
     '- [x] Invalidation keyed on the projection',
     '- [ ] Ingest-path call sites',
-  ].join('\n'),
+  ].join('\n');
+
+const w1Report = {
+  schemaVersion: 3,
+  docRev: 7,
+  summary: 'Reference resolution now runs off the frozen index; two call sites still bypass it.',
+  body: w1Body,
+  blocks: [
+    // The prose block stops where the benchmark table starts: in the block
+    // model that table is a `table` block, and leaving the Markdown copy in the
+    // prose would render it twice. `body` keeps both, because `body` is the
+    // flat projection of the blocks, not a second document.
+    { id: 'b-goal', kind: 'prose', rev: 4, payload: { markdown: w1Body.split('\nThe measured read path')[0] } },
+    {
+      id: 'b-bench', kind: 'table', rev: 2,
+      payload: {
+        caption: 'Read path on the 4k-card fixture',
+        highlight: 'resolve one reference',
+        columns: [
+          { key: 'step', label: 'Step' },
+          { key: 'before', label: 'Before', align: 'right' },
+          { key: 'after', label: 'After', align: 'right' },
+        ],
+        rows: [
+          { step: 'resolve one reference', before: '84.0', after: '0.3' },
+          { step: 'rebuild after one edit', before: null, after: '11.0' },
+          { step: 'cold projection', before: '260.0', after: '271.0' },
+        ],
+      },
+    },
+    {
+      id: 'b-open', kind: 'prose', rev: 5,
+      payload: {
+        markdown: [
+          '# Still open',
+          '',
+          'Two call sites reach the graph directly and do not go through the resolver.',
+          'The valuation this hangs off is in [the referenced side](neige://wave/w-2#b-thesis),',
+          'and its comparables table is [here](neige://wave/w-2#b-comps).',
+          '',
+          '```rust',
+          '// crates/calm-truth/src/projection.rs:412',
+          'let target = cards.iter().find(|c| c.id == reference.target_id);',
+          '```',
+          '',
+          '> Left alone deliberately. Making them go through the resolver means building',
+          '> the index during ingest, which is a different wave.',
+        ].join('\n'),
+      },
+    },
+    {
+      id: 'b-task-ingest', kind: 'task', rev: 1,
+      payload: {
+        key: 'ingest-resolver', kind: 'codex', declared_by: 'spec', ready: true,
+        goal: 'Route the two ingest-path call sites through the resolver, building the index during ingest.',
+        acceptance: 'No direct cards.iter().find on a reference id anywhere under crates/calm-truth.',
+        gate: {
+          steps: [
+            { name: 'fmt', cmd: 'cargo fmt --check' },
+            { name: 'clippy', cmd: 'cargo clippy --all-targets -- -D warnings' },
+            { name: 'test', cmd: 'cargo test -p calm-truth' },
+          ],
+        },
+      },
+    },
+    {
+      id: 'b-task-dropped', kind: 'task', rev: 2,
+      payload: {
+        key: 'walk-fallback', declared_by: 'spec', tombstoned_by: 'user',
+        tombstone: { reason: 'A fallback that never runs is a fallback nobody notices has broken.' },
+      },
+    },
+    {
+      id: 'b-app', kind: 'app', rev: 1,
+      payload: { src: '/dev-mock/app.html', title: 'Index rebuild timeline', height: 168 },
+    },
+    // The block this build cannot draw. It is in the fixture on purpose: the
+    // degraded state is the one that decides whether the block model is safe to
+    // ship, and it is the only state that cannot be produced on demand later.
+    { id: 'b-sankey', kind: 'chart.sankey', rev: 1, payload: { nodes: [], links: [] } },
+  ],
+};
+
+const w2Body = [
+  '# Valuation conclusion',
+  '',
+  'We hold the discount rate at 9.4%. It is not copied from a screen: it is the',
+  'cost of equity implied by the comparables below, rounded up by 40bp for the',
+  'concentration in a single distribution channel.',
+  '',
+  '# How the rate is taken',
+  '',
+  'Three years of daily closes, and the volatility that comes out of them.',
+].join('\n');
+
+const w2Report = {
+  schemaVersion: 3,
+  docRev: 3,
+  summary: 'Discount rate held at 9.4%; the concentration premium is the only judgement call.',
+  body: w2Body,
+  blocks: [
+    { id: 'b-thesis', kind: 'prose', rev: 3, payload: { markdown: w2Body.split('\n# How the rate')[0] } },
+    {
+      id: 'b-comps', kind: 'table', rev: 2,
+      payload: {
+        caption: 'Comparables, trailing twelve months',
+        highlight: '600519.SH',
+        columns: [
+          { key: 'name', label: 'Company' },
+          { key: 'pe', label: 'P/E', align: 'right' },
+          { key: 'margin', label: 'Op margin', align: 'right' },
+          { key: 'beta', label: 'Beta', align: 'right' },
+        ],
+        rows: [
+          { name: '600519.SH', pe: '28.4', margin: '67.1%', beta: '0.82' },
+          { name: '000858.SZ', pe: '21.9', margin: '52.4%', beta: '0.94' },
+          { name: '600809.SH', pe: '18.2', margin: '48.0%', beta: '1.05' },
+          { name: '000568.SZ', pe: '19.7', margin: '50.6%', beta: '0.98' },
+        ],
+      },
+    },
+    { id: 'b-method', kind: 'prose', rev: 1, payload: { markdown: '# How the rate is taken\n\nThree years of daily closes, and the volatility that comes out of them.' } },
+    {
+      id: 'b-chart', kind: 'chart.candles', rev: 6,
+      payload: {
+        symbol: '600519.SH', period: 'day', overlays: ['ma20', 'ma60'],
+        caption: 'Daily closes. The gap in March is the ex-dividend date, not a data hole.',
+        candles: candleSeries(now - 220 * DAY, 220, 168),
+      },
+    },
+  ],
 };
 
 export const devMockCards = {
@@ -117,8 +270,97 @@ export const devMockCards = {
     { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', sort: 0, payload: w1Report, deletable: false },
     { id: 'c-2', wave_id: 'w-1', kind: 'codex', title: 'agent', sort: 1, payload: {}, deletable: true },
   ],
-  'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', sort: 0, payload: {}, deletable: false }],
+  'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', sort: 0, payload: w2Report, deletable: false }],
 };
+
+// Backlinks are what *other* waves wrote, so the fixture derives them from the
+// links actually present in w-1's report rather than declaring them separately:
+// a fixture whose backlinks disagree with its documents would be demonstrating
+// a state the kernel cannot produce.
+const backlinks = {
+  'w-2': {
+    truncated: false,
+    skipped_sources: 0,
+    backlinks: [
+      {
+        src_wave_id: 'w-1', src_wave_title: 'Reference resolver: this round of fixes',
+        src_block_id: 'b-open', dst_block_id: 'b-thesis', label: 'the referenced side',
+        quote: {
+          before: 'The valuation this hangs off is in ', label: 'the referenced side',
+          after: ', and its comparables table is here.', head_elided: true, tail_elided: false,
+        },
+        updated_at: now - HOUR,
+      },
+      {
+        src_wave_id: 'w-1', src_wave_title: 'Reference resolver: this round of fixes',
+        src_block_id: 'b-open', dst_block_id: 'b-comps', label: 'here',
+        quote: {
+          before: '…and its comparables table is ', label: 'here',
+          after: '.', head_elided: true, tail_elided: false,
+        },
+        updated_at: now - HOUR,
+      },
+      // A second citing wave, mentioning this one from two different blocks —
+      // the case the row's count exists for. One wave citing you twice from
+      // *one* block (above) is one mention; twice from two blocks is two.
+      {
+        src_wave_id: 'w-3', src_wave_title: 'Backfill the projection table',
+        src_block_id: 'b-plan', dst_block_id: 'b-comps', label: 'the comparables',
+        quote: {
+          before: 'Numbers come from ', label: 'the comparables',
+          after: ' rather than from the screen.', head_elided: false, tail_elided: true,
+        },
+        updated_at: now - 3 * HOUR,
+      },
+      {
+        src_wave_id: 'w-3', src_wave_title: 'Backfill the projection table',
+        src_block_id: 'b-risks', dst_block_id: null, label: 'the valuation wave',
+        quote: {
+          before: 'If ', label: 'the valuation wave',
+          after: ' moves the rate, this backfill has to run again.', head_elided: true, tail_elided: false,
+        },
+        updated_at: now - 3 * HOUR,
+      },
+    ],
+  },
+};
+
+const EMPTY_BACKLINKS = { backlinks: [], truncated: false, skipped_sources: 0 };
+
+// A same-origin page for the `app` block to embed. It is served by this
+// middleware rather than dropped into `web/public` so the demo adds no tracked
+// asset to the app itself.
+//
+// **It is styled like the document that embeds it**, and that is not cheating:
+// an app authored for this product reads the host's theme (that is what the
+// legacy card host's `ui/initialize` + theme push is for). A fixture in a
+// different type stack would have been demonstrating a page nobody wrote.
+const DEV_MOCK_APP_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<style>
+  /* html as well as body: a transparent body still leaves the frame's own
+     canvas painted the UA default white, which is a white patch inside a
+     tinted frame, and a glaring one in dark mode. */
+  html, body { background: transparent; }
+  :root { color-scheme: light dark; }
+  body {
+    margin: 0; padding: 18px 20px;
+    font: 15px/1.5 ui-serif, "New York", Georgia, serif;
+    color: light-dark(oklch(38% 0.01 250), oklch(80% 0.01 245));
+  }
+  ol { margin: 0; padding-left: 20px; }
+  li { margin-block: 6px; }
+  b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; font-weight: 400;
+      color: light-dark(oklch(45% 0.10 267), oklch(80% 0.11 267)); }
+</style></head>
+<body>
+  <ol>
+    <li><b>t+0ms</b> projection transaction opens</li>
+    <li><b>t+11ms</b> frozen reverse index built, in-transaction</li>
+    <li><b>t+11ms</b> commit; readers see index and cards together</li>
+    <li><b>on edit</b> invalidation keyed on <b>card.updated_at</b></li>
+  </ol>
+</body></html>`;
 
 const settings = { http_proxy: 'http://127.0.0.1:2080', https_proxy: 'http://127.0.0.1:2080' };
 
@@ -127,14 +369,12 @@ const waves = devMockWaves;
 const overlays = devMockOverlays;
 const cards = devMockCards;
 
-// Contract-backed inventory for every non-auth route implemented below. The gate
-// compares these method/template pairs with OpenAPI; adding or renaming dispatch
-// requires changing this inventory in the same hunk.
 export const DEV_MOCK_ROUTES = Object.freeze([
   ['GET', '/api/version'], ['GET', '/api/settings'], ['PUT', '/api/settings'],
   ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
   ['GET', '/api/coves/{cove_id}/waves'], ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
   ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
+  ['GET', '/api/waves/{id}/backlinks'],
 ].map((route) => Object.freeze(route)));
 
 function send(res, status, body) {
@@ -163,6 +403,11 @@ export function devMockApi() {
 export async function handleDevMockRequest(req, res, next) {
         const url = new URL(req.url ?? '/', 'http://mock');
         const path = url.pathname;
+        if (path === '/dev-mock/app.html') {
+          res.statusCode = 200;
+          res.setHeader('content-type', 'text/html; charset=utf-8');
+          return res.end(DEV_MOCK_APP_HTML);
+        }
         if (!path.startsWith('/api/')) return next();
         const method = req.method ?? 'GET';
 
@@ -203,7 +448,7 @@ export async function handleDevMockRequest(req, res, next) {
           return send(res, 200, waves.filter((wave) => wave.cove_id === decodeURIComponent(coveWaves[1])));
         }
         const coveId = /^\/api\/coves\/([^/]+)$/.exec(path);
-        if (coveId && (method === 'GET' || method === 'PATCH' || method === 'DELETE')) {
+        if (coveId && (method === 'PATCH' || method === 'DELETE')) {
           const id = decodeURIComponent(coveId[1]);
           const index = coves.findIndex((cove) => cove.id === id);
           if (index < 0) return send(res, 404, { message: 'no such cove' });
@@ -228,6 +473,11 @@ export async function handleDevMockRequest(req, res, next) {
           };
           waves.push(wave);
           return send(res, 201, wave);
+        }
+        const waveBacklinks = /^\/api\/waves\/([^/]+)\/backlinks$/.exec(path);
+        if (waveBacklinks && method === 'GET') {
+          const id = decodeURIComponent(waveBacklinks[1]);
+          return send(res, 200, backlinks[id] ?? EMPTY_BACKLINKS);
         }
         const waveId = /^\/api\/waves\/([^/]+)$/.exec(path);
         if (waveId && (method === 'GET' || method === 'PATCH' || method === 'DELETE')) {

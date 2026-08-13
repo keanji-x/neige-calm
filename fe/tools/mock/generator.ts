@@ -197,7 +197,7 @@ export function generateMockFiles(input: unknown, wireSource: string): Generated
   const missingWireTypes = [...responseSchemaRefs].filter((name) => !wireTypes.has(name) && !Object.hasOwn(RESPONSE_WIRE_TYPE_EXEMPTIONS, name)).sort();
   if (missingWireTypes.length > 0) throw new Error(`response schema wire types missing: ${missingWireTypes.join(', ')}`);
   const schemaWireTypes = Object.fromEntries(Object.keys(componentSchemas).sort().map((name) => [name, wireTypes.has(name) ? name : null]));
-  const banner = '// 由 tools/mock/generate.mjs 根据 web/src/api/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。\n';
+  const banner = '// 由 tools/mock/generate.mjs 根据 core/api/generated/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。\n';
   const body = `export const mockOperations = ${JSON.stringify(stable(routes), null, 2)} as const;\n\nexport const schemaWireTypes = ${JSON.stringify(schemaWireTypes, null, 2)} as const;\n`;
   return [{ path: 'operations.ts', content: `${banner}${body}` }];
 }
