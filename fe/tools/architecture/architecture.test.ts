@@ -7,6 +7,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { checkCoreNoJsx } from './check-core-no-jsx.mjs';
 import { checkEslintHygiene } from './check-eslint-hygiene.mjs';
+import { breakpointMismatches } from './check-breakpoint-literals.mjs';
 import { checkTopLevel } from './check-top-level.mjs';
 import { checkDuplicationManifest } from './check-duplication-manifest.mjs';
 import { duplicationManifest } from './duplication-manifest.mjs';
@@ -178,6 +179,16 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
 }
 
 describe('architecture fixtures', () => {
+  it('parses media/container ranges and ignores comments and strings', () => {
+    expect(breakpointMismatches('@container card (min-width: 30em) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@media (30em <= width <= 61em) {}')).toHaveLength(2);
+    expect(breakpointMismatches('/* @media (min-width: 30em) {} */ a { content: "@media (30em)" }')).toEqual([]);
+    expect(breakpointMismatches('@media (width >= 60rem) {}')).toEqual([]);
+    expect(breakpointMismatches('@media (width >= 60rem) and (max-height: 40rem) {}')).toEqual([]);
+    expect(breakpointMismatches('@media (min-width: calc(60rem + 1px)) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@custom-media --narrow (max-width: 30em); @media (--narrow) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@custom-media --wide (width >= 30em); @media (--wide) {}')).toHaveLength(1);
+  });
   const expectedViolation = new Map<string, string>([
     ['dup-inv-001', 'INV-DUP-001'],
     ['dup-inv-002', 'INV-DUP-002'],
@@ -214,6 +225,7 @@ describe('architecture fixtures', () => {
     ['cards-registry-no-jsx', 'registry.tsx'],
     ['react-state-hook-import', 'web/src/ui/state/public.ts'],
     ['eslint-config-root-only', 'nested/eslint.config.js'],
+    ['eslint-architecture-production-scope', 'missing production error rule architecture/no-class-dom-query'],
     ['eslint-no-off-shims', 'example/rule'],
     ['source-layout', 'core/helpers.js'],
     ['source-layout-dir', 'web/src/features/inbox/shared'],

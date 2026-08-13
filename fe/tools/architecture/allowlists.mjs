@@ -6,16 +6,19 @@
  * App providers and UI primitives may be added here only when the owning file
  * exists and the exception has an architecture reason.
  */
-/** @type {ReadonlyArray<string>} */
-export const moduleRuntimeStateAllowlist = [
-  // App bootstrap must retain the browser mount node while composing React.
-  'web/src/main.tsx',
-];
+export const moduleRuntimeStateExceptions = Object.freeze([
+  Object.freeze({ path: 'web/src/main.tsx', reason: 'App bootstrap must retain the browser mount node while composing React.' }),
+]);
+export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExceptions.map(({ path }) => path));
 
-/** @type {ReadonlyArray<string>} */
-export const createContextAllowlist = [
-  // App theme is a cross-route concern whose single provider intentionally owns the document dataset mirror.
-  'web/src/app/theme/public.tsx',
-  // Reason: issue #997 §4/§6 allow context in a primitive's own directory; consumers remain in ui, so no primitive-to-business reverse dependency is introduced.
-  'web/src/ui/dialog/public.tsx',
-];
+export const createContextExceptions = Object.freeze([
+  Object.freeze({ path: 'web/src/app/theme/public.tsx', reason: 'App theme provider owns the document dataset mirror.' }),
+  Object.freeze({ path: 'web/src/ui/dialog/public.tsx', reason: 'Issue #997 permits context in the primitive directory while consumers remain in ui.' }),
+]);
+/** @param {string} name @param {ReadonlyArray<{reason: string}>} entries */
+function requireReasons(name, entries) {
+  if (entries.some(({ reason }) => reason.trim() === '')) throw new Error(`${name} exceptions require a nonempty reason`);
+}
+requireReasons('module runtime state', moduleRuntimeStateExceptions);
+requireReasons('createContext', createContextExceptions);
+export const createContextAllowlist = Object.freeze(createContextExceptions.map(({ path }) => path));

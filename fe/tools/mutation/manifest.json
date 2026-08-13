@@ -102,6 +102,7 @@
       "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
       "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects overlap for jsdom as well as browser",
+      "test-tier-project fixtures rejects migrated entries without a real authoritative test",
       "tier gate decisions reports an oracle tier/project mismatch"
     ],
     "selection_paths": [
@@ -903,6 +904,21 @@
     ],
     "selection_paths": ["core/events/invalidation-plan.contract.test.ts"],
     "why_more_than_one": "T-G3c independently pins the report-edit plan and the all-kind wave-report set."
+  },
+  {
+    "mutation_id": "app-providers-retry-401-as-400",
+    "defends": [
+      "oracle:INV-APP-059"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -19,7 +19,7 @@ export function retryUnless401(failureCount: number, error: unknown): boolean {\n   if (typeof error === 'object' && error !== null && 'failure' in error) {\n     const failure = error.failure;\n-    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'unauthorized') return false;\n+    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'authorized') return false;\n   }\n   return failureCount < 1;\n }\n\n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "why_more_than_one": "Only the shared retry-policy contract should turn red; more than one would mean unrelated provider behavior depends on error classification."
   },
   {
     "mutation_id": "app-theme-swap-light-dark-bg",
