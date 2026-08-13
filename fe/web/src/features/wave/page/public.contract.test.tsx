@@ -42,7 +42,7 @@ describe('WavePage delete confirm contract', () => {
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
     expect(confirm.dataset.ncState).toBe('busy');
     expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
-    expect(screen.getByRole('dialog').textContent).toContain('close this dialog; the delete request will continue in the background');
+    expect(screen.getByRole('dialog').textContent).toContain('Closing this dialog cancels the delete request.');
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
 

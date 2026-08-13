@@ -38,7 +38,7 @@ export type CovePageProps = Readonly<{
   /** CR-8 — after a successful delete, focus lands on the next page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameCove: (name: string) => void | Promise<void>;
-  onDeleteCove: () => void | Promise<void>;
+  onDeleteCove: (signal: AbortSignal) => void | Promise<void>;
   onRequestNewWave: () => void;
 }>;
 
@@ -46,16 +46,16 @@ export type CovePageProps = Readonly<{
  * INV-A11Y-061 — every affordance here is a `<button>` + callback. No `<a href>`
  * anywhere on this surface.
  *
- * INV-CONFIRM-001 — the destructive confirm stays mounted for the whole await:
+ * INV-CONFIRM-001 — the destructive confirm owns the request for its lifetime:
  * Confirm goes busy (not really `disabled` — that would drop focus out of the
- * trap), Cancel stays enabled so the user always keeps an exit, and a `finally`
- * clears both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
+ * trap), Cancel stays enabled and aborts the request, and a `finally` clears
+ * both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
  */
 export function CovePage({
   cove, waveCount, waveList, report, conversationList, conversationAction, pageTitleRef,
   onRenameCove, onDeleteCove, onRequestNewWave,
 }: CovePageProps) {
-  const deletion = useDeleteConfirm(() => onDeleteCove());
+  const deletion = useDeleteConfirm((_id, signal) => onDeleteCove(signal));
   const typed = useTypedConfirm(deletion.open ? cove.name : '');
   const copy = deleteCoveCopy(cove.name, waveCount);
 

@@ -1,5 +1,12 @@
 import type { z } from 'zod';
 
+/** Platform-neutral subset used to relay request cancellation to an adapter. */
+export type ApiAbortSignal = Readonly<{
+  aborted: boolean;
+  addEventListener(type: 'abort', listener: () => void, options?: { once?: boolean }): void;
+  removeEventListener(type: 'abort', listener: () => void): void;
+}>;
+
 export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** Platform adapters must preserve session cookies on every API request. */
@@ -9,6 +16,7 @@ export type ApiRequest = Readonly<{
   credentials: 'include';
   headers?: Readonly<Record<string, string>>;
   body?: unknown;
+  signal?: ApiAbortSignal;
 }>;
 
 export type ApiTransportResponse = Readonly<{
@@ -62,4 +70,5 @@ export type ApiOperation<T> = Readonly<{
   path: string;
   responseSchema: z.ZodType<T>;
   body?: unknown;
+  signal?: ApiAbortSignal;
 }>;

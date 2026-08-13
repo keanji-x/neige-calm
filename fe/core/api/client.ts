@@ -26,6 +26,7 @@ export async function performApiRequest<T>(
       method: operation.method,
       path: operation.path,
       credentials: 'include',
+      ...(operation.signal === undefined ? {} : { signal: operation.signal }),
       ...(operation.body === undefined ? {} : {
         headers: { 'content-type': 'application/json' },
         body: operation.body,

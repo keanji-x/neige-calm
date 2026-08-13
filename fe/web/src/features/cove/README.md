@@ -29,7 +29,7 @@ sentence exists to prevent.
   container *and* in the portalled confirm dialog.
 - **INV-CONFIRM-001** — the delete confirm always keeps Cancel enabled (the
   user keeps an exit). Closing during the await dismisses the dialog while the
-  request continues in the background; a `finally` clears pending. A *rejected* `onDeleteCove` must
+  request is aborted and pending is released; a `finally` clears pending. A *rejected* `onDeleteCove` must
   therefore still close the dialog and leave a reopened Confirm usable —
   otherwise the second attempt is dead on arrival. The rejection is swallowed
   here on purpose: surfacing it is the caller's job, not stranding the dialog is

@@ -1,11 +1,11 @@
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { useState } from '../state/public.ts';
 
 export type OperationFeedbackState = Readonly<{
   error: string | null;
   clear: () => void;
-  run: (operation: Promise<unknown>, fallback: string) => Promise<boolean>;
+  run: (operation: Promise<unknown>, fallback: string, ignore?: () => boolean) => Promise<boolean>;
 }>;
 
 function messageOf(error: unknown, fallback: string): string {
@@ -18,12 +18,13 @@ export function useOperationFeedback(): OperationFeedbackState {
   return {
     error,
     clear: () => setError(null),
-    run: async (operation, fallback) => {
+    run: async (operation, fallback, ignore) => {
       setError(null);
       try {
         await operation;
         return true;
       } catch (reason) {
+        if (ignore?.()) return false;
         setError(messageOf(reason, fallback));
         return false;
       }
@@ -40,27 +41,34 @@ export function OperationFeedback({ feedback, children }: {
 }
 
 export function useDeleteConfirm(
-  perform: (id: string) => void | Promise<void>,
+  perform: (id: string, signal: AbortSignal) => void | Promise<void>,
   onDone?: () => void,
 ) {
   const [target, setTarget] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  const active = useRef<AbortController | null>(null);
   const feedback = useOperationFeedback();
+  useEffect(() => () => { active.current?.abort(); }, []);
   return {
     target,
     open: target !== null,
     pending,
     feedback,
     request: (id: string) => { feedback.clear(); setTarget(id); },
-    // INV-CONFIRM-001 — closing is always available. Once sent, the request
-    // keeps running and reports through feedback; only the modal goes away.
-    cancel: () => { setTarget(null); },
+    // INV-CONFIRM-001 — closing aborts the request and releases this target;
+    // no delete is allowed to outlive the dialog that owns its consequences.
+    cancel: () => { active.current?.abort(); active.current = null; setPending(false); setTarget(null); },
     confirm: () => {
       if (pending || target === null) return;
+      const controller = new AbortController();
+      active.current = controller;
       setPending(true);
-      void feedback.run(Promise.resolve().then(() => perform(target)), 'Could not delete this item.')
+      void feedback.run(Promise.resolve().then(() => perform(target, controller.signal)), 'Could not delete this item.', () => controller.signal.aborted)
         .then((deleted) => { if (deleted) onDone?.(); })
-        .finally(() => { setPending(false); setTarget(null); });
+        .finally(() => {
+          if (active.current !== controller) return;
+          active.current = null; setPending(false); setTarget(null);
+        });
     },
   };
 }

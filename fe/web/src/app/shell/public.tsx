@@ -69,16 +69,16 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
         }}
         onGo={go}
         onCreateCove={async (name, color) => { await coveMutations.create({ name, color }); }}
-        onDeleteCove={(coveId) => coveMutations.remove(coveId)}
+        onDeleteCove={(coveId, signal) => coveMutations.remove(coveId, signal)}
         onSetPinned={async (waveId, pinned) => {
           const coveId = coveIdOf(waveId);
           if (coveId === undefined) return;
           await waveMutations.setPinned(waveId, coveId, pinned, nowMs ?? Date.now());
         }}
-        onDeleteWave={async (waveId) => {
+        onDeleteWave={async (waveId, signal) => {
           const coveId = coveIdOf(waveId);
           if (coveId === undefined) return;
-          await waveMutations.remove(waveId, coveId);
+          await waveMutations.remove(waveId, coveId, signal);
         }}
         onOpenSettings={onOpenSettings}
         onSignOut={onSignOut}

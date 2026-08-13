@@ -185,7 +185,7 @@ describe('destructive confirms', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
-    expect(onDeleteWave.mock.calls).toEqual([['w1']]);
+    expect(onDeleteWave).toHaveBeenCalledWith('w1', expect.any(AbortSignal));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
@@ -204,7 +204,7 @@ describe('destructive confirms', () => {
 
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
-    expect(onDeleteCove.mock.calls).toEqual([['c1']]);
+    expect(onDeleteCove).toHaveBeenCalledWith('c1', expect.any(AbortSignal));
   });
 
   it('states that the cascade count is unknown when the cove wave query has no data', async () => {
@@ -223,7 +223,11 @@ describe('destructive confirms', () => {
 
   it('keeps the confirm mounted while the delete is in flight and clears it on rejection', async () => {
     let reject: (reason: Error) => void = () => {};
-    const onDeleteWave = vi.fn(() => new Promise<void>((_resolve, rejectFn) => { reject = rejectFn; }));
+    let signal: AbortSignal | undefined;
+    const onDeleteWave = vi.fn((_id: string, requestSignal: AbortSignal) => {
+      signal = requestSignal;
+      return new Promise<void>((_resolve, rejectFn) => { reject = rejectFn; });
+    });
     renderSidebar({ waves: [wave({ id: 'w1', title: 'Task' })], onDeleteWave });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
@@ -236,14 +240,35 @@ describe('destructive confirms', () => {
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
     const cancel = screen.getByRole('button', { name: 'Cancel' });
     expect(cancel.hasAttribute('disabled')).toBe(false);
-    expect(screen.getByRole('dialog').textContent).toContain('close this dialog; the delete request will continue in the background');
+    expect(screen.getByRole('dialog').textContent).toContain('Closing this dialog cancels the delete request.');
     await userEvent.click(cancel);
     expect(screen.queryByRole('dialog', { name: 'Delete this wave?' })).toBeNull();
+    expect(signal?.aborted).toBe(true);
 
-    reject(new Error('boom'));
+    reject(new DOMException('aborted', 'AbortError'));
     await screen.findByRole('button', { name: 'Delete Task' });
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.getByRole('alert').textContent).toContain('boom');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('can delete a second target immediately after canceling the first request', async () => {
+    const deleted: string[] = [];
+    const onDeleteWave = vi.fn((id: string, signal: AbortSignal) => {
+      deleted.push(id);
+      if (id !== 'w1') return Promise.resolve();
+      return new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+    renderSidebar({ waves: [wave({ id: 'w1', title: 'Alpha' }), wave({ id: 'w2', title: 'Beta' })], onDeleteWave });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Alpha' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Beta' }));
+    expect(screen.getByRole('button', { name: 'Delete wave' }).getAttribute('aria-busy')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    expect(deleted).toEqual(['w1', 'w2']);
   });
 });
 

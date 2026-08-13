@@ -38,7 +38,7 @@ export type WavePageProps = Readonly<{
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
   pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameWave: (title: string) => void | Promise<void>;
-  onDeleteWave: () => void | Promise<void>;
+  onDeleteWave: (signal: AbortSignal) => void | Promise<void>;
 }>;
 
 
@@ -46,7 +46,7 @@ export function WavePage({
   wave, cards, report, conversationList, conversationAction, pageTitleRef,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
-  const deletion = useDeleteConfirm(() => onDeleteWave());
+  const deletion = useDeleteConfirm((_id, signal) => onDeleteWave(signal));
 
   return (
     <section className={styles.page} data-nc-wave-page="">

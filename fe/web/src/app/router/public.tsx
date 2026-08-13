@@ -307,10 +307,10 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   const workspace = useWorkspace(transport);
   const go = useGo();
   const waveMutations = useWaveMutations(transport);
-  const deletion = useDeleteConfirm((waveId) => {
+  const deletion = useDeleteConfirm((waveId, signal) => {
     const wave = workspace.waves.find((candidate) => candidate.id === waveId);
     if (wave === undefined) throw new Error('This wave is no longer available.');
-    return waveMutations.remove(wave.id, wave.coveId);
+    return waveMutations.remove(wave.id, wave.coveId, signal);
   });
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
      a card, and cards belong to waves), and this route has no single wave in
@@ -378,7 +378,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
   const workspace = useWorkspace(transport);
   const coveMutations = useCoveMutations(transport);
   const waveMutations = useWaveMutations(transport);
-  const waveDeletion = useDeleteConfirm((waveId) => waveMutations.remove(waveId, coveId ?? ''));
+  const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, coveId ?? '', signal));
   const go = useGo();
   const [creating, setCreating] = useState(false);
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
@@ -399,7 +399,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
     return <PendingRoute label="Cove" owner="features/cove" missing />;
   }
   const waveError = workspace.waveErrorsByCove.get(cove.id);
-  if (waveError !== null && waveError !== undefined) return <ErrorBox
+  if (waveError !== null && waveError !== undefined && !workspace.wavesByCove.has(cove.id)) return <ErrorBox
     message={waveError.message}
     onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
   />;
@@ -426,6 +426,10 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
 
   return (
     <>
+      {waveError !== null && waveError !== undefined && <ErrorBox
+        message={waveError.message}
+        onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
+      />}
       {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
       <CovePage
         cove={cove}
@@ -446,7 +450,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
           ]}
         />}
         onRenameCove={(name) => coveMutations.rename(cove.id, { name }).then(() => undefined)}
-        onDeleteCove={() => coveMutations.remove(cove.id).then(() => { go({ name: 'today' }); })}
+        onDeleteCove={(signal) => coveMutations.remove(cove.id, signal).then(() => { go({ name: 'today' }); })}
         onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
         conversationList={chat.list}
         conversationAction={chat.action}
@@ -515,17 +519,8 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
   // fetches; rendering it under this URL would show the wrong wave.
   if (waveId !== undefined && detail.data.wave.id !== waveId) return null;
 
-  const workspaceWave = workspace.waves.find((candidate) => candidate.id === detail.data.wave.id);
   const detailActivity = waveActivityFrom(detail.data.wave.id, detail.data.overlays);
-  const workspaceActivity = workspaceWave === undefined ? detailActivity : {
-    progress: workspaceWave.progress,
-    eta: workspaceWave.eta,
-    now: workspaceWave.now,
-    anyCardNeedsInput: workspaceWave.anyCardNeedsInput,
-  };
-  const wave = toWave(detail.data.wave, detail.data.overlays.length > 0
-    ? detailActivity
-    : workspaceActivity);
+  const wave = toWave(detail.data.wave, detailActivity);
 
   return (
     <WaveRouteBody
@@ -572,7 +567,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
       conversationList={chat.list}
       conversationAction={chat.action}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
-      onDeleteWave={() => waveMutations.remove(wave.id, wave.coveId).then(() => {
+      onDeleteWave={(signal) => waveMutations.remove(wave.id, wave.coveId, signal).then(() => {
         if (cove !== undefined) go({ name: 'cove', coveId: cove.id });
         else go({ name: 'today' });
       })}

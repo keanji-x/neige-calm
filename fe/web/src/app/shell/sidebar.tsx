@@ -35,9 +35,9 @@ export type SidebarProps = Readonly<{
   onGo: (target: NavTarget) => void;
   /** Colour is picked here, at random from `COVE_PALETTE` (INV-DUP-006). */
   onCreateCove: (name: string, color: string) => void | Promise<void>;
-  onDeleteCove: (coveId: string) => void | Promise<void>;
+  onDeleteCove: (coveId: string, signal: AbortSignal) => void | Promise<void>;
   onSetPinned: (waveId: string, pinned: boolean) => void | Promise<void>;
-  onDeleteWave: (waveId: string) => void | Promise<void>;
+  onDeleteWave: (waveId: string, signal: AbortSignal) => void | Promise<void>;
   onOpenSettings: () => void;
   /** The shell never signs out itself; the owner of the session does. */
   onSignOut: () => void;

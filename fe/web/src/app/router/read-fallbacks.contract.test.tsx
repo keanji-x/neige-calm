@@ -23,9 +23,10 @@ function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportR
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, client, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
-  return render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+  const view = render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
+  return { ...view, client };
 }
 
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -38,7 +39,8 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path.startsWith('/api/overlays?')) return fail('overlays down');
       return ok([]);
     });
-    expect((await screen.findAllByRole('alert')).some((node) => node.textContent?.includes('Wave activity is unavailable: overlays down'))).toBe(true);
+    const main = await screen.findByRole('main');
+    expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Wave activity is unavailable: overlays down'))).toBe(true);
   });
 
   it('keeps Today content when one cove wave read fails', async () => {
@@ -49,8 +51,21 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     expect((await screen.findAllByText('Reliable')).length).toBeGreaterThan(1);
-    expect(screen.getAllByRole('alert').some((node) => node.textContent?.includes('cove two down'))).toBe(true);
+    expect(within(screen.getByRole('main')).getAllByRole('alert').some((node) => node.textContent?.includes('cove two down'))).toBe(true);
     expect(screen.getByText('Terminal is not wired up yet.')).toBeTruthy();
+  });
+
+  it('keeps Cove content when a refetch fails after usable wave data', async () => {
+    let waveReads = 0;
+    const view = renderRoute('/cove/c1', (request) => {
+      if (request.path === '/api/coves') return ok(coves.slice(0, 1));
+      if (request.path === '/api/coves/c1/waves') return ++waveReads === 1 ? ok([wave]) : fail('waves stale');
+      return ok([]);
+    });
+    expect(await screen.findByRole('button', { name: 'New wave' })).toBeTruthy();
+    await view.client.invalidateQueries({ queryKey: ['waves', 'c1'] });
+    expect(await within(screen.getByRole('main')).findByText('waves stale')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New wave' })).toBeTruthy();
   });
 
   it('prefers wave-detail overlays to the neutral workspace fallback', async () => {
@@ -69,6 +84,21 @@ describe('degraded workspace reads stay usable', () => {
       kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
     }] }));
     expect(await screen.findByText('Needs input')).toBeTruthy();
+  });
+
+  it('uses a successful neutral detail read instead of stale workspace activity', async () => {
+    renderRoute('/wave/w1', (request) => {
+      if (request.path === '/api/coves') return ok(coves.slice(0, 1));
+      if (request.path === '/api/coves/c1/waves') return ok([wave]);
+      if (request.path.startsWith('/api/overlays?')) return ok([{
+        id: 'workspace-needs-input', plugin_id: 'cards', entity_kind: 'wave', entity_id: 'w1',
+        kind: 'any_card_needs_input', payload: { value: true }, updated_at: 1,
+      }]);
+      if (request.path === '/api/waves/w1') return ok({ wave, cards: [], overlays: [] });
+      return ok([]);
+    });
+    await screen.findByRole('button', { name: 'Rename wave' });
+    expect(screen.queryByText('Needs input')).toBeNull();
   });
 });
 

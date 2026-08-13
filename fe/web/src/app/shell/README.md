@@ -61,8 +61,8 @@ line, watch the named test go red) before landing.
   its `aria-pressed` state in both cases. **The visual half is a `browser`-tier
   concern and is not covered here.**
 - **INV-CONFIRM-001** — both destructive confirms always keep Cancel enabled.
-  Closing during the await dismisses only the dialog; the request continues in
-  the background and reports failure through operation feedback.
+  Closing during the await aborts the request, dismisses its owning dialog and
+  releases pending immediately.
 
 ## Deliberate gaps
 
