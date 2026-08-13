@@ -133,7 +133,6 @@ fn codex_worker_payload_omits_none_cwd_for_hash_stability() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,

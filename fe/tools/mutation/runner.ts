@@ -155,6 +155,24 @@ export function selectedEntries(entries: MutationEntry[], changedPaths: readonly
   return entries.filter((entry) => [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
 }
 
+export function parseShard(value: string): { index: number; total: number } {
+  const match = /^(\d+)\/(\d+)$/.exec(value);
+  if (!match) throw new Error(`invalid shard: ${value}`);
+  const index = Number(match[1]);
+  const total = Number(match[2]);
+  if (!Number.isSafeInteger(index) || !Number.isSafeInteger(total) || total < 1 || index < 1 || index > total) {
+    throw new Error(`invalid shard: ${value}`);
+  }
+  return { index, total };
+}
+
+export function shardEntries(
+  entries: MutationEntry[], shard: { index: number; total: number } | null,
+): MutationEntry[] {
+  if (shard === null) return entries;
+  return entries.filter((_entry, arrayIndex) => arrayIndex % shard.total === shard.index - 1);
+}
+
 export function equalPathSets(declared: readonly string[], tracked: readonly string[]): boolean {
   return duplicates(declared).length === 0 && duplicates(tracked).length === 0
     && difference(new Set(declared), new Set(tracked)).length === 0
@@ -183,9 +201,9 @@ export function oracleIdsFromDocuments(documents: readonly unknown[]): Set<strin
 }
 
 export function mutationRunExitCode(
-  report: readonly MutationVerdict[], infrastructureChanged: boolean, baseMode: boolean,
+  report: readonly MutationVerdict[], infrastructureChanged: boolean, baseMode: boolean, selectedCount: number,
 ): 0 | 1 {
-  if (report.length === 0) return baseMode && infrastructureChanged ? 1 : 0;
+  if (selectedCount === 0) return baseMode && infrastructureChanged ? 1 : 0;
   return report.some((verdict) => verdictExitCode(verdict) === 1) ? 1 : 0;
 }
 

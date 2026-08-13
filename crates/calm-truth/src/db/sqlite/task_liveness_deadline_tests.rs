@@ -1,5 +1,5 @@
 use super::{
-    SqlxRepo, task_claim_pending_tx, task_get_tx, task_insert_tx, task_mark_running_tx,
+    SqlxRepo, task_claim_pending_tx, task_get_tx, task_mark_running_tx,
     task_stamp_missing_running_deadline_tx,
 };
 use crate::model::{Task, TaskKind, TaskStatus, now_ms};
@@ -30,11 +30,56 @@ fn task(key: &str, status: TaskStatus) -> Task {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
     }
+}
+
+async fn insert_task(tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>, task: &Task) {
+    sqlx::query(
+        r#"INSERT INTO tasks (
+               id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
+               depends_on_json,priority,gate_json,status,status_detail,worker_card_id,
+               gate_result_json,gate_attempt,gate_pid,gate_pid_starttime,gate_pid_boot_id,
+               running_deadline_ms,context_stale_at_ms,declared_by,claim_context_json,
+               context_closure_truncated,decl_ready,decl_released_by_user,
+               context_verify_failures,spawn,child_wave_id,created_at_ms,updated_at_ms,
+               finished_at_ms
+           ) VALUES (
+               ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,
+               ?17,?18,?19,?20,?21,?22,NULL,0,0,0,0,?23,NULL,?24,?25,?26
+           )"#,
+    )
+    .bind(&task.id)
+    .bind(&task.wave_id)
+    .bind(&task.key)
+    .bind(task.kind)
+    .bind(&task.goal)
+    .bind(&task.context_json)
+    .bind(&task.acceptance_criteria)
+    .bind(&task.cwd)
+    .bind(&task.depends_on_json)
+    .bind(task.priority)
+    .bind(&task.gate_json)
+    .bind(task.status)
+    .bind(&task.status_detail)
+    .bind(&task.worker_card_id)
+    .bind(&task.gate_result_json)
+    .bind(task.gate_attempt)
+    .bind(task.gate_pid)
+    .bind(task.gate_pid_starttime)
+    .bind(&task.gate_pid_boot_id)
+    .bind(task.running_deadline_ms)
+    .bind(task.context_stale_at_ms)
+    .bind(&task.declared_by)
+    .bind(&task.spawn)
+    .bind(task.created_at_ms)
+    .bind(task.updated_at_ms)
+    .bind(task.finished_at_ms)
+    .execute(&mut **tx)
+    .await
+    .expect("insert task fixture");
 }
 
 #[tokio::test]
@@ -64,7 +109,7 @@ async fn migration_adds_task_running_liveness_column_and_task_round_trips_it() {
     row.running_deadline_ms = Some(5678);
     let id = row.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    task_insert_tx(&mut tx, &row).await.expect("insert task");
+    insert_task(&mut tx, &row).await;
     let read = task_get_tx(&mut tx, &id)
         .await
         .expect("read task")
@@ -81,7 +126,7 @@ async fn mark_running_stamps_running_liveness_deadline() {
     let row = task("stamp", TaskStatus::Pending);
     let id = row.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    task_insert_tx(&mut tx, &row).await.expect("insert task");
+    insert_task(&mut tx, &row).await;
     let rows = task_claim_pending_tx(&mut tx, &id, 1000, &[], false)
         .await
         .expect("claim pending");
@@ -119,12 +164,8 @@ async fn stamp_missing_running_liveness_deadline_includes_claude_and_excludes_te
     let claude_id = claude.id.clone();
     let terminal_id = terminal.id.clone();
     let mut tx = repo.pool().begin().await.expect("begin insert tx");
-    task_insert_tx(&mut tx, &claude)
-        .await
-        .expect("insert claude task");
-    task_insert_tx(&mut tx, &terminal)
-        .await
-        .expect("insert terminal task");
+    insert_task(&mut tx, &claude).await;
+    insert_task(&mut tx, &terminal).await;
 
     let rows = task_stamp_missing_running_deadline_tx(&mut tx, &claude_id, 3000, 9700)
         .await

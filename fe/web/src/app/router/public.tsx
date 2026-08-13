@@ -12,8 +12,8 @@
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
-import { useRef } from 'react';
-import { useQuery, type QueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef } from 'react';
+import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
@@ -28,129 +28,175 @@ import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
+import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
-import { readWaveReport } from '../../../../core/domain/report.ts';
+import { ReportOutline } from '../../features/report/outline/public.tsx';
+import { revealReportAnchor } from '../../features/report/anchor/public.ts';
 import {
-  conversationName, conversationNameFrom,
+  backlinkCountsByBlock, deriveReportOutline, readWaveReport, type ReportLinkTarget,
+} from '../../../../core/domain/report.ts';
+import {
+  conversationName, conversationNameFrom, harnessItemToTurn, reconcileUserEchoes,
   type Conversation, type ConversationTurn,
 } from '../../../../core/domain/conversation.ts';
-import { Dialog } from '../../ui/dialog/public.tsx';
+import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, prefetchCoveList, settingsQueryOptions, useCoveMutations, useSettingsMutation,
-  useWaveMutations, useWorkspace, waveDetailQueryOptions,
+  ApiError, harnessItemsQueryOptions, prefetchCoveList, settingsQueryOptions, specRunQueryOptions,
+  useCoveMutations, useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
+  waveBacklinksQueryOptions, waveDetailQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
-import { useGo, useRouteParam } from './navigation.ts';
+import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
-
-/**
- * The conversation store, standing in for an endpoint that does not exist.
- *
- * `core/domain/conversation.ts` explains what the kernel really holds — a
- * `WorkerSessionProjection` per session and `HarnessItem` rows for its turns —
- * and what it does not have: any HTTP route the frontend can read them from.
- * So the *composition layer* holds them, in memory, for the length of a visit.
- *
- * It lives here rather than in `features/chat` on purpose. Nothing under
- * `features/**` learns that its data is a stub: the list takes a list, the
- * thread takes turns, the composer reports a string. When the endpoint lands,
- * this hook becomes a query plus a mutation and not one line of the chat
- * feature changes. A stub inside the feature would have had to be unpicked
- * from it instead.
- *
- * The reply **says that it is a stub**, and runs the length a real answer runs.
- *
- * It was the literal string `test`, which was honest and turned out to be
- * unusable: a transcript of four one-word replies against four full sentences
- * cannot be looked at to judge whether the transcript works. It made the demo
- * lie in the other direction. Length is the thing being demonstrated, so the
- * stub has to have some — and it stays honest by naming itself, rather than by
- * being too short to read.
- */
-const STUB_REPLY =
-  'No agent is attached to this build, so this is a canned reply. It runs a few '
-  + 'sentences on purpose: the length is the point, because a one-word answer '
-  + 'cannot show what a real one does to the column. The reply keeps the full '
-  + 'width and the serif; your own turn stays short, sans, and on the other side.';
-const STUB_REPLY_DELAY_MS = 400;
 
 type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly ConversationTurn[];
   pending: ReadonlySet<string>;
-  start: (wave: { id: string; title: string }) => Conversation;
+  working: boolean;
+  stopping: boolean;
+  sending: boolean;
+  resetting: boolean;
+  hasEarlier: boolean;
+  loadingEarlier: boolean;
+  historyError: string | null;
+  actionError: string | null;
+  actionMessage: string | null;
+  start: () => Conversation | null;
   send: (conversationId: string, text: string) => void;
+  interrupt: () => void;
+  reset: () => Promise<boolean>;
+  loadEarlier: () => void;
 }>;
 
-function useConversationStore(): ConversationStore {
-  const [conversations, setConversations] = useState<readonly Conversation[]>([]);
-  const [turns, setTurns] = useState<Readonly<Record<string, readonly ConversationTurn[]>>>({});
-  const [pending, setPending] = useState<ReadonlySet<string>>(() => new Set());
+function errorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message !== '' ? error.message : fallback;
+}
+
+/*
+ * Conversation liveness depends on the /api/events stream from #1057 and on
+ * its PR-B G4 harness.* invalidation plan. Until both are present, persisted
+ * agent replies and harness phase changes do not appear here automatically.
+ */
+function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
+  const cardId = scope?.cardId ?? '';
+  const history = useInfiniteQuery({
+    ...harnessItemsQueryOptions(transport, cardId), enabled: scope !== null,
+  });
+  const run = useQuery({ ...specRunQueryOptions(transport, cardId), enabled: scope !== null });
+  const mutations = useSpecMutations(transport, cardId);
+  const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
+  const [sending, setSending] = useState(false);
+  const [interruptPending, setInterruptPending] = useState(false);
+  const [resetting, setResetting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const sendingRef = useRef(false);
   const seq = useRef(0);
-  const nextId = (prefix: string) => { seq.current += 1; return `${prefix}-${seq.current}`; };
+  const serverTurns = useMemo(() => (history.data?.pages ?? [])
+    .flat().sort((left, right) => left.id - right.id).flatMap((item) => {
+      const turn = harnessItemToTurn(item);
+      return turn === null ? [] : [turn];
+    }), [history.data]);
+  useEffect(() => {
+    setEchoes((current) => reconcileUserEchoes(serverTurns, current));
+  }, [serverTurns]);
+  useEffect(() => {
+    setEchoes([]);
+    setActionError(null);
+    setActionMessage(null);
+    sendingRef.current = false;
+    setSending(false);
+    setInterruptPending(false);
+    setResetting(false);
+  }, [cardId]);
 
-  const start = (wave: { id: string; title: string }): Conversation => {
-    const now = Date.now();
-    const conversation: Conversation = {
-      id: nextId('conv'), waveId: wave.id, waveTitle: wave.title, title: null,
-      kind: 'codex', state: 'idle', updatedAt: now, turns: 0,
-    };
-    setConversations((current) => [conversation, ...current]);
-    return conversation;
+  const turns = [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs);
+  const phase = run.data?.phase ?? null;
+  const working = phase === 'issuing_turn' || phase === 'turn_running';
+  const stopping = phase === 'issuing_interrupt' || interruptPending;
+  const conversation: Conversation | null = scope === null ? null : {
+    id: scope.cardId, waveId: scope.id, waveTitle: scope.title,
+    title: scope.cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+    kind: 'shared-spec', state: working ? 'running' : 'idle',
+    updatedAt: turns.at(-1)?.atMs ?? scope.updatedAt, turns: turns.length,
   };
 
-  const append = (conversationId: string, turn: ConversationTurn) => {
-    setTurns((current) => ({ ...current, [conversationId]: [...(current[conversationId] ?? []), turn] }));
-    setConversations((current) => current.map((conversation) => (
-      conversation.id === conversationId
-        ? { ...conversation, updatedAt: turn.atMs, turns: conversation.turns + 1 }
-        : conversation
-    )));
+  const send = (_conversationId: string, text: string) => {
+    if (sendingRef.current) return;
+    sendingRef.current = true;
+    setSending(true);
+    setActionError(null);
+    setActionMessage(null);
+    seq.current += 1;
+    const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
+    setEchoes((current) => [...current, echo]);
+    void mutations.send(text).catch((error: unknown) => {
+      setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
+      setActionError(errorMessage(error, 'Could not send the message.'));
+    }).finally(() => {
+      sendingRef.current = false;
+      setSending(false);
+    });
   };
 
-  const send = (conversationId: string, text: string) => {
-    append(conversationId, { id: nextId('turn'), author: 'you', text, atMs: Date.now() });
-    /*
-     * The first thing you say names the conversation, and nothing after it
-     * renames it. That is what every agent surface does, and the reason is that
-     * a name has to be stable to be a name: one that tracked the latest message
-     * would move in the list every time you spoke.
-     */
-    setConversations((current) => current.map((conversation) => (
-      conversation.id === conversationId && conversation.title === null
-        ? { ...conversation, title: conversationNameFrom(text) }
-        : conversation
-    )));
-    setPending((current) => new Set(current).add(conversationId));
-    // A delay, because the state it puts the surface in is real: the live dot
-    // and the "working" state exist and have to be reachable to be looked at.
-    window.setTimeout(() => {
-      append(conversationId, { id: nextId('turn'), author: 'agent', text: STUB_REPLY, atMs: Date.now() });
-      setPending((current) => {
-        const next = new Set(current);
-        next.delete(conversationId);
-        return next;
-      });
-    }, STUB_REPLY_DELAY_MS);
+  const interrupt = () => {
+    if (!working || stopping) return;
+    setInterruptPending(true);
+    setActionError(null);
+    void mutations.interrupt().then((result) => {
+      if (result.stopped) setActionMessage('Turn stopped');
+    }).catch((error: unknown) => {
+      setActionError(errorMessage(error, 'Could not stop the turn.'));
+    }).finally(() => setInterruptPending(false));
+  };
+
+  const reset = async (): Promise<boolean> => {
+    if (resetting) return false;
+    setResetting(true);
+    setActionError(null);
+    try {
+      await mutations.reset();
+      setEchoes([]);
+      setActionMessage(null);
+      return true;
+    } catch (error: unknown) {
+      setActionError(errorMessage(error, 'Could not reset the conversation.'));
+      return false;
+    } finally {
+      setResetting(false);
+    }
   };
 
   return {
-    conversations,
-    turnsOf: (conversationId) => turns[conversationId] ?? EMPTY_TURNS,
-    pending,
-    start,
+    conversations: conversation === null ? [] : [conversation],
+    turnsOf: () => turns,
+    pending: working && conversation !== null ? new Set([conversation.id]) : new Set(),
+    working,
+    stopping,
+    sending,
+    resetting,
+    hasEarlier: history.hasNextPage,
+    loadingEarlier: history.isFetchingNextPage,
+    historyError: history.error instanceof Error ? history.error.message : null,
+    actionError,
+    actionMessage,
+    start: () => conversation,
     send,
+    interrupt,
+    reset,
+    loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
   };
 }
 
-/** One frozen reference, so a conversation with no turns does not hand React a
- *  new array on every render. */
-const EMPTY_TURNS: readonly ConversationTurn[] = Object.freeze([]);
+type SpecConversationScope = Readonly<{
+  id: string; title: string; cardId: string; cardTitle: string | null; updatedAt: number;
+}>;
 
 export type AppRouterDeps = Readonly<{
   transport: ApiTransportPort;
@@ -211,24 +257,6 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
 }
 
 /**
- * The conversation module every route's panel card carries, plus the drawer it
- * opens into.
- *
- * It lives here, in the composition layer, for two separate reasons. The list
- * is `features/chat` and the pages are `features/today|cove|wave`, and a
- * feature may not import a sibling domain — so someone above them has to put
- * the two together, exactly as `renderWaveRow` and `waveList` already are. And
- * the drawer overlays the entire main region (§7.6), which is not something a
- * 308px module inside one page should own.
- *
- * The store is a route-local `useState` stub, so each route component creates
- * a fresh instance: conversations do not survive navigation, and Today's
- * cross-wave list is always empty. The kernel holds this data
- * (`WorkerSessionProjection` + `HarnessItem`) but no HTTP endpoint serves it
- * yet, so the list renders §5.3's unbuilt shape. See
- * `core/domain/conversation.ts`.
- */
-/**
  * The conversation module, identical on all three routes: a list, a `+` in the
  * module head, and the drawer both of them open.
  *
@@ -239,12 +267,35 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
  * `open === null` check in every branch that reads one.
  */
 function useConversationPanel(
-  scope: { id: string; title: string } | null,
+  transport: ApiTransportPort,
+  scope: SpecConversationScope | null,
   options?: { showWave?: boolean },
 ) {
-  const store = useConversationStore();
+  const store = useConversationStore(transport, scope);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [confirmingReset, setConfirmingReset] = useState(false);
   const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
+
+  useEffect(() => {
+    if (open === null) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (confirmingReset) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (!store.resetting) setConfirmingReset(false);
+        return;
+      }
+      if (!store.working || store.stopping) return;
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest('[role="complementary"]') === null) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      store.interrupt();
+    };
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => document.removeEventListener('keydown', onKeyDown, true);
+  }, [confirmingReset, open, store]);
 
   /*
    * The `+` starts a conversation *and* opens it. A control that creates a row
@@ -254,7 +305,8 @@ function useConversationPanel(
    */
   const start = () => {
     if (scope === null) return;
-    setOpenId(store.start(scope).id);
+    const conversation = store.start();
+    if (conversation !== null) setOpenId(conversation.id);
   };
 
   return {
@@ -272,22 +324,57 @@ function useConversationPanel(
       ? undefined
       : <PanelAction label="New conversation" onClick={start}>+</PanelAction>,
     drawer: (
+      <>
       <Drawer
         open={open !== null}
         title={open === null ? '' : conversationName(open)}
         onClose={() => setOpenId(null)}
         footer={open === null ? undefined : (
-          <ChatComposer onSend={(text) => store.send(open.id, text)} />
+          <>
+            <ChatComposer disabled={store.sending} onSend={(text) => store.send(open.id, text)} />
+            {(store.working || store.stopping) && (
+              <button type="button" disabled={store.stopping} onClick={store.interrupt}>
+                {store.stopping ? 'Stopping…' : 'Stop'}
+              </button>
+            )}
+            <button type="button" onClick={() => setConfirmingReset(true)}>Reset conversation</button>
+            {store.actionError !== null && <p role="alert">{store.actionError}</p>}
+            {store.actionMessage !== null && <p role="status">{store.actionMessage}</p>}
+          </>
         )}
       >
         {open !== null && (
-          <ChatThread
-            conversation={open}
-            turns={store.turnsOf(open.id)}
-            pending={store.pending.has(open.id)}
-          />
+          <>
+            {store.hasEarlier && (
+              <button type="button" disabled={store.loadingEarlier} onClick={store.loadEarlier}>
+                {store.loadingEarlier ? 'Loading…' : 'Load earlier'}
+              </button>
+            )}
+            {store.historyError !== null && <p role="alert">{store.historyError}</p>}
+            <ChatThread
+              conversation={open}
+              turns={store.turnsOf(open.id)}
+              pending={store.pending.has(open.id)}
+            />
+          </>
         )}
       </Drawer>
+      <ConfirmDialog
+        open={confirmingReset}
+        title="Reset conversation?"
+        description={<>
+          <p>This clears the transcript and starts a new agent thread. This cannot be undone.</p>
+          {store.actionError !== null && <p role="alert">{store.actionError}</p>}
+        </>}
+        confirmLabel="Reset conversation"
+        confirmBusyLabel="Resetting…"
+        confirmState={store.resetting ? 'busy' : 'ready'}
+        onCancel={() => { if (!store.resetting) setConfirmingReset(false); }}
+        onConfirm={() => {
+          void store.reset().then((succeeded) => { if (succeeded) setConfirmingReset(false); });
+        }}
+      />
+      </>
     ),
   };
 }
@@ -300,7 +387,7 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(null);
+  const chat = useConversationPanel(transport, null);
   return (
     <>
     <TodayPage
@@ -344,7 +431,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(null);
+  const chat = useConversationPanel(transport, null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -478,10 +565,44 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
   const go = useGo();
   // `showWave: false` — on a wave's own page the wave's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
+  const specCard = cards.find((card) => card.kind === 'codex' &&
+    typeof card.payload === 'object' && card.payload !== null &&
+    (card.payload as { spec_harness?: unknown }).spec_harness === true);
   const chat = useConversationPanel(
-    { id: wave.id, title: waveDisplayTitle(wave.title) },
+    transport,
+    specCard === undefined ? null : {
+      id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
+      cardTitle: specCard.title, updatedAt: specCard.updated_at,
+    },
     { showWave: false },
   );
+
+  const { report, outline } = useMemo(() => {
+    const nextReport = readWaveReport(cards);
+    return {
+      report: nextReport,
+      outline: deriveReportOutline(nextReport?.blocks ?? null),
+    };
+  }, [cards]);
+  const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id));
+  const backlinks = backlinksQuery.data;
+
+  /*
+   * A `neige://wave/…` citation. Same wave — the common case, since a report
+   * mostly cites its own sections — reveals immediately so activating an
+   * unchanged hash still flashes the destination, then records that destination
+   * in the URL. The route body is keyed by wave id, so the hash update preserves
+   * the document. Another wave is a real navigation carrying the same hash.
+   */
+  const arrivalAnchorId = useRouteHash();
+  const openReportLink = (target: ReportLinkTarget) => {
+    if (target.waveId === wave.id) {
+      if (target.blockId !== null) revealReportAnchor(target.blockId);
+      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+      return;
+    }
+    go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+  };
 
   return (
     <>
@@ -489,7 +610,11 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
       wave={wave}
       cards={cards}
       report={<ReportDocument
-        body={readWaveReport(cards)?.body ?? null}
+        report={report}
+        rail={<ReportOutline items={outline} />}
+        backlinkCounts={backlinks === undefined ? undefined : backlinkCountsByBlock(backlinks.backlinks)}
+        onOpenLink={openReportLink}
+        arrivalAnchorId={arrivalAnchorId}
         empty={<ReportEmpty
           lead="Nothing written here yet."
           hints={[
@@ -498,6 +623,15 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
           ]}
         />}
       />}
+      backlinks={backlinks !== undefined && backlinks.backlinks.length > 0
+        ? (
+          <ReportBacklinks
+            waveId={wave.id}
+            backlinks={backlinks}
+            onOpen={(waveId, blockId) => { go({ name: 'wave', waveId, blockId }); }}
+          />
+        )
+        : undefined}
       conversationList={chat.list}
       conversationAction={chat.action}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}

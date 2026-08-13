@@ -20,8 +20,8 @@ use crate::model::now_ms;
 
 /// Persisted task columns compared for in-flight declaration drift. `refs` is
 /// resolved through the frozen context/index rather than stored on `tasks`;
-/// `no_gate_reason` is folded into legacy context and otherwise only affects
-/// gate validation, so neither belongs to this direct column comparison.
+/// `no_gate_reason` only affects gate validation, so neither belongs to this
+/// direct column comparison.
 pub const PROJECTION_DRIFT_TASK_FIELDS: &[&str] = &[
     "kind",
     "goal",
@@ -37,13 +37,12 @@ fn declaration_field_changed(
     row: &FrozenDeclarationRow,
     declaration: &TaskDeclaration,
     expected_context: &str,
-    legacy: bool,
 ) -> Result<bool> {
-    let (_, _, kind, goal, context, acceptance, cwd, depends, _, gate, _, _, _, _) = row;
+    let (_, _, kind, goal, context, acceptance, cwd, depends, _, gate, _, _, _) = row;
     Ok(match field {
         "kind" => kind != &declaration.kind,
         "goal" => goal != &declaration.goal,
-        "context" => !context_eq(context, expected_context, declaration, legacy),
+        "context" => !context_eq(context, expected_context),
         "acceptance" => acceptance != &declaration.acceptance,
         "cwd" => cwd != &declaration.cwd,
         "depends_on" => {
@@ -75,7 +74,6 @@ type FrozenDeclarationRow = (
     i64,
     Option<String>,
     String,
-    String,
     i64,
     i64,
 );
@@ -87,38 +85,12 @@ pub enum WithdrawalEdge {
     ReleasedByUser,
 }
 
-fn declaration_context_json(declaration: &TaskDeclaration, legacy: bool) -> Result<String> {
-    let mut context = declaration.context.clone();
-    if legacy && let Some(reason) = &declaration.no_gate_reason {
-        match &mut context {
-            serde_json::Value::Null => {
-                context = serde_json::json!({"no_gate_reason": reason});
-            }
-            serde_json::Value::Object(map) => {
-                map.insert(
-                    "no_gate_reason".into(),
-                    serde_json::Value::String(reason.clone()),
-                );
-            }
-            _ => {}
-        }
-    }
-    serde_json::to_string(&context)
+fn declaration_context_json(declaration: &TaskDeclaration) -> Result<String> {
+    serde_json::to_string(&declaration.context)
         .map_err(|e| CalmError::Internal(format!("serialize task context: {e}")))
 }
 
-fn context_eq(actual: &str, expected: &str, declaration: &TaskDeclaration, legacy: bool) -> bool {
-    if legacy
-        && declaration.no_gate_reason.is_none()
-        && declaration
-            .context
-            .as_object()
-            .is_some_and(|value| value.is_empty())
-        && serde_json::from_str::<serde_json::Value>(actual)
-            .is_ok_and(|value| value.is_null() || value.as_object().is_some_and(|v| v.is_empty()))
-    {
-        return true;
-    }
+fn context_eq(actual: &str, expected: &str) -> bool {
     json_eq(actual, expected)
 }
 
@@ -374,14 +346,12 @@ fn reference_diagnostic(code: &str, reference: &str, wave_id: Option<String>) ->
 }
 
 /// One in-flight `tasks` row, as carried by [`wave_projection_state`]'s
-/// `json_group_array`. Shape mirrors the four columns the predicate needs;
-/// `declared_by` / `origin` are `NOT NULL` since migration 0068.
+/// `json_group_array`. Shape mirrors the three columns the predicate needs.
 #[derive(Deserialize)]
 struct InflightTaskRow {
     key: String,
     status: String,
     declared_by: String,
-    origin: String,
 }
 
 /// Everything the schedulability verdict needs from `waves` + the in-flight
@@ -394,11 +364,6 @@ struct WaveProjectionState {
     /// cross-cove reference check.
     source_cove: String,
     inflight: Vec<InflightTaskRow>,
-    /// Non-terminal spec rows which projection cannot treat as its own
-    /// replaceable `origin='block' AND status='pending'` output. Migration
-    /// 0068 legacy rows live here, including legacy pending rows: they must
-    /// consume tree share but must never be culled to make room.
-    non_block_live_spec: i64,
     task_read_state: Vec<TaskReadState>,
 }
 
@@ -409,7 +374,6 @@ struct WaveProjectionStateRow {
     require_task_gates: i64,
     cove_id: String,
     inflight_json: String,
-    non_block_live_spec: i64,
     task_read_state_json: String,
 }
 
@@ -427,10 +391,8 @@ struct WaveProjectionStateRow {
 /// fetch_one` that turned a concurrently deleted wave into a 500 (it is the
 /// `NotFound` below, i.e. a 404, on the same row that carries the policy).
 ///
-/// The in-flight key set, block-origin ceiling occupancy, orphan candidates,
-/// and non-block live spec occupancy are captured by the same statement. The
-/// last count is deliberately separate: legacy rows consume TREE share while
-/// the per-wave ceiling retains its approved block-only predicate.
+/// The in-flight key set, ceiling occupancy, and orphan candidates are captured
+/// by the same statement.
 async fn wave_projection_state(
     conn: &mut SqliteConnection,
     wave_id: &str,
@@ -440,14 +402,10 @@ async fn wave_projection_state(
         r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
-                       'declared_by', t.declared_by, 'origin', t.origin))
+                       'declared_by', t.declared_by))
                    FROM tasks t
                    WHERE t.wave_id = w.id
-                      AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
-                   (SELECT count(*) FROM tasks t
-                    WHERE t.wave_id = w.id AND t.declared_by = 'spec'
-                      AND t.origin != 'block'
-                      AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                       AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
                        'gate_result_json', t.gate_result_json,
@@ -465,14 +423,10 @@ async fn wave_projection_state(
         r#"SELECT w.automation_policy, w.spec_task_ceiling, w.require_task_gates, w.cove_id,
                   (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
-                       'declared_by', t.declared_by, 'origin', t.origin))
+                       'declared_by', t.declared_by))
                    FROM tasks t
                    WHERE t.wave_id = w.id
-                      AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
-                   (SELECT count(*) FROM tasks t
-                    WHERE t.wave_id = w.id AND t.declared_by = 'spec'
-                      AND t.origin != 'block'
-                      AND t.status NOT IN ('done','failed','canceled')) AS non_block_live_spec,
+                       AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    '[]' AS task_read_state_json
            FROM waves w WHERE w.id = ?1"#
     };
@@ -487,7 +441,6 @@ async fn wave_projection_state(
         require_gates: row.require_task_gates != 0,
         source_cove: row.cove_id,
         inflight: serde_json::from_str(&row.inflight_json)?,
-        non_block_live_spec: row.non_block_live_spec,
         task_read_state: serde_json::from_str(&row.task_read_state_json)?,
     })
 }
@@ -600,11 +553,10 @@ async fn evaluate_schedulability_with_tree_term(
     // share)` where `share` is this wave's deterministic slice of the root's
     // `tree_task_budget`, split over the tree's waves in `(created_at, id)`
     // order. Its quota is a function of tree SHAPE, never sibling projection
-    // output. Within this wave, immutable occupancy (block in-flight plus
-    // non-block live spec rows) is subtracted and block pending rows re-enter
-    // as ordered candidates. That keeps "rebuild ≡ incremental" (D.1 #11)
-    // true while making upgrade legacy rows consume share without culling
-    // them. A shared sibling count would instead be first-come-first-served,
+    // output. Within this wave, immutable in-flight occupancy is subtracted and
+    // pending rows re-enter as ordered candidates. That keeps
+    // "rebuild ≡ incremental" (D.1 #11) true. A shared sibling count would
+    // instead be first-come-first-served,
     // path-dependent, and not reconstructible by a rebuild.
     let ceiling = state.ceiling;
     let (tree_share, tree_root_unresolved) = match &tree_term {
@@ -621,21 +573,18 @@ async fn evaluate_schedulability_with_tree_term(
     let require_gates = state.require_gates;
     let source_cove = state.source_cove;
     let effective_wait = configured_policy.as_deref() == Some("declare-and-wait");
-    // unknown_deps knows every in-flight key in the wave, including rows
-    // backfilled as legacy.  Ceiling occupancy is intentionally narrower.
+    // unknown_deps knows every in-flight key in the wave.
     let inflight_keys: Vec<String> = state.inflight.iter().map(|r| r.key.clone()).collect();
     let inflight_key_set: BTreeSet<&str> = inflight_keys.iter().map(String::as_str).collect();
     let ceiling_occupied: i64 = state
         .inflight
         .iter()
-        .filter(|r| r.declared_by == "spec" && r.origin == "block")
+        .filter(|r| r.declared_by == "spec")
         .count() as i64;
     let ceiling_capacity = ceiling.saturating_sub(ceiling_occupied).max(0);
-    // Block pending rows are projection output and re-enter below as
-    // candidates. Everything else is fixed occupancy for this write: all
-    // block in-flight rows plus every non-terminal non-block spec row. In
-    // particular, 0068 legacy rows consume share without becoming cullable.
-    let tree_occupied = ceiling_occupied.saturating_add(state.non_block_live_spec);
+    // Pending rows are projection output and re-enter below as candidates.
+    // In-flight spec rows are fixed occupancy for this write.
+    let tree_occupied = ceiling_occupied;
     let tree_capacity = tree_share.as_ref().map_or(i64::MAX, |share| {
         share.share.saturating_sub(tree_occupied).max(0)
     });
@@ -781,7 +730,7 @@ async fn evaluate_schedulability_with_tree_term(
     // in-flight declaration cannot consume capacity, and a terminal key can never
     // produce a new live row.
     let frozen: Vec<FrozenDeclarationRow> = sqlx::query_as(
-        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,origin,decl_ready,decl_released_by_user FROM tasks WHERE wave_id=?1 AND status!='pending'",
+        "SELECT status,key,kind,goal,context_json,acceptance_criteria,cwd,depends_on_json,priority,gate_json,declared_by,decl_ready,decl_released_by_user FROM tasks WHERE wave_id=?1 AND status!='pending'",
     )
     .bind(wave_id)
     .fetch_all(&mut *conn)
@@ -801,28 +750,20 @@ async fn evaluate_schedulability_with_tree_term(
             _priority,
             _gate,
             _declared_by,
-            origin,
             decl_ready,
             decl_released_by_user,
         )) = frozen_by_key.get(&declaration.key)
         else {
             continue;
         };
-        let legacy = origin == "legacy";
-        let expected_context = declaration_context_json(declaration, legacy)?;
+        let expected_context = declaration_context_json(declaration)?;
         let row = frozen_by_key.get(&declaration.key).expect("frozen row");
         let changed = PROJECTION_DRIFT_TASK_FIELDS
             .iter()
             .try_fold(false, |changed, field| {
                 Ok::<_, CalmError>(
                     changed
-                        || declaration_field_changed(
-                            field,
-                            row,
-                            declaration,
-                            &expected_context,
-                            legacy,
-                        )?,
+                        || declaration_field_changed(field, row, declaration, &expected_context)?,
                 )
             })?;
         verdict.withdrawal = if *decl_ready == 1 && !declaration.ready {
@@ -872,9 +813,8 @@ async fn evaluate_schedulability_with_tree_term(
     // still-live projection row as a synthetic verdict so both read APIs retain
     // the §6.5 withdrawal diagnostic without changing their response shape.
     let declared_keys: BTreeSet<&str> = declarations.iter().map(|d| d.key.as_str()).collect();
-    // Same rows the in-flight key list came from (one statement, one
-    // version), narrowed to block-origin projection rows.
-    for row in state.inflight.iter().filter(|r| r.origin == "block") {
+    // Same rows the in-flight key list came from (one statement, one version).
+    for row in &state.inflight {
         if !declared_keys.contains(row.key.as_str()) {
             verdicts.push(BlockVerdict {
                 block_id: String::new(),
@@ -922,8 +862,8 @@ async fn evaluate_schedulability_with_tree_term(
     // Attribution matters here (§12.2 C): recovery must name every setting
     // that actually binds this admission. A strict minimum names one knob;
     // equality names BOTH, because raising either one alone leaves the other
-    // at the same minimum. A legacy overage freeze always binds the tree and
-    // also binds the local ceiling when that ceiling has no remaining slot.
+    // at the same minimum. An overage freeze always binds the tree and also
+    // binds the local ceiling when that ceiling has no remaining slot.
     let tree_bound = tree_share
         .as_ref()
         .filter(|share| share.admission_frozen || tree_capacity < ceiling_capacity)
@@ -1134,12 +1074,11 @@ async fn project_tasks_from_verdicts_tx(
         .filter(|v| !v.key.is_empty())
         .map(|v| (v.key.clone(), v.schedulable))
         .collect();
-    let existing: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
-        "SELECT id,key,status,claim_context_json FROM tasks WHERE wave_id=?1 AND origin='block'",
-    )
-    .bind(wave_id)
-    .fetch_all(&mut **tx)
-    .await?;
+    let existing: Vec<(String, String, String, Option<String>)> =
+        sqlx::query_as("SELECT id,key,status,claim_context_json FROM tasks WHERE wave_id=?1")
+            .bind(wave_id)
+            .fetch_all(&mut **tx)
+            .await?;
     let mut verdicts = verdicts;
     let verdict_index_by_key: BTreeMap<_, _> = verdicts
         .iter()
@@ -1233,19 +1172,6 @@ async fn project_tasks_from_verdicts_tx(
     }
     let now = now_ms();
     for (declaration, verdict) in declarations.iter().zip(&verdicts) {
-        if verdict.schedulable && !declaration.tombstone {
-            let adopted = sqlx::query(
-                "UPDATE tasks SET origin='block',decl_ready=1,updated_at_ms=?1 WHERE wave_id=?2 AND key=?3 AND origin='legacy' AND status!='pending'",
-            )
-            .bind(now)
-            .bind(wave_id)
-            .bind(&declaration.key)
-            .execute(&mut **tx)
-            .await?;
-            if adopted.rows_affected() != 0 {
-                changed.insert(declaration.key.clone());
-            }
-        }
         if !verdict.schedulable {
             continue;
         }
@@ -1263,10 +1189,10 @@ async fn project_tasks_from_verdicts_tx(
         let result = sqlx::query(
             r#"INSERT INTO tasks(
                    id,wave_id,key,kind,goal,context_json,acceptance_criteria,cwd,
-                   depends_on_json,priority,gate_json,status,declared_by,spawn,origin,
+                   depends_on_json,priority,gate_json,status,declared_by,spawn,
                    decl_ready,decl_released_by_user,created_at_ms,updated_at_ms
                ) VALUES(
-                   ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,'block',
+                   ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'pending',?12,?13,
                    ?14,?15,?16,?16
                )
                ON CONFLICT(wave_id,key) DO UPDATE SET
@@ -1280,12 +1206,10 @@ async fn project_tasks_from_verdicts_tx(
                    gate_json=excluded.gate_json,
                    declared_by=excluded.declared_by,
                    spawn=excluded.spawn,
-                   origin='block',
                    decl_ready=excluded.decl_ready,
                    decl_released_by_user=excluded.decl_released_by_user,
                    updated_at_ms=excluded.updated_at_ms
                WHERE tasks.status='pending'
-                 AND (tasks.origin='block' OR tasks.origin='legacy')
                  AND (
                      tasks.kind IS NOT excluded.kind
                      OR tasks.goal IS NOT excluded.goal
@@ -1297,7 +1221,6 @@ async fn project_tasks_from_verdicts_tx(
                      OR tasks.gate_json IS NOT excluded.gate_json
                      OR tasks.declared_by IS NOT excluded.declared_by
                      OR tasks.spawn IS NOT excluded.spawn
-                     OR tasks.origin IS NOT 'block'
                      OR tasks.decl_ready IS NOT excluded.decl_ready
                      OR tasks.decl_released_by_user IS NOT excluded.decl_released_by_user
                  )"#,
@@ -1375,7 +1298,7 @@ mod tests {
     }
 
     async fn insert_block_task(repo: &super::super::SqlxRepo, wave: &str, key: &str, status: &str) {
-        sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,origin,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec','block',0,0)")
+        sqlx::query("INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,claim_context_json,context_closure_truncated,decl_ready,decl_released_by_user,context_verify_failures,spawn,child_wave_id,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,'codex',?4,'{}','[]',0,?5,'spec',NULL,0,0,0,0,'in-wave',NULL,0,0)")
             .bind(format!("{wave}:{key}")).bind(wave).bind(key).bind(format!("goal {key}")).bind(status)
             .execute(&repo.pool).await.unwrap();
     }

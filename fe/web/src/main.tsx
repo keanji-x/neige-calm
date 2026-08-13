@@ -4,6 +4,8 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import { AppProviders, type ProviderRuntime } from './app/providers/public.tsx';
+import { createBrowserEventComposition } from './app/composition.ts';
+import { EventBridge } from './app/events/event-bridge.tsx';
 import { logoutOperation, runOperation, serverVersionOperation } from './app/providers/queries.ts';
 import { createFetchTransport } from './app/providers/transport.ts';
 import { createAppRouter } from './app/router/public.tsx';
@@ -14,6 +16,10 @@ if (!root) throw new Error('Missing #root mount point');
 
 const transport = createFetchTransport();
 const client = new QueryClient();
+const events = createBrowserEventComposition({
+  storage: window.localStorage,
+  transport,
+});
 const router = createAppRouter({
   transport,
   client,
@@ -34,7 +40,20 @@ const runtime: ProviderRuntime = {
 
 createRoot(root).render(
   <StrictMode>
-    <AppProviders client={client} runtime={runtime}>
+    <AppProviders
+      client={client}
+      runtime={runtime}
+      cursorStore={events.store}
+      renderEventBridge={(server) => (
+        <EventBridge
+          client={client}
+          stream={events.stream}
+          syncEventVersion={server.syncEventVersion}
+          dbInstanceId={server.dbInstanceId}
+          cursor={events.store}
+        />
+      )}
+    >
       <RouterProvider router={router} />
     </AppProviders>
   </StrictMode>,
