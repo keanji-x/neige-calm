@@ -11,7 +11,7 @@ use axum::http::Request;
 use axum::{Extension, Json};
 use calm_server::actor::Actor;
 use calm_server::auth::Principal;
-use calm_server::db::sqlite::{project_tasks_tx, task_claim_pending_tx};
+use calm_server::db::sqlite::{begin_immediate_tx, project_tasks_tx, task_claim_pending_tx};
 use calm_server::event::{EditAuthor, Event, EventBus};
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
@@ -153,7 +153,8 @@ async fn assert_diagnosed_on_both_reads(boot: &Boot, key: &str, needle: &str) {
 }
 
 async fn rebuild(boot: &Boot) -> calm_server::db::sqlite::TaskProjectionOutcome {
-    let mut tx = boot.repo.sqlite_pool().unwrap().begin().await.unwrap();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = begin_immediate_tx(&pool).await.unwrap();
     let outcome = tasks_rebuild_tx(&mut tx, boot.wave_id.as_str())
         .await
         .unwrap();
