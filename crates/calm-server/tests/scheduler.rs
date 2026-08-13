@@ -1001,6 +1001,7 @@ struct BootstrapBlockHook {
     wait_entered: Arc<tokio::sync::Notify>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+    completed: Arc<tokio::sync::Notify>,
 }
 
 impl BootstrapAdapter {
@@ -1082,6 +1083,7 @@ impl ProviderAdapter for BootstrapAdapter {
             let entered = block.entered.clone();
             let wait_entered = block.wait_entered.clone();
             let release = block.release.clone();
+            let completed = block.completed.clone();
             let pool = ctx.operation_repo.sqlite_pool();
             let op_id = op.id.clone();
             let result = output.data.clone();
@@ -1096,6 +1098,7 @@ impl ProviderAdapter for BootstrapAdapter {
                     complete_parked_for_test(&pool, &op_id, &ParkedOutcome::Succeeded { result })
                         .await
                         .expect("complete blocked bootstrap operation");
+                    completed.notify_one();
                 }),
             });
         }
@@ -6381,6 +6384,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         wait_entered: Arc::new(tokio::sync::Notify::new()),
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
+        completed: Arc::new(tokio::sync::Notify::new()),
     };
     let bootstrap_adapter = Arc::new(BootstrapAdapter::new_blocking(
         minted.clone(),
@@ -6481,6 +6485,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         wait_entered: Arc::new(tokio::sync::Notify::new()),
         entered: Arc::new(tokio::sync::Notify::new()),
         release: Arc::new(tokio::sync::Notify::new()),
+        completed: Arc::new(tokio::sync::Notify::new()),
     };
     let (crash_runtime, crash_scheduler) = build_scheduler(
         &crash_boot,
@@ -6531,10 +6536,6 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             Arc::new(BootstrapAdapter::new(crash_minted.clone())),
         ],
     );
-    let recovered_sweep = {
-        let scheduler = recovered_scheduler.clone();
-        tokio::spawn(async move { scheduler.sweep_all().await })
-    };
     assert_eq!(
         crash_boot
             .repo
@@ -6546,6 +6547,13 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
         TaskStatus::Dispatched
     );
     crash_block.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), crash_block.completed.notified())
+        .await
+        .expect("blocked bootstrap completion must be persisted");
+    let recovered_sweep = {
+        let scheduler = recovered_scheduler.clone();
+        tokio::spawn(async move { scheduler.sweep_all().await })
+    };
     tokio::time::timeout(Duration::from_secs(30), recovered_sweep)
         .await
         .expect("recovered bootstrap sweep must not hang")
