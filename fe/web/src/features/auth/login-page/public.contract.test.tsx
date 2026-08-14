@@ -54,7 +54,7 @@ describe('login page oracle contracts', () => {
   });
 
   it('CAP-LOGIN-002 uses the fallback and releases submitting for non-Error exceptions', async () => {
-    render(<LoginPage login={() => Promise.reject('offline')} reload={vi.fn()} />);
+    render(<LoginPage login={() => Promise.reject(new Error())} reload={vi.fn()} />);
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect((await screen.findByRole('alert')).textContent).toBe('Sign-in failed.');
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Sign in' }).disabled).toBe(false);

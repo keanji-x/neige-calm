@@ -16,11 +16,12 @@ describe('session gate contracts', () => {
     const paths: string[] = [];
     const transport: ApiTransportPort = { send: (request) => { paths.push(request.path); return Promise.resolve({ status: 401, statusText: 'Unauthorized', body: {} }); } };
     const client = new QueryClient();
-    const runtime: ProviderRuntime = { fetchVersion: vi.fn(), reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'calm', storage: localStorage };
+    const fetchVersion = vi.fn();
+    const runtime: ProviderRuntime = { fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'calm', storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
     render(<SessionGate transport={transport} client={client} unauthorized={createUnauthorizedChannel({ enqueue: (task) => task() })} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>}><AppProviders client={client} runtime={runtime} cursorStore={{ clear: vi.fn() }}><b>router</b></AppProviders></SessionGate>);
     expect(paths).toEqual(['/api/auth/whoami']);
     expect(await screen.findByText('login')).toBeTruthy();
-    expect(runtime.fetchVersion).not.toHaveBeenCalled();
+    expect(fetchVersion).not.toHaveBeenCalled();
   });
 
   it('renders login on 401, error with retry on transport failure, and clears on broadcast 401', async () => {
