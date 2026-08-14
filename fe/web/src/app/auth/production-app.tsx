@@ -2,17 +2,17 @@ import { QueryClient } from '@tanstack/react-query';
 import { RouterProvider, type AnyRouter } from '@tanstack/react-router';
 import { StrictMode, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
-import { createUnauthorizedChannel, type UnauthorizedChannel } from '../../../core/api/unauthorized.ts';
-import type { ApiTransportPort } from '../../../core/api/types.ts';
-import { LoginPage } from '../features/auth/login-page/public.tsx';
-import { loginWithTransport } from './auth/login.ts';
-import { SessionGate } from './auth/session-gate.tsx';
-import { createBrowserEventComposition } from './composition.ts';
-import { EventBridge } from './events/event-bridge.tsx';
-import { AppProviders, type ProviderRuntime } from './providers/public.tsx';
-import { logoutOperation, runOperation, serverVersionOperation } from './providers/queries.ts';
-import { createFetchTransport } from './providers/transport.ts';
-import { createAppRouter } from './router/public.tsx';
+import { createUnauthorizedChannel, type UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import { LoginPage } from '../../features/auth/login-page/public.tsx';
+import { loginWithTransport } from './login.ts';
+import { SessionGate } from './session-gate.tsx';
+import { createBrowserEventComposition } from '../composition.ts';
+import { EventBridge } from '../events/event-bridge.tsx';
+import { AppProviders, type ProviderRuntime } from '../providers/public.tsx';
+import { logoutOperation, runOperation, serverVersionOperation } from '../providers/queries.ts';
+import { createFetchTransport } from '../providers/transport.ts';
+import { createAppRouter } from '../router/public.tsx';
 
 export function ProductionApp({ transport, unauthorized, client, runtime, cursorStore, router, renderEventBridge,
   renderLogin, renderError }: Readonly<{

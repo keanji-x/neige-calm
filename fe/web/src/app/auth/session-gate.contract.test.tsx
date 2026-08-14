@@ -7,7 +7,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { SessionGate } from './session-gate.tsx';
 import type { ProviderRuntime } from '../providers/public.tsx';
-import { ProductionApp } from '../production-app.tsx';
+import { ProductionApp } from './production-app.tsx';
 import { createAppRouter } from '../router/public.tsx';
 
 afterEach(cleanup);

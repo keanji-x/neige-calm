@@ -1,4 +1,4 @@
-import { mountProductionApp } from './app/production-app.tsx';
+import { mountProductionApp } from './app/auth/production-app.tsx';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Missing #root mount point');

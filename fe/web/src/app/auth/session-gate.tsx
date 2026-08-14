@@ -27,7 +27,7 @@ export function SessionGate({ children, transport, unauthorized, client, renderL
     activeProbe.current = controller;
     const probeEpoch = ++epoch.current;
     setState({ status: 'unknown' });
-    void performApiRequest(transport, whoamiOperation(controller.signal)).then((result) => {
+    void performApiRequest(transport, { ...whoamiOperation(), signal: controller.signal }).then((result) => {
       if (mounted.current && epoch.current === probeEpoch) setState(resolveSessionProbe(result));
     });
     return () => { controller.abort(); if (activeProbe.current === controller) activeProbe.current = null; };
