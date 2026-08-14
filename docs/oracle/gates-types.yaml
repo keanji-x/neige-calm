@@ -123,11 +123,11 @@
   kind: gate
   family: tokens-alias
   statement: >
-    已废弃的 ALIAS_TOKENS 必须从 `:root` 与 dark 主题的 token 闭集中移除
+    已废弃的 token 必须从 `:root` 与 dark 主题的 `INVENTORY` 精确闭集中移除
   why: >
     这组别名已由当前 token 取代；INVENTORY 的精确闭集会拒绝它们被重新声明。
-  source: web/src/styles/tokens.contract.test.ts:83-91
-  authoritative_test: web/src/styles/tokens.contract.test.ts:93-101
+  source: fe/web/src/styles/tokens.contract.test.ts:83-91
+  authoritative_test: fe/web/src/styles/tokens.contract.test.ts:93-101
   owner_slice: styles/tokens
   intentional_omission: false
   runtime_layer: styles
