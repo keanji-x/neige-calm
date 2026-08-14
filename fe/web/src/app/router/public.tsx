@@ -213,7 +213,6 @@ export function useConversationStore(
     } catch (error: unknown) {
       suppressRememberRef.current = false;
       suppressedRememberSnapshotRef.current = null;
-      if (conversation !== null) registry.remember(conversation, turns);
       setActionError(errorMessage(error, 'Could not reset the conversation.'));
       return false;
     } finally {

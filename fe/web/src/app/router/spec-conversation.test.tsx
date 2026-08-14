@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -265,6 +265,26 @@ describe('spec conversation regressions', () => {
     expect(requests.filter((request) => request.path.endsWith('/spec/reset'))).toHaveLength(1);
     reject(new Error('reset exploded'));
     expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
+  });
+
+  it('keeps the current turn count on Today when history changes before reset fails', async () => {
+    let reject!: (reason: Error) => void;
+    const pending = new Promise<ApiTransportResponse>((_resolve, rejectPromise) => { reject = rejectPromise; });
+    const { client, router } = setup((request) => {
+      if (request.path.endsWith('/spec/reset')) return pending;
+      return request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 1 turns' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
+      .getByRole('button', { name: 'Reset conversation' }));
+    client.setQueryData(queryKeys.harnessItems(CARD.id), {
+      pages: [harnessRows(3)], pageParams: [0],
+    });
+    await screen.findByText('reply 2');
+    await router.navigate({ to: '/' });
+    await act(() => { reject(new Error('reset exploded')); return Promise.resolve(); });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 3 turns' });
   });
 
   it('uses Escape to interrupt a working turn without closing the drawer', async () => {
