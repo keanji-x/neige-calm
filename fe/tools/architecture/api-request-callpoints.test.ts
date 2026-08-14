@@ -12,11 +12,11 @@ function sourceFiles(directory: string): string[] {
 
 function performApiRequestArities(source: string): number[] {
   const arities: number[] = [];
-  const call = 'performApiRequest(';
-  for (let start = source.indexOf(call); start !== -1; start = source.indexOf(call, start + call.length)) {
+  for (const match of source.matchAll(/\bperformApiRequest\s*\(/g)) {
+    const start = match.index + match[0].length;
     let depth = 1;
     let commas = 0;
-    for (let index = start + call.length; index < source.length && depth > 0; index += 1) {
+    for (let index = start; index < source.length && depth > 0; index += 1) {
       if (source[index] === '(' || source[index] === '{' || source[index] === '[') depth += 1;
       if (source[index] === ')' || source[index] === '}' || source[index] === ']') depth -= 1;
       if (source[index] === ',' && depth === 1) commas += 1;
@@ -26,14 +26,29 @@ function performApiRequestArities(source: string): number[] {
   return arities;
 }
 
+function performApiRequestCallpoints(root: string): string[] {
+  return sourceFiles(root).filter((path) => /\bperformApiRequest\s*\(/.test(readFileSync(path, 'utf8')));
+}
+
 describe('web api request callpoints', () => {
   it('keeps performApiRequest at the general-operation and session-probe policy boundaries', () => {
     const root = resolve(process.cwd(), 'web/src');
-    const callpoints = sourceFiles(root).filter((path) => readFileSync(path, 'utf8').includes('performApiRequest('));
+    const callpoints = performApiRequestCallpoints(root);
     expect(callpoints.map((path) => path.slice(root.length + 1)).sort()).toEqual([
       'app/auth/session-gate.tsx',
       'app/providers/queries.ts',
     ]);
     expect(callpoints.flatMap((path) => performApiRequestArities(readFileSync(path, 'utf8')))).toEqual([3, 3]);
+  });
+
+  it('detects whitespace before the call parenthesis without matching similar names', () => {
+    const root = resolve(import.meta.dirname, 'rule-fixtures/api-request-callpoints');
+    const positiveRoot = resolve(root, 'positive/web/src');
+    const negativeRoot = resolve(root, 'negative/web/src');
+    const callpoints = performApiRequestCallpoints(positiveRoot);
+
+    expect(callpoints.map((path) => path.slice(positiveRoot.length + 1))).toEqual(['spaced-call.ts']);
+    expect(callpoints.flatMap((path) => performApiRequestArities(readFileSync(path, 'utf8')))).toEqual([3]);
+    expect(performApiRequestCallpoints(negativeRoot)).toEqual([]);
   });
 });

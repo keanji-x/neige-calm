@@ -93,7 +93,7 @@ describe('architecture/no-module-runtime-state', () => {
     });
   }
 
-  const accepted = ['primitive.ts', 'function-declaration.ts', 'frozen-static-data.ts', 'frozen-nested-static-data.ts', 'frozen-functions.ts', 'imported-static.ts', 'safe-class-and-call.ts', 'declare-module.ts', 'schema.ts', 'schema-chained.ts', 'pure-factories.tsx'] as const;
+  const accepted = ['primitive.ts', 'function-declaration.ts', 'frozen-static-data.ts', 'frozen-nested-static-data.ts', 'frozen-functions.ts', 'imported-static.ts', 'safe-class-and-call.ts', 'declare-module.ts', 'schema.ts', 'schema-chained.ts', 'pure-factories.tsx', 'api-request-callpoints/positive/web/src/spaced-call.ts', 'api-request-callpoints/negative/web/src/similar-name.ts'] as const;
   for (const fixture of accepted) {
     it(`accepts ${fixture}`, async () => {
       expect(await lintFixture('no-module-runtime-state', fixture)).toHaveLength(0);
