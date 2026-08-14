@@ -360,8 +360,17 @@ pub trait RepoRead: Send + Sync + 'static {
     /// The JOIN is a correctness guard: stale index rows never revive a
     /// terminal or deleted task.
     async fn task_contexts_by_dst_wave(&self, dst_wave_id: &str) -> Result<Vec<TaskContextRow>>;
+    /// Explicit recovery candidates affected by an edit to `dst_wave_id`.
+    /// Kept separate from the fresh pass so stale rows never re-enter material
+    /// classification or its retry budget.
+    async fn stale_task_contexts_by_dst_wave(
+        &self,
+        dst_wave_id: &str,
+    ) -> Result<Vec<TaskContextRow>>;
     /// Sweep source. Deliberately reads tasks rather than the reverse index.
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<TaskContextRow>>;
+    /// Recovery sweep source for non-terminal rows that already carry stale.
+    async fn task_contexts_inflight_stale(&self) -> Result<Vec<TaskContextRow>>;
     /// Minimal operation lookup for session-owned worker convergence:
     /// `worker_sessions.spawn_op_id` resolves to `operations.idempotency_key`,
     /// which is the immutable task id the worker operation was submitted with.

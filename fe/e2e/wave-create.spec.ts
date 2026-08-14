@@ -20,7 +20,7 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   const errors = captureBrowserErrors(page);
   const cove = await createCove(request);
   createdCoveIds.push(cove.id);
-  await page.goto(`/cove/${cove.id}`);
+  await page.goto(`/next/cove/${cove.id}`);
   await page.getByRole('button', { name: 'New wave' }).click();
 
   const dialog = page.getByRole('dialog', { name: 'New wave' });

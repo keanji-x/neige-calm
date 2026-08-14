@@ -250,7 +250,11 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut }: 
 }
 
 export function createAppRouter(deps: AppRouterDeps) {
-  return createRouter({ routeTree: createRouteTree(deps), defaultPreload: false });
+  return createRouter({
+    routeTree: createRouteTree(deps),
+    basepath: '/next',
+    defaultPreload: false,
+  });
 }
 
 function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {

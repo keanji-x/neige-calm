@@ -230,7 +230,12 @@ fn attach_task_read_state(rows: &[TaskReadState], wave_id: &str, verdicts: &mut 
                 "context_stale_declaration" | "declaration_changed_in_flight"
             )
         });
-        if row.context_stale_at_ms.is_some() && !already_declaration_stale {
+        let restore_check_available =
+            matches!(row.status.as_str(), "dispatched" | "running" | "verifying");
+        if row.context_stale_at_ms.is_some()
+            && !already_declaration_stale
+            && restore_check_available
+        {
             verdict
                 .diagnostics
                 .extend(related_context_blocks().into_iter().map(
@@ -238,7 +243,10 @@ fn attach_task_read_state(rows: &[TaskReadState], wave_id: &str, verdicts: &mut 
                         Diagnostic::coded(
                             "context_stale_reference",
                             "refs",
-                            BTreeMap::new(),
+                            diagnostic_args([(
+                                "status",
+                                serde_json::Value::String(row.status.clone()),
+                            )]),
                             related_block_ids,
                             related_wave_id,
                             Some("relink_reference".into()),
@@ -1306,7 +1314,7 @@ mod tests {
     #[tokio::test]
     async fn read_state_surfaces_truncated_and_stale_reference_diagnostics() {
         let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "read-state", "pending").await;
+        insert_block_task(&repo, &wave, "read-state", "running").await;
         let claim_context = json!([
             {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true},
             {"wave_id": wave, "block_id": "b_feed", "rev": 2, "hash": "ref", "is_root": false}
@@ -1350,7 +1358,7 @@ mod tests {
     #[tokio::test]
     async fn read_state_root_only_context_remains_fail_closed() {
         let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "root-only", "pending").await;
+        insert_block_task(&repo, &wave, "root-only", "running").await;
         let claim_context = json!([
             {"wave_id": wave, "block_id": "b_0000", "rev": 1, "hash": "root", "is_root": true}
         ]);
@@ -1416,7 +1424,7 @@ mod tests {
     #[tokio::test]
     async fn read_state_groups_related_context_links_by_wave() {
         let (repo, wave) = setup().await;
-        insert_block_task(&repo, &wave, "cross-wave", "pending").await;
+        insert_block_task(&repo, &wave, "cross-wave", "running").await;
         let other_wave = "wave_remote".to_owned();
         let claim_context = json!([
             {"wave_id": wave, "block_id": "b_root", "rev": 1, "hash": "root", "is_root": true},
@@ -1454,6 +1462,39 @@ mod tests {
             diagnostic.related_wave_id.as_deref() == Some(other_wave.as_str())
                 && diagnostic.related_block_ids == ["b_remote"]
         }));
+    }
+
+    #[tokio::test]
+    async fn terminal_stale_row_only_offers_the_new_key_action() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "terminal-stale", "failed").await;
+        sqlx::query(
+            "UPDATE tasks SET context_stale_at_ms=42,claim_context_json='[]' \
+             WHERE wave_id=?1 AND key='terminal-stale'",
+        )
+        .bind(&wave)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let mut tx = repo.pool.begin().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut tx,
+            &wave,
+            &[declaration(0, "terminal-stale")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+
+        let codes = verdicts[0]
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"task_key_completed"));
+        assert!(!codes.contains(&"context_stale_reference"));
     }
 
     #[tokio::test]

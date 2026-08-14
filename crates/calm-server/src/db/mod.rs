@@ -50,7 +50,12 @@ pub trait ServerRepoReadExt {
         &self,
         dst_wave_id: &str,
     ) -> Result<Vec<calm_truth::db::TaskContextRow>>;
+    async fn stale_task_contexts_by_dst_wave(
+        &self,
+        dst_wave_id: &str,
+    ) -> Result<Vec<calm_truth::db::TaskContextRow>>;
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<calm_truth::db::TaskContextRow>>;
+    async fn task_contexts_inflight_stale(&self) -> Result<Vec<calm_truth::db::TaskContextRow>>;
     async fn cards_by_wave(&self, wave_id: &str) -> Result<Vec<Card>>;
     async fn wave_report_cards_by_cove(&self, cove_id: &str) -> Result<Vec<Card>>;
     async fn card_get(&self, id: &str) -> Result<Option<Card>>;
@@ -190,8 +195,21 @@ where
             .await
             .map_err(Into::into)
     }
+    async fn stale_task_contexts_by_dst_wave(
+        &self,
+        dst_wave_id: &str,
+    ) -> Result<Vec<calm_truth::db::TaskContextRow>> {
+        calm_truth::db::RepoRead::stale_task_contexts_by_dst_wave(self, dst_wave_id)
+            .await
+            .map_err(Into::into)
+    }
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<calm_truth::db::TaskContextRow>> {
         calm_truth::db::RepoRead::task_contexts_inflight_fresh(self)
+            .await
+            .map_err(Into::into)
+    }
+    async fn task_contexts_inflight_stale(&self) -> Result<Vec<calm_truth::db::TaskContextRow>> {
+        calm_truth::db::RepoRead::task_contexts_inflight_stale(self)
             .await
             .map_err(Into::into)
     }
