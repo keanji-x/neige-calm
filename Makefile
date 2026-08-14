@@ -224,9 +224,9 @@ $(FE_DIST): $(shell find $(WORKTREE)/fe/core $(WORKTREE)/fe/web/src -type f 2>/d
 	cd $(WORKTREE)/fe && npm run build
 
 .PHONY: fe-build fe-dev
-fe-build: $(FE_DIST) ## Build the next-generation frontend bundle (Node >= 22.12).
+fe-build: $(FE_DIST) ## Build the next-generation frontend bundle (Node ^20.19 or >=22.12).
 
-fe-dev: $(FE_NODE_MODULES_STAMP) ## Preview the next-generation frontend with Vite's dev server.
+fe-dev: $(FE_NODE_MODULES_STAMP) ## Preview the next-generation frontend at http://localhost:5180/next/.
 	@$(CHECK_FE_NODE)
 	cd $(WORKTREE)/fe && npm run dev
 

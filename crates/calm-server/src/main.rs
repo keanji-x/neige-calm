@@ -363,12 +363,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absent_fe_dist_preserves_real_api_internal_health_and_legacy_routes() {
+    async fn configured_fe_dist_preserves_real_api_internal_and_legacy_routes() {
         let web = tempfile::tempdir().unwrap();
+        let fe = tempfile::tempdir().unwrap();
         let runtime = tempfile::tempdir().unwrap();
         let legacy_index = b"legacy-index-exact\n";
         std::fs::write(web.path().join("index.html"), legacy_index).unwrap();
         std::fs::write(web.path().join("asset.txt"), b"legacy-asset-exact\n").unwrap();
+        std::fs::write(fe.path().join("index.html"), b"next-index-exact\n").unwrap();
 
         let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
         cfg.data_dir = Some(runtime.path().join("data"));
@@ -382,17 +384,18 @@ mod tests {
         let state = calm_server::state::AppState::new(&cfg, repo).await.unwrap();
         let routes = calm_server::routes::router().with_state(state);
         let baseline = routes.clone();
-        let app = super::mount_frontends(routes, Some(web.path()), None);
+        let app = super::mount_frontends(routes, Some(web.path()), Some(fe.path()));
 
         for (method, uri) in [
             (Method::GET, "/api/version"),
-            (Method::GET, "/health"),
+            (Method::GET, "/api/openapi.json"),
             (Method::POST, "/internal/codex/hook"),
+            (Method::POST, "/internal/claude/hook"),
         ] {
             assert_eq!(
                 response_body_with_method(app.clone(), method.clone(), uri).await,
                 response_body_with_method(baseline.clone(), method, uri).await,
-                "mounting the legacy frontend changed the real {uri} route",
+                "mounting the frontends changed the real {uri} route",
             );
         }
         let root = app
@@ -411,8 +414,8 @@ mod tests {
             (StatusCode::OK, b"legacy-asset-exact\n".to_vec())
         );
         assert_eq!(
-            response_body(app, "/next/wave/deep-link").await.0,
-            StatusCode::NOT_FOUND
+            response_body(app, "/next/wave/deep-link").await,
+            (StatusCode::OK, b"next-index-exact\n".to_vec())
         );
     }
 
