@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import { queryKeys } from '../providers/queries.ts';
 import { createAppRouter } from './public.tsx';
 
 const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
@@ -14,6 +15,7 @@ const WAVE = { id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 
 const CARD = { id: 'card-1', wave_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
 const WAVE_B = { ...WAVE, id: 'w2', title: 'Second wave', sort: 2 };
 const CARD_B = { ...CARD, id: 'card-2', wave_id: 'w2', title: 'Second chat' };
+const CARD_SAME_WAVE = { ...CARD, id: 'card-other', title: 'Other chat' };
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -63,7 +65,7 @@ function setup(reply?: Reply) {
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  return { requests, router };
+  return { client, requests, router };
 }
 
 async function openConversation() {
@@ -130,6 +132,52 @@ describe('spec conversation regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
     await screen.findByText('No conversations yet.');
     expect(screen.queryByRole('button', { name: /Conversation Spec chat, on Test wave, 3 turns/ })).toBeNull();
+  });
+
+  it('remembers a card again after reset suppression crosses a card switch', async () => {
+    const { client, router } = setup((request) => request.path.includes('/harness/items')
+      ? ok(harnessRows(3)) : undefined);
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
+      .getByRole('button', { name: 'Reset conversation' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reset conversation?' })).toBeNull());
+
+    client.setQueryData(queryKeys.harnessItems(CARD_SAME_WAVE.id), {
+      pages: [harnessRows(3)], pageParams: [0],
+    });
+    client.setQueryData(queryKeys.waveDetail(WAVE.id), { wave: WAVE, cards: [CARD_SAME_WAVE], overlays: [] });
+    await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
+    client.setQueryData(queryKeys.waveDetail(WAVE.id), { wave: WAVE, cards: [CARD], overlays: [] });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' });
+    await router.navigate({ to: '/' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 3 turns' });
+  });
+
+  it('clears an unclaimed open request after a wave without a spec card resolves', async () => {
+    let omitTargetCard = false;
+    const { client, router } = setup((request) => {
+      if (request.path === '/api/waves/w1' && omitTargetCard) {
+        return ok({ wave: WAVE, cards: [], overlays: [] });
+      }
+      if (request.path === '/api/waves/w2') {
+        return ok({ wave: WAVE_B, cards: [{ ...CARD, wave_id: WAVE_B.id }], overlays: [] });
+      }
+      return undefined;
+    });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    await router.navigate({ to: '/' });
+    omitTargetCard = true;
+    client.removeQueries({ queryKey: queryKeys.waveDetail(WAVE.id) });
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Conversation Spec chat, on Test wave, 0 turns',
+    }));
+    await screen.findByText('No cards yet.');
+    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+
+    await router.navigate({ to: '/wave/w2' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
   });
 
   it('loads only the first history page until the user asks for earlier rows', async () => {

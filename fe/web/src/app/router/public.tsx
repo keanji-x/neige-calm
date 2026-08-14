@@ -132,6 +132,7 @@ export function useConversationStore(
     setActionError(null);
     setActionMessage(null);
     sendingRef.current = false;
+    suppressRememberRef.current = false;
     setSending(false);
     setInterruptPending(false);
     setResetting(false);
@@ -642,10 +643,20 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
 function WaveRoute({ transport }: { transport: ApiTransportPort }) {
   const waveId = useRouteParam('/wave/');
   const workspace = useWorkspace(transport);
+  const registry = useConversationRegistry();
   const detail = useQuery({
     ...waveDetailQueryOptions(transport, waveId ?? ''),
     enabled: waveId !== undefined,
   });
+  const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
+    && card.kind === 'codex'
+    && typeof card.payload === 'object' && card.payload !== null
+    && (card.payload as { spec_harness?: unknown }).spec_harness === true);
+  const detailMatchesRoute = waveId !== undefined && detail.data?.wave.id === waveId;
+  useEffect(() => {
+    if (registry.requestedOpenId === null || detail.isLoading || detail.isFetching) return;
+    if (!detailMatchesRoute || requestedCard === undefined) registry.clearOpenRequest();
+  }, [detail.isFetching, detail.isLoading, detailMatchesRoute, registry, requestedCard]);
 
   if (!detail.data) {
     if (detail.isLoading || detail.isFetching) return null;
