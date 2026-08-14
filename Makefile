@@ -147,6 +147,9 @@ PROC_SUP := $(WORKTREE)/target/release/calm-proc-supervisor
 NEIGE_CLI := $(WORKTREE)/target/release/neige
 DIST     := $(WORKTREE)/web/dist
 NODE_MODULES_STAMP := $(WORKTREE)/web/node_modules/.package-lock.json
+FE_DIST  := $(WORKTREE)/fe/web/dist
+FE_NODE_MODULES_STAMP := $(WORKTREE)/fe/node_modules/.package-lock.json
+CHECK_FE_NODE := node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 12)) { console.error("fe requires Node >= 22.12 (found " + process.versions.node + ")"); process.exit(1); }'
 LOCAL_BIN_DIR ?= $(HOME)/.local/bin
 LOCAL_MCP_STDIO_SHIM ?= $(LOCAL_BIN_DIR)/neige-mcp-stdio-shim
 LOCAL_NEIGE_CLI ?= $(LOCAL_BIN_DIR)/neige
@@ -193,7 +196,7 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) ## Build server, app shell, codex bridge, mcp-stdio shim, proc-supervisor, neige CLI, web bundle.
+build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) $(FE_DIST) ## Build binaries and both frontend bundles.
 
 # Single cargo invocation builds all binaries — cheaper than separate
 # calls because deps overlap. Touch every output so the rule re-fires
@@ -211,6 +214,21 @@ $(NODE_MODULES_STAMP): $(WORKTREE)/web/package-lock.json
 
 $(DIST): $(shell find $(WORKTREE)/web/src -type f 2>/dev/null) $(WORKTREE)/web/package.json $(WORKTREE)/web/vite.config.ts $(WORKTREE)/web/index.html $(NODE_MODULES_STAMP)
 	cd $(WORKTREE)/web && npm run build
+
+$(FE_NODE_MODULES_STAMP): $(WORKTREE)/fe/package-lock.json
+	@$(CHECK_FE_NODE)
+	cd $(WORKTREE)/fe && npm ci
+
+$(FE_DIST): $(shell find $(WORKTREE)/fe/core $(WORKTREE)/fe/web/src -type f 2>/dev/null) $(WORKTREE)/fe/package.json $(WORKTREE)/fe/vite.config.ts $(WORKTREE)/fe/web/index.html $(FE_NODE_MODULES_STAMP)
+	@$(CHECK_FE_NODE)
+	cd $(WORKTREE)/fe && npm run build
+
+.PHONY: fe-build fe-dev
+fe-build: $(FE_DIST) ## Build the next-generation frontend bundle (Node >= 22.12).
+
+fe-dev: $(FE_NODE_MODULES_STAMP) ## Preview the next-generation frontend with Vite's dev server.
+	@$(CHECK_FE_NODE)
+	cd $(WORKTREE)/fe && npm run dev
 
 # ---- docker lifecycle ---------------------------------------------------
 
@@ -396,6 +414,7 @@ prod: build prod-dirs prod-repair-codex-homes ## Run production locally without 
 	  CALM_DATA_DIR="$(PROD_DATA_DIR)" \
 	  CALM_PLUGINS_DATA_DIR="$(PROD_PLUGINS_DATA_DIR)" \
 	  CALM_WEB_DIST="$(DIST)" \
+	  CALM_FE_DIST="$(FE_DIST)" \
 	  CALM_MCP_STDIO_SHIM_BIN="$(LOCAL_MCP_STDIO_SHIM)" \
 	  CALM_AUTH_USERNAME="$(PROD_AUTH_USERNAME)" \
 	  CALM_AUTH_PASSWORD="$(PROD_AUTH_PASSWORD)" \
@@ -425,9 +444,10 @@ prod-dirs:
 	@mkdir -p "$(PROD_DATA_DIR)" "$(PROD_PLUGINS_DATA_DIR)"
 
 .PHONY: clean
-clean: ## Remove build artifacts (target/, web/dist).
+clean: ## Remove build artifacts (target/, web/dist, fe/web/dist).
 	cargo clean --manifest-path $(WORKTREE)/Cargo.toml
 	rm -rf $(DIST)
+	rm -rf $(FE_DIST)
 
 .PHONY: clean-data
 clean-data: ## Remove the sqlite db and plugin state (DANGEROUS).

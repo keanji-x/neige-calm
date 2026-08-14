@@ -185,19 +185,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(auth_router)
         .layer(cors);
 
-    if let Some(web_dist) = &cfg.web_dist {
-        let index = web_dist.join("index.html");
-        tracing::info!(
-            web_dist = %web_dist.display(),
-            "serving built web bundle under /calm/"
-        );
-        app = app
-            .route("/", get(|| async { Redirect::temporary("/calm/") }))
-            .nest_service(
-                "/calm",
-                ServeDir::new(web_dist).fallback(ServeFile::new(index)),
-            );
-    }
+    app = mount_frontends(app, cfg.web_dist.as_deref(), cfg.fe_dist.as_deref());
 
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");
@@ -231,6 +219,40 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+fn mount_frontends(
+    mut app: axum::Router,
+    web_dist: Option<&std::path::Path>,
+    fe_dist: Option<&std::path::Path>,
+) -> axum::Router {
+    if let Some(web_dist) = web_dist {
+        let index = web_dist.join("index.html");
+        tracing::info!(
+            web_dist = %web_dist.display(),
+            "serving built web bundle under /calm/"
+        );
+        app = app
+            .route("/", get(|| async { Redirect::temporary("/calm/") }))
+            .nest_service(
+                "/calm",
+                ServeDir::new(web_dist).fallback(ServeFile::new(index)),
+            );
+    }
+
+    if let Some(fe_dist) = fe_dist {
+        let index = fe_dist.join("index.html");
+        tracing::info!(
+            fe_dist = %fe_dist.display(),
+            "serving built next-generation frontend bundle under /next/"
+        );
+        app = app.nest_service(
+            "/next",
+            ServeDir::new(fe_dist).fallback(ServeFile::new(index)),
+        );
+    }
+
+    app
 }
 
 /// #954 defect 4 — bound on the post-signal HTTP drain. A code invariant
@@ -306,7 +328,68 @@ fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, StatusCode};
     use std::time::Duration;
+    use tower::ServiceExt;
+
+    async fn response_body(app: axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
+        let response = app
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn absent_fe_dist_leaves_legacy_routes_byte_for_byte_unchanged() {
+        let web = tempfile::tempdir().unwrap();
+        let legacy_index = b"legacy-index-exact\n";
+        std::fs::write(web.path().join("index.html"), legacy_index).unwrap();
+        std::fs::write(web.path().join("asset.txt"), b"legacy-asset-exact\n").unwrap();
+
+        let app = super::mount_frontends(axum::Router::new(), Some(web.path()), None);
+        assert_eq!(
+            response_body(app.clone(), "/calm/wave/deep-link").await,
+            (StatusCode::OK, legacy_index.to_vec())
+        );
+        assert_eq!(
+            response_body(app.clone(), "/calm/asset.txt").await,
+            (StatusCode::OK, b"legacy-asset-exact\n".to_vec())
+        );
+        assert_eq!(
+            response_body(app, "/next/wave/deep-link").await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_fe_dist_serves_assets_and_deep_links_alongside_legacy() {
+        let web = tempfile::tempdir().unwrap();
+        let fe = tempfile::tempdir().unwrap();
+        std::fs::write(web.path().join("index.html"), b"legacy-index\n").unwrap();
+        std::fs::write(fe.path().join("index.html"), b"next-index\n").unwrap();
+        std::fs::write(fe.path().join("asset.txt"), b"next-asset\n").unwrap();
+
+        let app = super::mount_frontends(axum::Router::new(), Some(web.path()), Some(fe.path()));
+        assert_eq!(
+            response_body(app.clone(), "/calm/wave/deep-link").await,
+            (StatusCode::OK, b"legacy-index\n".to_vec())
+        );
+        assert_eq!(
+            response_body(app.clone(), "/next/wave/deep-link").await,
+            (StatusCode::OK, b"next-index\n".to_vec())
+        );
+        assert_eq!(
+            response_body(app, "/next/asset.txt").await,
+            (StatusCode::OK, b"next-asset\n".to_vec())
+        );
+    }
 
     /// #954 defect 4 — the drain is BOUNDED: a serve future held open past
     /// the signal (long-lived WS) is abandoned `drain_max` after the
