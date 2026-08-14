@@ -12,6 +12,8 @@ import { createAppRouter } from './public.tsx';
 const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const WAVE = { id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
 const CARD = { id: 'card-1', wave_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
+const WAVE_B = { ...WAVE, id: 'w2', title: 'Second wave', sort: 2 };
+const CARD_B = { ...CARD, id: 'card-2', wave_id: 'w2', title: 'Second chat' };
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -43,9 +45,10 @@ function setup(reply?: Reply) {
         if (response) return response;
       }
       if (request.path === '/api/coves') return ok([COVE]);
-      if (request.path === '/api/coves/c1/waves') return ok([WAVE]);
+      if (request.path === '/api/coves/c1/waves') return ok([WAVE, WAVE_B]);
       if (request.path === '/api/overlays?entity_kind=wave') return ok([]);
       if (request.path === '/api/waves/w1') return ok({ wave: WAVE, cards: [CARD], overlays: [] });
+      if (request.path === '/api/waves/w2') return ok({ wave: WAVE_B, cards: [CARD_B], overlays: [] });
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/spec/run')) return ok({ card_id: CARD.id, runtime_id: 'runtime', phase: 'idle' });
       if (request.path.endsWith('/spec/input')) return ok({ card_id: CARD.id, runtime_id: 'runtime' });
@@ -60,7 +63,7 @@ function setup(reply?: Reply) {
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  return { requests };
+  return { requests, router };
 }
 
 async function openConversation() {
@@ -80,6 +83,14 @@ afterEach(() => {
 });
 
 describe('spec conversation regressions', () => {
+  it('keeps a wave route conversation list scoped after visiting another wave', async () => {
+    const { router } = setup();
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    await router.navigate({ to: '/wave/w2' });
+    await screen.findByRole('button', { name: 'Conversation Second chat, 0 turns' });
+    expect(screen.queryByRole('button', { name: 'Conversation Spec chat, 0 turns' })).toBeNull();
+  });
+
   it('keeps a wave conversation on Today after navigating away from the wave', async () => {
     setup();
     await openConversation();
@@ -88,6 +99,37 @@ describe('spec conversation regressions', () => {
       name: 'Conversation Spec chat, on Test wave, 0 turns',
     });
     expect(conversation.textContent).toContain('Test wave');
+  });
+
+  it('navigates from a Today conversation to its wave before opening it', async () => {
+    const { requests } = setup();
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Conversation Spec chat, on Test wave, 0 turns',
+    }));
+    await screen.findByRole('complementary', { name: 'Spec chat' });
+    expect(window.location.pathname).toBe('/wave/w1');
+    expect(requests.some(({ path }) => path.includes('/api/cards//'))).toBe(false);
+  });
+
+  it('does not retain the pre-reset turn count on Today', async () => {
+    setup((request) => {
+      if (request.path.endsWith('/spec/reset')) {
+        return ok({ card_id: CARD.id, terminal_id: 'terminal', new_thread_id: 'thread-2' });
+      }
+      // Model an invalidation race returning the pre-reset snapshot once more.
+      if (request.path.includes('/harness/items')) return ok(harnessRows(3));
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
+      .getByRole('button', { name: 'Reset conversation' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reset conversation?' })).toBeNull());
+    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
+    await screen.findByText('No conversations yet.');
+    expect(screen.queryByRole('button', { name: /Conversation Spec chat, on Test wave, 3 turns/ })).toBeNull();
   });
 
   it('loads only the first history page until the user asks for earlier rows', async () => {

@@ -14,6 +14,10 @@ export type ConversationRegistry = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly ConversationTurn[];
   remember: (conversation: Conversation, turns: readonly ConversationTurn[]) => void;
+  forget: (conversationId: string) => void;
+  requestedOpenId: string | null;
+  requestOpen: (conversationId: string) => void;
+  clearOpenRequest: () => void;
 }>;
 
 const ConversationContext = createContext<ConversationRegistry | null>(null);
@@ -33,16 +37,27 @@ function equalEntry(left: RememberedConversation | undefined, conversation: Conv
 
 export function ConversationProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Readonly<Record<string, RememberedConversation>>>({});
+  const [requestedOpenId, setRequestedOpenId] = useState<string | null>(null);
   const remember = useCallback((conversation: Conversation, turns: readonly ConversationTurn[]) => {
     setEntries((current) => equalEntry(current[conversation.id], conversation, turns)
       ? current
       : { ...current, [conversation.id]: { conversation, turns } });
   }, []);
+  const forget = useCallback((conversationId: string) => {
+    setEntries((current) => {
+      if (!(conversationId in current)) return current;
+      return Object.fromEntries(Object.entries(current).filter(([id]) => id !== conversationId));
+    });
+  }, []);
+  const requestOpen = useCallback((conversationId: string) => setRequestedOpenId(conversationId), []);
+  const clearOpenRequest = useCallback(() => setRequestedOpenId(null), []);
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
   const turnsOf = useCallback((conversationId: string) => entries[conversationId]?.turns ?? [], [entries]);
   const value = useMemo<ConversationRegistry>(
-    () => ({ conversations, turnsOf, remember }),
-    [conversations, turnsOf, remember],
+    () => ({
+      conversations, turnsOf, remember, forget, requestedOpenId, requestOpen, clearOpenRequest,
+    }),
+    [clearOpenRequest, conversations, forget, remember, requestOpen, requestedOpenId, turnsOf],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;
 }

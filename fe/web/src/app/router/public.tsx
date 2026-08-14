@@ -80,6 +80,10 @@ type ConversationStore = Readonly<{
   loadEarlier: () => void;
 }>;
 
+type ConversationRouteIntent = Readonly<
+  { kind: 'all' } | { kind: 'waves'; waveIds: readonly string[] }
+>;
+
 export function pendingConversationIds(
   conversation: Conversation | null, working: boolean, sending: boolean,
 ): ReadonlySet<string> {
@@ -90,7 +94,11 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
 
-export function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
+export function useConversationStore(
+  transport: ApiTransportPort,
+  scope: SpecConversationScope | null,
+  routeIntent: ConversationRouteIntent,
+): ConversationStore {
   const registry = useConversationRegistry();
   const cardId = scope?.cardId ?? '';
   const waveId = scope?.id;
@@ -109,6 +117,7 @@ export function useConversationStore(transport: ApiTransportPort, scope: SpecCon
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const sendingRef = useRef(false);
+  const suppressRememberRef = useRef(false);
   const seq = useRef(0);
   const serverTurns = useMemo(() => (history.data?.pages ?? [])
     .flat().sort((left, right) => left.id - right.id).flatMap((item) => {
@@ -142,12 +151,19 @@ export function useConversationStore(transport: ApiTransportPort, scope: SpecCon
     updatedAt: turns.at(-1)?.atMs ?? scopeUpdatedAt ?? 0, turns: turns.length,
   }, [cardId, cardTitle, scopeUpdatedAt, turns, waveId, waveTitle, working]);
   useEffect(() => {
-    if (conversation !== null) registry.remember(conversation, turns);
+    if (conversation === null) return;
+    if (suppressRememberRef.current && turns.length !== 0) return;
+    suppressRememberRef.current = false;
+    registry.remember(conversation, turns);
   }, [conversation, registry, turns]);
 
-  const conversations = conversation === null
+  const allConversations = conversation === null
     ? registry.conversations
     : [...registry.conversations.filter(({ id }) => id !== conversation.id), conversation];
+  const waveIds = routeIntent.kind === 'waves' ? new Set(routeIntent.waveIds) : null;
+  const conversations = waveIds === null
+    ? allConversations
+    : allConversations.filter((candidate) => waveIds.has(candidate.waveId));
 
   const send = (_conversationId: string, text: string) => {
     if (sendingRef.current) return;
@@ -186,6 +202,8 @@ export function useConversationStore(transport: ApiTransportPort, scope: SpecCon
       await mutations.reset();
       setEchoes([]);
       setActionMessage(null);
+      suppressRememberRef.current = true;
+      if (conversation !== null) registry.forget(conversation.id);
       return true;
     } catch (error: unknown) {
       setActionError(errorMessage(error, 'Could not reset the conversation.'));
@@ -293,12 +311,21 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
 function useConversationPanel(
   transport: ApiTransportPort,
   scope: SpecConversationScope | null,
+  routeIntent: ConversationRouteIntent,
   options?: { showWave?: boolean },
 ) {
-  const store = useConversationStore(transport, scope);
+  const store = useConversationStore(transport, scope, routeIntent);
+  const registry = useConversationRegistry();
+  const go = useGo();
   const [openId, setOpenId] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
+
+  useEffect(() => {
+    if (scope === null || registry.requestedOpenId !== scope.cardId) return;
+    setOpenId(scope.cardId);
+    registry.clearOpenRequest();
+  }, [registry, scope]);
 
   useEffect(() => {
     if (open === null) return;
@@ -339,7 +366,14 @@ function useConversationPanel(
         conversations={store.conversations}
         activeId={open?.id ?? null}
         showWave={options?.showWave ?? true}
-        onOpen={(conversation) => setOpenId(conversation.id)}
+        onOpen={(conversation) => {
+          if (scope !== null) {
+            setOpenId(conversation.id);
+            return;
+          }
+          registry.requestOpen(conversation.id);
+          go({ name: 'wave', waveId: conversation.waveId });
+        }}
       />
     ),
     /* The module head's action, composed by the page — same slot the WAVES and
@@ -416,7 +450,7 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(transport, null);
+  const chat = useConversationPanel(transport, null, { kind: 'all' });
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -485,7 +519,8 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(transport, null);
+  const coveWaveIds = (workspace.wavesByCove.get(coveId ?? '') ?? []).map(({ id }) => id);
+  const chat = useConversationPanel(transport, null, { kind: 'waves', waveIds: coveWaveIds });
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -654,6 +689,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
       id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
       cardTitle: specCard.title, updatedAt: specCard.updated_at,
     },
+    { kind: 'waves', waveIds: [wave.id] },
     { showWave: false },
   );
   const { report, outline } = useMemo(() => {

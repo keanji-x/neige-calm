@@ -130,7 +130,7 @@ export type StyleToken = ColorToken | ScalarToken | FontToken | ZIndexToken | Bo
 | `SHADOW` | `--shadow-float` | 只断言 `root.has` && `dark.has`——它是复合值，正则化没有意义；两个主题必须都给值（dark 下阴影更重，§0.1 #11） |
 | `THEMED_ALIASES` | `--text-on-accent` | `root.get` 与 `dark.get` **都**匹配 `/^var\(--[a-z0-9-]+\)$/`。**它不能进 `ALIASES`**：`ALIASES` 那条断言写死 `dark.has(name) === false`，而 `--text-on-accent` 两个主题都要给值（§0.1 #10），进 `ALIASES` 必红 |
 
-`MISC` 追加 `--warn-text` / `--success-text` / `--error-soft` / `--error-border` 四项——`MISC` 的 `it.each` 断言明暗双主题都在场，另一条写死三个名字的 `it.each(['--cal-event-waiting-bg','--error-text','--warn-border'])`（`:127`）要同步扩成四加四项，否则新色只有存在性没有形状。
+`MISC` 追加 `--warn-text` / `--success-text` / `--error-soft` / `--error-border` 四项——`MISC` 的 `it.each` 断言明暗双主题都在场，形状断言也要覆盖当前闭集，否则新色只有存在性没有形状。
 
 **④ `--surface-rail` 的改值不需要动断言**：它已在 `CONCRETE_SURFACES` 里，断言是"两个主题都是 oklch 字面量"，新值仍然满足。改值本身不改任何契约，只改 §10-7 那次复测的输入。
 
@@ -382,7 +382,7 @@ agent 在人阅读的同时往界面里写。任何在数据到达时移动、�
 
 **z 阶梯**（`tokens.css` 已有，本文三处引用即此）：`--z-base` 0 普通内容 · `--z-raised` 2 行内浮起的 hover 动作与吸底细线 · `--z-sticky` 4 吸顶页头（§6.4）· `--z-overlay` 10 菜单/弹出/抽屉/大纲浮层 · `--z-modal` 100 对话框 · `--z-toast` 1000 toast。`z-index` 只能取这六个之一（§9.1）。
 
-**已删除的废弃别名**：本 change request 已删除 `--surface-bg`（用 `--bg`）、`--surface-paper`（用 `--paper`）、`--surface-toggle-overlay` / `--surface-hover-overlay`（用 `--overlay-*`）、`--text-label` / `--text-meta` / `--text-decorative`（用 `--text-2/3/4`）、`--cal-event-waiting-bg`（用 `--warn-soft`）；不得恢复声明或新增引用。`--font-serif` 不是废弃别名，report 文档与 conversation reply 正在使用。**保留但本文暂无使用点**：`--surface-terminal`、`--surface-code`——终端槽落地时它们是终端底与代码块底。
+**已删除的废弃别名**：本 change request 已删除 `--surface-bg`（用 `--bg`）、`--surface-paper`（用 `--paper`）、旧 surface hover 别名（用 `--overlay-*`）、`--text-label` / `--text-meta` / `--text-decorative`（用 `--text-2/3/4`）与旧日历等待态 token（用 `--warn-soft`）；不得恢复声明或新增引用。`--font-serif` 不是废弃别名，report 文档与 conversation reply 正在使用。**保留但本文暂无使用点**：`--surface-terminal`、`--surface-code`——终端槽落地时它们是终端底与代码块底。
 
 ### 2.2 字体与字号
 
