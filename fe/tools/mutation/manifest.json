@@ -710,7 +710,7 @@
       "oracle:INV-APP-111"
     ],
     "target": "web/src/app/composition.ts",
-    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -27,7 +27,7 @@\n   const store = createBrowserCursorStore(options.storage, options.idle);\n   const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));\n   const driver = createDriver({\n-    cursor: store,\n+    cursor: createBrowserCursorStore(options.storage, options.idle),\n     probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation())),\n     onUnauthorized: options.onUnauthorized ?? (() => undefined),\n     ...(options.socketFactory === undefined ? {} : { socketFactory: options.socketFactory }),\n",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -43,7 +43,7 @@\n   const store = createBrowserCursorStore(options.storage, options.idle);\n   const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));\n   const driver = createDriver({\n-    cursor: store,\n+    cursor: createBrowserCursorStore(options.storage, options.idle),\n     // The driver owns the single unauthorized notification for its probe.\n     probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation(), undefined)),\n     onUnauthorized: options.onUnauthorized ?? (() => undefined),\n",
     "expected_red": [
       "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id"
     ],
