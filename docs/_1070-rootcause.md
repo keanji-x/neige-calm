@@ -117,3 +117,94 @@ test result: FAILED. 0 passed; 1 failed; ... finished in 0.43s
 - `cargo test -p calm-server --test mcp_integration_suite -- --test-threads=8`：163 PASS / 1 ignored（即本 repro）/ 0 failed。
 
 未运行全 workspace；本片只新增默认忽略的确定性 repro 与本报告，没有改生产实现或现有断言。
+
+---
+
+# #1070 第 2 步：`row survived` 定性
+
+基线：本分支上一片 `e7c5f2e7`，生产基线仍为 `origin/main` / `42767c5b9115cea8d956c119281cb7a5fa3d1de5`。
+
+## 结论
+
+1. **三次 `row survived` 是同一测试、同一 key。** 都是 `task_projection_acceptance::explicit_wait_policy_removes_unreleased_pending_rows_with_readable_reason`，都是 `collateral row survived`。该测试先删除 `vetoed`、确认只剩 `collateral`，再 PATCH `automation_policy=declare-and-wait`，见 `crates/calm-server/tests/cases/task_projection_acceptance.rs:1508-1516`；消息由只查 key、不查 status 的 helper 产生，见 `:141-145`。
+2. **根因是测试 helper 意外启动的 live dispatcher 与两个顺序请求之间的合法 scheduler claim 竞速，不是 DELETE 漏执行，也不是第 1 步的 SQLite deadlock。** 删除 `vetoed` 同步提交后广播 `PlanUpdated`；dispatcher 异步 poke scheduler，可在下一条 policy PATCH 取得写事务前把 `collateral` 从 `pending` claim 为 `dispatched`。policy 投影按设计保留 `dispatched/running/verifying`，于是断言只看见“row survived”。事件、claim 与保留分支分别见 `crates/calm-server/src/wave_report.rs:837-876`、`crates/calm-server/src/dispatcher/mod.rs:788-810,1013-1018`、`crates/calm-server/src/scheduler/mod.rs:973-1016,1092-1103,1233-1242`、`crates/calm-truth/src/db/sqlite/task_projection.rs:1095-1105`。
+3. **拿到确定性红测。** 新增默认忽略的 repro 用已有 post-claim hook 会合：它先按原 helper 生命周期丢掉 DELETE 的临时 `AppState`，等 claim commit，实查 PATCH 前后 status 均为 `dispatched`，最后复用原断言稳定得到 `collateral row survived`，见 `crates/calm-server/tests/cases/task_projection_acceptance.rs:1656-1720`。
+4. **“该删的 pending 行没删”不生产可达；“两个用户请求之间 pending 已被合法 claim，随后 policy PATCH 保留 in-flight 行”生产可达且是既定语义，不是生产缺陷。** 生产 dispatcher 同样订阅 `PlanUpdated`，而 lifecycle `Planning` 允许新 claim，见 `crates/calm-server/src/dispatcher/mod.rs:744-810,1013-1018` 和 `crates/calm-server/src/scheduler/mod.rs:145-156`。PATCH 一旦拿到 `BEGIN IMMEDIATE`，policy 更新、重建和 guarded DELETE 位于同一事务，事务内不可能再被 claim 插入，见 `crates/calm-server/src/routes/waves.rs:1324-1346`、`crates/calm-truth/src/db/sqlite/task_projection.rs:1165-1170`。因此生产可达的是“PATCH 前已在飞”，不是“PATCH 看到 pending 却没删”。
+
+历史 CI 没打印 status，所以三次历史现场在断言时的**直接观测 status 是 UNKNOWN**；其日志只证明 key 仍存在。上述根因定性来自同构路径的确定性会合与完整代码条件，而不是把历史未记录字段冒充成已观测值。确定性 repro 中的 status 则是实查所得 `dispatched`，见 `crates/calm-server/tests/cases/task_projection_acceptance.rs:1693-1716`。
+
+## 三次 CI 对齐
+
+以下是 CI JUnit artifact 实查所得；三份 artifact 都保存了完整 panic 文本。
+
+| run / artifact | 分支与时间 | 测试 | key / 消息 | 历史现场 status |
+|---|---|---|---|---|
+| `31452754443` / `9086977392` | `main`，2026-08-11 | `explicit_wait_policy_removes_unreleased_pending_rows_with_readable_reason` | `collateral row survived`，历史源码 `task_projection_acceptance.rs:141` | **UNKNOWN**（断言只调用 `keys`） |
+| `31597828275` attempt 1 / `9141986847` | PR #1063，2026-08-12 | 同上 | 同上，历史源码 `:141` | **UNKNOWN** |
+| `31689276190` / `9176848836` | PR #1082，2026-08-13 | 同上 | 同上，历史源码 `:141` | **UNKNOWN** |
+
+当前同一断言仍只做 `SELECT key ...` 后检查 key 是否存在，`crates/calm-server/tests/cases/task_projection_acceptance.rs:141-145,251-256`，所以不能从历史 panic 反推出 status。作为交叉核对，`31597828275` 的下一次重跑 artifact `9143138972` 是另一条测试 `rebuild_matches_incremental_withdrawal_outcomes_and_exactly_once_events` 的 `database is deadlocked`；它不是第 3 次 `row survived`，也没有混入上表。
+
+## 删除路径的完整条件
+
+以下均为读代码所得；括号内说明本测试现场。
+
+1. **必须实际进入 projection rebuild。** PATCH 中 `automation_policy.is_some()` 令 `projection_policy_changed=true`，route 在同一个 typed write closure 中先 `wave_update_tx`，再 `tasks_rebuild_tx`，`crates/calm-server/src/routes/waves.rs:1324-1346`。（满足：helper 明确 PATCH `declare-and-wait`，测试 `crates/calm-server/tests/cases/task_projection_acceptance.rs:232-249,1515`。）
+2. **wave-report 必须存在，且声明从事务内所读 CRDT 快照投影出来。** 无 report 会直接返回空 outcome；有 report 时从 `body_crdt` 取 blocks，再生成 declarations，`crates/calm-server/src/wave_report.rs:128-166`。（满足：`Boot` 创建 report card，`crates/calm-server/tests/cases/mcp_wave_report.rs:175-188`。）
+3. **`collateral` 声明仍在报告中。** 测试只删除 `vetoed` block，`collateral` 未被删除，`crates/calm-server/tests/cases/task_projection_acceptance.rs:1510-1515`。（满足。）声明不在报告里时 `schedulable_by_key` 缺项也会令存量 pending 行进入删除考虑，但不会产生本测试要求的 `declare-and-wait` 声明诊断，谓词见 `crates/calm-truth/src/db/sqlite/task_projection.rs:1072-1100`。
+4. **事务内读到的新 policy 必须是 `declare-and-wait`。** `wave_projection_state` 从 `waves.automation_policy` 读取，`effective_wait` 只在精确相等时为真，`crates/calm-truth/src/db/sqlite/task_projection.rs:396-445,542-576`。（满足；policy write 与 rebuild 同事务，见条件 1，不依赖 cache invalidation。）
+5. **声明必须因 wait policy 判为不可调度。** 对 `declared_by == "spec"`、`released_by_user == false`、`tombstone == false` 的声明添加 `declare_and_wait` 诊断；最终 `schedulable = ready && !tombstone && diagnostics.is_empty()`，`crates/calm-truth/src/db/sqlite/task_projection.rs:697-726`。（满足：测试 `task()` 固定 `declared_by=spec, ready=true` 且未设置 release/tombstone，`crates/calm-server/tests/cases/task_projection_acceptance.rs:37-44`。）
+6. **目标行必须进入 `existing` 集合。** 当前 SELECT 是 wave 下全部 tasks，`crates/calm-truth/src/db/sqlite/task_projection.rs:1077-1081`。#1055 / PR #1063 前的精确旧 SQL 是 `... WHERE wave_id=?1 AND origin='block'`（`git show 91e2b259^:crates/calm-truth/src/db/sqlite/task_projection.rs:1137-1142`）；`collateral` 本来就是投影生成的 block 行，所以前三次中的 pre/post-#1055 两种 schema 都会选中它。去掉 origin 条件只扩大存量扫描，不会造成这条行漏删。
+7. **该 key 必须不可调度或发生 withdrawal。** 条件为 `!schedulable_by_key[key] || withdrawal`，`crates/calm-truth/src/db/sqlite/task_projection.rs:1095-1100`。（满足：条件 5 令 schedulable=false。）
+8. **真正执行并命中 DELETE 的最后条件是 status 仍为 `pending`。** `dispatched/running/verifying` 直接进入保留/诊断分支；其余状态才调用 `task_delete_pending_tx`，而 SQL 自身又有 `AND status='pending'`，`crates/calm-truth/src/db/sqlite/task_projection.rs:1013-1020,1101-1166`。**这是 CI 并行/时序下可能尚未成立、且确定性 repro 证明会被破坏的唯一条件：DELETE 事件触发的 scheduler 已把 `collateral` claim 为 `dispatched`。** repro 在 PATCH 前后各实查一次，均为 `dispatched`，`crates/calm-server/tests/cases/task_projection_acceptance.rs:1693-1716`。
+9. **不可调度声明不能在后半段被重新 upsert。** 写入循环对 `!verdict.schedulable` 直接 continue，`crates/calm-truth/src/db/sqlite/task_projection.rs:1173-1177`。（满足。）
+10. **事务必须成功提交。** DELETE 错误仍以 `?` 返回；typed write closure 出错 rollback，成功才 commit 并广播，`crates/calm-truth/src/db/sqlite/task_projection.rs:1013-1020,1165-1166`、`crates/calm-truth/src/db/sqlite/events.rs:338-353,416-425`。helper 在读行前断言 HTTP 200，`crates/calm-server/tests/cases/task_projection_acceptance.rs:232-249`。（三次均越过 status 断言；不是错误吞掉。）
+
+### wave lifecycle 在哪里起作用
+
+Projection 删除谓词本身不读 lifecycle；`wave_projection_state` 读取的字段只有 policy、ceiling、gate、cove 和 task 聚合，`crates/calm-truth/src/db/sqlite/task_projection.rs:396-445`。lifecycle 是**竞速对手 scheduler 能否 claim** 的前置：`Boot` 把 wave 设为 `Planning`，`crates/calm-server/tests/cases/mcp_wave_report.rs:155-164`；scheduler 允许 `Planning/Dispatching/Working/Reviewing`，`crates/calm-server/src/scheduler/mod.rs:145-156`，并在成功 claim 时把 `Planning -> Dispatching -> Working` 与 `pending -> dispatched` 同事务提交，`crates/calm-server/src/scheduler/mod.rs:1284-1347`。
+
+## 时序依赖与隐式“立即可见”假设
+
+### 实际异步动作
+
+- 测试 `route_state()` 每次用同一 repo 构造一个新 `AppState` 和新 `EventBus`，`crates/calm-server/tests/cases/task_projection_acceptance.rs:101-122`；`AppState::from_parts` 又无条件 spawn live dispatcher，`crates/calm-server/src/state.rs:648-671`。
+- `user_delete()` 正是用这种临时状态调用 handler，`crates/calm-server/tests/cases/task_projection_acceptance.rs:219-239`。`Dispatcher` 保存 JoinHandle 但没有 shutdown/drop，源码注释也说明 handle 只是留待未来 abort，`crates/calm-server/src/dispatcher/mod.rs:368-400`；receiver task 自持 `Inner`，而 `Inner` 持 scheduler，`crates/calm-server/src/dispatcher/mod.rs:788-842,918-947`。因此临时 `AppState` 析构并不取消已 spawn 的订阅任务。
+- 删除 handler 在同一事务更新 report、重做 projection，并在 `vetoed` pending 行被删后生成 `PlanUpdated`，`crates/calm-server/src/wave_report.rs:816-876`；write wrapper 先 commit、再同步 broadcast，`crates/calm-truth/src/db/sqlite/events.rs:416-425`。所以 `user_delete().await` 保证删除与事件已经提交，却**不保证异步 dispatcher 已消费完事件**。
+- dispatcher 收到 `PlanUpdated` 后 per-event `tokio::spawn`，再由 `Scheduler::poke` 二次 `tokio::spawn`，`crates/calm-server/src/dispatcher/mod.rs:788-810,1013-1018`、`crates/calm-server/src/scheduler/mod.rs:745-751`。scheduler 读取 pending ready set并 claim，`crates/calm-server/src/scheduler/mod.rs:973-1016,1037-1089`。
+
+### 不存在的异步依赖
+
+- policy patch 生效、projection rebuild、DELETE 和 commit 都在 PATCH 请求 await 内完成；没有“等 dispatcher 才应用 policy”，`crates/calm-server/src/routes/waves.rs:1324-1378`。
+- policy 由同一事务直接从 `waves` 表读取，不经过 cache；报告声明也从同一事务中的 CRDT/card row读取，`crates/calm-truth/src/db/sqlite/task_projection.rs:396-445`、`crates/calm-server/src/wave_report.rs:128-166`。
+- cache invalidation 与 PATCH 后删除无关；事件只在 commit 后广播，`crates/calm-truth/src/db/sqlite/events.rs:416-425`。
+
+因此隐式假设位于测试的三行顺序：`user_delete().await` → “只剩 collateral” → `patch_policy().await` → “collateral 必须消失”，`crates/calm-server/tests/cases/task_projection_acceptance.rs:1513-1516`。中间的行列表检查只证明当次读取时 key 存在，不冻结 status；它把“前一请求已 commit”错误等同于“前一请求派生的异步 scheduler 工作也已静止”。CI 资源紧张会改变 dispatcher 与下一 PATCH 谁先取得 writer 的顺序：PATCH 先赢则 pending 被删、测试 PASS；claim 先赢则变 `dispatched`、测试报 `row survived`。
+
+## 确定性复现与实跑
+
+新增 repro 没有 sleep/重试：它使用生产 scheduler 已有的 `PostClaimDriveTestHook`，该 hook 位于 claim commit 后、operation drive 前，定义与消费点见 `crates/calm-server/src/scheduler/mod.rs:582-589,1073-1081`。repro 的步骤和证据：
+
+1. 建立与原测试相同的 `vetoed + collateral`，安装 hook，`crates/calm-server/tests/cases/task_projection_acceptance.rs:1662-1675`；
+2. 先抽出 `RouteState` 再 drop 临时 `AppState`，精确模拟原 helper 的生命周期，然后删除 `vetoed`，`:1677-1692`；
+3. 等 `claimed` 会合，实查 `collateral.status == dispatched`，`:1693-1702`；
+4. 用另一新 `AppState` PATCH wait policy，再查仍为 `dispatched`，`:1704-1716`；
+5. 调原 `assert_diagnosed_on_both_reads`，稳定 panic `collateral row survived`，`:1717-1719`。
+
+实跑命令（无任何 feature）：
+
+```text
+cargo test -p calm-server --test mcp_integration_suite \
+  task_projection_acceptance::dispatcher_claim_between_delete_and_policy_patch_reproduces_row_survived \
+  -- --ignored --exact --nocapture
+```
+
+结果：第一次与生命周期收紧后的第二次均在约 0.32 秒确定性失败，panic 均为：
+
+```text
+thread '...dispatcher_claim_between_delete_and_policy_patch_reproduces_row_survived' panicked at
+crates/calm-server/tests/cases/task_projection_acceptance.rs:142:5:
+collateral row survived
+```
+
+正常原测试单跑仍为 1 PASS；这符合竞速定性，不是用重试得到的结论。第 2 步只新增默认忽略的红测，未改生产实现、未改 helper、未改既有断言。

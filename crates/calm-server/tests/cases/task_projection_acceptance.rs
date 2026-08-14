@@ -1652,3 +1652,69 @@ async fn terminal_spec_key_does_not_consume_ceiling_capacity() {
             .unwrap();
     assert_eq!(status, "pending");
 }
+
+/// #1070 red reproducer: the REST helper builds a live dispatcher. The
+/// `PlanUpdated` emitted by deleting `vetoed` may claim `collateral` before the
+/// following policy PATCH projects it. In-flight rows are retained by design,
+/// so the existing acceptance assertion then reports `collateral row survived`.
+#[tokio::test]
+#[ignore = "#1070 deterministic red reproducer for the live-dispatcher test-helper race"]
+async fn dispatcher_claim_between_delete_and_policy_patch_reproduces_row_survived() {
+    let boot = new_boot().await;
+    let (vetoed, vetoed_rev) = upsert(&boot, None, task("vetoed")).await;
+    upsert(&boot, None, task("collateral")).await;
+    let state = route_state(&boot).await;
+
+    let claimed = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    state.dispatcher.scheduler().set_post_claim_drive_test_hook(
+        calm_server::scheduler::PostClaimDriveTestHook {
+            claimed: Arc::clone(&claimed),
+            resume: Arc::clone(&resume),
+        },
+    );
+
+    let delete_state = RouteState::from_ref(&state);
+    // This is the existing helper's exact lifetime: the AppState temporary is
+    // gone before the direct handler future runs. Its detached subscription
+    // task still owns the scheduler and receives this handler's event bus.
+    drop(state);
+    let _ = delete_block(
+        State(delete_state),
+        principal(),
+        Actor("user".into()),
+        Path((boot.wave_id.to_string(), vetoed)),
+        Json(DeleteReportBlockBody {
+            if_block_rev: vetoed_rev as u32,
+        }),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(2), claimed.notified())
+        .await
+        .expect("dispatcher must claim collateral after delete PlanUpdated");
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE wave_id=?1 AND key='collateral'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(status, "dispatched", "rendezvous is after the claim commit");
+
+    // Match the flaky helper shape: the following PATCH builds a different
+    // AppState while the first state's scheduler is parked after its claim.
+    patch_policy(&boot, "declare-and-wait").await;
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE wave_id=?1 AND key='collateral'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "dispatched",
+        "policy projection retains in-flight rows"
+    );
+    resume.notify_one();
+
+    assert_diagnosed_on_both_reads(&boot, "collateral", "requires user release").await;
+}
