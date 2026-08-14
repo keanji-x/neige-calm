@@ -28,8 +28,8 @@
     "defends": ["oracle:CAP-LOGIN-002"],
     "target": "web/src/features/auth/login-page/public.tsx",
     "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..0377347a 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -21,7 +21,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       if (submitting) return;\n       setSubmitting(true); setError(null);\n       void login(username, password).then((result) => {\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n       }).catch((cause: unknown) => {\n",
-    "expected_red": ["login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state", "login page oracle contracts CAP-LOGIN-002 shows the credential message through the production login assembly"],
-    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx"],
+    "expected_red": ["login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state", "production login assembly CAP-LOGIN-002 maps a production 401 to credential copy without broadcasting"],
+    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx", "web/src/app/auth/login.contract.test.tsx"],
     "why_more_than_one": "Both the component branch and production assembly oracle must reject generic copy for bad credentials."
   },
   {
