@@ -101,7 +101,12 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly 
   for (const entry of entries) {
     if (entry.migration !== 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;
     const expected = EXPECTED_PROJECTS[entry.test_tier as keyof typeof EXPECTED_PROJECTS];
-    if (!expected || entry.authoritative_test === 'NONE') continue;
+    if (!expected) continue;
+    if (entry.authoritative_test === 'NONE') {
+      violations.push({ id: entry.id, rule: 'test-tier-project', source: 'NONE',
+        message: 'migrated entries require a real authoritative_test location' });
+      continue;
+    }
     for (const source of new Set(referencedPaths(entry.authoritative_test))) {
       const testPath = configRelativePath(repoRoot, configRoot, source);
       const actual = testPath === null ? [] : projectsForPath(testPath, projects);

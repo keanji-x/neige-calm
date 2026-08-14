@@ -50,6 +50,8 @@
     color: var(--text);
   }
 
+  .titleHeading { min-inline-size: 0; }
+
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry
      a page's attention — unlike progress/eta/now, which have no writer at all. */
   .needsInput {

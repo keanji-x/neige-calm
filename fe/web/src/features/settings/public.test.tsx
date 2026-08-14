@@ -16,6 +16,7 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     saveError: null,
     savedAt: null,
     onSave: vi.fn(),
+    onRetryLoad: vi.fn(),
     onOpenToday: vi.fn(),
     themeMode: 'system',
     onThemeModeChange: vi.fn(),
@@ -67,6 +68,16 @@ describe('Settings network form', () => {
     expect(save.dataset.ncState).toBe('busy');
   });
 
+  it('marks only the ready Save label as visible before saving', async () => {
+    render(<SettingsPage {...props()} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge');
+    const save = screen.getByRole('button', { name: 'Save' });
+    const labels = save.querySelectorAll('span > span');
+    expect(labels[0]?.getAttribute('aria-hidden')).toBe('false');
+    expect(labels[1]?.getAttribute('aria-hidden')).toBe('true');
+    expect(save.dataset.ncState).toBeUndefined();
+  });
+
   it('re-seeds the fields when the settings prop reports a new server value', () => {
     const view = render(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://old' } })} />);
     view.rerender(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://new' } })} />);
@@ -81,9 +92,32 @@ describe('Settings network form', () => {
     view.rerender(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box' } })} />);
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://typed');
   });
+
+  it('preserves a field edited during an in-flight save when the response updates another field', async () => {
+    const view = render(<SettingsPage {...props({
+      settings: { [HTTP_PROXY_KEY]: 'http://old-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
+      saving: true,
+    })} />);
+    await userEvent.clear(screen.getByLabelText('HTTPS proxy'));
+    await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://typed-during-save');
+    view.rerender(<SettingsPage {...props({
+      settings: { [HTTP_PROXY_KEY]: 'http://saved-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
+      saving: false, savedAt: 123,
+    })} />);
+    expect(screen.getByLabelText<HTMLInputElement>('HTTPS proxy').value).toBe('http://typed-during-save');
+  });
 });
 
 describe('Settings appearance', () => {
+  it('moves and selects with radiogroup arrow keys', async () => {
+    const onThemeModeChange = vi.fn();
+    render(<SettingsPage {...props({ themeMode: 'system', onThemeModeChange })} />);
+    const system = screen.getByRole('radio', { name: 'System' });
+    system.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(onThemeModeChange).toHaveBeenCalledWith('light');
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Light' }));
+  });
   it('reports the selected mode without going through onSave', async () => {
     const onThemeModeChange = vi.fn();
     const onSave = vi.fn();
@@ -105,7 +139,16 @@ describe('Settings appearance', () => {
 describe('Settings states', () => {
   it('surfaces a load failure as an alert', () => {
     render(<SettingsPage {...props({ settings: undefined, loadError: 'settings unreachable' })} />);
-    expect(screen.getByRole('alert').textContent).toBe('settings unreachable');
+    expect(screen.getByRole('alert')).toBeTruthy();
+    expect(screen.getByText('settings unreachable')).toBeTruthy();
+    expect(screen.queryByText('Loading settings…')).toBeNull();
+  });
+
+  it('retries a failed settings read from the in-place error', async () => {
+    const onRetryLoad = vi.fn();
+    render(<SettingsPage {...props({ settings: undefined, loadError: 'settings unreachable', onRetryLoad })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetryLoad).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces a save failure as an alert', () => {

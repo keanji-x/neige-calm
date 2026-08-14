@@ -16,7 +16,7 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 const now = Date.now();
 
-const coves = [
+export const devMockCoves = [
   { id: 'cove-atlas', name: 'atlas', color: '#5B8DEF', sort: 0, kind: 'user' },
   { id: 'cove-ledger', name: 'ledger-service', color: '#8B7FE8', sort: 1, kind: 'user' },
   { id: 'cove-notes', name: 'field-notes', color: '#7FC8A9', sort: 2, kind: 'user' },
@@ -37,7 +37,7 @@ const waveSeed = [
   ['w-10', 'cove-notes', '', 'planning', 90_000, false],
 ];
 
-const waves = waveSeed.map(([id, coveId, title, lifecycle, age, pinned], index) => ({
+export const devMockWaves = waveSeed.map(([id, coveId, title, lifecycle, age, pinned], index) => ({
   id, cove_id: coveId, title, sort: index, lifecycle,
   cwd: cwdOf[coveId],
   archived_at: null,
@@ -50,7 +50,7 @@ const waves = waveSeed.map(([id, coveId, title, lifecycle, age, pinned], index) 
 // `any_card_needs_input` is the one overlay the kernel really writes, so it is
 // the only one seeded: `progress` / `eta` / `now` have no writer in production
 // and the design forbids reserving space for them (§6.3).
-const overlays = [{
+export const devMockOverlays = [{
   id: 'ov-1', plugin_id: 'card-fsm', entity_kind: 'wave', entity_id: 'w-6',
   kind: 'any_card_needs_input', payload: { value: true }, updated_at: now - 60_000,
 }];
@@ -265,12 +265,12 @@ const w2Report = {
   ],
 };
 
-const cards = {
+export const devMockCards = {
   'w-1': [
-    { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', title: null, sort: 0, payload: w1Report, deletable: false },
+    { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', sort: 0, payload: w1Report, deletable: false },
     { id: 'c-2', wave_id: 'w-1', kind: 'codex', title: 'agent', sort: 1, payload: {}, deletable: true },
   ],
-  'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', title: null, sort: 0, payload: w2Report, deletable: false }],
+  'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', sort: 0, payload: w2Report, deletable: false }],
 };
 
 // Backlinks are what *other* waves wrote, so the fixture derives them from the
@@ -364,6 +364,19 @@ const DEV_MOCK_APP_HTML = `<!doctype html>
 
 const settings = { http_proxy: 'http://127.0.0.1:2080', https_proxy: 'http://127.0.0.1:2080' };
 
+const coves = devMockCoves;
+const waves = devMockWaves;
+const overlays = devMockOverlays;
+const cards = devMockCards;
+
+export const DEV_MOCK_ROUTES = Object.freeze([
+  ['GET', '/api/version'], ['GET', '/api/settings'], ['PUT', '/api/settings'],
+  ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
+  ['GET', '/api/coves/{cove_id}/waves'], ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
+  ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
+  ['GET', '/api/waves/{id}/backlinks'],
+].map((route) => Object.freeze(route)));
+
 function send(res, status, body) {
   res.statusCode = status;
   res.setHeader('content-type', 'application/json');
@@ -382,7 +395,12 @@ export function devMockApi() {
   return {
     name: 'neige-dev-mock-api',
     configureServer(server) {
-      server.middlewares.use(async (req, res, next) => {
+      server.middlewares.use(handleDevMockRequest);
+    },
+  };
+}
+
+export async function handleDevMockRequest(req, res, next) {
         const url = new URL(req.url ?? '/', 'http://mock');
         const path = url.pathname;
         if (path === '/dev-mock/app.html') {
@@ -397,12 +415,12 @@ export function devMockApi() {
           return send(res, 200, { userId: 'u-dev', displayName: 'Kenji Xie', role: 'owner', sessionId: 's-dev' });
         }
         if (path === '/api/auth/logout') return send(res, 204, undefined);
-        if (path === '/api/version') {
+        if (path === '/api/version' && method === 'GET') {
           return send(res, 200, {
             webCompatVersion: 1, minWebCompatVersion: 1, syncEventVersion: 1, dbInstanceId: 'mock',
           });
         }
-        if (path === '/api/settings') {
+        if (path === '/api/settings' && (method === 'GET' || method === 'PUT')) {
           if (method === 'PUT') {
             const body = await readBody(req);
             for (const [key, value] of Object.entries(body.settings ?? {})) {
@@ -412,24 +430,25 @@ export function devMockApi() {
           }
           return send(res, 200, { settings });
         }
-        if (path === '/api/overlays') return send(res, 200, overlays);
+        if (path === '/api/overlays' && method === 'GET') return send(res, 200, overlays);
         if (path === '/api/coves' && method === 'GET') return send(res, 200, coves);
         if (path === '/api/coves' && method === 'POST') {
           const body = await readBody(req);
+          if (typeof body.name !== 'string' || typeof body.color !== 'string') return send(res, 400, { message: 'name and color are required' });
           const cove = {
             id: `cove-${Math.random().toString(36).slice(2, 8)}`, name: body.name, color: body.color,
             sort: coves.length, kind: 'user', created_at: Date.now(), updated_at: Date.now(),
           };
           coves.push(cove);
-          return send(res, 200, cove);
+          return send(res, 201, cove);
         }
 
         const coveWaves = /^\/api\/coves\/([^/]+)\/waves$/.exec(path);
-        if (coveWaves) {
+        if (coveWaves && method === 'GET') {
           return send(res, 200, waves.filter((wave) => wave.cove_id === decodeURIComponent(coveWaves[1])));
         }
         const coveId = /^\/api\/coves\/([^/]+)$/.exec(path);
-        if (coveId) {
+        if (coveId && (method === 'PATCH' || method === 'DELETE')) {
           const id = decodeURIComponent(coveId[1]);
           const index = coves.findIndex((cove) => cove.id === id);
           if (index < 0) return send(res, 404, { message: 'no such cove' });
@@ -443,23 +462,25 @@ export function devMockApi() {
           return send(res, 200, coves[index]);
         }
 
+        if (path === '/api/waves' && method === 'GET') return send(res, 200, waves);
         if (path === '/api/waves' && method === 'POST') {
           const body = await readBody(req);
+          if (typeof body.cove_id !== 'string' || typeof body.title !== 'string') return send(res, 400, { message: 'cove_id and title are required' });
           const wave = {
             id: `w-${Math.random().toString(36).slice(2, 8)}`, cove_id: body.cove_id, title: body.title,
             sort: waves.length, lifecycle: 'draft', cwd: body.cwd ?? '', archived_at: null, pinned_at: null,
             terminal_at: null, created_at: Date.now(), updated_at: Date.now(),
           };
           waves.push(wave);
-          return send(res, 200, wave);
+          return send(res, 201, wave);
         }
         const waveBacklinks = /^\/api\/waves\/([^/]+)\/backlinks$/.exec(path);
-        if (waveBacklinks) {
+        if (waveBacklinks && method === 'GET') {
           const id = decodeURIComponent(waveBacklinks[1]);
           return send(res, 200, backlinks[id] ?? EMPTY_BACKLINKS);
         }
         const waveId = /^\/api\/waves\/([^/]+)$/.exec(path);
-        if (waveId) {
+        if (waveId && (method === 'GET' || method === 'PATCH' || method === 'DELETE')) {
           const id = decodeURIComponent(waveId[1]);
           const index = waves.findIndex((wave) => wave.id === id);
           if (index < 0) return send(res, 404, { message: 'no such wave' });
@@ -477,7 +498,4 @@ export function devMockApi() {
         }
 
         return send(res, 404, { message: `dev mock has no route for ${method} ${path}` });
-      });
-    },
-  };
 }

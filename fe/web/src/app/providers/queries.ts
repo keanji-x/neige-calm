@@ -181,6 +181,14 @@ export type Workspace = Readonly<{
   wavesByCove: ReadonlyMap<string, Wave[]>;
   waves: Wave[];
   covesLoading: boolean;
+  overlaysLoading: boolean;
+  covesError: Error | null;
+  overlaysError: Error | null;
+  waveErrorsByCove: ReadonlyMap<string, Error>;
+  wavesLoadingByCove: ReadonlyMap<string, boolean>;
+  retryCoves: () => void;
+  retryOverlays: () => void;
+  retryWaves: (coveId: string) => void;
 }>;
 
 /**
@@ -203,14 +211,33 @@ export function useWorkspace(transport: ApiTransportPort): Workspace {
     queries: coves.map((cove) => wavesInCoveQueryOptions(transport, cove.id)),
   });
   const wavesByCove = new Map<string, Wave[]>();
+  const waveErrorsByCove = new Map<string, Error>();
+  const wavesLoadingByCove = new Map<string, boolean>();
   const waves: Wave[] = [];
   for (const [index, cove] of coves.entries()) {
-    const rows = (waveQueries[index]?.data ?? [])
-      .map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
-    wavesByCove.set(cove.id, rows);
-    waves.push(...rows);
+    const query = waveQueries[index];
+    wavesLoadingByCove.set(cove.id, query?.isLoading ?? false);
+    if (query?.error instanceof Error) waveErrorsByCove.set(cove.id, query.error);
+    if (query?.data !== undefined) {
+      const rows = query.data.map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
+      wavesByCove.set(cove.id, rows);
+      waves.push(...rows);
+    }
   }
-  return { coves, wavesByCove, waves, covesLoading: covesQuery.isLoading };
+  return {
+    coves, wavesByCove, waves, covesLoading: covesQuery.isLoading,
+    overlaysLoading: overlaysQuery.isLoading,
+    covesError: covesQuery.error instanceof Error ? covesQuery.error : null,
+    overlaysError: overlaysQuery.error instanceof Error ? overlaysQuery.error : null,
+    waveErrorsByCove,
+    wavesLoadingByCove,
+    retryCoves: () => { void covesQuery.refetch(); },
+    retryOverlays: () => { void overlaysQuery.refetch(); },
+    retryWaves: (coveId) => {
+      const index = coves.findIndex((cove) => cove.id === coveId);
+      if (index >= 0) void waveQueries[index]?.refetch();
+    },
+  };
 }
 
 /** Route loaders prime only this one list; see INV-APP-084 above. */
@@ -227,7 +254,7 @@ export function prefetchCoveList(client: QueryClient, transport: ApiTransportPor
 export type CoveMutations = Readonly<{
   create: (body: NewCoveBody) => Promise<Cove>;
   rename: (coveId: string, body: CovePatchBody) => Promise<Cove>;
-  remove: (coveId: string) => Promise<void>;
+  remove: (coveId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
 export function useCoveMutations(transport: ApiTransportPort): CoveMutations {
@@ -242,18 +269,20 @@ export function useCoveMutations(transport: ApiTransportPort): CoveMutations {
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
   });
   const remove = useMutation({
-    mutationFn: (coveId: string) => runOperation(transport, deleteCoveOperation(coveId)),
-    onSuccess: (_result, coveId) => {
-      void client.invalidateQueries({ queryKey: queryKeys.coves() });
+    mutationFn: ({ coveId, signal }: { coveId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteCoveOperation(coveId), signal }),
+    onSuccess: (_result, { coveId }) => {
       // The cove is gone; its wave list can never resolve again, so drop it
       // instead of leaving a permanently-stale entry behind.
       client.removeQueries({ queryKey: queryKeys.wavesInCove(coveId) });
     },
+    // Abort only ends the client wait: the server may already have committed.
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
   });
   return {
     create: async (body) => toCove(await create.mutateAsync(body)),
     rename: async (coveId, body) => toCove(await rename.mutateAsync({ coveId, body })),
-    remove: async (coveId) => { await remove.mutateAsync(coveId); },
+    remove: async (coveId, signal) => { await remove.mutateAsync({ coveId, signal }); },
   };
 }
 
@@ -261,7 +290,7 @@ export type WaveMutations = Readonly<{
   create: (body: NewWaveBody) => Promise<Wave>;
   patch: (waveId: string, coveId: string, body: WavePatchBody) => Promise<Wave>;
   setPinned: (waveId: string, coveId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
-  remove: (waveId: string, coveId: string) => Promise<void>;
+  remove: (waveId: string, coveId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
 export function useWaveMutations(transport: ApiTransportPort): WaveMutations {
@@ -283,12 +312,15 @@ export function useWaveMutations(transport: ApiTransportPort): WaveMutations {
     },
   });
   const remove = useMutation({
-    mutationFn: ({ waveId }: { waveId: string; coveId: string }) =>
-      runOperation(transport, deleteWaveOperation(waveId)),
+    mutationFn: ({ waveId, signal }: { waveId: string; coveId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteWaveOperation(waveId), signal }),
     onSuccess: (_result, variables) => {
+      client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
+    },
+    // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
+    onSettled: (_result, _error, variables) => {
       void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(variables.coveId) });
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
-      client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
     },
   });
   const patchWave = async (waveId: string, coveId: string, body: WavePatchBody) =>
@@ -300,7 +332,7 @@ export function useWaveMutations(transport: ApiTransportPort): WaveMutations {
     // null write rather than a delete of some separate row.
     setPinned: (waveId, coveId, pinned, nowMs) =>
       patchWave(waveId, coveId, { pinned_at: pinned ? nowMs : null }),
-    remove: async (waveId, coveId) => { await remove.mutateAsync({ waveId, coveId }); },
+    remove: async (waveId, coveId, signal) => { await remove.mutateAsync({ waveId, coveId, signal }); },
   };
 }
 

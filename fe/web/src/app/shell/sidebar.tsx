@@ -8,15 +8,20 @@
 import { useEffect, useRef } from 'react';
 
 import { coveOf, visibleCoves, type Cove } from '../../../../core/domain/cove.ts';
-import { needsUserAttention, type Wave } from '../../../../core/domain/wave.ts';
+import { needsUserAttention, visibleWaves, type Wave } from '../../../../core/domain/wave.ts';
 import { COVE_PALETTE } from '../../features/cove/palette.ts';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { deleteCoveCopy, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { Menu } from '../../ui/menu/public.tsx';
+import { ErrorBox } from '../../ui/error-box/public.tsx';
+import {
+  OperationFeedback, useDeleteConfirm, useOperationFeedback,
+} from '../../ui/operation-feedback/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
+import { routeParamFromPath } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
 import styles from './shell.module.css';
 
@@ -30,19 +35,21 @@ export type SidebarProps = Readonly<{
   onGo: (target: NavTarget) => void;
   /** Colour is picked here, at random from `COVE_PALETTE` (INV-DUP-006). */
   onCreateCove: (name: string, color: string) => void | Promise<void>;
-  onDeleteCove: (coveId: string) => void | Promise<void>;
+  onDeleteCove: (coveId: string, signal: AbortSignal) => void | Promise<void>;
   onSetPinned: (waveId: string, pinned: boolean) => void | Promise<void>;
-  onDeleteWave: (waveId: string) => void | Promise<void>;
+  onDeleteWave: (waveId: string, signal: AbortSignal) => void | Promise<void>;
   onOpenSettings: () => void;
   /** The shell never signs out itself; the owner of the session does. */
   onSignOut: () => void;
   /** Owned by the shell: collapsing changes the shell grid, not just the rail. */
   collapsed: boolean;
   onToggleCollapsed: () => void;
-  /** CR-8 — where focus lands once a delete removes the trigger element. */
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   userLabel?: string;
   nowMs?: number;
+  readError?: string | null;
+  activityError?: string | null;
+  readLoading?: boolean;
+  onRetryRead?: () => void;
 }>;
 
 /** Two initials at most; the avatar is decoration on top of a labelled button. */
@@ -53,47 +60,6 @@ export function initialsOf(label: string): string {
 
 function randomCoveColor(): string {
   return COVE_PALETTE[Math.floor(Math.random() * COVE_PALETTE.length)] ?? COVE_PALETTE[0];
-}
-
-/**
- * INV-CONFIRM-001 — the destructive confirm stays mounted for the whole await:
- * Confirm goes busy, Cancel stays enabled (the user must keep an exit), and the
- * `finally` clears both pending and target so a *rejected* mutation cannot
- * strand the dialog.
- *
- * Since CR-6 the in-flight state is `busy`, not a real `disabled`: a disabled
- * element is not focusable, so pressing Confirm would drop focus out of the
- * trap at the exact moment the dialog needs to hold it.
- */
-function useDeleteConfirm(perform: (id: string) => void | Promise<void>, onDone?: () => void) {
-  const [target, setTarget] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
-  return {
-    target,
-    open: target !== null,
-    pending,
-    request: (id: string) => setTarget(id),
-    cancel: () => { if (!pending) setTarget(null); },
-    confirm: () => {
-      if (pending || target === null) return;
-      setPending(true);
-      void (async () => {
-        try {
-          await perform(target);
-          // Order is load-bearing (CR-8): navigate first, then close, so the new
-          // page's title element is mounted when the dialog's cleanup restores
-          // focus to it.
-          onDone?.();
-        } catch {
-          // The caller owns surfacing the failure; this surface only has to
-          // make sure the dialog cannot strand. See INV-CONFIRM-001.
-        } finally {
-          setPending(false);
-          setTarget(null);
-        }
-      })();
-    },
-  };
 }
 
 /**
@@ -118,8 +84,9 @@ function useDeleteConfirm(perform: (id: string) => void | Promise<void>, onDone?
 export function Sidebar({
   coves, wavesByCove, waves, currentPath, onGo,
   onCreateCove, onDeleteCove, onSetPinned, onDeleteWave,
-  onOpenSettings, onSignOut, collapsed, onToggleCollapsed, pageTitleRef,
-  userLabel = 'You', nowMs,
+  onOpenSettings, onSignOut, collapsed, onToggleCollapsed,
+  userLabel = 'You', nowMs, readError = null, activityError = null,
+  readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
   const { mode, resolved, setMode } = useTheme();
   const [expandedOverride, setExpandedOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map());
@@ -129,24 +96,25 @@ export function Sidebar({
   const railRef = useRef<HTMLElement | null>(null);
   const waveConfirm = useDeleteConfirm(onDeleteWave);
   const coveConfirm = useDeleteConfirm(onDeleteCove, () => onGo({ name: 'today' }));
+  const writeFeedback = useOperationFeedback();
 
   const userCoves = visibleCoves(coves);
   const userCoveIds = new Set(userCoves.map((cove) => cove.id));
-  const visibleWaves = waves.filter((wave) => userCoveIds.has(wave.coveId));
-  const waiting = visibleWaves.filter(needsUserAttention);
-  const pinned = visibleWaves.filter((wave) => wave.pinnedAt !== null)
+  const userWaves = visibleWaves(waves).filter((wave) => userCoveIds.has(wave.coveId));
+  const waiting = userWaves.filter(needsUserAttention);
+  const pinned = userWaves.filter((wave) => wave.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));
 
-  const activeWaveId = currentPath.startsWith('/wave/') ? currentPath.slice('/wave/'.length) : null;
+  const activeWaveId = routeParamFromPath(currentPath, '/wave/') ?? null;
   const activeCoveId = activeWaveId === null
     ? null
-    : visibleWaves.find((wave) => wave.id === activeWaveId)?.coveId ?? null;
+    : userWaves.find((wave) => wave.id === activeWaveId)?.coveId ?? null;
 
   const deletingCove = userCoves.find((cove) => cove.id === coveConfirm.target);
   const typed = useTypedConfirm(deletingCove?.name ?? '');
   const coveCopy = deleteCoveCopy(
     deletingCove?.name ?? '',
-    wavesByCove.get(coveConfirm.target ?? '')?.length ?? 0,
+    wavesByCove.get(coveConfirm.target ?? '')?.length,
   );
 
   // Navigating into a wave drops any manual collapse on its cove — the row the
@@ -190,14 +158,16 @@ export function Sidebar({
     if (name === '') return;
     setCreatingCove(false);
     setCoveDraft('');
-    void onCreateCove(name, randomCoveColor());
+    void writeFeedback.run(Promise.resolve(onCreateCove(name, randomCoveColor())), 'Could not create the cove.');
   };
 
   const rowProps = {
     currentPath,
     onGo,
     nowMs,
-    onSetPinned: (waveId: string, next: boolean) => { void onSetPinned(waveId, next); },
+    onSetPinned: (waveId: string, next: boolean) => {
+      void writeFeedback.run(Promise.resolve(onSetPinned(waveId, next)), 'Could not update the wave.');
+    },
     onDelete: waveConfirm.request,
   };
 
@@ -205,7 +175,7 @@ export function Sidebar({
   // in the first row's place rather than a sentence pointing at a button
   // elsewhere (§5.3). It is not auto-focused — that would steal the reading
   // position a screen-reader user just landed on.
-  const showInlineCreate = creatingCove || userCoves.length === 0;
+  const showInlineCreate = readError === null && !readLoading && (creatingCove || userCoves.length === 0);
 
   return (
     <nav ref={railRef} className={`${styles.rail} ${collapsed ? styles.railCollapsed : ''}`} aria-label="Workspace">
@@ -226,6 +196,10 @@ export function Sidebar({
           {collapsed ? '›' : '‹'}
         </button>
       </div>
+      {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
+      {activityError !== null && <ErrorBox message={`Wave activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
+      {readLoading && <div role="status">Loading workspace…</div>}
+      <OperationFeedback feedback={writeFeedback} />
 
       {collapsed ? (
         <>
@@ -251,10 +225,10 @@ export function Sidebar({
               key={cove.id}
               type="button"
               data-nc-role="row"
-              className={`${styles.stripItem} ${currentPath === `/cove/${cove.id}` ? styles.stripItemActive : ''}`}
+              className={`${styles.stripItem} ${routeParamFromPath(currentPath, '/cove/') === cove.id ? styles.stripItemActive : ''}`}
               aria-label={cove.name}
               title={cove.name}
-              aria-current={currentPath === `/cove/${cove.id}` ? 'page' : undefined}
+              aria-current={routeParamFromPath(currentPath, '/cove/') === cove.id ? 'page' : undefined}
               onClick={() => onGo({ name: 'cove', coveId: cove.id })}
             >
               <span className={styles.stripInitial} aria-hidden="true">{initialsOf(cove.name)[0]}</span>
@@ -312,7 +286,7 @@ export function Sidebar({
                   <CoveGroup
                     key={cove.id}
                     cove={cove}
-                    coveWaves={wavesByCove.get(cove.id) ?? []}
+                    coveWaves={visibleWaves(wavesByCove.get(cove.id) ?? [])}
                     expanded={expandedOverride.get(cove.id) ?? true}
                     onToggle={(next) => setExpandedOverride((current) => new Map(current).set(cove.id, next))}
                     onRequestDelete={coveConfirm.request}
@@ -323,7 +297,10 @@ export function Sidebar({
             )}
           </div>
 
-          <div className={styles.userRow}>
+        </>
+      )}
+
+      <div className={styles.userRow}>
             <Menu
               items={[
                 { label: `Theme: ${mode} (${resolved})`, onSelect: () => setMode(NEXT_THEME_MODE[mode]) },
@@ -345,9 +322,7 @@ export function Sidebar({
                 </button>
               )}
             />
-          </div>
-        </>
-      )}
+      </div>
 
       <ConfirmDialog
         open={waveConfirm.open}
@@ -356,10 +331,11 @@ export function Sidebar({
         confirmLabel={DELETE_WAVE_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
         confirmState={waveConfirm.pending ? 'busy' : 'ready'}
-        restoreFocusRef={pageTitleRef}
         onConfirm={waveConfirm.confirm}
         onCancel={waveConfirm.cancel}
       />
+      <OperationFeedback feedback={waveConfirm.feedback} />
+      <OperationFeedback feedback={coveConfirm.feedback} />
       {/* Deleting a cove cascades to every wave inside it: the one operation in
           the product that earns a typed confirm (§4.3). The rail entry and the
           cove page header entry are two entry points to the same operation, so
@@ -378,7 +354,6 @@ export function Sidebar({
         confirmBusyLabel="Deleting…"
         confirmState={coveConfirm.pending ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
         initialFocusRef={typed.inputRef}
-        restoreFocusRef={pageTitleRef}
         onConfirm={coveConfirm.confirm}
         onCancel={coveConfirm.cancel}
       />
@@ -444,7 +419,7 @@ function CoveGroup({
   onToggle: (expanded: boolean) => void;
   onRequestDelete: (coveId: string) => void;
 }) {
-  const active = currentPath === `/cove/${cove.id}`;
+  const active = routeParamFromPath(currentPath, '/cove/') === cove.id;
 
   return (
     <div className={styles.coveGroup}>
@@ -494,7 +469,7 @@ function CoveGroup({
               wave={wave}
               variant="rail"
               nowMs={nowMs}
-              active={currentPath === `/wave/${wave.id}`}
+              active={routeParamFromPath(currentPath, '/wave/') === wave.id}
               onOpen={(waveId) => onGo({ name: 'wave', waveId })}
               onSetPinned={onSetPinned}
               onDelete={onDelete}

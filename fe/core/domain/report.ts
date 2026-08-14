@@ -232,6 +232,7 @@ export function readWaveReport(cards: readonly CardWire[]): WaveReport | null {
   if (card === undefined) return null;
   const parsed = waveReportPayloadSchema.safeParse(card.payload);
   if (!parsed.success) return null;
+  const summary = parsed.data.summary.trim();
   const body = parsed.data.body.trim();
   // One malformed block must cost only that block: `body` is still a complete
   // flat projection, and the other blocks still carry usable layout and ids.
@@ -243,8 +244,8 @@ export function readWaveReport(cards: readonly CardWire[]): WaveReport | null {
     : null;
   // A blocks array that exists but is empty is the same emptiness as a blank
   // body; it is not a document with zero sections that deserves a frame.
-  if (body === '' && (blocks === null || blocks.length === 0)) return null;
-  return { summary: parsed.data.summary.trim(), body, blocks };
+  if (summary === '' && body === '' && (blocks === null || blocks.length === 0)) return null;
+  return { summary, body, blocks };
 }
 
 /* ── Outline ────────────────────────────────────────────────────────────

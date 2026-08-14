@@ -13,8 +13,8 @@ export type NavTarget =
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
     case 'today': return '/';
-    case 'cove': return `/cove/${target.coveId}`;
-    case 'wave': return `/wave/${target.waveId}`;
+    case 'cove': return `/cove/${encodeURIComponent(target.coveId)}`;
+    case 'wave': return `/wave/${encodeURIComponent(target.waveId)}`;
     case 'settings': return '/settings';
   }
 }
@@ -62,7 +62,16 @@ export function useCurrentPath(): string {
  */
 export function useRouteParam(prefix: '/cove/' | '/wave/'): string | undefined {
   const path = useCurrentPath();
+  return routeParamFromPath(path, prefix);
+}
+
+export function routeParamFromPath(path: string, prefix: '/cove/' | '/wave/'): string | undefined {
   if (!path.startsWith(prefix)) return undefined;
   const segment = path.slice(prefix.length).split('/', 1)[0];
-  return segment === '' ? undefined : decodeURIComponent(segment);
+  if (segment === '') return undefined;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return undefined;
+  }
 }

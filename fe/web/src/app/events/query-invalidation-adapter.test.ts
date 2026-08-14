@@ -1,6 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { CoveWire } from '../../../../core/domain/cove.ts';
+import type { WireEvent } from '../../../../core/api/schemas.ts';
 import type { CacheWrite } from '../../../../core/events/invalidation-plan.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
@@ -36,6 +37,8 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['wave', 'w1'])).toEqual(queryKeys.waveDetail('w1'));
     expect(mapPlannedQueryKey(['overlays', 'wave'])).toEqual(queryKeys.overlaysByKind('wave'));
     expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
+    expect(mapPlannedQueryKey(['harness-items', 'card-1'])).toEqual(queryKeys.harnessItems('card-1'));
+    expect(mapPlannedQueryKey(['spec-run', 'card-1'])).toEqual(queryKeys.specRun('card-1'));
     for (const dropped of [['wave-files'], ['wave-files', 'w1'], ['waves-range'], ['wave-backlinks'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
@@ -128,6 +131,21 @@ describe('query invalidation adapter', () => {
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
     expect(calls).toEqual([{ op: 'invalidate', queryKey: queryKeys.coves() }]);
+  });
+
+  it('turns each real harness plan into its exact live query invalidations', () => {
+    const expected = [
+      ['harness.item.added', [queryKeys.harnessItems('card-1')]],
+      ['harness.phase.changed', [queryKeys.specRun('card-1')]],
+      ['harness.transcript.cleared', [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')]],
+      ['harness.user_message.enqueued', [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')]],
+    ] as const;
+    for (const [ev, keys] of expected) {
+      const plan = invalidationPlanFor({ ev, data: { card_id: 'card-1' } } as WireEvent);
+      const { calls, client } = recordingClient();
+      applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+      expect(calls).toEqual(keys.map((queryKey) => ({ op: 'invalidate', queryKey })));
+    }
   });
 
   it('turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal', () => {

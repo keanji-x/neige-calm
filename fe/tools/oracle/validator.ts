@@ -18,6 +18,7 @@ export interface ValidateOptions {
   anchorNonePath?: string;
   anchorBaselinePath?: string;
   anchorUnsupportedPath?: string;
+  today?: string;
 }
 
 export const ORACLE_RULES = Object.freeze([
@@ -286,7 +287,11 @@ function parseStructuredList(path: string | undefined): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+const ANCHOR_BASELINE_MAXIMUM = 218;
+const ANCHOR_EXPIRY_CEILING = '2026-12-31';
+
 export function validateOracle(options: ValidateOptions): Violation[] {
+  const today = options.today ?? new Date().toISOString().slice(0, 10);
   const owners = canonicalOwners(options.ownerAliasesPath);
   const anchorNone = new Map<string, Set<string>>();
   for (const raw of parseStructuredList(options.anchorNonePath)) {
@@ -302,7 +307,10 @@ export function validateOracle(options: ValidateOptions): Violation[] {
   for (const raw of baselineRows) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const entry = raw as Record<string, unknown>;
-    if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss')) {
+    if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss')
+      && typeof entry.reason === 'string' && entry.reason.trim() !== ''
+      && typeof entry.expiry === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.expiry)
+      && entry.expiry >= today && entry.expiry <= ANCHOR_EXPIRY_CEILING) {
       baseline.set(entry.id, entry.subtype);
     }
   }
@@ -312,7 +320,10 @@ export function validateOracle(options: ValidateOptions): Violation[] {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const entry = raw as Record<string, unknown>;
     if (typeof entry.id === 'string' && Array.isArray(entry.locations)
-      && entry.locations.every((location) => typeof location === 'string')) {
+      && entry.locations.every((location) => typeof location === 'string')
+      && typeof entry.reason === 'string' && entry.reason.trim() !== ''
+      && typeof entry.expiry === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.expiry)
+      && entry.expiry >= today && entry.expiry <= ANCHOR_EXPIRY_CEILING) {
       registeredUnsupported.set(entry.id, entry.locations);
     }
   }
@@ -325,6 +336,10 @@ export function validateOracle(options: ValidateOptions): Violation[] {
   const actualBaseline = new Map<string, AnchorSubtype>();
   const actualUnsupported = new Map<string, string[]>();
   const add = (file: string, id: string, rule: string, message: string): void => { violations.push({ file, id, rule, message }); };
+  if (baselineRows.length > ANCHOR_BASELINE_MAXIMUM) {
+    add('<baseline>', '<count>', 'source-anchor',
+      `baseline may only shrink: declared ${baselineRows.length}, maximum ${ANCHOR_BASELINE_MAXIMUM}`);
+  }
 
   for (const file of files) {
     const value: unknown = parse(readFileSync(resolve(options.oracleDir, file), 'utf8'));

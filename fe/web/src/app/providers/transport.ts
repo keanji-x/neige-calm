@@ -3,6 +3,8 @@
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 async function readBody(response: Response): Promise<unknown> {
   const text = await response.text();
   if (text === '') return undefined;
@@ -18,13 +20,24 @@ async function readBody(response: Response): Promise<unknown> {
 export function createFetchTransport(): ApiTransportPort {
   return {
     async send(request: ApiRequest): Promise<ApiTransportResponse> {
-      const response = await fetch(request.path, {
-        method: request.method,
-        credentials: request.credentials,
-        ...(request.headers === undefined ? {} : { headers: { ...request.headers } }),
-        ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
-      });
-      return { status: response.status, statusText: response.statusText, body: await readBody(response) };
+      const controller = new AbortController();
+      const relayAbort = () => controller.abort();
+      request.signal?.addEventListener('abort', relayAbort, { once: true });
+      if (request.signal?.aborted) relayAbort();
+      const timeout = setTimeout(() => controller.abort(new DOMException('Request timed out.', 'TimeoutError')), REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch(request.path, {
+          method: request.method,
+          credentials: request.credentials,
+          ...(request.headers === undefined ? {} : { headers: { ...request.headers } }),
+          ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
+          signal: controller.signal,
+        });
+        return { status: response.status, statusText: response.statusText, body: await readBody(response) };
+      } finally {
+        clearTimeout(timeout);
+        request.signal?.removeEventListener('abort', relayAbort);
+      }
     },
   };
 }

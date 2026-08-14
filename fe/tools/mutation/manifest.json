@@ -102,6 +102,7 @@
       "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
       "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects overlap for jsdom as well as browser",
+      "test-tier-project fixtures rejects migrated entries without a real authoritative test",
       "tier gate decisions reports an oracle tier/project mismatch"
     ],
     "selection_paths": [
@@ -712,7 +713,7 @@
       "oracle:GATE-APP-029"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -32,7 +32,7 @@\n   const [head, first, second] = key;\n   if (head === 'coves' && key.length === 1) return queryKeys.coves();\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   return null;\n }\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'coves' && key.length === 1) return queryKeys.coves();\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n",
     "expected_red": [
       "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
       "event composition T-B2 carries a real socket card event through the bridge into wave invalidation",
@@ -837,72 +838,114 @@
   },
   {
     "mutation_id": "app-wave-lookup-always-misses",
-    "defends": ["oracle:INV-APP-034", "oracle:CAP-APP-036"],
+    "defends": [
+      "oracle:INV-APP-034",
+      "oracle:CAP-APP-036"
+    ],
     "target": "web/src/app/events/wave-lookup.ts",
     "patch": "diff --git a/web/src/app/events/wave-lookup.ts b/web/src/app/events/wave-lookup.ts\n--- a/web/src/app/events/wave-lookup.ts\n+++ b/web/src/app/events/wave-lookup.ts\n@@ -10,7 +10,7 @@\n       for (const [key, detail] of client.getQueriesData<WaveDetailWire>({ queryKey: ['wave'] })) {\n         if (detail?.cards.some((card) => card.id === cardId)) {\n           const waveId = key[1];\n-          return typeof waveId === 'string' ? waveId : null;\n+          return null;\n         }\n       }\n       return null;\n",
     "expected_red": [
       "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
       "wave lookup context finds a card in cached wave details and returns null when it is absent"
     ],
-    "selection_paths": ["web/src/app/events/wave-lookup.test.ts", "web/src/app/events/event-bridge.contract.test.tsx"],
+    "selection_paths": [
+      "web/src/app/events/wave-lookup.test.ts",
+      "web/src/app/events/event-bridge.contract.test.tsx"
+    ],
     "why_more_than_one": "T-G1 locks the lookup directly and through the production bridge default context."
   },
   {
     "mutation_id": "app-adapter-write-through-drops-other-coves",
-    "defends": ["oracle:INV-APP-030"],
+    "defends": [
+      "oracle:INV-APP-030"
+    ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -73,7 +73,7 @@\n         const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);\n         if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;\n         const updated = toCove(write.value);\n-        client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));\n+        client.setQueryData(mapped, [updated]);\n       }\n       continue;\n     }\n",
     "expected_red": [
       "query invalidation adapter write-through replaces one existing cove and preserves every other row"
     ],
-    "selection_paths": ["web/src/app/events/query-invalidation-adapter.test.ts"],
+    "selection_paths": [
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
     "why_more_than_one": "T-G2a observes the replaced row and an independent preserved row."
   },
   {
     "mutation_id": "app-adapter-write-through-creates-phantom",
-    "defends": ["oracle:INV-APP-031"],
+    "defends": [
+      "oracle:INV-APP-031"
+    ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
     "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -71,7 +71,10 @@\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);\n-        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;\n+        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) {\n+          client.setQueryData(mapped, [toCove(write.value)]);\n+          continue;\n+        }\n         const updated = toCove(write.value);\n         client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));\n       }\n",
     "expected_red": [
       "query invalidation adapter write-through never creates a phantom cove when the row is absent"
     ],
-    "selection_paths": ["web/src/app/events/query-invalidation-adapter.test.ts"],
+    "selection_paths": [
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
     "why_more_than_one": "T-G2b starts with an unrelated cached row and rejects insertion of the event payload."
   },
   {
     "mutation_id": "events-derived-kind-list-drops-gate-result",
-    "defends": ["oracle:INV-APP-035"],
+    "defends": [
+      "oracle:INV-APP-035"
+    ],
     "target": "core/events/invalidation-plan.ts",
     "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n function derivedWaveId(data: unknown, context: InvalidationContext): string | null {\n",
     "expected_red": [
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
     ],
-    "selection_paths": ["core/events/invalidation-plan.contract.test.ts"],
+    "selection_paths": [
+      "core/events/invalidation-plan.contract.test.ts"
+    ],
     "why_more_than_one": "T-G3a derives the actual set from all wire kinds, independently of the exported list."
   },
   {
     "mutation_id": "events-derived-call-drops-report-key",
-    "defends": ["oracle:INV-APP-035"],
+    "defends": [
+      "oracle:INV-APP-035"
+    ],
     "target": "core/events/invalidation-plan.ts",
     "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -140,7 +140,7 @@\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   'workflow.registered': noop('No workflow catalog query exists.'),\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
     ],
-    "selection_paths": ["core/events/invalidation-plan.contract.test.ts", "core/events/invalidation-plan.test.ts"],
+    "selection_paths": [
+      "core/events/invalidation-plan.contract.test.ts",
+      "core/events/invalidation-plan.test.ts"
+    ],
     "why_more_than_one": "T-G3b makes production behavior disagree with the independently fixed expected set."
   },
   {
     "mutation_id": "events-report-edited-drops-report-key",
-    "defends": ["oracle:CAP-APP-037"],
+    "defends": [
+      "oracle:CAP-APP-037"
+    ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -118,7 +118,7 @@\n   'harness.transcript.cleared': noop('Report consumers reset transcript state directly.'),\n   'harness.user_message.enqueued': noop('Report consumers observe queued messages directly.'),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -121,7 +121,7 @@\n   'harness.user_message.enqueued': plan((event) => result([\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],\n   ])),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
     ],
-    "selection_paths": ["core/events/invalidation-plan.contract.test.ts"],
+    "selection_paths": [
+      "core/events/invalidation-plan.contract.test.ts"
+    ],
     "why_more_than_one": "T-G3c independently pins the report-edit plan and the all-kind wave-report set."
+  },
+  {
+    "mutation_id": "app-providers-retry-401-as-400",
+    "defends": [
+      "oracle:INV-APP-059"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -19,7 +19,7 @@ export function retryUnless401(failureCount: number, error: unknown): boolean {\n   if (typeof error === 'object' && error !== null && 'failure' in error) {\n     const failure = error.failure;\n-    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'unauthorized') return false;\n+    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'authorized') return false;\n   }\n   return failureCount < 1;\n }\n\n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "why_more_than_one": "Only the shared retry-policy contract should turn red; more than one would mean unrelated provider behavior depends on error classification."
   },
   {
     "mutation_id": "app-theme-swap-light-dark-bg",
@@ -920,5 +963,39 @@
       "web/src/app/theme/theme.browser.test.tsx"
     ],
     "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
+  },
+  {
+    "mutation_id": "events-harness-item-plan-becomes-empty",
+    "defends": [
+      "oracle:CAP-CHATHIST-005"
+    ],
+    "target": "core/events/invalidation-plan.ts",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -113,7 +113,7 @@\n     const waveId = context.findWaveOwningCard(event.data.card_id);\n     return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);\n   }),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([['spec-run', event.data.card_id]])),\n   'harness.transcript.cleared': plan((event) => result([\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],\n",
+    "expected_red": [
+      "invalidation plan behavior plans each harness event against the projections it can change",
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+    ],
+    "selection_paths": [
+      "core/events/invalidation-plan.test.ts",
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
+    "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path."
+  },
+  {
+    "mutation_id": "app-adapter-drops-harness-items",
+    "defends": [
+      "oracle:CAP-CHATHIST-005",
+      "oracle:CAP-SPECCONVO-017"
+    ],
+    "target": "web/src/app/events/query-invalidation-adapter.ts",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   return null;\n }\n",
+    "expected_red": [
+      "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+    ],
+    "selection_paths": [
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
+    "why_more_than_one": "T-G4b locks both the literal mapping and the end-to-end harness event path."
   }
 ]

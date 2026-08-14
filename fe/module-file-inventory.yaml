@@ -9,6 +9,17 @@
 - { path: fe/module-file-inventory.yaml, type: file, owner: tooling/architecture, readonly: true, basis: "ownership policy source; frozen enforcement control" }
 - { path: fe/ownership-manifest.mjs, type: file, owner: tooling/architecture, readonly: true, basis: "ownership policy generator; frozen enforcement control" }
 - { path: fe/stylelint.config.js, type: file, owner: tooling/styles, readonly: true, basis: "style policy configuration; frozen enforcement control" }
+- { path: fe/.dependency-cruiser.cjs, type: file, owner: tooling/architecture, readonly: true, basis: "dependency policy configuration; frozen enforcement control (#997)" }
+- { path: fe/eslint.config.js, type: file, owner: tooling/architecture, readonly: true, basis: "lint policy configuration; frozen enforcement control (#997)" }
+- { path: fe/package.json, type: file, owner: tooling/architecture, readonly: true, basis: "gate script configuration; frozen enforcement control (#997)" }
+- { path: fe/package-lock.json, type: file, owner: tooling/architecture, readonly: true, basis: "gate dependency lock; frozen enforcement control (#997)" }
+- { path: fe/ownership-manifest.d.mts, type: file, owner: tooling/architecture, readonly: true, basis: "ownership manifest type surface; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.app.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.core.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.node.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/vite.config.ts, type: file, owner: tooling/architecture, readonly: true, basis: "build configuration; frozen enforcement control (#997)" }
+- { path: fe/vitest.config.ts, type: file, owner: tooling/test-tier, readonly: true, basis: "test partition configuration; frozen enforcement control (#997)" }
 - { path: fe/mock, type: directory, owner: tooling/mock, readonly: false, basis: "architecture §5 repository tree; test-support boundary; consumes web/src/api/openapi.json as a one-way legacy input (#997)" }
 - { path: fe/tools/architecture, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; enforcement infrastructure" }
 - { path: fe/tools/oracle, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; oracle enforcement infrastructure" }
@@ -96,6 +107,8 @@
 - { path: fe/web/src/ui/calm-select, type: directory, owner: ui/calm-select, readonly: true, basis: "INV-DUP-002" }
 - { path: fe/web/src/ui/editable-title, type: directory, owner: ui/editable-title, readonly: true, basis: "INV-DUP-008" }
 - { path: fe/web/src/ui/confirm-dialog, type: directory, owner: ui/confirm-dialog, readonly: true, basis: "INV-DUP-010" }
+- { path: fe/web/src/ui/error-box, type: directory, owner: ui/error-box, readonly: false, basis: "shared non-blocking and blocking read failure surface" }
+- { path: fe/web/src/ui/operation-feedback, type: directory, owner: ui/operation-feedback, readonly: false, basis: "shared asynchronous mutation feedback surface" }
 - { path: fe/web/src/ui/page-header, type: directory, owner: ui/page-header, readonly: false, basis: "design §6.4/§6.14" }
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
 - { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }

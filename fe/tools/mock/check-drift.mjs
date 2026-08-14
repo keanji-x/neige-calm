@@ -19,7 +19,8 @@ const tracked = trackedOutput()
 const openApiPath = resolve(feRoot, 'core/api/generated/openapi.json');
 if (!existsSync(openApiPath)) throw new Error(`mock drift input is missing: ${openApiPath}; run npm run gen:api`);
 const openApi = JSON.parse(readFileSync(openApiPath, 'utf8'));
-const wireSource = readFileSync(resolve(feRoot, 'core/api/generated/wire.ts'), 'utf8');
+const wireSource = ['core/api/generated/wire.ts', 'tools/mock/response-wire.ts']
+  .map((path) => readFileSync(resolve(feRoot, path), 'utf8')).join('\n');
 /** @type {Array<{path: string, content: string}>} */
 const generated = generateMockFiles(openApi, wireSource);
 generated.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);

@@ -2,7 +2,9 @@
 
 #![cfg(unix)]
 
+use std::future::Future;
 use std::sync::Arc;
+use std::task::Poll;
 
 use crate::mcp_wave_report::{Boot, boot as new_boot, call_tool, spec_identity};
 use axum::body::Body;
@@ -99,7 +101,7 @@ fn principal() -> Principal {
 
 async fn route_state(boot: &Boot) -> AppState {
     let events = EventBus::new();
-    AppState::from_parts(
+    let state = AppState::from_parts(
         boot.repo.clone(),
         events.clone(),
         Arc::new(DaemonClient::new_stub()),
@@ -118,7 +120,9 @@ async fn route_state(boot: &Boot) -> AppState {
         Arc::new(CodexClient::new_stub()),
         None,
         None,
-    )
+    );
+    state.dispatcher.abort_event_listener_for_test();
+    state
 }
 
 async fn rest_read(boot: &Boot) -> Value {
@@ -160,6 +164,51 @@ async fn rebuild(boot: &Boot) -> calm_server::db::sqlite::TaskProjectionOutcome 
         .unwrap();
     tx.commit().await.unwrap();
     outcome
+}
+
+/// #1070 regression for the pre-#1080 deferred rebuild helper. The rebuild
+/// transaction owns the writer slot before it reads projection inputs, so a
+/// distinct writer waits without forming a shared-cache lock cycle.
+#[tokio::test]
+async fn immediate_rebuild_serializes_with_waiting_writer_without_deadlock() {
+    let boot = new_boot().await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'repro-damage','codex','damage','{}','[]',0,'pending','spec',0,0)",
+    )
+    .bind(format!("{}:repro-damage", boot.wave_id))
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let mut rebuild_tx = begin_immediate_tx(&pool).await.unwrap();
+    let _: i64 = sqlx::query_scalar("SELECT count(*) FROM cards WHERE wave_id=?1")
+        .bind(boot.wave_id.as_str())
+        .fetch_one(&mut *rebuild_tx)
+        .await
+        .unwrap();
+
+    let mut waiting_writer = Box::pin(begin_immediate_tx(&pool));
+    std::future::poll_fn(|cx| match waiting_writer.as_mut().poll(cx) {
+        Poll::Pending => Poll::Ready(()),
+        Poll::Ready(_) => panic!("rebuild transaction must already own the writer slot"),
+    })
+    .await;
+
+    tasks_rebuild_tx(&mut rebuild_tx, boot.wave_id.as_str())
+        .await
+        .unwrap();
+    rebuild_tx.commit().await.unwrap();
+
+    let mut writer_tx = waiting_writer.await.unwrap();
+    sqlx::query("UPDATE cards SET updated_at=updated_at WHERE id=?1")
+        .bind(boot.report_card_id.as_str())
+        .execute(&mut *writer_tx)
+        .await
+        .unwrap();
+    writer_tx.commit().await.unwrap();
+    assert!(!keys(&boot).await.contains(&"repro-damage".to_string()));
 }
 
 async fn user_delete(boot: &Boot, id: &str, rev: u64) {
@@ -1598,4 +1647,28 @@ async fn terminal_spec_key_does_not_consume_ceiling_capacity() {
             .await
             .unwrap();
     assert_eq!(status, "pending");
+}
+
+/// #1070 regression: handler-only route fixtures do not attach a live
+/// dispatcher, so the delete-to-policy-PATCH window keeps `collateral`
+/// pending and the wait-policy projection must delete it.
+#[tokio::test]
+async fn handler_fixture_keeps_pending_row_unclaimed_until_policy_patch() {
+    let boot = new_boot().await;
+    let (vetoed, vetoed_rev) = upsert(&boot, None, task("vetoed")).await;
+    upsert(&boot, None, task("collateral")).await;
+    user_delete(&boot, &vetoed, vetoed_rev).await;
+    let status: String =
+        sqlx::query_scalar("SELECT status FROM tasks WHERE wave_id=?1 AND key='collateral'")
+            .bind(boot.wave_id.as_str())
+            .fetch_one(&boot.repo.sqlite_pool().unwrap())
+            .await
+            .unwrap();
+    assert_eq!(
+        status, "pending",
+        "handler fixture must not run a scheduler"
+    );
+
+    patch_policy(&boot, "declare-and-wait").await;
+    assert_diagnosed_on_both_reads(&boot, "collateral", "requires user release").await;
 }

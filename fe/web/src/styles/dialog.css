@@ -119,8 +119,8 @@
     grid-area: label;
   }
 
-  [data-nc-state='busy'] .confirm-dialog-label > :first-child,
-  :not([data-nc-state='busy']) .confirm-dialog-label > :last-child {
+  [data-nc-state='busy'] > .confirm-dialog-label > :first-child,
+  [data-nc-action]:not([data-nc-state='busy']) > .confirm-dialog-label > :last-child {
     visibility: hidden;
   }
 

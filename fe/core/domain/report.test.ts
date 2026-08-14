@@ -27,6 +27,11 @@ describe('readWaveReport', () => {
     expect(readWaveReport(cards)).toEqual({ summary: 'One line', body: '# Goal\n\nDo the thing.', blocks: null });
   });
 
+  it('keeps a report whose summary is written while its body is blank', () => {
+    expect(readWaveReport([card({ payload: { summary: 'Agent finished the migration.', body: '  ' } })]))
+      .toEqual({ summary: 'Agent finished the migration.', body: '', blocks: null });
+  });
+
   // A payload from a newer schema must stay readable: this surface renders a
   // known set of block kinds and has no business rejecting a document because
   // the persistence layer grew a field.

@@ -6,7 +6,8 @@ const feRoot = resolve(import.meta.dirname, '../..');
 const openApiPath = resolve(feRoot, 'core/api/generated/openapi.json');
 if (!existsSync(openApiPath)) throw new Error(`mock generation input is missing: ${openApiPath}; run npm run gen:api`);
 const openApi = JSON.parse(readFileSync(openApiPath, 'utf8'));
-const wireSource = readFileSync(resolve(feRoot, 'core/api/generated/wire.ts'), 'utf8');
+const wireSource = ['core/api/generated/wire.ts', 'tools/mock/response-wire.ts']
+  .map((path) => readFileSync(resolve(feRoot, path), 'utf8')).join('\n');
 const outputRoot = resolve(feRoot, 'mock/generated');
 mkdirSync(outputRoot, { recursive: true });
 for (const file of generateMockFiles(openApi, wireSource)) writeFileSync(resolve(outputRoot, file.path), file.content);

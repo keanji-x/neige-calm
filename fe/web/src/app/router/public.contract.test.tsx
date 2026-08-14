@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
 // Invariants owned by the route tree.
 import { QueryClient } from '@tanstack/react-query';
-import { describe, expect, it } from 'vitest';
+import { cleanup } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { createRouteTree } from './public.tsx';
-import { pathFor } from './navigation.ts';
+import { createRouteTree, pendingConversationIds } from './public.tsx';
+import { pathFor, routeParamFromPath } from './navigation.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 
@@ -72,5 +73,31 @@ describe('route registration', () => {
     expect(pathFor({ name: 'cove', coveId: 'c1' })).toBe('/cove/c1');
     expect(pathFor({ name: 'wave', waveId: 'w1' })).toBe('/wave/w1');
     expect(pathFor({ name: 'settings' })).toBe('/settings');
+  });
+});
+
+describe('route parameter codec', () => {
+  it('percent-encodes ids on output and decodes them on input', () => {
+    expect(pathFor({ name: 'wave', waveId: 'a/b %' })).toBe('/wave/a%2Fb%20%25');
+    expect(routeParamFromPath('/wave/a%2Fb%20%25', '/wave/')).toBe('a/b %');
+  });
+
+  it('treats malformed percent escapes as an unmatched parameter instead of throwing', () => {
+    expect(routeParamFromPath('/wave/%', '/wave/')).toBeUndefined();
+  });
+});
+
+afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+describe('conversation pending accounting', () => {
+  const conversation = {
+    id: 'c1', waveId: 'w1', waveTitle: 'Wave', title: null, kind: 'shared-spec' as const,
+    state: 'idle' as const, updatedAt: 0, turns: 0,
+  };
+
+  it('bridges the user-visible Working state from input submission to the real harness phase', () => {
+    expect(pendingConversationIds(conversation, false, true).has('c1')).toBe(true);
+    expect(pendingConversationIds(conversation, true, false).has('c1')).toBe(true);
+    expect(pendingConversationIds(conversation, false, false).has('c1')).toBe(false);
   });
 });

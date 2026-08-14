@@ -3,7 +3,7 @@ import { dirname, extname, relative, resolve } from 'node:path';
 import { ESLint } from 'eslint';
 import * as tsParser from '@typescript-eslint/parser';
 import { describe, expect, it } from 'vitest';
-import { createContextAllowlist, moduleRuntimeStateAllowlist } from './allowlists.mjs';
+import { createContextAllowlist, createContextExceptions, moduleRuntimeStateAllowlist, moduleRuntimeStateExceptions } from './allowlists.mjs';
 import { architecturePlugin } from './plugin.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -83,6 +83,7 @@ describe('architecture/no-module-runtime-state', () => {
     ['destructured-array.ts', 'Module runtime state'],
     ['schema-value.ts', 'z.object({}).parse(x)'],
     ['imported-mutable.ts', 'Object.freeze'],
+    ['top-level-new-expression.ts', "new WebSocket('/api/events')"],
   ] as const;
   for (const [fixture, entity] of rejected) {
     it(`rejects ${fixture}`, async () => {
@@ -259,6 +260,9 @@ describe('architecture/no-create-context-outside-allowlist', () => {
 });
 
 describe('architecture allowlists', () => {
+  it('requires a substantive reason beside every exception', () => {
+    expect([...moduleRuntimeStateExceptions, ...createContextExceptions].every(({ reason }) => reason.trim().length >= 20)).toBe(true);
+  });
   for (const [name, entries] of [
     ['module runtime state', moduleRuntimeStateAllowlist],
     ['createContext', createContextAllowlist],

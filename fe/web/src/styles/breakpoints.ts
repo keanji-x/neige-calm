@@ -6,3 +6,4 @@
  * audit asserts every `@media (width` literal in the repo equals this number.
  */
 export const RAIL_COLLAPSE_REM = 60;
+export const RAIL_COLLAPSE_QUERY = `(width < ${RAIL_COLLAPSE_REM}rem)`;

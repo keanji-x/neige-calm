@@ -110,4 +110,27 @@ describe('Dialog behavior', () => {
     fireEvent.keyDown(screen.getByRole('button', { name: 'Nested control' }), { key: 'Escape' });
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it('restores focus to the surviving inline opener before the page-title fallback', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+    const result = render(<Dialog open title="Parent" onClose={vi.fn()} />);
+    result.unmount();
+    expect(document.activeElement).toBe(opener);
+    opener.remove(); pageTitle.remove();
+  });
+
+  it('falls back to the page title when the opener has been removed', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+    const result = render(<Dialog open title="Parent" onClose={vi.fn()} />);
+    opener.remove();
+    result.unmount();
+    expect(document.activeElement).toBe(pageTitle);
+    pageTitle.remove();
+  });
 });

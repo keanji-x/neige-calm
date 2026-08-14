@@ -88,7 +88,7 @@ export function ReportDocument({
           // column, same measure, just nothing to anchor to.
           <div className={styles.row}>
             <div className={styles.block}>
-              <ProseBlock markdown={report.body} blockId={null} onOpenLink={onOpenLink} />
+              <ProseBlock markdown={report.body || report.summary} blockId={null} onOpenLink={onOpenLink} />
             </div>
           </div>
         )
