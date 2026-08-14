@@ -1,5 +1,20 @@
 [
   {
+    "mutation_id": "session-gate-drop-401-cache-clear",
+    "defends": [
+      "oracle:INV-LOGIN-001"
+    ],
+    "target": "web/src/app/session/session-gate.tsx",
+    "patch": "diff --git a/web/src/app/session/session-gate.tsx b/web/src/app/session/session-gate.tsx\nindex 0fe04d6e..7023b49b 100644\n--- a/web/src/app/session/session-gate.tsx\n+++ b/web/src/app/session/session-gate.tsx\n@@ -23,7 +23,7 @@ export function SessionGate({ children, transport, unauthorized, client, renderL\n     void performApiRequest(transport, whoamiOperation()).then((result) => setState(resolveSessionProbe(result)));\n   }, [transport]);\n   useEffect(probe, [probe]);\n-  useEffect(() => unauthorized.subscribe(() => { client.clear(); setState({ status: 'unauthed' }); }), [client, unauthorized]);\n+  useEffect(() => unauthorized.subscribe(() => { setState({ status: 'unauthed' }); }), [client, unauthorized]);\n   if (state.status === 'unknown') return null;\n   if (state.status === 'unauthed') return renderLogin();\n   if (state.status === 'error') return renderError(probe);\n",
+    "expected_red": [
+      "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401"
+    ],
+    "selection_paths": [
+      "web/src/app/session/session-gate.contract.test.tsx"
+    ],
+    "why_more_than_one": "Only the broadcast consumer contract should fail when its cache clear is removed."
+  },
+  {
     "mutation_id": "no-class-dom-query-drop-closest",
     "defends": [
       "arch-rule:no-class-dom-query"

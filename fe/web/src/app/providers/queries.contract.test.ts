@@ -4,11 +4,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
+import { z } from 'zod';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
 import {
-  ApiError, coveListQueryOptions, harnessItemsQueryOptions, queryKeys, useCoveMutations, useWaveMutations,
+  ApiError, coveListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, useCoveMutations, useWaveMutations,
   useWorkspace, wavesInCoveQueryOptions,
 } from './queries.ts';
 
@@ -51,6 +53,17 @@ describe('E2E-INV-SHELL-003 the system cove never reaches the workspace surface'
 });
 
 describe('failure channel', () => {
+  it('passes the transport unauthorized channel to every operation', async () => {
+    const listener = vi.fn();
+    const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+    unauthorized.subscribe(listener);
+    const transport: ApiTransportPort & { unauthorized: typeof unauthorized } = {
+      unauthorized,
+      send: () => Promise.resolve({ status: 401, statusText: 'Unauthorized', body: {} }),
+    };
+    await expect(runOperation(transport, { method: 'GET', path: '/private', responseSchema: z.unknown() })).rejects.toBeInstanceOf(ApiError);
+    expect(listener).toHaveBeenCalledOnce();
+  });
   it('rejects with ApiError carrying the normalized failure so Query can surface it', async () => {
     const { transport } = recordingTransport(() => ({ status: 500, statusText: 'Server Error', body: { code: 'boom', error: 'kaboom' } }));
     await expect(coveListQueryOptions(transport).queryFn()).rejects.toBeInstanceOf(ApiError);

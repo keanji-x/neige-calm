@@ -2,6 +2,7 @@ import { QueryClient } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createUnauthorizedChannel } from '../../core/api/unauthorized.ts';
 
 import { AppProviders, type ProviderRuntime } from './app/providers/public.tsx';
 import { createBrowserEventComposition } from './app/composition.ts';
@@ -9,16 +10,21 @@ import { EventBridge } from './app/events/event-bridge.tsx';
 import { logoutOperation, runOperation, serverVersionOperation } from './app/providers/queries.ts';
 import { createFetchTransport } from './app/providers/transport.ts';
 import { createAppRouter } from './app/router/public.tsx';
+import { SessionGate } from './app/auth/session-gate.tsx';
+import { LoginPage } from './features/auth/login-page/public.tsx';
+import { loginWithTransport } from './app/auth/login.ts';
 
 const root = document.getElementById('root');
 
 if (!root) throw new Error('Missing #root mount point');
 
-const transport = createFetchTransport();
+const unauthorized = createUnauthorizedChannel({ enqueue: (task) => queueMicrotask(task) }, { report: console.error });
+const transport = createFetchTransport(unauthorized);
 const client = new QueryClient();
 const events = createBrowserEventComposition({
   storage: window.localStorage,
   transport,
+  unauthorizedChannel: unauthorized,
 });
 const router = createAppRouter({
   transport,
@@ -40,7 +46,13 @@ const runtime: ProviderRuntime = {
 
 createRoot(root).render(
   <StrictMode>
-    <AppProviders
+    <SessionGate
+      transport={transport}
+      unauthorized={unauthorized}
+      client={client}
+      renderLogin={() => <LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={() => { window.location.reload(); }} />}
+      renderError={(retry) => <main><p>Could not check your session.</p><button type="button" onClick={retry}>Try again</button></main>}
+    ><AppProviders
       client={client}
       runtime={runtime}
       cursorStore={events.store}
@@ -55,6 +67,6 @@ createRoot(root).render(
       )}
     >
       <RouterProvider router={router} />
-    </AppProviders>
+    </AppProviders></SessionGate>
   </StrictMode>,
 );

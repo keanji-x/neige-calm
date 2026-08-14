@@ -14,6 +14,7 @@ import { z } from 'zod';
 
 import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
+import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
   coveListOperation, createCoveOperation, deleteCoveOperation, sortedCoves, toCove,
   updateCoveOperation, visibleCoves,
@@ -51,8 +52,11 @@ export class ApiError extends Error {
 export async function runOperation<T>(
   transport: ApiTransportPort,
   operation: ApiOperation<T>,
+  broadcastUnauthorized = true,
 ): Promise<T> {
-  const result = await performApiRequest(transport, operation);
+  const unauthorized = broadcastUnauthorized && 'unauthorized' in transport
+    ? transport.unauthorized as UnauthorizedChannel : undefined;
+  const result = await performApiRequest(transport, operation, unauthorized);
   if (result.status === 'failed') throw new ApiError(result.error);
   return result.value;
 }
