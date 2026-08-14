@@ -1,11 +1,13 @@
 // @vitest-environment jsdom
 // Invariants owned by the route tree.
-import { QueryClient } from '@tanstack/react-query';
-import { cleanup } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
+import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { createRouteTree, pendingConversationIds } from './public.tsx';
+import { ThemeProvider } from '../theme/public.tsx';
+import { createAppRouter, createRouteTree, pendingConversationIds } from './public.tsx';
 import { pathFor, routeParamFromPath } from './navigation.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
@@ -61,6 +63,24 @@ describe('INV-APP-084 the index loader primes coves and nothing else', () => {
 });
 
 describe('route registration', () => {
+  it('renders the index route at the deployed /next/ basepath', async () => {
+    const { transport } = recordingTransport();
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+    router.update({ history: createMemoryHistory({ initialEntries: ['/next/'] }) });
+
+    render(
+      <QueryClientProvider client={client}>
+        <ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+          <RouterProvider router={router} />
+        </ThemeProvider>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole('complementary')).toBeTruthy();
+    expect(screen.getByLabelText('Today terminal')).toBeTruthy();
+  });
+
   it('registers the four product routes', () => {
     const { transport } = recordingTransport();
     const tree = createRouteTree({ transport, client: new QueryClient(), onSignOut: () => undefined });

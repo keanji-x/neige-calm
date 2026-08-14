@@ -18,7 +18,7 @@ test.afterEach(async ({ request }) => {
 test('creates and deletes a cove through the UI and persists both changes', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const name = `FE e2e CRUD ${Date.now()}`;
-  await page.goto('/');
+  await page.goto('/next/');
   const rail = page.locator('nav[aria-label="Workspace"]');
   await rail.getByRole('button', { name: 'New cove' }).click();
   await rail.getByRole('textbox', { name: 'Cove name' }).fill(name);

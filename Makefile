@@ -149,7 +149,7 @@ DIST     := $(WORKTREE)/web/dist
 NODE_MODULES_STAMP := $(WORKTREE)/web/node_modules/.package-lock.json
 FE_DIST  := $(WORKTREE)/fe/web/dist
 FE_NODE_MODULES_STAMP := $(WORKTREE)/fe/node_modules/.package-lock.json
-CHECK_FE_NODE := node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 22 || (major === 22 && minor < 12)) { console.error("fe requires Node >= 22.12 (found " + process.versions.node + ")"); process.exit(1); }'
+CHECK_FE_NODE := node -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (major < 20 || (major === 20 && minor < 19) || (major === 21) || (major === 22 && minor < 12)) { console.error("fe requires Node ^20.19.0 or >=22.12.0 (found " + process.versions.node + ")"); process.exit(1); }'
 LOCAL_BIN_DIR ?= $(HOME)/.local/bin
 LOCAL_MCP_STDIO_SHIM ?= $(LOCAL_BIN_DIR)/neige-mcp-stdio-shim
 LOCAL_NEIGE_CLI ?= $(LOCAL_BIN_DIR)/neige
@@ -196,7 +196,7 @@ help: ## Show this help.
 # ---- build (on host, not in docker) -------------------------------------
 
 .PHONY: build
-build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) $(FE_DIST) ## Build binaries and both frontend bundles.
+build: $(BIN) $(BRIDGE) $(APP) $(MCP_SHIM) $(PROC_SUP) $(NEIGE_CLI) $(DIST) ## Build binaries and the legacy frontend bundle.
 
 # Single cargo invocation builds all binaries — cheaper than separate
 # calls because deps overlap. Touch every output so the rule re-fires
@@ -394,7 +394,7 @@ prod-repair-codex-homes: prod-local-bin ## Rewrite stale docker shim paths in ex
 	fi
 
 .PHONY: prod
-prod: build prod-dirs prod-repair-codex-homes ## Run production locally without docker (uses host ~/.codex and local shell).
+prod: build fe-build prod-dirs prod-repair-codex-homes ## Run production locally without docker (uses host ~/.codex and local shell; serves /next/).
 	@echo "  → http://localhost:$(PROD_PORT)/"
 	@echo "  → API: http://localhost:$(PROD_PORT)/api/coves"
 	@echo "  data:  $(PROD_DATA_DIR)"

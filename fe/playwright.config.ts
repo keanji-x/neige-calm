@@ -15,9 +15,12 @@ export default defineConfig({
   },
   webServer: {
     command: `npm run dev -- --host 127.0.0.1 --port ${port} --strictPort`,
-    url: `http://127.0.0.1:${port}/`,
+    url: `http://127.0.0.1:${port}/next/`,
     reuseExistingServer: !process.env.CI,
     timeout: 60_000,
-    env: { FE_API_PROXY_TARGET: process.env.FE_API_PROXY_TARGET ?? 'http://127.0.0.1:4041' },
+    env: {
+      FE_API_PROXY_TARGET: process.env.FE_API_PROXY_TARGET ?? 'http://127.0.0.1:4041',
+      FE_DEV_MOCK: '0',
+    },
   },
 });

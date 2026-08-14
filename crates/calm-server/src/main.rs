@@ -329,13 +329,29 @@ fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
 #[cfg(test)]
 mod tests {
     use axum::body::{Body, to_bytes};
-    use axum::http::{Request, StatusCode};
+    use axum::http::{Method, Request, StatusCode};
+    use clap::Parser;
+    use std::sync::Arc;
     use std::time::Duration;
     use tower::ServiceExt;
 
     async fn response_body(app: axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
+        response_body_with_method(app, Method::GET, uri).await
+    }
+
+    async fn response_body_with_method(
+        app: axum::Router,
+        method: Method,
+        uri: &str,
+    ) -> (StatusCode, Vec<u8>) {
         let response = app
-            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         let status = response.status();
@@ -347,13 +363,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absent_fe_dist_leaves_legacy_routes_byte_for_byte_unchanged() {
+    async fn absent_fe_dist_preserves_real_api_internal_health_and_legacy_routes() {
         let web = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
         let legacy_index = b"legacy-index-exact\n";
         std::fs::write(web.path().join("index.html"), legacy_index).unwrap();
         std::fs::write(web.path().join("asset.txt"), b"legacy-asset-exact\n").unwrap();
 
-        let app = super::mount_frontends(axum::Router::new(), Some(web.path()), None);
+        let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
+        cfg.data_dir = Some(runtime.path().join("data"));
+        cfg.plugins_dir = Some(runtime.path().join("plugins"));
+        cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
+        let repo: Arc<dyn calm_server::db::Repo> = Arc::new(
+            calm_server::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let state = calm_server::state::AppState::new(&cfg, repo).await.unwrap();
+        let routes = calm_server::routes::router().with_state(state);
+        let baseline = routes.clone();
+        let app = super::mount_frontends(routes, Some(web.path()), None);
+
+        for (method, uri) in [
+            (Method::GET, "/api/version"),
+            (Method::GET, "/health"),
+            (Method::POST, "/internal/codex/hook"),
+        ] {
+            assert_eq!(
+                response_body_with_method(app.clone(), method.clone(), uri).await,
+                response_body_with_method(baseline.clone(), method, uri).await,
+                "mounting the legacy frontend changed the real {uri} route",
+            );
+        }
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(root.headers()[axum::http::header::LOCATION], "/calm/");
         assert_eq!(
             response_body(app.clone(), "/calm/wave/deep-link").await,
             (StatusCode::OK, legacy_index.to_vec())
