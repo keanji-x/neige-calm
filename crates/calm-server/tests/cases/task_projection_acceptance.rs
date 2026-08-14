@@ -162,6 +162,59 @@ async fn rebuild(boot: &Boot) -> calm_server::db::sqlite::TaskProjectionOutcome 
     outcome
 }
 
+/// #1070 red reproducer for the pre-#1080 test helper. A deferred rebuild can
+/// hold a shared-cache table read lock while waiting for the writer slot; an
+/// IMMEDIATE writer waiting on that table then closes the unlock-notify cycle.
+/// Production and the normal `rebuild` helper both use `begin_immediate_tx`.
+#[tokio::test]
+#[ignore = "#1070 deterministic red reproducer; intentionally uses the retired deferred helper"]
+async fn deferred_rebuild_deadlocks_when_immediate_writer_waits_on_its_read_lock() {
+    let boot = new_boot().await;
+    let pool = boot.repo.sqlite_pool().unwrap();
+    sqlx::query(
+        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,depends_on_json,priority,status,declared_by,created_at_ms,updated_at_ms) VALUES(?1,?2,'repro-damage','codex','damage','{}','[]',0,'pending','spec',0,0)",
+    )
+    .bind(format!("{}:repro-damage", boot.wave_id))
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // This is the transaction shape used by the flaky helper before #1080.
+    let mut deferred = pool.begin().await.unwrap();
+    let _: i64 = sqlx::query_scalar("SELECT count(*) FROM cards WHERE wave_id=?1")
+        .bind(boot.wave_id.as_str())
+        .fetch_one(&mut *deferred)
+        .await
+        .unwrap();
+
+    let (writer_started_tx, writer_started_rx) = tokio::sync::oneshot::channel();
+    let blocker_pool = pool.clone();
+    let report_card_id = boot.report_card_id.to_string();
+    let blocker = tokio::spawn(async move {
+        let mut tx = begin_immediate_tx(&blocker_pool).await.unwrap();
+        writer_started_tx.send(()).unwrap();
+        sqlx::query("UPDATE cards SET updated_at=updated_at WHERE id=?1")
+            .bind(report_card_id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+    });
+    writer_started_rx.await.unwrap();
+    // Same bounded lock-meeting technique as deadlock_semantics_tests: the
+    // writer's worker has ample time to park on deferred's R(cards).
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Red by construction: the deferred rebuild now asks for the writer slot
+    // while retaining R(cards), closing the cycle with `blocker`.
+    tasks_rebuild_tx(&mut deferred, boot.wave_id.as_str())
+        .await
+        .unwrap();
+    deferred.commit().await.unwrap();
+    blocker.await.unwrap();
+}
+
 async fn user_delete(boot: &Boot, id: &str, rev: u64) {
     let _ = delete_block(
         State(RouteState::from_ref(&route_state(boot).await)),
