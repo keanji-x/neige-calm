@@ -29,7 +29,7 @@ test.afterEach(async ({ request }) => {
 test('persists network and appearance settings across reloads', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const proxy = `http://fe-e2e-${Date.now()}.invalid:3128`;
-  await page.goto('/settings');
+  await page.goto('/next/settings');
   await page.getByLabel('HTTP proxy').fill(proxy);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('status')).toHaveText('Saved.');
