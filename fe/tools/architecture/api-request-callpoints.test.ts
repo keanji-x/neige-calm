@@ -15,7 +15,7 @@ describe('web api request callpoints', () => {
     const root = resolve(process.cwd(), 'web/src');
     const callpoints = sourceFiles(root).filter((path) =>
       readFileSync(path, 'utf8').includes('performApiRequest('));
-    expect(callpoints.map((path) => path.slice(root.length + 1))).toEqual([
+    expect(callpoints.map((path) => path.slice(root.length + 1)).sort()).toEqual([
       'app/auth/session-gate.tsx',
       'app/providers/queries.ts',
     ]);

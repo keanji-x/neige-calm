@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
@@ -12,6 +13,7 @@ import { createAppRouter } from './public.tsx';
 const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const WAVE = { id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
 const CARD = { id: 'card-1', wave_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1, payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2 };
+const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
@@ -56,7 +58,7 @@ function setup(reply?: Reply) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, onSignOut: vi.fn() });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

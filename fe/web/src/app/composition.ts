@@ -45,7 +45,8 @@ export function createEventComposition(options: Readonly<{
   const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));
   const driver = createDriver({
     cursor: store,
-    probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation())),
+    // The driver owns the single unauthorized notification for its probe.
+    probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation(), undefined)),
     onUnauthorized: options.onUnauthorized ?? (() => undefined),
     ...(options.socketFactory === undefined ? {} : { socketFactory: options.socketFactory }),
   });

@@ -7,7 +7,7 @@ export async function loginWithTransport(
   transport: ApiTransportPort, username: string, password: string,
 ): Promise<SessionIdentity | null> {
   try {
-    return await runOperation(transport, loginOperation({ username, password }), false);
+    return await runOperation(transport, loginOperation({ username, password }), undefined);
   } catch (cause: unknown) {
     if (cause instanceof ApiError && cause.failure.kind === 'unauthorized') return null;
     throw cause;

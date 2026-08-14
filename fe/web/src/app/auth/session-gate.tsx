@@ -20,20 +20,27 @@ export function SessionGate({ children, transport, unauthorized, client, renderL
   const [state, setState] = useState<SessionProbeState<unknown>>({ status: 'unknown' });
   const epoch = useRef(0);
   const mounted = useRef(false);
+  const activeProbe = useRef<AbortController | null>(null);
   const probe = useCallback(() => {
+    activeProbe.current?.abort();
+    const controller = new AbortController();
+    activeProbe.current = controller;
     const probeEpoch = ++epoch.current;
     setState({ status: 'unknown' });
-    void performApiRequest(transport, whoamiOperation()).then((result) => {
+    void performApiRequest(transport, whoamiOperation(controller.signal)).then((result) => {
       if (mounted.current && epoch.current === probeEpoch) setState(resolveSessionProbe(result));
     });
+    return () => { controller.abort(); if (activeProbe.current === controller) activeProbe.current = null; };
   }, [transport]);
   useEffect(() => {
     mounted.current = true;
-    probe();
-    return () => { mounted.current = false; epoch.current += 1; };
+    const cancel = probe();
+    return () => { mounted.current = false; epoch.current += 1; cancel(); };
   }, [probe]);
   useEffect(() => unauthorized.subscribe(() => {
     epoch.current += 1;
+    activeProbe.current?.abort();
+    activeProbe.current = null;
     client.clear();
     setState({ status: 'unauthed' });
   }), [client, unauthorized]);

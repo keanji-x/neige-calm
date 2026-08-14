@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef } from 'react';
 import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import {
   toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
@@ -89,13 +90,13 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
 
-export function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
+export function useConversationStore(transport: ApiTransportPort, unauthorized: UnauthorizedChannel, scope: SpecConversationScope | null): ConversationStore {
   const cardId = scope?.cardId ?? '';
   const history = useInfiniteQuery({
-    ...harnessItemsQueryOptions(transport, cardId), enabled: scope !== null,
+    ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
-  const run = useQuery({ ...specRunQueryOptions(transport, cardId), enabled: scope !== null });
-  const mutations = useSpecMutations(transport, cardId);
+  const run = useQuery({ ...specRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
+  const mutations = useSpecMutations(transport, cardId, unauthorized);
   const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
   const [sending, setSending] = useState(false);
   const [interruptPending, setInterruptPending] = useState(false);
@@ -206,12 +207,13 @@ type SpecConversationScope = Readonly<{
 
 export type AppRouterDeps = Readonly<{
   transport: ApiTransportPort;
+  unauthorized: UnauthorizedChannel;
   client: QueryClient;
   onSignOut: () => void;
 }>;
 
-export function createRouteTree({ transport, client, onSignOut }: AppRouterDeps): AnyRoute {
-  const rootRoute = createRootRoute({ component: () => <ShellRoute transport={transport} onSignOut={onSignOut} /> });
+export function createRouteTree({ transport, unauthorized, client, onSignOut }: AppRouterDeps): AnyRoute {
+  const rootRoute = createRootRoute({ component: () => <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /> });
 
   const indexRoute = createRoute({
     getParentRoute: () => rootRoute,
@@ -222,26 +224,26 @@ export function createRouteTree({ transport, client, onSignOut }: AppRouterDeps)
      * `useWorkspace`); awaiting it here would let one slow cove block the
      * whole calendar behind the route commit.
      */
-    loader: () => prefetchCoveList(client, transport),
-    component: () => <TodayRoute transport={transport} />,
+    loader: () => prefetchCoveList(client, transport, unauthorized),
+    component: () => <TodayRoute transport={transport} unauthorized={unauthorized} />,
   });
 
   const coveRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/cove/$coveId',
-    component: () => <CoveRoute transport={transport} />,
+    component: () => <CoveRoute transport={transport} unauthorized={unauthorized} />,
   });
 
   const waveRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/wave/$waveId',
-    component: () => <WaveRoute transport={transport} />,
+    component: () => <WaveRoute transport={transport} unauthorized={unauthorized} />,
   });
 
   const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
-    component: () => <SettingsRoute transport={transport} />,
+    component: () => <SettingsRoute transport={transport} unauthorized={unauthorized} />,
   });
 
   return rootRoute.addChildren([indexRoute, coveRoute, waveRoute, settingsRoute]);
@@ -251,11 +253,12 @@ export function createAppRouter(deps: AppRouterDeps) {
   return createRouter({ routeTree: createRouteTree(deps), defaultPreload: false });
 }
 
-function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onSignOut: () => void }) {
+function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {
   const go = useGo();
   return (
     <AppShell
       transport={transport}
+      unauthorized={unauthorized}
       onOpenSettings={() => go({ name: 'settings' })}
       onSignOut={onSignOut}
     />
@@ -274,10 +277,11 @@ function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onS
  */
 function useConversationPanel(
   transport: ApiTransportPort,
+  unauthorized: UnauthorizedChannel,
   scope: SpecConversationScope | null,
   options?: { showWave?: boolean },
 ) {
-  const store = useConversationStore(transport, scope);
+  const store = useConversationStore(transport, unauthorized, scope);
   const [openId, setOpenId] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
@@ -385,10 +389,10 @@ function useConversationPanel(
   };
 }
 
-function TodayRoute({ transport }: { transport: ApiTransportPort }) {
-  const workspace = useWorkspace(transport);
+function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const workspace = useWorkspace(transport, unauthorized);
   const go = useGo();
-  const waveMutations = useWaveMutations(transport);
+  const waveMutations = useWaveMutations(transport, unauthorized);
   const deletion = useDeleteConfirm((waveId, signal) => {
     const wave = workspace.waves.find((candidate) => candidate.id === waveId);
     if (wave === undefined) throw new Error('This wave is no longer available.');
@@ -398,7 +402,7 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(transport, null);
+  const chat = useConversationPanel(transport, unauthorized, null);
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -455,11 +459,11 @@ function TodayRoute({ transport }: { transport: ApiTransportPort }) {
   );
 }
 
-function CoveRoute({ transport }: { transport: ApiTransportPort }) {
+function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const coveId = useRouteParam('/cove/');
-  const workspace = useWorkspace(transport);
-  const coveMutations = useCoveMutations(transport);
-  const waveMutations = useWaveMutations(transport);
+  const workspace = useWorkspace(transport, unauthorized);
+  const coveMutations = useCoveMutations(transport, unauthorized);
+  const waveMutations = useWaveMutations(transport, unauthorized);
   const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, coveId ?? '', signal));
   const go = useGo();
   const [creating, setCreating] = useState(false);
@@ -467,7 +471,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(transport, null);
+  const chat = useConversationPanel(transport, unauthorized, null);
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -586,11 +590,11 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
  * the fetching and the returns, and the half below owns the hooks that need a
  * wave.
  */
-function WaveRoute({ transport }: { transport: ApiTransportPort }) {
+function WaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const waveId = useRouteParam('/wave/');
-  const workspace = useWorkspace(transport);
+  const workspace = useWorkspace(transport, unauthorized);
   const detail = useQuery({
-    ...waveDetailQueryOptions(transport, waveId ?? ''),
+    ...waveDetailQueryOptions(transport, waveId ?? '', unauthorized),
     enabled: waveId !== undefined,
   });
 
@@ -610,6 +614,7 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
     <WaveRouteBody
       key={wave.id}
       transport={transport}
+      unauthorized={unauthorized}
       wave={wave}
       cove={coveOf(wave.coveId, workspace.coves)}
       cards={detail.data.cards}
@@ -617,13 +622,14 @@ function WaveRoute({ transport }: { transport: ApiTransportPort }) {
   );
 }
 
-function WaveRouteBody({ transport, wave, cove, cards }: {
+function WaveRouteBody({ transport, unauthorized, wave, cove, cards }: {
   transport: ApiTransportPort;
+  unauthorized: UnauthorizedChannel;
   wave: Wave;
   cove: Cove | undefined;
   cards: WaveDetailWire['cards'];
 }) {
-  const waveMutations = useWaveMutations(transport);
+  const waveMutations = useWaveMutations(transport, unauthorized);
   const go = useGo();
   // `showWave: false` — on a wave's own page the wave's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
@@ -632,6 +638,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
     (card.payload as { spec_harness?: unknown }).spec_harness === true);
   const chat = useConversationPanel(
     transport,
+    unauthorized,
     specCard === undefined ? null : {
       id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
       cardTitle: specCard.title, updatedAt: specCard.updated_at,
@@ -645,7 +652,7 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
       outline: deriveReportOutline(nextReport?.blocks ?? null),
     };
   }, [cards]);
-  const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id));
+  const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
   /*
@@ -707,11 +714,11 @@ function WaveRouteBody({ transport, wave, cove, cards }: {
   );
 }
 
-function SettingsRoute({ transport }: { transport: ApiTransportPort }) {
+function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const go = useGo();
   const theme = useTheme();
-  const save = useSettingsMutation(transport);
-  const settings = useQuery(settingsQueryOptions(transport));
+  const save = useSettingsMutation(transport, unauthorized);
+  const settings = useQuery(settingsQueryOptions(transport, unauthorized));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);

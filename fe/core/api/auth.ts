@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import type { ApiOperation } from './types.js';
+import type { ApiAbortSignal, ApiOperation } from './types.js';
 
 export const sessionIdentitySchema = z.strictObject({
   userId: z.string(),
@@ -16,8 +16,9 @@ export const loginRequestSchema = z.strictObject({
 });
 export type LoginRequest = z.infer<typeof loginRequestSchema>;
 
-export function whoamiOperation(): ApiOperation<SessionIdentity> {
-  return { method: 'GET', path: '/api/auth/whoami', responseSchema: sessionIdentitySchema };
+export function whoamiOperation(signal?: ApiAbortSignal): ApiOperation<SessionIdentity> {
+  return { method: 'GET', path: '/api/auth/whoami', responseSchema: sessionIdentitySchema,
+    ...(signal === undefined ? {} : { signal }) };
 }
 
 export function loginOperation(body: LoginRequest): ApiOperation<SessionIdentity> {

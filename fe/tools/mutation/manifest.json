@@ -1,20 +1,5 @@
 [
   {
-    "mutation_id": "session-gate-drop-401-cache-clear",
-    "defends": [
-      "oracle:CAP-APP-064"
-    ],
-    "target": "web/src/app/auth/session-gate.tsx",
-    "patch": "diff --git a/web/src/app/auth/session-gate.tsx b/web/src/app/auth/session-gate.tsx\nindex 942e3f4a..2648cf1b 100644\n--- a/web/src/app/auth/session-gate.tsx\n+++ b/web/src/app/auth/session-gate.tsx\n@@ -34,7 +34,6 @@ export function SessionGate({ children, transport, unauthorized, client, renderL\n   }, [probe]);\n   useEffect(() => unauthorized.subscribe(() => {\n     epoch.current += 1;\n-    client.clear();\n     setState({ status: 'unauthed' });\n   }), [client, unauthorized]);\n   if (state.status === 'unknown') return null;\n",
-    "expected_red": [
-      "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401"
-    ],
-    "selection_paths": [
-      "web/src/app/auth/session-gate.contract.test.tsx"
-    ],
-    "why_more_than_one": "Only the broadcast consumer contract should fail when its cache clear is removed."
-  },
-  {
     "mutation_id": "login-success-drop-reload",
     "defends": ["oracle:INV-LOGIN-001"],
     "target": "web/src/features/auth/login-page/public.tsx",

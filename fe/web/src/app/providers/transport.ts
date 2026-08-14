@@ -2,7 +2,6 @@
 // `fetch`; this is the only place the web end hands it one.
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -18,9 +17,8 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
-export function createFetchTransport(unauthorized?: UnauthorizedChannel): ApiTransportPort {
+export function createFetchTransport(): ApiTransportPort {
   return {
-    ...(unauthorized === undefined ? {} : { unauthorized }),
     async send(request: ApiRequest): Promise<ApiTransportResponse> {
       const controller = new AbortController();
       const relayAbort = () => controller.abort();

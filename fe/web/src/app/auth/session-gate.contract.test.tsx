@@ -6,7 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { SessionGate } from './session-gate.tsx';
-import { AppProviders, type ProviderRuntime } from '../providers/public.tsx';
+import type { ProviderRuntime } from '../providers/public.tsx';
+import { ProductionApp } from '../production-app.tsx';
+import { createAppRouter } from '../router/public.tsx';
 
 afterEach(cleanup);
 const identity = { userId: 'u', displayName: 'Owner', role: 'admin', sessionId: 's' };
@@ -18,7 +20,10 @@ describe('session gate contracts', () => {
     const client = new QueryClient();
     const fetchVersion = vi.fn();
     const runtime: ProviderRuntime = { fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'calm', storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
-    render(<SessionGate transport={transport} client={client} unauthorized={createUnauthorizedChannel({ enqueue: (task) => task() })} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>}><AppProviders client={client} runtime={runtime} cursorStore={{ clear: vi.fn() }}><b>router</b></AppProviders></SessionGate>);
+    const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+    const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn() });
+    render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
+      cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
     expect(paths).toEqual(['/api/auth/whoami']);
     expect(await screen.findByText('login')).toBeTruthy();
     expect(fetchVersion).not.toHaveBeenCalled();

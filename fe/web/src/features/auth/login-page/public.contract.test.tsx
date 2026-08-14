@@ -38,7 +38,8 @@ describe('login page oracle contracts', () => {
   });
 
   it('CAP-LOGIN-002 uses the fallback and releases submitting for non-Error exceptions', async () => {
-    render(<LoginPage login={() => Promise.reject(new Error())} reload={vi.fn()} />);
+    // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- exercises hostile non-Error thenables.
+    render(<LoginPage login={() => Promise.reject('network vanished')} reload={vi.fn()} />);
     await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect((await screen.findByRole('alert')).textContent).toBe('Sign-in failed.');
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Sign in' }).disabled).toBe(false);
