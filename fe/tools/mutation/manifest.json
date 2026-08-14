@@ -2,17 +2,44 @@
   {
     "mutation_id": "session-gate-drop-401-cache-clear",
     "defends": [
-      "oracle:INV-LOGIN-001"
+      "oracle:CAP-APP-064"
     ],
-    "target": "web/src/app/session/session-gate.tsx",
-    "patch": "diff --git a/web/src/app/session/session-gate.tsx b/web/src/app/session/session-gate.tsx\nindex 0fe04d6e..7023b49b 100644\n--- a/web/src/app/session/session-gate.tsx\n+++ b/web/src/app/session/session-gate.tsx\n@@ -23,7 +23,7 @@ export function SessionGate({ children, transport, unauthorized, client, renderL\n     void performApiRequest(transport, whoamiOperation()).then((result) => setState(resolveSessionProbe(result)));\n   }, [transport]);\n   useEffect(probe, [probe]);\n-  useEffect(() => unauthorized.subscribe(() => { client.clear(); setState({ status: 'unauthed' }); }), [client, unauthorized]);\n+  useEffect(() => unauthorized.subscribe(() => { setState({ status: 'unauthed' }); }), [client, unauthorized]);\n   if (state.status === 'unknown') return null;\n   if (state.status === 'unauthed') return renderLogin();\n   if (state.status === 'error') return renderError(probe);\n",
+    "target": "web/src/app/auth/session-gate.tsx",
+    "patch": "diff --git a/web/src/app/auth/session-gate.tsx b/web/src/app/auth/session-gate.tsx\nindex 942e3f4a..2648cf1b 100644\n--- a/web/src/app/auth/session-gate.tsx\n+++ b/web/src/app/auth/session-gate.tsx\n@@ -34,7 +34,6 @@ export function SessionGate({ children, transport, unauthorized, client, renderL\n   }, [probe]);\n   useEffect(() => unauthorized.subscribe(() => {\n     epoch.current += 1;\n-    client.clear();\n     setState({ status: 'unauthed' });\n   }), [client, unauthorized]);\n   if (state.status === 'unknown') return null;\n",
     "expected_red": [
       "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401"
     ],
     "selection_paths": [
-      "web/src/app/session/session-gate.contract.test.tsx"
+      "web/src/app/auth/session-gate.contract.test.tsx"
     ],
     "why_more_than_one": "Only the broadcast consumer contract should fail when its cache clear is removed."
+  },
+  {
+    "mutation_id": "login-success-drop-reload",
+    "defends": ["oracle:INV-LOGIN-001"],
+    "target": "web/src/features/auth/login-page/public.tsx",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..be25005b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -23,7 +23,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       void login(username, password).then((result) => {\n         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n-        reload();\n+        setSubmitting(false);\n       }).catch((cause: unknown) => {\n         setError(cause instanceof Error && cause.message ? cause.message : 'Sign-in failed.');\n         setSubmitting(false);\n",
+    "expected_red": ["login page oracle contracts INV-LOGIN-001 reloads the whole document after successful login"],
+    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx"],
+    "why_more_than_one": "The success oracle alone should fail when the full-page reload is removed."
+  },
+  {
+    "mutation_id": "login-credentials-use-generic-error",
+    "defends": ["oracle:CAP-LOGIN-002"],
+    "target": "web/src/features/auth/login-page/public.tsx",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..0377347a 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -21,7 +21,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       if (submitting) return;\n       setSubmitting(true); setError(null);\n       void login(username, password).then((result) => {\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n       }).catch((cause: unknown) => {\n",
+    "expected_red": ["login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state", "login page oracle contracts CAP-LOGIN-002 shows the credential message through the production login assembly"],
+    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx"],
+    "why_more_than_one": "Both the component branch and production assembly oracle must reject generic copy for bad credentials."
+  },
+  {
+    "mutation_id": "login-drop-username-autocomplete",
+    "defends": ["oracle:INV-LOGIN-003"],
+    "target": "web/src/features/auth/login-page/public.tsx",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..3fc9d56b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -33,7 +33,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       {error !== null && <p role=\"alert\" className={styles.error}>{error}</p>}\n       <label htmlFor={`${prefix}-username`}>Username</label>\n       {/* eslint-disable-next-line jsx-a11y/no-autofocus -- Single-purpose login screen intentionally starts at its first field. */}\n-      <input id={`${prefix}-username`} name=\"username\" autoFocus autoComplete=\"username\" value={username} onChange={(event) => setUsername(event.target.value)} />\n+      <input id={`${prefix}-username`} name=\"username\" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />\n       <label htmlFor={`${prefix}-password`}>Password</label>\n       <input id={`${prefix}-password`} name=\"password\" type=\"password\" autoComplete=\"current-password\" value={password} onChange={(event) => setPassword(event.target.value)} />\n       <button type=\"submit\" disabled={submitting}>{submitting ? 'Signing in…' : 'Sign in'}</button>\n",
+    "expected_red": ["login page browser contract INV-LOGIN-003 focuses username and declares both credential autocomplete tokens"],
+    "selection_paths": ["web/src/features/auth/login-page/login-page.browser.test.tsx"],
+    "why_more_than_one": "Only the browser autocomplete oracle should fail when the username token is removed."
   },
   {
     "mutation_id": "no-class-dom-query-drop-closest",
