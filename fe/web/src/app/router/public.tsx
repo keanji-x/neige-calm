@@ -55,6 +55,7 @@ import {
 } from '../providers/queries.ts';
 import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
+import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
@@ -90,7 +91,12 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 export function useConversationStore(transport: ApiTransportPort, scope: SpecConversationScope | null): ConversationStore {
+  const registry = useConversationRegistry();
   const cardId = scope?.cardId ?? '';
+  const waveId = scope?.id;
+  const waveTitle = scope?.title;
+  const cardTitle = scope?.cardTitle;
+  const scopeUpdatedAt = scope?.updatedAt;
   const history = useInfiniteQuery({
     ...harnessItemsQueryOptions(transport, cardId), enabled: scope !== null,
   });
@@ -122,16 +128,26 @@ export function useConversationStore(transport: ApiTransportPort, scope: SpecCon
     setResetting(false);
   }, [cardId]);
 
-  const turns = [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs);
+  const turns = useMemo(
+    () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
+    [echoes, serverTurns],
+  );
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
-  const conversation: Conversation | null = scope === null ? null : {
-    id: scope.cardId, waveId: scope.id, waveTitle: scope.title,
-    title: scope.cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+  const conversation = useMemo<Conversation | null>(() => waveId === undefined ? null : {
+    id: cardId, waveId, waveTitle: waveTitle ?? '',
+    title: cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
     kind: 'shared-spec', state: working ? 'running' : 'idle',
-    updatedAt: turns.at(-1)?.atMs ?? scope.updatedAt, turns: turns.length,
-  };
+    updatedAt: turns.at(-1)?.atMs ?? scopeUpdatedAt ?? 0, turns: turns.length,
+  }, [cardId, cardTitle, scopeUpdatedAt, turns, waveId, waveTitle, working]);
+  useEffect(() => {
+    if (conversation !== null) registry.remember(conversation, turns);
+  }, [conversation, registry, turns]);
+
+  const conversations = conversation === null
+    ? registry.conversations
+    : [...registry.conversations.filter(({ id }) => id !== conversation.id), conversation];
 
   const send = (_conversationId: string, text: string) => {
     if (sendingRef.current) return;
@@ -180,8 +196,8 @@ export function useConversationStore(transport: ApiTransportPort, scope: SpecCon
   };
 
   return {
-    conversations: conversation === null ? [] : [conversation],
-    turnsOf: () => turns,
+    conversations,
+    turnsOf: (conversationId) => conversation?.id === conversationId ? turns : registry.turnsOf(conversationId),
     pending: pendingConversationIds(conversation, working, sending),
     working,
     stopping,
@@ -254,11 +270,13 @@ export function createAppRouter(deps: AppRouterDeps) {
 function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onSignOut: () => void }) {
   const go = useGo();
   return (
-    <AppShell
-      transport={transport}
-      onOpenSettings={() => go({ name: 'settings' })}
-      onSignOut={onSignOut}
-    />
+    <ConversationProvider>
+      <AppShell
+        transport={transport}
+        onOpenSettings={() => go({ name: 'settings' })}
+        onSignOut={onSignOut}
+      />
+    </ConversationProvider>
   );
 }
 

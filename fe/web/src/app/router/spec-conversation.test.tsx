@@ -80,6 +80,16 @@ afterEach(() => {
 });
 
 describe('spec conversation regressions', () => {
+  it('keeps a wave conversation on Today after navigating away from the wave', async () => {
+    setup();
+    await openConversation();
+    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
+    const conversation = await screen.findByRole('button', {
+      name: 'Conversation Spec chat, on Test wave, 0 turns',
+    });
+    expect(conversation.textContent).toContain('Test wave');
+  });
+
   it('loads only the first history page until the user asks for earlier rows', async () => {
     const { requests } = setup((request) => request.path.includes('/harness/items')
       ? ok(harnessRows(HARNESS_ITEMS_PAGE_LIMIT)) : undefined);
