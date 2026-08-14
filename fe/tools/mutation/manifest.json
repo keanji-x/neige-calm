@@ -1024,5 +1024,20 @@
       "web/src/app/events/query-invalidation-adapter.test.ts"
     ],
     "why_more_than_one": "T-G4b locks both the literal mapping and the end-to-end harness event path."
+  },
+  {
+    "mutation_id": "session-gate-drop-query-cache-clear",
+    "defends": [
+      "oracle:INV-APP-114"
+    ],
+    "target": "web/src/app/auth/session-gate.tsx",
+    "patch": "diff --git a/web/src/app/auth/session-gate.tsx b/web/src/app/auth/session-gate.tsx\nindex e557edb4..283a6a26 100644\n--- a/web/src/app/auth/session-gate.tsx\n+++ b/web/src/app/auth/session-gate.tsx\n@@ -42,7 +42,6 @@ export function SessionGate({ children, transport, unauthorized, client, renderL\n     epoch.current += 1;\n     activeProbe.current?.abort();\n     activeProbe.current = null;\n-    client.clear();\n     setState({ status: 'unauthed' });\n   }), [client, unauthorized]);\n   if (state.status === 'unknown') return null;\n",
+    "expected_red": [
+      "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401"
+    ],
+    "selection_paths": [
+      "web/src/app/auth/session-gate.contract.test.tsx"
+    ],
+    "why_more_than_one": "Only the cache assertion should turn red; login rendering remains independently functional after the cache clear is removed."
   }
 ]

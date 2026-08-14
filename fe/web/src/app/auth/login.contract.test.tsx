@@ -12,7 +12,7 @@ describe('production login assembly', () => {
   it('CAP-LOGIN-002 maps a production 401 to credential copy without broadcasting', async () => {
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
     const broadcast = vi.fn(); unauthorized.subscribe(broadcast);
-    const transport = { unauthorized, send: vi.fn().mockResolvedValue({
+    const transport = { send: vi.fn().mockResolvedValue({
       status: 401, statusText: 'Unauthorized', body: { code: 'unauthorized', error: 'unauthorized' },
     }) };
     render(<LoginPage login={(username, password) => loginWithTransport(transport, username, password)} reload={vi.fn()} />);

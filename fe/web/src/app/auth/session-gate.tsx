@@ -27,7 +27,8 @@ export function SessionGate({ children, transport, unauthorized, client, renderL
     activeProbe.current = controller;
     const probeEpoch = ++epoch.current;
     setState({ status: 'unknown' });
-    void performApiRequest(transport, { ...whoamiOperation(), signal: controller.signal }).then((result) => {
+    // The probe's 401 is an expected session verdict, so it must not broadcast.
+    void performApiRequest(transport, { ...whoamiOperation(), signal: controller.signal }, undefined).then((result) => {
       if (mounted.current && epoch.current === probeEpoch) setState(resolveSessionProbe(result));
     });
     return () => { controller.abort(); if (activeProbe.current === controller) activeProbe.current = null; };
