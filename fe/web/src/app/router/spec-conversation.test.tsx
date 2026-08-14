@@ -115,6 +115,17 @@ describe('spec conversation regressions', () => {
     expect(requests.some(({ path }) => path.includes('/api/cards//'))).toBe(false);
   });
 
+  it('navigates from a cove conversation to its wave before opening it', async () => {
+    setup();
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    fireEvent.click(screen.getByRole('button', { name: 'Work' }));
+    fireEvent.click(await screen.findByRole('button', {
+      name: 'Conversation Spec chat, on Test wave, 0 turns',
+    }));
+    await screen.findByRole('complementary', { name: 'Spec chat' });
+    expect(window.location.pathname).toBe('/wave/w1');
+  });
+
   it('does not retain the pre-reset turn count on Today', async () => {
     setup((request) => {
       if (request.path.endsWith('/spec/reset')) {
@@ -132,6 +143,29 @@ describe('spec conversation regressions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
     await screen.findByText('No conversations yet.');
     expect(screen.queryByRole('button', { name: /Conversation Spec chat, on Test wave, 3 turns/ })).toBeNull();
+  });
+
+  it('remembers the first non-empty server snapshot after reset without waiting for an empty one', async () => {
+    let resetStarted = false;
+    setup((request) => {
+      if (request.path.endsWith('/spec/reset')) {
+        resetStarted = true;
+        return ok({ card_id: CARD.id, terminal_id: 'terminal', new_thread_id: 'thread-2' });
+      }
+      if (request.path.includes('/harness/items')) {
+        return ok(resetStarted
+          ? harnessRows(2).map((row) => ({ ...row, id: row.id + 10, created_at_ms: row.created_at_ms + 10 }))
+          : harnessRows(3));
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
+    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
+      .getByRole('button', { name: 'Reset conversation' }));
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 2 turns' });
+    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 2 turns' });
   });
 
   it('remembers a card again after reset suppression crosses a card switch', async () => {

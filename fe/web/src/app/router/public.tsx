@@ -118,6 +118,7 @@ export function useConversationStore(
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const sendingRef = useRef(false);
   const suppressRememberRef = useRef(false);
+  const suppressedRememberSnapshotRef = useRef<readonly ConversationTurn[] | null>(null);
   const seq = useRef(0);
   const serverTurns = useMemo(() => (history.data?.pages ?? [])
     .flat().sort((left, right) => left.id - right.id).flatMap((item) => {
@@ -133,6 +134,7 @@ export function useConversationStore(
     setActionMessage(null);
     sendingRef.current = false;
     suppressRememberRef.current = false;
+    suppressedRememberSnapshotRef.current = null;
     setSending(false);
     setInterruptPending(false);
     setResetting(false);
@@ -153,10 +155,11 @@ export function useConversationStore(
   }, [cardId, cardTitle, scopeUpdatedAt, turns, waveId, waveTitle, working]);
   useEffect(() => {
     if (conversation === null) return;
-    if (suppressRememberRef.current && turns.length !== 0) return;
+    if (suppressRememberRef.current && serverTurns === suppressedRememberSnapshotRef.current) return;
     suppressRememberRef.current = false;
+    suppressedRememberSnapshotRef.current = null;
     registry.remember(conversation, turns);
-  }, [conversation, registry, turns]);
+  }, [conversation, registry, serverTurns, turns]);
 
   const allConversations = conversation === null
     ? registry.conversations
@@ -199,14 +202,18 @@ export function useConversationStore(
     if (resetting) return false;
     setResetting(true);
     setActionError(null);
+    suppressRememberRef.current = true;
+    suppressedRememberSnapshotRef.current = serverTurns;
+    if (conversation !== null) registry.forget(conversation.id);
     try {
       await mutations.reset();
       setEchoes([]);
       setActionMessage(null);
-      suppressRememberRef.current = true;
-      if (conversation !== null) registry.forget(conversation.id);
       return true;
     } catch (error: unknown) {
+      suppressRememberRef.current = false;
+      suppressedRememberSnapshotRef.current = null;
+      if (conversation !== null) registry.remember(conversation, turns);
       setActionError(errorMessage(error, 'Could not reset the conversation.'));
       return false;
     } finally {
