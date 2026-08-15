@@ -147,6 +147,24 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
     assert_eq!(recovered.len(), 1);
     assert_eq!(recovered[0].id, chat_runtime_id);
     assert_eq!(recovered[0].kind, WorkerSessionKind::CodexCard);
+    let registry = HarnessRegistry::new();
+    let outcome = spawn_recovered_harness(
+        repo.clone(),
+        EventBus::new(),
+        repo.card_role_cache().clone(),
+        repo.wave_cove_cache().clone(),
+        SharedCodexAppServer::new_stub(repo.clone()),
+        &registry,
+        recovered.into_iter().next().unwrap(),
+        ClaimMode::Replace,
+    )
+    .await
+    .expect("marked Worker plain-chat runtime must pass the cove-chat recovery fence");
+    let handle = outcome
+        .installed()
+        .expect("plain-chat runtime must install a harness");
+    assert!(registry.get(&chat_runtime_id).is_some());
+    handle.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -237,11 +255,10 @@ async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
         ClaimMode::Replace,
     )
     .await;
-    let error = match result {
-        Err(error) => error,
-        Ok(_) => panic!("direct recovery must reject cove-chat spec runtime"),
-    };
-    assert!(matches!(error, CalmError::Forbidden(_)));
+    assert!(matches!(
+        result,
+        Ok(calm_server::harness::RecoveryOutcome::Skipped)
+    ));
     assert!(registry.get(&runtime_id).is_none());
 }
 
@@ -305,6 +322,53 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
     .unwrap();
     tx.commit().await.unwrap();
     runtime_id
+}
+
+#[tokio::test]
+async fn boot_recovery_skips_cove_chat_spec_and_recovers_later_valid_runtime() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let declined_id = seed_recoverable_runtime(&repo, "declined-first", "thread-declined").await;
+    let declined = repo
+        .session_projection_by_id(&declined_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let declined_card = repo.card_get(&declined.card_id).await.unwrap().unwrap();
+    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+        .bind(declined_card.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    repo.card_role_cache().insert(
+        declined_card.id.clone(),
+        CardRole::Spec,
+        declined_card.wave_id.clone(),
+    );
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(declined_card.wave_id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    let valid_id = seed_recoverable_runtime(&repo, "valid-second", "thread-valid").await;
+    let registry = HarnessRegistry::new();
+
+    let recovered = recover_harnesses_on_boot(
+        repo.clone(),
+        EventBus::new(),
+        repo.card_role_cache().clone(),
+        repo.wave_cove_cache().clone(),
+        SharedCodexAppServer::new_stub(repo.clone()),
+        &registry,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(recovered, 1);
+    assert!(registry.get(&declined_id).is_none());
+    let valid = registry
+        .remove(&valid_id)
+        .expect("valid runtime after declined row must still recover");
+    valid.shutdown().await.unwrap();
 }
 
 #[tokio::test]

@@ -216,11 +216,6 @@ pub struct SpecHarnessStartOperationPayload {
     pub profile: HarnessProfile,
 }
 
-fn card_is_plain_chat(card: &Card) -> bool {
-    card.kind == "codex"
-        && card.payload.get("harness_profile").and_then(Value::as_str) == Some("plain_chat")
-}
-
 pub(crate) fn render_spec_developer_instructions(
     wave_id: &str,
     workflow_descriptor: Option<&WorkflowDescriptor>,
@@ -325,7 +320,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         }
         let expected_role = match payload.profile {
             HarnessProfile::Spec => CardRole::Spec,
-            HarnessProfile::PlainChat if card_is_plain_chat(&card) => CardRole::Worker,
+            HarnessProfile::PlainChat
+                if crate::plain_chat::card_is_plain_chat(
+                    &card,
+                    self.card_role_cache.get(&card.id),
+                    true,
+                ) =>
+            {
+                CardRole::Worker
+            }
             HarnessProfile::PlainChat => {
                 return Err(CalmError::BadRequest(format!(
                     "card {} is not marked for plain chat",

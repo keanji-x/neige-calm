@@ -101,11 +101,9 @@ async fn plain_chat_is_excluded_at_all_worker_flow_attach_entries() {
 
     let state = wf::app_state(repo.clone(), events.clone());
     state.worker_flow.start_on_boot().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(40)).await;
     assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0, "boot");
 
-    events.emit(
-        ActorId::Kernel,
+    let entries = [
         Event::RuntimeStarted {
             runtime_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
@@ -113,31 +111,32 @@ async fn plain_chat_is_excluded_at_all_worker_flow_attach_entries() {
             agent_provider: seed.runtime.agent_provider.clone(),
             status: WorkerSessionState::Running,
         },
-    );
-    events.emit(
-        ActorId::Kernel,
         Event::RuntimeStatusChanged {
             runtime_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
             old_status: WorkerSessionState::Starting,
             new_status: WorkerSessionState::Running,
         },
-    );
-    events.emit(ActorId::Kernel, Event::CardAdded(card));
-    events.emit(
-        ActorId::Kernel,
+        Event::CardAdded(card),
         Event::RuntimeSuperseded {
             old_runtime_id: "old-plain-chat-runtime".into(),
             new_runtime_id: seed.runtime.id.clone(),
             card_id: seed.runtime.card_id.clone(),
         },
-    );
-    tokio::time::sleep(Duration::from_millis(80)).await;
-    assert_eq!(
-        state.worker_flow.tasks_alive_for_test().await,
-        0,
-        "four event entries"
-    );
+    ];
+    for (index, event) in entries.into_iter().enumerate() {
+        events.emit(ActorId::Kernel, event);
+        wf::wait_until(wf::LIVENESS_BUDGET, || {
+            let driver = state.worker_flow.clone();
+            async move { driver.events_handled_for_test() > index as u64 }
+        })
+        .await;
+        assert_eq!(
+            state.worker_flow.tasks_alive_for_test().await,
+            0,
+            "plain chat event entry {index}"
+        );
+    }
     let items = repo
         .worker_flow_item_list_by_card(seed.card.id.as_str(), 0, 100, false)
         .await

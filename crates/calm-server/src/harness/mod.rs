@@ -115,10 +115,13 @@ pub async fn spawn_recovered_harness(
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
         if wave.purpose.as_deref() == Some("cove-chat") {
-            return Err(CalmError::Forbidden(format!(
-                "spec harness is disabled for cove chat wave {}",
-                wave.id
-            )));
+            tracing::warn!(
+                runtime_id = %runtime.id,
+                card_id = %card.id,
+                wave_id = %wave.id,
+                "recovered spec harness is disabled for cove chat wave; skipping runtime"
+            );
+            return Ok(RecoveryOutcome::Skipped);
         }
     }
     let Some(state_json) = runtime.handle_state_json.clone() else {
@@ -333,7 +336,8 @@ pub async fn recover_harnesses_on_boot(
     let runtimes = repo.session_projection_recover_harnesses_on_boot().await?;
     let mut recovered = 0usize;
     for runtime in runtimes {
-        if spawn_recovered_harness(
+        let runtime_id = runtime.id.clone();
+        match spawn_recovered_harness(
             repo.clone(),
             events.clone(),
             card_role_cache.clone(),
@@ -343,11 +347,15 @@ pub async fn recover_harnesses_on_boot(
             runtime,
             ClaimMode::Replace,
         )
-        .await?
-        .installed()
-        .is_some()
+        .await
         {
-            recovered += 1;
+            Ok(RecoveryOutcome::Installed(_)) => recovered += 1,
+            Ok(RecoveryOutcome::Skipped | RecoveryOutcome::DaemonIneligible) => {}
+            Err(error) => tracing::warn!(
+                runtime_id = %runtime_id,
+                error = %error,
+                "boot harness recovery: runtime recovery failed; continuing"
+            ),
         }
     }
     Ok(recovered)

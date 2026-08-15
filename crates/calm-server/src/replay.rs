@@ -532,7 +532,12 @@ pub async fn force_spec_phase(
                         WorkerSessionInit {
                             id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
-                            kind: WorkerSessionKind::SharedSpec,
+                            kind: if crate::plain_chat::card_is_plain_chat(&card, Some(role), true)
+                            {
+                                WorkerSessionKind::CodexCard
+                            } else {
+                                WorkerSessionKind::SharedSpec
+                            },
                             agent_provider: Some(AgentProvider::Codex),
                             // Deliberately `Idle`, not the `Starting` that
                             // `run_status_for(PendingThreadStart)` would

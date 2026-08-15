@@ -1091,12 +1091,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         }
     }
     let plain_chat = match inner.repo.card_get(inner.card_id.as_str()).await? {
-        Some(card) => {
-            card.kind == "codex"
-                && inner.repo.card_role_get(card.id.as_str()).await?
-                    == Some(crate::model::CardRole::Worker)
-                && card.payload.get("harness_profile").and_then(Value::as_str) == Some("plain_chat")
-        }
+        Some(card) => crate::plain_chat::card_is_plain_chat(
+            &card,
+            inner.repo.card_role_get(card.id.as_str()).await?,
+            true,
+        ),
         None => false,
     };
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();

@@ -708,6 +708,14 @@ async fn plain_chat_worker_card_cannot_ratify() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("not a spec codex card")),
+        "{body}"
+    );
 }
 
 #[tokio::test]
