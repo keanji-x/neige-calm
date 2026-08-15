@@ -39,13 +39,14 @@ import {
   backlinkCountsByBlock, deriveReportOutline, readWaveReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
-  conversationName, conversationNameFrom, harnessItemToTurn, reconcileUserEchoes,
-  type Conversation, type ConversationTurn,
+  buildTranscript, conversationName, conversationNameFrom, harnessItemToTurn, mergeTranscript,
+  reconcileUserEchoes,
+  type Conversation, type ConversationTurn, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
-import { Drawer } from '../../ui/drawer/public.tsx';
+import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
@@ -64,7 +65,8 @@ export const APP_BASEPATH = '/next';
 
 type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
-  turnsOf: (conversationId: string) => readonly ConversationTurn[];
+  /** Messages *and* the actions between them, in the order they happened. */
+  turnsOf: (conversationId: string) => readonly TranscriptEntry[];
   pending: ReadonlySet<string>;
   working: boolean;
   stopping: boolean;
@@ -122,11 +124,15 @@ export function useConversationStore(
   const suppressRememberRef = useRef(false);
   const suppressedRememberSnapshotRef = useRef<readonly ConversationTurn[] | null>(null);
   const seq = useRef(0);
-  const serverTurns = useMemo(() => (history.data?.pages ?? [])
-    .flat().sort((left, right) => left.id - right.id).flatMap((item) => {
+  const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
+  const serverTurns = useMemo(() => [...items]
+    .sort((left, right) => left.id - right.id).flatMap((item) => {
       const turn = harnessItemToTurn(item);
       return turn === null ? [] : [turn];
-    }), [history.data]);
+    }), [items]);
+  /* Actions are read from the same rows, so they cannot disagree with the
+     messages about what happened or when (`buildTranscript`). */
+  const serverEntries = useMemo(() => buildTranscript(items), [items]);
   useEffect(() => {
     setEchoes((current) => reconcileUserEchoes(serverTurns, current));
   }, [serverTurns]);
@@ -146,6 +152,12 @@ export function useConversationStore(
     () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
     [echoes, serverTurns],
   );
+  /* An echo is a message you already sent, so it belongs after everything the
+     server has confirmed. Keep `buildTranscript`'s positional pairing intact:
+     a completed action retains the started row's place even when its end time
+     is later than an interleaved message. A completed tail thought stops being
+     the tail as soon as the user speaks again. */
+  const transcript = useMemo(() => mergeTranscript(serverEntries, echoes), [echoes, serverEntries]);
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
@@ -160,8 +172,10 @@ export function useConversationStore(
     if (suppressRememberRef.current && serverTurns === suppressedRememberSnapshotRef.current) return;
     suppressRememberRef.current = false;
     suppressedRememberSnapshotRef.current = null;
-    registry.remember(conversation, turns);
-  }, [conversation, registry, serverTurns, turns]);
+    // Remember the full transcript so reopening the conversation preserves its
+    // activity lines and looks identical to the route the user just left.
+    registry.remember(conversation, transcript);
+  }, [conversation, registry, serverTurns, transcript]);
 
   const allConversations = conversation === null
     ? registry.conversations
@@ -224,7 +238,9 @@ export function useConversationStore(
 
   return {
     conversations,
-    turnsOf: (conversationId) => conversation?.id === conversationId ? turns : registry.turnsOf(conversationId),
+    turnsOf: (conversationId) => conversation?.id === conversationId
+      ? transcript
+      : registry.turnsOf(conversationId),
     pending: pendingConversationIds(conversation, working, sending),
     working,
     stopping,
@@ -400,6 +416,26 @@ function useConversationPanel(
         open={open !== null}
         title={open === null ? '' : conversationName(open)}
         onClose={() => setOpenId(null)}
+        /*
+         * Reset lives in the head, not under the composer.
+         *
+         * It is the *rarest* control on the surface and the only destructive
+         * one — it throws the transcript away and starts a new codex thread —
+         * and it was sitting beside the message box at the same weight as
+         * `Stop`, which you press casually. `destructive` is §4.3's tier:
+         * `--error-text` at rest, transparent fill, red before the pointer
+         * arrives rather than after. The confirm dialog it opens is unchanged.
+         *
+         * It is not offered when there is nothing to reset.
+         */
+        headAction={open === null ? undefined : (
+          /* `↺` — the glyph, not the word. A 28px red mark beside the close is
+             the lowest emphasis this action can take and still be red at rest;
+             the word "Reset" at 13px was reading as a peer of the title. */
+          <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
+            ↺
+          </DrawerAction>
+        )}
         footer={open === null ? undefined : (
           <>
             <ChatComposer disabled={store.sending} onSend={(text) => store.send(open.id, text)} />
@@ -408,7 +444,6 @@ function useConversationPanel(
                 {store.stopping ? 'Stopping…' : 'Stop'}
               </button>
             )}
-            <button type="button" onClick={() => setConfirmingReset(true)}>Reset conversation</button>
             {store.actionError !== null && <p role="alert">{store.actionError}</p>}
             {store.actionMessage !== null && <p role="status">{store.actionMessage}</p>}
           </>
