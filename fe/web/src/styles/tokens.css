@@ -98,6 +98,17 @@
     --surface-chip: oklch(85.1% 0.005 240);
 
     /*
+     * The one fill behind your own words, in the conversation drawer.
+     *
+     * Alpha, not a surface rank: it is a tint over whatever it sits on, and it
+     * must stay the *faintest* mark on the drawer — under `--surface-code`,
+     * well under `--surface-chip`. It is not elevation and never carries text
+     * contrast of its own; the turn inside it is `--text` on `--paper` either
+     * way, which is why it can be this light.
+     */
+    --surface-said: oklch(0% 0 0 / 0.03);
+
+    /*
      * A well that has taken focus, one step further from the page.
      *
      * This cannot be an overlay, and that is the point of it existing. The
@@ -376,6 +387,11 @@
     --surface-rail: oklch(12% 0.008 245);
     --surface-card: oklch(31.4% 0.009 245);
     --surface-chip: oklch(12% 0.008 245);
+
+    /* Ink flips, the faintness does not: white at the same weight reads a shade
+       stronger on this ground, so it is set a touch under the light value's
+       apparent step rather than at the same number. */
+    --surface-said: oklch(100% 0 0 / 0.05);
 
     /* See the light block: the direction is the same (further from the page),
        the room is not. This is the floor. */

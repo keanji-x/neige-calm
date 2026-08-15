@@ -2,6 +2,10 @@ import { z } from 'zod';
 
 import type { HarnessItem } from '../api/generated/wire.js';
 import type { ApiOperation } from '../api/types.js';
+import {
+  PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
+  TASK_VERDICT_TOOL, WAVE_TOOL_PREFIX,
+} from '../keys/mcp-tools.js';
 
 /** Mirrors `WorkerSessionKind` in `core/api/generated/wire.ts`. */
 export type ConversationKind = 'terminal' | 'codex' | 'claude' | 'shared-spec';
@@ -88,10 +92,10 @@ export function byRecency(left: Conversation, right: Conversation): number {
 /**
  * Who wrote a turn.
  *
- * The kernel's own vocabulary is wider — `HarnessItem` carries tool calls, shell
- * runs, reasoning summaries and file edits alongside plain messages, and the
- * legacy web renders seven kinds. Two is what this surface can render honestly
- * today; the union is the place the rest arrive when the endpoint does.
+ * Two, and only two, because this is who *spoke*. The kernel's vocabulary is
+ * wider — tool calls, shell runs, reasoning, file edits — and those are not
+ * speech: they arrive as `ConversationActivity`, share the transcript, and are
+ * rendered as one quiet line each rather than as a third voice.
  */
 export type TurnAuthor = 'you' | 'agent';
 
@@ -167,33 +171,291 @@ const DIFF_PREFIX = '## Wave state changes since your last turn';
 const DIFF_END = '\n\n---\n\n';
 const USER_SAYS = 'User says:\n';
 
+/*
+ * Live data uses the camelCase spellings: all 162 rows checked on a real card
+ * were `agentMessage` / `userMessage`. The kernel stores `item.type` verbatim,
+ * though: `spec_harness_items_persist.rs` proves that with a synthetic
+ * `agent_message` notification. That does not prove codex emits snake_case; we
+ * accept it as a precaution so such a stored message remains a turn instead of
+ * falling through to a generic `Worked agent_message` activity.
+ */
+const AGENT_MESSAGE = 'agentMessage';
+const AGENT_MESSAGE_SNAKE_CASE = 'agent_message';
+const USER_MESSAGE = 'userMessage';
+const USER_MESSAGE_SNAKE_CASE = 'user_message';
+
+function isAgentMessage(itemType: string | null): boolean {
+  return itemType === AGENT_MESSAGE || itemType === AGENT_MESSAGE_SNAKE_CASE;
+}
+
+function isUserMessage(itemType: string | null): boolean {
+  return itemType === USER_MESSAGE || itemType === USER_MESSAGE_SNAKE_CASE;
+}
+
 export function harnessItemToTurn(item: HarnessItem): ConversationTurn | null {
   if (item.method !== 'item/completed' ||
-      (item.item_type !== 'agent_message' && item.item_type !== 'user_message')) return null;
+      (!isAgentMessage(item.item_type) && !isUserMessage(item.item_type))) return null;
   let parsed: unknown;
   try { parsed = JSON.parse(item.params); } catch { return null; }
   if (typeof parsed !== 'object' || parsed === null) return null;
   const envelope = parsed as { completedAtMs?: unknown; item?: unknown };
   if (typeof envelope.item !== 'object' || envelope.item === null) return null;
   const payload = envelope.item as { text?: unknown; content?: unknown };
-  let text = item.item_type === 'agent_message'
+  let text = isAgentMessage(item.item_type)
     ? (typeof payload.text === 'string' ? payload.text : '')
     : (Array.isArray(payload.content) ? payload.content.map((part: unknown) => (
       typeof part === 'object' && part !== null && typeof (part as { text?: unknown }).text === 'string'
         ? (part as { text: string }).text : ''
     )).join('') : '');
-  if (item.item_type === 'user_message' && text.startsWith(DIFF_PREFIX)) {
+  if (isUserMessage(item.item_type) && text.startsWith(DIFF_PREFIX)) {
     const end = text.indexOf(DIFF_END);
     if (end >= 0) text = text.slice(end + DIFF_END.length);
   }
-  if (item.item_type === 'user_message' && text.startsWith(USER_SAYS)) text = text.slice(USER_SAYS.length);
+  if (isUserMessage(item.item_type) && text.startsWith(USER_SAYS)) text = text.slice(USER_SAYS.length);
   text = text.trim();
   if (text === '') return null;
   return {
-    id: String(item.id), author: item.item_type === 'user_message' ? 'you' : 'agent', text,
+    id: String(item.id), author: isUserMessage(item.item_type) ? 'you' : 'agent', text,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
   };
+}
+
+/* ── What the agent did between two things it said ──────────────────────────
+ *
+ * A spec turn is mostly not messages. In a captured four-minute session the 36
+ * persisted rows were: 4 agent messages, 2 user messages, and **11 actions** —
+ * 7 reasoning, 3 shell runs, 1 `calm.report.write`. Rendering only the messages
+ * is what made the agent look like it answered by silently editing the report:
+ * the edit *was* the answer, and the only row that said so was dropped.
+ *
+ * These lines are not a second transcript and not a log viewer. One line each,
+ * a verb and its target, in the quietest type the surface has (§3 — emphasis is
+ * a budget, and the prose is what gets read). The kernel already persists both
+ * `item/started` and `item/completed` for every action (`harness/run_loop.rs`
+ * `should_persist_item_method`), so the running state is real data, not a
+ * spinner: the line appears in the present tense when the action starts and
+ * settles into the past tense when it completes.
+ */
+export type ActivityState = 'running' | 'done' | 'failed';
+
+export type ConversationActivity = Readonly<{
+  id: string;
+  /** Discriminates against `ConversationTurn` inside one sorted transcript. */
+  author: 'activity';
+  /** Present tense while running, past tense once done: `Running` / `Ran`. */
+  verb: string;
+  /** What it acted on, already trimmed to something readable. Never a payload. */
+  target: string | null;
+  state: ActivityState;
+  atMs: number;
+}>;
+
+export type TranscriptEntry = ConversationTurn | ConversationActivity;
+
+/** `bash -lc 'neige state'` is how codex spells every command; the wrapper is
+ *  noise on every single line, so the line shows what was actually run. */
+const SHELL_WRAPPER = /^(?:\S*\/)?(?:ba|z|)sh\s+-l?c\s+(['"])([\s\S]*)\1$/;
+
+export function readableCommand(command: string): string {
+  const match = SHELL_WRAPPER.exec(command.trim());
+  return (match?.[2] ?? command).trim();
+}
+
+const ACTIVITY_TARGET_MAX = 64;
+
+function clip(text: string): string | null {
+  const line = text.trim().split('\n', 1)[0]?.trim() ?? '';
+  if (line === '') return null;
+  return line.length <= ACTIVITY_TARGET_MAX
+    ? line
+    : `${line.slice(0, ACTIVITY_TARGET_MAX - 1).trimEnd()}…`;
+}
+
+type ActivityShape = Readonly<{ running: string; done: string; target: string | null }>;
+
+/**
+ * The tools whose names are worth saying in English. Anything else keeps its
+ * wire name — an unknown tool is still a fact, and inventing a phrase for it
+ * would be the one place this surface could lie about what happened.
+ *
+ * Reads and writes are told apart deliberately, and it is the most useful
+ * distinction on the line: "it looked at the report" and "it rewrote the
+ * report" are the two things a reader is actually trying to tell apart when
+ * they scan back through a turn.
+ */
+function toolShape(tool: string): ActivityShape {
+  if (REPORT_WRITE_TOOLS.includes(tool)) {
+    return { running: 'Writing report', done: 'Wrote report', target: null };
+  }
+  if (tool === REPORT_MOVE_TOOL) {
+    return { running: 'Reordering report', done: 'Reordered report', target: null };
+  }
+  if (tool === REPORT_DELETE_TOOL) {
+    return { running: 'Deleting blocks', done: 'Deleted blocks', target: null };
+  }
+  if (REPORT_READ_TOOLS.includes(tool)) {
+    return { running: 'Reading report', done: 'Read report', target: null };
+  }
+  if (tool === TASK_VERDICT_TOOL) {
+    return { running: 'Writing task verdict', done: 'Wrote task verdict', target: null };
+  }
+  if (tool === PLAN_LIST_TOOL) {
+    return { running: 'Reading plan', done: 'Read plan', target: null };
+  }
+  // `cat`, `ls`, `state`, `log`, `diff` — the wave's tree and history, all of
+  // them looks. One phrase covers them because which one it was is a detail of
+  // how the agent went looking, not of what happened.
+  if (tool.startsWith(WAVE_TOOL_PREFIX)) {
+    return { running: 'Reading the wave', done: 'Read the wave', target: null };
+  }
+  return { running: 'Calling', done: 'Called', target: clip(tool) };
+}
+
+function activityShape(itemType: string, item: Record<string, unknown>): ActivityShape | null {
+  switch (itemType) {
+    case 'reasoning':
+      // No summary text on the line: the point of this one is that *time is
+      // passing*, and a half-sentence of the model's inner monologue is the
+      // loudest possible way to say it. The detail stays one fetch away.
+      return { running: 'Thinking', done: 'Thought', target: null };
+    case 'commandExecution':
+      return {
+        running: 'Running', done: 'Ran',
+        target: typeof item.command === 'string' ? clip(readableCommand(item.command)) : null,
+      };
+    case 'fileChange': {
+      const changes = Array.isArray(item.changes) ? item.changes.length : 0;
+      return {
+        running: 'Editing', done: 'Edited',
+        target: changes === 0 ? null : (changes === 1 ? '1 file' : `${changes} files`),
+      };
+    }
+    case 'mcpToolCall':
+      return toolShape(typeof item.tool === 'string' ? item.tool : '');
+    // Curated subset of the codex binary's embedded `ThreadItem.ts` union;
+    // unknown variants intentionally fall through to the generic line below.
+    case 'webSearch':
+      return { running: 'Searching the web', done: 'Searched the web', target: null };
+    case 'imageGeneration':
+      return { running: 'Generating image', done: 'Generated image', target: null };
+    case 'sleep':
+      return { running: 'Waiting', done: 'Waited', target: null };
+    case 'collabAgentToolCall':
+      return { running: 'Calling agent', done: 'Called agent', target: null };
+    case 'subAgentActivity':
+      return { running: 'Delegating', done: 'Delegated', target: null };
+    case 'dynamicToolCall':
+      return { running: 'Calling tool', done: 'Called tool', target: null };
+    case 'hookPrompt':
+      return { running: 'Prompting', done: 'Prompted', target: null };
+    case 'imageView':
+      return { running: 'Viewing image', done: 'Viewed image', target: null };
+    case 'enteredReviewMode':
+      return { running: 'Entering review mode', done: 'Entered review mode', target: null };
+    case 'exitedReviewMode':
+      return { running: 'Exiting review mode', done: 'Exited review mode', target: null };
+    case 'contextCompaction':
+      return { running: 'Compacting', done: 'Compacted', target: null };
+    default:
+      return { running: 'Working', done: 'Worked', target: clip(itemType) };
+  }
+}
+
+export function harnessItemToActivity(item: HarnessItem): ConversationActivity | null {
+  if (isAgentMessage(item.item_type) || isUserMessage(item.item_type)) return null;
+  if (item.method !== 'item/started' && item.method !== 'item/completed') return null;
+  if (item.item_type === null) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(item.params); } catch { return null; }
+  if (typeof parsed !== 'object' || parsed === null) return null;
+  const envelope = parsed as { completedAtMs?: unknown; item?: unknown };
+  if (typeof envelope.item !== 'object' || envelope.item === null) return null;
+  const payload = envelope.item as Record<string, unknown>;
+  const shape = activityShape(item.item_type, payload);
+  if (shape === null) return null;
+
+  const done = item.method === 'item/completed';
+  /* Failure is read from the action's own report, never guessed: a non-zero
+     exit, an MCP error member, or a status the wire itself calls failed. */
+  const failed = done && (
+    (typeof payload.exitCode === 'number' && payload.exitCode !== 0)
+    || (payload.error !== undefined && payload.error !== null)
+    || payload.status === 'failed'
+  );
+  return {
+    id: `activity-${item.id}`,
+    author: 'activity',
+    verb: done ? shape.done : shape.running,
+    target: shape.target,
+    state: failed ? 'failed' : (done ? 'done' : 'running'),
+    atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
+      ? envelope.completedAtMs : item.created_at_ms,
+  };
+}
+
+/**
+ * The transcript: messages and actions in one list, in the order they happened.
+ *
+ * Three collapses, all of them there because the raw list is unreadable without
+ * them:
+ *
+ * 1. **`started` and `completed` are one line, not two.** They are paired on
+ *    `item_uuid`; the completed row overwrites the started row *in the started
+ *    row's position*, so a line never jumps down the column when it finishes.
+ * 2. **A finished `Thought` survives only as the tail.** Seven of them in a row
+ *    is what the raw data looks like, and it says nothing seven times; once
+ *    anything follows, that the agent thought first is not news. Thinking that
+ *    is still the last thing that happened *is* news — running or just
+ *    finished, it is the difference between "working" and "wedged".
+ *
+ * `Thinking` (the unfinished one) is never dropped: it is the whole reason this
+ * layer exists.
+ */
+export function buildTranscript(items: readonly HarnessItem[]): readonly TranscriptEntry[] {
+  const order: string[] = [];
+  const byKey = new Map<string, TranscriptEntry>();
+
+  for (const item of [...items].sort((left, right) => left.id - right.id)) {
+    const turn = harnessItemToTurn(item);
+    if (turn !== null) {
+      const key = `turn-${item.id}`;
+      if (!byKey.has(key)) order.push(key);
+      byKey.set(key, turn);
+      continue;
+    }
+    const activity = harnessItemToActivity(item);
+    if (activity === null) continue;
+    // Pair on the wire's own item id when it has one; a row without one can
+    // only ever be its own line.
+    const key = `activity-${item.item_uuid ?? item.id}`;
+    if (!byKey.has(key)) order.push(key);
+    byKey.set(key, { ...activity, id: key });
+  }
+
+  const entries = order.flatMap((key) => {
+    const entry = byKey.get(key);
+    return entry === undefined ? [] : [entry];
+  });
+
+  return entries.filter((entry, index) => {
+    if (entry.author !== 'activity' || entry.verb !== 'Thought') return true;
+    const next = entries[index + 1];
+    if (next === undefined) return true;
+    // Collapse a run of thoughts into the last one, and drop the run entirely
+    // once anything else follows it.
+    return false;
+  });
+}
+
+/** Append optimistic user echoes without leaving a completed thought at the tail. */
+export function mergeTranscript(
+  serverEntries: readonly TranscriptEntry[],
+  echoes: readonly ConversationTurn[],
+): readonly TranscriptEntry[] {
+  const confirmed = echoes.length === 0 ? serverEntries : serverEntries.filter((entry, index) =>
+    index !== serverEntries.length - 1 || entry.author !== 'activity' || entry.verb !== 'Thought');
+  return [...confirmed, ...echoes];
 }
 
 const ECHO_RECONCILIATION_LOOKBACK = 50;
@@ -229,7 +491,7 @@ export function reconcileUserEchoes(
  * This returns, per turn, whether it opens an exchange — which is exactly
  * "authored by you, and the turn before it was not".
  */
-export function opensExchange(turns: readonly ConversationTurn[], index: number): boolean {
+export function opensExchange(turns: readonly TranscriptEntry[], index: number): boolean {
   const turn = turns[index];
   if (turn === undefined) return false;
   return turn.author === 'you' && turns[index - 1]?.author !== 'you';
@@ -246,7 +508,7 @@ export function opensExchange(turns: readonly ConversationTurn[], index: number)
  */
 export const CONVERSATION_GAP_MS = 10 * 60 * 1000;
 
-export function opensAfterGap(turns: readonly ConversationTurn[], index: number): boolean {
+export function opensAfterGap(turns: readonly TranscriptEntry[], index: number): boolean {
   const turn = turns[index];
   const previous = turns[index - 1];
   if (turn === undefined) return false;
