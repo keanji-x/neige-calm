@@ -1858,12 +1858,33 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     )
     .await
     .expect("create deferred placeholder shared spec card");
+    let chat = calm_server::db::sqlite::card_create_with_id_tx(
+        &mut tx,
+        calm_server::model::new_id(),
+        NewCard {
+            wave_id: pending_wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({
+                "schemaVersion": 1,
+                "harness_profile": "plain_chat",
+                "appserver_sock": "unix:///tmp/shared.sock",
+            }),
+        },
+        CardRole::Worker,
+        false,
+        &cache,
+    )
+    .await
+    .expect("create plain-chat card");
     tx.commit().await.unwrap();
 
     // Shared takeover now keys off an active shared-spec runtime pointing
     // at a live terminal, not payload identity stamps.
     let mapped_term = make_terminal(&repo, mapped.id.as_str()).await;
     let term = make_terminal(&repo, pending.id.as_str()).await;
+    let chat_term = make_terminal(&repo, chat.id.as_str()).await;
     let mut tx = repo.pool().begin().await.unwrap();
     session_start_runtime_tx(
         &mut tx,
@@ -1878,6 +1899,25 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
             session_id: None,
             active_turn_id: None,
             handle_state_json: None,
+            spawn_op_id: None,
+            now_ms: calm_server::model::now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: calm_server::model::new_id(),
+            card_id: chat.id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::TurnPending,
+            terminal_run_id: Some(chat_term.id.to_string()),
+            thread_id: None,
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(json!({"mode": "harness"})),
             spawn_op_id: None,
             now_ms: calm_server::model::now_ms(),
         },

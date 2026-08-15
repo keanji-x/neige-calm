@@ -1280,6 +1280,7 @@ async fn reset_spec_harness_card(
         goal: (!goal.is_empty()).then_some(goal),
         reset_harness_items: true,
         force_new_thread: true,
+        profile: Default::default(),
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_spec_card_operation(&s, "spec-harness-start", start_payload).await?;

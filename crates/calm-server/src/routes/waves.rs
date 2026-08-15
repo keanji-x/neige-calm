@@ -919,6 +919,7 @@ async fn create_wave_with_spec_harness(
         goal: (!goal.is_empty()).then_some(goal),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({

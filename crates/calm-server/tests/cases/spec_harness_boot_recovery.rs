@@ -61,6 +61,89 @@ fn sqlite_url(tmp: &TempDir, name: &str) -> String {
     format!("sqlite://{}?mode=rwc", tmp.path().join(name).display())
 }
 
+#[tokio::test]
+async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "plain-chat-recovery".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id,
+            title: "plain chat recovery".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let chat = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        })
+        .await
+        .unwrap();
+    let pty = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        })
+        .await
+        .unwrap();
+    let chat_runtime_id = new_id();
+    let pty_runtime_id = new_id();
+    let snapshot = HarnessSnapshot::initial(0, vec![]);
+    let mut tx = repo.pool().begin().await.unwrap();
+    for (runtime_id, card_id) in [
+        (&chat_runtime_id, chat.id.as_str()),
+        (&pty_runtime_id, pty.id.as_str()),
+    ] {
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: runtime_id.clone(),
+                card_id: card_id.to_string(),
+                kind: WorkerSessionKind::CodexCard,
+                agent_provider: Some(AgentProvider::Codex),
+                status: WorkerSessionState::Idle,
+                terminal_run_id: None,
+                thread_id: Some(format!("thread-{card_id}")),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    let recovered = repo
+        .session_projection_recover_harnesses_on_boot()
+        .await
+        .unwrap();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].id, chat_runtime_id);
+    assert_eq!(recovered[0].kind, WorkerSessionKind::CodexCard);
+}
+
 /// Seed a cove/wave/card + recoverable SharedSpec runtime row; returns the
 /// runtime id.
 async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &str) -> String {
@@ -944,6 +1027,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             goal: Some("recover after crash".into()),
             reset_harness_items: false,
             force_new_thread: true,
+            profile: Default::default(),
         })
         .unwrap();
         let mut output = TxOutput::new(

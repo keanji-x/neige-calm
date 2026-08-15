@@ -84,7 +84,7 @@ fn worker_session_from_runtime_init(init: &WorkerSessionInit, wave_id: WaveId) -
     }
 }
 
-async fn session_refresh_deferred_planner_tx(
+async fn session_refresh_deferred_placeholder_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     existing: WorkerSession,
     desired: WorkerSession,
@@ -93,8 +93,11 @@ async fn session_refresh_deferred_planner_tx(
         || existing.state == WorkerSessionState::Superseded;
     let refreshable_completed =
         existing.completed_at_ms.is_none() || existing.state == WorkerSessionState::Superseded;
-    if desired.contract != WorkerContract::Planner
-        || existing.contract != WorkerContract::Planner
+    if existing.contract != desired.contract
+        || !matches!(
+            desired.contract,
+            WorkerContract::Planner | WorkerContract::Executor
+        )
         || !refreshable_state
         || existing.wave_id != desired.wave_id
         || existing.provider != desired.provider
@@ -104,7 +107,7 @@ async fn session_refresh_deferred_planner_tx(
         || !refreshable_completed
     {
         return Err(runtime_message(format!(
-            "worker session {} already exists and is not a deferred planner placeholder",
+            "worker session {} already exists and is not a compatible deferred placeholder",
             desired.id
         )));
     }
@@ -132,7 +135,7 @@ async fn session_refresh_deferred_planner_tx(
                   updated_at_ms = ?13,
                   completed_at_ms = ?14
             WHERE id = ?15
-              AND contract = 'planner'
+              AND contract = ?16
               AND state IN ('starting', 'superseded')"#,
     )
     .bind(desired.state.as_db_str())
@@ -150,12 +153,13 @@ async fn session_refresh_deferred_planner_tx(
     .bind(desired.updated_at_ms)
     .bind(desired.completed_at_ms)
     .bind(desired.id.as_str())
+    .bind(desired.contract.as_db_str())
     .execute(&mut **tx)
     .await
     .map_err(|e| runtime_message(e.to_string()))?;
     if res.rows_affected() != 1 {
         return Err(runtime_message(format!(
-            "deferred planner placeholder {} changed before runtime mirror refresh",
+            "deferred placeholder {} changed before runtime mirror refresh",
             desired.id
         )));
     }
@@ -164,7 +168,7 @@ async fn session_refresh_deferred_planner_tx(
         .map_err(runtime_session_error)?
         .ok_or_else(|| {
             runtime_message(format!(
-                "worker session {} missing after deferred planner refresh",
+                "worker session {} missing after deferred placeholder refresh",
                 desired.id
             ))
         })
@@ -178,7 +182,7 @@ async fn session_insert_or_refresh_start_mirror_tx(
         .await
         .map_err(runtime_session_error)?
     {
-        session_refresh_deferred_planner_tx(tx, existing, session).await
+        session_refresh_deferred_placeholder_tx(tx, existing, session).await
     } else {
         session_insert_tx(tx, session)
             .await
@@ -279,9 +283,13 @@ pub async fn session_prepare_deferred_spec_tx(
     tx: &mut WorkerSessionProjectionTx<'_>,
     init: &WorkerSessionInit,
 ) -> WorkerSessionProjectionResult<WorkerSession> {
-    if init.kind != WorkerSessionKind::SharedSpec || init.status != WorkerSessionState::Starting {
+    if !matches!(
+        init.kind,
+        WorkerSessionKind::SharedSpec | WorkerSessionKind::CodexCard
+    ) || init.status != WorkerSessionState::Starting
+    {
         return Err(runtime_message(
-            "deferred spec session placeholders require a starting shared-spec runtime init",
+            "deferred spec session placeholders require a starting shared-spec or codex runtime init",
         ));
     }
     if init.thread_id.is_some() || init.terminal_run_id.is_some() || init.session_id.is_some() {
