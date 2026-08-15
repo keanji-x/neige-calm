@@ -1006,6 +1006,80 @@ export const mockOperations = [
     ]
   },
   {
+    "method": "POST",
+    "parameters": [
+      {
+        "in": "path",
+        "name": "cove_id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "path": "/api/coves/{cove_id}/chat-wave/ensure",
+    "responses": [
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/Wave"
+            }
+          }
+        ],
+        "status": "200"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/Wave"
+            }
+          }
+        ],
+        "status": "201"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "404"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "409"
+      }
+    ],
+    "template": [
+      {
+        "kind": "literal",
+        "value": "/api/coves/"
+      },
+      {
+        "kind": "parameter",
+        "name": "cove_id"
+      },
+      {
+        "kind": "literal",
+        "value": "/chat-wave/ensure"
+      }
+    ]
+  },
+  {
     "method": "GET",
     "parameters": [
       {
