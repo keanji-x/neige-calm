@@ -1,6 +1,4 @@
 // @vitest-environment jsdom
-import { readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,15 +19,6 @@ function open(props: Partial<Parameters<typeof Drawer>[0]> = {}) {
       {props.children ?? <p>the transcript</p>}
     </Drawer>,
   );
-}
-
-function productionSourcesUnder(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) return productionSourcesUnder(path);
-    return entry.isFile() && /\.tsx?$/.test(entry.name)
-      && !/\.(?:test|spec)\.tsx?$/.test(entry.name) ? [path] : [];
-  });
 }
 
 describe('Drawer', () => {
@@ -89,20 +78,6 @@ describe('Drawer', () => {
     expect(scroll?.firstElementChild).toBe(screen.getByRole('heading').parentElement);
     expect(scroll?.parentElement).toBe(drawer);
     expect(screen.getByLabelText('composer').parentElement).toBe(drawer);
-  });
-
-  it('has no production writer for the pending data-nc-scrolled seam', () => {
-    const sourceRoot = resolve(import.meta.dirname, '../..');
-    const writerPatterns = [
-      /data-nc-scrolled\s*=/g,
-      /dataset\.ncScrolled\s*=/g,
-      /setAttribute\(\s*['"]data-nc-scrolled['"]/g,
-    ];
-    const writers = productionSourcesUnder(sourceRoot).flatMap((path) => {
-      const source = readFileSync(path, 'utf8');
-      return writerPatterns.flatMap((pattern) => [...source.matchAll(pattern)].map(() => path));
-    });
-    expect(writers).toEqual([]);
   });
 
   it('restores focus to the opener when it closes', () => {

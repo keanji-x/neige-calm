@@ -205,10 +205,12 @@
    *
    * On opaque `--paper`, `--text` measured 18.1:1 and `--text-3` 7.8:1 in
    * light / 6.5:1 in dark. The frosted ground also admits 15% of whatever has
-   * scrolled behind it: across 20 scroll positions in both themes, per-pixel
-   * minima were 7.16 light / 5.74 dark. Light therefore still clears AAA 7:1
-   * and dark clears AA 4.5:1. 85% is the smallest measured opacity tier that
-   * recovers light AAA.
+   * scrolled behind it. On real transcript content, with blur spreading the
+   * ink and no large solid dark blocks, 20-position browser audits measured
+   * minima of 7.18 light / 5.74 dark. The analytical worst case, with a solid
+   * full-ink block behind the head, is about 5.6 light / 4.2 dark. This
+   * therefore targets AA; AAA is only established for the measured content
+   * shape. `saturate(1.4)` is not included in the analytical model.
    *
    * This remains a manual browser audit: `tools/styles/check-contrast.mjs`
    * hard-codes token pairs with one underlay per pair, so it cannot express a
@@ -306,9 +308,11 @@
     min-block-size: 0;
     overflow: auto;
     padding: 0;
-    /* The head now lives inside this scroller. Reserve a classic scrollbar's
-       lane so it cannot overlap the head controls, and so the transcript
-       becoming scrollable does not shift the entire column. */
+    /* Reserve a classic scrollbar lane so becoming scrollable does not shift
+       the entire column. This does not affect overlay scrollbars: they may
+       paint over the sticky frosted head, an accepted tradeoff of putting the
+       head inside the scroller so content can pass beneath it. Moving the head
+       outside is the structural fix, but would remove that frosted premise. */
     scrollbar-gutter: stable;
   }
 

@@ -834,7 +834,7 @@ blocked 这个例外的代价由两件事补掉：**危险对话框的初始焦�
 ```
 
   **四页的取值**（由 §6.4 的规则推出，不是逐页选择）：**Today 32**（根，无面包屑；无机器标识）· **cove 62**（无领域祖先 → 无面包屑；有 cwd 标识行）· **Settings 62**（有面包屑；无机器标识）· **wave 92**（三行俱全）。把 `--header-h` 写成静态 92 是旧版的错：四页里只有一页真的是 92，而 `scroll-margin-block-start` 用错了值就会把聚焦的行藏到吸顶页头后面或空出 60px。
-- **吸顶**：`position: sticky` 在主区滚动容器顶部，`--z-sticky`，背景 `--bg`；block-end 的 hairline **只在 `[data-nc-scrolled]` 时出现**，只过渡 `border-color`。**该属性应由主区滚动容器的 `scroll` 监听在 `scrollTop > 0` 时写在主区元素上；该监听尚未实现**。实现时用 `requestAnimationFrame` 节流，一处实现四页复用；不用 `IntersectionObserver`（哨兵元素会在页头高度变化时错位），不用 `animation-timeline`（目标 WebView 支持面未验证）。
+- **吸顶**：`position: sticky` 在主区滚动容器顶部，`--z-sticky`，背景 `--bg`；block-end 的 hairline **只在 `[data-nc-scrolled]` 时出现**，只过渡 `border-color`。**该属性由主区滚动容器的 `scroll` 监听在 `scrollTop > 0` 时写在主区元素上**。监听用 `requestAnimationFrame` 节流，一处实现四页复用；不用 `IntersectionObserver`（哨兵元素会在页头高度变化时错位），不用 `animation-timeline`（目标 WebView 支持面未验证）。
 - **规则**：第一行渲染该实体的**领域祖先**（wave 的祖先是它的 cove；cove 没有祖先，整行省略；Settings 的祖先是工作区；Today 是根）——这是规则，不是逐页选择。第三行没有机器标识就省略。
 - **刻意不做**：滚动时变小（会重排用户正在读的内容）；承载超过一个主操作；居中任何东西；用与页面不同的 surface。
 

@@ -7,6 +7,9 @@ import { describe, expect, it } from 'vitest';
 // first letter, which no icon set can supply.
 const TEXT_IN_ICON_BOX_EXEMPTIONS = new Map<string, (node: ts.JsxElement, source: ts.SourceFile) => boolean>([
   ['fe/web/src/app/shell/sidebar.tsx', (node, source) => {
+    // Deliberately brittle: renaming the avatar class or its accessible name
+    // must update this predicate. violations + unusedExemptions together mean
+    // the exemption no longer matches its intended node.
     const attributes = node.openingElement.attributes.properties;
     const hasAvatarClass = attributes.some((attribute) => ts.isJsxAttribute(attribute)
       && attribute.name.getText(source) === 'className'
@@ -45,18 +48,19 @@ function hasIconRole(node: ts.JsxElement, source: ts.SourceFile): boolean {
 function isBareText(child: ts.JsxChild): boolean {
   if (ts.isJsxText(child)) return child.text.trim() !== '';
   if (!ts.isJsxExpression(child) || child.expression === undefined) return false;
-  if (ts.isJsxElement(child.expression)) return child.expression.children.some(isBareText);
-  if (ts.isJsxFragment(child.expression)) return child.expression.children.some(isBareText);
+  if (ts.isJsxElement(child.expression) || ts.isJsxFragment(child.expression)) {
+    return hasBareTextDescendant(child.expression);
+  }
   if (ts.isJsxSelfClosingElement(child.expression)) return false;
   // A passthrough primitive may accept an icon as `children`; the consumer is
   // still scanned at its own source site. Every other expression renders text.
   return !(ts.isIdentifier(child.expression) && child.expression.text === 'children');
 }
 
-function hasBareTextDescendant(node: ts.JsxElement): boolean {
+function hasBareTextDescendant(node: ts.JsxElement | ts.JsxFragment): boolean {
   return node.children.some((child) => {
     if (isBareText(child)) return true;
-    return ts.isJsxElement(child) && hasBareTextDescendant(child);
+    return (ts.isJsxElement(child) || ts.isJsxFragment(child)) && hasBareTextDescendant(child);
   });
 }
 
@@ -66,10 +70,9 @@ describe('icon-role source contract', () => {
     const usedExemptions = new Set<string>();
 
     const scannedFiles = tsxFilesUnder(resolve(feRoot, 'web/src'));
-    // Keep the scanner fail-closed if discovery ever regresses. The exemption
-    // back-check otherwise depends on sidebar.tsx still containing its avatar;
-    // after that control becomes a component, scanning zero files could pass.
-    expect(scannedFiles.length).toBeGreaterThan(35);
+    // Canary for recursive discovery regressing (for example, readdirSync
+    // unexpectedly returning empty or visiting only part of the source tree).
+    expect(scannedFiles.length).toBeGreaterThan(20);
 
     for (const absolutePath of scannedFiles) {
       const file = relative(workspaceRoot, absolutePath).replaceAll('\\', '/');

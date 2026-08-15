@@ -19,6 +19,9 @@ describe('Icon', () => {
   });
 
   it('centres the reset line work at y=8 after correcting its source paths', () => {
+    // Solving the arc parameters gives centre (7.982, 8.003); the combined
+    // bbox centres at x=7.991, y=8.003. The old paths centred at y=8.383, so
+    // this source correction moves the line work up by 0.38px.
     const { container } = render(<Icon name="reset" />);
     expect([...container.querySelectorAll('path')].map((path) => path.getAttribute('d')))
       .toEqual(['M3 3.12v3.25h3.25', 'M3.35 6.12a5 5 0 1 1 .15 4.1']);
