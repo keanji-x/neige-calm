@@ -757,9 +757,11 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
         state
             .shared_codex_appserver
             .started_thread_params_for_test(),
-        vec![(None, true, CardRole::Worker)],
-        // INV-CHAT-002 currently pins only the ThreadConfig::NoMcp shape. The
-        // calm.wave.update rejection belongs to slice 1b's role gate.
+        vec![(None, true, None)],
+        // The deferred mint API does not receive a card role, so this path can
+        // only observe developer instructions and ThreadConfig::NoMcp. Role is
+        // observable only on the non-deferred path and is locked by
+        // plain_chat_non_deferred_thread_start_uses_worker_role.
         "plain-chat thread/start must select ThreadConfig::NoMcp"
     );
     assert_eq!(
@@ -819,7 +821,7 @@ async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
         state
             .shared_codex_appserver
             .started_thread_params_for_test(),
-        vec![(None, true, CardRole::Worker)],
+        vec![(None, true, Some(CardRole::Worker))],
         "non-deferred PlainChat must start without MCP config as a worker"
     );
 }
