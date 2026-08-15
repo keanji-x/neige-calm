@@ -9,7 +9,7 @@
 // trap would mean you cannot click the next wave without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
 
 import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
@@ -33,7 +33,7 @@ export function DrawerAction({ label, onClick, danger = false, children }: {
   label: string;
   onClick: () => void;
   danger?: boolean;
-  children: ReactNode;
+  children: ReactElement;
 }) {
   return (
     <button

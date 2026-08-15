@@ -77,13 +77,15 @@ describe('INV-SIDEBAR-012 the pin is always reachable, and names its action', ()
     expect(screen.getByRole('button', { name: 'Unpin Open wave' }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('keeps one arrow icon while the accessible action changes', () => {
+  it('keeps the arrow-up icon while the accessible action changes', () => {
     const view = render(<WaveRow wave={wave()} onOpen={vi.fn()} onSetPinned={vi.fn()} nowMs={NOW} />);
     const before = screen.getByRole('button', { name: 'Pin Open wave' }).querySelector('svg');
     expect(before).toBeTruthy();
     view.rerender(<WaveRow wave={wave({ pinnedAt: 10 })} onOpen={vi.fn()} onSetPinned={vi.fn()} nowMs={NOW} />);
     const after = screen.getByRole('button', { name: 'Unpin Open wave' }).querySelector('svg');
-    expect(after?.innerHTML).toBe(before?.innerHTML);
+    const expectedPaths = ['M8 12.5V3.5', 'M4 7.5 8 3.5l4 4'];
+    expect([...before!.querySelectorAll('path')].map((path) => path.getAttribute('d'))).toEqual(expectedPaths);
+    expect([...after!.querySelectorAll('path')].map((path) => path.getAttribute('d'))).toEqual(expectedPaths);
   });
 
   it('renders no pin and no delete unless the surface supplies the callback', () => {

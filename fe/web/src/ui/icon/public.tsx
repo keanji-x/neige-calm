@@ -11,7 +11,7 @@ const paths: Readonly<Record<IconName, readonly string[]>> = Object.freeze({
   'arrow-up': Object.freeze(['M8 12.5V3.5', 'M4 7.5 8 3.5l4 4']),
   plus: Object.freeze(['M8 3.5v9', 'M3.5 8h9']),
   close: Object.freeze(['M4 4l8 8', 'M12 4l-8 8']),
-  reset: Object.freeze(['M3 3.5v3.25h3.25', 'M3.35 6.5a5 5 0 1 1 .15 4.1']),
+  reset: Object.freeze(['M3 3.12v3.25h3.25', 'M3.35 6.12a5 5 0 1 1 .15 4.1']),
 });
 
 export function Icon({ name, size = 'md' }: { name: IconName; size?: 'sm' | 'md' }) {

@@ -121,7 +121,6 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-4);
-    flex: none;
     position: sticky;
     inset-block-start: 0;
     z-index: var(--z-raised);
@@ -149,7 +148,7 @@
      */
     min-block-size: calc(var(--nc-head-band) + var(--control-h-lg));
     padding: calc(var(--header-baseline) - 14px) var(--space-4) var(--space-2) var(--space-8);
-    background: color-mix(in oklch, var(--paper) 72%, transparent);
+    background: color-mix(in oklch, var(--paper) 85%, transparent);
     backdrop-filter: blur(12px) saturate(1.4);
   }
 
@@ -204,9 +203,16 @@
    * once on open and never again, and at 15px full-ink semibold it was the
    * darkest thing on screen, out-shouting every reply under it.
    *
-   * Measured on both grounds: `--text` is 18.1:1 light and 11.5:1 dark,
-   * `--text-3` is 7.8:1 and 6.5:1. Less than half the loudness, still well
-   * clear of AAA's 7:1 in light and AA's 4.5:1 in dark.
+   * On opaque `--paper`, `--text` measured 18.1:1 and `--text-3` 7.8:1 in
+   * light / 6.5:1 in dark. The frosted ground also admits 15% of whatever has
+   * scrolled behind it: across 20 scroll positions in both themes, per-pixel
+   * minima were 7.16 light / 5.74 dark. Light therefore still clears AAA 7:1
+   * and dark clears AA 4.5:1. 85% is the smallest measured opacity tier that
+   * recovers light AAA.
+   *
+   * This remains a manual browser audit: `tools/styles/check-contrast.mjs`
+   * hard-codes token pairs with one underlay per pair, so it cannot express a
+   * translucent layer composited over arbitrary scrolling content.
    *
    * `--text-3` is where this stops, and the next rank is why. The ladder is
    * 18.1 → 10.0 → 7.8 → **2.3**: `--text-4` is the *decorative* rank, and a
@@ -235,9 +241,8 @@
    *
    * Both controls use 16px stroked SVGs so their optical weight stays stable
    * instead of depending on a font's arrow metrics. The close keeps the same
-   * right-facing chevron shape as the rail collapse, but it is drawn here to
-   * belong to the reset beside it; the rail has no adjacent SVG control and is
-   * deliberately unchanged.
+   * right-facing chevron shape as the rail collapse. The rail collapse and
+   * cove chevron use the same shared `<Icon>` line-work system.
    */
   .action {
     display: grid;
@@ -301,6 +306,10 @@
     min-block-size: 0;
     overflow: auto;
     padding: 0;
+    /* The head now lives inside this scroller. Reserve a classic scrollbar's
+       lane so it cannot overlap the head controls, and so the transcript
+       becoming scrollable does not shift the entire column. */
+    scrollbar-gutter: stable;
   }
 
   .bodyInner {

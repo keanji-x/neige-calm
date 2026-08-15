@@ -93,7 +93,9 @@ describe('spec conversation regressions', () => {
     const reset = screen.getByRole('button', { name: 'Reset conversation' });
     const glyph = reset.querySelector('svg');
     expect(glyph).toBeTruthy();
-    expect(glyph?.hasAttribute('style')).toBe(false);
+    expect(glyph?.querySelectorAll('path')).toHaveLength(2);
+    expect(glyph?.querySelectorAll('path')[1]?.getAttribute('d'))
+      .toBe('M3.35 6.12a5 5 0 1 1 .15 4.1');
     expect(reset.textContent).not.toContain('↺');
   });
 

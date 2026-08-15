@@ -98,9 +98,9 @@
     transition: border-color var(--motion-quick) ease-out;
   }
 
-  /* The rule appears only once there is content scrolled underneath it. The
-     attribute is written by the main region's scroll listener — one
-     implementation, four routes. */
+  /* §6.4 assigns the attribute to a shared main-region scroll listener, but
+     that writer has not been implemented yet, so this rule does not currently
+     trigger. It is the receiving side of that pending four-route seam. */
   [data-nc-scrolled] .header {
     border-block-end-color: var(--hairline);
   }

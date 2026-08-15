@@ -1,8 +1,10 @@
 # Stroked icons
 
 `ui/icon` keeps icon shape separate from the geometry of its control box. Every
-icon uses the same 16×16 view box, 1.5px rounded stroke, visual centre, and
-`currentColor`; the module CSS alone selects the 14px or 16px rendered size.
+icon shares one line drawing and one 0.85 optical-inset ratio in a 16×16 view
+box. The source `stroke-width` is 1.5; after the inset and viewBox-to-viewport
+mapping it renders as 1.275px at md (16px) and 1.116px at sm (14px).
+`currentColor` supplies the colour and module CSS selects the rendered size.
 
 Text glyphs cannot provide that consistency because their visible ink is owned
 by the font. In a real browser at 1440×900, with the same 28px box and 16px font

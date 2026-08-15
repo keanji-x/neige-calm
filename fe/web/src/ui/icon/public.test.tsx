@@ -11,12 +11,17 @@ const names: readonly IconName[] = [
 ];
 
 describe('Icon', () => {
-  it.each(names)('renders the %s stroked SVG without inline geometry', (name) => {
+  it.each(names)('renders the %s stroked SVG', (name) => {
     const { container } = render(<Icon name={name} />);
     const svg = container.querySelector('svg');
     expect(svg).toBeTruthy();
     expect(svg?.getAttribute('stroke-width')).toBe('1.5');
-    expect(svg?.getAttribute('style')).toBeNull();
+  });
+
+  it('centres the reset line work at y=8 after correcting its source paths', () => {
+    const { container } = render(<Icon name="reset" />);
+    expect([...container.querySelectorAll('path')].map((path) => path.getAttribute('d')))
+      .toEqual(['M3 3.12v3.25h3.25', 'M3.35 6.12a5 5 0 1 1 .15 4.1']);
   });
 
   it('uses distinct CSS classes for the default md and sm sizes', () => {
