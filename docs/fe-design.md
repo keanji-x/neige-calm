@@ -168,7 +168,7 @@ export const RAIL_COLLAPSE_REM = 60;
 
 ### 0.3 `data-*` 属性一律 `data-nc-` 前缀（**全仓重命名**）
 
-`auditDataAttributes` 拒绝生产 TSX 里除 `data-theme` / `data-testid` / `data-nc-<kebab-case>` 之外的任何 `data-*`。因此本文用到的属性**穷尽为六个**：`data-nc-action`（`primary|secondary|tertiary|destructive`，动作按钮的强调档，§4.1）、`data-nc-role`（`row|icon|menu-item|tab|cell`，组件按钮的种类，§4.1）、`data-nc-state`（`open|selected|checked|busy`）、`data-nc-header-rows`（`1|2|3`，页头实际渲染的行数，§6.4）、`data-nc-scrolled`、`data-nc-page-title`。
+`auditDataAttributes` 拒绝生产 TSX 里除 `data-theme` / `data-testid` / `data-nc-<kebab-case>` 之外的任何 `data-*`。因此本文用到的属性**穷尽为六个**：`data-nc-action`（`primary|secondary|tertiary|destructive`，动作按钮的强调档，§4.1）、`data-nc-role`（`row|icon|menu-item|tab|cell`，组件按钮的种类，§4.1）、`data-nc-state`（`open|selected|checked|busy|running|done|failed`）、`data-nc-header-rows`（`1|2|3`，页头实际渲染的行数，§6.4）、`data-nc-scrolled`、`data-nc-page-title`。
 
 **现有代码用的是 `data-variant="danger|primary"`**（唯一一处生产写法在 `web/src/ui/dialog/public.tsx:129`，且它在 `repository-check.mjs` 的 `LEGACY_DATA_ATTRIBUTES` 里有一条精确到 `web/src/ui/dialog/public.tsx:data-variant` 的豁免）。选定的名字是 `data-nc-action`，值用 `destructive` 而不是 `danger`——与 §4 的四档词汇同名，一个词汇表管到底。**这是一次全仓重命名，三个落点**：改 `dialog/public.tsx:129`（需要 §0.0 的 trailer）；删掉 `tools/styles/repository-check.mjs` 的那条 legacy 豁免（`tools/` 不是 readonly，不需要 trailer；**豁免留着不删会被"未用即红"判负**，§9.2）；改 `web/src/styles/README.md:33` 里把 `data-variant` 描述成"冻结接口中既有的遗留项"的那句（README 在 readonly 目录下，也要 trailer）。**没有任何测试断言 `data-variant`**——逐条 grep 过全仓，只有上面三处，所以这一步不牵动契约测试。
 

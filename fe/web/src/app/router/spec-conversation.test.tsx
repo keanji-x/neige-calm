@@ -24,7 +24,7 @@ function ok(body: unknown): ApiTransportResponse {
 function harnessRows(count: number) {
   return Array.from({ length: count }, (_, index) => ({
     id: index + 1, runtime_id: 'runtime', card_id: CARD.id, wave_id: WAVE.id, thread_id: 'thread',
-    turn_id: null, item_uuid: null, item_type: 'agent_message', method: 'item/completed',
+    turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
     params: JSON.stringify({ item: { text: `reply ${index}` } }), created_at_ms: index + 1,
   }));
 }
@@ -212,6 +212,52 @@ describe('spec conversation regressions', () => {
     await router.navigate({ to: '/wave/w2' });
     await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+  });
+
+  it('renders a server-sent reply from the history fixture', async () => {
+    setup((request) => request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined);
+    await openConversation();
+    expect(await screen.findByText('reply 0')).toBeTruthy();
+  });
+
+  it('keeps a completed action in its started position', async () => {
+    const rows = [
+      {
+        ...harnessRows(1)[0], id: 1, item_uuid: 'command-1', item_type: 'commandExecution',
+        method: 'item/started', params: JSON.stringify({ item: { command: 'npm test' } }),
+      },
+      {
+        ...harnessRows(1)[0], id: 2, item_uuid: 'message-1',
+        params: JSON.stringify({ completedAtMs: 20, item: { text: 'interleaved reply' } }),
+      },
+      {
+        ...harnessRows(1)[0], id: 3, item_uuid: 'command-1', item_type: 'commandExecution',
+        params: JSON.stringify({ completedAtMs: 30, item: { command: 'npm test', exitCode: 0 } }),
+      },
+    ];
+    setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
+    await openConversation();
+    const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
+    const actionIndex = drawer.textContent?.indexOf('Ran') ?? -1;
+    const replyIndex = drawer.textContent?.indexOf('interleaved reply') ?? -1;
+    expect(actionIndex).toBeGreaterThanOrEqual(0);
+    expect(replyIndex).toBeGreaterThanOrEqual(0);
+    expect(actionIndex).toBeLessThan(replyIndex);
+  });
+
+  it('drops a completed tail thought when an optimistic message follows it', async () => {
+    const thought = {
+      ...harnessRows(1)[0], item_uuid: 'thought-1', item_type: 'reasoning',
+      params: JSON.stringify({ item: { summary: [] } }),
+    };
+    setup((request) => request.path.includes('/harness/items') ? ok([thought]) : undefined);
+    await openConversation();
+    expect(screen.getByText('Thought')).toBeTruthy();
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    fireEvent.change(field, { target: { value: 'next message' } });
+    fireEvent.submit(field.closest('form')!);
+    expect(await screen.findByText('next message')).toBeTruthy();
+    expect(screen.queryByText('Thought')).toBeNull();
   });
 
   it('loads only the first history page until the user asks for earlier rows', async () => {
