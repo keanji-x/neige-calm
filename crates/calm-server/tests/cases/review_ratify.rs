@@ -678,6 +678,47 @@ async fn post_ratify(boot: &Boot, decision: &str) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
+async fn plain_chat_worker_card_cannot_ratify() {
+    let boot = boot().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.wave_id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        })
+        .await
+        .unwrap();
+    boot.card_role_cache
+        .insert(card.id.clone(), CardRole::Worker, boot.wave_id.clone());
+    let body = serde_json::to_vec(&json!({"decision": "grant"})).unwrap();
+    let response = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/cards/{}/ratify", card.id))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("not a spec codex card")),
+        "{body}"
+    );
+}
+
+#[tokio::test]
 async fn ratify_route_rejects_non_pending_wave_for_all_decisions_without_event() {
     let boot = boot().await;
 

@@ -216,11 +216,6 @@ pub struct SpecHarnessStartOperationPayload {
     pub profile: HarnessProfile,
 }
 
-fn card_is_plain_chat(card: &Card) -> bool {
-    card.kind == "codex"
-        && card.payload.get("harness_profile").and_then(Value::as_str) == Some("plain_chat")
-}
-
 pub(crate) fn render_spec_developer_instructions(
     wave_id: &str,
     workflow_descriptor: Option<&WorkflowDescriptor>,
@@ -306,9 +301,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
-        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
-        }
+        let wave = self
+            .repo
+            .wave_get(&payload.wave_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("wave {}", payload.wave_id)))?;
         let Some(card) = self.repo.card_get(payload.spec_card_id.as_str()).await? else {
             return Err(CalmError::NotFound(format!(
                 "card {}",
@@ -323,7 +320,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         }
         let expected_role = match payload.profile {
             HarnessProfile::Spec => CardRole::Spec,
-            HarnessProfile::PlainChat if card_is_plain_chat(&card) => CardRole::Worker,
+            HarnessProfile::PlainChat
+                if crate::plain_chat::card_is_plain_chat(
+                    &card,
+                    self.card_role_cache.get(&card.id),
+                    true,
+                ) =>
+            {
+                CardRole::Worker
+            }
             HarnessProfile::PlainChat => {
                 return Err(CalmError::BadRequest(format!(
                     "card {} is not marked for plain chat",
@@ -339,6 +344,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 }
             };
             return Err(CalmError::BadRequest(message));
+        }
+        if expected_role == CardRole::Spec && wave.purpose.as_deref() == Some("cove-chat") {
+            return Err(CalmError::Forbidden(format!(
+                "spec harness is disabled for cove chat wave {}",
+                wave.id
+            )));
         }
         if !self.daemon.is_running() {
             // #953 — same variant/status; message carries the live failure

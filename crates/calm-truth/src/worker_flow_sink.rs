@@ -121,6 +121,7 @@ mod tests {
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
+            None,
             repo.wave_cove_cache(),
         )
         .await

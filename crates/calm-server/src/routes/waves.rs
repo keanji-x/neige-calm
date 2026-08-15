@@ -731,7 +731,7 @@ async fn create_wave_with_spec_harness(
                     .await?;
                 }
 
-                let wave = wave_create_tx(tx, p, write_for_tx.cove_cache()).await?;
+                let wave = wave_create_tx(tx, p, None, write_for_tx.cove_cache()).await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
                 let goal = wave.title.trim().to_string();
