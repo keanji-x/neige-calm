@@ -162,8 +162,8 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
    * for a dialog, which is a thing that was in the way and is now gone. It is
    * wrong for a panel attached to an edge: the whole point of an edge panel is
    * that it is *still there*, pushed off-screen, and an instant disappearance
-   * says it was destroyed. The control says the same thing — `›`, the direction
-   * it goes, the same glyph the rail's own collapse uses.
+   * says it was destroyed. The control says the same thing — a right-facing
+   * chevron, the direction it goes.
    *
    * So closing holds the element mounted for one animation. Reduced motion
    * skips the phase entirely rather than waiting on an `animationend` that a
@@ -193,7 +193,18 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
               title="Close"
               onClick={onClose}
             >
-              ›
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+                focusable="false"
+              >
+                <path d="M6 3.5 10.5 8 6 12.5" />
+              </svg>
             </button>
           </div>
         </div>

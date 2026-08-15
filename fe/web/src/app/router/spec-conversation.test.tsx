@@ -91,7 +91,9 @@ describe('spec conversation regressions', () => {
     setup();
     await openConversation();
     const reset = screen.getByRole('button', { name: 'Reset conversation' });
-    expect(reset.querySelector('svg')).toBeTruthy();
+    const glyph = reset.querySelector('svg');
+    expect(glyph).toBeTruthy();
+    expect(glyph?.hasAttribute('style')).toBe(false);
     expect(reset.textContent).not.toContain('↺');
   });
 

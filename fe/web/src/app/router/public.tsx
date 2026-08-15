@@ -445,12 +445,11 @@ function useConversationPanel(
          * It is not offered when there is nothing to reset.
          */
         headAction={open === null ? undefined : (
-          /* An explicit stroke keeps the reset mark optically stable beside
-             the shared text chevron regardless of the active font. */
+          /* The caller supplies the reset shape; DrawerAction owns its box and
+             glyph geometry so adjacent head controls stay one family. */
           <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
             <svg
               viewBox="0 0 16 16"
-              style={{ inlineSize: 'var(--glyph)', blockSize: 'var(--glyph)' }}
               fill="none"
               stroke="currentColor"
               strokeWidth="1.5"

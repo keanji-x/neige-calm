@@ -227,8 +227,11 @@
    * A head control: the same 28px square the close is, because two controls on
    * one row that differ in size read as two ranks, and these are one.
    *
-   * The caller supplies an SVG so its stroke and 16px geometry stay stable
-   * beside the close control instead of depending on a font's arrow metrics.
+   * Both controls use 16px stroked SVGs so their optical weight stays stable
+   * instead of depending on a font's arrow metrics. The close keeps the same
+   * right-facing chevron shape as the rail collapse, but it is drawn here to
+   * belong to the reset beside it; the rail has no adjacent SVG control and is
+   * deliberately unchanged.
    */
   .action {
     display: grid;
@@ -266,6 +269,14 @@
     color: var(--error-text);
   }
 
+  /* Glyph geometry belongs to the drawer's control boxes; callers supply only
+     the shape so they cannot make adjacent head controls drift in size. */
+  .action > svg,
+  .close > svg {
+    inline-size: var(--glyph);
+    block-size: var(--glyph);
+  }
+
   /* The hit area keeps its full 28px; `.headActions` is what places it on the
      title's first line (§5, 2.5.8). */
   .close {
@@ -275,7 +286,6 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
