@@ -18,6 +18,7 @@
 import {
   isRunning, lifecycleLabel, needsUserAttention, waveDisplayTitle, type Wave,
 } from '../../../../../core/domain/wave.ts';
+import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './row.module.css';
 
 export type WaveRowVariant = 'default' | 'compact' | 'panel' | 'rail';
@@ -175,14 +176,12 @@ export function WaveRow({
           onClick={() => onSetPinned(wave.id, !pinned)}
         >
           {/*
-            The glyph names the *action*, not the state — so it flips. Unpinned
-            offers ↑ ("lift this to the top"); pinned offers ↓ ("put it back"),
-            which is the toggle's off-switch and the reason §4.5 keeps it
-            visible at rest in the first place. Direction is the whole signal:
-            still one stroke, still one weight, still greyscale — no
-            hollow/solid pair, and no second channel.
+            The shared arrow stays stable across both states. The accessible
+            name carries Pin versus Unpin, while aria-pressed and §4.5's
+            permanent visibility carry the toggle state without introducing a
+            second icon family or a hollow/solid pair.
           */}
-          {pinned ? '↓' : '↑'}
+          <Icon name="arrow-up" size="sm" />
         </button>
       )}
       {onDelete !== undefined && (
@@ -193,7 +192,7 @@ export function WaveRow({
           aria-label={`Delete ${title}`}
           onClick={() => onDelete(wave.id)}
         >
-          ×
+          <Icon name="close" size="sm" />
         </button>
       )}
     </div>

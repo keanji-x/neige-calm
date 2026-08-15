@@ -18,6 +18,7 @@ import type { Cove } from '../../../../../core/domain/cove.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { deleteCoveCopy } from '../../../ui/confirm-dialog/copy.ts';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelAction, PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
@@ -119,7 +120,7 @@ export function CovePage({
             title="Delete cove"
             onClick={() => deletion.request(cove.id)}
           >
-            ×
+            <Icon name="close" />
           </button>
         }
       />
@@ -151,7 +152,7 @@ export function CovePage({
           <PanelCard>
             <PanelModule
               title="Waves"
-              action={<PanelAction label="New wave" onClick={onRequestNewWave}>+</PanelAction>}
+              action={<PanelAction label="New wave" onClick={onRequestNewWave}><Icon name="plus" size="sm" /></PanelAction>}
             >
               {waveList}
             </PanelModule>

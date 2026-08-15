@@ -294,7 +294,6 @@
     block-size: var(--control-h-sm);
     padding: 0;
     border-radius: var(--radius-sm);
-    font-size: var(--glyph-sm);
     line-height: var(--leading-none);
     color: var(--text-3);
     opacity: 0;

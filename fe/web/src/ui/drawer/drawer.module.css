@@ -160,16 +160,19 @@
    * the buttons — not the text — decided how tall the head was, which is what
    * put its bottom edge 11.5px below the page header's.
    *
-   * `--space-6` between them is §4.3's minimum distance between a destructive
-   * control and a benign one. The reset is *before* the close rather than after
-   * it: §4.3 wants the danger last in its group, but the corner of a panel is
-   * where a pointer goes to dismiss things, and a destructive control under a
-   * dismiss reflex is a worse failure than an ordering one.
+   * §4.3 requires at least `--space-6` (12px) between destructive and benign
+   * actions. This 8px gap is a user-confirmed exception: each 16px stroked icon
+   * is centred in a 28px box with 6px on either side, so a 12px box gap reads as
+   * 24px of visual whitespace and the two controls no longer look like a group.
+   * The reset is *before* the close rather than after it: §4.3 wants the danger
+   * last in its group, but the corner of a panel is where a pointer goes to
+   * dismiss things, and a destructive control under a dismiss reflex is a
+   * worse failure than an ordering one.
    */
   .headActions {
     display: flex;
     align-items: center;
-    gap: var(--space-6);
+    gap: var(--space-4);
     flex: none;
     margin-block: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
   }

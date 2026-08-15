@@ -426,7 +426,7 @@ function useConversationPanel(
        CARDS modules already use, which is why this needed no new mechanism. */
     action: scope === null
       ? undefined
-      : <PanelAction label="New conversation" onClick={start}>+</PanelAction>,
+      : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     drawer: (
       <>
       <Drawer
