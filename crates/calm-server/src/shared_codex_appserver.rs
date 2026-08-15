@@ -621,7 +621,6 @@ pub fn bounded_exponential_backoff(initial: Duration, max: Duration, attempt: u6
 
 pub type NotificationFanout = broadcast::Sender<Notification>;
 
-
 pub struct SharedCodexAppServer {
     sock: PathBuf,
     kernel_mcp_socket_path: PathBuf,
