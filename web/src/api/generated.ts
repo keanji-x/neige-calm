@@ -256,6 +256,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/coves/{cove_id}/chat-wave/ensure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ensure the cove's single chat wave exists.
+         * @description The cwd is selected only while creating the wave: it is the claimed path
+         *     with the fewest path components, breaking ties lexicographically. Cove
+         *     folder claims cannot be equal, ancestors, or descendants of one another,
+         *     so "closest to the cove root" is defined here as this deterministic shallow
+         *     path ordering rather than containment. Once created, later folder claims or
+         *     changes deliberately do not update the wave cwd, so an existing conversation
+         *     cannot drift between working directories from one message to the next.
+         */
+        post: operations["ensure_cove_chat_wave"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/coves/{cove_id}/folders": {
         parameters: {
             query?: never;
@@ -3084,6 +3110,56 @@ export interface operations {
             };
             /** @description Internal error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    ensure_cove_chat_wave: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cove id */
+                cove_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Existing chat wave */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Wave"];
+                };
+            };
+            /** @description Chat wave created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Wave"];
+                };
+            };
+            /** @description Cove not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Cove has no claimed folder */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

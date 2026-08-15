@@ -915,6 +915,69 @@
         }
       }
     },
+    "/api/coves/{cove_id}/chat-wave/ensure": {
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "Ensure the cove's single chat wave exists.",
+        "description": "The cwd is selected only while creating the wave: it is the claimed path\nwith the fewest path components, breaking ties lexicographically. Cove\nfolder claims cannot be equal, ancestors, or descendants of one another,\nso \"closest to the cove root\" is defined here as this deterministic shallow\npath ordering rather than containment. Once created, later folder claims or\nchanges deliberately do not update the wave cwd, so an existing conversation\ncannot drift between working directories from one message to the next.",
+        "operationId": "ensure_cove_chat_wave",
+        "parameters": [
+          {
+            "name": "cove_id",
+            "in": "path",
+            "description": "Cove id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Existing chat wave",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Wave"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Chat wave created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Wave"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Cove not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Cove has no claimed folder",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/coves/{cove_id}/folders": {
       "get": {
         "tags": [

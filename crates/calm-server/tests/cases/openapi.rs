@@ -16,6 +16,7 @@ fn document_contains_every_annotated_path() {
         "/api/coves",
         "/api/coves/{id}",
         "/api/coves/{cove_id}/waves",
+        "/api/coves/{cove_id}/chat-wave/ensure",
         "/api/waves",
         "/api/waves/{id}",
         "/api/waves/{wave_id}/cards",
