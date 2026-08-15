@@ -57,6 +57,9 @@ try {
     await page.evaluate((value) => { globalThis.document.documentElement.dataset.theme = value; }, theme);
     const foreground = rgb(await title.evaluate((element) => globalThis.getComputedStyle(element).color));
     const maximum = await scroll.evaluate((element) => element.scrollHeight - element.clientHeight);
+    if (maximum <= 0) {
+      throw new Error('Pass a URL with a transcript long enough for the drawer to actually scroll.');
+    }
     let minimum = Number.POSITIVE_INFINITY;
 
     for (let index = 0; index < 20; index += 1) {

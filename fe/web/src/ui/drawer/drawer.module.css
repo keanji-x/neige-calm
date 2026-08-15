@@ -207,10 +207,12 @@
    * light / 6.5:1 in dark. The frosted ground also admits 15% of whatever has
    * scrolled behind it. On real transcript content, with blur spreading the
    * ink and no large solid dark blocks, 20-position browser audits measured
-   * minima of 7.18 light / 5.74 dark. The analytical worst case, with a solid
-   * full-ink block behind the head, is about 5.6 light / 4.2 dark. This
-   * therefore targets AA; AAA is only established for the measured content
-   * shape. `saturate(1.4)` is not included in the analytical model.
+   * minima of 7.18 light / 5.74 dark: AAA in light and AA in dark. The
+   * analytical worst case, with a large solid full-ink block sliding behind
+   * the head, is about 5.6 light / 4.2 dark. Light still clears AA, but dark is
+   * below AA's 4.5 threshold. The guarantee here is therefore AA/AAA for the
+   * measured real-content shape; a dark-theme full-ink block is a known
+   * analytical boundary. `saturate(1.4)` is not included in that model.
    *
    * This remains a manual browser audit: `tools/styles/check-contrast.mjs`
    * hard-codes token pairs with one underlay per pair, so it cannot express a

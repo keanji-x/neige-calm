@@ -33,8 +33,14 @@ function tsxFilesUnder(directory: string): string[] {
   });
 }
 
-function hasIconRole(node: ts.JsxElement, source: ts.SourceFile): boolean {
-  return node.openingElement.attributes.properties.some((attribute) => ts.isJsxAttribute(attribute)
+type JsxTag = ts.JsxElement | ts.JsxSelfClosingElement;
+
+function attributesOf(node: JsxTag): ts.JsxAttributes {
+  return ts.isJsxElement(node) ? node.openingElement.attributes : node.attributes;
+}
+
+function hasIconRole(node: JsxTag, source: ts.SourceFile): boolean {
+  return attributesOf(node).properties.some((attribute) => ts.isJsxAttribute(attribute)
     && attribute.name.getText(source) === 'data-nc-role'
     && attribute.initializer !== undefined
     && (ts.isStringLiteral(attribute.initializer)
@@ -45,16 +51,20 @@ function hasIconRole(node: ts.JsxElement, source: ts.SourceFile): boolean {
         && attribute.initializer.expression.text === 'icon'));
 }
 
+function expressionHasBareText(expression: ts.Expression): boolean {
+  if (ts.isJsxElement(expression) || ts.isJsxFragment(expression)) {
+    return hasBareTextDescendant(expression);
+  }
+  if (ts.isJsxSelfClosingElement(expression)) return false;
+  // A passthrough primitive may accept an icon as `children`; the consumer is
+  // still scanned at its own source site. Every other expression renders text.
+  return !(ts.isIdentifier(expression) && expression.text === 'children');
+}
+
 function isBareText(child: ts.JsxChild): boolean {
   if (ts.isJsxText(child)) return child.text.trim() !== '';
   if (!ts.isJsxExpression(child) || child.expression === undefined) return false;
-  if (ts.isJsxElement(child.expression) || ts.isJsxFragment(child.expression)) {
-    return hasBareTextDescendant(child.expression);
-  }
-  if (ts.isJsxSelfClosingElement(child.expression)) return false;
-  // A passthrough primitive may accept an icon as `children`; the consumer is
-  // still scanned at its own source site. Every other expression renders text.
-  return !(ts.isIdentifier(child.expression) && child.expression.text === 'children');
+  return expressionHasBareText(child.expression);
 }
 
 function hasBareTextDescendant(node: ts.JsxElement | ts.JsxFragment): boolean {
@@ -62,6 +72,16 @@ function hasBareTextDescendant(node: ts.JsxElement | ts.JsxFragment): boolean {
     if (isBareText(child)) return true;
     return (ts.isJsxElement(child) || ts.isJsxFragment(child)) && hasBareTextDescendant(child);
   });
+}
+
+function hasBareTextChildrenAttribute(node: ts.JsxSelfClosingElement, source: ts.SourceFile): boolean {
+  const attribute = node.attributes.properties.find((property) => ts.isJsxAttribute(property)
+    && property.name.getText(source) === 'children');
+  if (!attribute || !ts.isJsxAttribute(attribute) || attribute.initializer === undefined) return false;
+  if (ts.isStringLiteral(attribute.initializer)) return attribute.initializer.text.trim() !== '';
+  return ts.isJsxExpression(attribute.initializer)
+    && attribute.initializer.expression !== undefined
+    && expressionHasBareText(attribute.initializer.expression);
 }
 
 describe('icon-role source contract', () => {
@@ -79,10 +99,13 @@ describe('icon-role source contract', () => {
       const source = ts.createSourceFile(file, readFileSync(absolutePath, 'utf8'),
         ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
       const visit = (node: ts.Node) => {
-        if (ts.isJsxElement(node) && hasIconRole(node, source)
-          && hasBareTextDescendant(node)) {
+        const iconWithBareText = ts.isJsxElement(node)
+          ? hasIconRole(node, source) && hasBareTextDescendant(node)
+          : ts.isJsxSelfClosingElement(node)
+            && hasIconRole(node, source) && hasBareTextChildrenAttribute(node, source);
+        if (iconWithBareText) {
           const exemption = TEXT_IN_ICON_BOX_EXEMPTIONS.get(file);
-          if (exemption?.(node, source)) usedExemptions.add(file);
+          if (ts.isJsxElement(node) && exemption?.(node, source)) usedExemptions.add(file);
           else violations.push(`${file}:${source.getLineAndCharacterOfPosition(node.pos).line + 1}`);
         }
         ts.forEachChild(node, visit);

@@ -19,7 +19,11 @@ describe('page-header scroll seam source contract', () => {
     // false positive over missing an unfamiliar write form. Delete this test
     // when the shared §6.4 listener is implemented.
     const spellings = /data-nc-scrolled|ncScrolled/;
-    const matches = productionTypeScriptUnder(sourceRoot)
+    const files = productionTypeScriptUnder(sourceRoot);
+    // Canary against directory discovery being silently narrowed while still
+    // finding enough local production files to leave the scan green.
+    expect(files.length).toBeGreaterThan(20);
+    const matches = files
       .filter((path) => spellings.test(readFileSync(path, 'utf8')));
     expect(matches).toEqual([]);
   });
