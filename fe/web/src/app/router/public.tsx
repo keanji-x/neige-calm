@@ -48,6 +48,7 @@ import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
 import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
@@ -445,22 +446,9 @@ function useConversationPanel(
          * It is not offered when there is nothing to reset.
          */
         headAction={open === null ? undefined : (
-          /* The caller supplies the reset shape; DrawerAction owns its box and
-             glyph geometry so adjacent head controls stay one family. */
+          /* DrawerAction owns the box; the shared icon owns glyph geometry. */
           <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
-            <svg
-              viewBox="0 0 16 16"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-              focusable="false"
-            >
-              <path d="M3 3.5v3.25h3.25" />
-              <path d="M3.35 6.5a5 5 0 1 1 .15 4.1" />
-            </svg>
+            <Icon name="reset" />
           </DrawerAction>
         )}
         footer={open === null ? undefined : (

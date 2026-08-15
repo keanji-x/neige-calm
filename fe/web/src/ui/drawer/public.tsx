@@ -11,6 +11,7 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 
+import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
@@ -193,18 +194,7 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
               title="Close"
               onClick={onClose}
             >
-              <svg
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-                focusable="false"
-              >
-                <path d="M6 3.5 10.5 8 6 12.5" />
-              </svg>
+              <Icon name="chevron-right" />
             </button>
           </div>
         </div>

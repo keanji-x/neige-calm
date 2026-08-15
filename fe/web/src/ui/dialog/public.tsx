@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, type KeyboardEventHandler, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
+import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 
 export interface DialogChildView { title: ReactNode; body: ReactNode; onEscape?: () => void }
@@ -134,7 +135,7 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
       {headerTitle && (showingView || !hideTitleRow) && <header className="dialog-header"><span id={titleId}>{headerTitle}</span>{(showingView || !hideClose) && <button type="button" data-nc-role="icon" aria-label="Close" onClick={() => {
         if (view) { if (view.onEscape) view.onEscape(); else popView(); }
         else onClose();
-      }}>×</button>}</header>}
+      }}><Icon name="close" /></button>}</header>}
       <div className="dialog-body" style={showingView ? { display: 'none' } : undefined}>{children}</div>
       {showingView && <div className="dialog-body dialog-child-view">{view.body}</div>}
     </div>

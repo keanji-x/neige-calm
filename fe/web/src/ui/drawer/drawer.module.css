@@ -269,14 +269,6 @@
     color: var(--error-text);
   }
 
-  /* Glyph geometry belongs to the drawer's control boxes; callers supply only
-     the shape so they cannot make adjacent head controls drift in size. */
-  .action > svg,
-  .close > svg {
-    inline-size: var(--glyph);
-    block-size: var(--glyph);
-  }
-
   /* The hit area keeps its full 28px; `.headActions` is what places it on the
      title's first line (§5, 2.5.8). */
   .close {

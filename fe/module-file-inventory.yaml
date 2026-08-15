@@ -114,6 +114,7 @@
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
 - { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }
 - { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }
+- { path: fe/web/src/ui/icon, type: directory, owner: ui/icon, readonly: false, basis: "design §6.7 描边图标集；字形墨迹在同字号下差 1.75 倍 (#997)" }
 - { path: fe/web/src/features/chat, type: directory, owner: features/chat, readonly: false, basis: "对话列表；数据源为 WorkerSessionProjection + HarnessItem，端点未落地 (#997)" }
 
 # Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).
