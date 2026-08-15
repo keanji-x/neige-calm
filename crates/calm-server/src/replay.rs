@@ -485,12 +485,21 @@ pub async fn force_spec_phase(
         .write()
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !crate::routes::cards::card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {card_id} is not a spec codex card",
         )));
     }
-
+    let wave = repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+    if role == CardRole::Spec && wave.purpose.as_deref() == Some("cove-chat") {
+        return Err(CalmError::Forbidden(format!(
+            "spec harness is disabled for cove chat wave {}",
+            wave.id
+        )));
+    }
     // Issue #682 review — take the same per-card recovery lock
     // `ensure_live_spec_harness` (`/spec/input` lazy recovery) and
     // `/spec/reset` use, and hold it through stand-up + force. Without it

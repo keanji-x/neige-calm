@@ -74,6 +74,7 @@ async fn seed_wave_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<St
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await

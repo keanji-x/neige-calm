@@ -165,6 +165,7 @@ async fn closure_error_rolls_back_entity_and_event_rows() {
                         attach_folder: false,
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
+                    None,
                     &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
                 .await?;
@@ -335,6 +336,7 @@ async fn replaying_events_table_yields_same_envelope_sequence_as_live_subscriber
                         attach_folder: false,
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
+                    None,
                     &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
                 .await?;
@@ -451,6 +453,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                             attach_folder: false,
                             theme: calm_server::routes::theme::RequestTheme::default_dark(),
                         },
+                        None,
                         &calm_server::wave_cove_cache::WaveCoveCache::new(),
                     )
                     .await?;
@@ -523,6 +526,7 @@ async fn replay_then_live_dedup_under_concurrent_write() {
                             attach_folder: false,
                             theme: calm_server::routes::theme::RequestTheme::default_dark(),
                         },
+                        None,
                         &calm_server::wave_cove_cache::WaveCoveCache::new(),
                     )
                     .await?;
@@ -659,6 +663,7 @@ async fn apply_op(repo: &dyn Repo, bus: &EventBus, state: &mut PropState, op: &O
                                 attach_folder: false,
                                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
                             },
+                            None,
                             &calm_server::wave_cove_cache::WaveCoveCache::new(),
                         )
                         .await?;

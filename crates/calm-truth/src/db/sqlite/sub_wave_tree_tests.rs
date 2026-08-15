@@ -32,6 +32,7 @@ async fn seed_wave(repo: &SqlxRepo, cove_id: &str, suffix: &str) -> String {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await

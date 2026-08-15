@@ -306,9 +306,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
-        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
-        }
+        let wave = self
+            .repo
+            .wave_get(&payload.wave_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("wave {}", payload.wave_id)))?;
         let Some(card) = self.repo.card_get(payload.spec_card_id.as_str()).await? else {
             return Err(CalmError::NotFound(format!(
                 "card {}",
@@ -339,6 +341,12 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 }
             };
             return Err(CalmError::BadRequest(message));
+        }
+        if expected_role == CardRole::Spec && wave.purpose.as_deref() == Some("cove-chat") {
+            return Err(CalmError::Forbidden(format!(
+                "spec harness is disabled for cove chat wave {}",
+                wave.id
+            )));
         }
         if !self.daemon.is_running() {
             // #953 — same variant/status; message carries the live failure

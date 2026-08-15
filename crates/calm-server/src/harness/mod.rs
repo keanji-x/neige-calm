@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::card_role_cache::CardRoleCache;
 use crate::db::{Repo, write_in_tx_typed};
 use crate::dispatcher;
-use crate::error::Result;
+use crate::error::{CalmError, Result};
 use crate::event::{Event, EventBus};
 use crate::ids::{CardId, WaveId};
 use crate::model::CardRole;
@@ -108,6 +108,19 @@ pub async fn spawn_recovered_harness(
     let Some(card) = repo.card_get(&runtime.card_id).await? else {
         return Ok(RecoveryOutcome::Skipped);
     };
+    let role = repo.card_role_get(card.id.as_str()).await?;
+    if role == Some(CardRole::Spec) {
+        let wave = repo
+            .wave_get(card.wave_id.as_str())
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+        if wave.purpose.as_deref() == Some("cove-chat") {
+            return Err(CalmError::Forbidden(format!(
+                "spec harness is disabled for cove chat wave {}",
+                wave.id
+            )));
+        }
+    }
     let Some(state_json) = runtime.handle_state_json.clone() else {
         return Ok(RecoveryOutcome::Skipped);
     };

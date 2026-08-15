@@ -319,6 +319,19 @@ impl WorkerFlowDriver {
         let Some(source_kind) = source_kind_for_runtime(&runtime) else {
             return Ok(());
         };
+        // This is the single fail-closed boundary shared by boot and every
+        // runtime/card event entry point. `source_kind_for_runtime` cannot do
+        // this because the persisted card payload is not part of its input.
+        let card = self
+            .repo
+            .card_get(&runtime.card_id)
+            .await
+            .map_err(|e| CoreError::Internal(format!("card_get: {e}")))?
+            .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
+        if card.payload.get("harness_profile").and_then(|v| v.as_str()) == Some("plain_chat") {
+            self.cancel_card(&runtime.card_id).await;
+            return Ok(());
+        }
         match source_kind {
             FlowSourceKind::Codex if runtime.thread_id.is_none() => {
                 tracing::warn!(
@@ -360,12 +373,6 @@ impl WorkerFlowDriver {
             }
         }
 
-        let card = self
-            .repo
-            .card_get(&runtime.card_id)
-            .await
-            .map_err(|e| CoreError::Internal(format!("card_get: {e}")))?
-            .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
         let session = session_from_runtime(&runtime, &card);
         let stop = CancellationToken::new();
         let sink = self.sink.clone();

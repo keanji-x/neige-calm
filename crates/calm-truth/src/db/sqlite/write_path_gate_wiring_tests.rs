@@ -37,6 +37,7 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await

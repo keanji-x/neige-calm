@@ -70,6 +70,16 @@ pub(crate) async fn card_scope(
     })
 }
 
+/// Whether the persisted card shape is allowed to use the headless harness
+/// routes. Unknown/malformed profile values deliberately fail closed.
+pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
+    card.kind == "codex"
+        && (role == CardRole::Spec
+            || (role == CardRole::Worker
+                && card.payload.get("harness_profile").and_then(Value::as_str)
+                    == Some("plain_chat")))
+}
+
 pub(crate) async fn interrupt_shared_card_active_turn(
     repo: &dyn RouteRepo,
     cs: &CodexShellState,
@@ -195,7 +205,7 @@ pub(crate) async fn get_harness_items(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -716,7 +726,7 @@ pub(crate) async fn send_spec_input(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -947,7 +957,7 @@ pub(crate) async fn interrupt_spec_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -1028,7 +1038,7 @@ pub(crate) async fn get_spec_run(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -1225,7 +1235,7 @@ pub(crate) async fn reset_spec_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));

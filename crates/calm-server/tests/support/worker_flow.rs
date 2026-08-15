@@ -104,6 +104,7 @@ pub async fn seed_codex_card(repo: &Arc<SqlxRepo>, card_id: &str) -> Card {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await
@@ -152,6 +153,7 @@ pub async fn seed_claude_card(repo: &Arc<SqlxRepo>, card_id: &str, cwd: &str) ->
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await

@@ -148,6 +148,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                         attach_folder: false,
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
+                    None,
                     &wave_cove_cache,
                 )
                 .await?;

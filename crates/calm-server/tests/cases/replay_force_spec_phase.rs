@@ -164,6 +164,47 @@ async fn probe_replay_boot_wave_create_leaves_spec_card_inert() {
     );
 }
 
+#[tokio::test]
+async fn cove_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
+    let boot = boot().await;
+    let (wave_id, spec_card_id) = create_wave(&boot).await;
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(&wave_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+
+    let (reset_status, _, reset_text) = post(
+        boot.app.clone(),
+        &format!("/api/cards/{spec_card_id}/spec/reset"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(reset_status, StatusCode::FORBIDDEN, "{reset_text}");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+        .bind(&spec_card_id)
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "reset fence must precede runtime creation");
+
+    let force_error = replay::force_spec_phase(
+        &boot.state,
+        boot.dyn_repo(),
+        &spec_card_id,
+        HarnessPhaseTag::Idle,
+    )
+    .await
+    .expect_err("the fixtures endpoint engine must reject cove-chat spec cards");
+    assert_eq!(force_error.status(), StatusCode::FORBIDDEN);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+        .bind(&spec_card_id)
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "force fence must precede runtime creation");
+}
+
 /// Count persisted `harness.phase.changed` rows whose `new_phase` is `tag`.
 async fn phase_changed_events(boot: &Boot, tag: HarnessPhaseTag) -> usize {
     boot.repo
