@@ -705,11 +705,14 @@ pub struct SharedCodexAppServer {
 }
 
 #[cfg(feature = "fixtures")]
+pub type StartedThreadParam = (Option<String>, bool, Option<CardRole>);
+
+#[cfg(feature = "fixtures")]
 pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     fail_next_thread_start: AtomicBool,
-    started_thread_params: std::sync::Mutex<Vec<(Option<String>, bool, Option<CardRole>)>>,
+    started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
 }
@@ -3296,7 +3299,7 @@ impl SharedCodexAppServer {
     }
 
     #[cfg(feature = "fixtures")]
-    pub fn started_thread_params_for_test(&self) -> Vec<(Option<String>, bool, Option<CardRole>)> {
+    pub fn started_thread_params_for_test(&self) -> Vec<StartedThreadParam> {
         self.fake
             .as_ref()
             .map(|fake| {
