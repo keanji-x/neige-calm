@@ -131,10 +131,6 @@
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
 
-    /* Glyph size follows the box, one pairing for the whole app: a 28px chrome
-       box takes --glyph (16), a 20px in-row box takes --glyph-sm (14). Mixing
-       them is what made the rail's own controls look like three icon sets. */
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -257,7 +253,6 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -343,7 +338,6 @@
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -422,7 +416,6 @@
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph-sm);
     line-height: var(--leading-none);
     color: var(--text-3);
     opacity: 0;

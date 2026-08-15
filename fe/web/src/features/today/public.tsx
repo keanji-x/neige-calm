@@ -16,6 +16,7 @@ import {
 } from '../../../../core/domain/wave.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './today.module.css';
@@ -311,12 +312,12 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
             side and drop every column from 42px to 40. */}
         <div className={styles.weekHead}>
           <button type="button" data-nc-role="icon" className={styles.navButton}
-            aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}>‹</button>
+            aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}><Icon name="chevron-left" /></button>
           <span className={styles.monthLabel}>
             {weekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
           </span>
           <button type="button" data-nc-role="icon" className={styles.navButton}
-            aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}>›</button>
+            aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}><Icon name="chevron-right" /></button>
         </div>
 
         <div className={styles.dayNames} aria-hidden="true">

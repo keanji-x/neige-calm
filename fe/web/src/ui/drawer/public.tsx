@@ -9,8 +9,9 @@
 // trap would mean you cannot click the next wave without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
-import { useEffect, useRef, type ReactNode, type UIEvent } from 'react';
+import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
 
+import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
@@ -32,7 +33,7 @@ export function DrawerAction({ label, onClick, danger = false, children }: {
   label: string;
   onClick: () => void;
   danger?: boolean;
-  children: ReactNode;
+  children: ReactElement;
 }) {
   return (
     <button
@@ -82,7 +83,6 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
   headAction?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const [scrolled, setScrolled] = useState(false);
   const [closing, setClosing] = useState(false);
   const wasOpen = useRef(open);
   const shouldRestoreFocus = useRef(false);
@@ -163,8 +163,8 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
    * for a dialog, which is a thing that was in the way and is now gone. It is
    * wrong for a panel attached to an edge: the whole point of an edge panel is
    * that it is *still there*, pushed off-screen, and an instant disappearance
-   * says it was destroyed. The control says the same thing — `›`, the direction
-   * it goes, the same glyph the rail's own collapse uses.
+   * says it was destroyed. The control says the same thing — a right-facing
+   * chevron, the direction it goes.
    *
    * So closing holds the element mounted for one animation. Reduced motion
    * skips the phase entirely rather than waiting on an `animationend` that a
@@ -180,35 +180,27 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
       aria-label={frame.title}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
-      {...(scrolled ? { 'data-nc-scrolled': '' } : {})}
     >
-      <div className={styles.head}>
-        <h2 className={styles.title}>{frame.title}</h2>
-        <div className={styles.headActions}>
-          {frame.headAction}
-          <button
-            type="button"
-            data-nc-role="icon"
-            className={styles.close}
-            aria-label="Close conversation"
-            title="Close"
-            onClick={onClose}
-          >
-            ›
-          </button>
+      <div className={styles.scroll}>
+        <div className={styles.head}>
+          <h2 className={styles.title}>{frame.title}</h2>
+          <div className={styles.headActions}>
+            {frame.headAction}
+            <button
+              type="button"
+              data-nc-role="icon"
+              className={styles.close}
+              aria-label="Close conversation"
+              title="Close"
+              onClick={onClose}
+            >
+              <Icon name="chevron-right" />
+            </button>
+          </div>
         </div>
-      </div>
-      <div
-        className={styles.body}
-        onScroll={(event: UIEvent<HTMLDivElement>) => {
-          // The head's rule appears only once something is under it. Compared
-          // against the current value so a scroll event per frame does not
-          // become a render per frame.
-          const past = event.currentTarget.scrollTop > 0;
-          if (past !== scrolled) setScrolled(past);
-        }}
-      >
-        {frame.children}
+        <div className={styles.bodyInner}>
+          {frame.children}
+        </div>
       </div>
       {frame.footer}
     </div>

@@ -48,6 +48,7 @@ import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
 import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
@@ -425,7 +426,7 @@ function useConversationPanel(
        CARDS modules already use, which is why this needed no new mechanism. */
     action: scope === null
       ? undefined
-      : <PanelAction label="New conversation" onClick={start}>+</PanelAction>,
+      : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     drawer: (
       <>
       <Drawer
@@ -445,11 +446,9 @@ function useConversationPanel(
          * It is not offered when there is nothing to reset.
          */
         headAction={open === null ? undefined : (
-          /* `↺` — the glyph, not the word. A 28px red mark beside the close is
-             the lowest emphasis this action can take and still be red at rest;
-             the word "Reset" at 13px was reading as a peer of the title. */
+          /* DrawerAction owns the box; the shared icon owns glyph geometry. */
           <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
-            ↺
+            <Icon name="reset" />
           </DrawerAction>
         )}
         footer={open === null ? undefined : (

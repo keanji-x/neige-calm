@@ -1,0 +1,11 @@
+@layer ui {
+  .md {
+    inline-size: var(--glyph);
+    block-size: var(--glyph);
+  }
+
+  .sm {
+    inline-size: var(--glyph-sm);
+    block-size: var(--glyph-sm);
+  }
+}

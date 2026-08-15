@@ -17,7 +17,7 @@
 // Still no shadow: §6.5 reserves that for menus, popovers, dialogs and toasts.
 // The card sits in the page, it does not float above it.
 
-import type { ReactNode } from 'react';
+import type { ReactElement, ReactNode } from 'react';
 
 import styles from './panel-card.module.css';
 
@@ -60,7 +60,7 @@ export function PanelModule({ title, action, children }: {
 export function PanelAction({ label, onClick, children }: {
   label: string;
   onClick: () => void;
-  children: string;
+  children: ReactElement;
 }) {
   return (
     <button

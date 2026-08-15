@@ -39,7 +39,6 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;

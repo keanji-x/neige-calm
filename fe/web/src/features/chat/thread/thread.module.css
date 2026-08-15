@@ -423,7 +423,6 @@
     block-size: var(--control-h);
     border-radius: var(--radius-pill);
     background: none;
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text);
     cursor: pointer;

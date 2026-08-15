@@ -87,6 +87,18 @@ afterEach(() => {
 });
 
 describe('spec conversation regressions', () => {
+  it('renders reset as an explicit SVG glyph', async () => {
+    setup();
+    await openConversation();
+    const reset = screen.getByRole('button', { name: 'Reset conversation' });
+    const glyph = reset.querySelector('svg');
+    expect(glyph).toBeTruthy();
+    expect(glyph?.querySelectorAll('path')).toHaveLength(2);
+    expect(glyph?.querySelectorAll('path')[1]?.getAttribute('d'))
+      .toBe('M3.35 6.12a5 5 0 1 1 .15 4.1');
+    expect(reset.textContent).not.toContain('↺');
+  });
+
   it('keeps a wave route conversation list scoped after visiting another wave', async () => {
     const { router } = setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });

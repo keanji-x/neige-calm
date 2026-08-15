@@ -33,6 +33,7 @@
 import { useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
+import { Icon } from '../../../ui/icon/public.tsx';
 
 import {
   isLiveConversation, opensAfterGap, opensExchange,
@@ -228,7 +229,7 @@ export function ChatComposer({ onSend, disabled = false }: {
         aria-disabled={ready ? undefined : 'true'}
         className={styles.send}
       >
-        ↑
+        <Icon name="arrow-up" />
       </button>
     </form>
   );

@@ -121,7 +121,9 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-4);
-    flex: none;
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--z-raised);
 
     /*
      * Two alignments, and the head owes both:
@@ -144,13 +146,10 @@
      * End inset is smaller because the trailing controls carry their own 28px
      * hit areas: 8 + (28 − 16) / 2 lands the glyph optically on the 16 inset.
      */
-    /* `+ 1px` is this head's own bottom rule: `box-sizing: border-box` counts it
-       inside the min, while the page header's 53.3 is 52.3 of band-plus-row
-       *plus* its rule. Without it the two edges miss by that pixel. */
-    min-block-size: calc(var(--nc-head-band) + var(--control-h-lg) + 1px);
+    min-block-size: calc(var(--nc-head-band) + var(--control-h-lg));
     padding: calc(var(--header-baseline) - 14px) var(--space-4) var(--space-2) var(--space-8);
-    border-block-end: 1px solid transparent;
-    transition: border-color var(--motion-quick) ease-out;
+    background: color-mix(in oklch, var(--paper) 85%, transparent);
+    backdrop-filter: blur(12px) saturate(1.4);
   }
 
   /*
@@ -160,28 +159,37 @@
    * the buttons — not the text — decided how tall the head was, which is what
    * put its bottom edge 11.5px below the page header's.
    *
-   * `--space-6` between them is §4.3's minimum distance between a destructive
-   * control and a benign one. The reset is *before* the close rather than after
-   * it: §4.3 wants the danger last in its group, but the corner of a panel is
-   * where a pointer goes to dismiss things, and a destructive control under a
-   * dismiss reflex is a worse failure than an ordering one.
+   * §4.3 requires at least `--space-6` (12px) between destructive and benign
+   * actions. This 2px gap is a user-confirmed exception limited to this reset +
+   * close pair. Measured ink widths are 8.48px and 3.82px, leaving 9.76px and
+   * 12.10px respectively on their facing sides inside the 28px boxes. The boxes
+   * therefore supply 21.86px of whitespace before any gap: zero gap would only
+   * reduce the visual separation from 29.86px to 21.86px. `--space-1` (2px) is
+   * §2.3's tightest inline tier and leaves about 23.9px of visual whitespace.
+   * The reset is *before* the close rather than after it: §4.3 wants the danger
+   * last in its group, but the corner of a panel is where a pointer goes to
+   * dismiss things, and a destructive control under a dismiss reflex is a
+   * worse failure than an ordering one.
    */
   .headActions {
     display: flex;
     align-items: center;
-    gap: var(--space-6);
+    gap: var(--space-1);
     flex: none;
     margin-block: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
   }
 
-  /*
-   * The one line that survives, and only while it is doing work: once the
-   * transcript has scrolled under the head, no colour separates them — both are
-   * `--paper` — so the hairline is the only thing that can. Same trade, same
-   * attribute, same token as `[data-nc-scrolled] .header` in `ui/page-header`.
-   */
-  [data-nc-scrolled] .head {
-    border-block-end-color: var(--hairline);
+  @supports not (backdrop-filter: blur(2px)) {
+    .head {
+      background: var(--paper);
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .head {
+      background: var(--paper);
+      backdrop-filter: none;
+    }
   }
 
   /*
@@ -195,9 +203,20 @@
    * once on open and never again, and at 15px full-ink semibold it was the
    * darkest thing on screen, out-shouting every reply under it.
    *
-   * Measured on both grounds: `--text` is 18.1:1 light and 11.5:1 dark,
-   * `--text-3` is 7.8:1 and 6.5:1. Less than half the loudness, still well
-   * clear of AAA's 7:1 in light and AA's 4.5:1 in dark.
+   * On opaque `--paper`, `--text` measured 18.1:1 and `--text-3` 7.8:1 in
+   * light / 6.5:1 in dark. The frosted ground also admits 15% of whatever has
+   * scrolled behind it. On real transcript content, with blur spreading the
+   * ink and no large solid dark blocks, 20-position browser audits measured
+   * minima of 7.18 light / 5.74 dark: AAA in light and AA in dark. The
+   * analytical worst case, with a large solid full-ink block sliding behind
+   * the head, is about 5.6 light / 4.2 dark. Light still clears AA, but dark is
+   * below AA's 4.5 threshold. The guarantee here is therefore AA/AAA for the
+   * measured real-content shape; a dark-theme full-ink block is a known
+   * analytical boundary. `saturate(1.4)` is not included in that model.
+   *
+   * This remains a manual browser audit: `tools/styles/check-contrast.mjs`
+   * hard-codes token pairs with one underlay per pair, so it cannot express a
+   * translucent layer composited over arbitrary scrolling content.
    *
    * `--text-3` is where this stops, and the next rank is why. The ladder is
    * 18.1 → 10.0 → 7.8 → **2.3**: `--text-4` is the *decorative* rank, and a
@@ -224,10 +243,10 @@
    * A head control: the same 28px square the close is, because two controls on
    * one row that differ in size read as two ranks, and these are one.
    *
-   * The glyph is `--glyph-sm`, a step under the close's `--glyph`. That is the
-   * whole of the emphasis difference between them and it is deliberate: this is
-   * the rarer control, and §4.3 asks a destructive action to take the *lowest
-   * usable* emphasis — which colour has already spent for it.
+   * Both controls use 16px stroked SVGs so their optical weight stays stable
+   * instead of depending on a font's arrow metrics. The close keeps the same
+   * right-facing chevron shape as the rail collapse. The rail collapse and
+   * cove chevron use the same shared `<Icon>` line-work system.
    */
   .action {
     display: grid;
@@ -237,7 +256,6 @@
     block-size: var(--control-h);
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    font-size: var(--glyph-sm);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -274,7 +292,6 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -286,18 +303,26 @@
     color: var(--text);
   }
 
-  /* The one part that scrolls. `flex: 1` so it takes the height the head and
-     the footer leave, and `min-block-size: 0` so it may actually shrink — a
-     flex item defaults to its content's size and would otherwise push the
-     footer off the bottom instead of scrolling. */
-  .body {
-    display: flex;
+  /* The head and transcript share the scrolling region so the sticky frosted
+     surface can separate them without adding a line. */
+  .scroll {
     flex: 1;
+    min-block-size: 0;
+    overflow: auto;
+    padding: 0;
+    /* Reserve a classic scrollbar lane so becoming scrollable does not shift
+       the entire column. This does not affect overlay scrollbars: they may
+       paint over the sticky frosted head, an accepted tradeoff of putting the
+       head inside the scroller so content can pass beneath it. Moving the head
+       outside is the structural fix, but would remove that frosted premise. */
+    scrollbar-gutter: stable;
+  }
+
+  .bodyInner {
+    display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    min-block-size: 0;
     padding: var(--space-4) var(--space-8) var(--space-6);
-    overflow: auto;
   }
 
   /*

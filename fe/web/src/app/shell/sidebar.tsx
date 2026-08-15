@@ -13,6 +13,7 @@ import { COVE_PALETTE } from '../../features/cove/palette.ts';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { deleteCoveCopy, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { Menu } from '../../ui/menu/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 import {
@@ -193,7 +194,7 @@ export function Sidebar({
           aria-expanded={!collapsed}
           onClick={onToggleCollapsed}
         >
-          {collapsed ? '›' : '‹'}
+          <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} />
         </button>
       </div>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
@@ -250,7 +251,7 @@ export function Sidebar({
                 aria-label="New cove"
                 onClick={() => { setCoveDraft(''); setCreatingCove(true); }}
               >
-                +
+                <Icon name="plus" />
               </button>
             </div>
 
@@ -449,7 +450,7 @@ function CoveGroup({
           {/* One stroked chevron that rotates, not a filled ▸/▾ pair. §2.6
               already names "折叠箭头旋转" as a --motion-snappy case, and a solid
               triangle is the heaviest mark in a rail meant to read as line work. */}
-          ›
+          <Icon name="chevron-right" />
         </button>
         <button
           type="button"
@@ -458,7 +459,7 @@ function CoveGroup({
           aria-label={`Delete cove ${cove.name}`}
           onClick={() => onRequestDelete(cove.id)}
         >
-          ×
+          <Icon name="close" size="sm" />
         </button>
       </div>
       {expanded && (

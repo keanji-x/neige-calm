@@ -77,14 +77,15 @@ describe('INV-SIDEBAR-012 the pin is always reachable, and names its action', ()
     expect(screen.getByRole('button', { name: 'Unpin Open wave' }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  // The glyph names the action, so it flips: ↑ offers "lift this to the top",
-  // ↓ offers "put it back". Direction is the whole signal — no hollow/solid
-  // pair, no weight change, no colour.
-  it('flips the arrow once the wave is pinned', () => {
+  it('keeps the arrow-up icon while the accessible action changes', () => {
     const view = render(<WaveRow wave={wave()} onOpen={vi.fn()} onSetPinned={vi.fn()} nowMs={NOW} />);
-    expect(screen.getByRole('button', { name: 'Pin Open wave' }).textContent).toBe('↑');
+    const before = screen.getByRole('button', { name: 'Pin Open wave' }).querySelector('svg');
+    expect(before).toBeTruthy();
     view.rerender(<WaveRow wave={wave({ pinnedAt: 10 })} onOpen={vi.fn()} onSetPinned={vi.fn()} nowMs={NOW} />);
-    expect(screen.getByRole('button', { name: 'Unpin Open wave' }).textContent).toBe('↓');
+    const after = screen.getByRole('button', { name: 'Unpin Open wave' }).querySelector('svg');
+    const expectedPaths = ['M8 12.5V3.5', 'M4 7.5 8 3.5l4 4'];
+    expect([...before!.querySelectorAll('path')].map((path) => path.getAttribute('d'))).toEqual(expectedPaths);
+    expect([...after!.querySelectorAll('path')].map((path) => path.getAttribute('d'))).toEqual(expectedPaths);
   });
 
   it('renders no pin and no delete unless the surface supplies the callback', () => {

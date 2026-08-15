@@ -20,6 +20,7 @@ import { waveDisplayTitle, type CardWire, type Wave } from '../../../../../core/
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
@@ -103,7 +104,7 @@ export function WavePage({
             title="Delete wave"
             onClick={() => deletion.request(wave.id)}
           >
-            ×
+            <Icon name="close" />
           </button>
         }
         /*

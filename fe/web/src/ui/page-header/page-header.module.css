@@ -98,9 +98,9 @@
     transition: border-color var(--motion-quick) ease-out;
   }
 
-  /* The rule appears only once there is content scrolled underneath it. The
-     attribute is written by the main region's scroll listener — one
-     implementation, four routes. */
+  /* Receiving side of the shared main-region scroll listener specified by
+     §6.4. When that listener is implemented, delete the temporary no-writer
+     contract test beside this stylesheet. */
   [data-nc-scrolled] .header {
     border-block-end-color: var(--hairline);
   }
@@ -148,7 +148,6 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     color: var(--text-3);
     cursor: pointer;
   }
