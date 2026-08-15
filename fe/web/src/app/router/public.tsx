@@ -95,6 +95,16 @@ export function pendingConversationIds(
   return (working || sending) && conversation !== null ? new Set([conversation.id]) : new Set();
 }
 
+function sameConversationTurns(
+  left: readonly ConversationTurn[], right: readonly ConversationTurn[],
+): boolean {
+  return left.length === right.length && left.every((turn, index) => {
+    const other = right[index];
+    return other !== undefined && turn.id === other.id && turn.author === other.author
+      && turn.text === other.text && turn.atMs === other.atMs;
+  });
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
@@ -171,7 +181,8 @@ export function useConversationStore(
   }, [cardId, cardTitle, scopeUpdatedAt, turns, waveId, waveTitle, working]);
   useEffect(() => {
     if (conversation === null) return;
-    if (suppressRememberRef.current && serverTurns === suppressedRememberSnapshotRef.current) return;
+    if (suppressRememberRef.current && suppressedRememberSnapshotRef.current !== null
+      && sameConversationTurns(serverTurns, suppressedRememberSnapshotRef.current)) return;
     suppressRememberRef.current = false;
     suppressedRememberSnapshotRef.current = null;
     // Remember the full transcript so reopening the conversation preserves its
