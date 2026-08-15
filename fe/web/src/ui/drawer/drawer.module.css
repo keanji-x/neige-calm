@@ -161,9 +161,12 @@
    * put its bottom edge 11.5px below the page header's.
    *
    * §4.3 requires at least `--space-6` (12px) between destructive and benign
-   * actions. This 8px gap is a user-confirmed exception: each 16px stroked icon
-   * is centred in a 28px box with 6px on either side, so a 12px box gap reads as
-   * 24px of visual whitespace and the two controls no longer look like a group.
+   * actions. This 2px gap is a user-confirmed exception limited to this reset +
+   * close pair. Measured ink widths are 8.48px and 3.82px, leaving 9.76px and
+   * 12.10px respectively on their facing sides inside the 28px boxes. The boxes
+   * therefore supply 21.86px of whitespace before any gap: zero gap would only
+   * reduce the visual separation from 29.86px to 21.86px. `--space-1` (2px) is
+   * §2.3's tightest inline tier and leaves about 23.9px of visual whitespace.
    * The reset is *before* the close rather than after it: §4.3 wants the danger
    * last in its group, but the corner of a panel is where a pointer goes to
    * dismiss things, and a destructive control under a dismiss reflex is a
@@ -172,7 +175,7 @@
   .headActions {
     display: flex;
     align-items: center;
-    gap: var(--space-4);
+    gap: var(--space-1);
     flex: none;
     margin-block: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
   }
