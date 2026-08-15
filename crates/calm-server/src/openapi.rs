@@ -77,6 +77,7 @@ use utoipa::OpenApi;
         crate::routes::waves::list_waves_window,
         crate::routes::waves::get_wave_detail,
         crate::routes::waves::create_wave,
+        crate::routes::waves::ensure_cove_chat_wave,
         crate::routes::waves::update_wave,
         crate::routes::waves::delete_wave,
         crate::routes::waves::get_wave_backlinks,

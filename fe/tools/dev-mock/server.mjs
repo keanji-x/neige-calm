@@ -372,7 +372,8 @@ const cards = devMockCards;
 export const DEV_MOCK_ROUTES = Object.freeze([
   ['GET', '/api/version'], ['GET', '/api/settings'], ['PUT', '/api/settings'],
   ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
-  ['GET', '/api/coves/{cove_id}/waves'], ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
+  ['GET', '/api/coves/{cove_id}/waves'], ['POST', '/api/coves/{cove_id}/chat-wave/ensure'],
+  ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
   ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
   ['GET', '/api/waves/{id}/backlinks'],
 ].map((route) => Object.freeze(route)));
@@ -446,6 +447,21 @@ export async function handleDevMockRequest(req, res, next) {
         const coveWaves = /^\/api\/coves\/([^/]+)\/waves$/.exec(path);
         if (coveWaves && method === 'GET') {
           return send(res, 200, waves.filter((wave) => wave.cove_id === decodeURIComponent(coveWaves[1])));
+        }
+        const coveChatWave = /^\/api\/coves\/([^/]+)\/chat-wave\/ensure$/.exec(path);
+        if (coveChatWave && method === 'POST') {
+          const id = decodeURIComponent(coveChatWave[1]);
+          if (!coves.some((cove) => cove.id === id)) return send(res, 404, { message: 'no such cove' });
+          const existing = waves.find((wave) => wave.cove_id === id && wave.purpose === 'cove-chat');
+          if (existing) return send(res, 200, existing);
+          const wave = {
+            id: `w-${Math.random().toString(36).slice(2, 8)}`, cove_id: id, title: 'Cove chat',
+            sort: waves.length, lifecycle: 'draft', cwd: cwdOf[id] ?? '', workflow_id: null,
+            purpose: 'cove-chat', workflow_input: null, archived_at: null, pinned_at: null,
+            terminal_at: null, created_at: Date.now(), updated_at: Date.now(),
+          };
+          waves.push(wave);
+          return send(res, 201, wave);
         }
         const coveId = /^\/api\/coves\/([^/]+)$/.exec(path);
         if (coveId && (method === 'PATCH' || method === 'DELETE')) {

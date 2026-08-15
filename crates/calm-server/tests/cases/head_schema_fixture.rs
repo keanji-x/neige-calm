@@ -11,6 +11,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0071_sub_wave_tree.sql",
     "0072_wave_tree_task_budget.sql",
     "0073_drop_task_origin.sql",
+    "0074_one_chat_wave_per_cove.sql",
 ];
 
 #[test]

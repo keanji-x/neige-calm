@@ -97,6 +97,14 @@ const coveWaves = await invoke('GET', '/api/coves/{cove_id}/waves');
 if (coveWaves.status !== 200 || !waveSchema.strict().array().safeParse(coveWaves.body).success) {
   console.error('dev-mock-contract: invalid GET /api/coves/{cove_id}/waves response'); process.exitCode = 1;
 }
+const chatWaveCreated = await invoke('POST', '/api/coves/{cove_id}/chat-wave/ensure');
+const chatWaveExisting = await invoke('POST', '/api/coves/{cove_id}/chat-wave/ensure');
+if (chatWaveCreated.status !== 201 || chatWaveExisting.status !== 200
+  || chatWaveCreated.body?.id !== chatWaveExisting.body?.id
+  || chatWaveCreated.body?.purpose !== 'cove-chat'
+  || !waveSchema.strict().safeParse(chatWaveCreated.body).success) {
+  console.error('dev-mock-contract: invalid POST /api/coves/{cove_id}/chat-wave/ensure response'); process.exitCode = 1;
+}
 for (const [method, path, body, schema] of [
   ['PATCH', '/api/coves/{id}', { name: 'atlas-probed' }, coveSchema.strict()],
   ['PATCH', '/api/waves/{id}', { title: 'wave-probed' }, waveSchema.strict()],
