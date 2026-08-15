@@ -60,7 +60,7 @@ function setup(reply?: Reply) {
       return ok([]);
     },
   };
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
   const router = createAppRouter({ transport, client, onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
