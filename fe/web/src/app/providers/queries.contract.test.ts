@@ -145,7 +145,7 @@ describe('spec history pagination', () => {
   it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
     const firstPage = Array.from({ length: 300 }, (_, index) => ({
       id: 701 + index, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
-      turn_id: null, item_uuid: null, item_type: 'agent_message', method: 'item/completed',
+      turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
       params: '{}', created_at_ms: index,
     }));
     const { transport, paths } = recordingTransport(() => ok(firstPage));

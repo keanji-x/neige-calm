@@ -2,18 +2,18 @@ import {
   createContext, useCallback, useContext, useMemo, type ReactNode,
 } from 'react';
 
-import type { Conversation, ConversationTurn } from '../../../../core/domain/conversation.ts';
+import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { useState } from '../../ui/state/public.ts';
 
 type RememberedConversation = Readonly<{
   conversation: Conversation;
-  turns: readonly ConversationTurn[];
+  turns: readonly TranscriptEntry[];
 }>;
 
 export type ConversationRegistry = Readonly<{
   conversations: readonly Conversation[];
-  turnsOf: (conversationId: string) => readonly ConversationTurn[];
-  remember: (conversation: Conversation, turns: readonly ConversationTurn[]) => void;
+  turnsOf: (conversationId: string) => readonly TranscriptEntry[];
+  remember: (conversation: Conversation, turns: readonly TranscriptEntry[]) => void;
   forget: (conversationId: string) => void;
   requestedOpenId: string | null;
   requestOpen: (conversationId: string) => void;
@@ -27,18 +27,18 @@ function equalRecord(left: Readonly<Record<string, unknown>>, right: Readonly<Re
   return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
 }
 
-function equalTurns(left: readonly ConversationTurn[], right: readonly ConversationTurn[]): boolean {
+function equalTurns(left: readonly TranscriptEntry[], right: readonly TranscriptEntry[]): boolean {
   return left.length === right.length && left.every((turn, index) => equalRecord(turn, right[index]));
 }
 
-function equalEntry(left: RememberedConversation | undefined, conversation: Conversation, turns: readonly ConversationTurn[]): boolean {
+function equalEntry(left: RememberedConversation | undefined, conversation: Conversation, turns: readonly TranscriptEntry[]): boolean {
   return left !== undefined && equalRecord(left.conversation, conversation) && equalTurns(left.turns, turns);
 }
 
 export function ConversationProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Readonly<Record<string, RememberedConversation>>>({});
   const [requestedOpenId, setRequestedOpenId] = useState<string | null>(null);
-  const remember = useCallback((conversation: Conversation, turns: readonly ConversationTurn[]) => {
+  const remember = useCallback((conversation: Conversation, turns: readonly TranscriptEntry[]) => {
     setEntries((current) => equalEntry(current[conversation.id], conversation, turns)
       ? current
       : { ...current, [conversation.id]: { conversation, turns } });
