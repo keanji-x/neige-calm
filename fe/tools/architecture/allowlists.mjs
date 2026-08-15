@@ -12,6 +12,7 @@ export const moduleRuntimeStateExceptions = Object.freeze([
 export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExceptions.map(({ path }) => path));
 
 export const createContextExceptions = Object.freeze([
+  Object.freeze({ path: 'web/src/app/conversations/public.tsx', reason: 'The visit-scoped conversation registry provider must sit above the route outlet so navigation cannot discard remembered conversations.' }),
   Object.freeze({ path: 'web/src/app/theme/public.tsx', reason: 'App theme provider owns the document dataset mirror.' }),
   Object.freeze({ path: 'web/src/ui/dialog/public.tsx', reason: 'Issue #997 permits context in the primitive directory while consumers remain in ui.' }),
 ]);

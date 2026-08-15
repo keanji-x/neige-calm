@@ -144,6 +144,97 @@ async fn boot() -> Boot {
     }
 }
 
+#[tokio::test]
+async fn plain_chat_turn_does_not_refresh_or_read_wave_vcs() {
+    let boot = boot().await;
+    boot.harness.shutdown().await.unwrap();
+    let chat_card = add_card_with_event(
+        &boot.repo,
+        &boot.events,
+        &boot.roles,
+        &boot.write,
+        &boot.wave_id,
+        &boot.cove_id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+    )
+    .await;
+    let runtime_id = new_id();
+    let thread_id = "thread-plain-chat-no-vcs".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: runtime_id.clone(),
+            card_id: chat_card.id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id,
+        wave_id: boot.wave_id.clone(),
+        card_id: chat_card.id,
+        thread_id: Some(thread_id),
+        repo: repo_dyn,
+        events: boot.events.clone(),
+        card_role_cache: boot.roles.clone(),
+        wave_cove_cache: boot.wave_cove_cache.clone(),
+        daemon: boot.daemon.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_millis(10),
+            debounce_max_wait: Duration::from_millis(100),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+    let before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wave_vcs_commits WHERE wave_id = ?1 AND message = 'transcript refresh'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    harness
+        .observe(Observation::UserMessage {
+            text: "hello without vcs".into(),
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while boot.daemon.turn_start_count_for_test() == 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(boot.daemon.turn_start_count_for_test(), 1);
+    let after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM wave_vcs_commits WHERE wave_id = ?1 AND message = 'transcript refresh'",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        after, before,
+        "PlainChat turn must not create a wave-VCS transcript-refresh commit"
+    );
+    harness.shutdown().await.unwrap();
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn add_card_with_event(
     repo: &SqlxRepo,

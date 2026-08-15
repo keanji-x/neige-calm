@@ -26,7 +26,7 @@ use calm_server::db::prelude::*;
 use calm_server::error::CalmError;
 use calm_server::event::Event;
 use calm_server::harness::HarnessPhaseTag;
-use calm_server::model::NewCove;
+use calm_server::model::{CardRole, NewCard, NewCove};
 use calm_server::replay;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -162,6 +162,94 @@ async fn probe_replay_boot_wave_create_leaves_spec_card_inert() {
         body["runtime_id"].is_null() && body["phase"].is_null(),
         "spec/run must answer dormant in replay boot; got {body}"
     );
+}
+
+#[tokio::test]
+async fn cove_chat_spec_start_backdoors_are_forbidden_without_runtime_rows() {
+    let boot = boot().await;
+    let (wave_id, spec_card_id) = create_wave(&boot).await;
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(&wave_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+
+    let (reset_status, _, reset_text) = post(
+        boot.app.clone(),
+        &format!("/api/cards/{spec_card_id}/spec/reset"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(reset_status, StatusCode::FORBIDDEN, "{reset_text}");
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+        .bind(&spec_card_id)
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "reset fence must precede runtime creation");
+
+    let force_error = replay::force_spec_phase(
+        &boot.state,
+        boot.dyn_repo(),
+        &spec_card_id,
+        HarnessPhaseTag::Idle,
+    )
+    .await
+    .expect_err("the fixtures endpoint engine must reject cove-chat spec cards");
+    assert_eq!(force_error.status(), StatusCode::FORBIDDEN);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+        .bind(&spec_card_id)
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(count, 0, "force fence must precede runtime creation");
+}
+
+#[tokio::test]
+async fn cove_chat_plain_chat_card_can_be_forced_and_uses_codex_card_runtime() {
+    let boot = boot().await;
+    let (wave_id, _) = create_wave(&boot).await;
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(&wave_id)
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    let chat = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: wave_id.clone().into(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        })
+        .await
+        .unwrap();
+    boot.state
+        .card_role_cache
+        .insert(chat.id.clone(), CardRole::Worker, chat.wave_id.clone());
+
+    replay::force_spec_phase(
+        &boot.state,
+        boot.dyn_repo(),
+        chat.id.as_str(),
+        HarnessPhaseTag::Idle,
+    )
+    .await
+    .expect("Worker plain-chat card must pass the replay cove-chat fence");
+    let runtime = boot
+        .repo
+        .session_projection_active_for_card(&chat.id.to_string())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        runtime.kind,
+        calm_server::session_projection_repo::WorkerSessionKind::CodexCard
+    );
+    if let Some(handle) = boot.state.harness.remove(&runtime.id) {
+        handle.shutdown().await.unwrap();
+    }
 }
 
 /// Count persisted `harness.phase.changed` rows whose `new_phase` is `tag`.

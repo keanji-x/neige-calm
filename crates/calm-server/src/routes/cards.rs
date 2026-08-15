@@ -22,7 +22,9 @@ use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, WaveLifecycle, new_id};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
-use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use crate::operation::spec_harness_start_adapter::{
+    HarnessProfile, SpecHarnessStartOperationPayload,
+};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::{PerCardLockGuard, lock_card};
@@ -68,6 +70,13 @@ pub(crate) async fn card_scope(
         wave: w.id,
         cove: w.cove_id,
     })
+}
+
+/// Whether the persisted card shape is allowed to use the headless harness
+/// routes. Unknown/malformed profile values deliberately fail closed.
+pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
+    card.kind == "codex"
+        && (role == CardRole::Spec || crate::plain_chat::card_is_plain_chat(card, Some(role), true))
 }
 
 pub(crate) async fn interrupt_shared_card_active_turn(
@@ -195,7 +204,7 @@ pub(crate) async fn get_harness_items(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -716,7 +725,7 @@ pub(crate) async fn send_spec_input(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -947,7 +956,7 @@ pub(crate) async fn interrupt_spec_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -1028,7 +1037,7 @@ pub(crate) async fn get_spec_run(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
@@ -1225,10 +1234,27 @@ pub(crate) async fn reset_spec_card(
         .write
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {id} is not a spec codex card",
         )));
+    }
+    // Recovery deliberately declines malformed persisted Spec runtimes so a
+    // boot pass can continue. This user-facing reset boundary preserves the
+    // established HTTP 403 contract instead of turning that decline into a
+    // generic operation failure.
+    if role == CardRole::Spec {
+        let wave = s
+            .repo
+            .wave_get(card.wave_id.as_str())
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+        if wave.purpose.as_deref() == Some("cove-chat") {
+            return Err(CalmError::Forbidden(format!(
+                "spec harness is disabled for cove chat wave {}",
+                wave.id
+            )));
+        }
     }
     let response = reset_spec_card_shared(s, actor, card).await?;
     Ok(Json(response))
@@ -1269,7 +1295,11 @@ async fn reset_spec_harness_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
 
-    let goal = wave.title.trim().to_string();
+    // #1098 §5.3: marked chat cards use the PlainChat profile and must not
+    // inherit the wave title as a spec goal.
+    let plain_chat =
+        crate::plain_chat::card_is_plain_chat(&card, s.write.verify_role(&card.id), true);
+    let goal = (!plain_chat).then(|| wave.title.trim().to_string());
     let start_request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
@@ -1277,9 +1307,14 @@ async fn reset_spec_harness_card(
         report_card_id: None,
         sort: None,
         cwd: wave.cwd.clone(),
-        goal: (!goal.is_empty()).then_some(goal),
+        goal: goal.filter(|goal| !goal.is_empty()),
         reset_harness_items: true,
         force_new_thread: true,
+        profile: if plain_chat {
+            HarnessProfile::PlainChat
+        } else {
+            HarnessProfile::Spec
+        },
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_spec_card_operation(&s, "spec-harness-start", start_payload).await?;

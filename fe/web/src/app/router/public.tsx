@@ -40,13 +40,14 @@ import {
   backlinkCountsByBlock, deriveReportOutline, readWaveReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
-  conversationName, conversationNameFrom, harnessItemToTurn, reconcileUserEchoes,
-  type Conversation, type ConversationTurn,
+  buildTranscript, conversationName, conversationNameFrom, harnessItemToTurn, mergeTranscript,
+  reconcileUserEchoes,
+  type Conversation, type ConversationTurn, type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
-import { Drawer } from '../../ui/drawer/public.tsx';
+import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
@@ -56,13 +57,17 @@ import {
 } from '../providers/queries.ts';
 import { AppShell } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
+import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 
+export const APP_BASEPATH = '/next';
+
 type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
-  turnsOf: (conversationId: string) => readonly ConversationTurn[];
+  /** Messages *and* the actions between them, in the order they happened. */
+  turnsOf: (conversationId: string) => readonly TranscriptEntry[];
   pending: ReadonlySet<string>;
   working: boolean;
   stopping: boolean;
@@ -80,6 +85,10 @@ type ConversationStore = Readonly<{
   loadEarlier: () => void;
 }>;
 
+type ConversationRouteIntent = Readonly<
+  { kind: 'all' } | { kind: 'waves'; waveIds: readonly string[] }
+>;
+
 export function pendingConversationIds(
   conversation: Conversation | null, working: boolean, sending: boolean,
 ): ReadonlySet<string> {
@@ -90,8 +99,18 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
 
-export function useConversationStore(transport: ApiTransportPort, unauthorized: UnauthorizedChannel, scope: SpecConversationScope | null): ConversationStore {
+export function useConversationStore(
+  transport: ApiTransportPort,
+  unauthorized: UnauthorizedChannel,
+  scope: SpecConversationScope | null,
+  routeIntent: ConversationRouteIntent,
+): ConversationStore {
+  const registry = useConversationRegistry();
   const cardId = scope?.cardId ?? '';
+  const waveId = scope?.id;
+  const waveTitle = scope?.title;
+  const cardTitle = scope?.cardTitle;
+  const scopeUpdatedAt = scope?.updatedAt;
   const history = useInfiniteQuery({
     ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
@@ -104,12 +123,18 @@ export function useConversationStore(transport: ApiTransportPort, unauthorized: 
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const sendingRef = useRef(false);
+  const suppressRememberRef = useRef(false);
+  const suppressedRememberSnapshotRef = useRef<readonly ConversationTurn[] | null>(null);
   const seq = useRef(0);
-  const serverTurns = useMemo(() => (history.data?.pages ?? [])
-    .flat().sort((left, right) => left.id - right.id).flatMap((item) => {
+  const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
+  const serverTurns = useMemo(() => [...items]
+    .sort((left, right) => left.id - right.id).flatMap((item) => {
       const turn = harnessItemToTurn(item);
       return turn === null ? [] : [turn];
-    }), [history.data]);
+    }), [items]);
+  /* Actions are read from the same rows, so they cannot disagree with the
+     messages about what happened or when (`buildTranscript`). */
+  const serverEntries = useMemo(() => buildTranscript(items), [items]);
   useEffect(() => {
     setEchoes((current) => reconcileUserEchoes(serverTurns, current));
   }, [serverTurns]);
@@ -118,21 +143,49 @@ export function useConversationStore(transport: ApiTransportPort, unauthorized: 
     setActionError(null);
     setActionMessage(null);
     sendingRef.current = false;
+    suppressRememberRef.current = false;
+    suppressedRememberSnapshotRef.current = null;
     setSending(false);
     setInterruptPending(false);
     setResetting(false);
   }, [cardId]);
 
-  const turns = [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs);
+  const turns = useMemo(
+    () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
+    [echoes, serverTurns],
+  );
+  /* An echo is a message you already sent, so it belongs after everything the
+     server has confirmed. Keep `buildTranscript`'s positional pairing intact:
+     a completed action retains the started row's place even when its end time
+     is later than an interleaved message. A completed tail thought stops being
+     the tail as soon as the user speaks again. */
+  const transcript = useMemo(() => mergeTranscript(serverEntries, echoes), [echoes, serverEntries]);
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
-  const conversation: Conversation | null = scope === null ? null : {
-    id: scope.cardId, waveId: scope.id, waveTitle: scope.title,
-    title: scope.cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+  const conversation = useMemo<Conversation | null>(() => waveId === undefined ? null : {
+    id: cardId, waveId, waveTitle: waveTitle ?? '',
+    title: cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
     kind: 'shared-spec', state: working ? 'running' : 'idle',
-    updatedAt: turns.at(-1)?.atMs ?? scope.updatedAt, turns: turns.length,
-  };
+    updatedAt: turns.at(-1)?.atMs ?? scopeUpdatedAt ?? 0, turns: turns.length,
+  }, [cardId, cardTitle, scopeUpdatedAt, turns, waveId, waveTitle, working]);
+  useEffect(() => {
+    if (conversation === null) return;
+    if (suppressRememberRef.current && serverTurns === suppressedRememberSnapshotRef.current) return;
+    suppressRememberRef.current = false;
+    suppressedRememberSnapshotRef.current = null;
+    // Remember the full transcript so reopening the conversation preserves its
+    // activity lines and looks identical to the route the user just left.
+    registry.remember(conversation, transcript);
+  }, [conversation, registry, serverTurns, transcript]);
+
+  const allConversations = conversation === null
+    ? registry.conversations
+    : [...registry.conversations.filter(({ id }) => id !== conversation.id), conversation];
+  const waveIds = routeIntent.kind === 'waves' ? new Set(routeIntent.waveIds) : null;
+  const conversations = waveIds === null
+    ? allConversations
+    : allConversations.filter((candidate) => waveIds.has(candidate.waveId));
 
   const send = (_conversationId: string, text: string) => {
     if (sendingRef.current) return;
@@ -167,12 +220,17 @@ export function useConversationStore(transport: ApiTransportPort, unauthorized: 
     if (resetting) return false;
     setResetting(true);
     setActionError(null);
+    suppressRememberRef.current = true;
+    suppressedRememberSnapshotRef.current = serverTurns;
+    if (conversation !== null) registry.forget(conversation.id);
     try {
       await mutations.reset();
       setEchoes([]);
       setActionMessage(null);
       return true;
     } catch (error: unknown) {
+      suppressRememberRef.current = false;
+      suppressedRememberSnapshotRef.current = null;
       setActionError(errorMessage(error, 'Could not reset the conversation.'));
       return false;
     } finally {
@@ -181,8 +239,10 @@ export function useConversationStore(transport: ApiTransportPort, unauthorized: 
   };
 
   return {
-    conversations: conversation === null ? [] : [conversation],
-    turnsOf: () => turns,
+    conversations,
+    turnsOf: (conversationId) => conversation?.id === conversationId
+      ? transcript
+      : registry.turnsOf(conversationId),
     pending: pendingConversationIds(conversation, working, sending),
     working,
     stopping,
@@ -252,7 +312,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut }: 
 export function createAppRouter(deps: AppRouterDeps) {
   return createRouter({
     routeTree: createRouteTree(deps),
-    basepath: '/next',
+    basepath: APP_BASEPATH,
     defaultPreload: false,
   });
 }
@@ -260,12 +320,14 @@ export function createAppRouter(deps: AppRouterDeps) {
 function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel; onSignOut: () => void }) {
   const go = useGo();
   return (
-    <AppShell
-      transport={transport}
-      unauthorized={unauthorized}
-      onOpenSettings={() => go({ name: 'settings' })}
-      onSignOut={onSignOut}
-    />
+    <ConversationProvider>
+      <AppShell
+        transport={transport}
+        unauthorized={unauthorized}
+        onOpenSettings={() => go({ name: 'settings' })}
+        onSignOut={onSignOut}
+      />
+    </ConversationProvider>
   );
 }
 
@@ -283,12 +345,21 @@ function useConversationPanel(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
   scope: SpecConversationScope | null,
+  routeIntent: ConversationRouteIntent,
   options?: { showWave?: boolean },
 ) {
-  const store = useConversationStore(transport, unauthorized, scope);
+  const store = useConversationStore(transport, unauthorized, scope, routeIntent);
+  const registry = useConversationRegistry();
+  const go = useGo();
   const [openId, setOpenId] = useState<string | null>(null);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
+
+  useEffect(() => {
+    if (scope === null || registry.requestedOpenId !== scope.cardId) return;
+    setOpenId(scope.cardId);
+    registry.clearOpenRequest();
+  }, [registry, scope]);
 
   useEffect(() => {
     if (open === null) return;
@@ -329,7 +400,14 @@ function useConversationPanel(
         conversations={store.conversations}
         activeId={open?.id ?? null}
         showWave={options?.showWave ?? true}
-        onOpen={(conversation) => setOpenId(conversation.id)}
+        onOpen={(conversation) => {
+          if (scope !== null) {
+            setOpenId(conversation.id);
+            return;
+          }
+          registry.requestOpen(conversation.id);
+          go({ name: 'wave', waveId: conversation.waveId });
+        }}
       />
     ),
     /* The module head's action, composed by the page — same slot the WAVES and
@@ -343,6 +421,26 @@ function useConversationPanel(
         open={open !== null}
         title={open === null ? '' : conversationName(open)}
         onClose={() => setOpenId(null)}
+        /*
+         * Reset lives in the head, not under the composer.
+         *
+         * It is the *rarest* control on the surface and the only destructive
+         * one — it throws the transcript away and starts a new codex thread —
+         * and it was sitting beside the message box at the same weight as
+         * `Stop`, which you press casually. `destructive` is §4.3's tier:
+         * `--error-text` at rest, transparent fill, red before the pointer
+         * arrives rather than after. The confirm dialog it opens is unchanged.
+         *
+         * It is not offered when there is nothing to reset.
+         */
+        headAction={open === null ? undefined : (
+          /* `↺` — the glyph, not the word. A 28px red mark beside the close is
+             the lowest emphasis this action can take and still be red at rest;
+             the word "Reset" at 13px was reading as a peer of the title. */
+          <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
+            ↺
+          </DrawerAction>
+        )}
         footer={open === null ? undefined : (
           <>
             <ChatComposer disabled={store.sending} onSend={(text) => store.send(open.id, text)} />
@@ -351,7 +449,6 @@ function useConversationPanel(
                 {store.stopping ? 'Stopping…' : 'Stop'}
               </button>
             )}
-            <button type="button" onClick={() => setConfirmingReset(true)}>Reset conversation</button>
             {store.actionError !== null && <p role="alert">{store.actionError}</p>}
             {store.actionMessage !== null && <p role="status">{store.actionMessage}</p>}
           </>
@@ -406,7 +503,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(transport, unauthorized, null);
+  const chat = useConversationPanel(transport, unauthorized, null, { kind: 'all' });
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -475,7 +572,10 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(transport, unauthorized, null);
+  const coveWaveIds = (workspace.wavesByCove.get(coveId ?? '') ?? []).map(({ id }) => id);
+  const chat = useConversationPanel(
+    transport, unauthorized, null, { kind: 'waves', waveIds: coveWaveIds },
+  );
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -597,10 +697,20 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
 function WaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const waveId = useRouteParam('/wave/');
   const workspace = useWorkspace(transport, unauthorized);
+  const registry = useConversationRegistry();
   const detail = useQuery({
     ...waveDetailQueryOptions(transport, waveId ?? '', unauthorized),
     enabled: waveId !== undefined,
   });
+  const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
+    && card.kind === 'codex'
+    && typeof card.payload === 'object' && card.payload !== null
+    && (card.payload as { spec_harness?: unknown }).spec_harness === true);
+  const detailMatchesRoute = waveId !== undefined && detail.data?.wave.id === waveId;
+  useEffect(() => {
+    if (registry.requestedOpenId === null || detail.isLoading || detail.isFetching) return;
+    if (!detailMatchesRoute || requestedCard === undefined) registry.clearOpenRequest();
+  }, [detail.isFetching, detail.isLoading, detailMatchesRoute, registry, requestedCard]);
 
   if (!detail.data) {
     if (detail.isLoading || detail.isFetching) return null;
@@ -647,6 +757,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards }: {
       id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
       cardTitle: specCard.title, updatedAt: specCard.updated_at,
     },
+    { kind: 'waves', waveIds: [wave.id] },
     { showWave: false },
   );
   const { report, outline } = useMemo(() => {

@@ -130,7 +130,7 @@ export type StyleToken = ColorToken | ScalarToken | FontToken | ZIndexToken | Bo
 | `SHADOW` | `--shadow-float` | 只断言 `root.has` && `dark.has`——它是复合值，正则化没有意义；两个主题必须都给值（dark 下阴影更重，§0.1 #11） |
 | `THEMED_ALIASES` | `--text-on-accent` | `root.get` 与 `dark.get` **都**匹配 `/^var\(--[a-z0-9-]+\)$/`。**它不能进 `ALIASES`**：`ALIASES` 那条断言写死 `dark.has(name) === false`，而 `--text-on-accent` 两个主题都要给值（§0.1 #10），进 `ALIASES` 必红 |
 
-`MISC` 追加 `--warn-text` / `--success-text` / `--error-soft` / `--error-border` 四项——`MISC` 的 `it.each` 断言明暗双主题都在场，另一条写死三个名字的 `it.each(['--cal-event-waiting-bg','--error-text','--warn-border'])`（`:127`）要同步扩成四加四项，否则新色只有存在性没有形状。
+`MISC` 追加 `--warn-text` / `--success-text` / `--error-soft` / `--error-border` 四项——`MISC` 的 `it.each` 断言明暗双主题都在场，形状断言也要覆盖当前闭集，否则新色只有存在性没有形状。
 
 **④ `--surface-rail` 的改值不需要动断言**：它已在 `CONCRETE_SURFACES` 里，断言是"两个主题都是 oklch 字面量"，新值仍然满足。改值本身不改任何契约，只改 §10-7 那次复测的输入。
 
@@ -168,7 +168,7 @@ export const RAIL_COLLAPSE_REM = 60;
 
 ### 0.3 `data-*` 属性一律 `data-nc-` 前缀（**全仓重命名**）
 
-`auditDataAttributes` 拒绝生产 TSX 里除 `data-theme` / `data-testid` / `data-nc-<kebab-case>` 之外的任何 `data-*`。因此本文用到的属性**穷尽为六个**：`data-nc-action`（`primary|secondary|tertiary|destructive`，动作按钮的强调档，§4.1）、`data-nc-role`（`row|icon|menu-item|tab|cell`，组件按钮的种类，§4.1）、`data-nc-state`（`open|selected|checked|busy`）、`data-nc-header-rows`（`1|2|3`，页头实际渲染的行数，§6.4）、`data-nc-scrolled`、`data-nc-page-title`。
+`auditDataAttributes` 拒绝生产 TSX 里除 `data-theme` / `data-testid` / `data-nc-<kebab-case>` 之外的任何 `data-*`。因此本文用到的属性**穷尽为六个**：`data-nc-action`（`primary|secondary|tertiary|destructive`，动作按钮的强调档，§4.1）、`data-nc-role`（`row|icon|menu-item|tab|cell`，组件按钮的种类，§4.1）、`data-nc-state`（`open|selected|checked|busy|running|done|failed`）、`data-nc-header-rows`（`1|2|3`，页头实际渲染的行数，§6.4）、`data-nc-scrolled`、`data-nc-page-title`。
 
 **现有代码用的是 `data-variant="danger|primary"`**（唯一一处生产写法在 `web/src/ui/dialog/public.tsx:129`，且它在 `repository-check.mjs` 的 `LEGACY_DATA_ATTRIBUTES` 里有一条精确到 `web/src/ui/dialog/public.tsx:data-variant` 的豁免）。选定的名字是 `data-nc-action`，值用 `destructive` 而不是 `danger`——与 §4 的四档词汇同名，一个词汇表管到底。**这是一次全仓重命名，三个落点**：改 `dialog/public.tsx:129`（需要 §0.0 的 trailer）；删掉 `tools/styles/repository-check.mjs` 的那条 legacy 豁免（`tools/` 不是 readonly，不需要 trailer；**豁免留着不删会被"未用即红"判负**，§9.2）；改 `web/src/styles/README.md:33` 里把 `data-variant` 描述成"冻结接口中既有的遗留项"的那句（README 在 readonly 目录下，也要 trailer）。**没有任何测试断言 `data-variant`**——逐条 grep 过全仓，只有上面三处，所以这一步不牵动契约测试。
 
@@ -382,7 +382,7 @@ agent 在人阅读的同时往界面里写。任何在数据到达时移动、�
 
 **z 阶梯**（`tokens.css` 已有，本文三处引用即此）：`--z-base` 0 普通内容 · `--z-raised` 2 行内浮起的 hover 动作与吸底细线 · `--z-sticky` 4 吸顶页头（§6.4）· `--z-overlay` 10 菜单/弹出/抽屉/大纲浮层 · `--z-modal` 100 对话框 · `--z-toast` 1000 toast。`z-index` 只能取这六个之一（§9.1）。
 
-**废弃别名**（`tokens.css` 里存在，本文一律不用；清理与 §0 同批走 change request，在那之前只是"不许新增引用"）：`--surface-bg`（用 `--bg`）、`--surface-paper`（用 `--paper`）、`--surface-toggle-overlay` / `--surface-hover-overlay`（用 `--overlay-*`）、`--text-label` / `--text-meta` / `--text-decorative`（用 `--text-2/3/4`）、`--cal-event-waiting-bg`（用 `--warn-soft`）、`--font-serif`（无用途）。**保留但本文暂无使用点**：`--surface-terminal`、`--surface-code`——终端槽落地时它们是终端底与代码块底。
+**已删除的废弃别名**：本 change request 已删除 `--surface-bg`（用 `--bg`）、`--surface-paper`（用 `--paper`）、旧 surface hover 别名（用 `--overlay-*`）、`--text-label` / `--text-meta` / `--text-decorative`（用 `--text-2/3/4`）与旧日历等待态 token（用 `--warn-soft`）；不得恢复声明或新增引用。`--font-serif` 不是废弃别名，report 文档与 conversation reply 正在使用。**保留但本文暂无使用点**：`--surface-terminal`、`--surface-code`——终端槽落地时它们是终端底与代码块底。
 
 ### 2.2 字体与字号
 

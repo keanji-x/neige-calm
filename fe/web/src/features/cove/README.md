@@ -4,7 +4,7 @@ Two presentational surfaces plus the shared cove palette.
 
 | Module | What it is |
 | --- | --- |
-| `palette.ts` | INV-DUP-006 — the one cove colour table (`COVE_PALETTE`, `coveColorForIndex`). Not redeclared anywhere. |
+| `palette.ts` | INV-DUP-006 — the canonical cove colour table (`COVE_PALETTE`), consumed only by the sidebar's random new-cove picker. Not redeclared anywhere. |
 | `page/public.tsx` | `<CovePage>` — the cove route shell: swatch, rename, wave count, `+ New wave`, delete-with-confirm, and a body slot. |
 | `new-wave/public.tsx` | `<NewWaveForm>` — a small subset of the legacy 1166-line NewTaskForm. Local form state only; never calls an API. |
 

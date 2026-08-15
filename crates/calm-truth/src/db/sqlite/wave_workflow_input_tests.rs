@@ -37,6 +37,7 @@ async fn wave_create_round_trips_workflow_input() {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        Some("cove-chat"),
         repo.wave_cove_cache(),
     )
     .await
@@ -54,6 +55,7 @@ async fn wave_create_round_trips_workflow_input() {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await
@@ -66,6 +68,7 @@ async fn wave_create_round_trips_workflow_input() {
         .expect("get wave")
         .expect("wave exists");
     assert_eq!(stored.workflow_input.as_ref(), Some(&input));
+    assert_eq!(stored.purpose.as_deref(), Some("cove-chat"));
 
     let stored_none = repo
         .wave_get(without_input.id.as_str())

@@ -6,7 +6,7 @@ pub mod cursor;
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use calm_exec::flow::{WorkerFlowItemSink, WorkerFlowSource};
 use calm_truth::worker_flow_sink::WorkerFlowSink;
@@ -37,6 +37,7 @@ pub struct WorkerFlowDriver {
     events: EventBus,
     tasks: Mutex<HashMap<String, SourceTask>>,
     subscriber_started: AtomicBool,
+    events_handled: AtomicU64,
     flow_options: CodexRolloutFlowSourceOptions,
     claude_flow_options: ClaudeTranscriptFlowSourceOptions,
 }
@@ -61,6 +62,7 @@ impl WorkerFlowDriver {
             events,
             tasks: Mutex::new(HashMap::new()),
             subscriber_started: AtomicBool::new(false),
+            events_handled: AtomicU64::new(0),
             flow_options: CodexRolloutFlowSourceOptions::default(),
             claude_flow_options: ClaudeTranscriptFlowSourceOptions::default(),
         })
@@ -81,6 +83,7 @@ impl WorkerFlowDriver {
             events,
             tasks: Mutex::new(HashMap::new()),
             subscriber_started: AtomicBool::new(false),
+            events_handled: AtomicU64::new(0),
             flow_options,
             claude_flow_options: ClaudeTranscriptFlowSourceOptions::default(),
         })
@@ -102,6 +105,7 @@ impl WorkerFlowDriver {
             events,
             tasks: Mutex::new(HashMap::new()),
             subscriber_started: AtomicBool::new(false),
+            events_handled: AtomicU64::new(0),
             flow_options,
             claude_flow_options,
         })
@@ -170,16 +174,20 @@ impl WorkerFlowDriver {
         self.attach_runtime(runtime).await
     }
 
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn events_handled_for_test(&self) -> u64 {
+        self.events_handled.load(Ordering::SeqCst)
+    }
+
     fn start_runtime_subscriber(self: &Arc<Self>) {
         if self.subscriber_started.swap(true, Ordering::SeqCst) {
             return;
         }
+        // Subscribe before returning from start_on_boot: callers may publish
+        // immediately, and broadcast events sent without a receiver are lost.
+        let mut rx = self.events.subscribe_filtered();
         let weak = Arc::downgrade(self);
         tokio::spawn(async move {
-            let mut rx = match weak.upgrade() {
-                Some(driver) => driver.events.subscribe_filtered(),
-                None => return,
-            };
             loop {
                 match rx.recv().await {
                     Ok(env) => {
@@ -187,6 +195,7 @@ impl WorkerFlowDriver {
                             return;
                         };
                         driver.handle_event(env.event).await;
+                        driver.events_handled.fetch_add(1, Ordering::SeqCst);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!(
@@ -319,6 +328,19 @@ impl WorkerFlowDriver {
         let Some(source_kind) = source_kind_for_runtime(&runtime) else {
             return Ok(());
         };
+        // This is the single fail-closed boundary shared by boot and every
+        // runtime/card event entry point. `source_kind_for_runtime` cannot do
+        // this because the persisted card payload is not part of its input.
+        let card = self
+            .repo
+            .card_get(&runtime.card_id)
+            .await
+            .map_err(|e| CoreError::Internal(format!("card_get: {e}")))?
+            .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
+        if crate::plain_chat::card_is_plain_chat(&card, None, false) {
+            self.cancel_card(&runtime.card_id).await;
+            return Ok(());
+        }
         match source_kind {
             FlowSourceKind::Codex if runtime.thread_id.is_none() => {
                 tracing::warn!(
@@ -360,12 +382,6 @@ impl WorkerFlowDriver {
             }
         }
 
-        let card = self
-            .repo
-            .card_get(&runtime.card_id)
-            .await
-            .map_err(|e| CoreError::Internal(format!("card_get: {e}")))?
-            .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
         let session = session_from_runtime(&runtime, &card);
         let stop = CancellationToken::new();
         let sink = self.sink.clone();

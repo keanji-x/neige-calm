@@ -600,6 +600,98 @@ async fn seed_live_spec_harness(boot: &Boot) -> (Card, String, SpecHarness) {
     (card, runtime_id, harness)
 }
 
+async fn seed_live_plain_chat_harness(boot: &Boot) -> (Card, String, SpecHarness) {
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Worker,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    let runtime_id = new_id();
+    let thread_id = format!("thread-{runtime_id}");
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: runtime_id.clone(),
+        wave_id: card.wave_id.clone(),
+        card_id: card.id.clone(),
+        thread_id: Some(thread_id),
+        repo: repo_dyn,
+        events: boot.state.events.clone(),
+        card_role_cache: boot.state.card_role_cache.clone(),
+        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        daemon: boot.state.shared_codex_appserver.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+    boot.state
+        .harness
+        .insert(runtime_id.clone(), harness.clone());
+    (card, runtime_id, harness)
+}
+
+#[tokio::test]
+async fn spec_input_accepts_plain_chat_but_rejects_unmarked_pty_codex() {
+    let boot = boot().await;
+    let pty = seed_codex_card_with_role(&boot, CardRole::Worker).await;
+    let (status, _) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", pty.id),
+        json!({"text": "must fail closed"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    let (chat, runtime_id, harness) = seed_live_plain_chat_harness(&boot).await;
+    let (status, body) = post_json(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/input", chat.id),
+        json!({"text": "hello chat"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(harness.snapshot().await.pending_queue.len(), 1);
+    boot.state.harness.remove(&runtime_id);
+    harness.shutdown().await.unwrap();
+}
+
 async fn seed_inactive_spec_runtime(boot: &Boot, card: &Card) -> String {
     let runtime_id = new_id();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);

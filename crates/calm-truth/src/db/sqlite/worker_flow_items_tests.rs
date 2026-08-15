@@ -40,6 +40,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await

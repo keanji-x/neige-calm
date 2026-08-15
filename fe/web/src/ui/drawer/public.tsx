@@ -14,7 +14,41 @@ import { useEffect, useRef, type ReactNode, type UIEvent } from 'react';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
-export function Drawer({ open, title, onClose, children, footer }: {
+/**
+ * A control in the drawer's head, beside the close.
+ *
+ * It is a companion component rather than a free `ReactNode` for the reason
+ * `PanelAction` is one: the geometry belongs to the head — a 28px hit area
+ * carried on the title's first line — and a caller composing its own button
+ * would have to restate it, which is the drift the role/tier split exists to
+ * prevent (§4.1).
+ *
+ * `danger` is §4.3's tier and it is red **at rest**: a warning that appears
+ * only under the pointer is missing at the moment of the decision, and missing
+ * from the keyboard path entirely. Icon-only, so the label is the whole of what
+ * a screen reader gets — it must name the object, not just the verb.
+ */
+export function DrawerAction({ label, onClick, danger = false, children }: {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      data-nc-role="icon"
+      className={`${styles.action} ${danger ? styles.actionDanger : ''}`}
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function Drawer({ open, title, onClose, children, footer, headAction }: {
   open: boolean;
   /**
    * The whole head — one grey line on the close button's row.
@@ -36,6 +70,16 @@ export function Drawer({ open, title, onClose, children, footer }: {
    * the bottom of a long transcript is a message box you cannot reach.
    */
   footer?: ReactNode;
+  /**
+   * One control beside the close, for something that belongs to the surface
+   * rather than to what is in it — today, the conversation's reset.
+   *
+   * It is a head slot and not a footer button because the footer is where you
+   * *work*: a destructive action standing next to the message box is one
+   * mis-click away from the most routine thing on the surface, and it inherits
+   * the visual weight of a control you press every turn.
+   */
+  headAction?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [scrolled, setScrolled] = useState(false);
@@ -54,9 +98,11 @@ export function Drawer({ open, title, onClose, children, footer }: {
    * snapshot of the last frame that had content, and it must never cause a
    * render of its own.
    */
-  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode }>({ title, children, footer });
-  if (open) lastFrame.current = { title, children, footer };
-  const frame = open ? { title, children, footer } : lastFrame.current;
+  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode; headAction?: ReactNode }>(
+    { title, children, footer, headAction },
+  );
+  if (open) lastFrame.current = { title, children, footer, headAction };
+  const frame = open ? { title, children, footer, headAction } : lastFrame.current;
 
   /*
    * The retraction starts **during render**, not in an effect, and that is the
@@ -138,16 +184,19 @@ export function Drawer({ open, title, onClose, children, footer }: {
     >
       <div className={styles.head}>
         <h2 className={styles.title}>{frame.title}</h2>
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={styles.close}
-          aria-label="Close conversation"
-          title="Close"
-          onClick={onClose}
-        >
-          ›
-        </button>
+        <div className={styles.headActions}>
+          {frame.headAction}
+          <button
+            type="button"
+            data-nc-role="icon"
+            className={styles.close}
+            aria-label="Close conversation"
+            title="Close"
+            onClick={onClose}
+          >
+            ›
+          </button>
+        </div>
       </div>
       <div
         className={styles.body}

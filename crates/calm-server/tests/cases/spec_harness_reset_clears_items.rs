@@ -208,3 +208,53 @@ async fn reset_spec_card_clears_persisted_harness_items() {
         handle.shutdown().await.unwrap();
     }
 }
+
+#[tokio::test]
+async fn reset_plain_chat_card_on_cove_chat_wave_succeeds_without_spec_goal() {
+    let boot = boot().await;
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(boot.spec_card.wave_id.as_str())
+        .execute(boot.repo.pool())
+        .await
+        .unwrap();
+    let chat = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: boot.spec_card.wave_id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        })
+        .await
+        .unwrap();
+    boot.state
+        .card_role_cache
+        .insert(chat.id.clone(), CardRole::Worker, chat.wave_id.clone());
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        format!("/api/cards/{}/spec/reset", chat.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let active = boot
+        .repo
+        .session_projection_active_for_card(&chat.id.to_string())
+        .await
+        .unwrap()
+        .expect("plain-chat reset runtime");
+    assert_eq!(
+        active.kind,
+        calm_server::session_projection_repo::WorkerSessionKind::CodexCard
+    );
+    let snapshot: calm_server::harness::HarnessSnapshot =
+        serde_json::from_value(active.handle_state_json.unwrap()).unwrap();
+    assert!(
+        snapshot.pending_queue.is_empty(),
+        "plain chat must not inherit the wave title as a goal"
+    );
+    if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
+}

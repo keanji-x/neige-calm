@@ -1494,6 +1494,7 @@ impl Scheduler {
             goal: Some(seed.to_string()),
             reset_harness_items: false,
             force_new_thread: false,
+            profile: Default::default(),
         };
         let bootstrap_payload = serde_json::to_value(&bootstrap)?;
         let bootstrap_id = runtime
