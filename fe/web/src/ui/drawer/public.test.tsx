@@ -69,8 +69,21 @@ describe('Drawer', () => {
 
   it('puts the footer outside the scrolling body', () => {
     open({ footer: <form aria-label="composer" /> });
-    const body = screen.getByText('the transcript').parentElement;
-    expect(body?.contains(screen.getByLabelText('composer'))).toBe(false);
+    const bodyInner = screen.getByText('the transcript').parentElement;
+    const scroll = bodyInner?.parentElement;
+    const drawer = screen.getByRole('complementary');
+    expect(scroll?.firstElementChild).toBe(screen.getByRole('heading').parentElement);
+    expect(scroll?.parentElement).toBe(drawer);
+    expect(screen.getByLabelText('composer').parentElement).toBe(drawer);
+  });
+
+  it('does not restore the retired scroll-state attribute', () => {
+    open();
+    const drawer = screen.getByRole('complementary');
+    const scroll = screen.getByText('the transcript').parentElement?.parentElement;
+    expect(scroll).toBeTruthy();
+    fireEvent.scroll(scroll as HTMLElement, { target: { scrollTop: 20 } });
+    expect(drawer.hasAttribute('data-nc-scrolled')).toBe(false);
   });
 
   it('restores focus to the opener when it closes', () => {

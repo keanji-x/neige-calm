@@ -122,6 +122,9 @@
     justify-content: space-between;
     gap: var(--space-4);
     flex: none;
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--z-raised);
 
     /*
      * Two alignments, and the head owes both:
@@ -144,13 +147,10 @@
      * End inset is smaller because the trailing controls carry their own 28px
      * hit areas: 8 + (28 − 16) / 2 lands the glyph optically on the 16 inset.
      */
-    /* `+ 1px` is this head's own bottom rule: `box-sizing: border-box` counts it
-       inside the min, while the page header's 53.3 is 52.3 of band-plus-row
-       *plus* its rule. Without it the two edges miss by that pixel. */
-    min-block-size: calc(var(--nc-head-band) + var(--control-h-lg) + 1px);
+    min-block-size: calc(var(--nc-head-band) + var(--control-h-lg));
     padding: calc(var(--header-baseline) - 14px) var(--space-4) var(--space-2) var(--space-8);
-    border-block-end: 1px solid transparent;
-    transition: border-color var(--motion-quick) ease-out;
+    background: color-mix(in oklch, var(--paper) 72%, transparent);
+    backdrop-filter: blur(12px) saturate(1.4);
   }
 
   /*
@@ -174,14 +174,17 @@
     margin-block: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
   }
 
-  /*
-   * The one line that survives, and only while it is doing work: once the
-   * transcript has scrolled under the head, no colour separates them — both are
-   * `--paper` — so the hairline is the only thing that can. Same trade, same
-   * attribute, same token as `[data-nc-scrolled] .header` in `ui/page-header`.
-   */
-  [data-nc-scrolled] .head {
-    border-block-end-color: var(--hairline);
+  @supports not (backdrop-filter: blur(2px)) {
+    .head {
+      background: var(--paper);
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .head {
+      background: var(--paper);
+      backdrop-filter: none;
+    }
   }
 
   /*
@@ -224,10 +227,8 @@
    * A head control: the same 28px square the close is, because two controls on
    * one row that differ in size read as two ranks, and these are one.
    *
-   * The glyph is `--glyph-sm`, a step under the close's `--glyph`. That is the
-   * whole of the emphasis difference between them and it is deliberate: this is
-   * the rarer control, and §4.3 asks a destructive action to take the *lowest
-   * usable* emphasis — which colour has already spent for it.
+   * The caller supplies an SVG so its stroke and 16px geometry stay stable
+   * beside the close control instead of depending on a font's arrow metrics.
    */
   .action {
     display: grid;
@@ -237,7 +238,7 @@
     block-size: var(--control-h);
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    font-size: var(--glyph-sm);
+    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -286,18 +287,20 @@
     color: var(--text);
   }
 
-  /* The one part that scrolls. `flex: 1` so it takes the height the head and
-     the footer leave, and `min-block-size: 0` so it may actually shrink — a
-     flex item defaults to its content's size and would otherwise push the
-     footer off the bottom instead of scrolling. */
-  .body {
-    display: flex;
+  /* The head and transcript share the scrolling region so the sticky frosted
+     surface can separate them without adding a line. */
+  .scroll {
     flex: 1;
+    min-block-size: 0;
+    overflow: auto;
+    padding: 0;
+  }
+
+  .bodyInner {
+    display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    min-block-size: 0;
     padding: var(--space-4) var(--space-8) var(--space-6);
-    overflow: auto;
   }
 
   /*

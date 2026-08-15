@@ -87,6 +87,14 @@ afterEach(() => {
 });
 
 describe('spec conversation regressions', () => {
+  it('renders reset as an explicit SVG glyph', async () => {
+    setup();
+    await openConversation();
+    const reset = screen.getByRole('button', { name: 'Reset conversation' });
+    expect(reset.querySelector('svg')).toBeTruthy();
+    expect(reset.textContent).not.toContain('↺');
+  });
+
   it('keeps a wave route conversation list scoped after visiting another wave', async () => {
     const { router } = setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });

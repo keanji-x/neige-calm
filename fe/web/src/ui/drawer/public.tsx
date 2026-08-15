@@ -9,7 +9,7 @@
 // trap would mean you cannot click the next wave without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
-import { useEffect, useRef, type ReactNode, type UIEvent } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
@@ -82,7 +82,6 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
   headAction?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const [scrolled, setScrolled] = useState(false);
   const [closing, setClosing] = useState(false);
   const wasOpen = useRef(open);
   const shouldRestoreFocus = useRef(false);
@@ -180,35 +179,27 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
       aria-label={frame.title}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
-      {...(scrolled ? { 'data-nc-scrolled': '' } : {})}
     >
-      <div className={styles.head}>
-        <h2 className={styles.title}>{frame.title}</h2>
-        <div className={styles.headActions}>
-          {frame.headAction}
-          <button
-            type="button"
-            data-nc-role="icon"
-            className={styles.close}
-            aria-label="Close conversation"
-            title="Close"
-            onClick={onClose}
-          >
-            ›
-          </button>
+      <div className={styles.scroll}>
+        <div className={styles.head}>
+          <h2 className={styles.title}>{frame.title}</h2>
+          <div className={styles.headActions}>
+            {frame.headAction}
+            <button
+              type="button"
+              data-nc-role="icon"
+              className={styles.close}
+              aria-label="Close conversation"
+              title="Close"
+              onClick={onClose}
+            >
+              ›
+            </button>
+          </div>
         </div>
-      </div>
-      <div
-        className={styles.body}
-        onScroll={(event: UIEvent<HTMLDivElement>) => {
-          // The head's rule appears only once something is under it. Compared
-          // against the current value so a scroll event per frame does not
-          // become a render per frame.
-          const past = event.currentTarget.scrollTop > 0;
-          if (past !== scrolled) setScrolled(past);
-        }}
-      >
-        {frame.children}
+        <div className={styles.bodyInner}>
+          {frame.children}
+        </div>
       </div>
       {frame.footer}
     </div>

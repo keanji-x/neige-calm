@@ -445,11 +445,23 @@ function useConversationPanel(
          * It is not offered when there is nothing to reset.
          */
         headAction={open === null ? undefined : (
-          /* `↺` — the glyph, not the word. A 28px red mark beside the close is
-             the lowest emphasis this action can take and still be red at rest;
-             the word "Reset" at 13px was reading as a peer of the title. */
+          /* An explicit stroke keeps the reset mark optically stable beside
+             the shared text chevron regardless of the active font. */
           <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
-            ↺
+            <svg
+              viewBox="0 0 16 16"
+              style={{ inlineSize: 'var(--glyph)', blockSize: 'var(--glyph)' }}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+              focusable="false"
+            >
+              <path d="M3 3.5v3.25h3.25" />
+              <path d="M3.35 6.5a5 5 0 1 1 .15 4.1" />
+            </svg>
           </DrawerAction>
         )}
         footer={open === null ? undefined : (
