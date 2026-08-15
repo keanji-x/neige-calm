@@ -342,16 +342,6 @@
    */
   .pin {
     inset-inline-end: var(--space-2);
-
-    /*
-     * 11px, not the 14px every other 20px icon box takes. Nominal size is not
-     * optical size: `x` and `+` have side bearings and sit around the
-     * x-height, while the arrows are drawn to fill the em box top to bottom,
-     * so at 14px the arrow stood a third taller than the 12.5px title beside
-     * it and was the loudest thing in the row. The constraint here is matching
-     * the title, not matching the other glyphs.
-     */
-    font-size: var(--text-xs);
   }
 
   .remove {

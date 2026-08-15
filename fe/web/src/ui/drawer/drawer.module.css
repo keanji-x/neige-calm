@@ -244,7 +244,6 @@
     block-size: var(--control-h);
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;

@@ -24,4 +24,12 @@ describe('Icon', () => {
     const [md, sm] = container.querySelectorAll('svg');
     expect(md.getAttribute('class')).not.toBe(sm.getAttribute('class'));
   });
+
+  it.each(names)('keeps every %s path inside the 0.85 optical-inset group', (name) => {
+    const { container } = render(<Icon name={name} />);
+    const svg = container.querySelector('svg');
+    const inset = svg?.querySelector(':scope > g');
+    expect(inset?.getAttribute('transform')).toBe('translate(8 8) scale(0.85) translate(-8 -8)');
+    expect(inset?.querySelectorAll('path')).toHaveLength(svg?.querySelectorAll('path').length ?? -1);
+  });
 });

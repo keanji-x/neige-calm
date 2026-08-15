@@ -27,7 +27,11 @@ export function Icon({ name, size = 'md' }: { name: IconName; size?: 'sm' | 'md'
       aria-hidden="true"
       focusable="false"
     >
-      {paths[name].map((path) => <path key={path} d={path} />)}
+      {/* The token sizes the em-like icon box; the line work keeps a 0.85
+          optical inset inside it, just as a font's ink sits inside its em box. */}
+      <g transform="translate(8 8) scale(0.85) translate(-8 -8)">
+        {paths[name].map((path) => <path key={path} d={path} />)}
+      </g>
     </svg>
   );
 }

@@ -860,7 +860,7 @@ blocked 这个例外的代价由两件事补掉：**危险对话框的初始焦�
 
 ### 6.7 图标按钮
 
-- **anatomy**：一个 `--glyph-sm`（14px）或 `--glyph`（16px）**描边图标**（`ui/icon`，`viewBox 0 0 16 16`、`stroke-width: 1.5`、`currentColor`、几何居中），居中在方盒子里。
+- **anatomy**：`--glyph-sm`（14px）与 `--glyph`（16px）给的是图标的**盒**，不是线稿墨迹；盒内的**描边图标**（`ui/icon`，`viewBox 0 0 16 16`、`stroke-width: 1.5`、`currentColor`、几何居中）统一按 `0.85` 光学内缩，再居中在方盒子里。这与字体的 em 盒和字形墨迹的关系相同，目标是让墨迹对齐相邻正文的 cap height：真浏览器实测 13px 正文 cap height 为 9px，内缩前图标墨迹为 10.5px，内缩后为 8.9px。
 - **尺寸**：行内 `--control-h-sm`（20px），chrome 里 `--control-h`（28px）；`--radius-sm`；`display: grid; place-items: center; padding: 0`。带 `data-nc-role="icon"`，不带 `data-nc-action`（§4.1）。
 - **状态**：rest 透明 / `--text-3`；hover `--overlay-hover-strong` / `--text`；active `--overlay-active`；选中/开启 `--accent-soft` / `--accent`，无边框（§2.1 允许的四个 `--accent-soft` 使用点之一；选中语汇全应用只有一种，§5.1）；disabled 透明 / `--text-4`。
 - **刻意不做**：没有无障碍名就存在；成为某个危险动作的唯一入口；**在行外用 20px**（分区标签行、页头、工具栏一律 28px）；hover 时换图标（只有盒子和描边变）；**用文本字形当图标**——1440×900 真浏览器、同为 28 盒 / 16px 时，`‹` 5.3px、`↑` 8.0px、`×`/`+` 9.3px，最宽是最窄的 1.75 倍，字号相同也无法对齐墨迹。
