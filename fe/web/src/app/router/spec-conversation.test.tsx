@@ -8,7 +8,7 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import { HARNESS_ITEMS_PAGE_LIMIT } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { queryKeys } from '../providers/queries.ts';
-import { createAppRouter } from './public.tsx';
+import { APP_BASEPATH, createAppRouter } from './public.tsx';
 
 const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const WAVE = { id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
@@ -74,7 +74,7 @@ async function openConversation() {
 }
 
 beforeEach(() => {
-  window.history.pushState({}, '', '/wave/w1');
+  window.history.pushState({}, '', `${APP_BASEPATH}/wave/w1`);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
 });
@@ -111,7 +111,7 @@ describe('spec conversation regressions', () => {
       name: 'Conversation Spec chat, on Test wave, 0 turns',
     }));
     await screen.findByRole('complementary', { name: 'Spec chat' });
-    expect(window.location.pathname).toBe('/wave/w1');
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w1`);
     expect(requests.some(({ path }) => path.includes('/api/cards//'))).toBe(false);
   });
 
@@ -123,7 +123,7 @@ describe('spec conversation regressions', () => {
       name: 'Conversation Spec chat, on Test wave, 0 turns',
     }));
     await screen.findByRole('complementary', { name: 'Spec chat' });
-    expect(window.location.pathname).toBe('/wave/w1');
+    expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w1`);
   });
 
   it('does not retain the pre-reset turn count on Today', async () => {

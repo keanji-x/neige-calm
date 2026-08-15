@@ -60,6 +60,8 @@ import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 
+export const APP_BASEPATH = '/next';
+
 type ConversationStore = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly ConversationTurn[];
@@ -291,7 +293,7 @@ export function createRouteTree({ transport, client, onSignOut }: AppRouterDeps)
 export function createAppRouter(deps: AppRouterDeps) {
   return createRouter({
     routeTree: createRouteTree(deps),
-    basepath: '/next',
+    basepath: APP_BASEPATH,
     defaultPreload: false,
   });
 }
