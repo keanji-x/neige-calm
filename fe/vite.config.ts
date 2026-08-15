@@ -38,6 +38,7 @@ export default defineConfig({
   // root on the command line silently dropped this file — and the React plugin
   // with it. Declaring the root here keeps dev and build on this config.
   root: 'web',
+  base: '/next/',
   plugins: [react(), ...(useMock ? [devMockApi()] : [])],
   define: {
     __NC_VERSION__: JSON.stringify(version),

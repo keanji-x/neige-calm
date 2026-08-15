@@ -289,7 +289,11 @@ export function createRouteTree({ transport, client, onSignOut }: AppRouterDeps)
 }
 
 export function createAppRouter(deps: AppRouterDeps) {
-  return createRouter({ routeTree: createRouteTree(deps), defaultPreload: false });
+  return createRouter({
+    routeTree: createRouteTree(deps),
+    basepath: '/next',
+    defaultPreload: false,
+  });
 }
 
 function ShellRoute({ transport, onSignOut }: { transport: ApiTransportPort; onSignOut: () => void }) {

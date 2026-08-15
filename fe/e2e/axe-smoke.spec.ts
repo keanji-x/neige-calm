@@ -16,10 +16,10 @@ test('the four primary routes have no WCAG A or AA violations in light mode', as
   const wave = await createWave(request, cove.id);
 
   const routes = [
-    { path: '/', anchor: page.locator('section[aria-label="Today terminal"]') },
-    { path: `/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
-    { path: `/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
-    { path: '/settings', anchor: page.getByRole('radiogroup', { name: 'Appearance' }) },
+    { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
+    { path: `/next/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
+    { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
+    { path: '/next/settings', anchor: page.getByRole('radiogroup', { name: 'Appearance' }) },
   ];
 
   for (const route of routes) {
