@@ -114,7 +114,7 @@ pub async fn spawn_recovered_harness(
             .wave_get(card.wave_id.as_str())
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-        if wave.purpose.as_deref() == Some("cove-chat") {
+        if wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
             tracing::warn!(
                 runtime_id = %runtime.id,
                 card_id = %card.id,

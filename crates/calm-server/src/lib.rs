@@ -44,6 +44,9 @@ use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+/// Kernel-owned purpose marker for the cove's inert conversation wave.
+pub const COVE_CHAT_PURPOSE: &str = "cove-chat";
+
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns
 /// daemon binaries at boot. If the supervisor does not know a supposedly

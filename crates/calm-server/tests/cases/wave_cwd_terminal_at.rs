@@ -757,9 +757,9 @@ async fn list_waves_window_inverted_returns_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
 }
 
-/// Empty query returns every wave (no filters applied).
+/// Empty query keeps ordinary waves visible when no window filters apply.
 #[tokio::test]
-async fn list_waves_window_no_params_returns_all_waves() {
+async fn list_waves_window_no_params_keeps_ordinary_waves_visible() {
     let boot = boot().await;
     seed_wave(&boot.repo, &boot.cove_id).await;
     seed_wave(&boot.repo, &boot.cove_id).await;
@@ -785,4 +785,65 @@ async fn list_waves_window_cove_id_filter() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().map(|a| a.len()), Some(2));
+}
+
+/// INV-CHAT-005 paired route-boundary contract: NULL-purpose ordinary waves
+/// and launchpads remain visible in both public lists, while only cove-chat is
+/// hidden. The repository still returns the full set.
+#[tokio::test]
+async fn public_wave_lists_hide_only_cove_chat_and_repo_keeps_full_set() {
+    let boot = boot().await;
+    let ordinary = seed_wave(&boot.repo, &boot.cove_id).await;
+    let launchpad = seed_wave(&boot.repo, &boot.cove_id).await;
+    let chat = seed_wave(&boot.repo, &boot.cove_id).await;
+    sqlx::query("UPDATE waves SET purpose = 'launchpad' WHERE id = ?1")
+        .bind(launchpad.id.as_str())
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(chat.id.as_str())
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .unwrap();
+
+    let expected = [ordinary.id.as_str(), launchpad.id.as_str()];
+    for uri in [
+        format!("/api/coves/{}/waves", boot.cove_id),
+        format!("/api/waves?cove_id={}", boot.cove_id),
+    ] {
+        let (status, body) = get(boot.app.clone(), &uri).await;
+        assert_eq!(status, StatusCode::OK, "body={body}");
+        let ids: Vec<_> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wave| wave["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2, "{uri}: only chat is hidden; ids={ids:?}");
+        for id in expected {
+            assert!(ids.contains(&id), "{uri}: expected visible wave {id}");
+        }
+        assert!(!ids.contains(&chat.id.as_str()), "{uri}: chat leaked");
+    }
+
+    let repo_waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(
+        repo_waves.len(),
+        3,
+        "repository readers require the full set"
+    );
+    assert!(repo_waves.iter().any(|wave| wave.id == chat.id));
+
+    let repo_window = boot
+        .repo
+        .waves_window(Some(&boot.cove_id), None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo_window.len(),
+        3,
+        "waves_window must also retain the repository's full set"
+    );
+    assert!(repo_window.iter().any(|wave| wave.id == chat.id));
 }

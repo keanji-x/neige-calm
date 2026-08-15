@@ -1249,7 +1249,7 @@ pub(crate) async fn reset_spec_card(
             .wave_get(card.wave_id.as_str())
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-        if wave.purpose.as_deref() == Some("cove-chat") {
+        if wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
             return Err(CalmError::Forbidden(format!(
                 "spec harness is disabled for cove chat wave {}",
                 wave.id

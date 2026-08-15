@@ -494,7 +494,7 @@ pub async fn force_spec_phase(
         .wave_get(card.wave_id.as_str())
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
-    if role == CardRole::Spec && wave.purpose.as_deref() == Some("cove-chat") {
+    if role == CardRole::Spec && wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
         return Err(CalmError::Forbidden(format!(
             "spec harness is disabled for cove chat wave {}",
             wave.id

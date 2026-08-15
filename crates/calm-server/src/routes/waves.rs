@@ -28,6 +28,7 @@
 //! so a missed cleanup surfaces as a transaction-level error rather
 //! than a silent daemon-process leak.
 
+use crate::COVE_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
@@ -363,8 +364,22 @@ pub(crate) async fn list_waves_by_cove(
     State(s): State<RouteState>,
     Path(cove_id): Path<String>,
 ) -> Result<Json<Vec<Wave>>> {
-    let waves = s.repo.waves_by_cove(&cove_id).await?;
+    let mut waves = s.repo.waves_by_cove(&cove_id).await?;
+    waves.retain(user_visible_wave);
     Ok(Json(waves))
+}
+
+/// Public wave lists hide only the cove conversation container. Keep this at
+/// the route boundary: repository readers such as cove deletion and backlink
+/// resolution require the complete set. The explicit `None` arm is the Rust
+/// equivalent of SQL's
+/// `w.purpose IS NULL OR w.purpose <> 'cove-chat'`; ordinary NULL-purpose
+/// waves must remain visible.
+fn user_visible_wave(wave: &Wave) -> bool {
+    match wave.purpose.as_deref() {
+        None => true,
+        Some(purpose) => purpose != COVE_CHAT_PURPOSE,
+    }
 }
 
 /// Issue #250 PR 2 — calendar window query parameters for
@@ -429,10 +444,11 @@ pub(crate) async fn list_waves_window(
             "window query: `since` ({since}) must be <= `until` ({until})"
         )));
     }
-    let waves = state
+    let mut waves = state
         .repo
         .waves_window(q.cove_id.as_deref(), q.since, q.until)
         .await?;
+    waves.retain(user_visible_wave);
     Ok(Json(waves))
 }
 
@@ -791,7 +807,7 @@ pub(crate) async fn ensure_cove_chat_wave(
         .waves_by_cove(&cove_id)
         .await?
         .into_iter()
-        .find(|wave| wave.purpose.as_deref() == Some("cove-chat"))
+        .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
     {
         return Ok((StatusCode::OK, Json(wave)).into_response());
     }
@@ -841,7 +857,7 @@ pub(crate) async fn ensure_cove_chat_wave(
             },
             fork_report_from: None,
         },
-        Some("cove-chat"),
+        Some(COVE_CHAT_PURPOSE),
     )
     .await;
     let (wave, created) = match attempt {
@@ -852,7 +868,7 @@ pub(crate) async fn ensure_cove_chat_wave(
                 .waves_by_cove(&cove_id)
                 .await?
                 .into_iter()
-                .find(|wave| wave.purpose.as_deref() == Some("cove-chat"))
+                .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
                 .ok_or_else(|| CalmError::Internal("chat wave ensure race had no winner".into()))?;
             (wave, false)
         }
@@ -1405,6 +1421,11 @@ pub(crate) async fn update_wave(
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    if existing.purpose.as_deref() == Some(COVE_CHAT_PURPOSE) && p.lifecycle.is_some() {
+        return Err(CalmError::Forbidden(
+            "cove chat wave lifecycle cannot be changed".into(),
+        ));
+    }
     let scope = EventScope::Wave {
         wave: existing.id.clone(),
         cove: existing.cove_id.clone(),
