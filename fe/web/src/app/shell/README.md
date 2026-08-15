@@ -68,5 +68,5 @@ line, watch the named test go red) before landing.
 
 - Cove rename and drag-reorder are not in the rail; renaming lives on the cove
   page (`features/cove/page`).
-- The new-cove colour is picked at random from `COVE_PALETTE`; the wave create
-  form picks deterministically. Only the palette values are shared (INV-DUP-006).
+- The sidebar's new-cove flow is the sole consumer of `COVE_PALETTE`; it picks
+  a colour at random and sends it to the kernel (INV-DUP-006).
