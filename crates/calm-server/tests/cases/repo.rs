@@ -1858,6 +1858,9 @@ async fn shared_initial_prompt_takeover_returns_live_pending_shared_specs() {
     )
     .await
     .expect("create deferred placeholder shared spec card");
+    // INV-CHAT-015 has two independent production fences: c.role = 'spec'
+    // and ws.contract = 'planner'. This counterexample pins the role fence;
+    // the contract fence is pinned separately by INV-CHAT-009's counterexample.
     let chat = calm_server::db::sqlite::card_create_with_id_tx(
         &mut tx,
         calm_server::model::new_id(),

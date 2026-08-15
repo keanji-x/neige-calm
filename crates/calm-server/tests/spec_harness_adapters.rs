@@ -758,7 +758,18 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
             .shared_codex_appserver
             .started_thread_params_for_test(),
         vec![(None, true)],
-        "plain-chat thread/start must omit developer instructions and MCP config"
+        // INV-CHAT-002 currently pins only the ThreadConfig::NoMcp shape. The
+        // calm.wave.update rejection belongs to slice 1b's role gate.
+        "plain-chat thread/start must select ThreadConfig::NoMcp"
+    );
+    assert_eq!(
+        repo.card_get(&card_id)
+            .await
+            .unwrap()
+            .expect("plain-chat card after thread start")
+            .payload["harness_profile"],
+        "plain_chat",
+        "INV-CHAT-011 should turn red if thread start loses the boot-recovery marker"
     );
     assert!(card_mcp_hash(&repo, &card_id).await.is_some());
     let runtime = repo
@@ -771,6 +782,45 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
         wave_root_session_id(&repo, wave.id.as_str())
             .await
             .is_none()
+    );
+}
+
+#[tokio::test]
+async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_plain_chat_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: HarnessProfile::PlainChat,
+    })
+    .unwrap();
+
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    let outcome = wait_op(&state, &op_id).await;
+    assert!(
+        matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "should turn red if non-deferred PlainChat uses the spec role: {outcome:?}"
+    );
+    assert_eq!(
+        state
+            .shared_codex_appserver
+            .started_thread_params_for_test(),
+        vec![(None, true)],
+        "non-deferred PlainChat must start without MCP config"
     );
 }
 

@@ -100,6 +100,7 @@ async fn session_refresh_deferred_placeholder_tx(
         )
         || !refreshable_state
         || existing.wave_id != desired.wave_id
+        || existing.card_id != desired.card_id
         || existing.provider != desired.provider
         || existing.mode != desired.mode
         || existing.parent_session_id.is_some()
@@ -136,6 +137,7 @@ async fn session_refresh_deferred_placeholder_tx(
                   completed_at_ms = ?14
             WHERE id = ?15
               AND contract = ?16
+              AND card_id = ?17
               AND state IN ('starting', 'superseded')"#,
     )
     .bind(desired.state.as_db_str())
@@ -154,6 +156,7 @@ async fn session_refresh_deferred_placeholder_tx(
     .bind(desired.completed_at_ms)
     .bind(desired.id.as_str())
     .bind(desired.contract.as_db_str())
+    .bind(desired.card_id.as_ref().map(CardId::as_str))
     .execute(&mut **tx)
     .await
     .map_err(|e| runtime_message(e.to_string()))?;

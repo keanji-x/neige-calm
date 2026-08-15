@@ -332,10 +332,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
         };
         if self.card_role_cache.get(&card.id) != Some(expected_role) {
-            return Err(CalmError::BadRequest(format!(
-                "card {} is not a spec card",
-                card.id
-            )));
+            let message = match payload.profile {
+                HarnessProfile::Spec => format!("card {} is not a spec card", card.id),
+                HarnessProfile::PlainChat => {
+                    format!("card {} is not marked for plain chat", card.id)
+                }
+            };
+            return Err(CalmError::BadRequest(message));
         }
         if !self.daemon.is_running() {
             // #953 — same variant/status; message carries the live failure

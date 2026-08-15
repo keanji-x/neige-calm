@@ -495,13 +495,13 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
     async fn session_projection_recover_harnesses_on_boot(
         &self,
     ) -> WorkerSessionProjectionResult<Vec<WorkerSessionProjection>> {
-        let (provider, _mode, _contract) = derive_session_identity(&WorkerSessionKind::SharedSpec);
+        let (provider, _mode, contract) = derive_session_identity(&WorkerSessionKind::SharedSpec);
         let sql = format!(
             r#"{WS_BACKED_CARD_RUNTIME_SELECT}
                JOIN waves w ON w.id = c.wave_id
                WHERE ws.provider = ?1
                  AND (
-                       ws.contract = 'planner'
+                       ws.contract = ?2
                        OR (ws.contract = 'executor'
                            AND c.role = 'worker'
                            AND c.kind = 'codex'
@@ -518,6 +518,7 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
         );
         let rows = sqlx::query(&sql)
             .bind(provider.as_db_str())
+            .bind(contract.as_db_str())
             .fetch_all(&self.pool)
             .await?;
         rows.iter()
