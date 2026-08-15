@@ -18,7 +18,9 @@ use calm_server::mcp_server::auth;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id, now_ms};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use calm_server::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
-use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use calm_server::operation::spec_harness_start_adapter::{
+    HarnessProfile, SpecHarnessStartOperationPayload,
+};
 use calm_server::operation::{OperationKey, OperationOutcome, PhaseTag, TxOutput};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -209,6 +211,52 @@ async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, wave: &Wave
     tx.commit().await.unwrap();
 }
 
+async fn seed_plain_chat_card(
+    repo: &SqlxRepo,
+    role_cache: &CardRoleCache,
+    wave: &Wave,
+    card_id: &str,
+) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.to_string(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        },
+        CardRole::Worker,
+        false,
+        role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[test]
+fn legacy_start_payload_defaults_to_spec_profile() {
+    let mut payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::Kernel,
+        wave_id: "wave-old".into(),
+        spec_card_id: CardId::from("card-old".to_string()),
+        report_card_id: None,
+        sort: None,
+        cwd: "/tmp".into(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: HarnessProfile::PlainChat,
+    })
+    .unwrap();
+    payload.as_object_mut().unwrap().remove("profile");
+    let decoded: SpecHarnessStartOperationPayload = serde_json::from_value(payload).unwrap();
+    assert_eq!(decoded.profile, HarnessProfile::Spec);
+}
+
 fn key() -> OperationKey {
     OperationKey {
         operation_key: new_id(),
@@ -308,6 +356,7 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -474,6 +523,7 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let first_op = state
@@ -523,6 +573,7 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
+        profile: Default::default(),
     })
     .unwrap();
     let second_op = state
@@ -607,6 +658,7 @@ async fn spec_thread_start_carries_neige_mcp_exec_shell_env() {
         goal: Some("spec channel-3 point-of-use".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -672,6 +724,109 @@ async fn spec_thread_start_carries_neige_mcp_exec_shell_env() {
 }
 
 #[tokio::test]
+async fn plain_chat_thread_start_has_no_mcp_config() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_plain_chat_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile: HarnessProfile::PlainChat,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    let outcome = wait_op(&state, &op_id).await;
+    assert!(
+        matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "plain-chat start failed: {outcome:?}"
+    );
+
+    assert_eq!(
+        state
+            .shared_codex_appserver
+            .started_thread_params_for_test(),
+        vec![(None, true, None)],
+        // The deferred mint API does not receive a card role, so this path can
+        // only observe developer instructions and ThreadConfig::NoMcp. Role is
+        // observable only on the non-deferred path and is locked by
+        // plain_chat_non_deferred_thread_start_uses_worker_role.
+        "plain-chat thread/start must select ThreadConfig::NoMcp"
+    );
+    assert_eq!(
+        repo.card_get(&card_id)
+            .await
+            .unwrap()
+            .expect("plain-chat card after thread start")
+            .payload["harness_profile"],
+        "plain_chat",
+        "INV-CHAT-011 should turn red if thread start loses the boot-recovery marker"
+    );
+    assert!(card_mcp_hash(&repo, &card_id).await.is_some());
+    let runtime = repo
+        .session_projection_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("plain-chat runtime");
+    assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
+    assert!(
+        wave_root_session_id(&repo, wave.id.as_str())
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_plain_chat_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: HarnessProfile::PlainChat,
+    })
+    .unwrap();
+
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    let outcome = wait_op(&state, &op_id).await;
+    assert!(
+        matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "should turn red if non-deferred PlainChat uses the spec role: {outcome:?}"
+    );
+    assert_eq!(
+        state
+            .shared_codex_appserver
+            .started_thread_params_for_test(),
+        vec![(None, true, Some(CardRole::Worker))],
+        "non-deferred PlainChat must start without MCP config as a worker"
+    );
+}
+
+#[tokio::test]
 async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
@@ -732,6 +887,7 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -861,6 +1017,7 @@ async fn force_new_thread_kills_old_pty_immediately() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -955,6 +1112,7 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -1023,6 +1181,7 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -1100,6 +1259,7 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -1200,6 +1360,7 @@ async fn reusable_thread_without_token_fails_op() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state
@@ -1357,6 +1518,7 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
     })
     .unwrap();
     let op_id = state

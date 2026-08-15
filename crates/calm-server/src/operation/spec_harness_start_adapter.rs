@@ -188,6 +188,14 @@ struct BoundWorkflow {
     input: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessProfile {
+    #[default]
+    Spec,
+    PlainChat,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpecHarnessStartOperationPayload {
     pub actor: ActorId,
@@ -204,6 +212,13 @@ pub struct SpecHarnessStartOperationPayload {
     pub reset_harness_items: bool,
     #[serde(default)]
     pub force_new_thread: bool,
+    #[serde(default)]
+    pub profile: HarnessProfile,
+}
+
+fn card_is_plain_chat(card: &Card) -> bool {
+    card.kind == "codex"
+        && card.payload.get("harness_profile").and_then(Value::as_str) == Some("plain_chat")
 }
 
 pub(crate) fn render_spec_developer_instructions(
@@ -306,11 +321,24 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 card.id, card.wave_id, payload.wave_id
             )));
         }
-        if self.card_role_cache.get(&card.id) != Some(CardRole::Spec) {
-            return Err(CalmError::BadRequest(format!(
-                "card {} is not a spec card",
-                card.id
-            )));
+        let expected_role = match payload.profile {
+            HarnessProfile::Spec => CardRole::Spec,
+            HarnessProfile::PlainChat if card_is_plain_chat(&card) => CardRole::Worker,
+            HarnessProfile::PlainChat => {
+                return Err(CalmError::BadRequest(format!(
+                    "card {} is not marked for plain chat",
+                    card.id
+                )));
+            }
+        };
+        if self.card_role_cache.get(&card.id) != Some(expected_role) {
+            let message = match payload.profile {
+                HarnessProfile::Spec => format!("card {} is not a spec card", card.id),
+                HarnessProfile::PlainChat => {
+                    format!("card {} is not marked for plain chat", card.id)
+                }
+            };
+            return Err(CalmError::BadRequest(message));
         }
         if !self.daemon.is_running() {
             // #953 — same variant/status; message carries the live failure
@@ -331,6 +359,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = payload.wave_id;
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
+        let session_kind = match payload.profile {
+            HarnessProfile::Spec => WorkerSessionKind::SharedSpec,
+            HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
+        };
         let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
                  FROM cards
@@ -378,7 +410,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_init = WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: session_kind,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -444,6 +476,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
         let reset_harness_items = payload.reset_harness_items;
         let force_new_thread = payload.force_new_thread;
+        let profile = payload.profile;
+        let session_kind = match profile {
+            HarnessProfile::Spec => WorkerSessionKind::SharedSpec,
+            HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
+        };
+        let card_role = match profile {
+            HarnessProfile::Spec => CardRole::Spec,
+            HarnessProfile::PlainChat => CardRole::Worker,
+        };
         let card_id = output.output_string("card_id", "spec harness")?;
         let wave_id = output.output_string("wave_id", "spec harness")?;
         let runtime_id = output.output_string("runtime_id", "spec harness")?;
@@ -502,14 +543,18 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             thread_id
         } else {
-            let bound_workflow = self.bound_workflow(&wave_id).await?;
-            let developer_instructions = render_spec_developer_instructions(
-                &wave_id,
-                bound_workflow.as_ref().map(|bound| &bound.descriptor),
-                bound_workflow
-                    .as_ref()
-                    .and_then(|bound| bound.input.as_ref()),
-            );
+            let developer_instructions = if matches!(profile, HarnessProfile::PlainChat) {
+                None
+            } else {
+                let bound_workflow = self.bound_workflow(&wave_id).await?;
+                Some(render_spec_developer_instructions(
+                    &wave_id,
+                    bound_workflow.as_ref().map(|bound| &bound.descriptor),
+                    bound_workflow
+                        .as_ref()
+                        .and_then(|bound| bound.input.as_ref()),
+                ))
+            };
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
@@ -523,10 +568,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 cwd,
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
-                developer_instructions: Some(developer_instructions),
-                config: ThreadConfig::McpShell {
-                    socket_path: PathBuf::from(&socket_path),
-                    raw_token: raw,
+                developer_instructions,
+                config: match profile {
+                    HarnessProfile::Spec => ThreadConfig::McpShell {
+                        socket_path: PathBuf::from(&socket_path),
+                        raw_token: raw,
+                    },
+                    HarnessProfile::PlainChat => ThreadConfig::NoMcp,
                 },
             };
             if runtime_deferred {
@@ -535,7 +583,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     .await?
             } else {
                 self.daemon
-                    .thread_start_for_card(&card_id, CardRole::Spec, Some(&wave_id), params)
+                    .thread_start_for_card(&card_id, card_role, Some(&wave_id), params)
                     .await?
             }
         };
@@ -589,7 +637,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         let runtime_init = WorkerSessionInit {
                             id: runtime_id.clone(),
                             card_id: card_id.clone(),
-                            kind: WorkerSessionKind::SharedSpec,
+                            kind: session_kind,
                             agent_provider: Some(AgentProvider::Codex),
                             status: WorkerSessionState::Starting,
                             terminal_run_id: None,
