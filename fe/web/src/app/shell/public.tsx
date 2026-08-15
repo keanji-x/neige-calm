@@ -10,6 +10,7 @@ import { Outlet } from '@tanstack/react-router';
 import { useEffect } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useCoveMutations, useWaveMutations, useWorkspace } from '../providers/queries.ts';
 import { useCurrentPath, useGo } from '../router/navigation.ts';
@@ -19,6 +20,7 @@ import styles from './shell.module.css';
 
 export type AppShellProps = Readonly<{
   transport: ApiTransportPort;
+  unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
   onSignOut: () => void;
   /** Pinned by tests so `pinned_at` assertions are stable. */
@@ -26,10 +28,10 @@ export type AppShellProps = Readonly<{
   userLabel?: string;
 }>;
 
-export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
-  const workspace = useWorkspace(transport);
-  const coveMutations = useCoveMutations(transport);
-  const waveMutations = useWaveMutations(transport);
+export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
+  const workspace = useWorkspace(transport, unauthorized);
+  const coveMutations = useCoveMutations(transport, unauthorized);
+  const waveMutations = useWaveMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
   const go = useGo();
   const readError = workspace.covesError

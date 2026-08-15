@@ -6,10 +6,12 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, expect, it } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { createAppRouter } from './public.tsx';
 
 afterEach(cleanup);
+const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 it('requires the shared confirmation before deleting a Today panel wave', async () => {
   const requests: ApiRequest[] = [];
@@ -28,7 +30,7 @@ it('requires the shared confirmation before deleting a Today panel wave', async 
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.method === 'DELETE' ? undefined : [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
@@ -57,7 +59,7 @@ it('requires the shared confirmation before deleting from the CoveRoute panel', 
     return Promise.resolve({ status: 200, statusText: 'OK', body: request.method === 'DELETE' ? undefined : [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/cove/c1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
@@ -83,7 +85,7 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/wave/w1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
@@ -109,7 +111,7 @@ it('does not navigate on a cove delete success that arrives after cancellation',
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/cove/c1'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
@@ -139,7 +141,7 @@ it('round-trips an encoded wave id through useGo, TanStack history, and useRoute
     return Promise.resolve({ status: 200, statusText: 'OK', body: [] });
   } };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, onSignOut: () => undefined });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />

@@ -2856,13 +2856,13 @@
     源码注释(#189):"the reload is the simplest path that guarantees every persisted / in-memory cache also
     gets a fresh start under the new identity — matches what the ServerCompatGate's bust path does."
   source: web/src/LoginPage.tsx:4-16,29-35
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/features/auth/login-page/public.contract.test.tsx:9-18
   owner_slice: features/auth/login-page
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: CAP-LOGIN-002
   kind: capability
@@ -2873,13 +2873,13 @@
   why: >
     凭据错(200 + 空结果)与网络/服务器错是两类不同的失败,文案必须区分。
   source: web/src/LoginPage.tsx:23-40,70-78
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/features/auth/login-page/public.contract.test.tsx:20-38
   owner_slice: features/auth/login-page
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-LOGIN-003
   kind: invariant
@@ -2890,13 +2890,13 @@
     源码注释:"Single-purpose login screen; autofocus the first field for expected UX. There's no surrounding
     context to skip past." —— 这是对 no-autofocus 规则的有意豁免。
   source: web/src/LoginPage.tsx:48-69
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/features/auth/login-page/login-page.browser.test.tsx:8-16
   owner_slice: features/auth/login-page
   intentional_omission: true
   runtime_layer: features
   verification_owner: e2e
   test_tier: browser
-  migration: pending
+  migration: migrated
 
 # ============================================================
 # §15 Sidebar

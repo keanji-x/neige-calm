@@ -1207,6 +1207,23 @@
   test_tier: jsdom
   migration: pending
 
+- id: INV-APP-114
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    新前端收到全局 unauthorized 信号时，必须清空 QueryClient 中的上一会话缓存，
+    再把会话态翻回 unauthed。
+  why: >
+    即使游标和 IndexedDB 的完整 legacy 清理尚未迁移，上一用户的私有 query 数据也不得在登录页后留存。
+  source: fe/web/src/app/auth/session-gate.tsx:16-18,41-49
+  authoritative_test: fe/web/src/app/auth/session-gate.contract.test.tsx:44-46
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
 - id: INV-APP-065
   kind: invariant
   family: app-session-auth

@@ -3,6 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from './public.tsx';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 
 vi.mock('@tanstack/react-router', () => ({ Outlet: () => <div>route</div> }));
 vi.mock('../providers/queries.ts', () => ({
@@ -30,7 +31,8 @@ describe('narrow rail interaction contracts', () => {
       removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
     })));
-    const { container } = render(<AppShell transport={{} as never} onOpenSettings={vi.fn()} onSignOut={vi.fn()} />);
+    const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+    const { container } = render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onSignOut={vi.fn()} />);
     const toggle = screen.getByRole('button', { name: 'Expand' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.firstElementChild?.className).toContain('shellCollapsed');
