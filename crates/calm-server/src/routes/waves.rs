@@ -929,11 +929,12 @@ async fn create_wave_structure(
     let normalized_cwd_for_tx = normalized_cwd;
     let repo_identity_for_tx = repo_identity.identity;
     let repo_identity_probed_at = repo_identity.probed_at;
-    let fork_author = if actor.as_str() == Actor::DEFAULT {
-        EditAuthor::User
-    } else {
-        EditAuthor::Spec
-    };
+    // #1115 — the fork path deliberately derives no `EditAuthor`. It used to
+    // (`User` when no `X-Calm-Actor` header was present, `Spec` otherwise) and
+    // hand it to `fork_guard::guard_forked_blocks`, which made that guard a
+    // no-op for the browser fork — the single most common fork there is. The
+    // fork's normalization and its belt are both author-independent now, so
+    // nothing here may classify the caller.
     let ((wave, created), _event_ids) = write_with_actor_events_typed(
         s.repo.as_ref(),
         None,
@@ -987,7 +988,6 @@ async fn create_wave_structure(
                         blocks,
                         source_wave_id,
                         wave_id.as_str(),
-                        fork_author,
                     )?)
                 } else {
                     None
@@ -1257,7 +1257,6 @@ fn prepare_fork_report(
     mut blocks: Vec<ReportBlock>,
     source_wave_id: &str,
     target_wave_id: &str,
-    author: EditAuthor,
 ) -> Result<ForkReportSnapshot> {
     use std::collections::HashSet;
 
@@ -1342,11 +1341,10 @@ fn prepare_fork_report(
                 // below, so a corrupt source fails the fork closed instead of
                 // being silently repaired into a shape it never validly had.
                 //
-                // `released_by_user` is the third privilege field on a task
-                // block; fork deliberately does not normalize it here — see
-                // #1115 for that decision (it is enforced instead by
-                // `fork_guard::guard_forked_blocks`, which runs after this
-                // rewrite, so normalizing it would make that rule unreachable).
+                // `released_by_user` is the third privilege field; it is
+                // normalized in the `else` arm below, because the tombstone
+                // schema (`report_blocks/kinds.rs:158-166`) forbids the field
+                // outright — see that arm's comment.
                 payload.insert(
                     "tombstoned_by".into(),
                     serde_json::Value::String("spec".into()),
@@ -1354,6 +1352,36 @@ fn prepare_fork_report(
                 payload.remove("ready");
             } else {
                 payload.insert("ready".into(), serde_json::Value::Bool(false));
+                // #1115 — `released_by_user` is the third and last privilege
+                // field on a task block, and the one that answers "did a HUMAN
+                // approve this task in THIS wave". `declared_by` is rewritten to
+                // `"spec"` two lines up, which is exactly the shape
+                // `declare_and_wait` exists to hold back
+                // (`task_projection.rs:709-719`: `effective_wait &&
+                // declared_by == "spec" && !released_by_user && !tombstone`).
+                // Copying a template's `released_by_user: true` would hand the
+                // copy a standing exemption from a decision the new wave's user
+                // never made — and `report-blocks/task.tsx:185` would then hide
+                // the "Allow this task" button from her, because the flag is
+                // already set. Same source semantics as `ready: false` above:
+                // nothing in a template was decided for *this* wave.
+                //
+                // Removed rather than written as an explicit `false`. Absent and
+                // `false` are identical to every reader (`tasks.rs:732-734`
+                // `.unwrap_or(false)`; `task.tsx:185` tests falsiness), but they
+                // are NOT identical to `wave_report_edit_guard.rs:162-167`,
+                // which compares the raw `Option<&Value>` and rejects any
+                // non-user edit that changes it. A natively spec-declared task
+                // carries no such key (`plan.rs:917-925` excludes
+                // `released_by_user` from every generated task block), so an
+                // explicit `false` would make forked blocks the only ones a spec
+                // author must echo the field back on — re-creating, on this
+                // field, the "template block the spec can never edit" failure
+                // #1111 just closed. `ready` is written explicitly only because
+                // `kinds.rs:243-245` makes it *required* on a live task; this
+                // one is optional, so the absent form is available and is the
+                // one that matches a fresh declaration byte for byte.
+                payload.remove("released_by_user");
             }
         }
 
@@ -1382,7 +1410,7 @@ fn prepare_fork_report(
         )));
     }
 
-    guard_forked_blocks(&blocks, author)?;
+    guard_forked_blocks(&blocks)?;
     let doc = ReportDoc::from_blocks_exact(&summary, &blocks).map_err(|error| {
         CalmError::BadRequest(format!(
             "wave create: invalid fork report snapshot: {error}"
@@ -2110,7 +2138,6 @@ mod tests {
     };
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
-    use crate::event::EditAuthor;
     use crate::model::{NewCard, NewCove, NewWave};
     use crate::routes::theme::RequestTheme;
     use crate::wave_report::{ReportBlock, WaveReportPayload};
@@ -2131,15 +2158,9 @@ mod tests {
                 "declared_by": "user"
             }),
         };
-        let error = prepare_fork_report(
-            "summary".into(),
-            vec![invalid],
-            "source",
-            "target",
-            EditAuthor::User,
-        )
-        .err()
-        .expect("invalid copied task must abort fork");
+        let error = prepare_fork_report("summary".into(), vec![invalid], "source", "target")
+            .err()
+            .expect("invalid copied task must abort fork");
         assert!(error.to_string().contains("invalid forked report block"));
     }
 

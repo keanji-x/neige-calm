@@ -1197,46 +1197,36 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
+/// Issue #1115 — the other half of the release normalization: a NON-user fork
+/// of a template holding a released task must succeed.
+///
+/// This test used to be `non_user_fork_rejects_user_released_task_and_rolls_
+/// back_every_created_row` and pinned the opposite outcome (400 + zero
+/// residue). That outcome was not a contract: it was the observable face of the
+/// same missing normalization. `prepare_fork_report` left `released_by_user`
+/// alone, so a template that any user had ever released became **un-forkable by
+/// any agent** — Rule 5 rejected the whole wave creation, with no repair path
+/// short of a human editing the template. Now the flag is normalized away
+/// before `guard_forked_blocks` ever sees it, so nothing is left for Rule 5 to
+/// reject and the AI-fork DoS is gone.
+///
+/// The privilege that the old 400 nominally protected is not weakened: no
+/// forked block reaches the new wave carrying a release, whoever forks it.
+///
+/// The actor is `ai:claude`, not `ai:codex`, and the difference is not
+/// cosmetic. Both are non-`user` for the fork's purposes, but `actor.rs:98-101`
+/// maps `ai:codex` alone onto `ActorId::AiCodex(CardId::from(""))`, which
+/// `role_gate` rejects outright (`EmptyAiCardId`) when the wave-create event
+/// emits. Under `ai:codex` this route therefore cannot reach 201 whatever the
+/// report holds — the old 400 was simply an earlier stop on a request that was
+/// going to 403 anyway. `ai:codex` is kept out of this test so it pins the fork
+/// behavior rather than that identity gate.
 #[tokio::test]
-async fn non_user_fork_rejects_user_released_task_and_rolls_back_every_created_row() {
+async fn non_user_fork_of_a_released_template_succeeds_without_the_release() {
     let boot = boot().await;
-    let (status, report) = request_json(
-        &boot.app,
-        "GET",
-        format!("/api/waves/{}/report", boot.source_wave_id),
-        &boot.cookie,
-        None,
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let task = report["blocks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|block| block["kind"] == "task" && block["payload"]["key"] == "build")
-        .unwrap();
-    let mut payload = task["payload"].clone();
-    payload["released_by_user"] = json!(true);
-    let (status, body) = request_json(
-        &boot.app,
-        "PATCH",
-        format!(
-            "/api/waves/{}/report/blocks/{}",
-            boot.source_wave_id,
-            task["id"].as_str().unwrap()
-        ),
-        &boot.cookie,
-        Some(json!({
-            "kind": "task",
-            "payload": payload,
-            "ifBlockRev": task["rev"]
-        })),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "seed released task: {body}");
+    seed_user_released_task(&boot, "allowed-upstream").await;
 
-    let before = fork_row_counts(boot.repo.as_ref()).await;
-    let (status, body) = request_json_as(
+    let (status, target_wave) = request_json_as(
         &boot.app,
         "POST",
         "/api/waves".into(),
@@ -1250,18 +1240,26 @@ async fn non_user_fork_rejects_user_released_task_and_rolls_back_every_created_r
             "theme": routes::theme::RequestTheme::default_dark(),
             "fork_report_from": boot.source_wave_id,
         })),
-        Some("ai:codex"),
+        Some("ai:claude"),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
-    assert!(
-        body.to_string().contains("released_by_user"),
-        "body = {body}"
-    );
-    assert_eq!(
-        fork_row_counts(boot.repo.as_ref()).await,
-        before,
-        "failed non-user fork must leave no transactional residue"
+    assert_eq!(status, StatusCode::CREATED, "body = {target_wave}");
+    let target_wave_id = target_wave["id"].as_str().unwrap().to_string();
+
+    let (status, report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{target_wave_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let forked = task_block_by_key(&report, "allowed-upstream");
+    assert_ne!(
+        forked["payload"]["released_by_user"],
+        json!(true),
+        "an AI fork must not import a release either: {forked}"
     );
 }
 
@@ -1572,4 +1570,286 @@ async fn call_spec_tool(
         .lookup(name)
         .unwrap_or_else(|| panic!("tool not registered: {name}"));
     handler(ctx.clone(), identity, args).await
+}
+
+/// The task payload the source wave's user declares. `declared_by: "user"` is
+/// the only shape the REST user path may create (Rule 1); fork rewrites it to
+/// `"spec"`, which is exactly the shape `declare_and_wait` is meant to hold.
+fn released_fixture_payload(key: &str) -> Value {
+    json!({
+        "key": key,
+        "kind": "codex",
+        "goal": "Template task the source wave's user allowed",
+        "acceptance": "A wave forked from this template must ask its own user again",
+        "refs": [],
+        // Kept gate-clean on purpose: `declare_and_wait` must be the ONLY
+        // diagnostic this fixture can produce, so `schedulable` below is a
+        // signal about the release and not about a missing gate.
+        "no_gate_reason": "fixture task carries no gate",
+        "ready": true,
+        "declared_by": "user"
+    })
+}
+
+/// Seed a live task that the SOURCE wave's user declared and then released,
+/// through the production REST user path: `POST .../report/blocks` followed by
+/// the same `PATCH` the "Allow this task" button issues
+/// (`WaveReportPage.tsx:95-99` spreads the payload and sets
+/// `released_by_user: true`). Returns the seeded block id.
+async fn seed_user_released_task(boot: &Boot, key: &str) -> String {
+    let (status, report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{}/report", boot.source_wave_id),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "read source report: {report}");
+    let (status, created) = request_json(
+        &boot.app,
+        "POST",
+        format!("/api/waves/{}/report/blocks", boot.source_wave_id),
+        &boot.cookie,
+        Some(json!({
+            "kind": "task",
+            "payload": released_fixture_payload(key),
+            "ifDocRev": report["docRev"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed task block: {created}");
+    let block_id = created["id"].as_str().unwrap().to_string();
+    let mut released = released_fixture_payload(key);
+    released["released_by_user"] = json!(true);
+    let (status, body) = request_json(
+        &boot.app,
+        "PATCH",
+        format!(
+            "/api/waves/{}/report/blocks/{block_id}",
+            boot.source_wave_id
+        ),
+        &boot.cookie,
+        Some(json!({
+            "kind": "task",
+            "payload": released,
+            "ifBlockRev": created["rev"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed user release: {body}");
+    block_id
+}
+
+fn task_block_by_key<'a>(report: &'a Value, key: &str) -> &'a Value {
+    report["blocks"]
+        .as_array()
+        .expect("blocks array")
+        .iter()
+        .find(|block| block["kind"] == "task" && block["payload"]["key"] == key)
+        .unwrap_or_else(|| panic!("forked report keeps task `{key}`: {report}"))
+}
+
+fn verdict_by_key<'a>(report: &'a Value, key: &str) -> &'a Value {
+    report["taskDiagnostics"]
+        .as_array()
+        .expect("taskDiagnostics array")
+        .iter()
+        .find(|verdict| verdict["key"] == key)
+        .unwrap_or_else(|| panic!("verdict for `{key}`: {report}"))
+}
+
+/// Issue #1115 — a template's `released_by_user: true` must not carry the
+/// SOURCE user's consent into a wave forked from it.
+///
+/// Fork rewrites `declared_by` to `"spec"` (§7.2), which is precisely the shape
+/// `declare_and_wait` exists to hold back
+/// (`task_projection.rs:709-719`: `effective_wait && declared_by == "spec" &&
+/// !released_by_user && !tombstone`). Copying the release flag verbatim exempts
+/// the copy from a decision the new wave's user never made — and
+/// `report-blocks/task.tsx:185` then hides the "Allow this task" button, so she
+/// cannot even see the exemption.
+///
+/// Whole flow through production REST: seed + release in the source, fork as the
+/// browser does (no `X-Calm-Actor`), tighten the new wave to `declare-and-wait`,
+/// then let the new user mark the copy ready — the only remaining gate must be
+/// her own release.
+#[tokio::test]
+async fn forked_task_does_not_inherit_the_source_users_release() {
+    let boot = boot().await;
+    seed_user_released_task(&boot, "allowed-upstream").await;
+
+    let (status, target_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "release normalization target",
+            "sort": null,
+            "cwd": format!("{}-released", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_wave}");
+    let target_wave_id = target_wave["id"].as_str().unwrap().to_string();
+
+    let (status, body) = request_json(
+        &boot.app,
+        "PATCH",
+        format!("/api/waves/{target_wave_id}"),
+        &boot.cookie,
+        Some(json!({ "automation_policy": "declare-and-wait" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tighten policy: {body}");
+
+    let (status, report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{target_wave_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let forked = task_block_by_key(&report, "allowed-upstream").clone();
+    assert_eq!(
+        forked["payload"]["declared_by"], "spec",
+        "fork re-attributes the copy to the spec author: {forked}"
+    );
+    assert_ne!(
+        forked["payload"]["released_by_user"],
+        json!(true),
+        "fork must not carry the source user's release into the new wave: {forked}"
+    );
+
+    // The new wave's user marks the copy ready — the ONLY thing that may still
+    // hold it back is her own release, so `schedulable` is a live signal here
+    // rather than a by-product of the forced `ready: false`.
+    let mut ready = forked["payload"].clone();
+    ready["ready"] = json!(true);
+    let (status, body) = request_json(
+        &boot.app,
+        "PATCH",
+        format!(
+            "/api/waves/{target_wave_id}/report/blocks/{}",
+            forked["id"].as_str().unwrap()
+        ),
+        &boot.cookie,
+        Some(json!({
+            "kind": "task",
+            "payload": ready,
+            "ifBlockRev": forked["rev"],
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "mark the forked copy ready: {body}");
+
+    let (status, report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{target_wave_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let verdict = verdict_by_key(&report, "allowed-upstream");
+    assert!(
+        verdict["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "declare_and_wait"),
+        "the forked copy must wait for the NEW wave's user: {verdict}"
+    );
+    assert_eq!(
+        verdict["schedulable"],
+        json!(false),
+        "an unreleased declare-and-wait task is not schedulable: {verdict}"
+    );
+}
+
+/// Issue #1115 — the tombstone half of the release normalization.
+///
+/// Fork strips `released_by_user` **only** from live task blocks. It must not
+/// insert or clear anything on a tombstone, because the tombstone schema
+/// (`calm-types/src/report_blocks/kinds.rs`) is the closed shape
+/// `{key, tombstone, declared_by, tombstoned_by}` and rejects every other
+/// accepted task field with `must be absent from a tombstone task`. A residual
+/// `released_by_user` on a tombstone therefore breaks the whole fork
+/// fail-closed, exactly as a residual `tombstoned_by` on a live task does
+/// (#1111) — the same deliberate choice: a corrupt source aborts wave creation
+/// instead of being silently repaired into a shape it never validly had.
+///
+/// **This shape is unreachable in production — not a realistic regression.**
+/// Every stored-report writer runs `validate_payload` first (whole-document via
+/// `wave_report_guard.rs`, block-level via `report_blocks/mod.rs`), and the
+/// tombstone-rewrite in `normalize_report_op` emits the closed shape only. The
+/// fixture forges it with a raw `UPDATE cards`. What it pins is the
+/// fail-closed net for legacy rows or a DB corrupted from outside the server,
+/// plus the fact that the normalization stays in the live-task arm.
+#[tokio::test]
+async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
+    let boot = boot().await;
+    let residual_body = render_fence(
+        "task",
+        &json!({
+            "key": "rejected",
+            "tombstone": { "reason": "not now" },
+            "declared_by": "user",
+            "tombstoned_by": "user",
+            "released_by_user": true
+        }),
+    );
+    let residual_payload = WaveReportPayload::new("released tombstone source", residual_body);
+    let report_id = boot.source_report_id.clone();
+    let serialized = serde_json::to_string(&residual_payload).unwrap();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE id=?2")
+                .bind(serialized)
+                .bind(report_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    let before = fork_row_counts(boot.repo.as_ref()).await;
+    let (status, body) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "released tombstone target",
+            "sort": null,
+            "cwd": format!("{}-released-tombstone", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(
+        body.to_string()
+            .contains("released_by_user: must be absent from a tombstone task"),
+        "body = {body}"
+    );
+    let after = fork_row_counts(boot.repo.as_ref()).await;
+    assert_eq!(after.0, before.0, "failed fork left a waves row");
+    assert_eq!(after.1, before.1, "failed fork left a cove_folders row");
+    assert_eq!(after.2, before.2, "failed fork left a spec card");
+    assert_eq!(after.3, before.3, "failed fork left a report card");
+    assert_eq!(after.4, before.4, "failed fork left an overlay");
+    assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }

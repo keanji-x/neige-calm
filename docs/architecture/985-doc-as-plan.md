@@ -280,7 +280,7 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 | 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由。该析取项**只**对本 wave 里人真正下的否决成立：fork 过来的模板墓碑已在 §7.2 被归一化为 `"spec"`，不落入本条 |
 | 4 | User 删除一个活的 task 块 ⇒ 改写为**原位墓碑**（`tombstoned_by: "user"`）|
 | 4′ | **主条款**：`author == User` 时，`before` 里任何非墓碑 `task` 块若在 `after` 中消失，则 `after` **必须存在同 `key` 且 `tombstoned_by=="user"` 的墓碑**，否则拒绝，**错误文案指向块级 DELETE 端点**（规则 4 只覆盖块级 DELETE，整文档路径必须 fail-closed）。**补丁**：满足它的墓碑必须是**本次编辑新立的**。live → tombstone 时 `tombstoned_by` 必须等于本次编辑的 author：没有它，spec 能伪造人的否决（终局、不可撤回，且规则 3 之后对 spec 永久锁死），人也能自废 §6.1 的防线。**且不得被一个早已存在的同 key 用户墓碑满足**——否则 fail-closed 兜底在它真正要生效的那天不成立 |
-| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变** |
+| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变**。**fork 更严**：任何作者 fork 出来的块都不得携带该位（§7.2 / #1115），归一化在前、`fork_guard` 的腰带在后 |
 | 6 | 既有块上 `key` 不可就地改写（§3.3）|
 
 **收口的完整性**（逐条查过绕过面）：`apply_report_op` 只在
@@ -288,7 +288,8 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 写一律 400；`card_update_with_crdt_tx` 只接受 wave-report 且唯一生产调用者是
 `wave_report.rs`；`card_create_with_id_tx` 强制 wave-report 必须是 kernel-minted
 的 canonical initial payload；REST 块级写口经 `require_rest_user_actor`。
-**fork 路径见 §7.2**（它不经 `apply_report_op`，自带三条补偿责任）。
+**fork 路径见 §7.2**（它不经 `apply_report_op`，自带三条补偿责任；三个特权字段
+`declared_by` / `tombstoned_by` / `released_by_user` 在那里全部被归一化）。
 
 ### 3.8 状态回显：读时合成，不进文档
 
@@ -1114,8 +1115,8 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 3. 豁免**只**豁免规则 1，且**只**在 fork 路径上 —— 不新增任何「跳过 guard」的
    可复用开关。
 
-**fork 强制改写三个字段**（`ready` / `declared_by` / `tombstoned_by`；下面四条里
-第二条是 `ready` 在墓碑上的特例，不是第四个字段）：
+**fork 强制改写四个字段**（`ready` / `declared_by` / `tombstoned_by` /
+`released_by_user`；下面五条里第二条是 `ready` 在墓碑上的特例，不是第五个字段）：
 
 - **live task 的 `ready` 降为 `false`** —— 没有任何东西是在「这次」被决定要做的；
   这也让「wave 创建事务里意外派发」在结构上不可能。
@@ -1132,28 +1133,52 @@ REST 400 校验、OpenAPI / zod / web 生成物。
   `validate_payload`（`tombstoned_by: must be absent from a non-tombstone task`）
   fail-closed 地打断**整条** fork：损坏的源报告应当让 wave 创建 400，而不是被
   静默修补成它从未合法拥有过的形状。
+- **live task 的 `released_by_user` 整个键被删除**（#1115）—— 它是三个特权字段里
+  唯一回答「**人**是否在**这个 wave** 里点头了」的那个。`declared_by` 上一条刚被
+  改写成 `"spec"`，正是 `declare_and_wait` 要拦的形态
+  （`task_projection.rs`：`effective_wait ∧ declared_by == "spec" ∧
+  ¬released_by_user ∧ ¬tombstone`）；若把模板的 `released_by_user: true` 原样带过来，
+  这个副本就凭源 wave 用户的一次点头，**永久豁免**新 wave 用户从未做过的决定 ——
+  而且 `web/src/pages/report-blocks/task.tsx` 见到该位为真会**隐藏「Allow this task」
+  按钮**，新用户连察觉的入口都没有。语义与同一处的 `ready: false` 同源：模板里没有
+  任何东西是为**这个** wave 决定的。
+  **是删键，不是写显式 `false`。** 对所有读者两者等价（`tasks.rs` 用
+  `.unwrap_or(false)`，前端判 falsy），但对
+  `wave_report_edit_guard.rs` 的规则 5 后续编辑分支**不等价** —— 它比较的是原始
+  `Option<&Value>`，缺席 ≠ `Some(false)`，且任何非 User 作者改变该 Option 一律拒绝。
+  原生 spec 声明出来的 task 块**不带**这个键（`plan.rs` 的模板映射把
+  `released_by_user` 列为排除字段），所以写显式 `false` 会让 fork 出来的块成为
+  「spec 每次改写都必须原样回填该字段」的唯一一类块 —— 在这个字段上重演 #1111 刚
+  关掉的「模板块 spec 永远改不动」故障类。`ready` 之所以写显式 `false`，只是因为
+  `kinds.rs` 把它列为 live task 的**必填**字段，这里没有这个约束。
+  **墓碑块不动该字段** —— 墓碑 schema（§3.6 的封闭形状
+  `{key, tombstone, declared_by, tombstoned_by}`）本就禁止它；墓碑上出现
+  `released_by_user` 会被 `validate_payload`（`released_by_user: must be absent from
+  a tombstone task`）fail-closed 地打断整条 fork，与上一条对残留 `tombstoned_by` 的
+  处理同一取舍。
 
-**先把两组计数分清楚**（否则下面这条缺口会被读成「fork 少改了一个它本该改的字段
-之外还漏了别的」）：**特权/归属字段一共三个** —— `declared_by`、`tombstoned_by`、
-`released_by_user`；而 **fork 强制改写的是三个字段** —— `ready`、`declared_by`、
-`tombstoned_by`。`ready` 是被改写字段之一，但它**不是**特权/归属字段（它是执行就绪
-状态，不回答「这是谁的意思」）。两组的交集是 `declared_by` / `tombstoned_by`：三个
-特权字段里**前两个已归一化，第三个是缺口**。
+**两组计数**：**特权/归属字段一共三个** —— `declared_by`、`tombstoned_by`、
+`released_by_user`，**三个现在全部被 fork 归一化**；而 **fork 强制改写的是四个
+字段** —— `ready`、`declared_by`、`tombstoned_by`、`released_by_user`。`ready` 是被
+改写字段之一，但它**不是**特权/归属字段（它是执行就绪状态，不回答「这是谁的
+意思」）。两组的差就是 `ready`。
 
-**第三个特权字段 `released_by_user` 目前不归一化 —— 这是已知缺口，不是设计意图**
-（追踪于 **#1115**）。fork 只改写上面三个字段，模板里 `released_by_user: true` 的
-任务会**原样承接**这个放行标记进入新 wave。它之所以没被 §3.7 规则 5 拦下：
-`fork_author` 在浏览器 fork（无 `X-Calm-Actor` 头）时判定为 `User`
-（`waves.rs:711-715`），而规则 5 只咬 `author != User`，于是 `guard_forked_blocks`
-放行。缓解有两层，且**都不是修复**：
+**归一化之后还有一条 fail-closed 腰带**（`fork_guard::guard_forked_blocks`，#1115）：
+**任何** fork 出来的 task 块都不得携带 `released_by_user`，**不分作者**，否则整条
+wave 创建 400。它比 §3.7 规则 5 严格（规则 5 只咬 `author != User`），且**刻意不再
+接收 author 参数** —— 旧形状正是栽在这里：浏览器 fork 不带 `X-Calm-Actor` 头，wave
+创建路径把它判成 `User`，于是规则 5 对最常见的那条路径恒不成立，守卫等于空转。
+腰带在正常路径上永远查不到东西（归一化排在它前面），**这个恒真是它的稳态而不是它
+空洞的证据**：归一化一旦被删掉、被挪到腰带之后、或被收窄到部分块，它会把这次回归
+变成立即的 400，而不是一次静默的特权授予。它保护的值由
+`task_projection.rs`（放行位为真则不产 `declare_and_wait` 诊断，`schedulable` 随
+诊断为空而为真）和 `report-blocks/task.tsx`（放行位为真则隐藏放行按钮）读取。
 
-1. `ready` 已被强制压成 `false`，任务不会在 wave 创建事务里被派发；
-2. 新 wave 建时 `automation_policy` 为 NULL ⇒ `effective_wait == false`
-   （`task_projection.rs:623`）⇒ 该标记**暂时惰性**：`declare_and_wait` 诊断整条不
-   触发，放行位无处生效。但一旦新 wave 的用户把策略收紧成 `declare-and-wait`，
-   这个从未经他同意的放行位就**永久生效**。
-
-**读者不要默认 fork 已经清洗了全部特权字段。**
+**副作用（一个真实的行为收窄的反面）**：旧的「非 User fork 遇到带放行位的模板 ⇒
+整条 400」随之消失。那不是一条契约，而是同一个缺口的另一面：任何被用过一次
+「Allow this task」的模板，对 agent 就**永久不可 fork**，且除了人去改模板之外没有
+修复路径。归一化把放行位在守卫看到之前就清掉了，所以没有东西可拒；特权本身一分
+未松 —— 无论谁 fork，都没有块能带着放行位进入新 wave。
 
 **归一化刻意授予的能力**：模板墓碑对新 wave 的 spec 降级为**建议**而非绑定 ——
 spec 可以改 `tombstone.reason`、可以**删除**该墓碑块；删除后可以用**新的 block id**
@@ -2026,7 +2051,11 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 **切片 5**：fork 的引用重写**硬测试**（内部引用指向新 wave id、
 **外部引用逐字节未变** —— 错了是静默的）；fork 强制 `ready:false` +
 `declared_by:"spec"` + 墓碑块 `tombstoned_by:"spec"`（#1111；非墓碑块上的残留
-`tombstoned_by` 不清，由 `validate_payload` 打断整条 fork）；
+`tombstoned_by` 不清，由 `validate_payload` 打断整条 fork）+ live 块删除
+`released_by_user` 键（#1115；墓碑块上的该字段不清，同样由 `validate_payload`
+打断整条 fork），并覆盖「模板放行位 ⇒ 用户 fork ⇒ 新 wave 收紧成
+`declare-and-wait` ⇒ 该 task 仍带 `declare_and_wait` 诊断且不可调度」与
+「非 User fork 不再被整条拒绝」两条；`fork_guard` 腰带对**所有**作者生效；
 fork 自跑 `validate_payload` 与 guard；
 **规则 1 豁免点的枚举测试**（全仓恰好一处：`Fork`）；
 `calm.plan.upsert` 隐藏 shim 返回迁移指引且零写入。
