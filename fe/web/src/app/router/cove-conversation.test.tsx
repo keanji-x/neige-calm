@@ -20,6 +20,7 @@ import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts'
 import { coveConversationCardId, COVE_CONVERSATION_TEXT_MAX } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
+import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const WAVE = { id: 'w1', cove_id: 'c1', title: 'Test wave', sort: 1, lifecycle: 'working', cwd: '/tmp', archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2 };
@@ -83,7 +84,7 @@ function setup(reply?: Reply) {
     },
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
-  const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn() });
+  const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn(), cards: bootTestCardRuntime() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);

@@ -563,7 +563,19 @@ jobs:
   fe-mutation:
     name: fe-mutation ${{ matrix.shard }}/6 (tracked evidence)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 → 25. This job is inherently expensive: tools/mutation/run.mjs re-runs
+    # the ENTIRE vitest suite once per mutation entry (it shells out to a bare
+    # `npx vitest run`; the manifest's `selection_paths` is metadata and does
+    # not narrow the run), and the worst shard of this 6-way matrix carries 11
+    # entries — so shard 3 alone pays 11 full-suite runs. Its cost therefore
+    # tracks total suite size, not the size of the PR under test.
+    # Measured on shard 3/6: origin/main runs took 12m58s, 13m06s, 14m17s and
+    # 14m50s — already inside a minute of the old 15m ceiling before this PR —
+    # and the latest run on this branch hit 15m16s and was CANCELLED by the
+    # timeout. The budget was shared and already exhausted; recent suite growth
+    # (#1098 slice 4, already on main, plus this slice) pushed it over. 25m
+    # restores headroom without touching the shard count or the runner.
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
