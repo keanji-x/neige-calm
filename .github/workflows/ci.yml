@@ -628,7 +628,7 @@ jobs:
           fi
           # The warning below never fails the step; a malformed plan always does, above.
           # Past the cap the shards stop being ~4 entries each and a full run drifts towards the
-          # 15min shard timeout, which would read as flake.
+          # 25min shard timeout (fe-mutation-shard timeout-minutes), which would read as flake.
           if [ "$clamped" = "true" ]; then
             per_shard=$(( (selected + total - 1) / total ))
             echo "::warning::fe-mutation: $selected selected entries exceed the $total-shard cap; ~$per_shard entries per shard (cap keeps wall clock from being flat — consider raising maxShards in fe/tools/mutation/runner.ts)"

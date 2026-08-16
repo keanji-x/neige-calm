@@ -186,8 +186,39 @@ export const manifestRelativePath = 'tools/mutation/manifest.json';
  */
 const evidenceInvalidatingDirectories = Object.freeze(['tools/mutation/', 'tools/vitest/'] as const);
 
-/** fe-relative files whose contents govern how the evidence is produced. */
-const evidenceInvalidatingFiles = Object.freeze(['vitest.config.ts', 'package.json', 'package-lock.json'] as const);
+/**
+ * fe-relative files whose contents govern how the evidence is produced.
+ *
+ * `tools/architecture/plugin.mjs` and `tools/architecture/allowlists.mjs` are here rather than in
+ * any entry's `selection_paths` because they are dependencies of the RUNNER itself, not just of a
+ * test file: `run.mjs:7` imports `architecturePlugin` from plugin.mjs to build the `arch-rule`
+ * namespace that `validateManifest` checks `defends` against, so a rule rename there can invalidate
+ * every entry at once. They are also imported by `tools/architecture/architecture-rules.test.ts`,
+ * the `selection_paths` file of all three `arch-rule:` entries, whose expected_red sets are exactly
+ * the rule verdicts these two modules produce.
+ */
+const evidenceInvalidatingFiles = Object.freeze([
+  'vitest.config.ts', 'package.json', 'package-lock.json',
+  'tools/architecture/plugin.mjs', 'tools/architecture/allowlists.mjs',
+] as const);
+
+/**
+ * Repo-root-relative (NOT fe-relative) paths that decide how the evidence is produced from OUTSIDE
+ * `fe/`. `.github/workflows/ci.yml` pins `node-version: "22"`, runs `npm ci` and installs the
+ * Playwright browser — the interpreter, the dependency tree and the browser every recorded
+ * `expected_red` was measured under. It must be matched BEFORE `selectedEntries` strips the `fe/`
+ * prefix, because that filter drops every non-`fe/` path on the floor: without this check a PR
+ * touching only the workflow selected zero entries.
+ *
+ * Sibling workflows (`.github/workflows/other.yml`) and `.github/dependabot.yml` are deliberately
+ * NOT in the set — they do not run vitest, so they cannot invalidate a recorded verdict.
+ */
+export const evidenceInvalidatingRepoPaths = Object.freeze(['.github/workflows/ci.yml'] as const);
+
+/** @see evidenceInvalidatingRepoPaths — matched against repo-root-relative paths, before any `fe/` stripping. */
+export function evidenceInvalidatingRepoPathChanged(changedPaths: readonly string[]): boolean {
+  return changedPaths.some((path) => (evidenceInvalidatingRepoPaths as readonly string[]).includes(path));
+}
 
 /** fe-ROOT tsconfigs only (`tsconfig.json`, `tsconfig.app.json`, …); `web/src/tsconfig.json` is not one. */
 const feRootTsconfigPattern = /^tsconfig[^/]*\.json$/;
@@ -206,6 +237,11 @@ const feRootTsconfigPattern = /^tsconfig[^/]*\.json$/;
  *  - `package.json` / `package-lock.json` — a vitest / jsdom / React / testing-library bump changes
  *    behaviour and test-id formatting wholesale. This is the case that used to select ZERO entries.
  *  - fe-root `tsconfig*.json` — strictness / lib / paths, i.e. what compiles and therefore what runs.
+ *  - `tools/architecture/plugin.mjs` / `allowlists.mjs` — the runner imports plugin.mjs to build its
+ *    `arch-rule` namespace, and both back the lint verdicts the `arch-rule:` entries record.
+ *
+ * `.github/workflows/ci.yml` belongs to the same set but is repo-root-relative, so it is matched
+ * separately in selectedEntries — see evidenceInvalidatingRepoPaths.
  *
  * DELIBERATE COST, do not "optimize" away: a dependency bump now runs all 65 entries (17 shards,
  * ~5.5 min). That is the correct price for a change that invalidates every recorded verdict, and it
@@ -250,6 +286,9 @@ export function entryIdsDriftedFromBase(
 export function selectedEntries(
   entries: MutationEntry[], changedPaths: readonly string[], baseManifest: readonly MutationEntry[] | null,
 ): MutationEntry[] {
+  // Repo-root paths FIRST: the `fe/` filter below discards them, so a workflow-only PR would
+  // otherwise select nothing at all.
+  if (evidenceInvalidatingRepoPathChanged(changedPaths)) return [...entries];
   const fePaths = changedPaths.filter((path) => path.startsWith('fe/')).map((path) => path.slice(3));
   const changed = new Set(fePaths);
   // Evidence-invalidating infrastructure changed: every recorded verdict is suspect, nothing may be skipped.

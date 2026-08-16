@@ -4,7 +4,7 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
   byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
-  evidenceInvalidatingInfraChanged, judgeMutation,
+  evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, judgeMutation,
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
   parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
   shardPlan, trackedFixtureSetMatches, validateManifest,
@@ -230,16 +230,23 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
   it.each([
     'tools/mutation/run.mjs', 'tools/mutation/runner.ts', 'tools/mutation/runner.test.ts',
     'tools/mutation/fixture-e2e.mjs', 'tools/mutation/fixtures/valid/source.ts', 'tools/mutation/plan-purity.mjs',
+    'tools/mutation/fixtures/impure-plan.mjs',
     'vitest.config.ts', 'tools/vitest/build-constants.ts',
     'package.json', 'package-lock.json',
     'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'tsconfig.core.json',
+    // run.mjs imports plugin.mjs to build the `arch-rule` namespace, and both modules produce the
+    // lint verdicts every `arch-rule:` entry records as expected_red.
+    'tools/architecture/plugin.mjs', 'tools/architecture/allowlists.mjs',
   ])('treats %s as evidence-invalidating infrastructure', (path) => {
     expect(evidenceInvalidatingInfraChanged([path])).toBe(true);
   });
   // Neighbours that must NOT trigger the sweep. `tools/vitestfoo.ts` / `tools/vitest-helpers/`
-  // guard the startsWith prefix bug; `web/src/tsconfig.json` guards the fe-ROOT-only tsconfig rule.
+  // guard the startsWith prefix bug; `web/src/tsconfig.json` guards the fe-ROOT-only tsconfig rule;
+  // `tools/architecture/other.mjs` guards against widening the two named architecture modules into
+  // the whole directory.
   it.each([
-    manifestRelativePath, 'web/src/app.ts', 'tools/architecture/plugin.mjs', 'tools/mutation-other/run.mjs',
+    manifestRelativePath, 'web/src/app.ts', 'tools/architecture/other.mjs', 'tools/mutation-other/run.mjs',
+    'tools/architecture/no-class-dom-query.mjs', 'tools/architecture/plugin.mjs.bak',
     'tools/vitestfoo.ts', 'tools/vitest-helpers/x.ts', 'tools/vitest.ts',
     'web/src/tsconfig.json', 'core/tsconfig.build.json', 'web/package.json', 'web/package-lock.json',
     'web/vitest.config.ts', 'tools/vitest.config.ts', 'tsconfig.json.bak', 'package.json5',
@@ -255,16 +262,66 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
   it.each([
     'fe/tools/mutation/runner.ts', 'fe/vitest.config.ts', 'fe/tools/vitest/build-constants.ts',
     'fe/package.json', 'fe/package-lock.json', 'fe/tsconfig.json', 'fe/tsconfig.app.json',
+    'fe/tools/architecture/plugin.mjs', 'fe/tools/architecture/allowlists.mjs',
+    // Repo-root-relative, i.e. dropped by the `fe/` filter unless it is matched before it.
+    '.github/workflows/ci.yml',
   ])('selects the full manifest when %s changes', (path) => {
     const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
     expect(selectedEntries(entries, [path], entries)).toEqual(entries);
     // …and with the manifest ALSO edited, where per-entry diff would otherwise have narrowed it.
     expect(selectedEntries(entries, [path, `fe/${manifestRelativePath}`], entries)).toEqual(entries);
   });
-  it.each(['fe/tools/vitest-helpers/x.ts', 'fe/tools/vitestfoo.ts', 'fe/web/src/tsconfig.json'])(
-    'does not sweep the manifest when the neighbouring path %s changes', (path) => {
-      const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
-      expect(selectedEntries(entries, [path], entries)).toEqual([]);
+  it.each([
+    'fe/tools/vitest-helpers/x.ts', 'fe/tools/vitestfoo.ts', 'fe/web/src/tsconfig.json',
+    'fe/tools/architecture/other.mjs',
+    // Only ci.yml governs how vitest runs; sibling GitHub config does not, and neither does an
+    // arbitrary repo-root path — all three must stay a no-op, not become a free full sweep.
+    '.github/workflows/other.yml', '.github/dependabot.yml', 'calm-server/src/main.rs',
+  ])('does not sweep the manifest when the neighbouring path %s changes', (path) => {
+    const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
+    expect(selectedEntries(entries, [path], entries)).toEqual([]);
+  });
+  // The `fe/` stripping must survive the repo-root check placed in front of it: a genuine fe path
+  // alongside a repo-root path still selects by intersection, and `fe/` is stripped exactly once.
+  it('keeps fe-relative selection working beside repo-root paths', () => {
+    const entries = ['alpha', 'beta'].map((id) => ({
+      ...baseEntry, mutation_id: id, target: `web/src/${id}.ts`, selection_paths: [`web/src/${id}.test.ts`],
+    }));
+    expect(selectedEntries(entries, ['.github/dependabot.yml', 'fe/web/src/beta.ts'], entries)
+      .map(({ mutation_id }) => mutation_id)).toEqual(['beta']);
+    expect(selectedEntries(entries, ['fe/fe/web/src/beta.ts'], entries)).toEqual([]);
+  });
+  it.each(['.github/workflows/ci.yml'])('treats the repo-root path %s as evidence-invalidating', (path) => {
+    expect(evidenceInvalidatingRepoPathChanged([path])).toBe(true);
+  });
+  it.each(['.github/workflows/other.yml', '.github/dependabot.yml', 'fe/.github/workflows/ci.yml',
+    'docs/.github/workflows/ci.yml', 'workflows/ci.yml'])(
+    'does not treat the repo-root path %s as evidence-invalidating', (path) => {
+      expect(evidenceInvalidatingRepoPathChanged([path])).toBe(false);
+    });
+});
+
+// The manifest's selection_paths is a HAND-MAINTAINED list, not a computed dependency closure. These
+// pin the shared test-harness modules that were measured selecting ZERO entries: a change to any of
+// them can flip the recorded expected_red of an entry whose own files did not move.
+describe('shared test-harness dependencies reach the entries that need them', () => {
+  const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8')) as MutationEntry[];
+  const select = (path: string): string[] =>
+    selectedEntries(manifest, [`fe/${path}`], manifest).map(({ mutation_id }) => mutation_id);
+
+  it.each([
+    ['web/src/app/router/test-card-runtime.ts',
+      ['session-gate-drop-query-cache-clear', 'cards-headless-filter-display-index']],
+    ['web/src/systems/cards/builtins/register.ts', ['cards-headless-filter-display-index']],
+    ['web/src/systems/cards/registry.ts', ['cards-headless-filter-display-index']],
+  ] as const)('%s selects exactly %j', (path, expected) => {
+    expect(select(path).sort()).toEqual([...expected].sort());
+  });
+
+  // Negative control against widening selection_paths to production modules generally.
+  it.each(['web/src/app/router/other.ts', 'web/src/systems/cards/builtins/other.ts'])(
+    'the neighbouring production path %s still selects nothing', (path) => {
+      expect(select(path)).toEqual([]);
     });
 });
 
