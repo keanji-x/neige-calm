@@ -15,6 +15,7 @@
     "test:browser": "vitest run --project browser",
     "test:mutation": "npm run test:mutation:fixtures && node tools/mutation/run.mjs",
     "test:mutation:fixtures": "node tools/mutation/fixture-e2e.mjs",
+    "test:mutation:plan": "node tools/mutation/run.mjs --plan",
     "mock:generate": "node --experimental-strip-types tools/mock/generate.mjs",
     "test:mock-drift": "node --experimental-strip-types tools/mock/check-drift.mjs && node tools/dev-mock/check-contract.mjs",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",

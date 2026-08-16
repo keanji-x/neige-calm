@@ -148,11 +148,64 @@ export function validateManifest(
   }
 }
 
-export function selectedEntries(entries: MutationEntry[], changedPaths: readonly string[]): MutationEntry[] {
+/** fe-relative path of the mutation manifest; it is DATA, not runner infrastructure. */
+export const manifestRelativePath = 'tools/mutation/manifest.json';
+
+/**
+ * Runner *code* changed (run.mjs / runner.ts / runner.test.ts / fixtures/** / fixture-e2e.mjs).
+ * The manifest itself is excluded: it carries per-entry evidence, diffed entry by entry instead.
+ */
+export function runnerCodeChanged(fePaths: readonly string[]): boolean {
+  return fePaths.some((path) => path.startsWith('tools/mutation/') && path !== manifestRelativePath);
+}
+
+/** Deep JSON with object keys sorted, so a pure key reorder is not drift but any value change is. Array order is significant. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Head entry ids whose evidence the base manifest cannot vouch for: absent from base, or canonically different.
+ * Entries removed from base are irrelevant — there is nothing left to run for them.
+ * Duplicate mutation_ids in base make per-id comparison meaningless, so every head id is reported (fail closed).
+ */
+export function entryIdsDriftedFromBase(
+  baseManifest: readonly MutationEntry[], entries: readonly MutationEntry[],
+): Set<string> {
+  const allHeadIds = new Set(entries.map((entry) => entry.mutation_id));
+  if (duplicates(baseManifest.map((entry) => entry.mutation_id)).length > 0) return allHeadIds;
+  const base = new Map(baseManifest.map((entry) => [entry.mutation_id, canonicalJson(entry)]));
+  return new Set(entries.filter((entry) => base.get(entry.mutation_id) !== canonicalJson(entry))
+    .map((entry) => entry.mutation_id));
+}
+
+export function selectedEntries(
+  entries: MutationEntry[], changedPaths: readonly string[], baseManifest: readonly MutationEntry[] | null,
+): MutationEntry[] {
   const fePaths = changedPaths.filter((path) => path.startsWith('fe/')).map((path) => path.slice(3));
   const changed = new Set(fePaths);
-  if (fePaths.some((path) => path.startsWith('tools/mutation/'))) return [...entries];
-  return entries.filter((entry) => [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
+  // Runner code changed: every recorded verdict is suspect, so nothing may be skipped.
+  if (runnerCodeChanged(fePaths)) return [...entries];
+  const manifestTouched = changed.has(manifestRelativePath);
+  // No readable baseline to diff the manifest against — fail closed.
+  if (manifestTouched && baseManifest === null) return [...entries];
+  const drifted = manifestTouched ? entryIdsDriftedFromBase(baseManifest ?? [], entries) : new Set<string>();
+  // Filtering over `entries` preserves manifest order, which shardEntries relies on for a deterministic split.
+  return entries.filter((entry) => drifted.has(entry.mutation_id)
+    || [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
+}
+
+export const entriesPerShard = 4;
+export const maxShards = 20;
+
+export function shardPlan(selectedCount: number): { total: number; shards: number[] } {
+  const total = Math.min(maxShards, Math.max(1, Math.ceil(selectedCount / entriesPerShard)));
+  return { total, shards: Array.from({ length: total }, (_value, index) => index + 1) };
 }
 
 export function parseShard(value: string): { index: number; total: number } {

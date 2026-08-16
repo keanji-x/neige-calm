@@ -560,14 +560,62 @@ jobs:
       - name: npm run test:browser
         run: npm run test:browser
 
-  fe-mutation:
-    name: fe-mutation ${{ matrix.shard }}/6 (tracked evidence)
+  # #1119 — the shard count follows the selected-entry count instead of being
+  # frozen at 6. This job runs the SAME selection code path as the shards
+  # (`run.mjs --plan`), so the plan can never drift from what the shards run.
+  fe-mutation-plan:
+    name: fe-mutation-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+    defaults:
+      run:
+        working-directory: fe
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      total: ${{ steps.plan.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fe/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      # Chromium is deliberately NOT installed here: --plan runs no vitest.
+      # `test:mutation:plan` also deliberately does NOT chain
+      # `test:mutation:fixtures` — the fixture e2e stays on the shard jobs.
+      - name: Plan mutation shards
+        id: plan
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            plan=$(npm run --silent test:mutation:plan -- --base "$BASE_SHA")
+          else
+            plan=$(npm run --silent test:mutation:plan)
+          fi
+          echo "plan=$plan"
+          # The plan JSON is the only stdout line; tail -n 1 keeps this robust
+          # if npm ever prefixes anything.
+          line=$(printf '%s\n' "$plan" | tail -n 1)
+          echo "shards=$(printf '%s' "$line" | jq -c '.shards')" >> "$GITHUB_OUTPUT"
+          echo "total=$(printf '%s' "$line" | jq -r '.total')" >> "$GITHUB_OUTPUT"
+
+  fe-mutation-shard:
+    name: fe-mutation shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    needs: fe-mutation-plan
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.fe-mutation-plan.outputs.shards) }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
     defaults:
@@ -592,11 +640,11 @@ jobs:
 
       - name: Run mutation evidence selected by PR target intersection
         if: github.event_name == 'pull_request'
-        run: npm run test:mutation -- --base "$BASE_SHA" --shard ${{ matrix.shard }}/6 --report /tmp/mutation-report-${{ matrix.shard }}.json
+        run: npm run test:mutation -- --base "$BASE_SHA" --shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }} --report /tmp/mutation-report-${{ matrix.shard }}.json
 
       - name: Run all mutation evidence on main
         if: github.event_name == 'push'
-        run: npm run test:mutation -- --shard ${{ matrix.shard }}/6 --report /tmp/mutation-report-${{ matrix.shard }}.json
+        run: npm run test:mutation -- --shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }} --report /tmp/mutation-report-${{ matrix.shard }}.json
 
       - name: Upload mutation report
         if: always()
@@ -605,6 +653,29 @@ jobs:
           name: mutation-report-${{ matrix.shard }}
           path: /tmp/mutation-report-${{ matrix.shard }}.json
           if-no-files-found: warn
+
+  # #1119 — THE required check. It exists so branch protection can pin ONE
+  # stable context name while the shard count floats with the manifest.
+  # Fail-closed: anything that is not exactly `success` (including skipped
+  # and cancelled) fails this job.
+  fe-mutation:
+    name: fe-mutation (tracked evidence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [fe-mutation-plan, fe-mutation-shard]
+    if: always()
+    steps:
+      - name: Require plan and every shard to have succeeded
+        env:
+          PLAN_RESULT: ${{ needs.fe-mutation-plan.result }}
+          SHARD_RESULT: ${{ needs.fe-mutation-shard.result }}
+        run: |
+          echo "fe-mutation-plan: $PLAN_RESULT"
+          echo "fe-mutation-shard: $SHARD_RESULT"
+          if [ "$PLAN_RESULT" != "success" ] || [ "$SHARD_RESULT" != "success" ]; then
+            echo "fe-mutation evidence gate failed"
+            exit 1
+          fi
 
   # #903 — the rust-dependent half of the `web (build + test + a11y)` split
   # (parallel pair with `web-unit` above; `web-unit` carries no rust dep).

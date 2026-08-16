@@ -3,9 +3,10 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
-  byteSequencesEqual, declaredFixtureDirectories, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
-  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
-  trackedFixtureSetMatches, validateManifest,
+  byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase, judgeMutation,
+  manifestRelativePath, maxShards, mutationRunExitCode, oracleIdsFromDocuments,
+  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, runnerCodeChanged, selectedEntries, shardEntries,
+  shardPlan, trackedFixtureSetMatches, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
 
@@ -64,11 +65,11 @@ describe('tracked fixture inventory', () => {
 });
 
 describe('selection and manifest judgments', () => {
-  it('selects independently by target, selection path, and infrastructure', () => {
-    expect(selectedEntries([baseEntry], [`fe/${baseEntry.target}`])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], [`fe/${baseEntry.selection_paths[0]}`])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], ['fe/tools/mutation/manifest.json'])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], ['fe/unrelated.ts'])).toEqual([]);
+  it('selects independently by target, selection path, and runner code', () => {
+    expect(selectedEntries([baseEntry], [`fe/${baseEntry.target}`], [baseEntry])).toEqual([baseEntry]);
+    expect(selectedEntries([baseEntry], [`fe/${baseEntry.selection_paths[0]}`], [baseEntry])).toEqual([baseEntry]);
+    expect(selectedEntries([baseEntry], ['fe/tools/mutation/run.mjs'], [baseEntry])).toEqual([baseEntry]);
+    expect(selectedEntries([baseEntry], ['fe/unrelated.ts'], [baseEntry])).toEqual([]);
   });
   const structuredEntry = { ...baseEntry, patch: readFileSync(resolve(fixtureRoot, 'valid/mutation.diff'), 'utf8'),
     target: 'tools/mutation/fixtures/valid/source.ts' };
@@ -90,6 +91,111 @@ describe('selection and manifest judgments', () => {
     expect(() => validateManifest([], namespaces, tracked)).toThrow('manifest must contain');
     expect(() => validateManifest([{ ...structuredEntry, selection_paths: ['tools/missing.ts'] }], namespaces, tracked))
       .toThrow('path is not tracked: tools/missing.ts');
+  });
+});
+
+describe('manifest is data, not runner infrastructure', () => {
+  const manifestPath = `fe/${manifestRelativePath}`;
+  const entry = (id: string): MutationEntry => ({
+    ...baseEntry, mutation_id: id, target: `web/src/${id}.ts`, selection_paths: [`web/src/${id}.test.ts`],
+  });
+  const [alpha, beta, gamma] = ['alpha', 'beta', 'gamma'].map(entry);
+  const ids = (entries: readonly MutationEntry[]): string[] => entries.map(({ mutation_id }) => mutation_id);
+
+  it('selects only the added entry when the manifest is the only changed path', () => {
+    expect(ids(selectedEntries([alpha, beta, gamma], [manifestPath], [alpha, beta]))).toEqual(['gamma']);
+  });
+
+  it('selects only the edited entry when an existing patch changes', () => {
+    const editedBeta = { ...beta, patch: 'diff --git a/web/src/beta.ts b/web/src/beta.ts' };
+    expect(ids(selectedEntries([alpha, editedBeta, gamma], [manifestPath], [alpha, beta, gamma]))).toEqual(['beta']);
+  });
+
+  it('does not select an entry identical to base whose paths are untouched', () => {
+    expect(selectedEntries([alpha], [manifestPath], [alpha])).toEqual([]);
+  });
+
+  it('treats a pure object-key reorder as no drift at all', () => {
+    const reordered = ['alpha', 'beta'].map((id) => {
+      const { mutation_id, defends, target, patch, expected_red, selection_paths, why_more_than_one } = entry(id);
+      return { why_more_than_one, selection_paths, expected_red, patch, target, defends, mutation_id };
+    });
+    expect(selectedEntries([alpha, beta], [manifestPath], reordered)).toEqual([]);
+    expect([...entryIdsDriftedFromBase(reordered, [alpha, beta])]).toEqual([]);
+  });
+
+  it.each([
+    'fe/tools/mutation/run.mjs',
+    'fe/tools/mutation/runner.ts',
+    'fe/tools/mutation/runner.test.ts',
+    'fe/tools/mutation/fixture-e2e.mjs',
+    'fe/tools/mutation/fixtures/valid/source.ts',
+  ])('selects every entry when runner code %s changes', (path) => {
+    expect(ids(selectedEntries([alpha, beta, gamma], [path], [alpha, beta, gamma]))).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('fails closed to the full manifest when the base manifest is unreadable', () => {
+    expect(ids(selectedEntries([alpha, beta, gamma], [manifestPath], null))).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('fails closed to the full manifest when the base contains duplicate mutation ids', () => {
+    const base = [alpha, alpha, beta, gamma];
+    expect(ids(selectedEntries([alpha, beta, gamma], [manifestPath], base))).toEqual(['alpha', 'beta', 'gamma']);
+    expect([...entryIdsDriftedFromBase(base, [alpha, beta, gamma])].sort()).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('still selects purely by path intersection when the manifest is untouched', () => {
+    expect(ids(selectedEntries([alpha, beta, gamma], ['fe/web/src/beta.ts'], [alpha, beta, gamma]))).toEqual(['beta']);
+    expect(ids(selectedEntries([alpha, beta, gamma], ['fe/web/src/gamma.test.ts'], [alpha, beta, gamma]))).toEqual(['gamma']);
+    expect(selectedEntries([alpha, beta, gamma], ['fe/web/src/unrelated.ts'], [alpha, beta, gamma])).toEqual([]);
+  });
+
+  it('unions drift and path selection without duplicates, in manifest order', () => {
+    const driftedGamma = { ...gamma, patch: 'diff --git a/web/src/gamma.ts b/web/src/gamma.ts' };
+    const selected = selectedEntries(
+      [alpha, beta, driftedGamma], [manifestPath, 'fe/web/src/gamma.test.ts', 'fe/web/src/alpha.ts'],
+      [alpha, beta, gamma],
+    );
+    expect(ids(selected)).toEqual(['alpha', 'gamma']);
+  });
+
+  it('ignores entries deleted from the manifest without shifting the survivors', () => {
+    const removed = entry('removed');
+    const driftedBeta = { ...beta, patch: 'diff --git a/web/src/beta.ts b/web/src/beta.ts' };
+    const selected = selectedEntries(
+      [alpha, driftedBeta, gamma], [manifestPath, 'fe/web/src/alpha.test.ts'], [removed, alpha, beta, gamma],
+    );
+    expect(ids(selected)).toEqual(['alpha', 'beta']);
+  });
+});
+
+describe('runner code versus manifest data', () => {
+  it.each([
+    'tools/mutation/run.mjs', 'tools/mutation/runner.ts', 'tools/mutation/runner.test.ts',
+    'tools/mutation/fixture-e2e.mjs', 'tools/mutation/fixtures/valid/source.ts',
+  ])('treats %s as runner code', (path) => {
+    expect(runnerCodeChanged([path])).toBe(true);
+  });
+  it.each([manifestRelativePath, 'web/src/app.ts', 'tools/architecture/plugin.mjs', 'tools/mutation-other/run.mjs'])(
+    'does not treat %s as runner code', (path) => {
+      expect(runnerCodeChanged([path])).toBe(false);
+    });
+  it('detects runner code alongside a manifest edit', () => {
+    expect(runnerCodeChanged([manifestRelativePath, 'tools/mutation/runner.ts'])).toBe(true);
+    expect(runnerCodeChanged([])).toBe(false);
+  });
+});
+
+describe('dynamic shard plan', () => {
+  it.each([[0, 1], [1, 1], [4, 1], [5, 2], [65, 17], [80, 20], [400, 20]])(
+    '%i selected entries plan %i shards', (selectedCount, total) => {
+      expect(shardPlan(selectedCount)).toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1) });
+    });
+  it('never plans fewer than one shard nor more than the cap', () => {
+    expect(entriesPerShard).toBe(4);
+    expect(maxShards).toBe(20);
+    expect(shardPlan(0).shards).toEqual([1]);
+    expect(shardPlan(10_000).total).toBe(maxShards);
   });
 });
 
