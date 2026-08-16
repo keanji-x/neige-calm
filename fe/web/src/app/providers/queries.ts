@@ -33,7 +33,8 @@ import {
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, resetSpecOperation, sendSpecInputOperation,
-  specRunOperation,
+  specRunOperation, coveConversationsOperation, createCoveConversationOperation,
+  type Conversation,
 } from '../../../../core/domain/conversation.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
@@ -70,6 +71,10 @@ export const queryKeys = Object.freeze({
   settings: () => ['settings'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
+  /* The event bridge can only invalidate the `['cove-conversations']` prefix —
+     no event carries a cove id and no cached row can supply one — so this key
+     must keep the cove id in second position for that prefix to reach it. */
+  coveConversations: (coveId: string) => ['cove-conversations', coveId] as const,
 });
 
 export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
@@ -105,6 +110,59 @@ export function useSpecMutations(transport: ApiTransportPort, cardId: string, un
     send: (text: string) => runOperation(transport, sendSpecInputOperation(cardId, text), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptSpecOperation(cardId), unauthorized).then(refreshAfter),
     reset: () => runOperation(transport, resetSpecOperation(cardId), unauthorized).then(refreshAfter),
+  };
+}
+
+export function coveConversationsQueryOptions(
+  transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel,
+) {
+  return {
+    queryKey: queryKeys.coveConversations(coveId),
+    queryFn: (): Promise<Conversation[]> =>
+      runOperation(transport, coveConversationsOperation(coveId), unauthorized),
+  };
+}
+
+export type CoveConversationMutations = Readonly<{
+  /**
+   * Mint a conversation and deliver its first message.
+   *
+   * The key is supplied by the caller because it identifies the *draft*, not
+   * the attempt: pressing send again after a timeout must reuse it, or the
+   * retry mints a second conversation.
+   */
+  create: (text: string, idempotencyKey: string) => Promise<Conversation>;
+  /** Re-read the list and hand back what it now holds. */
+  refresh: () => Promise<Conversation[]>;
+}>;
+
+export function useCoveConversationMutations(
+  transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel,
+): CoveConversationMutations {
+  const client = useQueryClient();
+  const create = useMutation({
+    mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
+      runOperation(transport, createCoveConversationOperation(coveId, text, idempotencyKey), unauthorized),
+    onSuccess: (row) => {
+      /* Written through as well as invalidated: the drawer switches to this row
+         in the same tick, and a list that does not contain it yet would render
+         the panel with no active row until the refetch lands. A replayed key
+         answers with a row that is already there, so the write is by id. */
+      client.setQueryData<Conversation[]>(queryKeys.coveConversations(coveId), (current) => {
+        const rows = current ?? [];
+        return rows.some((candidate) => candidate.id === row.id)
+          ? rows.map((candidate) => candidate.id === row.id ? row : candidate)
+          : [...rows, row];
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.coveConversations(coveId) });
+    },
+  });
+  return {
+    create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
+    refresh: () => client.fetchQuery({
+      ...coveConversationsQueryOptions(transport, coveId, unauthorized),
+      staleTime: 0,
+    }),
   };
 }
 
@@ -249,9 +307,13 @@ export function prefetchCoveList(client: QueryClient, transport: ApiTransportPor
 
 // ---------- mutations ----------
 //
-// Every mutation invalidates rather than hand-patching the cache. The event
-// bridge invalidates the same keys when the server pushes, so a hand-patch
-// would only widen the window in which the two disagree.
+// Every mutation invalidates. A mutation may additionally write its response
+// through to the cache first, but only when that response *is* the new cache
+// value (an id-keyed row the server just returned) and the very next render
+// needs it — see `useCoveConversationMutations`, where the drawer switches to
+// the new row in the same tick. The invalidation still follows and reconciles;
+// a write-through that guessed, or that stood in for one, would only widen the
+// window in which the cache and the server disagree.
 
 export type CoveMutations = Readonly<{
   create: (body: NewCoveBody) => Promise<Cove>;

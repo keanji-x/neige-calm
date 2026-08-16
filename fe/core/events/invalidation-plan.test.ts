@@ -1,7 +1,21 @@
 import { describe, expect, it } from 'vitest';
 
-import type { WireEvent } from '../api/schemas.js';
+import { wireEventSchema, type WireEvent } from '../api/schemas.js';
 import { invalidationPlanFor } from './invalidation-plan.js';
+
+/*
+ * The expected side of the four-kinds test, written out here on purpose.
+ *
+ * It cannot be derived from the policies without becoming the thing it checks:
+ * the production fact *is* "which policies push this key", so any expectation
+ * read out of them would agree with itself no matter what changed. So this is
+ * an independent list, maintained by hand, and its whole value is that adding a
+ * fifth policy — or dropping one of these four — has to be typed here as well,
+ * deliberately, before the suite goes green again.
+ */
+const COVE_CONVERSATIONS_KINDS = [
+  'card.added', 'card.updated', 'harness.phase.changed', 'harness.user_message.enqueued',
+] as const;
 
 function event(value: unknown): WireEvent {
   return value as WireEvent;
@@ -35,7 +49,7 @@ describe('invalidation plan behavior', () => {
 
   it('invalidates card mutations immediately without suppression or debounce state', () => {
     expect(invalidationPlanFor(event({ ev: 'card.added', data: { wave_id: 'w1' } }))).toEqual({
-      invalidate: [['wave', 'w1'], ['wave-files', 'w1']],
+      invalidate: [['wave', 'w1'], ['wave-files', 'w1'], ['cove-conversations']],
       remove: [],
       writeThrough: [],
     });
@@ -83,13 +97,31 @@ describe('invalidation plan behavior', () => {
   it('plans each harness event against the projections it can change', () => {
     const planned = (ev: WireEvent['ev']) => invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } })).invalidate;
     expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
-    expect(planned('harness.phase.changed')).toEqual([['spec-run', 'card-1']]);
+    expect(planned('harness.phase.changed')).toEqual([
+      ['spec-run', 'card-1'], ['cove-conversations'],
+    ]);
     expect(planned('harness.transcript.cleared')).toEqual([
       ['harness-items', 'card-1'], ['spec-run', 'card-1'],
     ]);
     expect(planned('harness.user_message.enqueued')).toEqual([
-      ['harness-items', 'card-1'], ['spec-run', 'card-1'],
+      ['harness-items', 'card-1'], ['spec-run', 'card-1'], ['cove-conversations'],
     ]);
+  });
+
+  /*
+   * The list is refetched wholesale, so every extra trigger is a whole refetch
+   * nobody asked for — and two triggers for one change make it impossible to
+   * prove either one is doing the work. The `actual` side is read out of the
+   * production planner by running every wire event kind through it; the
+   * `expected` side is the hand-kept list above, and the point is that the two
+   * are maintained separately.
+   */
+  it('refetches the cove conversation list from exactly four event kinds', () => {
+    const kinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
+    const actual = kinds.filter((kind) => invalidationPlanFor({ ev: kind, data: {} } as WireEvent)
+      .invalidate.some((key) => key[0] === 'cove-conversations'));
+    expect(new Set(actual)).toEqual(new Set(COVE_CONVERSATIONS_KINDS));
+    expect(actual).toHaveLength(COVE_CONVERSATIONS_KINDS.length);
   });
 
   it('returns an empty plan for explicit no-op policies', () => {

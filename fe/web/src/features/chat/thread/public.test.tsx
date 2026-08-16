@@ -43,6 +43,22 @@ describe('ChatThread', () => {
     expect(screen.getByLabelText('Working')).toBeTruthy();
   });
 
+  /* A conversation with no live session reads exactly like an idle one, because
+     that is all `null` says: no live session was found. It is not a claim that
+     the session exited — a card minted two seconds ago arrives the same way. */
+  it('renders a stateless conversation exactly like an idle one', () => {
+    const { container: idle } = render(
+      <ChatThread conversation={conversation({ state: 'idle' })} turns={[turn()]} />,
+    );
+    const idleHtml = idle.innerHTML;
+    cleanup();
+    const { container: stateless } = render(
+      <ChatThread conversation={conversation({ state: null })} turns={[turn()]} />,
+    );
+    expect(stateless.innerHTML).toBe(idleHtml);
+    expect(screen.queryByLabelText('Working')).toBeNull();
+  });
+
   it('keeps each turn verbatim and marks who wrote it', () => {
     const { container } = render(
       <ChatThread
