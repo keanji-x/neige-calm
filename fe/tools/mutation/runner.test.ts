@@ -3,9 +3,10 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
-  byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase, judgeMutation,
-  manifestRelativePath, maxShards, mutationRunExitCode, oracleIdsFromDocuments,
-  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, runnerCodeChanged, selectedEntries, shardEntries,
+  byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
+  evidenceInvalidatingInfraChanged, judgeMutation,
+  manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
+  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
   shardPlan, trackedFixtureSetMatches, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
@@ -109,6 +110,30 @@ describe('selection and manifest judgments', () => {
   it('accepts the same entry with a string mutation_id', () => {
     expect(() => validateManifest([{ ...structuredEntry, mutation_id: '9007199254740993' }], namespaces, tracked)).not.toThrow();
   });
+  // run.mjs interpolates mutation_id into `resolve(temporary, `${id}.diff`)`, so it is a path
+  // component: `../escaped` writes outside the temp dir and `sub/id` ENOENTs the whole shard.
+  it.each([
+    ['parent escape', '../escaped'], ['nested path', 'sub/id'], ['self', '.'], ['parent', '..'],
+    ['backslash', 'sub\\id'], ['leading dash', '-lead'], ['trailing dash', 'trail-'],
+    ['double dash', 'a--b'], ['uppercase', 'Alpha-Beta'], ['underscore', 'alpha_beta'],
+    ['dotted', 'alpha.beta'], ['spaced', 'alpha beta'], ['tilde', '~/id'], ['nul-ish', 'id%00'],
+  ] as const)('rejects a %s mutation_id', (_name, mutationId) => {
+    expect(() => validateManifest([{ ...structuredEntry, mutation_id: mutationId }], namespaces, tracked))
+      .toThrow(/non-slug mutation_id/);
+  });
+  it('rejects an empty mutation_id before it can reach the slug check', () => {
+    expect(() => validateManifest([{ ...structuredEntry, mutation_id: '' }], namespaces, tracked))
+      .toThrow(/non-string mutation_id/);
+  });
+  it.each(['login-success-drop-reload', 'app-cursor-accept-bare-number', 'a', '9007199254740993', 'a1-b2'])(
+    'accepts the real-shaped mutation_id %s', (mutationId) => {
+      expect(() => validateManifest([{ ...structuredEntry, mutation_id: mutationId }], namespaces, tracked)).not.toThrow();
+    });
+  it('accepts every id in the real manifest', () => {
+    const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8')) as MutationEntry[];
+    expect(manifest.length).toBeGreaterThan(0);
+    expect(manifest.filter(({ mutation_id }) => !mutationIdPattern.test(mutation_id))).toEqual([]);
+  });
 });
 
 describe('manifest is data, not runner infrastructure', () => {
@@ -199,21 +224,48 @@ describe('manifest is data, not runner infrastructure', () => {
   });
 });
 
-describe('runner code versus manifest data', () => {
+describe('evidence-invalidating infrastructure versus manifest data', () => {
+  // Every path here governs which tests exist or how vitest runs them, so every recorded
+  // expected_red set becomes unverifiable and selection must fail closed to the whole manifest.
   it.each([
     'tools/mutation/run.mjs', 'tools/mutation/runner.ts', 'tools/mutation/runner.test.ts',
-    'tools/mutation/fixture-e2e.mjs', 'tools/mutation/fixtures/valid/source.ts',
-  ])('treats %s as runner code', (path) => {
-    expect(runnerCodeChanged([path])).toBe(true);
+    'tools/mutation/fixture-e2e.mjs', 'tools/mutation/fixtures/valid/source.ts', 'tools/mutation/plan-purity.mjs',
+    'vitest.config.ts', 'tools/vitest/build-constants.ts',
+    'package.json', 'package-lock.json',
+    'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'tsconfig.core.json',
+  ])('treats %s as evidence-invalidating infrastructure', (path) => {
+    expect(evidenceInvalidatingInfraChanged([path])).toBe(true);
   });
-  it.each([manifestRelativePath, 'web/src/app.ts', 'tools/architecture/plugin.mjs', 'tools/mutation-other/run.mjs'])(
-    'does not treat %s as runner code', (path) => {
-      expect(runnerCodeChanged([path])).toBe(false);
+  // Neighbours that must NOT trigger the sweep. `tools/vitestfoo.ts` / `tools/vitest-helpers/`
+  // guard the startsWith prefix bug; `web/src/tsconfig.json` guards the fe-ROOT-only tsconfig rule.
+  it.each([
+    manifestRelativePath, 'web/src/app.ts', 'tools/architecture/plugin.mjs', 'tools/mutation-other/run.mjs',
+    'tools/vitestfoo.ts', 'tools/vitest-helpers/x.ts', 'tools/vitest.ts',
+    'web/src/tsconfig.json', 'core/tsconfig.build.json', 'web/package.json', 'web/package-lock.json',
+    'web/vitest.config.ts', 'tools/vitest.config.ts', 'tsconfig.json.bak', 'package.json5',
+  ])('does not treat %s as evidence-invalidating infrastructure', (path) => {
+    expect(evidenceInvalidatingInfraChanged([path])).toBe(false);
+  });
+  it('detects infrastructure alongside a manifest edit', () => {
+    expect(evidenceInvalidatingInfraChanged([manifestRelativePath, 'tools/mutation/runner.ts'])).toBe(true);
+    expect(evidenceInvalidatingInfraChanged([manifestRelativePath, 'package-lock.json'])).toBe(true);
+    expect(evidenceInvalidatingInfraChanged([])).toBe(false);
+  });
+  // The whole point: the sweep must reach selectedEntries, not just the predicate.
+  it.each([
+    'fe/tools/mutation/runner.ts', 'fe/vitest.config.ts', 'fe/tools/vitest/build-constants.ts',
+    'fe/package.json', 'fe/package-lock.json', 'fe/tsconfig.json', 'fe/tsconfig.app.json',
+  ])('selects the full manifest when %s changes', (path) => {
+    const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
+    expect(selectedEntries(entries, [path], entries)).toEqual(entries);
+    // …and with the manifest ALSO edited, where per-entry diff would otherwise have narrowed it.
+    expect(selectedEntries(entries, [path, `fe/${manifestRelativePath}`], entries)).toEqual(entries);
+  });
+  it.each(['fe/tools/vitest-helpers/x.ts', 'fe/tools/vitestfoo.ts', 'fe/web/src/tsconfig.json'])(
+    'does not sweep the manifest when the neighbouring path %s changes', (path) => {
+      const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
+      expect(selectedEntries(entries, [path], entries)).toEqual([]);
     });
-  it('detects runner code alongside a manifest edit', () => {
-    expect(runnerCodeChanged([manifestRelativePath, 'tools/mutation/runner.ts'])).toBe(true);
-    expect(runnerCodeChanged([])).toBe(false);
-  });
 });
 
 describe('dynamic shard plan', () => {

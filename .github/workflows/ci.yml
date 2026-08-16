@@ -610,13 +610,25 @@ jobs:
           total=$(printf '%s' "$plan" | jq -r '.total')
           selected=$(printf '%s' "$plan" | jq -r '.selected')
           clamped=$(printf '%s' "$plan" | jq -r '.clamped')
+          # `selected` is validated alongside `total`: it is arithmetic input below, and under
+          # `set -eu` a non-numeric value aborts the step anyway — a malformed plan SHOULD fail here.
           case "$total" in ''|*[!0-9]*) total='' ;; esac
-          if [ -z "$shards" ] || [ -z "$total" ] || [ "$total" = "0" ] || [ "${shards#\[}" = "$shards" ]; then
+          case "$selected" in ''|*[!0-9]*) selected='' ;; esac
+          if [ -z "$shards" ] || [ -z "$total" ] || [ -z "$selected" ] || [ "$total" = "0" ] || [ "${shards#\[}" = "$shards" ]; then
             echo "mutation plan did not produce a usable shard matrix; raw plan: $plan" >&2
             exit 1
           fi
-          # Visibility only, never a gate: past the cap the shards stop being ~4 entries each and
-          # a full run drifts towards the 15min shard timeout, which would read as flake.
+          # The shard list must be EXACTLY 1..total. `[` plus a digit-total is not enough:
+          # {"total":99999,"shards":[1]} passed both, and the single shard job then ran
+          # `--shard 1/99999` — about one of 65 entries — and the aggregate gate went green.
+          # plan-purity.mjs asserts the same identity but runs in the SHARD job, too late to stop this.
+          if ! printf '%s' "$plan" | jq -e '(.shards | length) == .total and .shards == [range(1; .total + 1)]' >/dev/null; then
+            echo "mutation plan shard list is not exactly 1..total; raw plan: $plan" >&2
+            exit 1
+          fi
+          # The warning below never fails the step; a malformed plan always does, above.
+          # Past the cap the shards stop being ~4 entries each and a full run drifts towards the
+          # 15min shard timeout, which would read as flake.
           if [ "$clamped" = "true" ]; then
             per_shard=$(( (selected + total - 1) / total ))
             echo "::warning::fe-mutation: $selected selected entries exceed the $total-shard cap; ~$per_shard entries per shard (cap keeps wall clock from being flat — consider raising maxShards in fe/tools/mutation/runner.ts)"

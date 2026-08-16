@@ -117,6 +117,15 @@ export function parseFailedTestIds(json: string): string[] {
   return parseVitestReport(json).failedTestIds;
 }
 
+/**
+ * `mutation_id` is interpolated straight into temp *filenames* by run.mjs
+ * (`resolve(temporary, `${mutation_id}.diff`)`), so it is a path component, not free text.
+ * A lowercase dash-slug has no `.`, no `/` and no `\`, which makes `../escaped` (writes outside the
+ * temp dir), `sub/id` (ENOENT that kills the whole shard) and `.`/`..` structurally impossible.
+ * All 65 manifest ids already match; new ids must keep the shape.
+ */
+export const mutationIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 export function validateManifest(
   entries: MutationEntry[],
   namespaces: { oracle: ReadonlySet<string>; 'arch-rule': ReadonlySet<string> },
@@ -130,6 +139,9 @@ export function validateManifest(
     // neighbours, which would make the canonical base/head comparison silently skip entries.
     if (typeof entry.mutation_id !== 'string' || entry.mutation_id.trim() === '') {
       throw new Error(`manifest entry has a non-string mutation_id: ${JSON.stringify(entry.mutation_id)}`);
+    }
+    if (!mutationIdPattern.test(entry.mutation_id)) {
+      throw new Error(`manifest entry has a non-slug mutation_id (it becomes a temp filename, so it must match ${String(mutationIdPattern)}): ${JSON.stringify(entry.mutation_id)}`);
     }
     if (ids.has(entry.mutation_id)) throw new Error(`duplicate mutation_id: ${entry.mutation_id}`);
     ids.add(entry.mutation_id);
@@ -168,11 +180,44 @@ export function validateManifest(
 export const manifestRelativePath = 'tools/mutation/manifest.json';
 
 /**
- * Runner *code* changed (run.mjs / runner.ts / runner.test.ts / fixtures/** / fixture-e2e.mjs).
- * The manifest itself is excluded: it carries per-entry evidence, diffed entry by entry instead.
+ * fe-relative directories whose contents govern how the evidence is produced. Trailing slash is
+ * load-bearing: it matches the DIRECTORY, so a `tools/vitestfoo.ts` or `tools/vitest-helpers/x.ts`
+ * sibling does not accidentally trigger a full sweep.
  */
-export function runnerCodeChanged(fePaths: readonly string[]): boolean {
-  return fePaths.some((path) => path.startsWith('tools/mutation/') && path !== manifestRelativePath);
+const evidenceInvalidatingDirectories = Object.freeze(['tools/mutation/', 'tools/vitest/'] as const);
+
+/** fe-relative files whose contents govern how the evidence is produced. */
+const evidenceInvalidatingFiles = Object.freeze(['vitest.config.ts', 'package.json', 'package-lock.json'] as const);
+
+/** fe-ROOT tsconfigs only (`tsconfig.json`, `tsconfig.app.json`, …); `web/src/tsconfig.json` is not one. */
+const feRootTsconfigPattern = /^tsconfig[^/]*\.json$/;
+
+/**
+ * Evidence-invalidating infrastructure changed: every recorded `expected_red` becomes a claim we can
+ * no longer trust, so selection must fail closed to the WHOLE manifest. Each member of the set governs
+ * which tests exist and/or how vitest runs them, which is exactly what an `expected_red` set encodes:
+ *
+ *  - `tools/mutation/**` except `manifest.json` — the runner code that applies patches and judges
+ *    verdicts. The manifest is DATA, diffed entry by entry instead (see entryIdsDriftedFromBase).
+ *  - `vitest.config.ts` — projects, include globs, environment, pool. Changing it changes which test
+ *    ids even exist, so every recorded id may now be stale.
+ *  - `tools/vitest/**` — the global `setupFiles` (build-constants.ts). It runs before every test file
+ *    in every project; a change there can flip any assertion in the suite.
+ *  - `package.json` / `package-lock.json` — a vitest / jsdom / React / testing-library bump changes
+ *    behaviour and test-id formatting wholesale. This is the case that used to select ZERO entries.
+ *  - fe-root `tsconfig*.json` — strictness / lib / paths, i.e. what compiles and therefore what runs.
+ *
+ * DELIBERATE COST, do not "optimize" away: a dependency bump now runs all 65 entries (17 shards,
+ * ~5.5 min). That is the correct price for a change that invalidates every recorded verdict, and it
+ * is rare. Narrowing this set trades a visible 5 minutes for an invisible always-green gate.
+ */
+export function evidenceInvalidatingInfraChanged(fePaths: readonly string[]): boolean {
+  return fePaths.some((path) => {
+    if (path === manifestRelativePath) return false;
+    return evidenceInvalidatingDirectories.some((directory) => path.startsWith(directory))
+      || (evidenceInvalidatingFiles as readonly string[]).includes(path)
+      || feRootTsconfigPattern.test(path);
+  });
 }
 
 /** Deep JSON with object keys sorted, so a pure key reorder is not drift but any value change is. Array order is significant. */
@@ -207,8 +252,8 @@ export function selectedEntries(
 ): MutationEntry[] {
   const fePaths = changedPaths.filter((path) => path.startsWith('fe/')).map((path) => path.slice(3));
   const changed = new Set(fePaths);
-  // Runner code changed: every recorded verdict is suspect, so nothing may be skipped.
-  if (runnerCodeChanged(fePaths)) return [...entries];
+  // Evidence-invalidating infrastructure changed: every recorded verdict is suspect, nothing may be skipped.
+  if (evidenceInvalidatingInfraChanged(fePaths)) return [...entries];
   let drifted = new Set<string>();
   if (changed.has(manifestRelativePath)) {
     // The single fail-closed mechanism for a missing baseline: without it `baseManifest` stays
