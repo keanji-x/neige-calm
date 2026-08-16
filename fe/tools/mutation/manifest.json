@@ -1,29 +1,49 @@
 [
   {
     "mutation_id": "login-success-drop-reload",
-    "defends": ["oracle:INV-LOGIN-001"],
+    "defends": [
+      "oracle:INV-LOGIN-001"
+    ],
     "target": "web/src/features/auth/login-page/public.tsx",
     "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..be25005b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -23,7 +23,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       void login(username, password).then((result) => {\n         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n-        reload();\n+        setSubmitting(false);\n       }).catch((cause: unknown) => {\n         setError(cause instanceof Error && cause.message ? cause.message : 'Sign-in failed.');\n         setSubmitting(false);\n",
-    "expected_red": ["login page oracle contracts INV-LOGIN-001 reloads the whole document after successful login"],
-    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx"],
+    "expected_red": [
+      "login page oracle contracts INV-LOGIN-001 reloads the whole document after successful login"
+    ],
+    "selection_paths": [
+      "web/src/features/auth/login-page/public.contract.test.tsx"
+    ],
     "why_more_than_one": "The success oracle alone should fail when the full-page reload is removed."
   },
   {
     "mutation_id": "login-credentials-use-generic-error",
-    "defends": ["oracle:CAP-LOGIN-002"],
+    "defends": [
+      "oracle:CAP-LOGIN-002"
+    ],
     "target": "web/src/features/auth/login-page/public.tsx",
     "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..0377347a 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -21,7 +21,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       if (submitting) return;\n       setSubmitting(true); setError(null);\n       void login(username, password).then((result) => {\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n       }).catch((cause: unknown) => {\n",
-    "expected_red": ["login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state", "production login assembly CAP-LOGIN-002 maps a production 401 to credential copy without broadcasting"],
-    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx", "web/src/app/auth/login.contract.test.tsx"],
+    "expected_red": [
+      "login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state",
+      "production login assembly CAP-LOGIN-002 maps a production 401 to credential copy without broadcasting"
+    ],
+    "selection_paths": [
+      "web/src/features/auth/login-page/public.contract.test.tsx",
+      "web/src/app/auth/login.contract.test.tsx"
+    ],
     "why_more_than_one": "Both the component branch and production assembly oracle must reject generic copy for bad credentials."
   },
   {
     "mutation_id": "login-drop-username-autocomplete",
-    "defends": ["oracle:INV-LOGIN-003"],
+    "defends": [
+      "oracle:INV-LOGIN-003"
+    ],
     "target": "web/src/features/auth/login-page/public.tsx",
     "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..3fc9d56b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -33,7 +33,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       {error !== null && <p role=\"alert\" className={styles.error}>{error}</p>}\n       <label htmlFor={`${prefix}-username`}>Username</label>\n       {/* eslint-disable-next-line jsx-a11y/no-autofocus -- Single-purpose login screen intentionally starts at its first field. */}\n-      <input id={`${prefix}-username`} name=\"username\" autoFocus autoComplete=\"username\" value={username} onChange={(event) => setUsername(event.target.value)} />\n+      <input id={`${prefix}-username`} name=\"username\" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />\n       <label htmlFor={`${prefix}-password`}>Password</label>\n       <input id={`${prefix}-password`} name=\"password\" type=\"password\" autoComplete=\"current-password\" value={password} onChange={(event) => setPassword(event.target.value)} />\n       <button type=\"submit\" disabled={submitting}>{submitting ? 'Signing in…' : 'Sign in'}</button>\n",
-    "expected_red": ["login page browser contract INV-LOGIN-003 focuses username and declares both credential autocomplete tokens"],
-    "selection_paths": ["web/src/features/auth/login-page/login-page.browser.test.tsx"],
+    "expected_red": [
+      "login page browser contract INV-LOGIN-003 focuses username and declares both credential autocomplete tokens"
+    ],
+    "selection_paths": [
+      "web/src/features/auth/login-page/login-page.browser.test.tsx"
+    ],
     "why_more_than_one": "Only the browser autocomplete oracle should fail when the username token is removed."
   },
   {
@@ -917,7 +937,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n function derivedWaveId(data: unknown, context: InvalidationContext): string | null {\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n /**\n",
     "expected_red": [
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
     ],
@@ -949,7 +969,7 @@
       "oracle:CAP-APP-037"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -121,7 +121,7 @@\n   'harness.user_message.enqueued': plan((event) => result([\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],\n   ])),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -147,7 +147,7 @@ function policies(): PolicyMap {\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id], COVE_CONVERSATIONS,\n   ])),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
@@ -997,7 +1017,7 @@
       "oracle:CAP-CHATHIST-005"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -113,7 +113,7 @@\n     const waveId = context.findWaveOwningCard(event.data.card_id);\n     return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);\n   }),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([['spec-run', event.data.card_id]])),\n   'harness.transcript.cleared': plan((event) => result([\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -136,7 +136,7 @@ function policies(): PolicyMap {\n     const waveId = context.findWaveOwningCard(event.data.card_id);\n     return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);\n   }),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([\n     ['spec-run', event.data.card_id], COVE_CONVERSATIONS,\n   ])),\n",
     "expected_red": [
       "invalidation plan behavior plans each harness event against the projections it can change",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations"

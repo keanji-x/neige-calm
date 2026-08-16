@@ -8,15 +8,26 @@ use axum::http::{Request, StatusCode, header};
 use calm_server::auth::{self, AuthConfig, AuthState, SESSION_COOKIE};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::SqlxRepo;
+use calm_server::db::sqlite::{SqlxRepo, session_insert_tx, session_mark_wave_root_tx};
+use calm_server::error::CalmError;
 use calm_server::event::{EditAuthor, EventBus};
-use calm_server::ids::ActorId;
-use calm_server::model::{NewCard, NewCove, NewWave};
+use calm_server::ids::{ActorId, CardId, WaveId};
+use calm_server::mcp_server::registry::AppContext;
+use calm_server::mcp_server::tools::wave_report_blocks::{
+    TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_UPSERT,
+};
+use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
+use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
+use calm_server::session_projection_repo::AgentProvider;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
 use calm_server::wave_report::{WaveReportPayload, persist_report};
 use calm_types::report_blocks::render_fence;
+use calm_types::worker::{
+    LivenessTag, SessionMode, WorkerContract, WorkerProviderKind, WorkerSession, WorkerSessionId,
+    WorkerSessionState,
+};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tempfile::TempDir;
@@ -490,7 +501,11 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
-async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64) {
+/// Counts every table the fork persistence path writes, so a "zero residue"
+/// assertion covers the whole surface: the wave row, the attached cove folder,
+/// both cards (spec + reportcard), the overlays, and the `tasks` rows that
+/// `persist_fork_report_and_project_tasks_tx` projects out of the copied report.
+async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
     calm_server::db::write_in_tx_typed(repo, |tx| {
         Box::pin(async move {
             let waves = sqlx::query_scalar("SELECT COUNT(*) FROM waves")
@@ -509,7 +524,10 @@ async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64) {
             let overlays = sqlx::query_scalar("SELECT COUNT(*) FROM overlays")
                 .fetch_one(&mut **tx)
                 .await?;
-            Ok((waves, folders, spec_cards, report_cards, overlays))
+            let tasks = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+                .fetch_one(&mut **tx)
+                .await?;
+            Ok((waves, folders, spec_cards, report_cards, overlays, tasks))
         })
     })
     .await
@@ -660,8 +678,9 @@ async fn fork_preserves_block_truth_and_rewrites_only_internal_references() {
             "kind": "task",
             "rev": source_truth[7].1,
             "payload": {
+                // #1111 — the copy is spec-owned on BOTH privilege fields.
                 "key": "rejected", "tombstone": {"reason": "not now"},
-                "declared_by": "spec", "tombstoned_by": "user"
+                "declared_by": "spec", "tombstoned_by": "spec"
             }
         }),
     ];
@@ -1093,6 +1112,89 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
+    assert_eq!(after.5, before.5, "failed fork left a tasks row");
+}
+
+/// Issue #1111 — the companion half of the tombstone normalization: fork
+/// rewrites `tombstoned_by` **only** on tombstone blocks. A residual
+/// `tombstoned_by` on a *non*-tombstone task is deliberately left alone so the
+/// fork's own `validate_payload` breaks the whole wave creation fail-closed,
+/// rather than silently repairing a corrupt source into a shape it never
+/// validly had.
+///
+/// **This shape is unreachable in production — this is not a realistic
+/// regression.** Every write surface that can produce a stored report runs
+/// `validate_payload` first: the whole-document path via
+/// `wave_report.rs:392,409 → wave_report_guard.rs:38`, and the block-level
+/// upsert path via `calm-types/src/report_blocks/mod.rs:214-216`. Nor can
+/// `normalize_report_op` emit it. The fixture below therefore forges the shape
+/// with raw SQL (`UPDATE cards ...`), bypassing every production writer.
+///
+/// What it pins is the **fail-closed safety net against legacy rows or a
+/// database corrupted from outside the server**: should such a payload ever
+/// reach fork, the whole creation must abort with zero residue rather than be
+/// quietly normalized. Do not read this test as a production regression.
+#[tokio::test]
+async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
+    let boot = boot().await;
+    let residual_body = render_fence(
+        "task",
+        &json!({
+            "key": "build",
+            "kind": "codex",
+            "goal": "Live task carrying a residual tombstone author",
+            "acceptance": "Fork must refuse this shape outright",
+            "refs": [],
+            "ready": true,
+            "declared_by": "user",
+            "tombstoned_by": "user"
+        }),
+    );
+    let residual_payload = WaveReportPayload::new("residual tombstoned_by source", residual_body);
+    let report_id = boot.source_report_id.clone();
+    let serialized = serde_json::to_string(&residual_payload).unwrap();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE id=?2")
+                .bind(serialized)
+                .bind(report_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    let before = fork_row_counts(boot.repo.as_ref()).await;
+    let (status, body) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "residual tombstoned_by target",
+            "sort": null,
+            "cwd": format!("{}-residual-tombstoned-by", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(
+        body.to_string()
+            .contains("must be absent from a non-tombstone task"),
+        "body = {body}"
+    );
+    let after = fork_row_counts(boot.repo.as_ref()).await;
+    assert_eq!(after.0, before.0, "failed fork left a waves row");
+    assert_eq!(after.1, before.1, "failed fork left a cove_folders row");
+    assert_eq!(after.2, before.2, "failed fork left a spec card");
+    assert_eq!(after.3, before.3, "failed fork left a report card");
+    assert_eq!(after.4, before.4, "failed fork left an overlay");
+    assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
 #[tokio::test]
@@ -1257,4 +1359,217 @@ async fn unsafe_markdown_destinations_fail_fork_with_block_and_source() {
         assert!(error.contains(&destination), "{error}");
         assert!(error.contains("plain form"), "{error}");
     }
+}
+
+/// Issue #1111 — a forked task tombstone must not carry the template's
+/// `tombstoned_by: "user"` privilege into every wave forked from it.
+///
+/// The fixture report holds a tombstone declared AND tombstoned by the user.
+/// After a fork, the spec author owns the copy: the guard's `user_owned`
+/// disjunction (`declared_by == "user" || tombstoned_by == "user"`) plus the
+/// immutability of `tombstoned_by` would otherwise freeze that block forever.
+#[tokio::test]
+async fn forked_user_tombstone_is_normalized_to_spec_and_stays_spec_editable() {
+    let boot = boot().await;
+    let (status, target_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "tombstone fork target",
+            "sort": null,
+            "cwd": format!("{}-tombstone", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_wave}");
+    let target_wave_id = target_wave["id"].as_str().unwrap().to_string();
+
+    let (status, target_report) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{target_wave_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let tombstone = target_report["blocks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|block| block["kind"] == "task" && block["payload"]["key"] == "rejected")
+        .expect("forked report keeps the tombstone block")
+        .clone();
+    assert!(
+        !tombstone["payload"]["tombstone"].is_null(),
+        "fixture block must be a tombstone: {tombstone}"
+    );
+
+    // Drive the real spec write path (MCP `calm.report.blocks.*` →
+    // `CardDecisionSink::commit_report_op` → `guard_task_declarations`).
+    let (ctx, registry, identity) = spec_tool_channel(&boot, &target_wave_id).await;
+    let rewritten = json!({
+        "key": "rejected",
+        "tombstone": { "reason": "spec re-scoped this task" },
+        "declared_by": tombstone["payload"]["declared_by"].clone(),
+        "tombstoned_by": tombstone["payload"]["tombstoned_by"].clone()
+    });
+    let upsert = call_spec_tool(
+        &ctx,
+        &registry,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        identity.clone(),
+        json!({
+            "id": tombstone["id"],
+            "kind": "task",
+            "payload": rewritten,
+            "if_rev": tombstone["rev"]
+        }),
+    )
+    .await
+    .expect("spec author must be able to rewrite a forked tombstone");
+
+    let delete = call_spec_tool(
+        &ctx,
+        &registry,
+        TOOL_REPORT_BLOCKS_DELETE,
+        identity,
+        json!({ "id": tombstone["id"], "if_rev": upsert["rev"] }),
+    )
+    .await
+    .expect("spec author must be able to delete a forked tombstone");
+    assert!(delete.get("docRev").is_some(), "delete returns docRev");
+
+    let (status, after) = request_json(
+        &boot.app,
+        "GET",
+        format!("/api/waves/{target_wave_id}/report"),
+        &boot.cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        !after["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|block| block["id"] == tombstone["id"]),
+        "the spec-owned tombstone is gone after the spec delete: {after}"
+    );
+    assert_eq!(
+        tombstone["payload"]["tombstoned_by"], "spec",
+        "fork must re-attribute the copied tombstone to the spec author: {tombstone}"
+    );
+}
+
+const FORKED_SPEC_SESSION_ID: &str = "forked-spec-session";
+
+fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
+    WorkerSession {
+        id: WorkerSessionId::from(id),
+        wave_id,
+        provider: WorkerProviderKind::Codex,
+        mode: SessionMode::Resumable,
+        contract: WorkerContract::Planner,
+        parent_session_id: None,
+        requester_session_id: None,
+        state: WorkerSessionState::Starting,
+        mcp_token_hash: None,
+        thread_id: None,
+        agent_session_id: None,
+        active_turn_id: None,
+        terminal_run_id: None,
+        card_id: Some(card_id),
+        handle_state_json: None,
+        liveness: LivenessTag::Unknown,
+        liveness_probed_at_ms: None,
+        exit_code: None,
+        exit_interpretation: None,
+        spawn_op_id: None,
+        last_activity_ms: None,
+        last_thread_status: None,
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        completed_at_ms: None,
+    }
+}
+
+/// An MCP tool channel bound to the forked wave's own spec card — the
+/// production identity a spec agent writes its wave report through.
+async fn spec_tool_channel(
+    boot: &Boot,
+    wave_id: &str,
+) -> (Arc<AppContext>, Arc<ToolRegistry>, ToolCallIdentity) {
+    let spec_card = boot
+        .repo
+        .cards_by_wave(wave_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "codex")
+        .expect("forked wave has a spec card");
+    let session = planner_session(
+        FORKED_SPEC_SESSION_ID,
+        WaveId::from(wave_id.to_string()),
+        spec_card.id.clone(),
+    );
+    let root_session_id = session.id.clone();
+    let root_wave_id = WaveId::from(wave_id.to_string());
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            session_insert_tx(tx, session)
+                .await
+                .map_err(CalmError::from)?;
+            session_mark_wave_root_tx(tx, &root_wave_id, &root_session_id)
+                .await
+                .map_err(CalmError::from)?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed the forked wave's root spec session");
+
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let ctx = Arc::new(AppContext {
+        repo: route_repo,
+        wave_vcs: None,
+        events: boot.state.events.clone(),
+        write: boot.state.write().clone(),
+        daemon_token_hash: None,
+        gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
+        plugin_host: Arc::new(tokio::sync::OnceCell::new()),
+        operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+    });
+    let mut registry = ToolRegistry::new();
+    calm_server::mcp_server::tools::register_default_tools(&mut registry);
+    let identity = ToolCallIdentity {
+        card_id: spec_card.id.as_str().to_string(),
+        role: CardRole::Spec,
+        provider: AgentProvider::Codex,
+        session_id: FORKED_SPEC_SESSION_ID.to_string(),
+        wave_id: Some(wave_id.to_string()),
+        cove_id: boot.cove_id.clone(),
+        thread_id: "forked-spec-thread".to_string(),
+    };
+    (ctx, Arc::new(registry), identity)
+}
+
+async fn call_spec_tool(
+    ctx: &Arc<AppContext>,
+    registry: &Arc<ToolRegistry>,
+    name: &str,
+    identity: ToolCallIdentity,
+    args: Value,
+) -> Result<Value, calm_server::plugin_host::mcp::RpcError> {
+    let handler = registry
+        .lookup(name)
+        .unwrap_or_else(|| panic!("tool not registered: {name}"));
+    handler(ctx.clone(), identity, args).await
 }

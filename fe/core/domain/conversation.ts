@@ -1,14 +1,24 @@
 import { z } from 'zod';
 
-import type { HarnessItem } from '../api/generated/wire.js';
-import type { ApiOperation } from '../api/types.js';
+import type { CoveConversationSummary, HarnessItem } from '../api/generated/wire.js';
+import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
   TASK_VERDICT_TOOL, WAVE_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
+import { sha256Hex } from './sha256.js';
 
-/** Mirrors `WorkerSessionKind` in `core/api/generated/wire.ts`. */
-export type ConversationKind = 'terminal' | 'codex' | 'claude' | 'shared-spec';
+/**
+ * What kind of thing the conversation is, from the reader's point of view.
+ *
+ * The first four spellings match `WorkerSessionKind` in
+ * `core/api/generated/wire.ts`; `'shared-chat'` deliberately does **not**. A
+ * cove chat runs on an ordinary codex-card session, so the session kind says
+ * nothing about it — the server derives `'shared-chat'` from the card's own
+ * persisted marker (`CoveConversationSummary.kind`). Do not "fix" this union
+ * back into a mirror of `WorkerSessionKind` by deleting the last member.
+ */
+export type ConversationKind = 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'shared-chat';
 
 /** Mirrors `WorkerSessionState` — the session state machine (#679 §1). */
 export type ConversationState =
@@ -17,8 +27,17 @@ export type ConversationState =
 export type Conversation = Readonly<{
   id: string;
   waveId: string;
-  /** The wave's title, resolved by whoever knows about waves. */
-  waveTitle: string;
+  /**
+   * The wave's title, resolved by whoever knows about waves — absent when
+   * nobody does.
+   *
+   * Optional because a cove conversation lives on the cove's hidden chat wave:
+   * the server withholds that wave's title on purpose
+   * (`CoveConversationSummary`), so there is no title to resolve rather than an
+   * empty one. A surface that names waves must therefore handle its absence;
+   * `undefined` is what makes that a type error instead of `", on undefined"`.
+   */
+  waveTitle?: string;
   /**
    * The conversation's own name, or null before it has one.
    *
@@ -28,11 +47,29 @@ export type Conversation = Readonly<{
    */
   title: string | null;
   kind: ConversationKind;
-  state: ConversationState;
+  /**
+   * The live session's state, or `null` when there is no live session to read.
+   *
+   * `null` is a fact, not a gap: the cove list is a LEFT JOIN restricted to the
+   * four live states, so a card whose session exited, failed or was superseded
+   * — and a card minted seconds ago that has none yet — both arrive as `null`.
+   * Rendering it must therefore say only "nothing is happening in it right
+   * now", which is what `isLiveConversation(null) === false` and the unlit dot
+   * already say. Substituting `'exited'` or `'failed'` would assert a state
+   * nobody read.
+   */
+  state: ConversationState | null;
   /** Last turn, or the session's own update time when it has no turns yet. */
   updatedAt: number;
-  /** Turn count. Zero is legal: a session can exist before its first turn. */
-  turns: number;
+  /**
+   * Turn count, or absent when the surface that produced the row cannot count.
+   *
+   * Optional because the cove list will not: counting turns means re-parsing
+   * every `harness_items.params` blob, and a count that silently disagrees with
+   * the drawer is worse than no count (`CoveConversationSummary`). Zero is
+   * still legal and still means zero.
+   */
+  turns?: number;
 }>;
 
 /** What a session is called when it has no name of its own. `kind` is its
@@ -42,6 +79,9 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
   codex: 'Codex',
   claude: 'Claude',
   'shared-spec': 'Spec',
+  /* Every cove conversation reads "Chat" until one is named: the server mints
+     the card with no title and nothing writes one yet (#1098 §7). */
+  'shared-chat': 'Chat',
 });
 
 /**
@@ -79,8 +119,11 @@ export function conversationNameFrom(text: string): string | null {
  * A session is *live* while it can still produce turns. This is the one
  * predicate the list needs, and it is declared here rather than in a feature so
  * the two surfaces that show conversations cannot disagree about it.
+ *
+ * `null` is not live, for the same reason it is not `'exited'`: it says no live
+ * session was found, and "not live" is precisely the whole of that.
  */
-export function isLiveConversation(state: ConversationState): boolean {
+export function isLiveConversation(state: ConversationState | null): boolean {
   return state === 'starting' || state === 'running' || state === 'turn_pending';
 }
 
@@ -165,6 +208,208 @@ export function resetSpecOperation(cardId: string): ApiOperation<unknown> {
       card_id: z.string(), terminal_id: z.string(), new_thread_id: z.string(), wave: z.unknown().optional(),
     }),
   };
+}
+
+/* ── Cove conversations (#1098) ─────────────────────────────────────────────
+ *
+ * A cove's conversations are ordinary plain-chat harness cards on a hidden chat
+ * wave. Everything *inside* one is the spec-harness surface unchanged — items,
+ * phase, input, interrupt, reset all take a card id and do not care how the
+ * card was made. Only two things are new: where the list comes from, and how
+ * the first message creates the card it is sent to.
+ *
+ * The schemas live here rather than in `core/api/schemas.ts` because that
+ * module mirrors the kernel's wire vocabulary, and `kind: 'shared-chat'` is not
+ * in it: the wire spells this field as a bare string and the server derives the
+ * value from a card marker. Narrowing it is this layer's job.
+ */
+
+const conversationStateSchema = z.enum([
+  'starting', 'running', 'idle', 'turn_pending', 'exited', 'failed', 'superseded',
+]);
+
+const coveConversationSummarySchema: z.ZodType<CoveConversationSummary> = z.object({
+  id: z.string(),
+  waveId: z.string(),
+  title: z.string().nullable(),
+  kind: z.string(),
+  state: conversationStateSchema.nullable(),
+  updatedAt: z.number(),
+});
+
+/**
+ * The wire row as this app's own `Conversation`.
+ *
+ * `waveTitle` and `turns` are left absent rather than filled with `''` and `0`:
+ * the server does not send them (and says why it will not), so any value here
+ * would be this function's invention. `kind` is pinned to `'shared-chat'`
+ * because that is the only value this endpoint produces — the wire's `string`
+ * is a ts-rs artefact, not a variation point.
+ */
+export function toCoveConversation(row: CoveConversationSummary): Conversation {
+  return {
+    id: row.id,
+    waveId: row.waveId,
+    title: row.title,
+    kind: 'shared-chat',
+    state: row.state,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function coveConversationsOperation(coveId: string): ApiOperation<Conversation[]> {
+  return {
+    method: 'GET',
+    path: `/api/coves/${encodeURIComponent(coveId)}/conversations`,
+    responseSchema: z.array(coveConversationSummarySchema).transform((rows) => rows.map(toCoveConversation)),
+  };
+}
+
+/**
+ * Mint a conversation and deliver its first message, in one call.
+ *
+ * `Idempotency-Key` is required by the server (a missing one is 400) and is
+ * what makes a retry return the same conversation instead of a second one. It
+ * is a parameter rather than something minted in here on purpose: the key
+ * belongs to the *draft* the user keeps pressing send on, and a key minted per
+ * call would be a new key per attempt, which is exactly the guarantee it
+ * exists to provide.
+ */
+export function createCoveConversationOperation(
+  coveId: string, text: string, idempotencyKey: string,
+): ApiOperation<Conversation> {
+  return {
+    method: 'POST',
+    path: `/api/coves/${encodeURIComponent(coveId)}/conversations`,
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: { text },
+    responseSchema: coveConversationSummarySchema.transform(toCoveConversation),
+  };
+}
+
+/** The longest first message the server accepts, checked before it is sent so a
+ *  rejected message costs no round trip (`NewCoveConversationBody`). */
+export const COVE_CONVERSATION_TEXT_MAX = 32768;
+
+/**
+ * The card id a create under `(coveId, idempotencyKey)` will have — computed
+ * here, before the server answers.
+ *
+ * It is a pure, **public** function of those two strings, and the server says
+ * so in as many words: `derive_conversation_keys`
+ * (`crates/calm-server/src/routes/cove_conversations.rs`) is
+ * `"conv-" + sha256("cove-chat-conversation:{cove_id}:{idempotency_key}")[..32]`,
+ * with a doc comment stating that anyone holding both inputs can compute it and
+ * that nothing may be built on it being secret. Nothing here is: this recomputes
+ * a *name*, so a draft can recognise **its own** row.
+ *
+ * That is the whole reason it exists. "A row that was not in the list before"
+ * is not this draft's row — during the seconds a create is failing, another
+ * client (or another tab) creating a conversation adds one too, and adopting it
+ * would open somebody else's chat as if it were the words you just typed. The
+ * id answers the question that was actually being asked.
+ *
+ * The `#N` operation-key suffix the server may use when retrying a failed
+ * operation touches only the *operation* key, never this one — a fact of the
+ * server function's signature, which takes no such parameter.
+ */
+export function coveConversationCardId(coveId: string, idempotencyKey: string): string {
+  return `conv-${sha256Hex(`cove-chat-conversation:${coveId}:${idempotencyKey}`).slice(0, 32)}`;
+}
+
+/**
+ * What a failed create means for the draft that caused it.
+ *
+ * Every arm exists because the *same* draft has to be treated differently
+ * afterwards, and none of them is "409, so it already worked, ignore it": a 409
+ * here is four distinguishable situations and three of them still have no
+ * conversation behind them.
+ */
+export type CoveConversationFailure = Readonly<
+  | {
+    /** Ambiguous: the attempt may have committed. Keep the key and the text,
+     *  re-read the list, and adopt a row if one appeared. */
+    kind: 'retry';
+    message: string;
+  }
+  | {
+    /** The derived card already exists — the list is behind, not the draft. */
+    kind: 'exists';
+    message: string;
+  }
+  | {
+    /** Refused before anything could commit, so the key is unspent and the text
+     *  is still the draft's to keep. What has to change before a retry can
+     *  succeed differs by cause: a 409 `has no claimed folder` is fixed outside
+     *  the draft (claim one, then resend these very words), while a 400 is a
+     *  refusal *of the body itself* — resending the same text will be rejected
+     *  again, and the composer is still open precisely so it can be rewritten. */
+    kind: 'blocked';
+    message: string;
+  }
+  | {
+    /**
+     * A 503 — the agent service is not running, or something behind it is
+     * saturated. It says the *service* could not do the work; it does **not**
+     * say the request never committed, and on this endpoint it usually means
+     * the opposite.
+     *
+     * `create_cove_conversation` mints the card through the operation runtime
+     * first and only then delivers the first message; every 503 the route can
+     * raise comes from that second half (`send_spec_input` → "spec harness is
+     * starting", "app-server not running", "observation queue full"), by which
+     * point the card exists. Operation failures never map to 503 at all
+     * (`calm_error_from_operation_failure` yields 400/404/409/500 only), and a
+     * 503 invented by a proxy in front of the server proves nothing either
+     * way.
+     *
+     * So this is exactly as ambiguous as `'retry'` and is resolved the same
+     * way: keep the key and the text, re-read the list, and adopt the row this
+     * key derives — a check that cannot mistake anyone else's conversation for
+     * this one. The kind stays separate because the *sentence* shown differs.
+     */
+    kind: 'unavailable';
+    message: string;
+  }
+  | {
+    /** This key was already spent on a different first message. */
+    kind: 'stale-payload';
+    message: string;
+  }
+  | {
+    /** The key used up its retry slots; only a new key can go anywhere. */
+    kind: 'exhausted';
+    message: string;
+  }
+  | {
+    /** The cove is gone; there is nowhere to put the draft. */
+    kind: 'gone';
+    message: string;
+  }
+>;
+
+const NO_CLAIMED_FOLDER = 'has no claimed folder';
+const DIFFERENT_PAYLOAD = 'already used with different payload';
+
+export function coveConversationFailure(failure: ApiFailure): CoveConversationFailure {
+  if (failure.kind === 'transport' || failure.kind === 'decode') {
+    // The request may have been served and the answer lost on the way back.
+    return { kind: 'retry', message: failure.message };
+  }
+  const { message } = failure;
+  if (failure.code === 'idempotency_key_exhausted') return { kind: 'exhausted', message };
+  if (failure.status === 404) return { kind: 'gone', message };
+  /* Its own kind for its own sentence — "the agent service is down" is not
+     "something went wrong" — but not its own resolution: see the variant's doc
+     comment for why a 503 here does not mean the card was never minted. */
+  if (failure.status === 503) return { kind: 'unavailable', message };
+  if (failure.status === 400) return { kind: 'blocked', message };
+  if (failure.status === 409) {
+    if (message.includes(NO_CLAIMED_FOLDER)) return { kind: 'blocked', message };
+    if (message.includes(DIFFERENT_PAYLOAD)) return { kind: 'stale-payload', message };
+    return { kind: 'exists', message };
+  }
+  return { kind: 'retry', message };
 }
 
 const DIFF_PREFIX = '## Wave state changes since your last turn';

@@ -64,6 +64,25 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
   'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',
 ] as const);
 
+/**
+ * The cove conversation list, invalidated without a cove id (#1098 §5.5).
+ *
+ * The id is not omitted for convenience — it is not derivable here.
+ * `InvalidationContext` can resolve a card to its wave and nothing further, and
+ * a cove chat wave's detail is never fetched (the wave is hidden), so there is
+ * no cached row to read a cove id out of either. A prefix key is the honest
+ * shape for "some cove's list may have changed"; it also costs nothing when no
+ * cove route is mounted, because an invalidated key with no active query only
+ * marks cache entries stale.
+ *
+ * Deliberately *not* invalidated from `harness.item.added` — it writes only
+ * `harness_items`, never `worker_sessions`, so it cannot change a row of this
+ * list, and it is the highest-frequency event the kernel emits. Nor from
+ * `harness.transcript.cleared`: a reset always emits `harness.phase.changed`
+ * too, so a second trigger would only make the first impossible to disprove.
+ */
+export const COVE_CONVERSATIONS: QueryKey = Object.freeze(['cove-conversations']);
+
 function derivedWaveId(data: unknown, context: InvalidationContext): string | null {
   if (typeof data !== 'object' || data === null) return null;
   const value = data as { wave_id?: unknown; card_id?: unknown };
@@ -98,8 +117,12 @@ function policies(): PolicyMap {
     ['waves', 'cove', event.data.cove_id], ['wave', event.data.id],
     ['wave-files', event.data.id], ['waves-range'],
   ])),
-  'card.added': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
-  'card.updated': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
+  'card.added': plan((event) => result([
+    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id], COVE_CONVERSATIONS,
+  ])),
+  'card.updated': plan((event) => result([
+    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id], COVE_CONVERSATIONS,
+  ])),
   'card.deleted': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
   'runtime.started': plan((event, context) => {
     const waveId = context.findWaveOwningCard(event.data.card_id);
@@ -114,12 +137,14 @@ function policies(): PolicyMap {
     return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
   }),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
-  'harness.phase.changed': plan((event) => result([['spec-run', event.data.card_id]])),
+  'harness.phase.changed': plan((event) => result([
+    ['spec-run', event.data.card_id], COVE_CONVERSATIONS,
+  ])),
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
   ])),
   'harness.user_message.enqueued': plan((event) => result([
-    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
+    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id], COVE_CONVERSATIONS,
   ])),
   'wave.report_edited': plan((event) => result([
     ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],
