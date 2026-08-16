@@ -11,7 +11,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::NewCove;
+use calm_server::model::{NewCove, NewTerminal, NewWave, RequestTheme};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -108,6 +108,46 @@ async fn get(app: axum::Router, uri: String) -> StatusCode {
         .await
         .unwrap()
         .status()
+}
+
+async fn request_json(
+    app: axum::Router,
+    method: &str,
+    uri: String,
+    body: Value,
+) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+async fn ensure_chat_wave(b: &Boot) -> Value {
+    b.repo
+        .cove_folder_create(&b.cove_id, "/workspace")
+        .await
+        .unwrap();
+    let (status, body) = post(
+        b.app.clone(),
+        format!("/api/coves/{}/chat-wave/ensure", b.cove_id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    body
 }
 
 #[tokio::test]
@@ -265,4 +305,105 @@ async fn ensure_without_claimed_folder_is_actionable_and_creates_nothing() {
         .await
         .unwrap();
     assert_eq!(count, 0);
+}
+
+/// PATCH guard is paired: a chat lifecycle transition is forbidden before
+/// the FSM/write, while the same Draft→Planning transition remains valid for
+/// an ordinary wave.
+#[tokio::test]
+async fn patch_lifecycle_rejects_chat_but_allows_ordinary_wave() {
+    let b = boot().await;
+    let chat = ensure_chat_wave(&b).await;
+    let chat_id = chat["id"].as_str().unwrap();
+    let (status, body) = request_json(
+        b.app.clone(),
+        "PATCH",
+        format!("/api/waves/{chat_id}"),
+        json!({"lifecycle": "planning"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+    assert_eq!(
+        b.repo
+            .wave_get(chat_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .lifecycle
+            .as_db_str(),
+        "draft"
+    );
+
+    let ordinary = b
+        .repo
+        .wave_create(NewWave {
+            cove_id: b.cove_id.clone().into(),
+            title: "ordinary".into(),
+            sort: None,
+            cwd: "/workspace".into(),
+            workflow_id: None,
+            workflow_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    let (status, body) = request_json(
+        b.app.clone(),
+        "PATCH",
+        format!("/api/waves/{}", ordinary.id),
+        json!({"lifecycle": "planning"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["lifecycle"], "planning");
+}
+
+/// INV-CHAT-005 backlink counterexample: resolving backlinks for the hidden
+/// wave itself exercises the repository-wide wave title map and must stay 200.
+#[tokio::test]
+async fn report_backlinks_still_sees_hidden_chat_wave() {
+    let b = boot().await;
+    let chat = ensure_chat_wave(&b).await;
+    assert_eq!(
+        get(
+            b.app,
+            format!("/api/waves/{}/backlinks", chat["id"].as_str().unwrap())
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+/// INV-CHAT-005 delete counterexample: the terminal's RESTRICT FK makes this
+/// fail if delete_cove's repository enumeration ever hides the chat wave.
+#[tokio::test]
+async fn delete_cove_still_enumerates_hidden_chat_wave_for_terminal_teardown() {
+    let b = boot().await;
+    let chat = ensure_chat_wave(&b).await;
+    let card_id: String = sqlx::query_scalar("SELECT id FROM cards WHERE wave_id = ?1 LIMIT 1")
+        .bind(chat["id"].as_str().unwrap())
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    b.repo
+        .terminal_create(NewTerminal {
+            card_id: card_id.into(),
+            program: "/bin/true".into(),
+            cwd: "/workspace".into(),
+            env: json!({}),
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+
+    let (status, body) = request_json(
+        b.app,
+        "DELETE",
+        format!("/api/coves/{}", b.cove_id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+    assert!(b.repo.cove_get(&b.cove_id).await.unwrap().is_none());
 }

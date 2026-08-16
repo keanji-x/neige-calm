@@ -209,17 +209,30 @@ impl SessionRepo for SqlxRepo {
         );
         let sql = format!(
             r#"SELECT w.id AS wave_id, w.cove_id AS cove_id, w.lifecycle AS lifecycle
-                 FROM waves w
-                WHERE w.lifecycle = 'draft'
+                FROM waves w
+               WHERE w.lifecycle = 'draft'
+                  -- Keep in sync with calm_server::COVE_CHAT_PURPOSE.
+                  AND (w.purpose IS NULL OR w.purpose <> 'cove-chat')
                   AND EXISTS (
                       SELECT 1 FROM operations o
                        WHERE o.kind = 'spec-harness-start'
                          AND o.phase = 'failed'
                          AND json_extract(o.payload_json, '$.wave_id') = w.id
+                         -- The inner MAX subquery limits candidates to start ops
+                         -- for this wave's real spec card. Equality to that MAX
+                         -- therefore implies o is a spec op; repeating the join
+                         -- here would create an unverifiable third-defense illusion.
                          AND o.rowid = (
                              SELECT MAX(o2.rowid) FROM operations o2
                               WHERE o2.kind = 'spec-harness-start'
                                 AND json_extract(o2.payload_json, '$.wave_id') = w.id
+                                AND json_type(o2.payload_json, '$.spec_card_id') = 'text'
+                                AND EXISTS (
+                                    SELECT 1 FROM cards c2
+                                     WHERE c2.id = json_extract(o2.payload_json, '$.spec_card_id')
+                                       AND c2.wave_id = w.id
+                                       AND c2.role = 'spec'
+                                )
                          )
                   )
                   AND {no_active_planner}
@@ -227,6 +240,8 @@ impl SessionRepo for SqlxRepo {
                SELECT w.id AS wave_id, w.cove_id AS cove_id, w.lifecycle AS lifecycle
                  FROM waves w
                 WHERE w.lifecycle = 'planning'
+                  -- Keep in sync with calm_server::COVE_CHAT_PURPOSE.
+                  AND (w.purpose IS NULL OR w.purpose <> 'cove-chat')
                   AND (
                       w.root_session_id IS NULL
                       OR NOT EXISTS (

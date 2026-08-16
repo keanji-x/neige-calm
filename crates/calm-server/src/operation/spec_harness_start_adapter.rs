@@ -345,7 +345,9 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             };
             return Err(CalmError::BadRequest(message));
         }
-        if expected_role == CardRole::Spec && wave.purpose.as_deref() == Some("cove-chat") {
+        if expected_role == CardRole::Spec
+            && wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE)
+        {
             return Err(CalmError::Forbidden(format!(
                 "spec harness is disabled for cove chat wave {}",
                 wave.id
