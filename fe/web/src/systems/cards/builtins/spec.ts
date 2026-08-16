@@ -34,7 +34,7 @@ export function isSpecHarnessPayload(payload: unknown): boolean {
  * (not yet landed) codex entry, so spec must stay on the registry's
  * insertion-ordered full scan rather than take an exact claim on the kind.
  */
-export const SPEC_CARD_ENTRY: CardEntry<SpecCard> = Object.freeze({
+export const SPEC_CARD_ENTRY = Object.freeze({
   type: 'spec',
   component: () => null,
   // The declaration `partitionWaveCards` reads. Dropping it puts a card that
@@ -49,4 +49,4 @@ export const SPEC_CARD_ENTRY: CardEntry<SpecCard> = Object.freeze({
       ? Object.freeze({ type: 'spec', id: card.id } as const)
       : null
   ),
-});
+}) satisfies CardEntry<SpecCard>;

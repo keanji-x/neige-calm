@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import type { CardEntry } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
 import { registerAvailableBuiltinCards } from './register.js';
+import type { WaveReportCard } from './wave-report.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
 
 describe('wave-report card entry', () => {
@@ -18,7 +20,11 @@ describe('wave-report card entry', () => {
   it('[INV-CARD-201] takes no claim, so it stays on the insertion-ordered fallback scan', () => {
     // Same standard as the sister headless entry `spec`: every builtin resolves
     // through `fromKernel` so one scan order decides every shared kernel kind.
-    expect(WAVE_REPORT_CARD_ENTRY.claim).toBeUndefined();
+    // Read through the interface: the entry literal is checked with `satisfies`
+    // so registration can require `headless`, which means the constant's own
+    // type only lists the members it declares. `claim` absent from that type is
+    // the same fact this asserts at runtime.
+    expect((WAVE_REPORT_CARD_ENTRY as CardEntry<WaveReportCard>).claim).toBeUndefined();
   });
 
   it('[INV-CARD-201] resolves the wave-report kernel kind and nothing else', () => {

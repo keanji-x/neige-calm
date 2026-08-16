@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CardEntry } from '../registry.js';
+import type { CardEntry, KernelCardInput } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
 import { partitionWaveCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
@@ -152,6 +152,50 @@ describe('builtin card composition contract', () => {
       const { visible, unknown } = partitionWaveCards(registry, [wire]);
       expect(visible).toEqual([]);
       expect(unknown).toEqual([]);
+    });
+  });
+
+  /*
+   * `partitionWaveCards` reads headlessness with `registry.get(card.type)` on
+   * the card `resolve` handed back. `resolve` never checks that a resolved
+   * card's `type` belongs to the entry that produced it, so that lookup is only
+   * sound while every entry's `fromKernel` mints its own type. The narrow
+   * `CardEntry<Card>` annotation ties the two together at compile time; an
+   * entry annotated as a bare `CardEntry` drops the tie with no other signal,
+   * and a headless card whose lookup misses would fail open into the visible
+   * list. Asserted here on the entries that are really registered.
+   */
+  describe('every registered entry mints cards of its own type', () => {
+    // Keyed by the landed types, so a slice that registers a new built-in must
+    // hand it a probe rather than quietly leave it unasserted.
+    const PROBE_BY_TYPE: Readonly<Record<(typeof LANDED_IN_S1)[number], KernelCardInput>> = Object.freeze({
+      spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
+      'wave-report': { id: 'probe-report', kind: 'wave-report', payload: null },
+    });
+
+    it('probes every entry the production boot registers, and only those', () => {
+      const registry = createCardRegistry();
+      registerAvailableBuiltinCards(registry);
+      expect(Object.keys(PROBE_BY_TYPE).sort()).toEqual(registry.entries().map((entry) => entry.type).sort());
+    });
+
+    it('[INV-CARD-226] resolves each probe back to the entry that owns it', () => {
+      const registry = createCardRegistry();
+      registerAvailableBuiltinCards(registry);
+      const entries = registry.entries();
+      expect(entries.length).toBeGreaterThan(0);
+      for (const entry of entries) {
+        const probe = PROBE_BY_TYPE[entry.type as (typeof LANDED_IN_S1)[number]];
+        expect(
+          entry.fromKernel?.(probe)?.type,
+          `${entry.type} must mint its own type, or the headless lookup reads another entry`,
+        ).toBe(entry.type);
+        // The same trip `partitionWaveCards` makes: resolve, then look the
+        // entry back up by the resolved card's type.
+        const card = registry.resolve(probe);
+        expect(card?.type, `${entry.type} probe must resolve through the registry`).toBe(entry.type);
+        if (card !== null) expect(registry.get(card.type)).toBe(entry);
+      }
     });
   });
 

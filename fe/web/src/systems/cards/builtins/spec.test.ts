@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import type { CardEntry } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
+import type { SpecCard } from './spec.js';
 import { isSpecHarnessPayload, SPEC_CARD_ENTRY } from './spec.js';
 import { registerAvailableBuiltinCards } from './register.js';
 
@@ -48,7 +50,10 @@ describe('spec card entry', () => {
   it('[INV-CARD-181] takes no claim, so it stays on the insertion-ordered fallback scan', () => {
     // An exact claim on `'codex'` would let spec pre-empt the codex entry that
     // lands in S4a; the shared kernel kind is resolved by scan order instead.
-    expect(SPEC_CARD_ENTRY.claim).toBeUndefined();
+    // Read through the interface: the entry literal is checked with `satisfies`
+    // so registration can require `headless`, which means the constant's own
+    // type only lists the members it declares.
+    expect((SPEC_CARD_ENTRY as CardEntry<SpecCard>).claim).toBeUndefined();
   });
 
   it('resolves a spec harness through a really booted registry', () => {

@@ -4136,7 +4136,7 @@
     spec 的 kernel kind 是 'codex' + spec_harness，没有 payload 就无法在
     unknown 分支识别 —— 这是已知且接受的缺口
   source: web/src/cards/excludeReportCards.ts:8-24
-  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75 fe/web/src/systems/cards/builtins/register.contract.test.ts:118,133 fe/web/src/app/router/wave-cards-panel.test.tsx:129,141,150,155,162
+  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75 fe/web/src/systems/cards/builtins/register.contract.test.ts:118,133,182 fe/web/src/app/router/wave-cards-panel.test.tsx:136,148,157,162,169
   owner_slice: systems/cards/builtins
   intentional_omission: true
   runtime_layer: systems

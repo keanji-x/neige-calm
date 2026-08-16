@@ -22,7 +22,7 @@ export type WaveReportCard = Readonly<{ type: 'wave-report'; id: string }>;
  * `fromKernel` rather than an exact `claim` so that every builtin goes through
  * one resolution path.
  */
-export const WAVE_REPORT_CARD_ENTRY: CardEntry<WaveReportCard> = Object.freeze({
+export const WAVE_REPORT_CARD_ENTRY = Object.freeze({
   type: 'wave-report',
   component: () => null,
   // The declaration `partitionWaveCards` reads. Dropping it puts the report
@@ -36,4 +36,4 @@ export const WAVE_REPORT_CARD_ENTRY: CardEntry<WaveReportCard> = Object.freeze({
   fromKernel: (card: KernelCardInput): WaveReportCard | null => (
     card.kind === 'wave-report' ? Object.freeze({ type: 'wave-report', id: card.id } as const) : null
   ),
-});
+}) satisfies CardEntry<WaveReportCard>;

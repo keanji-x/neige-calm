@@ -27,12 +27,18 @@ declare module '../registry.js' {
      * The card resolves, but owns no surface: it never occupies a slot in the
      * CARDS list or the grid (`INV-CARD-226`).
      *
-     * Optional rather than required because `public.contract.test.ts` is a
-     * frozen file whose entry literals are checked with `satisfies CardEntry`;
-     * a required member would fail its typecheck. Absent therefore means "has a
-     * surface", which is the common case and the safe default for the unknown
-     * slot — a mis-declared `true` deletes every card of that type, so the
-     * registry-wide contract test pins both directions.
+     * Optional rather than required because the frozen interface tests
+     * (`public.test.ts`, `public.contract.test.ts`) build entry literals
+     * without it and register them for real; a required member here would fail
+     * their typecheck, and neither file may be edited. Absent therefore means
+     * "has a surface", which is the common case and the safe default for the
+     * unknown slot.
+     *
+     * Built-ins do not get to rely on that default: `builtins/register.ts`
+     * registers them through a helper that requires the member, so a missing
+     * declaration on a production entry is a typecheck error there. A
+     * mis-declared `true` still compiles and deletes every card of that type,
+     * so the registry-wide contract test pins both directions by type.
      */
     readonly headless?: boolean;
   }
@@ -76,9 +82,18 @@ export function partitionWaveCards(
       if (wire.kind !== 'wave-report') unknown.push(Object.freeze({ wire, originalIndex }));
       return;
     }
-    // `resolve` returned this card, so the entry exists; `get` is the way back
-    // to it. Reading the declaration off the entry is what keeps this in step
-    // with whatever entries are actually registered.
+    // Back to the entry that minted this card, so the declaration is read off
+    // the entry rather than a list kept beside it. The registry does not
+    // guarantee this round trip: `resolve` returns whatever `fromKernel`
+    // produced and never checks that its `type` is the entry's own, so an entry
+    // returning a foreign type would send this lookup to `undefined` or to
+    // another entry's metadata, and a headless card would fail open into
+    // `visible`. What actually holds it is the entries: `CardEntry<Card>` ties
+    // `type: Card['type']` to `fromKernel: (…) => Card | null`, so a production
+    // entry written against the narrow generic cannot mismatch and compile.
+    // `register.contract.test.ts` asserts the round trip on every registered
+    // entry, because an entry annotated as a bare `CardEntry` would drop that
+    // compile-time tie without any other signal.
     if (registry.get(card.type)?.headless === true) return;
     visible.push(Object.freeze({ card, wire, originalIndex }));
   });

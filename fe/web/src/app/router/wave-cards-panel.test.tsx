@@ -59,9 +59,16 @@ const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_
  * exercising the stub with no signal at all. `headless-filter.test.ts` keeps
  * `surface-fixture` out of the tuple for the same reason.
  *
- * It also actually renders something. The whole point of the fixture is "a card
- * that owns a surface"; a `() => null` component would be the same shape as the
- * headless entries it is here to be distinguished from.
+ * What makes it "a card with a surface" here is that it resolves and does not
+ * declare `headless` — not its component. S1 mounts no card component at all:
+ * the route maps every surviving slot back to `slot.wire` and the panel renders
+ * `card.title ?? card.kind` (`app/router/public.tsx` `panelCards`,
+ * `features/wave/page/public.tsx` CARDS module). The JSX below is therefore
+ * never rendered by this test — the wire-order assertion reads `'Surface'`, the
+ * wire title, and would read `surface for card-surface` if a component were
+ * mounted. It is written as real markup only so the fixture stands in for the
+ * surface-owning entry S2's grid will actually mount; nothing about a surface
+ * is *proved* by rendering in this slice.
  */
 type SurfaceFixtureCard = Readonly<{ type: 'panel-surface-fixture'; id: string }>;
 const SURFACE_FIXTURE_ENTRY: CardEntry<SurfaceFixtureCard> = {
