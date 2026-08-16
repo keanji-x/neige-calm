@@ -801,7 +801,9 @@
   statement: >
     task 卡渲染目标、完成条件、排队/执行状态与诊断；等待人工放行时提供按钮。墓碑形态
     显示「不做」记录及 declared_by + tombstoned_by 双署名审计线索，并把撤回记录与恢复
-    自动化作为两个独立按钮。
+    自动化作为两个独立按钮。双署名只在同一个 wave 内成立：fork 复制块时两个署名一起
+    归一化为 "spec"（985-doc-as-plan.md §7.2 / #1111），从模板 fork 出来的墓碑一律
+    显示成 AI 留下的。
   why: >
     三句对外概念契约要求系统署名不成为输入或 UI 名词；状态来自读时投影，已交付卡只读。
   source: web/src/pages/report-blocks/task.tsx:126-184 + web/src/pages/WaveReportPage.tsx:431-466

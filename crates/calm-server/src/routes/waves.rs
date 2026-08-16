@@ -1093,8 +1093,8 @@ fn prepare_fork_report(
                 serde_json::Value::String("spec".into()),
             );
             if tombstone {
-                // #1111 — `tombstoned_by` is the second privilege field on a
-                // task block: `wave_report_edit_guard::guard_task_declarations`
+                // #1111 — `tombstoned_by` is the second *attribution* field on
+                // a task block: `wave_report_edit_guard::guard_task_declarations`
                 // treats `declared_by == "user" || tombstoned_by == "user"` as
                 // user-owned, and `tombstoned_by` is immutable once a block is
                 // a tombstone. Copying a template's `tombstoned_by: "user"`
@@ -1107,6 +1107,12 @@ fn prepare_fork_report(
                 // ("must be absent from a non-tombstone task") a few lines
                 // below, so a corrupt source fails the fork closed instead of
                 // being silently repaired into a shape it never validly had.
+                //
+                // `released_by_user` is the third privilege field on a task
+                // block; fork deliberately does not normalize it here — see
+                // #1115 for that decision (it is enforced instead by
+                // `fork_guard::guard_forked_blocks`, which runs after this
+                // rewrite, so normalizing it would make that rule unreachable).
                 payload.insert(
                     "tombstoned_by".into(),
                     serde_json::Value::String("spec".into()),

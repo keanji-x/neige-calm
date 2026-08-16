@@ -276,8 +276,8 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 |---|---|
 | 1 | 新出现的 `task` 块，其 `declared_by`（墓碑块则是 `tombstoned_by`）**必须**等于本次编辑的 `EditAuthor`；**其它任何 author（`Kernel` / `Plugin`）新建 `task` 块一律拒绝（fail closed）**——两者今天没有生产发射点，但 guard 不能在其中之一回归时行为未定义 |
 | 2 | 既有块上 `declared_by` **永久冻结**，任何作者不得改变 |
-| 2b | 已存在的墓碑块 `tombstoned_by` **不可改**；且墓碑块**不得原位改回非墓碑**（撤回 = 删除该墓碑块）。否则 spec 一次原位改写就能把人的否决变成自己的任务，**绕过规则 3** |
-| 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由 |
+| 2b | 已存在的墓碑块 `tombstoned_by` **不可改**；且墓碑块**不得原位改回非墓碑**（撤回 = 删除该墓碑块）。否则 spec 一次原位改写就能把人的否决变成自己的任务，**绕过规则 3**。**唯一例外是 fork**：它不经 `apply_report_op`，复制墓碑时把 `tombstoned_by` 归一化为 `"spec"`（§7.2 / #1111）—— 不豁免会让模板墓碑对每个 fork wave 的 spec 永久锁死 |
+| 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由。该析取项**只**对本 wave 里人真正下的否决成立：fork 过来的模板墓碑已在 §7.2 被归一化为 `"spec"`，不落入本条 |
 | 4 | User 删除一个活的 task 块 ⇒ 改写为**原位墓碑**（`tombstoned_by: "user"`）|
 | 4′ | **主条款**：`author == User` 时，`before` 里任何非墓碑 `task` 块若在 `after` 中消失，则 `after` **必须存在同 `key` 且 `tombstoned_by=="user"` 的墓碑**，否则拒绝，**错误文案指向块级 DELETE 端点**（规则 4 只覆盖块级 DELETE，整文档路径必须 fail-closed）。**补丁**：满足它的墓碑必须是**本次编辑新立的**。live → tombstone 时 `tombstoned_by` 必须等于本次编辑的 author：没有它，spec 能伪造人的否决（终局、不可撤回，且规则 3 之后对 spec 永久锁死），人也能自废 §6.1 的防线。**且不得被一个早已存在的同 key 用户墓碑满足**——否则 fail-closed 兜底在它真正要生效的那天不成立 |
 | 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变** |
@@ -947,7 +947,8 @@ sweep 末尾兜底。**代价要如实记**：用 FK + trigger 换掉了**编译
 
 **权属载体是独立的 `tombstoned_by`，`declared_by` 原样承接。** 用 `declared_by`
 当载体时，「人删 spec 声明的任务」这条**默认路径必然 400**（规则 4 的改写
-vs 规则 2 的冻结）。
+vs 规则 2 的冻结）。**双署名只在同一个 wave 内成立**：fork 复制块时两个署名
+一起被归一化为 `"spec"`（§7.2 / #1111），跨 wave 的原作者归属不由这两个字段承载。
 
 **换 `key` 绕过否决怎么办（B2 裁决：改为一次点击，不再自动派生）**：
 人删除一条 spec 声明的任务时，**UI 当场问一句**「要不要此后 spec 的任务都等你放行？
@@ -1120,13 +1121,30 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 3. 豁免**只**豁免规则 1，且**只**在 fork 路径上 —— 不新增任何「跳过 guard」的
    可复用开关。
 
-**fork 强制改写两个字段**：
+**fork 强制改写三个字段**：
 
 - **live task 的 `ready` 降为 `false`** —— 没有任何东西是在「这次」被决定要做的；
   这也让「wave 创建事务里意外派发」在结构上不可能。
 - **墓碑 task 不写 `ready`** —— 墓碑 schema 禁止该字段。
 - **`declared_by` 改写为 `"spec"`** —— 模板里的任务不是**这个人**为**这个 wave**
   提的；标成 `spec` 把它们纳入 §8 的预算（若标 `user`，模板就成了绕过预算的后门）。
+- **墓碑块的 `tombstoned_by` 改写为 `"spec"`**（#1111）—— 理由与 `declared_by`
+  同源：模板里的否决不是**这个人**为**这个 wave** 下的，不归一化模板就成了绕过
+  特权的后门；且 §3.7 规则 2b 让墓碑上的 `tombstoned_by` **不可改**、规则 3 的
+  `user_owned` 是**析取**（`declared_by == "user"` **或** `tombstoned_by == "user"`），
+  两者叠加 ⇒ 一个 `tombstoned_by: "user"` 的模板墓碑会在**每一个** fork 出来的
+  wave 上对 spec 作者**永久锁死**，且无任何修复路径。
+  **非墓碑块上的残留 `tombstoned_by` 刻意不清** —— 交给紧随其后的
+  `validate_payload`（`tombstoned_by: must be absent from a non-tombstone task`）
+  fail-closed 地打断**整条** fork：损坏的源报告应当让 wave 创建 400，而不是被
+  静默修补成它从未合法拥有过的形状。
+
+**归一化刻意授予的能力**：模板墓碑对新 wave 的 spec 降级为**建议**而非绑定 ——
+spec 可以改 `tombstone.reason`、可以**删除**该墓碑块；删除后可以用**新的 block id**
+重新声明同一个 `key`。但重新声明出来的 task 照样 `declared_by == "spec"`、照样计入
+§8 的预算、照样受 `declare_and_wait`（§6.6）约束，而新 wave 的用户随时可以再次把它
+墓碑化（并因此重新获得规则 3 的保护）。**墓碑仍然不可原地 restore**（规则 2b，
+对任何作者都成立）—— 被降级的只是「谁拥有这块墓碑」，不是墓碑本身的终局语义。
 
 ### 7.3 fork 的 `neige://` 引用重写
 
@@ -2023,7 +2041,9 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 
 **切片 5**：fork 的引用重写**硬测试**（内部引用指向新 wave id、
 **外部引用逐字节未变** —— 错了是静默的）；fork 强制 `ready:false` +
-`declared_by:"spec"`；fork 自跑 `validate_payload` 与 guard；
+`declared_by:"spec"` + 墓碑块 `tombstoned_by:"spec"`（#1111；非墓碑块上的残留
+`tombstoned_by` 不清，由 `validate_payload` 打断整条 fork）；
+fork 自跑 `validate_payload` 与 guard；
 **规则 1 豁免点的枚举测试**（本片全仓恰好一处：`Fork`；切片 7 物化工具落地后
 再扩成 `{Fork, Materialize}` 两处）；
 `calm.plan.upsert` 隐藏 shim 返回迁移指引且零写入。

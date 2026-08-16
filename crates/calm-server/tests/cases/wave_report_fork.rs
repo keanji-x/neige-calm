@@ -1107,6 +1107,74 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     assert_eq!(after.4, before.4, "failed fork left an overlay");
 }
 
+/// Issue #1111 — the companion half of the tombstone normalization: fork
+/// rewrites `tombstoned_by` **only** on tombstone blocks. A residual
+/// `tombstoned_by` on a *non*-tombstone task is deliberately left alone so the
+/// fork's own `validate_payload` breaks the whole wave creation fail-closed,
+/// rather than silently repairing a corrupt source into a shape it never
+/// validly had.
+#[tokio::test]
+async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
+    let boot = boot().await;
+    let residual_body = render_fence(
+        "task",
+        &json!({
+            "key": "build",
+            "kind": "codex",
+            "goal": "Live task carrying a residual tombstone author",
+            "acceptance": "Fork must refuse this shape outright",
+            "refs": [],
+            "ready": true,
+            "declared_by": "user",
+            "tombstoned_by": "user"
+        }),
+    );
+    let residual_payload = WaveReportPayload::new("residual tombstoned_by source", residual_body);
+    let report_id = boot.source_report_id.clone();
+    let serialized = serde_json::to_string(&residual_payload).unwrap();
+    calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
+        Box::pin(async move {
+            sqlx::query("UPDATE cards SET payload=json(?1),body_crdt=NULL WHERE id=?2")
+                .bind(serialized)
+                .bind(report_id)
+                .execute(&mut **tx)
+                .await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+    let before = fork_row_counts(boot.repo.as_ref()).await;
+    let (status, body) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "residual tombstoned_by target",
+            "sort": null,
+            "cwd": format!("{}-residual-tombstoned-by", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert!(
+        body.to_string()
+            .contains("must be absent from a non-tombstone task"),
+        "body = {body}"
+    );
+    let after = fork_row_counts(boot.repo.as_ref()).await;
+    assert_eq!(after.0, before.0, "failed fork left a waves row");
+    assert_eq!(after.1, before.1, "failed fork left a cove_folders row");
+    assert_eq!(after.2, before.2, "failed fork left a spec card");
+    assert_eq!(after.3, before.3, "failed fork left a report card");
+    assert_eq!(after.4, before.4, "failed fork left an overlay");
+}
+
 #[tokio::test]
 async fn non_user_fork_rejects_user_released_task_and_rolls_back_every_created_row() {
     let boot = boot().await;
