@@ -180,9 +180,10 @@ updatedAt: number, };
  *
  * One row per claimed directory; `path` is absolute and globally
  * unique across the table. A folder transparently covers every
- * descendant path — the kernel resolves a `cwd` to its owning cove
- * via longest-prefix matching against this table (see
- * `GET /api/coves/resolve`).
+ * descendant path — the kernel resolves a `cwd` to its owning cove by
+ * finding the claim that covers it (see `GET /api/coves/resolve`).
+ * The create endpoint rejects ancestor/descendant overlap with a 409,
+ * so at most one claim can cover any given path.
  *
  * `id` is an autoincrement integer rather than the kernel's usual
  * uuid-shaped TEXT id because cove_folders is a small, kernel-internal
@@ -191,15 +192,7 @@ updatedAt: number, };
  * later reconcile. The compact integer also keeps `/folders/:id` URLs
  * readable.
  */
-export type CoveFolder = { id: number, cove_id: CoveId, path: string, 
-/**
- * Normalized `owner/name` from the folder's Git origin, when resolvable.
- */
-repo_identity: string | null, 
-/**
- * Unix epoch milliseconds of the most recent identity probe.
- */
-repo_identity_probed_at: number | null, created_at: number, };
+export type CoveFolder = { id: number, cove_id: CoveId, path: string, created_at: number, };
 
 /**
  * Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the

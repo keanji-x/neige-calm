@@ -1225,9 +1225,10 @@ export interface components {
          *
          *     One row per claimed directory; `path` is absolute and globally
          *     unique across the table. A folder transparently covers every
-         *     descendant path — the kernel resolves a `cwd` to its owning cove
-         *     via longest-prefix matching against this table (see
-         *     `GET /api/coves/resolve`).
+         *     descendant path — the kernel resolves a `cwd` to its owning cove by
+         *     finding the claim that covers it (see `GET /api/coves/resolve`).
+         *     The create endpoint rejects ancestor/descendant overlap with a 409,
+         *     so at most one claim can cover any given path.
          *
          *     `id` is an autoincrement integer rather than the kernel's usual
          *     uuid-shaped TEXT id because cove_folders is a small, kernel-internal
@@ -1243,13 +1244,6 @@ export interface components {
             /** Format: int64 */
             id: number;
             path: string;
-            /** @description Normalized `owner/name` from the folder's Git origin, when resolvable. */
-            repo_identity?: string | null;
-            /**
-             * Format: int64
-             * @description Unix epoch milliseconds of the most recent identity probe.
-             */
-            repo_identity_probed_at?: number | null;
         };
         /**
          * @description Issue #175 — visibility / ownership gate persisted on each cove.
@@ -1690,12 +1684,14 @@ export interface components {
              * @description Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
              *     `cove_id` as a new folder, in the same transaction as the
              *     wave-create write". Default `false`: the cwd must already be
-             *     covered by some existing folder under the same cove (the
-             *     `cove_folder_resolve` longest-prefix match runs at the route
-             *     layer). `true` adds a `cove_folder` row first and then the
-             *     wave; folder-conflict rules (equal/ancestor/descendant of any
-             *     existing claim) still apply and roll the whole tx back on
-             *     conflict.
+             *     covered by some existing folder under the same cove. Both the
+             *     covering scan and the claim insert run inside that one
+             *     transaction (issue #275), through the same
+             *     [`crate::cove_folder_claim::find_owner`] rule
+             *     `GET /api/coves/resolve` uses. `true` adds a `cove_folder` row
+             *     first and then the wave; folder-conflict rules
+             *     (equal/ancestor/descendant of any existing claim) still apply and
+             *     roll the whole tx back on conflict.
              */
             attach_folder?: boolean;
             cove_id: string;
@@ -1883,8 +1879,9 @@ export interface components {
         ResolveQuery: {
             /**
              * @description Absolute filesystem path to resolve against every cove's folder
-             *     claims. Returns the most-specific claim that covers it (longest
-             *     prefix), or `null` if no claim covers the path.
+             *     claims. Returns the claim that covers it, or `null` if no claim
+             *     covers the path. At most one claim can cover a path: the create
+             *     endpoint rejects ancestor/descendant overlap with a 409.
              */
             path: string;
         };
@@ -3146,8 +3143,9 @@ export interface operations {
             query: {
                 /**
                  * @description Absolute filesystem path to resolve against every cove's folder
-                 *     claims. Returns the most-specific claim that covers it (longest
-                 *     prefix), or `null` if no claim covers the path.
+                 *     claims. Returns the claim that covers it, or `null` if no claim
+                 *     covers the path. At most one claim can cover a path: the create
+                 *     endpoint rejects ancestor/descendant overlap with a 409.
                  */
                 path: string;
             };
@@ -3157,7 +3155,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Owning cove + folder, or null when no claim covers the path */
+            /** @description The cove + folder whose claim covers the path, or null when no claim covers it. Overlapping claims are rejected at create time, so at most one claim can match. */
             200: {
                 headers: {
                     [name: string]: unknown;

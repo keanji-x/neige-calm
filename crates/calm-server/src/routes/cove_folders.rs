@@ -3,17 +3,22 @@
 //!
 //! A `cove_folder` claims an absolute filesystem path for a cove and
 //! transparently covers every descendant. Given a `cwd`, the kernel
-//! resolves the owning cove by longest-prefix matching against every
-//! row in the table. Claims are exclusive: a path may be claimed by
-//! at most one cove, and ancestor/descendant overlap is rejected at
-//! create time.
+//! resolves the owning cove by finding the row whose claim covers it.
+//! Claims are exclusive: a path may be claimed by at most one cove, and
+//! ancestor/descendant overlap is rejected at create time — *atomically*,
+//! inside the same `BEGIN IMMEDIATE` transaction as the INSERT — so the
+//! covering row is unique and needs no tiebreak (issue #275).
+//!
+//! The claim rules themselves live in [`calm_truth::cove_folder_claim`]
+//! so this route and the wave-create `attach_folder` path in
+//! [`crate::routes::waves`] cannot drift apart.
 //!
 //! These endpoints sit outside the event-sourced sync domain in PR 1
 //! — folders are operational mapping state, not co-edit content. PR 2+
 //! may revisit if a replication scenario emerges.
 
 use crate::error::{CalmError, ErrorBody, Result};
-use crate::model::{CoveFolder, CoveResolve, FolderConflict, FolderConflictKind, NewCoveFolder};
+use crate::model::{CoveFolder, CoveResolve, FolderConflict, NewCoveFolder};
 use crate::state::{AppState, RouteState};
 use axum::{
     Json, Router,
@@ -22,6 +27,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use calm_truth::cove_folder_claim::CoveFolderClaim;
 use serde::Deserialize;
 use utoipa::{IntoParams, ToSchema};
 
@@ -43,39 +49,9 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-/// Normalize an absolute filesystem path for storage / comparison.
-///
-/// * Trims exactly one trailing slash unless the entire string is the
-///   root `/`.
-/// * Does **not** validate that the path starts with `/` — that's a
-///   separate concern surfaced as a 400 in the handler so the wire
-///   error code is precise.
-pub(crate) fn normalize_path(raw: &str) -> String {
-    if raw == "/" {
-        return "/".to_string();
-    }
-    if let Some(stripped) = raw.strip_suffix('/') {
-        return stripped.to_string();
-    }
-    raw.to_string()
-}
-
-/// True when `candidate` is a descendant of `parent` (or equal).
-/// Implementation: `parent == candidate` OR `candidate` starts with
-/// `parent + "/"`. The `+ "/"` guard prevents `/abc` from matching
-/// against parent `/ab`.
-pub(crate) fn is_descendant_of(parent: &str, candidate: &str) -> bool {
-    if parent == candidate {
-        return true;
-    }
-    // Root `/` is a special case — every absolute path is a descendant
-    // of it, but naive `candidate.starts_with("/")` is trivially true,
-    // so the join below would still produce `"//..."`. Handle directly.
-    if parent == "/" {
-        return candidate.starts_with('/');
-    }
-    candidate.starts_with(&format!("{parent}/"))
-}
+// Path/overlap vocabulary is owned by calm-truth so the repo's atomic
+// writer and both HTTP resolvers share one definition (#275).
+pub(crate) use calm_truth::cove_folder_claim::{find_owner, is_descendant_of, normalize_path};
 
 // ---------------------------------------------------------------------------
 // GET /api/coves/:cove_id/folders
@@ -129,34 +105,23 @@ pub(crate) async fn create_folder(
     }
     let normalized = normalize_path(&body.path);
 
-    // Conflict detection: scan every existing folder and classify any
-    // overlap. The expected table size is tiny (handful of folders
-    // per workspace at most) so an in-memory pass keeps the SQL simple
-    // and avoids LIKE-pattern subtleties around `_` / `%` in user paths.
-    let existing = s.repo.cove_folders_list_all().await?;
-    for f in &existing {
-        let conflict_kind = if f.path == normalized {
-            Some(FolderConflictKind::Equal)
-        } else if is_descendant_of(&normalized, &f.path) {
-            Some(FolderConflictKind::Ancestor)
-        } else if is_descendant_of(&f.path, &normalized) {
-            Some(FolderConflictKind::Descendant)
-        } else {
-            None
-        };
-        if let Some(kind) = conflict_kind {
-            let body = FolderConflict {
-                folder_id: f.id,
-                cove_id: f.cove_id.clone(),
-                conflict_path: f.path.clone(),
-                conflict_kind: kind,
-            };
-            return Ok((StatusCode::CONFLICT, Json(body)).into_response());
-        }
+    // Conflict detection + INSERT are ONE atomic step inside the repo
+    // (#275). Doing the scan here and the insert there would put them on
+    // two different pooled connections, and `UNIQUE(cove_folders.path)`
+    // only rejects an *equal* path — so concurrent `/a` and `/a/b`
+    // claims would both commit and leave two rows covering `/a/b/c`.
+    //
+    // The scan itself is still an in-memory pass over the whole table:
+    // it is tiny (a handful of folders per workspace) and that keeps the
+    // SQL free of LIKE-pattern subtleties around `_` / `%` in user paths.
+    match s
+        .repo
+        .cove_folder_create_checked(&cove_id, &normalized)
+        .await?
+    {
+        CoveFolderClaim::Conflict(body) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
+        CoveFolderClaim::Created(folder) => Ok((StatusCode::CREATED, Json(folder)).into_response()),
     }
-
-    let folder = s.repo.cove_folder_create(&cove_id, &normalized).await?;
-    Ok((StatusCode::CREATED, Json(folder)).into_response())
 }
 
 // ---------------------------------------------------------------------------
@@ -199,8 +164,9 @@ pub(crate) async fn delete_folder(
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct ResolveQuery {
     /// Absolute filesystem path to resolve against every cove's folder
-    /// claims. Returns the most-specific claim that covers it (longest
-    /// prefix), or `null` if no claim covers the path.
+    /// claims. Returns the claim that covers it, or `null` if no claim
+    /// covers the path. At most one claim can cover a path: the create
+    /// endpoint rejects ancestor/descendant overlap with a 409.
     pub path: String,
 }
 
@@ -210,7 +176,7 @@ pub struct ResolveQuery {
     tag = "cove_folders",
     params(ResolveQuery),
     responses(
-        (status = 200, description = "Owning cove + folder, or null when no claim covers the path", body = Option<CoveResolve>),
+        (status = 200, description = "The cove + folder whose claim covers the path, or null when no claim covers it. Overlapping claims are rejected at create time, so at most one claim can match.", body = Option<CoveResolve>),
         (status = 400, description = "Path is not absolute", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -227,12 +193,12 @@ pub(crate) async fn resolve_path(
     }
     let normalized = normalize_path(&q.path);
     let folders = s.repo.cove_folders_list_all().await?;
-    // Longest-prefix match: keep the folder whose `path` is an ancestor
-    // (or equal to) the query AND has the longest `path` among matches.
-    let best = folders
-        .into_iter()
-        .filter(|f| is_descendant_of(&f.path, &normalized))
-        .max_by_key(|f| f.path.len());
+    // `cove_folder_create_checked` rejects ancestor/descendant overlap
+    // atomically, so at most one row can be an ancestor of (or equal to)
+    // the query. `find_owner` is therefore a uniqueness oracle and needs
+    // no tiebreak — and it is the *same* function the wave-create owner
+    // scan calls, so the two resolvers cannot disagree (issue #275).
+    let best = find_owner(&folders, &normalized).cloned();
     Ok(Json(best.map(|f| CoveResolve {
         cove_id: f.cove_id,
         folder_id: f.id,
@@ -240,34 +206,5 @@ pub(crate) async fn resolve_path(
     })))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn normalize_trims_trailing_slash() {
-        assert_eq!(normalize_path("/a/b/"), "/a/b");
-        assert_eq!(normalize_path("/a/b"), "/a/b");
-    }
-
-    #[test]
-    fn normalize_preserves_root() {
-        assert_eq!(normalize_path("/"), "/");
-    }
-
-    #[test]
-    fn descendant_match_basics() {
-        assert!(is_descendant_of("/a", "/a"));
-        assert!(is_descendant_of("/a", "/a/b"));
-        assert!(is_descendant_of("/a", "/a/b/c"));
-        assert!(!is_descendant_of("/a", "/ab"));
-        assert!(!is_descendant_of("/a", "/b"));
-    }
-
-    #[test]
-    fn descendant_root_special_case() {
-        assert!(is_descendant_of("/", "/"));
-        assert!(is_descendant_of("/", "/a"));
-        assert!(is_descendant_of("/", "/a/b/c"));
-    }
-}
+// `normalize_path` / `is_descendant_of` / `find_owner` unit tests live
+// next to their definitions in `calm_truth::cove_folder_claim`.
