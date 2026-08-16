@@ -937,8 +937,22 @@ async fn create_wave_structure(
                                 conflict_kind: FolderConflictKind::Descendant,
                             }));
                         }
-                        // Same cove already covers it — silently ignore
-                        // `attach_folder`, create the wave only.
+                        // Same cove already covers it — `attach_folder` is a
+                        // no-op, create the wave only.
+                        //
+                        // #275 behavior change. Before this fix the insert
+                        // ran unconditionally on the scan result, so this
+                        // arm fell through into `cove_folder_create_tx`:
+                        //   - cwd == the existing claim → UNIQUE(path) →
+                        //     409 for re-claiming your own folder;
+                        //   - cwd under the existing claim → a second,
+                        //     overlapping row, minted from plain HTTP with
+                        //     no concurrency at all.
+                        // The latter is the larger hole in the "at most one
+                        // claim covers any path" invariant — bigger and far
+                        // easier to reach than the scan/insert TOCTOU.
+                        // Pinned by `post_api_waves_attach_folder_*` in
+                        // `tests/cases/wave_cwd_terminal_at.rs`.
                         Some(_) => {}
                         None if *attach => {
                             // No claim covers the cwd and the caller wants

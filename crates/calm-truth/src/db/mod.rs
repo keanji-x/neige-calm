@@ -310,10 +310,9 @@ pub trait RepoRead: Send + Sync + 'static {
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>>;
     /// Issue #250 PR 1 — every folder across every cove, `ORDER BY path
     /// ASC`. Used by the resolve endpoint to find the covering claim
-    /// application-side
-    /// (SQLite has no native prefix function fast enough to outweigh
-    /// a Rust-side O(N) scan at the table sizes we expect — folders are
-    /// minted manually by users, not auto-discovered).
+    /// application-side (SQLite has no native prefix function fast enough
+    /// to outweigh a Rust-side O(N) scan at the table sizes we expect —
+    /// folders are minted manually by users, not auto-discovered).
     async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>>;
     /// Issue #250 PR 1 — single-row fetch for the DELETE handler's
     /// existence check.
@@ -1058,6 +1057,18 @@ pub trait RepoOutOfDomain: RepoRead {
     /// the structured 409 body; a missing `cove_id` is still `Err(NotFound)`.
     /// The transaction does nothing but two SQL statements — no I/O — so
     /// the writer-lock window stays as short as the plain INSERT's.
+    ///
+    /// # Precondition
+    ///
+    /// `path` MUST already be normalized — i.e. the output of
+    /// [`crate::cove_folder_claim::normalize_path`]. The overlap
+    /// classification is pure string comparison: `Equal` is `f.path ==
+    /// path` and the ancestor/descendant arms are prefix tests. A
+    /// non-normalized input (trailing slash, `.`/`..` segments) is
+    /// silently *mis*classified rather than rejected — `"/a/b/"` against a
+    /// stored `"/a/b"` compares unequal, skips `Equal`, and falls into the
+    /// descendant arm — so normalizing is the caller's job, not this
+    /// method's. Debug builds assert it.
     async fn cove_folder_create_checked(
         &self,
         cove_id: &str,

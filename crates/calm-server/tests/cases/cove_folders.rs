@@ -400,6 +400,21 @@ async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
     let claim = tokio::spawn(async move { repo_b.cove_folder_create_checked(&cove_b, "/a").await });
 
     // Let B get as far as it can, then release the lock.
+    //
+    // The sleep is load-bearing ONLY for the mutant. The green path does
+    // not depend on it: `cove_folder_create_checked` takes the writer lock
+    // *before* its scan, so however this sleep is scheduled, B's SELECT can
+    // only run after this commit and must see `/a/b`. (No leak either way —
+    // `busy_timeout=5000` plus `begin_immediate_tx`'s ~560 ms retry backoff
+    // leave ample headroom over these 150 ms.) The sleep exists so that a
+    // *non-atomic* implementation — scan on one pooled connection, insert on
+    // another — reliably lands on the wrong side of the race: it gets its
+    // pre-commit empty-table snapshot in, then inserts `/a` once the lock
+    // frees. Without the pause the mutant would sometimes serialize by luck
+    // and the test would pass against a broken implementation. There is no
+    // deterministic barrier available here: B blocks inside SQLite's own
+    // lock acquisition, which exposes no observable "now waiting" edge
+    // without adding a test-only hook to production code.
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     tx.commit().await.unwrap();
 

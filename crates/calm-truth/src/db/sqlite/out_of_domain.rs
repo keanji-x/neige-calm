@@ -621,6 +621,14 @@ impl RepoOutOfDomain for SqlxRepo {
         cove_id: &str,
         path: &str,
     ) -> Result<CoveFolderClaim> {
+        // Precondition (see the trait doc): `path` is already normalized.
+        // `classify_conflict` is pure string comparison, so a trailing
+        // slash would silently *mis*classify rather than error out.
+        debug_assert_eq!(
+            path,
+            crate::cove_folder_claim::normalize_path(path),
+            "cove_folder_create_checked requires a normalized path; got `{path}`"
+        );
         // #275 — BEGIN IMMEDIATE takes the writer lock *before* the scan,
         // so the SELECT and the INSERT are one atomic step. Without it the
         // scan and the insert land on two different pooled connections and

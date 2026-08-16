@@ -239,6 +239,123 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
     assert_eq!(waves[0].cwd, "/srv/projects/alpha");
 }
 
+/// Issue #275 — the cove already claims *exactly* this cwd and the caller
+/// still sets `attach_folder = true`. The claim scan finds the same cove as
+/// the owner, so `attach_folder` is silently ignored and no second row is
+/// minted.
+///
+/// BEHAVIOR CHANGE (deliberate). Before this fix the in-tx insert ran
+/// unconditionally on the scan result: it re-inserted `/workspace`, hit
+/// `UNIQUE(cove_folders.path)`, and the whole request 409'd. A caller
+/// re-posting the folder it already owns is not a conflict, so 201 is the
+/// correct answer. This test pins the new outcome.
+#[tokio::test]
+async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() {
+    let boot = boot().await;
+
+    boot.repo
+        .cove_folder_create(&boot.cove_id, "/workspace")
+        .await
+        .unwrap();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-reclaim-exact",
+            "cwd": "/workspace",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    // The invariant this test defends: re-claiming your own folder is
+    // NOT a conflict. (Stub daemon may still 500 post-commit.)
+    assert_ne!(
+        status,
+        StatusCode::CONFLICT,
+        "re-claiming the cove's own folder must not 409; body={body}"
+    );
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
+    );
+
+    // Exactly one claim row — no duplicate `/workspace`.
+    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(
+        folders.len(),
+        1,
+        "attach_folder on an already-owned exact path must not mint a second row; got {:?}",
+        folders.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert_eq!(folders[0].path, "/workspace");
+
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 1, "the wave must have landed");
+    assert_eq!(waves[0].cwd, "/workspace");
+}
+
+/// Issue #275 — the cove claims `/a` and the caller posts `cwd: "/a/b"`
+/// with `attach_folder = true`. The scan finds the same cove already
+/// covering the cwd, so nothing is minted.
+///
+/// BEHAVIOR CHANGE (deliberate), and the important one: before this fix
+/// the in-tx insert ran unconditionally on the scan result, so this
+/// request created `/a/b` alongside the existing `/a` — two rows that both
+/// cover `/a/b/...`. That is precisely the overlapping-claim corruption
+/// `cove_folders.rs::resolve_and_wave_create_agree_on_overlapping_rows`
+/// has to seed through the raw repo primitive to reproduce; this arm
+/// handed it to any caller over plain HTTP, single-threaded, with no
+/// concurrency at all. It was the larger of the two holes in the overlap
+/// invariant (the other being the scan/insert TOCTOU).
+#[tokio::test]
+async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
+    let boot = boot().await;
+
+    boot.repo
+        .cove_folder_create(&boot.cove_id, "/a")
+        .await
+        .unwrap();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-reclaim-descendant",
+            "cwd": "/a/b",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::CONFLICT,
+        "a cwd already covered by this cove's own claim must not 409; body={body}"
+    );
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
+    );
+
+    // The overlapping row must NOT exist. `/a` alone still covers `/a/b`.
+    let folders = boot.repo.cove_folders_list_all().await.unwrap();
+    let paths: Vec<&str> = folders.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["/a"],
+        "attach_folder must not mint `/a/b` under a cove that already claims `/a` — \
+         two rows covering the same subtree is the corrupt state #275 exists to prevent"
+    );
+
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 1, "the wave must have landed");
+    assert_eq!(waves[0].cwd, "/a/b");
+}
+
 /// `attach_folder = false` with an unclaimed cwd is refused (409) —
 /// otherwise the wave would be orphaned (no cove resolves it).
 #[tokio::test]
@@ -905,6 +1022,15 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
         }),
     )
     .await;
+    // The contract under test is "not a 409" — the two resolvers agree, so
+    // the owner scan must not refuse the cove the resolver just named. The
+    // 201-or-500 tolerance below is only the file's stub-daemon convention.
+    assert_ne!(
+        status,
+        StatusCode::CONFLICT,
+        "wave create must not refuse the cove `/api/coves/resolve` named for this cwd; \
+         body={body}"
+    );
     assert!(
         status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
         "wave create must accept the cove `/api/coves/resolve` named for this cwd; \
