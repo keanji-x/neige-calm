@@ -22,7 +22,7 @@ import {
   toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
 import type { CardHost, CardRegistry } from '../../systems/cards/public.js';
-import { partitionWaveCards } from '../../systems/cards/public.js';
+import { isSpecHarnessPayload, partitionWaveCards } from '../../systems/cards/public.js';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
@@ -1332,9 +1332,7 @@ function WaveRoute({ transport, unauthorized, cardRegistry }: {
     enabled: waveId !== undefined,
   });
   const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
-    && card.kind === 'codex'
-    && typeof card.payload === 'object' && card.payload !== null
-    && (card.payload as { spec_harness?: unknown }).spec_harness === true);
+    && card.kind === 'codex' && isSpecHarnessPayload(card.payload));
   const detailMatchesRoute = waveId !== undefined && detail.data?.wave.id === waveId;
   useEffect(() => {
     if (registry.requestedOpenId === null || detail.isLoading || detail.isFetching) return;
@@ -1378,9 +1376,10 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRegistr
   const go = useGo();
   // `showWave: false` — on a wave's own page the wave's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
-  const specCard = cards.find((card) => card.kind === 'codex' &&
-    typeof card.payload === 'object' && card.payload !== null &&
-    (card.payload as { spec_harness?: unknown }).spec_harness === true);
+  // The same predicate the spec entry resolves by (`INV-CARD-182`), imported
+  // rather than copied: hiding the card from CARDS and giving it a drawer are
+  // one decision, and two hand-written copies would drift apart silently.
+  const specCard = cards.find((card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload));
   const chat = useConversationPanel(
     transport,
     unauthorized,

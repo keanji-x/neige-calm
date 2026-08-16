@@ -235,7 +235,9 @@ split_owners:
 #    它是跨切面 a11y 政策，实现散落在 features/wave/row 与 ui/editable-title。
 #    候选: (a) ui/activation（新建横切 slice）；(b) none/policy/a11y-doc（当政策文档处理）。
 #
-# 6. "cards/report" (1 条，INV-CARD-226 excludeReportCards)
-#    临时归属: features/report/exclude-cards
-#    代码住在 web/src/cards/ 但语义完全是 report 的。
-#    候选: (a) features/report/exclude-cards；(b) systems/cards/registry。
+# 6. "cards/report" (1 条，INV-CARD-226 excludeReportCards) —— 已定案 (#1091 S1)
+#    归属: systems/cards/builtins（runtime_layer=systems），不再是临时。
+#    原临时归属 features/report/exclude-cards 出自 legacy 代码位置 web/src/cards/；
+#    S1 把过滤实现落在 systems/cards/builtins/headless-filter.ts，与 spec /
+#    wave-report 两个 entry 同住，谓词也是 entry 自己的，语义因此归 cards 而非 report。
+#    同批把 INV-CARD-181/182/201 一并收敛到同一 owner_slice。

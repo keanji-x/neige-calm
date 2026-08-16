@@ -1070,10 +1070,12 @@
     "expected_red": [
       "headless card filtering [INV-CARD-226] binds originalIndex before filtering, so surviving cards still address the wire array",
       "headless card filtering [INV-CARD-226] filters raw wave-report kinds out of the unknown branch defensively",
-      "headless card filtering routes cards with a surface into the visible branch with their wire and index"
+      "headless card filtering routes cards with a surface into the visible branch with their wire and index",
+      "wave route CARDS panel [INV-CARD-226] renders exactly the surviving cards in the kernel wire order"
     ],
     "selection_paths": [
-      "web/src/systems/cards/builtins/headless-filter.test.ts"
+      "web/src/systems/cards/builtins/headless-filter.test.ts",
+      "web/src/app/router/wave-cards-panel.test.tsx"
     ],
     "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card; nothing else should notice."
   }

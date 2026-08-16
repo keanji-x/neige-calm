@@ -3301,13 +3301,13 @@
     spec harness 不是用户可见面板，只是让 wave 知道有这个 agent 存在；
     有 UI 会在网格里占位
   source: web/src/cards/builtins/spec.tsx:43-51
-  authoritative_test: NONE
-  owner_slice: features/spec/card
+  authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:42,48
+  owner_slice: systems/cards/builtins
   intentional_omission: true
-  runtime_layer: features
-  verification_owner: e2e
-  test_tier: browser
-  migration: pending
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
 
 - id: INV-CARD-182
   kind: invariant
@@ -3319,9 +3319,9 @@
     kernel kind 是 'codex'；判别符是唯一区分点。加别的条件会让部分 spec 卡漏判
   source: web/src/cards/builtins/spec.tsx:33-41,55
   authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:11,19,28,37
-  owner_slice: features/spec/card
+  owner_slice: systems/cards/builtins
   intentional_omission: false
-  runtime_layer: features
+  runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
@@ -3339,9 +3339,13 @@
   owner_slice: features/spec/card
   intentional_omission: false
   runtime_layer: features
-  verification_owner: unit
+  verification_owner: null
   test_tier: jsdom
-  migration: pending
+  migration: skipped
+  skip_reason: >
+    前提已为假：spec 已被 `INV-CARD-226` 过滤出 CARDS 与 grid，不再出现在任何清单里，
+    该 accessible name 没有消费者；生产 entry 取 `accessibleName: () => 'Spec harness'`。
+    若将来 spec 重新获得可见行，须重开本条并连同措辞一起重定
 
 # ─────────────────────────────────────────────────────────────────────
 # family: card-kind-iframe
@@ -3656,10 +3660,10 @@
   why: >
     issue #229 PR B —— 每个 wave 只有一张，内容由报告视图渲染，网格里不占面板
   source: web/src/cards/builtins/wave-report.tsx:213-221
-  authoritative_test: fe/web/src/systems/cards/builtins/wave-report.test.ts:8,18
-  owner_slice: features/report/card
+  authoritative_test: fe/web/src/systems/cards/builtins/wave-report.test.ts:8,18,24
+  owner_slice: systems/cards/builtins
   intentional_omission: true
-  runtime_layer: features
+  runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
   migration: migrated
@@ -4088,9 +4092,13 @@
   owner_slice: systems/cards/builtins
   intentional_omission: false
   runtime_layer: systems
-  verification_owner: unit
+  verification_owner: null
   test_tier: jsdom
-  migration: pending
+  migration: skipped
+  skip_reason: >
+    模块级 `registered` 布尔守卫与 `no-module-runtime-state` 冲突，生产 TS 不允许；
+    registry 已改为 factory 实例持有可变 Map，重复注册同一 type 直接覆盖，
+    幂等性由实例本身提供，不需要也不得再加模块级一次性守卫
 
 - id: INV-CARD-225
   kind: invariant
@@ -4122,10 +4130,10 @@
     spec 的 kernel kind 是 'codex' + spec_harness，没有 payload 就无法在
     unknown 分支识别 —— 这是已知且接受的缺口
   source: web/src/cards/excludeReportCards.ts:8-24
-  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75
-  owner_slice: features/report/exclude-cards
+  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75 fe/web/src/app/router/wave-cards-panel.test.tsx:116,128,137,142,149
+  owner_slice: systems/cards/builtins
   intentional_omission: true
-  runtime_layer: features
+  runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
   migration: migrated

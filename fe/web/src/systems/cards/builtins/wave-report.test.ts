@@ -10,9 +10,15 @@ describe('wave-report card entry', () => {
     expect(WAVE_REPORT_CARD_ENTRY.create).toEqual({ mode: 'kernel-minted-only' });
     // `generic`, `atomic` and `catalog` are the three strategies that put a
     // card behind a user-facing add action; kernel-minted-only is the absence
-    // of one, which is what "no addPanel entry" means at this layer.
-    expect(WAVE_REPORT_CARD_ENTRY.create?.mode).not.toBe('generic');
+    // of one, which is what "no addPanel entry" means at this layer, and the
+    // deep equality above already excludes all three.
     expect(WAVE_REPORT_CARD_ENTRY.defaultSize).toEqual({ w: 1, h: 1, minW: 1, minH: 1 });
+  });
+
+  it('[INV-CARD-201] takes no claim, so it stays on the insertion-ordered fallback scan', () => {
+    // Same standard as the sister headless entry `spec`: every builtin resolves
+    // through `fromKernel` so one scan order decides every shared kernel kind.
+    expect(WAVE_REPORT_CARD_ENTRY.claim).toBeUndefined();
   });
 
   it('[INV-CARD-201] resolves the wave-report kernel kind and nothing else', () => {

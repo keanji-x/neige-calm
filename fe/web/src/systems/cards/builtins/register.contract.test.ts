@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardEntry } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
+import { HEADLESS_CARD_TYPES } from './headless-filter.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
@@ -81,6 +82,61 @@ describe('builtin card composition contract', () => {
       registry.resolve({ id: 'codex', kind: 'codex', payload: {} })?.type,
       'ordinary codex payload must resolve through codex before the shared-kind spec fallback',
     ).toBe('boot-codex');
+  });
+
+  /*
+   * `HEADLESS_CARD_TYPES` is a hand-written list, and being wrong either way
+   * deletes cards from the product: a missing member puts a card that renders
+   * nothing into the CARDS list and the grid; a spurious member deletes every
+   * card of that type from both the moment its entry lands. Neither direction
+   * has a type-level guard, so this pins the list against the *observable*
+   * fact — what the production entries actually are — rather than against a
+   * copy of itself.
+   */
+  describe('headless classification is set-equal to the registry', () => {
+    const bootedProductionRegistry = () => {
+      const registry = createCardRegistry();
+      registerAvailableBuiltinCards(registry);
+      return registry;
+    };
+    // Headless is observable, not declared: no surface and the 1x1 placeholder
+    // size. An entry that renders something is not headless whatever the list says.
+    const rendersNothing = (entry: CardEntry) =>
+      (entry.component as unknown as (props: unknown) => unknown)({}) === null;
+    const isOneByOne = (entry: CardEntry) => entry.defaultSize.w === 1 && entry.defaultSize.h === 1
+      && entry.defaultSize.minW === 1 && entry.defaultSize.minH === 1;
+
+    it('[INV-CARD-226] classifies every registered entry by what it observably is', () => {
+      const entries = bootedProductionRegistry().entries();
+      expect(entries.length).toBeGreaterThan(0);
+      for (const entry of entries) {
+        const declaredHeadless = (HEADLESS_CARD_TYPES as readonly string[]).includes(entry.type);
+        const observablyHeadless = rendersNothing(entry) && isOneByOne(entry);
+        expect(
+          declaredHeadless,
+          declaredHeadless
+            ? `${entry.type} is listed headless but renders a surface — it would vanish from the wave`
+            : `${entry.type} renders nothing at 1x1 but is not listed headless — it would occupy an empty slot`,
+        ).toBe(observablyHeadless);
+      }
+    });
+
+    it('[INV-CARD-226] names only types that are really registered, so no member sits inert', () => {
+      // The failure this catches: a type added to the list before its entry
+      // exists resolves to `null`, never reaches the headless branch, and every
+      // test stays green — right up until the entry lands and the card
+      // disappears from the product.
+      const registered = new Set(bootedProductionRegistry().entries().map((entry) => entry.type));
+      for (const type of HEADLESS_CARD_TYPES) {
+        expect(registered.has(type), `${type} is listed headless but no builtin registers it`).toBe(true);
+      }
+    });
+
+    it('[INV-CARD-225] names only types the order tuple knows about', () => {
+      for (const type of HEADLESS_CARD_TYPES) {
+        expect((BUILTIN_CARD_ORDER as readonly string[]).includes(type), `${type} is not a builtin`).toBe(true);
+      }
+    });
   });
 
   it('takes no entries and keeps no state: two registries boot independently', () => {
