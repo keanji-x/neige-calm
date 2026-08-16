@@ -599,3 +599,121 @@ AssertionError: spec must state its headlessness explicitly; absent is the fail-
 
 **后续（本轮不做）**：真正的根因是每个 case 都新建 ESLint 实例（冷启动 2090ms vs 复用后约 300ms）；
 复用单个 ESLint 实例可大幅提速整个文件，属 oracle/architecture 工具链，另开 issue。
+
+---
+
+## Rebase 到 `a541329e`（#1098 切片 4）+ plain_chat 交互重查
+
+基线从 `57115651` 移到 `a541329e`（`feat(#1098) 切片 4：cove 对话前端接线`）。9 条提交全部重放，
+新 HEAD `eecd2f56`。
+
+### 1. 冲突逐条
+
+只有 **1 处**真冲突，在重放第 1 条（`3556700c`）的 `fe/web/src/app/router/public.tsx`：
+
+- **冲突点**：双方都在同一个 `/**` 之后插入内容。切片 4 在 `SpecConversationScope` 之下新增了
+  `ConversationPanelSource` / `OpenTarget` / `ConversationDraft` / `DraftEdit` 四个类型及其文档；
+  本片在同一位置新增了 `CardRuntime` 的文档 + 类型。git 只能看到"同一个 `/**` 开头，两种续写"。
+- **解法**：保留双方——先切片 4 的四个类型（含完整注释），再补一个独立的 `/**` 开头接上本片的
+  `CardRuntime` 文档与 `export type CardRuntime`。没有任何一侧被丢弃或改写。
+- 其余 7 处改动（`AppRouterDeps.cards`、`createRouteTree` 解构、`waveRoute` 的
+  `cardRegistry={cards.registry}`、`WaveRoute`/`WaveRouteBody` 签名、`panelCards` memo、
+  `cards={panelCards}`）由 git 自动合并，落点正确。
+
+`public.contract.test.tsx`、`spec-conversation.test.tsx`、`fe/tools/mutation/manifest.json`
+**自动合并无冲突**（第 1、2 条提交各自 auto-merge）。后 7 条提交（评审轮次）零冲突。
+
+**两处 `isSpecHarnessPayload` 谓词**：第 1 条提交本来就还是内联谓词（`git show 3556700c -- public.tsx`
+里没有 `isSpecHarnessPayload`），是后续评审轮才换的共享函数；rebase 后终态两处都是共享函数，
+`grep -rn spec_harness fe/web/src` 生产代码零手抄副本（只剩 `builtins/spec.ts` 这一处定义 + 测试夹具）。
+
+### 2. 并集机器校验
+
+**方向 A —— 本片 28 个文件的改动一条不少**
+
+- `git diff origin/main..HEAD --name-only` 与 `git diff 57115651..e09d2618 --name-only`
+  逐行 `diff` → **完全一致，28 个文件**。
+- 对 28 个文件逐个做 diff-of-diff（去掉 `diff --git` 头两行后比较）：**26 个字节级完全相同**，
+  2 个有差异，逐条说明：
+  - `fe/tools/mutation/manifest.json`：唯一差异是 hunk 头
+    `@@ -1039,5 +1039,24 @@` → `@@ -1059,5 +1059,24 @@`。原因：切片 4 之前的 main
+    把 3 条已有条目改长了 20 行，追加点后移。**内容零差异**，属重放位移，非丢失。
+  - `fe/web/src/app/router/public.tsx`：差异全部是 hunk 头行号/上下文标签
+    （`@@ -277,…` → `@@ -411,…` 等 7 处），外加 import hunk 里多出一行**上下文**
+    `import { mintIdempotencyKey } from './idempotency-key.ts';`（切片 4 的行，作为 context 出现）。
+    `+`/`-` 行**逐字节相同**。属冲突解决/位移，非丢失。
+
+**方向 B —— 切片 4 的改动完整在树里**
+
+- 由方向 A 反推即成立：`origin/main..HEAD` 的逐文件 diff 与本片原始 diff 内容全等，
+  说明 HEAD = `a541329e` + 恰好本片那些增删，`a541329e` 里任何未被本片碰过的行都原样保留。
+- 交集 4 文件里 `public.tsx` 单独复核：切片 4 的
+  `ConversationPanelSource`/`OpenTarget`/`ConversationDraft`/`DraftEdit`、
+  `'rows'` intent、`kind:'elsewhere'|'card'` 的 `useConversationPanel` 调用、
+  `coveConversationCardId`/`coveConversationsQueryOptions` 接线全部在。
+- `git diff a541329e..HEAD -- fe/tools/mutation/manifest.json` 是**纯追加**：只多出本片
+  `cards-headless-filter-display-index` 一条。
+- manifest 条目集合校验（按 `mutation_id`）：`57115651` 65 条，`a541329e` 65 条
+  （切片 4 **没有**新增条目，只改了 3 条已有条目的正文），`e09d2618` 66 条，HEAD **66** 条；
+  `HEAD == main ∪ 本片新增`，缺失 0、多出 0。**双方条目都在**。
+- 全树 `grep -rn '<<<<<<<|>>>>>>>' fe/web/src fe/tools` → 无残留标记。
+
+### 3. plain_chat 交互重查（R6 BLOCKER 复审）
+
+**结论：不阻断 S1。**理由不再依赖"fe 侧没有 cove 通路"（该前提确已失效），而是三条独立的事实。
+
+**(1) plain_chat 卡走不到任何产品内的 `partitionWaveCards` 调用点。**
+`partitionWaveCards` 只有一个消费者：`fe/web/src/app/router/public.tsx:1415`，在 `WaveRouteBody` 内，
+只在 `/wave/$waveId` 渲染时执行。plain_chat 卡挂在 cove 的隐藏 chat wave 上
+（`crates/calm-server/src/routes/cove_conversations.rs:5`、`routes/waves.rs:819-886`，
+`purpose = 'cove-chat'`）。能产生 wave id 并 `go({name:'wave'})` 的产品入口有 6 个，
+其中 4 个的 id 来自被服务端过滤掉 chat wave 的列表
+（`crates/calm-server/src/routes/waves.rs:382-387` `user_visible_wave`，用于
+`list_waves_by_cove:368` 与 `list_waves_window:455`）：
+`public.tsx:1134`（Today）、`public.tsx:1282`（CovePage）、
+`fe/web/src/app/shell/sidebar.tsx:403,474`（侧栏），外加 `public.tsx:1230`（新建 wave 的 POST 响应，
+用户建的 wave 永远没有 purpose）。
+剩下两个理论入口都到不了 chat wave：
+- **backlinks**（`public.tsx:1464` ← `src_wave_id`，服务端 `routes/waves.rs:1891` 不过滤 purpose）：
+  backlink 源必须是某个 wave 的 `wave-report` 卡正文里的 `neige://wave/<id>` 链接。
+  chat wave 的 report 卡永远是空的 —— plain_chat 线程以 `ThreadConfig::NoMcp` 启动
+  （`crates/calm-server/tests/spec_harness_adapters.rs:737-780`），agent 拿不到任何 neige 工具，
+  写不了 report block；UI 也没有任何入口能打开 chat wave 去手写。空 report ⇒ 永不成为 backlink 源。
+- **别的 wave 的 report 里引用 chat wave id**：agent 侧没有任何列 wave 的工具或路由能吐出 chat wave id
+  （`waves_by_cove` 的非路由调用点只有 `report_backlinks.rs:142`、`routes/coves.rs:317` 删除 cove、
+  `cove_conversations.rs:541`，都不面向 agent）。
+剩下的只有**手敲/粘贴 URL**，那不是产品路径。
+
+**(2) cove 对话列表走服务端 `'rows'`，不读 wave detail 的 cards。**
+`public.tsx:1179` 用 `coveConversationsQueryOptions`（`app/providers/queries.ts:116-124`，
+`GET /api/coves/{id}/conversations`），`public.tsx:1186-1199` 以 `kind:'rows'` 喂 panel。
+`ConversationListIntent` 的注释（`public.tsx:95-101`）明说 `'rows'` 时不查 registry。
+切片 4 还专门装了两道闸：`public.tsx:214-233`（服务端列出的行**永不** `registry.remember`，
+注释直接点名"否则 Today 会把用户带进隐藏 wave，这一道就是全部防御"）与
+`public.tsx:970-979`（`'rows'` 路由打开行只开抽屉，不导航）。
+
+**(3) 没有新界面把 plain_chat 卡当普通卡渲染 —— 且 S1 对它零改变。**
+今天注册的 built-in 只有 `spec` 和 `wave-report`（`systems/cards/builtins/register.ts:170-173`），
+没有 `codex` adapter，所以 plain_chat 卡 `registry.resolve` 返回 null，落 `unknown` 分支
+（`builtins/headless-filter.ts:91-93`）。而 CARDS 面板就是一个标题清单
+（`features/wave/page/public.tsx:148-158`）。**S1 之前** `cards={cards}` 传的是全量 wire，
+plain_chat 卡本来就会作为一行出现；**S1 之后** `cards={panelCards}` = visible+unknown 按
+`originalIndex` 复原，plain_chat 仍在 unknown 里，**同一行、同一位置**。S1 只**移除**了 spec 与
+wave-report 两行。也就是说：即使有人手敲 URL 进了 chat wave，看到的东西 S1 前后完全一致 ——
+本片没有为 plain_chat 增加任何曝光面。
+
+**(4) `isSpecHarnessPayload` 在新结构下仍只命中真 spec。**
+定义在 `systems/cards/builtins/spec.ts:25-27`，判据是 `payload.spec_harness === true`。
+plain_chat 卡的 payload 是 `{"schemaVersion":1,"harness_profile":"plain_chat"}`
+（`crates/calm-server/src/operation/spec_harness_start_adapter.rs:490`），**没有** `spec_harness` 键 ⇒ false。
+两者互斥还有服务端背书：chat wave 上的 Spec 角色被显式 403
+（`crates/calm-server/src/routes/cards.rs:1252-1257`），
+且 cove 会话列表的判据是 `harness_profile = 'plain_chat'`
+（`crates/calm-server/src/routes/cove_conversations.rs:601`），与 `spec_harness` 正交。
+切片 4 重构后的两个调用点 `public.tsx:1335`（`requestedCard`）与 `public.tsx:1382`（`specCard`）
+仍是共享函数，未退回手抄谓词。
+
+**留给 orchestrator 的一条观察（非 S1 阻断项，属 #1098）**：
+`GET /api/waves/{id}` 不做 `user_visible_wave` 过滤，且 wave detail wire 不带 `purpose`
+（`fe/core/domain/wave.ts:22-33`），所以前端即使想拦也拦不住 —— 手敲 chat wave 的 URL 能渲染出
+标题为 "Cove chat" 的 wave 页。这是 #1098 的边界，S1 前后行为一致。
