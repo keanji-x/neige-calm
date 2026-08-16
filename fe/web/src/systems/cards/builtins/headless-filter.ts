@@ -35,10 +35,13 @@ declare module '../registry.js' {
      * unknown slot.
      *
      * Built-ins do not get to rely on that default: `builtins/register.ts`
-     * registers them through a helper that requires the member, so a missing
-     * declaration on a production entry is a typecheck error there. A
+     * registers them through a factory that requires the member, and its
+     * registrar map accepts only that factory's nominal result — so both a
+     * missing declaration and a registrar that skips the factory are typecheck
+     * errors there (an explicit `as unknown as` assertion is not covered). A
      * mis-declared `true` still compiles and deletes every card of that type,
-     * so the registry-wide contract test pins both directions by type.
+     * so the registry-wide contract test pins both directions by type and
+     * separately requires the declaration to be a boolean.
      */
     readonly headless?: boolean;
   }

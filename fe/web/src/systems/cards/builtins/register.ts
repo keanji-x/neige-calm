@@ -29,28 +29,54 @@ export const BUILTIN_CARD_ORDER = Object.freeze([
 export type BuiltinCardType = (typeof BUILTIN_CARD_ORDER)[number];
 
 /**
- * The production door onto `registry.register`, and the reason every built-in
- * states its headlessness out loud.
+ * The only value the registrar map accepts, and the only call site of
+ * `registry.register` on the production boot path.
  *
- * `CardEntry.headless` is optional on the interface — it has to be, because the
- * frozen contract tests build entries without it and register them for real —
- * so an omission is invisible to the compiler at the `register` call. Here it is
- * **required**, and an optional property is not assignable to a required one:
- * deleting `headless` from a built-in entry is a typecheck error at its
- * registrar below. Nothing that goes through this function can fall back on the
- * fail-open "absent means it has a surface" default by accident.
+ * What the types catch, exactly:
  *
- * That is the whole of what this catches: a *missing* declaration. It says
- * nothing about a *wrong* one — declaring `headless: false` on a headless card
- * type compiles fine and is caught one layer out, by the `HEADLESS_BY_TYPE`
- * table in `register.contract.test.ts`, which decides the answer per type from
- * the oracle and is set-equal to `BUILTIN_CARD_ORDER`.
+ * 1. A *missing* `headless`. `CardEntry.headless` is optional on the interface —
+ *    it has to be, because the frozen contract tests build entries without it
+ *    and register them for real — so an omission is invisible to the compiler at
+ *    a bare `register` call. `BuiltinRegistrar.of` requires it, and an optional
+ *    property is not assignable to a required one, so deleting `headless` from a
+ *    built-in entry is a typecheck error at its map slot below.
+ * 2. *Skipping `BuiltinRegistrar.of`.* The map's value type is this class, whose
+ *    `#register` field makes it nominal: no object literal, arrow function or
+ *    `Object.assign` shape is assignable to it, and the constructor is private,
+ *    so `BuiltinRegistrar.of` is the only expression that produces one. A future
+ *    slice writing `terminal: (target) => { target.register(TERMINAL_ENTRY); }`
+ *    does not typecheck. The registry's generic stays per-entry: the entry is
+ *    captured here with its own narrow `Card`, never widened to the whole
+ *    `RegisteredCard` union.
+ *
+ * What the types do *not* catch: a deliberate `as unknown as BuiltinRegistrar`
+ * assertion inside this file. No in-language brand survives `as unknown`; that
+ * is a visible, reviewable edit, not a silent omission.
+ *
+ * What the tests catch: a *wrong* declaration. `headless: false` on a headless
+ * card type compiles fine here and is caught one layer out by
+ * `register.contract.test.ts`, whose `HEADLESS_BY_TYPE` table decides the answer
+ * per type from the oracle and is set-equal to `BUILTIN_CARD_ORDER`. That file
+ * also asserts `typeof entry.headless === 'boolean'` on every registered entry,
+ * so an omission stays red even if the table were mis-edited the same way — and
+ * that runtime assertion is what covers the assertion escape above.
  */
-function registerBuiltin<Card extends RegisteredCard>(
-  registry: CardRegistry,
-  entry: CardEntry<Card> & { readonly headless: boolean },
-): void {
-  registry.register(entry);
+class BuiltinRegistrar {
+  readonly #register: (target: CardRegistry) => void;
+
+  private constructor(register: (target: CardRegistry) => void) {
+    this.#register = register;
+  }
+
+  static of<Card extends RegisteredCard>(
+    entry: CardEntry<Card> & { readonly headless: boolean },
+  ): BuiltinRegistrar {
+    return new BuiltinRegistrar((target) => { target.register(entry); });
+  }
+
+  run(target: CardRegistry): void {
+    this.#register(target);
+  }
 }
 
 /**
@@ -62,14 +88,15 @@ function registerBuiltin<Card extends RegisteredCard>(
  */
 export function registerAvailableBuiltinCards(registry: CardRegistry): void {
   // Keyed by `BuiltinCardType` and ordered like the tuple purely for reading;
-  // the loop below, not this literal, decides the registration order. Each
-  // value registers its own entry so the registry's per-card generic keeps the
-  // narrow card type instead of widening to the whole `RegisteredCard` union.
-  const registrars: Partial<Record<BuiltinCardType, (target: CardRegistry) => void>> = {
-    spec: (target) => { registerBuiltin(target, SPEC_CARD_ENTRY); },
-    'wave-report': (target) => { registerBuiltin(target, WAVE_REPORT_CARD_ENTRY); },
+  // the loop below, not this literal, decides the registration order. The value
+  // type is `BuiltinRegistrar`, so the only way to fill a slot is
+  // `BuiltinRegistrar.of(entry)` — see its doc comment for what that forces and
+  // what it does not.
+  const registrars: Partial<Record<BuiltinCardType, BuiltinRegistrar>> = {
+    spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
+    'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
   };
   for (const type of BUILTIN_CARD_ORDER) {
-    registrars[type]?.(registry);
+    registrars[type]?.run(registry);
   }
 }

@@ -87,10 +87,18 @@ describe('builtin card composition contract', () => {
   });
 
   /*
-   * `CardEntry.headless` is optional, so both mistakes are silent at the type
-   * level and both delete cards from the product: a missing declaration puts a
+   * Both mistakes delete cards from the product: a missing declaration puts a
    * card that renders nothing into the CARDS list and the grid; a spurious one
    * deletes every card of that type from both the moment its entry lands.
+   *
+   * `CardEntry.headless` is optional on the interface, so a bare
+   * `registry.register` call cannot see either. For built-ins the *missing*
+   * half is closed at compile time — `register.ts` fills its registrar map only
+   * with `BuiltinRegistrar.of(entry)`, which requires `headless` — and the
+   * `toBeTypeOf('boolean')` assertion below re-checks it at runtime so the
+   * suite does not depend on that types-only argument (a type assertion could
+   * still forge a registrar). The *wrong* half has no compile-time signal at
+   * all and lives here.
    *
    * The expectation below is written per built-in **type**, decided from the
    * oracle rather than read back off the entries, and covers all eight — so a
@@ -121,6 +129,14 @@ describe('builtin card composition contract', () => {
       for (const entry of entries) {
         const expected = HEADLESS_BY_TYPE[entry.type as BuiltinCardType];
         expect(expected, `${entry.type} is registered but not in the headless decision table`).toBeTypeOf('boolean');
+        // Independent of the table above, and deliberately not `=== true`:
+        // `undefined` means nobody decided. Without this line an omitted
+        // declaration plus a `false` row in the table — one mistake made twice
+        // in the same direction — would leave both assertions green.
+        expect(
+          entry.headless,
+          `${entry.type} must state its headlessness explicitly; absent is the fail-open default`,
+        ).toBeTypeOf('boolean');
         expect(
           entry.headless === true,
           expected
