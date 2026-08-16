@@ -18,4 +18,6 @@ export const createContextAllowlist = [
   'web/src/app/theme/public.tsx',
   // Reason: issue #997 §4/§6 allow context in a primitive's own directory; consumers remain in ui, so no primitive-to-business reverse dependency is introduced.
   'web/src/ui/dialog/public.tsx',
+  // Reason: the shell owns the New wave dialog because the rail and the cove page both open it; the cove route renders inside <Outlet /> and there is no prop path from the shell to it. The context carries one callback and is provided by the shell alone.
+  'web/src/app/shell/public.tsx',
 ];

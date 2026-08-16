@@ -18,9 +18,7 @@ import { useQuery, type QueryClient } from '@tanstack/react-query';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import { waveDisplayTitle, type Wave, type WaveDetailWire } from '../../../../core/domain/wave.ts';
-import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
-import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
@@ -35,15 +33,14 @@ import {
   conversationName, conversationNameFrom,
   type Conversation, type ConversationTurn,
 } from '../../../../core/domain/conversation.ts';
-import { Dialog } from '../../ui/dialog/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, prefetchCoveList, settingsQueryOptions, useCoveMutations, useSettingsMutation,
+  prefetchCoveList, settingsQueryOptions, useCoveMutations, useSettingsMutation,
   useWaveMutations, useWorkspace, waveDetailQueryOptions,
 } from '../providers/queries.ts';
-import { AppShell } from '../shell/public.tsx';
+import { AppShell, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { useGo, useRouteParam } from './navigation.ts';
 import { PendingRoute } from './pending-route.tsx';
@@ -339,14 +336,17 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
   const coveMutations = useCoveMutations(transport);
   const waveMutations = useWaveMutations(transport);
   const go = useGo();
-  const [creating, setCreating] = useState(false);
+  /* The New wave dialog is the shell's, not this route's. Two surfaces open it
+     — every cove row's `+` in the rail and this page's WAVES module head — and
+     the rail is a sibling of the outlet, so a dialog owned here was reachable
+     from exactly one of them. One dialog, one set of strings; this route only
+     says which cove to preselect. */
+  const requestNewWave = useRequestNewWave();
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
   const chat = useConversationPanel(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
 
   const cove = coveId === undefined ? undefined : coveOf(coveId, workspace.coves);
   if (cove === undefined) {
@@ -357,24 +357,6 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
     return <PendingRoute label="Cove" owner="features/cove" missing />;
   }
   const waves = workspace.wavesByCove.get(cove.id) ?? [];
-  const submit = (draft: NewWaveDraft) => {
-    setSubmitting(true);
-    setCreateError(null);
-    void waveMutations.create({
-      cove_id: draft.coveId,
-      title: draft.title,
-      cwd: draft.cwd,
-      theme: readHostThemeRgb(),
-      attach_folder: draft.attachFolder,
-    }).then((wave) => {
-      setCreating(false);
-      go({ name: 'wave', waveId: wave.id });
-    }).catch((error: unknown) => {
-      // The 409 body names the cove the directory would have to be claimed
-      // for, so the raw server sentence is more useful than a generic line.
-      setCreateError(error instanceof ApiError ? error.message : 'Could not create the wave.');
-    }).finally(() => { setSubmitting(false); });
-  };
 
   return (
     <>
@@ -398,7 +380,7 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
         />}
         onRenameCove={(name) => coveMutations.rename(cove.id, { name }).then(() => undefined)}
         onDeleteCove={() => coveMutations.remove(cove.id).then(() => { go({ name: 'today' }); })}
-        onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
+        onRequestNewWave={() => requestNewWave(cove.id)}
         conversationList={chat.list}
         conversationAction={chat.action}
         waveList={(
@@ -416,16 +398,6 @@ function CoveRoute({ transport }: { transport: ApiTransportPort }) {
           />
         )}
       />
-      <Dialog open={creating} onClose={() => setCreating(false)} title="New wave">
-        <NewWaveForm
-          coves={workspace.coves}
-          defaultCoveId={cove.id}
-          submitting={submitting}
-          error={createError}
-          onCancel={() => setCreating(false)}
-          onSubmit={submit}
-        />
-      </Dialog>
       {chat.drawer}
     </>
   );

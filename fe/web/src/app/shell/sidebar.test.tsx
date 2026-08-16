@@ -46,6 +46,7 @@ function renderSidebar(props: Partial<Props> = {}) {
           onGo={merged.onGo ?? vi.fn()}
           onCreateCove={merged.onCreateCove ?? vi.fn()}
           onDeleteCove={merged.onDeleteCove ?? vi.fn()}
+          onNewWave={merged.onNewWave ?? vi.fn()}
           onSetPinned={merged.onSetPinned ?? vi.fn()}
           onDeleteWave={merged.onDeleteWave ?? vi.fn()}
           collapsed={merged.collapsed ?? false}
@@ -113,6 +114,22 @@ describe('cove row', () => {
     const chevron = screen.getByRole('button', { name: 'Collapse cove Work' });
     expect(row.contains(chevron)).toBe(false);
     expect(chevron.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  /* The rail does not own the New wave dialog — `AppShell` does, because the
+     cove page's `+` opens the same one. All the row reports is which cove. */
+  it('starts a wave in its own cove from the row, without navigating into it', async () => {
+    const onNewWave = vi.fn();
+    const onGo = vi.fn();
+    renderSidebar({
+      coves: [cove(), cove({ id: 'c2', name: 'Reading', sort: 2 })],
+      wavesByCove: new Map([['c1', []], ['c2', []]]),
+      onNewWave,
+      onGo,
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'New wave in Reading' }));
+    expect(onNewWave.mock.calls).toEqual([['c2']]);
+    expect(onGo).not.toHaveBeenCalled();
   });
 });
 

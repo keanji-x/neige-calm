@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { coveListOperation, coveOf, coveWireSchema, sortedCoves, toCove, visibleCoves, type Cove } from './cove.js';
+import {
+  coveFolderWireSchema, coveFoldersOperation, coveListOperation, coveOf, coveWireSchema,
+  sortedCoveFolders, sortedCoves, toCove, toCoveFolder, visibleCoves,
+  type Cove, type CoveFolder,
+} from './cove.js';
 
 const baseWire = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, created_at: 1, updated_at: 1 };
 
@@ -55,5 +59,37 @@ describe('cove ordering and lookup', () => {
     const list = [cove({ id: 'a' })];
     expect(coveOf('a', list)?.id).toBe('a');
     expect(coveOf('nope', list)).toBeUndefined();
+  });
+});
+
+function folder(overrides: Partial<CoveFolder>): CoveFolder {
+  return { id: 1, coveId: 'c1', path: '/srv/a', repoIdentity: null, repoIdentityProbedAt: null, createdAt: 0, ...overrides };
+}
+
+describe('cove folders', () => {
+  it('decodes a folder row and defaults an unprobed repo identity to null', () => {
+    const wire = coveFolderWireSchema.parse({ id: 7, cove_id: 'c1', path: '/srv/a', created_at: 5 });
+    expect(toCoveFolder(wire)).toEqual({
+      id: 7, coveId: 'c1', path: '/srv/a', repoIdentity: null, repoIdentityProbedAt: null, createdAt: 5,
+    });
+  });
+
+  it('keeps a probed repo identity rather than flattening it', () => {
+    const wire = coveFolderWireSchema.parse({
+      id: 7, cove_id: 'c1', path: '/srv/a', repo_identity: 'you/repo', repo_identity_probed_at: 9, created_at: 5,
+    });
+    expect(toCoveFolder(wire)).toMatchObject({ repoIdentity: 'you/repo', repoIdentityProbedAt: 9 });
+  });
+
+  it('reads the folders of one cove, id-encoded into the path', () => {
+    expect(coveFoldersOperation('c/1')).toMatchObject({ method: 'GET', path: '/api/coves/c%2F1/folders' });
+  });
+
+  /* INV-NEWWAVE-003 — the new-wave form takes `[0]` as the folder a wave runs
+     in when it shows no choice, so "first" has to be one deterministic thing. */
+  it('orders by path and breaks ties by id without mutating the input', () => {
+    const list = [folder({ id: 3, path: '/srv/b' }), folder({ id: 2, path: '/srv/a' }), folder({ id: 1, path: '/srv/a' })];
+    expect(sortedCoveFolders(list).map((f) => f.id)).toEqual([1, 2, 3]);
+    expect(list.map((f) => f.id)).toEqual([3, 2, 1]);
   });
 });

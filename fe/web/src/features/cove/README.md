@@ -39,22 +39,37 @@ sentence exists to prevent.
 
 ## `attach_folder` and the 409 contract
 
-`NewWaveDraft.attachFolder` maps to the wave-create body's `attach_folder`.
+`NewWaveDraft.attachFolder` maps to the wave-create body's `attach_folder`, and
+**the form derives it — it is never asked** (INV-NEWWAVE-002).
 
-Claiming a directory for a cove is a durable, cross-cove side effect. When the
-working directory is **not already claimed**, creating a wave in it without
-`attach_folder: true` makes the server answer **HTTP 409 with code `conflict`**
-and a message naming the cove that would have to claim the folder. That sentence
-is in the checkbox help text so the user can act on the error instead of
-guessing.
+`POST /api/waves` needs a `cwd` under a folder the target cove has already
+claimed; otherwise the server answers **HTTP 409 with code `conflict`** naming
+the cove that would have to claim it, unless `attach_folder: true` claims it in
+the same transaction. But `GET /api/coves/{cove_id}/folders` already says which
+folders a cove owns, so for a cove that owns one there is nothing to ask:
 
-The checkbox therefore starts **unchecked** (INV-NEWWAVE-002). Defaulting it to
-`true` would turn a decision the user must make into a silent land-grab.
+| Folders the target cove owns | What the form shows | What it sends |
+| --- | --- | --- |
+| 1 | the Task field only | that folder's `path`, `attach_folder: false` |
+| more than 1 | a `Folder` select, defaulting to the first by `path` ascending | the picked `path`, `attach_folder: false` |
+| 0 | a `Folder` **path input** — this is the cove's first folder | the typed path, `attach_folder: true` |
 
-The working directory must be a non-empty **absolute** path (INV-NEWWAVE-001):
+There is no checkbox any more. With zero existing claims `false` is a guaranteed
+409, so the setting had exactly one legal value; with one or more, the path is a
+fact the server already holds. The land-grab the checkbox guarded against is
+still guarded — claiming a directory another cove owns still answers 409 naming
+that cove, and the caller surfaces the server's own sentence in `error`.
+
+The zero-folder path must be a non-empty **absolute** path (INV-NEWWAVE-001):
 the kernel does not resolve it against anything, so a relative path would land
 wherever the server happens to run. Invalid input blocks submit and renders an
-inline hint.
+inline hint. `sortedCoveFolders` (`core/domain/cove.ts`, INV-NEWWAVE-003) is
+what makes "the first folder" one deterministic thing.
+
+`coveId` is **controlled by the caller**. The form's shape depends on a query,
+`features/**` may not import `app/**`, so whoever owns the folder read owns the
+cove selection too — today that is `AppShell`, which owns the dialog because the
+rail and the cove page both open it.
 
 ## Deliberately deferred (not "missing")
 
