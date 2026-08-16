@@ -50,30 +50,39 @@ export type BuiltinCardType = (typeof BUILTIN_CARD_ORDER)[number];
  *    does not typecheck.
  *
  * What the types do *not* catch — `of` is emphatically **not** provably the only
- * expression of this type. Besides an explicit `as unknown as BuiltinRegistrar`
- * (no in-language brand survives `as unknown`), the runtime object-construction
- * APIs whose declarations hand back `any` or an identity `T` get through with no
- * assertion at all, all three verified against this file:
+ * expression of this type, and the list below is **open**: it is a sample, not
+ * an enumeration, and no count of it means anything. Any API whose declaration
+ * hands back `any` or an identity `T` fills a slot with no assertion at all, and
+ * the standard library keeps more of those than anyone has listed here. Each of
+ * the following was verified against this file, both for typecheck and for what
+ * it does at boot:
  *
+ *  - `x as unknown as BuiltinRegistrar` — no in-language brand survives
+ *    `as unknown`. *Runs*, and registers whatever entry it closes over.
  *  - `Object.create(BuiltinRegistrar.prototype)` — `lib.es5.d.ts` types
- *    `Object.create(o)` as `any`, so it assigns to a slot silently.
+ *    `Object.create(o)` as `any`, so it assigns to a slot silently. Throws at
+ *    boot: `TypeError: Cannot read private member #register from an object
+ *    whose class did not declare it`.
  *  - `structuredClone(BuiltinRegistrar.of(entry))` — declared `T => T`, so the
- *    slot keeps the static type `BuiltinRegistrar`.
+ *    slot keeps the static type `BuiltinRegistrar`. Throws at boot: the clone
+ *    carries neither the private field nor the prototype, so `run is not a
+ *    function`.
  *  - `Object.assign(Object.create(BuiltinRegistrar.prototype), { run })` —
- *    `any & {...}` collapses to `any`.
+ *    `any & {...}` collapses to `any`. *Runs*: the own `run` shadows the
+ *    prototype method, so `#register` is never read.
+ *  - `Object.setPrototypeOf({ run(target) {…} }, BuiltinRegistrar.prototype)` —
+ *    declared to return `any`. *Runs*, for the same shadowing reason.
+ *  - `Reflect.construct(BuiltinRegistrar, [register])` — declared to return
+ *    `any`, and `private constructor` is erased at runtime, so this builds a
+ *    *real* instance (`instanceof` holds, `#register` is set). *Runs*.
  *
- * Two of those three die at boot on their own, so they cannot ship silently: the
- * `Object.create` shape throws `TypeError: Cannot read private member #register
- * from an object whose class did not declare it`, and the `structuredClone` copy
- * is a plain object that carries neither the private field nor the prototype, so
- * `run is not a function`. The remaining two escapes — the `as unknown`
- * assertion and `Object.assign` over the prototype with an own `run` — *do* run,
- * and register whatever entry they close over; nothing in this file stops them.
- * What stops an entry smuggled in that way from skipping its headless
- * declaration is the runtime `typeof entry.headless === 'boolean'` assertion in
- * `register.contract.test.ts`, applied per entry to the real production
- * registry. All five escapes are visible, reviewable edits to this file, not
- * silent omissions.
+ * So "it would throw at boot" is not a property of this gate: several of these
+ * shapes run and really register. What stops an entry smuggled in that way from
+ * skipping its headless declaration is the runtime
+ * `typeof entry.headless === 'boolean'` assertion in `register.contract.test.ts`,
+ * applied per entry to the real production registry. The one guarantee that does
+ * hold for every escape, known or not yet written down, is that it is a visible,
+ * reviewable edit to *this* file — never a silent omission.
  *
  * The registry generic is narrow *today* because of how the two entry constants
  * are written, not because `of` forces it: both are object literals under
@@ -108,6 +117,44 @@ class BuiltinRegistrar {
 }
 
 /**
+ * The registrar map's own type, named so the negative fixture below is written
+ * against the exact type the boot path uses rather than a copy of it.
+ */
+type BuiltinRegistrarMap = Partial<Record<BuiltinCardType, BuiltinRegistrar>>;
+
+type AssertTrue<Condition extends true> = Condition;
+
+/**
+ * Compile-time negative fixture for the gate itself.
+ *
+ * Widening the slot type back to
+ * `BuiltinRegistrar | ((target: CardRegistry) => void)` — that is, deleting the
+ * only reason this class exists — leaves the typecheck and every runtime test
+ * green, so the gate could be dismantled with nothing turning red. This pins it:
+ * the moment either ordinary structural stand-in — a bare arrow, or an object
+ * carrying a `run` method — becomes assignable to a slot,
+ * `SlotRejectsStructuralRegistrars` resolves to `false` and `AssertTrue` fails
+ * to instantiate (`Type 'false' does not satisfy the constraint 'true'`). Both
+ * arms are needed: widening to a bare arrow also breaks the `?.run(...)` call
+ * below, but widening to `{ run }` would otherwise be completely silent.
+ *
+ * It has to live in this file because `BuiltinRegistrar` is deliberately not
+ * exported, so no test file can name the type. It is `export`ed only because an
+ * unused local type alias is itself an error (`TS6196` /
+ * `@typescript-eslint/no-unused-vars`); nothing imports it, and nothing should.
+ */
+type BuiltinRegistrarSlot = NonNullable<BuiltinRegistrarMap[BuiltinCardType]>;
+
+type SlotRejectsStructuralRegistrars =
+  ((target: CardRegistry) => void) extends BuiltinRegistrarSlot
+    ? false
+    : { run(target: CardRegistry): void } extends BuiltinRegistrarSlot
+      ? false
+      : true;
+
+export type StructuralRegistrarIsNotAssignable = AssertTrue<SlotRejectsStructuralRegistrars>;
+
+/**
  * Register every built-in card that exists today, in `BUILTIN_CARD_ORDER`.
  *
  * The signature is fixed: the caller owns the registry instance and nothing
@@ -120,7 +167,7 @@ export function registerAvailableBuiltinCards(registry: CardRegistry): void {
   // type is `BuiltinRegistrar`, so no ordinary structural value can fill a slot
   // and `BuiltinRegistrar.of(entry)` is the practical way in — see its doc
   // comment for what that forces and for the escapes it does not close.
-  const registrars: Partial<Record<BuiltinCardType, BuiltinRegistrar>> = {
+  const registrars: BuiltinRegistrarMap = {
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
     'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
   };

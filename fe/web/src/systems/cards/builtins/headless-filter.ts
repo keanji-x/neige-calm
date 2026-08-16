@@ -36,12 +36,19 @@ declare module '../registry.js' {
      *
      * Built-ins do not get to rely on that default: `builtins/register.ts`
      * registers them through a factory that requires the member, and its
-     * registrar map accepts only that factory's nominal result — so both a
-     * missing declaration and a registrar that skips the factory are typecheck
-     * errors there (an explicit `as unknown as` assertion is not covered). A
-     * mis-declared `true` still compiles and deletes every card of that type,
-     * so the registry-wide contract test pins both directions by type and
-     * separately requires the declaration to be a boolean.
+     * registrar map's value type is that factory's nominal result — so a
+     * missing declaration is a typecheck error there, as is any *ordinary*
+     * structural stand-in for the factory. That gate is not airtight and does
+     * not claim to be: an explicit assertion, and an open set of runtime
+     * object-construction APIs that need no assertion at all, still fill a map
+     * slot, and several of them run rather than throwing at boot. See the
+     * `BuiltinRegistrar` doc comment in `builtins/register.ts` for the escapes
+     * that are known today and for what actually holds the line — a per-entry
+     * runtime `typeof entry.headless === 'boolean'` assertion over the real
+     * production registry. A mis-declared `true` likewise still compiles and
+     * deletes every card of that type, so the registry-wide contract test pins
+     * both directions by type and separately requires the declaration to be a
+     * boolean.
      */
     readonly headless?: boolean;
   }
