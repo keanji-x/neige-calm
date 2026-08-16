@@ -19,6 +19,9 @@ function fixtureFiles(root: string): string[] {
   });
   return existsSync(root) ? visit(root).map((path) => path.slice(root.length + 1).replaceAll('\\', '/')) : [];
 }
+function fixtureCommits(caseName: string, kind: 'positive' | 'negative'): OwnershipCommit[] {
+  return parse(readFileSync(resolve(fixtures, caseName, kind, 'commits.yaml'), 'utf8')) as OwnershipCommit[];
+}
 
 describe('ownership fixtures', () => {
   it('guards exactly every YAML field in both directions', () => {
@@ -130,6 +133,12 @@ it('filters an injected tracked-file list to ownership scope', () => {
   ]);
 });
 
+it('includes every frontend gate control file in ownership scope', () => {
+  const controls = ['fe/.dependency-cruiser.cjs', 'fe/eslint.config.js', 'fe/package.json', 'fe/package-lock.json',
+    'fe/tsconfig.json', 'fe/vite.config.ts', 'fe/vitest.config.ts'];
+  expect(repositoryFiles('', controls)).toEqual([...controls].sort());
+});
+
 describe('P8b2 ownership exit', () => {
   const trackedRepositoryFiles = repositoryFiles('', [
     'fe/mock/.gitkeep',
@@ -166,15 +175,24 @@ describe('P8b2 ownership exit', () => {
 describe('ownership event routing', () => {
   const commits: readonly OwnershipCommit[] = [{ sha: 'abc123', message: 'change', paths: ['frozen.txt'] }];
 
-  it('skips loading trailer-range commits for push events', () => {
+  it('loads trailer-range commits for push events', () => {
     const load = vi.fn(() => commits);
-    expect(ownershipCommitsForEvent('push', load)).toEqual([]);
-    expect(load).not.toHaveBeenCalled();
+    expect(ownershipCommitsForEvent('push', load)).toBe(commits);
+    expect(load).toHaveBeenCalledOnce();
   });
 
   it.each(['pull_request', undefined])('loads trailer-range commits for %s events', (eventName) => {
     const load = vi.fn(() => commits);
     expect(ownershipCommitsForEvent(eventName, load)).toBe(commits);
     expect(load).toHaveBeenCalledOnce();
+  });
+
+  it('rejects the single readonly violation in a push and accepts its approved counterpart', () => {
+    const manifest = entries('readonly', 'positive');
+    expect(validateOwnership(manifest, [], fixtureCommits('push-readonly-trailer', 'negative'))).toEqual([{
+      rule: 'readonly-change-trailer',
+      message: 'push-negative changes frozen fe/web/src/styles/tokens.css without an OWNERSHIP-CHANGE trailer',
+    }]);
+    expect(validateOwnership(manifest, [], fixtureCommits('push-readonly-trailer', 'positive'))).toEqual([]);
   });
 });

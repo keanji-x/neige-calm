@@ -103,6 +103,14 @@ async fn runtime_row_snapshot(repo: &SqlxRepo, runtime_id: &str) -> (String, i64
     .expect("runtime row snapshot")
 }
 
+async fn card_session_id_for_test(repo: &SqlxRepo, card_id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT session_id FROM cards WHERE id = ?1")
+        .bind(card_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+}
+
 async fn runtime_by_id_tx_snapshot(
     repo: &SqlxRepo,
     runtime_id: &str,
@@ -813,6 +821,96 @@ async fn phase2_supersedes_placeholder_one_row() {
     .await
     .unwrap();
     assert_eq!(active_count, 1);
+}
+
+#[tokio::test]
+async fn chat_placeholder_refreshes_in_place_on_the_same_card() {
+    let repo = fresh_repo().await;
+    let card = make_card(&repo, "codex").await;
+    let placeholder = runtime_init(
+        card.id.to_string(),
+        WorkerSessionKind::CodexCard,
+        Some(AgentProvider::Codex),
+        WorkerSessionState::Starting,
+    );
+    let runtime_id = placeholder.id.clone();
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(&mut tx, placeholder)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut refreshed = runtime_init(
+        card.id.to_string(),
+        WorkerSessionKind::CodexCard,
+        Some(AgentProvider::Codex),
+        WorkerSessionState::Idle,
+    );
+    refreshed.id = runtime_id.clone();
+    refreshed.thread_id = Some("chat-thread".into());
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(&mut tx, refreshed)
+        .await
+        .expect("same-card chat placeholder refresh must remain authorized");
+    tx.commit().await.unwrap();
+
+    let session = repo
+        .session_get(&WorkerSessionId::from(runtime_id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        session.card_id.as_ref().map(CardId::as_str),
+        Some(card.id.as_str())
+    );
+    assert_eq!(session.thread_id.as_deref(), Some("chat-thread"));
+}
+
+#[tokio::test]
+async fn executor_same_id_cross_card_refresh_is_rejected() {
+    let repo = fresh_repo().await;
+    let first = make_card(&repo, "codex").await;
+    let second = make_card_in_wave(&repo, first.wave_id.clone(), "codex").await;
+    let placeholder = runtime_init(
+        first.id.to_string(),
+        WorkerSessionKind::CodexCard,
+        Some(AgentProvider::Codex),
+        WorkerSessionState::Starting,
+    );
+    let runtime_id = placeholder.id.clone();
+    let mut tx = repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(&mut tx, placeholder)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    let mut foreign = runtime_init(
+        second.id.to_string(),
+        WorkerSessionKind::CodexCard,
+        Some(AgentProvider::Codex),
+        WorkerSessionState::Idle,
+    );
+    foreign.id = runtime_id.clone();
+    let mut tx = repo.pool().begin().await.unwrap();
+    let err = session_start_runtime_tx(&mut tx, foreign)
+        .await
+        .expect_err("should turn red if an executor id can refresh across cards");
+    assert!(
+        err.to_string()
+            .contains("not a compatible deferred placeholder")
+    );
+    tx.rollback().await.unwrap();
+
+    assert_eq!(
+        card_session_id_for_test(&repo, first.id.as_str())
+            .await
+            .as_deref(),
+        Some(runtime_id.as_str())
+    );
+    assert_eq!(
+        card_session_id_for_test(&repo, second.id.as_str()).await,
+        None
+    );
 }
 
 #[tokio::test]

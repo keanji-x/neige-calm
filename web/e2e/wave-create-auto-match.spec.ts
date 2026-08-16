@@ -5,8 +5,8 @@
 // B's page (so defaultCoveId points at B) and types a cwd under cove
 // A's claim. NewTaskForm's debounced resolve lands a *hit* on A, the
 // auto-match banner appears naming A, and submitting POSTs the wave
-// against A — *not* B. This is the load-bearing "longest-prefix
-// resolve wins over surrounding page context" contract; without it
+// against A — *not* B. This is the load-bearing "cwd resolve wins over
+// surrounding page context" contract; without it
 // the user would silently land waves in the wrong cove every time
 // they typed a path that another cove already owns.
 //

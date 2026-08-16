@@ -29,13 +29,40 @@
    * drawn. The shadow *is* the colour.
    */
   .drawer {
+    /*
+     * **It covers exactly the column it replaces, plus that column's gutter.**
+     *
+     * `--drawer-w` (396) came from §7.6 before there was anything in the
+     * drawer to look at. Built and filled, a 396-wide slab of `--paper` running
+     * the full height of the window is the heaviest object on the page — for a
+     * conversation that is usually four short turns. Sized to the panel column
+     * it slides over, it reads as that column being replaced rather than as a
+     * second page arriving. The token stays as it is: this is a fact about
+     * *this* drawer's relationship to *this* page's trailing column, not a new
+     * global width.
+     */
+    --nc-drawer-w: calc(var(--panel-w) + var(--space-10));
+
     position: fixed;
     inset-block: 0;
-    inset-inline-end: 0;
+
+    /*
+     * Aligned to the *page's* trailing edge, not the window's, so the drawer's
+     * leading edge lands exactly on the panel column's. Welded to the window it
+     * would have to be 396 wide just to reach across the slack between the
+     * content and the window — which is where that number came from — and it
+     * would still cover the card by a different amount at every window size.
+     *
+     * `max(0px, …)` is the narrow case: once the window is smaller than the
+     * page's own maximum there is no slack, the expression goes negative, and
+     * the drawer welds to the window edge as before. `--rail-w` follows the
+     * shell's actual column so wider collapsed layouts keep this edge aligned.
+     */
+    inset-inline-end: max(0px, calc(100vw - var(--rail-w) - var(--measure-page)));
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;
-    inline-size: var(--drawer-w);
+    inline-size: var(--nc-drawer-w);
     max-inline-size: 100%;
     background: var(--paper);
     box-shadow: var(--shadow-float);
@@ -80,36 +107,89 @@
    * against a rounded 16px corner it read as text falling off the edge.
    */
   .head {
+    /*
+     * The page header's band, re-derived rather than imported: `--header-band`
+     * is declared by `ui/page-header` on the *page's* parent through `:has`,
+     * and this drawer is fixed-positioned outside that subtree, so it cannot
+     * inherit it. 21.7 is the route title's own top-to-baseline (a 20.7px line
+     * centred in the 32px title row is 5.7, plus 16 inside it) — the same
+     * number, kept next to the same reasoning.
+     */
+    --nc-head-band: calc(var(--header-baseline) - 21.7px);
+
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--space-4);
-    flex: none;
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--z-raised);
 
     /*
-     * Top inset puts the title's baseline on `--header-baseline`, the same one
-     * the rail's wordmark and the route title sit on — three headers, one line,
-     * across a window you see all of at once. Measured: this title's own
-     * top-to-baseline distance is 14 (a 15px line at `--leading-snug`), so the
-     * inset is 42 − 14 = 28. It was 16, which sat the drawer's title 12px above
-     * the route title it opens beside.
+     * Two alignments, and the head owes both:
      *
-     * End inset is smaller because the close button carries its own 28px hit
-     * area: 8 + (28 − 16) / 2 lands the × glyph optically on the 16 inset.
+     * **The baseline.** The top inset puts the title's baseline on
+     * `--header-baseline`, the same one the rail's wordmark and the route title
+     * sit on — three headers, one line, across a window you see all of at once.
+     * This title's top-to-baseline is 14 (a 15px line at `--leading-snug`), so
+     * the inset is 42 − 14 = 28.
+     *
+     * **The bottom edge.** Baseline alignment alone is not enough, and this is
+     * what a real window showed: the two heads *ended* 11.5px apart (53.3 on
+     * the page, 64.8 here), so the hairline that appears under both on scroll
+     * came out as two lines at two heights. `min-block-size` is the page
+     * header's own height arithmetic — band + one 32px title row — so a
+     * one-line title lands this head on exactly the page header's bottom edge.
+     * A title that wraps to its second line grows past it, which is honest:
+     * there is more in it.
+     *
+     * End inset is smaller because the trailing controls carry their own 28px
+     * hit areas: 8 + (28 − 16) / 2 lands the glyph optically on the 16 inset.
      */
-    padding: calc(var(--header-baseline) - 14px) var(--space-4) var(--space-6) var(--space-8);
-    border-block-end: 1px solid transparent;
-    transition: border-color var(--motion-quick) ease-out;
+    min-block-size: calc(var(--nc-head-band) + var(--control-h-lg));
+    padding: calc(var(--header-baseline) - 14px) var(--space-4) var(--space-2) var(--space-8);
+    background: color-mix(in oklch, var(--paper) 85%, transparent);
+    backdrop-filter: blur(12px) saturate(1.4);
   }
 
   /*
-   * The one line that survives, and only while it is doing work: once the
-   * transcript has scrolled under the head, no colour separates them — both are
-   * `--paper` — so the hairline is the only thing that can. Same trade, same
-   * attribute, same token as `[data-nc-scrolled] .header` in `ui/page-header`.
+   * The trailing controls sit on the title's **first line** and contribute no
+   * height of their own: the negative block margins are symmetric, so a 28px
+   * hit area collapses to the 19.5px line box it is centred on. Without that,
+   * the buttons — not the text — decided how tall the head was, which is what
+   * put its bottom edge 11.5px below the page header's.
+   *
+   * §4.3 requires at least `--space-6` (12px) between destructive and benign
+   * actions. This 2px gap is a user-confirmed exception limited to this reset +
+   * close pair. Measured ink widths are 8.48px and 3.82px, leaving 9.76px and
+   * 12.10px respectively on their facing sides inside the 28px boxes. The boxes
+   * therefore supply 21.86px of whitespace before any gap: zero gap would only
+   * reduce the visual separation from 29.86px to 21.86px. `--space-1` (2px) is
+   * §2.3's tightest inline tier and leaves about 23.9px of visual whitespace.
+   * The reset is *before* the close rather than after it: §4.3 wants the danger
+   * last in its group, but the corner of a panel is where a pointer goes to
+   * dismiss things, and a destructive control under a dismiss reflex is a
+   * worse failure than an ordering one.
    */
-  [data-nc-scrolled] .head {
-    border-block-end-color: var(--hairline);
+  .headActions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex: none;
+    margin-block: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
+  }
+
+  @supports not (backdrop-filter: blur(2px)) {
+    .head {
+      background: var(--paper);
+    }
+  }
+
+  @media (prefers-reduced-transparency: reduce) {
+    .head {
+      background: var(--paper);
+      backdrop-filter: none;
+    }
   }
 
   /*
@@ -123,9 +203,20 @@
    * once on open and never again, and at 15px full-ink semibold it was the
    * darkest thing on screen, out-shouting every reply under it.
    *
-   * Measured on both grounds: `--text` is 18.1:1 light and 11.5:1 dark,
-   * `--text-3` is 7.8:1 and 6.5:1. Less than half the loudness, still well
-   * clear of AAA's 7:1 in light and AA's 4.5:1 in dark.
+   * On opaque `--paper`, `--text` measured 18.1:1 and `--text-3` 7.8:1 in
+   * light / 6.5:1 in dark. The frosted ground also admits 15% of whatever has
+   * scrolled behind it. On real transcript content, with blur spreading the
+   * ink and no large solid dark blocks, 20-position browser audits measured
+   * minima of 7.18 light / 5.74 dark: AAA in light and AA in dark. The
+   * analytical worst case, with a large solid full-ink block sliding behind
+   * the head, is about 5.6 light / 4.2 dark. Light still clears AA, but dark is
+   * below AA's 4.5 threshold. The guarantee here is therefore AA/AAA for the
+   * measured real-content shape; a dark-theme full-ink block is a known
+   * analytical boundary. `saturate(1.4)` is not included in that model.
+   *
+   * This remains a manual browser audit: `tools/styles/check-contrast.mjs`
+   * hard-codes token pairs with one underlay per pair, so it cannot express a
+   * translucent layer composited over arbitrary scrolling content.
    *
    * `--text-3` is where this stops, and the next rank is why. The ladder is
    * 18.1 → 10.0 → 7.8 → **2.3**: `--text-4` is the *decorative* rank, and a
@@ -149,20 +240,58 @@
   }
 
   /*
-   * Pulled up so the × centres on the title's **first line** — which is what
-   * keeps them on one row when the title wraps to two. A 28px hit area against
-   * a 19.5px line (15 × 1.3) is (19.5 − 28) / 2 of overhang. The hit area keeps
-   * its full size; this moves where it sits, not how big it is (§5, 2.5.8).
+   * A head control: the same 28px square the close is, because two controls on
+   * one row that differ in size read as two ranks, and these are one.
+   *
+   * Both controls use 16px stroked SVGs so their optical weight stays stable
+   * instead of depending on a font's arrow metrics. The close keeps the same
+   * right-facing chevron shape as the rail collapse. The rail collapse and
+   * cove chevron use the same shared `<Icon>` line-work system.
    */
+  .action {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+    transition: background-color var(--motion-quick) ease-out,
+      color var(--motion-quick) ease-out,
+      border-color var(--motion-quick) ease-out;
+  }
+
+  .action:hover,
+  .action:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  /* §4.3's destructive recipe, in an icon's geometry: red at rest, transparent
+     fill; hover adds the soft fill and the border it implies. */
+  .actionDanger {
+    color: var(--error-text);
+  }
+
+  .actionDanger:hover,
+  .actionDanger:focus-visible {
+    border-color: var(--error-border);
+    background: var(--error-soft);
+    color: var(--error-text);
+  }
+
+  /* The hit area keeps its full 28px; `.headActions` is what places it on the
+     title's first line (§5, 2.5.8). */
   .close {
     display: grid;
     place-items: center;
     flex: none;
-    margin-block-start: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -174,18 +303,26 @@
     color: var(--text);
   }
 
-  /* The one part that scrolls. `flex: 1` so it takes the height the head and
-     the footer leave, and `min-block-size: 0` so it may actually shrink — a
-     flex item defaults to its content's size and would otherwise push the
-     footer off the bottom instead of scrolling. */
-  .body {
-    display: flex;
+  /* The head and transcript share the scrolling region so the sticky frosted
+     surface can separate them without adding a line. */
+  .scroll {
     flex: 1;
+    min-block-size: 0;
+    overflow: auto;
+    padding: 0;
+    /* Reserve a classic scrollbar lane so becoming scrollable does not shift
+       the entire column. This does not affect overlay scrollbars: they may
+       paint over the sticky frosted head, an accepted tradeoff of putting the
+       head inside the scroller so content can pass beneath it. Moving the head
+       outside is the structural fix, but would remove that frosted premise. */
+    scrollbar-gutter: stable;
+  }
+
+  .bodyInner {
+    display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    min-block-size: 0;
     padding: var(--space-4) var(--space-8) var(--space-6);
-    overflow: auto;
   }
 
   /*
@@ -195,15 +332,17 @@
    * welded to an edge: retracting says "still there, off-screen", vanishing
    * says "destroyed". See the note in public.tsx.
    */
+  /* The custom property resolves against the animating element, so both
+     keyframes travel exactly the drawer's own width. */
   @keyframes drawer-in {
     from {
-      translate: var(--drawer-w) 0;
+      translate: var(--nc-drawer-w) 0;
     }
   }
 
   @keyframes drawer-out {
     to {
-      translate: var(--drawer-w) 0;
+      translate: var(--nc-drawer-w) 0;
     }
   }
 

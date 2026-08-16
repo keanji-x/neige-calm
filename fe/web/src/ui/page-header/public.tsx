@@ -14,6 +14,7 @@
 
 import type { ReactNode, RefObject } from 'react';
 
+import { Icon } from '../icon/public.tsx';
 import styles from './page-header.module.css';
 
 export type PageHeaderProps = Readonly<{
@@ -101,7 +102,7 @@ export function Breadcrumb({ ancestor, current, onNavigate, onNavigateCurrent, b
     <nav className={styles.crumbs} aria-label="Breadcrumb">
       {onBack !== undefined && (
         <button type="button" data-nc-role="icon" className={styles.back}
-          aria-label={backLabel ?? 'Back'} onClick={onBack}>←</button>
+          aria-label={backLabel ?? 'Back'} onClick={onBack}><Icon name="arrow-left" /></button>
       )}
       <button type="button" data-nc-role="row" className={styles.crumbLink} onClick={onNavigate}>
         {ancestor}

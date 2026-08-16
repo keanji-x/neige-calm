@@ -94,7 +94,7 @@ export type CardId = string;
  * Persisted as a lowercase string in `cards.role` (migration 0008). The
  * serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
  * stable; ts-rs exports the matching TS union (`"spec" | "worker" |
- * "reportcard"`) into `web/src/api/generated-events.ts` so the
+ * "reportcard"`) into `fe/core/api/generated/wire.ts` so the
  * frontend can adopt the enum once any UI lands.
  */
 export type CardRole = "worker" | "spec" | "reportcard";
@@ -134,13 +134,56 @@ export type Cove = { id: CoveId, name: string, color: string, sort: number,
 kind: CoveKind, created_at: number, updated_at: number, };
 
 /**
+ * One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
+ *
+ * Deliberately absent:
+ * * `waveTitle` — every row belongs to the same hidden cove chat wave, so
+ *   returning its title would leak an object the user is never shown.
+ * * `turns` — the server cannot produce a turn count that agrees with the
+ *   drawer without re-parsing every `harness_items.params` blob; a number
+ *   that silently disagrees is worse than no number.
+ */
+export type CoveConversationSummary = { 
+/**
+ * The chat card's id. This is the conversation's identity everywhere.
+ */
+id: string, waveId: string, 
+/**
+ * The conversation's own name, or null before it has one. Never the
+ * wave's title.
+ */
+title: string | null, 
+/**
+ * Always `"shared-chat"`, derived from the card's persisted marker rather
+ * than from the session kind (the session is an ordinary codex-card
+ * session and says nothing about the conversation being a cove chat).
+ */
+kind: string, 
+/**
+ * The live session's state, or **null when the card has no session row**.
+ *
+ * This must stay nullable and must never be filled with an invented
+ * value. The list is a LEFT JOIN precisely so a card whose session is
+ * gone (failed start, superseded runtime, shut-down harness) stays
+ * visible; substituting `idle` or `exited` here would report a session
+ * state that was never read.
+ */
+state: WorkerSessionState | null, 
+/**
+ * The session's last update, falling back to the card's own — a card
+ * minted seconds ago with no session yet still sorts sensibly.
+ */
+updatedAt: number, };
+
+/**
  * Issue #250 PR 1 — a filesystem path claimed by a cove.
  *
  * One row per claimed directory; `path` is absolute and globally
  * unique across the table. A folder transparently covers every
- * descendant path — the kernel resolves a `cwd` to its owning cove
- * via longest-prefix matching against this table (see
- * `GET /api/coves/resolve`).
+ * descendant path — the kernel resolves a `cwd` to its owning cove by
+ * finding the claim that covers it (see `GET /api/coves/resolve`).
+ * The create endpoint rejects ancestor/descendant overlap with a 409,
+ * so at most one claim can cover any given path.
  *
  * `id` is an autoincrement integer rather than the kernel's usual
  * uuid-shaped TEXT id because cove_folders is a small, kernel-internal
@@ -149,15 +192,7 @@ kind: CoveKind, created_at: number, updated_at: number, };
  * later reconcile. The compact integer also keeps `/folders/:id` URLs
  * readable.
  */
-export type CoveFolder = { id: number, cove_id: CoveId, path: string, 
-/**
- * Normalized `owner/name` from the folder's Git origin, when resolvable.
- */
-repo_identity: string | null, 
-/**
- * Unix epoch milliseconds of the most recent identity probe.
- */
-repo_identity_probed_at: number | null, created_at: number, };
+export type CoveFolder = { id: number, cove_id: CoveId, path: string, created_at: number, };
 
 /**
  * Cove identifier. UUID-shaped (32 hex, no dashes) in practice, but the
@@ -187,7 +222,7 @@ export type CoveId = string;
  * Persisted as a lowercase string in `coves.kind` (migration 0009).
  * The serde + sqlx `rename_all = "lowercase"` keeps the wire / storage
  * shape stable; ts-rs exports the matching TS union
- * (`"user" | "system"`) into `web/src/api/generated-events.ts` so the
+ * (`"user" | "system"`) into `fe/core/api/generated/wire.ts` so the
  * frontend can validate against it. UI types intentionally don't
  * surface `kind` — the server's default filter already hides system
  * coves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /
@@ -231,7 +266,7 @@ export type EditAuthor = "spec" | "user" | "kernel" | "plugin";
  * The full set of WS event envelopes the kernel emits on `/api/events`.
  *
  * `ts-rs` derives a matching TypeScript discriminated union, written to
- * `web/src/api/generated-events.ts` when `cargo test export_bindings_` runs
+ * `fe/core/api/generated/wire.ts` when `cargo test export_bindings_` runs
  * (driven by `npm run gen:api`). The serde `tag`/`content` attributes are
  * honored — the emitted TS uses the same `{ ev, data }` envelope.
  *
@@ -556,7 +591,7 @@ export type WaveId = string;
  * Persisted as a lowercase string in `waves.lifecycle` (migration
  * 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
  * and storage shape stable; ts-rs exports the matching TS union into
- * `web/src/api/generated-events.ts` so the frontend can render the
+ * `fe/core/api/generated/wire.ts` so the frontend can render the
  * badge against the same vocabulary.
  */
 export type WaveLifecycle = "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";

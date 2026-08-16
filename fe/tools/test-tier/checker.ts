@@ -45,6 +45,10 @@ export function validateTierEntries(entries: readonly TierEntry[]): void {
 }
 
 const FIXTURE_MANIFEST = Object.freeze([
+  'tools/test-tier/fixtures/decisions/browser-probe-misassigned.yaml',
+  'tools/test-tier/fixtures/decisions/overlap.yaml',
+  'tools/test-tier/fixtures/decisions/playwright-owned.yaml',
+  'tools/test-tier/fixtures/decisions/unassigned.yaml',
   'tools/test-tier/fixtures/negative/data.yaml',
   'tools/test-tier/fixtures/negative/orphan.spec.ts',
   'tools/test-tier/fixtures/negative/wrong-browser.test.ts',
@@ -65,13 +69,18 @@ export function tierGateViolations(input: TierGateInput): string[] {
     violations.push(`tracked fixture set differs from its manifest: missing ${missingFixtures.join(', ') || 'none'}; extra ${extraFixtures.join(', ') || 'none'}`);
   }
   const vitestProjects = input.projects.filter(({ name }) => name !== 'playwright');
+  const playwrightProjects = input.projects.filter(({ name }) => name === 'playwright');
   const assignments = input.trackedTests
     .filter((path) => !expectedFixtures.has(path))
-    .map((path) => ({ path, projects: projectsForPath(path, vitestProjects) }));
-  const unassigned = assignments.filter(({ projects }) => projects.length === 0);
-  if (unassigned.length) violations.push(`tracked tests outside every vitest project: ${unassigned.map(({ path }) => path).join(', ')}`);
-  const overlapping = assignments.filter(({ projects }) => projects.length > 1);
-  if (overlapping.length) violations.push(`tracked tests in multiple vitest projects: ${overlapping.map(({ path }) => path).join(', ')}`);
+    .map((path) => ({
+      path,
+      projects: projectsForPath(path, vitestProjects),
+      playwrightProjects: projectsForPath(path, playwrightProjects),
+    }));
+  const unassigned = assignments.filter(({ projects, playwrightProjects: playwright }) => projects.length === 0 && playwright.length === 0);
+  if (unassigned.length) violations.push(`tracked tests outside every test project: ${unassigned.map(({ path }) => path).join(', ')}`);
+  const overlapping = assignments.filter(({ projects, playwrightProjects: playwright }) => projects.length + playwright.length > 1);
+  if (overlapping.length) violations.push(`tracked tests in multiple test projects: ${overlapping.map(({ path }) => path).join(', ')}`);
   const browserProbe = assignments.find(({ path }) => path === BROWSER_PROBE);
   if (!browserProbe || !browserProbe.projects.includes('browser')) {
     violations.push(`${BROWSER_PROBE} must be tracked and mapped to the browser project`);
@@ -92,7 +101,12 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly 
   for (const entry of entries) {
     if (entry.migration !== 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;
     const expected = EXPECTED_PROJECTS[entry.test_tier as keyof typeof EXPECTED_PROJECTS];
-    if (!expected || entry.authoritative_test === 'NONE') continue;
+    if (!expected) continue;
+    if (entry.authoritative_test === 'NONE') {
+      violations.push({ id: entry.id, rule: 'test-tier-project', source: 'NONE',
+        message: 'migrated entries require a real authoritative_test location' });
+      continue;
+    }
     for (const source of new Set(referencedPaths(entry.authoritative_test))) {
       const testPath = configRelativePath(repoRoot, configRoot, source);
       const actual = testPath === null ? [] : projectsForPath(testPath, projects);

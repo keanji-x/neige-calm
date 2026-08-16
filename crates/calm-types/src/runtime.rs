@@ -19,7 +19,7 @@ pub type RuntimeId = String;
 pub type TimestampMs = i64;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum WorkerSessionKind {
     #[serde(rename = "terminal")]
     Terminal,
@@ -32,7 +32,7 @@ pub enum WorkerSessionKind {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum AgentProvider {
     #[serde(rename = "codex")]
     Codex,
@@ -41,7 +41,7 @@ pub enum AgentProvider {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WorkerSessionProjection {
     pub id: RuntimeId,
     pub card_id: String,

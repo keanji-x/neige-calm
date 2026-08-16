@@ -75,17 +75,18 @@ line, watch the named test go red) before landing.
   indistinguishable controls (§4.4 also forbids the tooltip standing in for the
   name). It sits at the trailing edge with the hover-revealed `×` one
   control-step inboard, and `.coveRow` reserves both gutters at rest, so neither
-  control moves on hover. The collapsed strip gets no `+`: one glyph per cove,
-  and that glyph is the cove. As with INV-SIDEBAR-012 the *visual* reveal is CSS
-  and `browser`-tier; jsdom pins the names and that the two controls do not
-  share a class.
-- **INV-CONFIRM-001** — both destructive confirms stay mounted for the whole
-  await: Confirm disabled, Cancel enabled, and a `finally` clears pending and
-  target so a rejected mutation cannot strand the dialog.
+  control moves on hover. Both marks are stroked `ui/icon` glyphs, not literal
+  characters — an icon box with bare text is a source-contract violation. The
+  collapsed strip gets no `+`: one glyph per cove, and that glyph is the cove.
+  As with INV-SIDEBAR-012 the *visual* reveal is CSS and `browser`-tier; jsdom
+  pins the names and that the two controls do not share a class.
+- **INV-CONFIRM-001** — both destructive confirms always keep Cancel enabled.
+  Closing during the await aborts the request, dismisses its owning dialog and
+  releases pending immediately.
 
 ## Deliberate gaps
 
 - Cove rename and drag-reorder are not in the rail; renaming lives on the cove
   page (`features/cove/page`).
-- The new-cove colour is picked at random from `COVE_PALETTE`; the wave create
-  form picks deterministically. Only the palette values are shared (INV-DUP-006).
+- The sidebar's new-cove flow is the sole consumer of `COVE_PALETTE`; it picks
+  a colour at random and sends it to the kernel (INV-DUP-006).

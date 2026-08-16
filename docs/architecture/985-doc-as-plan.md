@@ -276,11 +276,11 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 |---|---|
 | 1 | 新出现的 `task` 块，其 `declared_by`（墓碑块则是 `tombstoned_by`）**必须**等于本次编辑的 `EditAuthor`；**其它任何 author（`Kernel` / `Plugin`）新建 `task` 块一律拒绝（fail closed）**——两者今天没有生产发射点，但 guard 不能在其中之一回归时行为未定义 |
 | 2 | 既有块上 `declared_by` **永久冻结**，任何作者不得改变 |
-| 2b | 已存在的墓碑块 `tombstoned_by` **不可改**；且墓碑块**不得原位改回非墓碑**（撤回 = 删除该墓碑块）。否则 spec 一次原位改写就能把人的否决变成自己的任务，**绕过规则 3** |
-| 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由 |
+| 2b | 已存在的墓碑块 `tombstoned_by` **不可改**；且墓碑块**不得原位改回非墓碑**（撤回 = 删除该墓碑块）。否则 spec 一次原位改写就能把人的否决变成自己的任务，**绕过规则 3**。**唯一例外是 fork**：它不经 `apply_report_op`，复制墓碑时把 `tombstoned_by` 归一化为 `"spec"`（§7.2 / #1111）—— 不豁免会让模板墓碑对每个 fork wave 的 spec 永久锁死 |
+| 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由。该析取项**只**对本 wave 里人真正下的否决成立：fork 过来的模板墓碑已在 §7.2 被归一化为 `"spec"`，不落入本条 |
 | 4 | User 删除一个活的 task 块 ⇒ 改写为**原位墓碑**（`tombstoned_by: "user"`）|
 | 4′ | **主条款**：`author == User` 时，`before` 里任何非墓碑 `task` 块若在 `after` 中消失，则 `after` **必须存在同 `key` 且 `tombstoned_by=="user"` 的墓碑**，否则拒绝，**错误文案指向块级 DELETE 端点**（规则 4 只覆盖块级 DELETE，整文档路径必须 fail-closed）。**补丁**：满足它的墓碑必须是**本次编辑新立的**。live → tombstone 时 `tombstoned_by` 必须等于本次编辑的 author：没有它，spec 能伪造人的否决（终局、不可撤回，且规则 3 之后对 spec 永久锁死），人也能自废 §6.1 的防线。**且不得被一个早已存在的同 key 用户墓碑满足**——否则 fail-closed 兜底在它真正要生效的那天不成立 |
-| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变** |
+| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变**。**fork 更严**：任何作者 fork 出来的块都不得携带**不等于 `false` 的**该位（§7.2 / #1115），归一化在前（删键）、`fork_guard` 的腰带在后（判「不等于 `false`」，故显式 `false` 也放行）|
 | 6 | 既有块上 `key` 不可就地改写（§3.3）|
 
 **收口的完整性**（逐条查过绕过面）：`apply_report_op` 只在
@@ -288,7 +288,8 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 写一律 400；`card_update_with_crdt_tx` 只接受 wave-report 且唯一生产调用者是
 `wave_report.rs`；`card_create_with_id_tx` 强制 wave-report 必须是 kernel-minted
 的 canonical initial payload；REST 块级写口经 `require_rest_user_actor`。
-**fork 路径见 §7.2**（它不经 `apply_report_op`，自带三条补偿责任）。
+**fork 路径见 §7.2**（它不经 `apply_report_op`，自带三条补偿责任；三个特权字段
+`declared_by` / `tombstoned_by` / `released_by_user` 在那里全部被归一化）。
 
 ### 3.8 状态回显：读时合成，不进文档
 
@@ -325,7 +326,7 @@ worker_card_id）贴在块上；`gate_result` 在服务端收窄为 `{passed, fa
 | # | 规则 |
 |---|---|
 | 1 | **声明消失 ⇒ 守卫式删除**（`DELETE … AND status='pending'`）。四种触发：块被删除 / 被墓碑覆盖 / `ready` 从 true 撤回 / 该块新产生了诊断 |
-| 2 | **非 `pending` 行的声明内容不再更新**，只产出诊断；例外是收养与 `0070_` backfill 对 `decl_*` 影子位的**初始化**，它不改变 worker 可见规格。**已派发过的 `key` 不复活** —— `tasks.id = "{wave}:{key}"` 就是 operation 幂等键（§3.3）|
+| 2 | **非 `pending` 行的声明内容不再更新**，只产出诊断；唯一例外是已发布且不可修改的 `0070_` 历史 backfill 对 `decl_*` 影子位的**初始化**，它不改变 worker 可见规格。**已派发过的 `key` 不复活** —— `tasks.id = "{wave}:{key}"` 就是 operation 幂等键（§3.3）|
 | 3 | **可调度谓词是唯一的**：`schedulable = ready ∧ ¬tombstone ∧ diagnostics.is_empty() ∧ 准入`（§8 的 ceiling）|
 | 4 | **诊断零存储、零缓存、零事件** —— 读端在读事务内派生的标注 |
 | 5 | **`kernel_events` 必须被调用者消费**（§5.4）|
@@ -334,7 +335,7 @@ worker_card_id）贴在块上；`gate_result` 在服务端收窄为 `{passed, fa
 **规则 1 的列级契约**（施工基本面）：
 
 - **声明列**（可被覆盖）：`kind` / `goal` / `context_json` / `acceptance_criteria` /
-  `cwd` / `depends_on_json` / `priority` / `gate_json` / `declared_by` / `origin`；
+  `cwd` / `depends_on_json` / `priority` / `gate_json` / `declared_by`；
 - **绝不触碰**：`status_detail` / `worker_card_id` / `gate_result_json` /
   `gate_attempt` / `gate_pid*` / `running_deadline_ms` / `finished_at_ms`；
 - `status` 只在建行时写一次。
@@ -347,9 +348,6 @@ worker_card_id）贴在块上；`gate_result` 在服务端收窄为 `{passed, fa
 出的 key 列表，**`pending` 行的 key 一律不在其中** —— 与规则 3 的 `occupied` 是
 同一条判据的同一次应用（**`pending` 行永远是输出，在飞行永远是输入**）。
 不收窄则同一事务内会分叉 ⇒ rebuild ≢ 增量。
-**必须专列进切片 3b 的迁移验收**：一条 `depends_on` 指向 `origin='legacy'` 的
-pending 行会**突然产生 `unknown_deps` 诊断** —— 这是存量库上线当天唯一会出现
-「突然多出来一批诊断」的地方。
 
 **等价性属性测试**（把「投影不得比 `calm.plan.upsert` 松」从散文变成机制）：
 > `resolve_plan_batch(existing, B).is_err() ⟺ project_task_declarations(blocks_of(B))
@@ -554,8 +552,7 @@ claim 前 `Task` 快照在 API 上不可达；即时派发、崩溃恢复与 chi
    行是文档的纯函数，天然一致；migration = 不需要新列，但需要一次性、幂等地执行
    `UPDATE tasks SET context_stale_at_ms = NULL WHERE status = 'pending' AND context_stale_at_ms IS NOT NULL`，只碰 pending、
    不产生事件——该状态在已发布版本不可达，仅防御曾含 claim 侧误写的未合并开发分支。
-3. `origin='legacy'` 的行跳过定位，冻结集为空集。
-4. 闭包**展开**在 claim 事务之外的普通读里完成，**但根块与各 wave 的 `doc_rev`
+3. 闭包**展开**在 claim 事务之外的普通读里完成，**但根块与各 wave 的 `doc_rev`
    必须在 claim 事务内复核**（§5.2 栅栏）。
 
 `task_claim_pending_tx` **不得**带 `context_stale_at_ms` 谓词：腿 1 后没有写者能让
@@ -664,7 +661,7 @@ snapshot；该桶任一非零增量立即告警（验收：注入一份损坏持
 
 | 载体 | 谁写 | rebuild 怎么重放 | migration |
 |---|---|---|---|
-| `tasks.decl_ready` / `tasks.decl_released_by_user`（`INTEGER NOT NULL DEFAULT 0`）| 与既有声明列同批写入；**非 `pending` 行不改声明内容**，但收养初始化 `decl_ready=1` | 撤回退化为**当前状态的纯函数**；收养与 `0070_` backfill 初始化影子位不改变 worker 可见规格 | `decl_ready` backfill 为 1（见 §9）；`decl_released_by_user` 保持 0 并列为显式例外 |
+| `tasks.decl_ready` / `tasks.decl_released_by_user`（`INTEGER NOT NULL DEFAULT 0`）| 与既有声明列同批写入；**非 `pending` 行不改声明内容** | 撤回退化为**当前状态的纯函数**；已发布且不可修改的 `0070_` 历史 backfill 初始化影子位，不改变 worker 可见规格 | `decl_ready` backfill 为 1（见 §9）；`decl_released_by_user` 保持 0 并列为显式例外 |
 
 **三条边界**：
 
@@ -904,12 +901,9 @@ kind 是任务派发与用户建卡**共用**的。
 >
 > **(A) 与 (B) 互不推出，要分别验收。**
 
-**关于例外 (d) 的范围**（必须如实说）：判据是**「冻结集为空」而不是
-`origin='legacy'`**。后者划错了范围，漏掉两类：**(i)** 收编路径会把在飞的 legacy
-行 `origin` 翻成 `'block'` 而 `claim_context_json` 仍是 `'[]'`；
-**(ii)** 更大的一块 —— **切片 3b′ 通电之前，生产 claim 对所有行都走空闭包**，
-即**每一条在飞行**都属于这一类。**新 legacy 行真正停增要到切片 5**
-（`calm.plan.upsert` 退场）；在那之前 (d) 是一个**持续增长**的集合。
+**关于例外 (d) 的范围**（必须如实说）：判据是**「冻结集为空」**。
+`claim_context_json = '[]'` 表示一个已记录的空冻结集，`NULL` 表示冻结集缺失并走
+fail-closed；两者必须始终可区分，不能把来源或迁移阶段偷换成判据。
 
 ### 5.8 检测的挂点
 
@@ -947,7 +941,8 @@ sweep 末尾兜底。**代价要如实记**：用 FK + trigger 换掉了**编译
 
 **权属载体是独立的 `tombstoned_by`，`declared_by` 原样承接。** 用 `declared_by`
 当载体时，「人删 spec 声明的任务」这条**默认路径必然 400**（规则 4 的改写
-vs 规则 2 的冻结）。
+vs 规则 2 的冻结）。**双署名只在同一个 wave 内成立**：fork 复制块时两个署名
+一起被归一化为 `"spec"`（§7.2 / #1111），跨 wave 的原作者归属不由这两个字段承载。
 
 **换 `key` 绕过否决怎么办（B2 裁决：改为一次点击，不再自动派生）**：
 人删除一条 spec 声明的任务时，**UI 当场问一句**「要不要此后 spec 的任务都等你放行？
@@ -1120,13 +1115,90 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 3. 豁免**只**豁免规则 1，且**只**在 fork 路径上 —— 不新增任何「跳过 guard」的
    可复用开关。
 
-**fork 强制改写两个字段**：
+**fork 强制改写四个字段**（`ready` / `declared_by` / `tombstoned_by` /
+`released_by_user`；下面五条里第二条是 `ready` 在墓碑上的特例，不是第五个字段）：
 
 - **live task 的 `ready` 降为 `false`** —— 没有任何东西是在「这次」被决定要做的；
   这也让「wave 创建事务里意外派发」在结构上不可能。
 - **墓碑 task 不写 `ready`** —— 墓碑 schema 禁止该字段。
 - **`declared_by` 改写为 `"spec"`** —— 模板里的任务不是**这个人**为**这个 wave**
   提的；标成 `spec` 把它们纳入 §8 的预算（若标 `user`，模板就成了绕过预算的后门）。
+- **墓碑块的 `tombstoned_by` 改写为 `"spec"`**（#1111）—— 理由与 `declared_by`
+  同源：模板里的否决不是**这个人**为**这个 wave** 下的，不归一化模板就成了绕过
+  特权的后门；且 §3.7 规则 2b 让墓碑上的 `tombstoned_by` **不可改**、规则 3 的
+  `user_owned` 是**析取**（`declared_by == "user"` **或** `tombstoned_by == "user"`），
+  两者叠加 ⇒ 一个 `tombstoned_by: "user"` 的模板墓碑会在**每一个** fork 出来的
+  wave 上对 spec 作者**永久锁死**，且无任何修复路径。
+  **非墓碑块上的残留 `tombstoned_by` 刻意不清** —— 交给紧随其后的
+  `validate_payload`（`tombstoned_by: must be absent from a non-tombstone task`）
+  fail-closed 地打断**整条** fork：损坏的源报告应当让 wave 创建 400，而不是被
+  静默修补成它从未合法拥有过的形状。
+- **live task 的 `released_by_user` 整个键被删除**（#1115）—— 它是三个特权字段里
+  唯一回答「**人**是否在**这个 wave** 里点头了」的那个。`declared_by` 上一条刚被
+  改写成 `"spec"`，正是 `declare_and_wait` 要拦的形态
+  （`task_projection.rs`：`effective_wait ∧ declared_by == "spec" ∧
+  ¬released_by_user ∧ ¬tombstone`）；若把模板的 `released_by_user: true` 原样带过来，
+  这个副本就凭源 wave 用户的一次点头，**永久豁免**新 wave 用户从未做过的决定 ——
+  而且 `web/src/pages/report-blocks/task.tsx` 见到该位为真会**隐藏「Allow this task」
+  按钮**，新用户连察觉的入口都没有。语义与同一处的 `ready: false` 同源：模板里没有
+  任何东西是为**这个** wave 决定的。
+  **是删键，不是写显式 `false`。** 对所有读者两者等价（`tasks.rs` 用
+  `.unwrap_or(false)`，前端判 falsy），但对
+  `wave_report_edit_guard.rs` 的规则 5 后续编辑分支**不等价** —— 它比较的是原始
+  `Option<&Value>`，缺席 ≠ `Some(false)`，且任何非 User 作者改变该 Option 一律拒绝。
+  经 **plan-template 生成器**（`plan.rs` 的 `plan_template_task_block_payload`）
+  声明出来的 task 块**不带**这个键（该映射把 `released_by_user` 列为排除字段，有
+  字段集相等的元测试钉住）。**这是那一个生成器的性质，不是全局不变量** —— 经 MCP
+  直接写块的 agent 理论上可以自己塞一个 `released_by_user: false`（schema 允许），
+  只是没有理由这么做。规范形状仍是**无键**，所以写显式 `false` 会让 fork 出来的块成为
+  「spec 每次改写都必须原样回填该字段」的唯一一类块 —— 在这个字段上重演 #1111 刚
+  关掉的「模板块 spec 永远改不动」故障类。`ready` 之所以写显式 `false`，只是因为
+  `kinds.rs` 把它列为 live task 的**必填**字段，这里没有这个约束。
+  **墓碑块不动该字段** —— 墓碑 schema（§3.6 的封闭形状
+  `{key, tombstone, declared_by, tombstoned_by}`）本就禁止它；墓碑上出现
+  `released_by_user` 会被 `validate_payload`（`released_by_user: must be absent from
+  a tombstone task`）fail-closed 地打断整条 fork，与上一条对残留 `tombstoned_by` 的
+  处理同一取舍。
+
+**两组计数**：**特权/归属字段一共三个** —— `declared_by`、`tombstoned_by`、
+`released_by_user`，**三个现在全部被 fork 归一化**；而 **fork 强制改写的是四个
+字段** —— `ready`、`declared_by`、`tombstoned_by`、`released_by_user`。`ready` 是被
+改写字段之一，但它**不是**特权/归属字段（它是执行就绪状态，不回答「这是谁的
+意思」）。两组的差就是 `ready`。
+
+**归一化之后还有一条 fail-closed 腰带**（`fork_guard::guard_forked_blocks`，#1115）：
+**任何** fork 出来的 task 块都不得携带**不等于 `false` 的**放行位，**不分作者**，
+否则整条 wave 创建 400。**判据是「不等于 `false`」而不是「键存在」** —— 键缺席
+（归一化之后的规范形状）与显式 `released_by_user: false` 都放行；`null` 或字符串
+这类 schema 本就不允许的值（`kinds.rs:243-245` 要求 boolean）则一律被拒，方向是
+fail-closed。这是刻意的：腰带的用途是抓
+归一化的回归（模板的**放行**漏进新 wave），不是规定「未放行」该怎么编码；显式
+`false` 对所有读者与缺席等价（`tasks.rs` 的 `.unwrap_or(false)`、前端判 falsy），
+若将来归一化改成写显式 `false`（语义无害），一条严格要求「键必须缺席」的腰带就会
+把一次无害的编码变更判成 400。同一条「不等于 `false`」判据（而非 `is_some()`）在
+普通守卫里已有先例：非 User 作者**新建** task 块时走的正是它
+（`wave_report_edit_guard.rs:111-115`）。它比 §3.7 规则 5 严格（规则 5 只咬 `author != User`），且**刻意不再
+接收 author 参数** —— 旧形状正是栽在这里：浏览器 fork 不带 `X-Calm-Actor` 头，wave
+创建路径把它判成 `User`，于是规则 5 对最常见的那条路径恒不成立，守卫等于空转。
+腰带在正常路径上永远查不到东西（归一化排在它前面），**这个恒真是它的稳态而不是它
+空洞的证据**：归一化一旦被删掉、被挪到腰带之后、或被收窄到部分块，它会把这次回归
+变成立即的 400，而不是一次静默的特权授予。它保护的值由
+`task_projection.rs`（放行位为真则不产 `declare_and_wait` 诊断，`schedulable` 随
+诊断为空而为真）和 `report-blocks/task.tsx`（放行位为真则隐藏放行按钮）读取。
+
+**副作用（一个真实的行为收窄的反面）**：旧的「非 User fork 遇到带放行位的模板 ⇒
+整条 400」随之消失（这里的「非 User」是 `EditAuthor` 意义上的 —— 只要请求带了
+`X-Calm-Actor: ai:*` 头就落入该分支，与 `actor.rs` 在**身份**层怎么归类无关）。那不是一条契约，而是同一个缺口的另一面：任何被用过一次
+「Allow this task」的模板，对 agent 就**永久不可 fork**，且除了人去改模板之外没有
+修复路径。归一化把放行位在守卫看到之前就清掉了，所以没有东西可拒；特权本身一分
+未松 —— 无论谁 fork，都没有块能带着放行位进入新 wave。
+
+**归一化刻意授予的能力**：模板墓碑对新 wave 的 spec 降级为**建议**而非绑定 ——
+spec 可以改 `tombstone.reason`、可以**删除**该墓碑块；删除后可以用**新的 block id**
+重新声明同一个 `key`。但重新声明出来的 task 照样 `declared_by == "spec"`、照样计入
+§8 的预算、照样受 `declare_and_wait`（§6.6）约束，而新 wave 的用户随时可以再次把它
+墓碑化（并因此重新获得规则 3 的保护）。**墓碑仍然不可原地 restore**（规则 2b，
+对任何作者都成立）—— 被降级的只是「谁拥有这块墓碑」，不是墓碑本身的终局语义。
 
 ### 7.3 fork 的 `neige://` 引用重写
 
@@ -1169,12 +1241,12 @@ wave 创建本来就是人的动作。
 
 ## 8. 预算
 
-三层，互不替代：
+四层，互不替代；其中 per-wave ceiling 与 tree share 两层容量取 min：
 
 | 层 | 载体 | 约束什么 |
 |---|---|---|
 | **并发** | `waves.task_budget`（既有，默认 1）| 同时在飞的任务数 |
-| **未结存量** | `waves.spec_task_ceiling`（默认 32）| 该 wave 内 `declared_by='spec'` 且 `origin='block'` 的**未结**行数 |
+| **未结存量** | `waves.spec_task_ceiling`（默认 32）| 该 wave 内 `declared_by='spec'` 的**未结**行数 |
 | **树深度（PR-A）** | `waves.parent_wave_id` + `MAX_WAVE_TREE_DEPTH = 3` | 子 wave 递归展开深度 0..=3 |
 | **树级存量（切片 6 PR-B，已交付）** | `waves.tree_task_budget`（`INTEGER NULL`，NULL ⇒ 内核默认 32，**只在树根有意义**）| 整棵树内 `declared_by='spec'` 的非终结存量 |
 
@@ -1199,15 +1271,13 @@ share(W, T)          = floor(B / N)，余数按 (created_at, id) 升序分给前
 整笔 PATCH / child-wave 创建回滚。因而 B 不能被提交到现有 live inventory 以下。
 ```
 
-树份额的占用口径覆盖**所有**非终结 `declared_by='spec'` 行：block-origin 在飞行直接占用，
-block-origin pending 作为本轮投影候选重新派额，非 block 行（升级迁移产生的 legacy，含 pending）
-作为不可裁的固定占用。per-wave `spec_task_ceiling` 仍保持 §4.2 已批准的 block-only 口径；两种
-容量分别计算后取较小值。若任一成员的不可裁占用已超过自己的 share，则整树冻结新 block 准入，
-避免未满 sibling 继续增长把总量推过 B。故 legacy 行既不会被裁剪/改写，也绝不能给新 block
-行“让出”树份额。
+两层容量使用同一行域但保持两套独立口径：per-wave ceiling 与 tree share 都只数
+`declared_by='spec'` 的在飞行作为固定占用，pending 行作为本轮投影候选重新派额；分别算出
+`ceiling - occupied` 与 `share - occupied` 后取较小值。若任一成员的不可裁在飞占用已超过
+自己的 share，则整树冻结新行准入，避免未满 sibling 继续增长把总量推过 B。
 
 三个输入 —— 本 wave 文档、本 wave 不可裁存量、**树的形状（`waves` 行）** —— 没有一个是
-block pending 投影产物；树项不读 sibling pending，且本 wave 的 block pending 仍作为候选重建，
+pending 投影产物；树项不读 sibling pending，且本 wave 的 pending 仍作为候选重建，
 D.1 #11「rebuild ≡ 增量差分」在树上原样成立。
 （早期方案「`external_occupied = 全树非终结 − 本 wave pending`」已取消：共享计数是
 先到先得、路径依赖的，rebuild 无从得知「谁先来」。）
@@ -1215,22 +1285,18 @@ D.1 #11「rebuild ≡ 增量差分」在树上原样成立。
 `sub-wave-tree-budget-exhausted`），并在 N 改变后走与 B PATCH 相同的整树重投影/后置复核。
 因此任一由本 build 准入的新状态都满足 `Σ_v live_spec(v) ≤ B`；承重验收是
 `whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences` 与
-`legacy_live_spec_consumes_tree_share_until_it_terminates`、
-`legacy_member_overage_freezes_new_blocks_across_the_tree`。
+`raw_sql_tree_overage_consumes_share_until_inflight_terminates`（truth 层防御性构造）、
+`in_flight_member_overage_freezes_new_blocks_across_the_tree`。
 **求不到树根时 fail-closed**（诊断 `tree_root_unresolved`，该 wave 一条都不准入）——
 一条断链绝不能让整棵子树无约束。
-
-**升级遗留退化旁注（与 ceiling 退化语义并列）**：若升级瞬间树内已有 `K` 条非终结 legacy
-spec 行且 `K >= B`，这些行逐字节不变、不得裁；当时的有效上界暂时退化为 `K`，所有成员的
-新 block 容量为 0。legacy 行每终结一条才按确定性 share 释放相应容量，存量不再上升并单调
-收敛到严格的 `Σ_v live_spec(v) ≤ B`。`K == B` 起一条新声明也不能落行；`K > B` 是被接管的
-升级前既有状态，不允许后续写把超额维持或扩大。
 
 **单 wave ceiling 上界的精确形式**：`非终结行数 = occupied + |准入| ≤ max(ceiling, occupied)`。
 若人把 ceiling 调低到当时的在飞行数以下，上界**暂时退化为调低那一刻的在飞行数**，
 并随这些行终结**单调收敛**回新 ceiling —— 期间 `capacity = 0`，不准入任何新行。
 这条退化只属于 `spec_task_ceiling`；tree B/N 改动由整树后置复核拒绝 in-flight 超额，
-不再允许新产生的 block 行把树总量上界退化；唯一例外是上一段逐字节保留的升级 legacy 存量。
+不允许通过生产写口提交树级退化状态。truth 层仍对 raw SQL、旧快照或损坏数据中已经存在的
+树级不可裁超额 fail-closed：冻结整树准入并随终结收敛；这是防御性读取语义，不代表该状态可由
+生产 PATCH 构造。
 
 子 wave 创建还有一个显式 409 失败模式：点一库存/成员准入可能放行，但 `N` 增长后的整树
 重投影若发现任一成员的不可裁 in-flight 存量高于新 share，整笔创建回滚并返回 Conflict；调用方
@@ -1253,34 +1319,12 @@ spec 行且 `K >= B`，这些行逐字节不变、不得裁；当时的有效上
 
 ## 9. 迁移
 
-### 9.1 声明侧一次性物化，状态侧原样保留
+### 9.1 `0073_` 删除来源桶
 
-现有 wave 的 `tasks` 行由 `calm.plan.upsert` 写入，**没有对应的 `task` 块**。
-plan 表降为投影后，一次 `tasks_rebuild_tx` 会把它们全部抹掉。
-
-**裁决：双向迁移。**
-
-1. **`tasks.declared_by TEXT NOT NULL DEFAULT 'spec'`** —— 存量行全部标 `spec`
-   （它们确实全部来自 `calm.plan.upsert`）。
-2. **`tasks.origin TEXT NOT NULL DEFAULT 'legacy'`**（`legacy | block`）。
-   **投影只管理 `origin='block'` 的行**：删除阶段只删 `origin='block'`、
-   当前文档不再声明、且仍是 `pending` 的行。
-3. **同 key 收编**（自动且幂等，因此物化工具只是便利工具、不是迁移必需品）：
-   - **pending 行** ⇒ 原地收编：`origin` 翻 `'block'`、**声明列全量覆盖**、
-     状态列一字不动，同一条 UPDATE 同一事务；
-   - **非 pending 行** ⇒ 同样翻 `origin`，声明内容不动；但收养只发生在
-     `schedulable`（当前 `ready=true`）时，必须初始化影子位 `decl_ready=1`。
-     `decl_released_by_user` 保持 0，因为旧值不可重建；不一致则出 stale 诊断。
-   - **任何情况下都不 INSERT**，所以 `UNIQUE(wave_id, key)` 永远不会被撞到。
-4. **物化工具（可选、人触发）**：admin CLI 把某个 wave 的 `tasks` 行写成 `task` 块。
-   **它与 fork 一样需要规则 1 的豁免**（写入的 `declared_by` 来自存量行的归因，
-   而不是本次编辑的 author）。**豁免点必须是封闭集**：全仓只有 **fork 与物化工具
-   两处**，配一条**枚举测试**断言不存在第三处——否则 §3.7「所有写路径唯一收口」
-   是一条空洞的普遍否定。
-   **对每一行写 `ready: true`** —— 语义是「这条声明现在由文档承载，与它此前的状态
-   一致」，不是「现在决定要做它」。（**与 fork 的 `ready:false` 方向相反，这是对的**：
-   fork 面对的是模板，物化面对的是**已经在排队的活行**；若写 `false`，
-   §4.2 规则 1 会当场删掉那条活的 pending 行。）
+`0073_drop_task_origin.sql` 先以临时 CHECK guard **硬断言不存在非终结的 legacy 行**，
+断言通过后执行 `ALTER TABLE tasks DROP COLUMN origin`；断言失败则整条 migration 回滚，
+启动 fail-closed。这里不再加 CHECK：SQLite 没有 `ALTER TABLE ADD CONSTRAINT`，而列删除后
+CHECK 也没有可约束的对象。
 
 ### 9.2 新列的 backfill（每一列都必须有裁决）
 
@@ -1325,14 +1369,15 @@ OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
 
 - **已发布的 migration 一律不可编辑** —— sqlx 对整个文件做 checksum，
   改一个字（含注释）会让启动直接 `VersionMismatch`。backfill 必须写进**新**文件。
-- **加列必须同步所有显式 SELECT** —— `sqlx::query_as` 在**运行期**失败而不是编译期。
-  这条纪律对 `declared_by` / `origin` 成立（投影确实读 `Task`）。
+- **加列必须同步所有显式 SELECT** —— 这条纪律对 `declared_by` 成立；**删列同样必须扫描
+  全部显式 SELECT**。本仓没有 sqlx 编译期宏，也没有 `.sqlx` 离线元数据，编译全绿不代表
+  列仍存在或已消失；漏改只会在 SQL 运行期炸。
 - `replay.rs` 的 fixture 重置表清单必须包含 `task_ref_index`（该表与 `tasks` 一样
   **没有 FK**，删 `waves` / `tasks` 不会级联到它）。
 
 ### 9.4 不做的事
 
-不在服务器启动时批量重写报告；不删任何 legacy 行；不改已发布的 migration。
+不在服务器启动时批量重写报告；不改已发布的 migration。
 
 ---
 
@@ -1365,18 +1410,16 @@ OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
 2. `PlanUpdated{key}` **严格早于**该 key 的第一个 `TaskDispatched`。
 3. 每个 `TaskDispatched` **同批**必有一条 `TaskContextFrozen`（同 wave、
    同 `idempotency_key`）。
-   **「空」不等于「缺失」**：`origin='legacy'` 的行仍然发射，只是 `refs: []`。
-   一个空冻结集的语义是「这个任务没有可失效的上下文」，与「我们没记下它的上下文」
+   **「空」不等于「缺失」**：一个空冻结集的语义是「这个任务没有可失效的上下文」，
+   与「我们没记下它的上下文」
    （= fail-closed 判 material）是两件事。
 
 **冻结与检测**：
 
 - **3a. 空冻结集行可区分**：`claim_context_json = '[]'` ⇒ 不判 material；
-  `NULL` ⇒ fail-closed 判 material。
-  （**判据是「冻结集为空」不是 `origin='legacy'`** —— 收编后 origin 已翻成
-  `'block'` 的行、以及 3b′ 通电前经 legacy claim 路径的**全部**行同属此类。）
-- **3b. task 块自身在冻结集内**：任何 `origin='block'` 行的
-  `TaskContextFrozen.refs` 必包含它自己的块，**且带显式 root 标记**。
+  `NULL` ⇒ fail-closed 判 material。判据只看冻结集是否为空，来源不参与判断。
+- **3b. task 块自身在冻结集内**：任何行的 `TaskContextFrozen.refs` 必包含它自己的块，
+  **且带显式 root 标记**。
   编辑一个 in-flight task 自己的 `goal` → 必有 `TaskContextAdvanced`。
   **限定**：这里的「编辑」指**纳入字段集内**的编辑（`goal` 恰在集内）；
   **不可据此推广**。
@@ -1410,7 +1453,7 @@ OpenAPI / TS / 所有 `query_as::<Task>` 的连带面。
 - **根接线元测试** —— **必须经由生产 claim 路径**产生 `claim_context_json`，
   **禁止用 SQL 预置该列**；断言非空且包含根块自身。
   表驱动用例：唯一存活块 / 同 `key` 两块 / 同 `key` 普通块 + 墓碑 / 根刚被删 /
-  `origin='legacy'` / 解析后 claim 前发生编辑（栅栏生效）/ 根块收窄投影 vs
+  解析后 claim 前发生编辑（栅栏生效）/ 根块收窄投影 vs
   子块整块哈希 / claim 回滚不留索引行也不留冻结事件。
   **变异验证**（注释掉接线证明变红）保留，但承重的是「禁止 SQL 预置」这条
   结构性约束。
@@ -1464,8 +1507,14 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 | 2 — 写口收口 + 人的块级写口 + 链接扫描 | #990 | **仍然惰性**（不投影）|
 | 3a — 冻结 + 反向索引 + 一级检测 + fail-closed sweep + 判决强制点 | #991 | 调度决策逐位不变；事件面已通电 |
 | 3b — 投影 + rebuild + 唯一可调度谓词 + 存量护栏 | #994 | **声明从此有后果** |
+| 3b′ — 冻结通电 + 3a 加固 | #1018 / #1025 | 冻结闭包进入真实 claim / sweep 路径 |
+| 3c — 状态回显 + 诊断渲染 | #1029 | 人能看见状态、诊断并执行放行 / 否决 |
+| 5 — 模板 fork + `calm.plan.upsert` 退场 | #1033 / #1038 | 声明写口收敛到文档；模板引用安全重写 |
+| 6 — 子 wave + 树预算 | #1040 / #1047 | 深度上限、父任务闭合与树级存量上界生效 |
 
-### 切片 3b′ — 冻结通电 + 3a 加固（~1100 行，**部署硬门**）
+**余下功能片只剩切片 4。** 以下已交付切片保留施工与验收记录；切片 4 是唯一待实现项。
+
+### 切片 3b′ — 冻结通电 + 3a 加固（已交付，**部署硬门**）
 
 **这一片之前，`task` 块的写口不得对人开放。** 3b 已经能投影出 `origin='block'`
 的行并驱动调度，而冻结闭包的输入端整条没有接线 ⇒ 第 5 章对它唯一要保护的那类行
@@ -1492,7 +1541,7 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 **验收**：§10.3 + **附录 D.2 的 3b′ 四条补充项**（㉒ 元测试的常量引用、
 ㉓ 两条路同结论、㉕ 开门后当轮完成 `resume_dispatched`、㉖ SQL / migration 回归）。
 
-### 切片 3c — 前端：状态回显 + 诊断渲染（~350 行）
+### 切片 3c — 前端：状态回显 + 诊断渲染（已交付）
 
 **代码依赖 3b；发布依赖 3b′**，且**必须与 3b′ 进同一次对人可见的发布**（§12.2 A 硬约束）——
 3b 是「行会被守卫式删除」的第一片，而诊断渲染在 3c，中间的窗口里系统第一次做决定
@@ -1513,7 +1562,7 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 |---|---|
 | 重复 `key` | 哪两个块撞了（带跳转）、改哪个 |
 | 依赖成环 | 环上的**完整 key 序列**（带跳转）|
-| 未知依赖 | key 不存在 / 只是一条 legacy 行（**存量库上线当天会冒出一批，必须预置文案**，§4.2 规则 3‴）|
+| 未知依赖 | key 不存在（§4.2 规则 3‴）|
 | 缺 gate / `no_gate_reason` | 该 wave 打开了 `require_task_gates`，二选一 |
 | 超 `spec_task_ceiling` | 当前 ceiling、当前占用、容量大于零时**你被谁挤出、为什么（块序 + `key` 升序）**；容量为零时不得伪造关联块，只显示「提高上限」的 wave 入口 |
 | 越 cove / 引用解析失败 | 哪一条 `refs`、指向哪、怎么重新链接 |
@@ -1531,7 +1580,7 @@ OpenAPI 重生成无 diff / **`web` build + vitest** / **`fe` lint + build + tes
 
 推论（本片必须做到的三件事）：`released_by_user` 渲染成**按钮**而不是字段；
 `declared_by` / `tombstoned_by` **不要求人填**（唯一合法值系统写入时已经知道，
-由 `normalize_report_op` 顺手盖章）；`origin` / `content_hash` / 冻结集 /
+由 `normalize_report_op` 顺手盖章）；`content_hash` / 冻结集 /
 `closure_truncated` / `if_doc_rev` vs `if_block_rev` / `effective_policy`
 **只以句子出现，从不以名词出现**。
 
@@ -1553,7 +1602,7 @@ task 块时，**当场弹确认框**「要不要此后 spec 的任务都等你�
 判非实质后冻结点推进到新的 `content_hash`，每次推进带一条 `TaskContextAdvanced`
 并同事务更新 `task_ref_index`；判 `material` **不推进**冻结点。
 
-### 切片 5 — 模板 fork + `calm.plan.upsert` 退场（~1000 行）
+### 切片 5 — 模板 fork + `calm.plan.upsert` 退场（已交付）
 
 `fork_report_from` + §7.3 的引用重写；`calm.plan.upsert` 从工具面移除
 （形状复刻 `calm.task.dispatch` 的隐藏 shim：`visible_to_roles: &[]`、零写入、
@@ -1571,29 +1620,22 @@ task 块时，**当场弹确认框**「要不要此后 spec 的任务都等你�
 **外部引用逐字节未变** —— **错了是静默的**（指回模板原文的链接看起来仍然合法），
 所以必须专测。
 
-**这一片之后新 legacy 行才真正停增**（§5.7 例外 (d) 的边界）。
-
-### 切片 6 — 深度上限 + `spawn: "sub-wave"`，再交付树预算
+### 切片 6 — 深度上限 + `spawn: "sub-wave"`，再交付树预算（已交付）
 
 PR-A 已交付冻结 `tasks.spawn`、child-wave operation、`parent_wave_id`、深度上限 3、
 父任务 live+sweep 闭合与 `childWaveId` 读时回显。`spawn` 保持在哈希排除集，依据是
 §5.2 的 claim-frozen 四条前置条件。PR-B 才交付 `tree_task_budget` 与创建准入、
 `evaluate_schedulability` 两个强制点；PR-A 与 PR-B 之间树存量上界尚未成立。
 
-### 切片 7 — 迁移物化工具 + cove 读时聚合（~700 行）
-
-§9.1 第 4 项 + cove 级的读时聚合视图（不新建存储）。
-
 ### 依赖图
 
 ```
 切片 1（惰性）→ 2（惰性）→ 3a（调度惰性、事件面通电）→ 3b（声明有后果）
-   → 3b′（冻结通电，**部署硬门**）
-        ├── 3c（前端，**必须**与 3b′ 同发布）
-        ├── 4（LLM 裁决，可后排）
-        ├── 5（模板 + upsert 退场）
-        ├── 6（树预算 + sub-wave）
-        └── 7（物化工具 + cove 聚合）
+   → 3b′（冻结通电，**部署硬门**，已交付）
+        ├── 3c（前端，已交付）
+        ├── 5（模板 + upsert 退场，已交付）
+        ├── 6（树预算 + sub-wave，已交付）
+        └── 4（LLM 裁决，唯一待实现功能片）
 ```
 
 ---
@@ -1616,7 +1658,6 @@ PR-A 已交付冻结 `tasks.spawn`、child-wave operation、`parent_wave_id`、�
 | 10 | **一次误报被变成不可逆终结** | sweep 判错 ⇒ 行落 `failed` ⇒ 人必须换 `key` 重开。**若切片 4 上线后误报率仍高，这条应重新评估**（例如改成可由人一键重开的形态）。这是误报定价的唯一出口 |
 | 11 | **一次触发的重解析开销无常数上界** | 上界 = 冻结了该 wave 的 in-flight 任务数 × `MAX_REF_NODES` ≤ (Σ per-wave `task_budget`) × 64。**由 `MAX_RERESOLVE_FANOUT` 封顶**（超出即 fail-closed 判 material，不引入漏报）；封顶之外的代价靠可观测量监控 |
 | 12 | **sweep 停摆** | 两条真实路径：(i) DB 出错「warn + 跳过本轮」会**静默降级**保证；(ii) reconcile tick 是 `tokio::spawn` 里的裸 `loop`，**一次 panic 静默终结该进程余生的所有 sweep**。健康信号（§5.5）只让它**可见**，不让它**不发生** —— 告警阈值 `3 ×` reconcile 周期 |
-| 13 | **升级日 legacy 在飞行不计入 `occupied`** | 人看到的「本 wave 未结任务」口径会**暂时大于 ceiling**，随这些行终结收敛。且 `unknown_deps` 按规则 3‴ **必须把 legacy 在飞 key 视为已知**（否则存量依赖全变未知依赖），但**不得在 `occupied` 查询里无条件混入 legacy 行**（那会让准入不幂等）—— 两条方向相反，容易被实现成同一个 JOIN |
 | 14 | **引用锚仍是 block id ⇒ 误中止潮** | 一次大幅整文档重写可能让 `refs[]` 批量失效 ⇒ 闭包解析不到 ⇒ fail-closed 判 material ⇒ **一批在飞任务同时终结**。缓解是「引用已失效，请重新链接」诊断 + marker 通道；**未量化**，上线后需观测 |
 | 15 | **换 `key` 绕过人的否决，防线降为 opt-in** | B2 裁决（§12.2）把「墓碑 ⇒ 自动派生 `declare-and-wait`」改成删任务时的一次点击 ⇒ **人不点时该循环仍然存在**。本设计只保证**同 `key`** 被挡住（§4.2 规则 2 + §3.7 规则 3）。**回退条件**：观测到真实的换 key 循环 ⇒ 恢复 `effective_policy` 的第二分支 + wave 级横幅 + 确认框 + 两个清除按钮（§6.1）|
 | 16 | **`task_budget` / `require_task_gates` 的既有写口不对称** | `update_wave` 对它们接受任何自述 actor，spec 仍可调高自己的并发度。那两列限的是**并发**，而本设计的护栏是**存量**与**能不能自动跑**，后两者已守住。属 #644 的面，应单开 issue |
@@ -1711,7 +1752,7 @@ related_wave_id?, action?, message }`。`message` 是由前两项派生的兼容
 |---|---|
 | 重复 `key` | 哪两个块撞了（带跳转）、改哪个 |
 | 依赖成环 | 环上的完整 key 序列（带跳转）|
-| 未知依赖 | 依赖的 key 不存在 / 只是一条 legacy 行（**存量库上线当天会冒出一批，必须预置文案**，§4.2 规则 3‴）|
+| 未知依赖 | 依赖的 key 不存在（§4.2 规则 3‴）|
 | 超 ceiling | 当前 ceiling、当前占用、**你被谁挤出、为什么（块序）**、以及「提高上限」的入口 |
 | 越 cove / 引用失效 | 哪一条 `refs`、指向哪、怎么重新链接 |
 | `closure_truncated` | 「引用链过深，此任务将按最保守方式判失效」|
@@ -1726,7 +1767,7 @@ related_wave_id?, action?, message }`。`message` 是由前两项派生的兼容
 **现状**：会以某种形式进入使用者视野的概念数了 **30 个以上**（`key` / `ready` /
 `declared_by` / `tombstoned_by` / `released_by_user` / 墓碑 / `spawn` / `refs` /
 `depends_on` / `gate` / `priority` / `cwd` / `context` / `automation_policy` /
-`effective_policy` / `spec_task_ceiling` / `task_budget` / `origin` / 冻结集 /
+`effective_policy` / `spec_task_ceiling` / `task_budget` / 冻结集 /
 `content_hash` / stale / material / `closure_truncated` / `if_doc_rev` vs
 `if_block_rev` / 模板 overlay / cove / …）。
 
@@ -1737,7 +1778,7 @@ related_wave_id?, action?, message }`。`message` 是由前两项派生的兼容
 - **必要但不该由人书写**（3 个）：`declared_by` / `tombstoned_by`
   （**填错就 400、填对等于没填** —— 唯一合法值系统写入时已经知道，
   建议由 `normalize_report_op` 顺手盖章）、`released_by_user`（应当是**按钮**不是字段）；
-- **实现细节泄漏**（其余全部）：`origin`、`content_hash`、冻结集、
+- **实现细节泄漏**（其余全部）：`content_hash`、冻结集、
   `closure_truncated`、`if_doc_rev`/`if_block_rev` 的区分、`effective_policy`
   这个名字 —— 这些应当**只以句子出现，从不以名词出现**。
 
@@ -1847,7 +1888,7 @@ r8 系列的形状很清晰，值得记下来作为方法论：
 | 把 `spec_task_ceiling` 改成累计配额 | 单调计数器不是当前文档的函数 ⇒ rebuild 重建不出 ⇒ 成为 §2 承重墙上的第三个真源 |
 | 「冻结规范字节本身」 | 256 KiB × 64 = 16 MiB/claim 进事件 payload |
 | 「引入持久的块化身 id」 | 动身份层，换的检测强度与 32 字节哈希相同 |
-| 「切片 3a 先不给 legacy 行发空 `TaskContextFrozen`」 | 那会让不变量 3 到 3b 才第一次通电，交付一条**从未被真实流量执行过**的硬不变量 |
+| 「切片 3a 先不给 legacy 行发空 `TaskContextFrozen`」 | 那会让不变量 3 到 3b 才第一次通电，交付一条**从未被真实流量执行过**的硬不变量。**历史前提已被 #1055 的删桶决策取代；保留此项只为如实记录当时的驳回依据。** |
 
 ### B.4 实现期发现的、设计评审七轮没抓到的
 
@@ -1904,12 +1945,11 @@ backfill**」四格。这四个问题只要有一个空着，就是下一轮的 
 | 列 | 类型 | 谁写 | 谁读 | rebuild | backfill | 片 |
 |---|---|---|---|---|---|---|
 | `declared_by` | `TEXT NOT NULL DEFAULT 'spec'` | 投影（块 payload 的副本）| 投影、预算 | 从文档重建 | 存量全标 `spec` | 3b |
-| `origin` | `TEXT NOT NULL DEFAULT 'legacy'` | 投影 / 收编 | 投影只管 `'block'` | 从文档重建 | 存量全 `legacy` | 3b |
 | `claim_context_json` | `TEXT NULL`（**纯 JSON 数组**）| claim 事务 | `detect_wave_edit` / `sweep_inner`（**解析失败即判 material**）| `TaskContextFrozen` 的投影 | **`'[]'`**（`NULL` = 缺失 ≠ 空）| 3a |
 | `context_stale_at_ms` | `INTEGER NULL` | `mark_context_material_tx`（**单赢家，且只写 in-flight 行；claim 路径与任何 `pending` 行一律不写**）| `refuse_if_context_stale` | `TaskContextAdvanced` 的投影 | `0069_` 防御性幂等清理不可达的 pending stale 状态（`NULL` = 从未判 material）| 3a / 3b′-i 修复 |
 | `context_closure_truncated` | `INTEGER NOT NULL DEFAULT 0` | claim 事务 | `detect_wave_edit` **与 `sweep_inner`（两处必须同形）** | `TaskContextFrozen.truncated` 的投影 | `0` | 3a |
-| `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；收养路径初始化为 1 | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight `origin='block'`** | 3b′-ii |
-| `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | pending 投影；存量 legacy 收养不初始化 | 同上 | 同上 | **保持 `0`，显式例外；升级时已在飞 legacy 行永久缺少该位的撤回前值，新 claim 不受影响** | 3b′-ii |
+| `decl_ready` | `INTEGER NOT NULL DEFAULT 0` | pending 投影 | `FrozenDeclarationRow` 定向 SELECT → `BlockVerdict.withdrawal` | 当前状态的纯函数 | **`1` for in-flight rows** | 3b′-ii |
+| `decl_released_by_user` | `INTEGER NOT NULL DEFAULT 0` | pending 投影 | 同上 | 同上 | **保持 `0`，显式例外；升级时已在飞行永久缺少该位的撤回前值，新 claim 不受影响** | 3b′-ii |
 | `context_verify_failures` | `INTEGER NOT NULL DEFAULT 0` | sweep 定向 SQL | sweep | 运行期计数，不需重放 | `0` | 3b′-ii |
 | `spawn` | `TEXT NOT NULL DEFAULT 'in-wave'` | 投影规范化并冻结；claim 后沿任务行驱动 | scheduler / child-wave adapter；进入公共 `Task` / `TASK_COLUMNS` | 从文档重建 | 存量全标 `in-wave` | 6 PR-A |
 | `child_wave_id` | `TEXT NULL` + 非 NULL partial unique index | `child-wave` 的 `prepare_tx` guarded stamp | 父任务闭合与 DTO 定向 reader；**不进 `TASK_COLUMNS` / 公共 `Task`** | 运行期状态，不从文档重放 | `NULL` | 6 PR-A |
@@ -1980,7 +2020,7 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 | 1 | `CardUpdated` → `WaveReportEdited` → `PlanUpdated`，同一事务、同一 wave scope |
 | 2 | `PlanUpdated{key}` **严格早于**该 key 的第一个 `TaskDispatched` |
 | 3 | 每个 `TaskDispatched` **同批**必有一条 `TaskContextFrozen`（同 wave、同 `idempotency_key`）|
-| 3a | **空冻结集行可区分**：`'[]'` ⇒ 不判 material；`NULL` ⇒ fail-closed 判 material。判据是「冻结集为空」**不是** `origin='legacy'` |
+| 3a | **空冻结集行可区分**：`'[]'` ⇒ 不判 material；`NULL` ⇒ fail-closed 判 material。判据只看冻结集是否为空，来源不参与判断 |
 | 3b | **task 块自身在冻结集内**且带**显式 root 标记**；改 in-flight 的 `goal` ⇒ 必有 `TaskContextAdvanced`（**限定：纳入字段集内的编辑**）|
 | 3c | **栅栏关闭解析→claim 的 TOCTOU**：注入报告写（**同 wave 与跨 wave 各一**）⇒ claim 必须 race-lost、行仍 `pending`、无 `TaskContextFrozen`、无 `task_ref_index` 行、**无任何 worker / gate 首次启动** |
 | 3d | **根块哈希只在纳入集敏感**：`goal`/`kind`/`gate` ⇒ 判；`priority`/`declared_by`/`spawn` ⇒ 不判；`released_by_user: false→true` ⇒ 不判。`spawn` 自切片 6 起有执行语义；不判只因 claim 后所有路由仅读冻结的 `tasks.spawn`（§5.2 四前提）。**3b′-ii 撤回规则**另覆盖：`ready: true→false` ⇒ 判（两种策略）；`released_by_user: true→false` ⇒ **仅 `declare-and-wait` 下判**；后二者在 3b′-i 本片不成立 |
@@ -2023,18 +2063,24 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 
 **切片 5**：fork 的引用重写**硬测试**（内部引用指向新 wave id、
 **外部引用逐字节未变** —— 错了是静默的）；fork 强制 `ready:false` +
-`declared_by:"spec"`；fork 自跑 `validate_payload` 与 guard；
-**规则 1 豁免点的枚举测试**（本片全仓恰好一处：`Fork`；切片 7 物化工具落地后
-再扩成 `{Fork, Materialize}` 两处）；
+`declared_by:"spec"` + 墓碑块 `tombstoned_by:"spec"`（#1111；非墓碑块上的残留
+`tombstoned_by` 不清，由 `validate_payload` 打断整条 fork）+ live 块删除
+`released_by_user` 键（#1115；墓碑块上的该字段不清，同样由 `validate_payload`
+打断整条 fork），并覆盖「模板放行位 ⇒ 用户 fork ⇒ 新 wave 收紧成
+`declare-and-wait` ⇒ 该 task 仍带 `declare_and_wait` 诊断且不可调度」与
+「带放行位的模板不再被整条拒绝、且副本落地时不带放行位」两条（后者带
+`X-Calm-Actor: ai:claude` 发出，但 `actor.rs` 的 defensive default 把它归成
+`ActorId::User`，所以它钉的是 fork 契约、**不**声称覆盖非 User 身份；唯一映射到
+真实 AI `ActorId` 的 `ai:codex` 携带空 card id，`role_gate` 会先以
+`EmptyAiCardId` 403，那条路根本到不了 201）；`fork_guard` 腰带对**所有**作者生效；
+fork 自跑 `validate_payload` 与 guard；
+**规则 1 豁免点的枚举测试**（全仓恰好一处：`Fork`）；
 `calm.plan.upsert` 隐藏 shim 返回迁移指引且零写入。
 
 **切片 6 PR-A**：§7 的 33 个编号验收行：`spawn` 规范化/投影/冻结路由、真实
 child-wave 创建与深度/环 fail-closed、五个 task-bound adapter stale 拒绝、
 bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB 生命周期与删除
 守卫、NO ACTION/cove 同域绊线。**PR-B** 另验树预算的两个强制点、投影幂等与 rebuild 顺序。
-
-**切片 7**：物化工具对每行写 `ready: true`（**不是 `false`** ——
-写 `false` 会当场删掉活的 pending 行）。
 
 ### D.3 每一片的自洽性自查（重切的验收标准）
 
@@ -2047,9 +2093,8 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 | 3b′ | 冻结通电，§5 第一次被真实流量执行 | 无 |
 | 3c | 人能看见状态与诊断、能放行 | 无 |
 | 4 | 误报下降，冻结点可推进 | 无 |
-| 5 | 模板可 fork，agent 只剩一个写口 | 无（新 legacy 行从此停增）|
-| 6 PR-A | 子 wave 可用、深度有界、父任务可闭合 | PR-B 已用确定性份额、整树后置复核与升级 legacy 退化语义收口树存量上界 |
-| 7 | 存量可见，cove 可聚合 | 无 |
+| 5 | 模板可 fork，agent 只剩一个写口 | 无 |
+| 6 PR-A | 子 wave 可用、深度有界、父任务可闭合 | PR-B 已用确定性份额、整树后置复核与 ceiling 收紧退化语义收口树存量上界 |
 
 ### D.4 补充不变量（B13 恢复项）
 
@@ -2060,7 +2105,7 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 | 5 的三构造 | (a) worker 未开始 → 重启 → 不得 spawn；(b) **gate 未开始**（`gate_attempt = 0` + material）→ 重启 → **不得有任何 gate shell 命令被执行**；(c) **已开始的不受影响**（验证没有过度收紧）|
 | 5b seam | boot 顺序**两半缺一不可**：(a) 源码序断言 + (b) **seam 测试**（真实跑一次 boot，断言上下文 sweep 的副作用先于 operation 恢复可见）|
 | 6b | **两个清除动作互相独立**（B2 后不再有派生耦合）：删墓碑 ⇒ 该 `key` 可重新声明；PATCH `automation_policy='auto-declare'` ⇒ 恢复自动化**且墓碑保留**。（换 key 不再被机制挡 —— 那是 §12.1 风险 15 记录的**已知缺口**，不是本条要验收的不变量）|
-| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**；以及由本 build 新准入形成的稳态树满足 `Σ_v live_spec(v) ≤ tree_task_budget`。后者由库存/成员创建准入、`evaluate_schedulability` 的确定性配额分割，以及 B/N 两个触发点共用的整树重投影/逐成员 + 总量后置复核共同保证；pending 超额被裁，无法裁掉的 in-flight 超额使 B/N 变更回滚。**升级 legacy 的精确退化形式（这是 7b 同一条教训的第二次，不能再把稳态界写成升级瞬间也无条件成立的全称句）**：若升级瞬间树内已有 `K > B` 条非终结 legacy spec 行，所有这些行仍占 tree share 且逐字节不变，当时的有效上界暂时退化为升级那一刻的既有超额 `K`；整树冻结且不准入任何新 block 行，并随这些 legacy 行终结单调收敛回 `B`。`K == B` 同样没有新容量。这里的“升级前 legacy 在飞行”正对应 7b 里“人把 ceiling 调低到既有在飞行数以下”：都保留既有行、都不主动扩大退化上界、都只随终结收敛。任一成员不可裁占用超过 share 时整树冻结；`N=1` 仍按公式，配额只依赖树形状与不可裁既有占用而不依赖 block pending 投影产物，保持 D.1 #11。承重验收：`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences`、`legacy_live_spec_consumes_tree_share_until_it_terminates`、`legacy_member_overage_freezes_new_blocks_across_the_tree`、`child_creation_409s_when_inflight_member_exceeds_its_new_share`；排除 legacy 占用、关闭整树冻结、删除 member 后置复核或删除 child-wave 后的整树重投影均 RED。整树成员数由 `MAX_TREE_TASK_BUDGET=64` 封顶，递归树查询固定 2 次，成员处理 O(N) |
+| 7 | **稳态并发上界**：任一时刻该 wave 的 in-flight 数 ≤ per-wave `task_budget`。**不得写成「由 dispatcher 全局信号量封顶」** —— `DEFAULT_PERMITS = 8` 是 **global concurrent-spawn cap，不是生命周期持有量**。另两半：**一次报告写产生的 `TaskDispatched` 恒为 0**；以及由本 build 新准入形成的稳态树满足 `Σ_v live_spec(v) ≤ tree_task_budget`。后者由库存/成员创建准入、`evaluate_schedulability` 的确定性配额分割，以及 B/N 两个触发点共用的整树重投影/逐成员 + 总量后置复核共同保证；pending 超额被裁，无法裁掉的 in-flight 超额使 B/N 变更回滚。**既有在飞行超出新 ceiling 时的精确退化形式（这是 7b 同一条教训的第二次，不能再把稳态界写成配置收紧瞬间也无条件成立的全称句）**：若人把 per-wave ceiling 调低，使既有不可裁在飞占用 `K` 达到或超过新 ceiling，所有既有在飞行逐字节不变，该 wave 冻结新准入，并随这些行终结单调收敛回新上界。`K` 恰等于新上界时同样没有新容量；`K` 超过新上界时，有效上界暂时退化为配置收紧那一刻的既有占用，后续写不得维持或扩大超额。tree B/N 的生产改动遇 in-flight 超额则整笔回滚，不提交退化状态；truth 层对 raw SQL、旧快照或损坏数据中的既有成员超 share 状态仍冻结整树。`N=1` 仍按公式，配额只依赖树形状与不可裁既有占用而不依赖 pending 投影产物，保持 D.1 #11。承重验收：`whole_tree_live_spec_never_exceeds_budget_across_admitted_growth_sequences`、`tightening_spec_ceiling_below_inflight_inventory_commits_degraded_state`、`tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomically`、`raw_sql_tree_overage_consumes_share_until_inflight_terminates`、`in_flight_member_overage_freezes_new_blocks_across_the_tree`、`child_creation_409s_when_inflight_member_exceeds_its_new_share`；排除 in-flight 占用、关闭整树冻结、删除 member 后置复核或删除 child-wave 后的整树重投影均 RED。整树成员数由 `MAX_TREE_TASK_BUDGET=64` 封顶，递归树查询固定 2 次，成员处理 O(N) |
 | 10 | **`refs[]` 的 cove 边界**：越界引用 ⇒ 该块不可调度 + 诊断，且**该引用不得出现在任何 `TaskContextFrozen.refs` 里** |
 | 11 生成器 | rebuild ≡ 增量的属性测试，其生成器**必须能生成「制造诊断的编辑」**：重复 key / 环 / 跨 cove / 撤回放行位 |
 | 13 | 删除必须能被检出：(a) wave 删除 (b) cove 删除 —— **各要「事件正常投递」与「事件被丢弃」两个变体，且必须给出同一结论**；(c) `EditAuthor::Spec` 编辑被引用块必须被第 1 级检出 |
@@ -2069,14 +2114,13 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 
 对任意 wave，rebuild 与增量必须在以下五点上一致：
 
-1. **删除阶段**只删同时满足三条的行：`origin='block'` ∧ 当前文档不再声明 ∧
-   `status='pending'`。**「可调度」谓词的完整形式**：
+1. **删除阶段**只删同时满足两条的行：当前文档不再声明 ∧ `status='pending'`。
+   **「可调度」谓词的完整形式**：
    非墓碑 ∧ `ready` ∧ 诊断集合为空 ∧（`declare-and-wait` 时 `released_by_user`
    已置）∧（`declared_by='spec'` 时通过 ceiling 准入）。
-2. **非 `pending` 行的声明内容一字不动**；收养与 `0070_` backfill 对 `decl_*`
-   影子位的初始化不受此限，因为它不改变 worker 可见规格。
-3. **所有存活行的状态列逐字节不变**。
-4. **`origin='legacy'` 行逐字节不变**。
+2. **非 `pending` 行的声明内容逐字节不变**。
+3. **在飞行不被 report 写编辑**，其 worker 可见规格逐字节不变。
+4. **所有存活行的状态列逐字节不变**。
 5. **`declared_by` 从块 payload 重建**，不依赖行内残留值。
 
 ### D.6 其余待补录的残余风险（按需取舍）
@@ -2086,10 +2130,6 @@ bootstrap-before-running、父任务 live+sweep 闭合、DTO/UI tombstone、DB �
 13.11（`tasks` 积累执行史行、**刻意无清理**、读端必须能区分）、13.13、13.16、
 13.19（三个权属位只能靠 §3.7 收口守住）、13.22 残余两条（**不阻止 spec 反复提议**；
 **「人一直不放行」与「人没看见」在机制上不可区分**）、
-**13.22b（升级日 legacy 在飞行不计入 per-wave ceiling 的 block-only `occupied`** ⇒ 人的
-「本 wave 未结任务」口径会暂时**大于 ceiling**；但它们必须计入独立的 tree-share 固定占用，
-且 `unknown_deps` 按规则 3‴ **必须把 legacy 在飞 key 视为已知**。不得把两层占用合并成一个
-谓词，避免悄悄改变既定 ceiling 语义）、
 13.2（block id 稳定性 ⇒ **误中止潮**，缓解是「引用已失效，请重新链接」诊断 +
 marker 通道，**未量化**）、13.14（闭包开销：一次触发的重解析上界 =
 冻结了该 wave 的 in-flight 任务数 × `MAX_REF_NODES` ≤ (Σ per-wave `task_budget`)

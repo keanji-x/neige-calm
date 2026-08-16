@@ -47,6 +47,42 @@ function waveFiles(waveId: string | null): QueryKey {
   return waveId === null ? ['wave-files'] : ['wave-files', waveId];
 }
 
+function waveFilesDerived(waveId: string | null): readonly QueryKey[] {
+  return [waveFiles(waveId), waveId === null ? ['wave-report'] : ['wave-report', waveId]];
+}
+
+export type WaveFilesDerivedKind =
+  | 'runtime.started' | 'runtime.status_changed' | 'runtime.superseded'
+  | 'terminal.deleted' | 'codex.hook' | 'claude.hook'
+  | 'codex.worker_requested' | 'terminal.worker_requested'
+  | 'task.completed' | 'task.failed' | 'task.dispatched' | 'task.gate_result';
+
+export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
+  'runtime.started', 'runtime.status_changed', 'runtime.superseded',
+  'terminal.deleted', 'codex.hook', 'claude.hook',
+  'codex.worker_requested', 'terminal.worker_requested',
+  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',
+] as const);
+
+/**
+ * The cove conversation list, invalidated without a cove id (#1098 §5.5).
+ *
+ * The id is not omitted for convenience — it is not derivable here.
+ * `InvalidationContext` can resolve a card to its wave and nothing further, and
+ * a cove chat wave's detail is never fetched (the wave is hidden), so there is
+ * no cached row to read a cove id out of either. A prefix key is the honest
+ * shape for "some cove's list may have changed"; it also costs nothing when no
+ * cove route is mounted, because an invalidated key with no active query only
+ * marks cache entries stale.
+ *
+ * Deliberately *not* invalidated from `harness.item.added` — it writes only
+ * `harness_items`, never `worker_sessions`, so it cannot change a row of this
+ * list, and it is the highest-frequency event the kernel emits. Nor from
+ * `harness.transcript.cleared`: a reset always emits `harness.phase.changed`
+ * too, so a second trigger would only make the first impossible to disprove.
+ */
+export const COVE_CONVERSATIONS: QueryKey = Object.freeze(['cove-conversations']);
+
 function derivedWaveId(data: unknown, context: InvalidationContext): string | null {
   if (typeof data !== 'object' || data === null) return null;
   const value = data as { wave_id?: unknown; card_id?: unknown };
@@ -81,26 +117,38 @@ function policies(): PolicyMap {
     ['waves', 'cove', event.data.cove_id], ['wave', event.data.id],
     ['wave-files', event.data.id], ['waves-range'],
   ])),
-  'card.added': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
-  'card.updated': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
+  'card.added': plan((event) => result([
+    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id], COVE_CONVERSATIONS,
+  ])),
+  'card.updated': plan((event) => result([
+    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id], COVE_CONVERSATIONS,
+  ])),
   'card.deleted': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
   'runtime.started': plan((event, context) => {
     const waveId = context.findWaveOwningCard(event.data.card_id);
-    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], waveFiles(waveId)]);
+    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
   }),
   'runtime.status_changed': plan((event, context) => {
     const waveId = context.findWaveOwningCard(event.data.card_id);
-    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], waveFiles(waveId)]);
+    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
   }),
   'runtime.superseded': plan((event, context) => {
     const waveId = context.findWaveOwningCard(event.data.card_id);
-    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], waveFiles(waveId)]);
+    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
   }),
-  'harness.item.added': noop('Card-topic report consumers handle harness items directly.'),
-  'harness.phase.changed': noop('Card-topic report consumers handle phase changes directly.'),
-  'harness.transcript.cleared': noop('Report consumers reset transcript state directly.'),
-  'harness.user_message.enqueued': noop('Report consumers observe queued messages directly.'),
-  'wave.report_edited': plan((event) => result([['wave-files', event.data.wave_id], ['wave-backlinks']])),
+  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
+  'harness.phase.changed': plan((event) => result([
+    ['spec-run', event.data.card_id], COVE_CONVERSATIONS,
+  ])),
+  'harness.transcript.cleared': plan((event) => result([
+    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
+  ])),
+  'harness.user_message.enqueued': plan((event) => result([
+    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id], COVE_CONVERSATIONS,
+  ])),
+  'wave.report_edited': plan((event) => result([
+    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],
+  ])),
   'overlay.set': plan((event, context) => {
     const keys: QueryKey[] = [];
     if (event.data.entity_kind === 'wave' || event.data.entity_kind === 'card') keys.push(['overlays', event.data.entity_kind]);
@@ -121,18 +169,18 @@ function policies(): PolicyMap {
     }
     return result(keys);
   }),
-  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
+  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'plugin.state': noop('No plugin list query exists.'),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),
   'workflow.registered': noop('No workflow catalog query exists.'),
-  'codex.hook': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
-  'claude.hook': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
-  'codex.worker_requested': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
-  'terminal.worker_requested': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
-  'task.completed': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
-  'task.failed': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
+  'codex.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'claude.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'codex.worker_requested': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'terminal.worker_requested': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'task.completed': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  'task.failed': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'plan.updated': noop('No task-plan query exists.'),
-  'task.dispatched': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
+  'task.dispatched': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'task.context_frozen': noop('Frozen task context has no query consumer.'),
   'task.context_advanced': noop('Context advancement has no query consumer.'),
   'workspace.leased': noop('Workspace leases have no query consumer.'),
@@ -152,7 +200,7 @@ function policies(): PolicyMap {
   'worktree.provisioned': noop('Worktree rows have no query consumer.'),
   'worktree.committed': noop('Worktree rows have no query consumer.'),
   'worktree.removed': noop('Worktree rows have no query consumer.'),
-  'task.gate_result': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
+  'task.gate_result': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   });
 }
 

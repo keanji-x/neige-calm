@@ -34,7 +34,7 @@ export const duplicationManifest = Object.freeze(/** @type {DuplicationEntry[]} 
   { id: 'INV-DUP-003', type: 'unique-symbol', canonicalPath: 'web/src/ui/schema-form/fields/public.tsx', symbols: ['FormField'] },
   { id: 'INV-DUP-004', type: 'import-fence', canonicalPath: 'core/markdown/public.ts', symbols: ['parse', 'sanitizeAstPolicy'], packages: ['react-markdown', 'remark-*', 'rehype-*', 'unified'], mergeObligations: ['SpecConversation 的 agent 气泡只有 remarkGfm，没有 urlTransform、没有 ReportLink；与前三者的差异合并时必须显式决策而非默认对齐。'] },
   { id: 'INV-DUP-005', type: 'import-fence', canonicalPath: 'core/markdown/public.ts', symbols: ['extractOutline'], packages: ['mdast-util-*', 'micromark*'], mergeObligations: ['必须保留 `<blockId>-h<n>` 与 `md-h-` 两种 id 前缀方案各自的锚点稳定性；报告大纲只要两级、文件预览要四级。'] },
-  { id: 'INV-DUP-006', type: 'unique-symbol', canonicalPath: 'web/src/features/cove/palette.ts', symbols: ['COVE_PALETTE'], mergeObligations: ['调色板值必须一致；取色策略故意不同——NewTaskForm 按 cove 数量确定性取模，Sidebar 用 Math.random，不要顺手统一取色策略。'] },
+  { id: 'INV-DUP-006', type: 'unique-symbol', canonicalPath: 'web/src/features/cove/palette.ts', symbols: ['COVE_PALETTE'], mergeObligations: ['COVE_PALETTE 必须保持唯一 canonical 符号；当前唯一消费者是 Sidebar，创建 cove 时用 Math.random 随机取色并把 color 发给内核。'] },
   { id: 'INV-DUP-007', type: 'unique-symbol', canonicalPath: 'web/src/app/theme/host-rgb.ts', symbols: ['readHostThemeRgb'] },
   { id: 'INV-DUP-008', type: 'unique-symbol', canonicalPath: 'web/src/ui/editable-title/public.tsx', symbols: ['EditableTitle'], mergeObligations: ['Cove 版有 #288 的合成 click 抑制器；合并时必须把抑制器带进统一实现，而不是删掉。'] },
   { id: 'INV-DUP-009', type: 'unique-symbol', canonicalPath: 'web/src/features/wave/row/public.tsx', symbols: ['WaveRow'] },

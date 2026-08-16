@@ -201,9 +201,8 @@ export function oracleIdsFromDocuments(documents: readonly unknown[]): Set<strin
 }
 
 export function mutationRunExitCode(
-  report: readonly MutationVerdict[], infrastructureChanged: boolean, baseMode: boolean, selectedCount: number,
+  report: readonly MutationVerdict[],
 ): 0 | 1 {
-  if (selectedCount === 0) return baseMode && infrastructureChanged ? 1 : 0;
   return report.some((verdict) => verdictExitCode(verdict) === 1) ? 1 : 0;
 }
 

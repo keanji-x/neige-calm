@@ -7,6 +7,7 @@ import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { checkCoreNoJsx } from './check-core-no-jsx.mjs';
 import { checkEslintHygiene } from './check-eslint-hygiene.mjs';
+import { breakpointMismatches } from './check-breakpoint-literals.mjs';
 import { checkTopLevel } from './check-top-level.mjs';
 import { checkDuplicationManifest } from './check-duplication-manifest.mjs';
 import { duplicationManifest } from './duplication-manifest.mjs';
@@ -178,6 +179,16 @@ async function cruise(caseName: string, kind: 'positive' | 'negative') {
 }
 
 describe('architecture fixtures', () => {
+  it('parses media/container ranges and ignores comments and strings', () => {
+    expect(breakpointMismatches('@container card (min-width: 30em) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@media (30em <= width <= 61em) {}')).toHaveLength(2);
+    expect(breakpointMismatches('/* @media (min-width: 30em) {} */ a { content: "@media (30em)" }')).toEqual([]);
+    expect(breakpointMismatches('@media (width >= 60rem) {}')).toEqual([]);
+    expect(breakpointMismatches('@media (width >= 60rem) and (max-height: 40rem) {}')).toEqual([]);
+    expect(breakpointMismatches('@media (min-width: calc(60rem + 1px)) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@custom-media --narrow (max-width: 30em); @media (--narrow) {}')).toHaveLength(1);
+    expect(breakpointMismatches('@custom-media --wide (width >= 30em); @media (--wide) {}')).toHaveLength(1);
+  });
   const expectedViolation = new Map<string, string>([
     ['dup-inv-001', 'INV-DUP-001'],
     ['dup-inv-002', 'INV-DUP-002'],
@@ -214,6 +225,7 @@ describe('architecture fixtures', () => {
     ['cards-registry-no-jsx', 'registry.tsx'],
     ['react-state-hook-import', 'web/src/ui/state/public.ts'],
     ['eslint-config-root-only', 'nested/eslint.config.js'],
+    ['eslint-architecture-production-scope', 'missing production error rule architecture/no-class-dom-query'],
     ['eslint-no-off-shims', 'example/rule'],
     ['source-layout', 'core/helpers.js'],
     ['source-layout-dir', 'web/src/features/inbox/shared'],
@@ -221,6 +233,15 @@ describe('architecture fixtures', () => {
     ['test-module-runtime-state-exemption', 'architecture/'],
   ]);
 
+  // Timeout rationale (measured, not guessed): every case that routes through `cruise` into an
+  // ESLint branch constructs a fresh `new ESLint(...)` and re-resolves the whole flat config, so the
+  // first such case in a run absorbs that cold start. Measured on an idle machine:
+  // `markdown-micromark-attributes-import` (the first micromark case) 2090ms, while its already-warm
+  // siblings `markdown-micromark-import` 400ms and `markdown-micromark-template-import` 284ms.
+  // 2090ms is 42% of vitest's 5000ms default, which leaves no room once CI runs this file under
+  // parallel load. 30000ms gives ~14x headroom over the measured worst case. This only widens the
+  // clock; no assertion below is relaxed and no retry is configured.
+  const fixtureCaseTimeoutMs = 30_000;
   for (const caseName of readdirSync(fixtures)) {
     if (caseName === '_syntax-shapes') continue;
     it(`${caseName}: accepts the positive and rejects the negative fixture`, async () => {
@@ -260,7 +281,7 @@ describe('architecture fixtures', () => {
             `${caseName}: ${fixturePath} must participate in a violation`).toBe(true);
         }
       }
-    });
+    }, fixtureCaseTimeoutMs);
   }
 });
 

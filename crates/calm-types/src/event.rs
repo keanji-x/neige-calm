@@ -2,7 +2,7 @@
 //! (#679 PR1).
 //!
 //! This module owns everything about events that is *shape*: the typed
-//! [`Event`] enum (the ts-rs source for `web/src/api/generated-events.ts`),
+//! [`Event`] enum (the ts-rs source for `fe/core/api/generated/wire.ts`),
 //! its payload types ([`ArtifactRef`], [`WaveUpdatedPayload`],
 //! [`EditAuthor`]), the persisted [`EventScope`], the
 //! [`SYNC_EVENT_VERSION`] constant, the [`EventMetadata`] classifier and the
@@ -17,7 +17,7 @@
 //!
 //! Wire format: `{"_id": 1729, "ev": "<dotted.name>", "data": {...}}`. The
 //! frontend's TS `Event` type is auto-generated from this enum via `ts-rs`
-//! and lives at `web/src/api/generated-events.ts`. The runtime zod
+//! and lives at `fe/core/api/generated/wire.ts`. The runtime zod
 //! validator in `web/src/api/schemas.ts` is type-pinned to that emitted
 //! TS type via an `expectTypeOf` conformance test, so any drift between
 //! this enum and the frontend fails at the type-check step. See D7 /
@@ -35,7 +35,7 @@ use ts_rs::TS;
 
 /// One report-block identity captured in a task context freeze.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskContextRef {
     pub wave_id: WaveId,
     pub block_id: String,
@@ -47,7 +47,7 @@ pub struct TaskContextRef {
 
 /// One changed frozen reference carried by a context-advance verdict.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct TaskContextChangedRef {
     #[serde(default)]
     pub wave_id: WaveId,
@@ -82,7 +82,7 @@ pub struct TaskContextChangedRef {
 /// = string;` so the frontend stays a thin alias.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ArtifactRef(pub String);
 
 impl ArtifactRef {
@@ -121,7 +121,7 @@ impl std::fmt::Display for ArtifactRef {
 /// optional adjacent field for #597. Older persisted rows that lack the field
 /// deserialize with `None`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveUpdatedPayload {
     #[serde(flatten)]
     pub wave: Wave,
@@ -180,7 +180,7 @@ impl AsRef<str> for ArtifactRef {
 /// its own envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum EditAuthor {
     /// Spec card calling one of the `calm.report.{write,edit}` MCP
     /// tools. The only producer PR2 emits.
@@ -221,7 +221,7 @@ pub enum EditAuthor {
 /// `System`-tagged event opts out of every per-scope filter that follows.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "id")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum EventScope {
     /// No entity scope — server-internal or cross-entity event.
     System,
@@ -393,7 +393,7 @@ pub const SYNC_EVENT_VERSION: u32 = 13;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ForgeMergeSubject {
     pub phase: String,
     pub slice_id: String,
@@ -402,7 +402,7 @@ pub struct ForgeMergeSubject {
 
 /// Logical review subject key for `review.round`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ReviewSubject {
     pub phase: String,
     pub slice_id: String,
@@ -411,7 +411,7 @@ pub struct ReviewSubject {
 
 /// Per-channel verdict recorded on a `review.round`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ChannelVerdict {
     pub role: String,
     pub verdict: ChannelVerdictKind,
@@ -419,7 +419,7 @@ pub struct ChannelVerdict {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ChannelVerdictKind {
     Approved,
     ChangesRequested,
@@ -427,7 +427,7 @@ pub enum ChannelVerdictKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum RatifyDecision {
     Grant,
     Deny,
@@ -436,7 +436,7 @@ pub enum RatifyDecision {
 /// The full set of WS event envelopes the kernel emits on `/api/events`.
 ///
 /// `ts-rs` derives a matching TypeScript discriminated union, written to
-/// `web/src/api/generated-events.ts` when `cargo test export_bindings_` runs
+/// `fe/core/api/generated/wire.ts` when `cargo test export_bindings_` runs
 /// (driven by `npm run gen:api`). The serde `tag`/`content` attributes are
 /// honored — the emitted TS uses the same `{ ev, data }` envelope.
 ///
@@ -446,7 +446,7 @@ pub enum RatifyDecision {
 /// `CoveUpdated(Cove)`) pull in the struct's own export.
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(tag = "ev", content = "data")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum Event {
     #[serde(rename = "cove.updated")]
     CoveUpdated(Cove),

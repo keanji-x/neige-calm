@@ -2,19 +2,21 @@
 //
 // ── Why it does not look like a chat app ──────────────────────────────────
 //
-// **No bubbles, and no fill of any kind.** A bubble is a variable-width column,
-// so the prose inside it has no measure — every turn wraps at a different width
-// — and in the 364px this drawer actually has, a bubble with its own padding
+// **The reply is never in a bubble.** A bubble is a variable-width column, so
+// the prose inside it has no measure — every turn wraps at a different width —
+// and in the 364px this drawer actually has, a bubble with its own padding
 // leaves ~320 and runs 45 characters a line against the 65–75 prose is read at.
-// A flat tinted block avoids that but still puts a slab of grey behind every
-// other paragraph of the column.
+// That argument is about the *long* text, so it binds the reply and only the
+// reply: what you typed is usually one line, and it is the thing you scan back
+// for rather than read.
 //
 // **Side carries "who".** Your turn is flush to the inline-end edge, the reply
-// to the inline-start, and that is the whole mechanism. It is the strongest
-// signal available and the only one that costs nothing: no ink, no shape, no
-// width taken from the text. What it spends is the one flush left edge — which
-// is why only *your* turn moves, and the reply, the long thing that is actually
-// read, keeps the column's left edge and its full width.
+// to the inline-start, and that is the mechanism. It is the strongest signal
+// available and the cheapest: no ink, no shape, no width taken from the text.
+// What it spends is the one flush left edge — which is why only *your* turn
+// moves, and the reply, the long thing that is actually read, keeps the
+// column's left edge and its full width. Your turn adds the faintest fill in
+// the app on top of side; the recipe and the reasoning are in the stylesheet.
 //
 // **No per-turn labels, and no per-turn timestamps.** This is where the first
 // version of this file was wrong, and it was wrong by measurement: in a strict
@@ -31,22 +33,27 @@
 import { useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
+import { Icon } from '../../../ui/icon/public.tsx';
 
 import {
   isLiveConversation, opensAfterGap, opensExchange,
-  type Conversation, type ConversationTurn,
+  type Conversation, type ConversationActivity, type TranscriptEntry,
 } from '../../../../../core/domain/conversation.ts';
 import styles from './thread.module.css';
 
 export type ChatThreadProps = Readonly<{
   conversation: Conversation;
-  turns: readonly ConversationTurn[];
+  /** Messages and the actions between them, in the order they happened. */
+  turns: readonly TranscriptEntry[];
   /** True while a turn is in flight; the composer stays usable, the dot pulses. */
   pending?: boolean;
 }>;
 
 export function ChatThread({ conversation, turns, pending = false }: ChatThreadProps) {
   const live = pending || isLiveConversation(conversation.state);
+  const lastTurn = turns[turns.length - 1];
+  const lastTurnCarriesLiveMark = lastTurn?.author === 'agent'
+    || (lastTurn?.author === 'activity' && lastTurn.state === 'running');
   const endRef = useRef<HTMLDivElement | null>(null);
 
   /*
@@ -78,6 +85,9 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
     <div className={styles.thread} data-nc-thread="">
       {turns.map((turn, index) => {
         const last = index === turns.length - 1;
+        if (turn.author === 'activity') {
+          return <ActivityLine key={turn.id} activity={turn} live={live && last} />;
+        }
         return (
           <div key={turn.id} className={opensExchange(turns, index) ? styles.exchange : undefined}>
             {/* A time only where the conversation restarted. */}
@@ -99,12 +109,41 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
           </div>
         );
       })}
-      {/* A reply that has not arrived yet still gets a place to arrive in. */}
-      {live && turns[turns.length - 1]?.author === 'you' && (
+      {/* A reply that has not arrived yet still gets a place to arrive in. The
+          last entry owns the live mark only when it is an agent reply or a
+          running action; otherwise this placeholder keeps the one mark visible. */}
+      {live && !lastTurnCarriesLiveMark && (
         <p className={styles.reply}><span className={styles.live} aria-label="Working" /></p>
       )}
       <div ref={endRef} aria-hidden="true" />
     </div>
+  );
+}
+
+/**
+ * One action, one line.
+ *
+ * The dot is the same 6px accent pulse a running wave row wears, and it is here
+ * for the same reason it is there: it is the one place in the app that says
+ * "this is happening right now". A running action is the honest place for it in
+ * a transcript — before this existed, a four-minute turn spent entirely in
+ * shell runs and a `report.write` looked from the drawer like nothing at all.
+ */
+function ActivityLine({ activity, live }: {
+  activity: ConversationActivity;
+  live: boolean;
+}) {
+  const running = activity.state === 'running';
+  return (
+    <p
+      className={`${styles.activity} ${activity.state === 'failed' ? styles.activityFailed : ''}`}
+      data-nc-state={activity.state}
+    >
+      <span>{activity.verb}</span>
+      {activity.target !== null && <span className={styles.activityTarget}>{activity.target}</span>}
+      {activity.state === 'failed' && <span className={styles.activityFailure}>Failed</span>}
+      {running && live && <span className={styles.live} aria-label="Working" />}
+    </p>
   );
 }
 
@@ -190,7 +229,7 @@ export function ChatComposer({ onSend, disabled = false }: {
         aria-disabled={ready ? undefined : 'true'}
         className={styles.send}
       >
-        ↑
+        <Icon name="arrow-up" />
       </button>
     </form>
   );

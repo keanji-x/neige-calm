@@ -54,6 +54,9 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     expect(confirm).toHaveProperty('disabled', false);
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
     expect(screen.getByRole('button', { name: 'Cancel' })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('dialog').textContent).toContain('Closing this dialog cancels the delete request.');
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     pending.settle.resolve();
   });

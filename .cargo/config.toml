@@ -6,7 +6,7 @@
 #
 # Default is `./bindings` which would force every export_to to read like
 # `"../bindings/../../web/..."`. Pinning to `.` lets the attribute on each
-# derive read naturally — `"../../web/src/api/generated-events.ts"` relative
+# derive read naturally — `"../../fe/core/api/generated/wire.ts"` relative
 # to the crate that owns the type (calm-server).
 #
 # `relative = true` resolves this against the directory containing this

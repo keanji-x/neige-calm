@@ -9,6 +9,17 @@
 - { path: fe/module-file-inventory.yaml, type: file, owner: tooling/architecture, readonly: true, basis: "ownership policy source; frozen enforcement control" }
 - { path: fe/ownership-manifest.mjs, type: file, owner: tooling/architecture, readonly: true, basis: "ownership policy generator; frozen enforcement control" }
 - { path: fe/stylelint.config.js, type: file, owner: tooling/styles, readonly: true, basis: "style policy configuration; frozen enforcement control" }
+- { path: fe/.dependency-cruiser.cjs, type: file, owner: tooling/architecture, readonly: true, basis: "dependency policy configuration; frozen enforcement control (#997)" }
+- { path: fe/eslint.config.js, type: file, owner: tooling/architecture, readonly: true, basis: "lint policy configuration; frozen enforcement control (#997)" }
+- { path: fe/package.json, type: file, owner: tooling/architecture, readonly: true, basis: "gate script configuration; frozen enforcement control (#997)" }
+- { path: fe/package-lock.json, type: file, owner: tooling/architecture, readonly: true, basis: "gate dependency lock; frozen enforcement control (#997)" }
+- { path: fe/ownership-manifest.d.mts, type: file, owner: tooling/architecture, readonly: true, basis: "ownership manifest type surface; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.app.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.core.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/tsconfig.node.json, type: file, owner: tooling/architecture, readonly: true, basis: "TypeScript gate configuration; frozen enforcement control (#997)" }
+- { path: fe/vite.config.ts, type: file, owner: tooling/architecture, readonly: true, basis: "build configuration; frozen enforcement control (#997)" }
+- { path: fe/vitest.config.ts, type: file, owner: tooling/test-tier, readonly: true, basis: "test partition configuration; frozen enforcement control (#997)" }
 - { path: fe/mock, type: directory, owner: tooling/mock, readonly: false, basis: "architecture §5 repository tree; test-support boundary; consumes web/src/api/openapi.json as a one-way legacy input (#997)" }
 - { path: fe/tools/architecture, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; enforcement infrastructure" }
 - { path: fe/tools/oracle, type: directory, owner: tooling/architecture, readonly: false, basis: "architecture §5 repository tree; oracle enforcement infrastructure" }
@@ -39,8 +50,10 @@
 - { path: fe/core/types, type: directory, owner: core/types, readonly: false, basis: "architecture §8.7" }
 
 # App composition (§2: router/providers/theme/shell/DI and §4.7 events).
-- { path: fe/web/src/app/cards.contract.test.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
 - { path: fe/web/src/app/cards.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
+- { path: fe/web/src/app/composition.test.tsx, type: file, owner: app/composition, readonly: false, basis: "architecture §2 dependency injection; issue #1057" }
+- { path: fe/web/src/app/composition.ts, type: file, owner: app/composition, readonly: false, basis: "architecture §2 dependency injection; issue #1057" }
+- { path: fe/web/src/app/conversations, type: directory, owner: app/conversations, readonly: false, basis: "architecture §2 visit-scoped route composition" }
 - { path: fe/web/src/app/env.d.ts, type: file, owner: app/bootstrap, readonly: false, basis: "§0.5 构建期常量的环境声明；web/src 顶层只允许 main.tsx，故落在 app/ (#997)" }
 - { path: fe/web/src/app/markdown-legacy-differential.test.ts, type: file, owner: app/markdown-migration, readonly: false, basis: "architecture §4.9" }
 - { path: fe/web/src/app/router, type: directory, owner: app/router, readonly: false, basis: "architecture §2" }
@@ -94,10 +107,13 @@
 - { path: fe/web/src/ui/calm-select, type: directory, owner: ui/calm-select, readonly: true, basis: "INV-DUP-002" }
 - { path: fe/web/src/ui/editable-title, type: directory, owner: ui/editable-title, readonly: true, basis: "INV-DUP-008" }
 - { path: fe/web/src/ui/confirm-dialog, type: directory, owner: ui/confirm-dialog, readonly: true, basis: "INV-DUP-010" }
+- { path: fe/web/src/ui/error-box, type: directory, owner: ui/error-box, readonly: false, basis: "shared non-blocking and blocking read failure surface" }
+- { path: fe/web/src/ui/operation-feedback, type: directory, owner: ui/operation-feedback, readonly: false, basis: "shared asynchronous mutation feedback surface" }
 - { path: fe/web/src/ui/page-header, type: directory, owner: ui/page-header, readonly: false, basis: "design §6.4/§6.14" }
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
 - { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }
 - { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }
+- { path: fe/web/src/ui/icon, type: directory, owner: ui/icon, readonly: false, basis: "design §6.7 描边图标集；字形墨迹在同字号下差 1.75 倍 (#997)" }
 - { path: fe/web/src/features/chat, type: directory, owner: features/chat, readonly: false, basis: "对话列表；数据源为 WorkerSessionProjection + HarnessItem，端点未落地 (#997)" }
 
 # Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).

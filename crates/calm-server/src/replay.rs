@@ -485,12 +485,21 @@ pub async fn force_spec_phase(
         .write()
         .verify_role(&card.id)
         .ok_or_else(|| CalmError::NotFound(format!("card {card_id}")))?;
-    if card.kind != "codex" || role != CardRole::Spec {
+    if !crate::routes::cards::card_runs_headless_harness(&card, role) {
         return Err(CalmError::Forbidden(format!(
             "card {card_id} is not a spec codex card",
         )));
     }
-
+    let wave = repo
+        .wave_get(card.wave_id.as_str())
+        .await?
+        .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
+    if role == CardRole::Spec && wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE) {
+        return Err(CalmError::Forbidden(format!(
+            "spec harness is disabled for cove chat wave {}",
+            wave.id
+        )));
+    }
     // Issue #682 review — take the same per-card recovery lock
     // `ensure_live_spec_harness` (`/spec/input` lazy recovery) and
     // `/spec/reset` use, and hold it through stand-up + force. Without it
@@ -523,7 +532,12 @@ pub async fn force_spec_phase(
                         WorkerSessionInit {
                             id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
-                            kind: WorkerSessionKind::SharedSpec,
+                            kind: if crate::plain_chat::card_is_plain_chat(&card, Some(role), true)
+                            {
+                                WorkerSessionKind::CodexCard
+                            } else {
+                                WorkerSessionKind::SharedSpec
+                            },
                             agent_provider: Some(AgentProvider::Codex),
                             // Deliberately `Idle`, not the `Starting` that
                             // `run_status_for(PendingThreadStart)` would

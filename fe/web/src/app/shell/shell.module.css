@@ -26,6 +26,10 @@
     grid-template-columns: var(--rail-w-collapsed) minmax(0, 1fr);
   }
 
+  .shellExpanded {
+    grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  }
+
   .main {
     min-inline-size: 0;
     overflow: auto;
@@ -77,7 +81,7 @@
      there. The number is declared once in styles/breakpoints.ts
      (RAIL_COLLAPSE_REM); this query and the shell's must match it. */
   @media (width < 60rem) {
-    .shell {
+    .shell:not(.shellExpanded):not(.shellCollapsed) {
       grid-template-columns: var(--rail-w-collapsed) minmax(0, 1fr);
     }
   }
@@ -127,10 +131,6 @@
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
 
-    /* Glyph size follows the box, one pairing for the whole app: a 28px chrome
-       box takes --glyph (16), a 20px in-row box takes --glyph-sm (14). Mixing
-       them is what made the rail's own controls look like three icon sets. */
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -253,7 +253,6 @@
     inline-size: var(--control-h);
     block-size: var(--control-h);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -348,7 +347,6 @@
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -427,7 +425,6 @@
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
     border-radius: var(--radius-sm);
-    font-size: var(--glyph-sm);
     line-height: var(--leading-none);
     color: var(--text-3);
     cursor: pointer;
@@ -534,9 +531,10 @@
   }
 
   .menu {
-    position: absolute;
-    inset-block-end: var(--control-h);
-    inset-inline-start: var(--space-0);
+    /* Fixed escapes `.rail`'s scroll/clipping box in the 44px icon strip. */
+    position: fixed;
+    inset-block-end: calc(var(--control-h) + var(--space-7));
+    inset-inline-start: var(--space-5);
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;

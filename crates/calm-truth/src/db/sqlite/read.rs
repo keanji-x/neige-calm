@@ -86,7 +86,7 @@ impl RepoRead for SqlxRepo {
     // -------------------------------------------------------- cove_folders
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
+            r#"SELECT id, cove_id, path, created_at
                FROM cove_folders WHERE cove_id = ?1 ORDER BY path ASC"#,
         )
         .bind(cove_id)
@@ -97,7 +97,7 @@ impl RepoRead for SqlxRepo {
 
     async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>> {
         let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
+            r#"SELECT id, cove_id, path, created_at
                FROM cove_folders ORDER BY path ASC"#,
         )
         .fetch_all(&self.pool)
@@ -107,7 +107,7 @@ impl RepoRead for SqlxRepo {
 
     async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>> {
         let row = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
-            r#"SELECT id, cove_id, path, repo_identity, repo_identity_probed_at, created_at
+            r#"SELECT id, cove_id, path, created_at
                FROM cove_folders WHERE id = ?1"#,
         )
         .bind(id)
@@ -462,12 +462,68 @@ impl RepoRead for SqlxRepo {
             .collect())
     }
 
+    async fn stale_task_contexts_by_dst_wave(
+        &self,
+        dst_wave_id: &str,
+    ) -> Result<Vec<crate::db::TaskContextRow>> {
+        let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
+            r#"SELECT DISTINCT t.id, t.wave_id, t.claim_context_json, t.context_closure_truncated
+               FROM task_ref_index i
+               JOIN tasks t ON t.id = i.task_id
+               WHERE i.dst_wave_id = ?1
+                 AND t.status IN ('dispatched','running','verifying')
+                 AND t.context_stale_at_ms IS NOT NULL
+               ORDER BY t.id"#,
+        )
+        .bind(dst_wave_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                    crate::db::TaskContextRow {
+                        task_id,
+                        wave_id,
+                        claim_context_json,
+                        closure_truncated: closure_truncated != 0,
+                    }
+                },
+            )
+            .collect())
+    }
+
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<crate::db::TaskContextRow>> {
         let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
             r#"SELECT id, wave_id, claim_context_json, context_closure_truncated
                FROM tasks
                WHERE status IN ('dispatched','running','verifying')
                  AND context_stale_at_ms IS NULL
+               ORDER BY id"#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(task_id, wave_id, claim_context_json, closure_truncated)| {
+                    crate::db::TaskContextRow {
+                        task_id,
+                        wave_id,
+                        claim_context_json,
+                        closure_truncated: closure_truncated != 0,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    async fn task_contexts_inflight_stale(&self) -> Result<Vec<crate::db::TaskContextRow>> {
+        let rows = sqlx::query_as::<_, (String, String, Option<String>, i64)>(
+            r#"SELECT id, wave_id, claim_context_json, context_closure_truncated
+               FROM tasks
+               WHERE status IN ('dispatched','running','verifying')
+                 AND context_stale_at_ms IS NOT NULL
                ORDER BY id"#,
         )
         .fetch_all(&self.pool)

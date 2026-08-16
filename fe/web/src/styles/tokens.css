@@ -37,10 +37,9 @@
      * eye actually sees. The shipped 1.25 step measures 1.251 rail → ground
      * and 1.261 ground → paper in light, then 1.252 for both steps in dark.
      *
-     * The text scale's alignment with M3 created the headroom for 1.25: the
-     * audit script's worst foreground/surface pair across both themes is 4.80,
-     * above AA's 4.5 requirement. The number is a knob with a measured wall,
-     * not a guess.
+     * `tools/styles/check-contrast.mjs` is intentionally only a point check for
+     * explicitly listed semantic fill recipes. It does not infer inherited
+     * foregrounds or ancestor backgrounds from CSS.
      *
      * Each theme is anchored at its outer end and walked inward — light from
      * `--paper` at the 99.9 ceiling, dark from `--surface-rail` at 12 — because
@@ -91,12 +90,23 @@
      * so all three are alpha.
      */
     --accent-soft: oklch(49% 0.10 267 / 0.14);
-    --warn: oklch(52% 0.14 30);
+    --warn: oklch(49% 0.14 30);
     --warn-soft: oklch(52% 0.14 30 / 0.12);
 
     --surface-rail: oklch(85.1% 0.004 240);
     --surface-card: oklch(99.9% 0.003 240);
     --surface-chip: oklch(85.1% 0.005 240);
+
+    /*
+     * The one fill behind your own words, in the conversation drawer.
+     *
+     * Alpha, not a surface rank: it is a tint over whatever it sits on, and it
+     * must stay the *faintest* mark on the drawer — under `--surface-code`,
+     * well under `--surface-chip`. It is not elevation and never carries text
+     * contrast of its own; the turn inside it is `--text` on `--paper` either
+     * way, which is why it can be this light.
+     */
+    --surface-said: oklch(0% 0 0 / 0.03);
 
     /*
      * A well that has taken focus, one step further from the page.
@@ -119,7 +129,6 @@
      * whole signal, which is what it was designed to be.
      */
     --surface-chip-focus: oklch(80% 0.005 240);
-    --surface-toggle-overlay: oklch(0% 0 0 / 0.045);
     --surface-panel-head: oklch(99.9% 0.003 240);
     --surface-terminal: oklch(99.9% 0.003 240);
     --surface-code: oklch(0% 0 0 / 0.04);
@@ -127,13 +136,6 @@
     --overlay-hover: oklch(0% 0 0 / 0.04);
     --overlay-hover-strong: oklch(0% 0 0 / 0.055);
     --overlay-active: oklch(0% 0 0 / 0.05);
-
-    --surface-paper: var(--paper);
-    --surface-bg: var(--bg);
-    --surface-hover-overlay: var(--surface-toggle-overlay);
-    --text-label: var(--text-2);
-    --text-meta: var(--text-3);
-    --text-decorative: var(--text-4);
 
     /*
      * ── The type scale ────────────────────────────────────────────────────
@@ -280,9 +282,8 @@
     --motion-pulse: 2.2s;
 
     --success: oklch(54% 0.14 145);
-    --error: oklch(56% 0.14 25);
+    --error: oklch(51% 0.14 25);
     --overlay-scrim: rgba(20, 30, 55, 0.32);
-    --cal-event-waiting-bg: oklch(97% 0.018 30);
     --error-text: oklch(42% 0.17 25);
     --warn-border: oklch(85% 0.05 30);
 
@@ -381,16 +382,20 @@
     --text-4: oklch(50% 0.012 245);
     --accent: oklch(80% 0.11 267);
     --accent-soft: oklch(74% 0.11 267 / 0.18);
-    --warn: oklch(72% 0.15 30);
+    --warn: oklch(74% 0.15 30);
     --warn-soft: oklch(72% 0.15 30 / 0.18);
     --surface-rail: oklch(12% 0.008 245);
     --surface-card: oklch(31.4% 0.009 245);
     --surface-chip: oklch(12% 0.008 245);
 
+    /* Ink flips, the faintness does not: white at the same weight reads a shade
+       stronger on this ground, so it is set a touch under the light value's
+       apparent step rather than at the same number. */
+    --surface-said: oklch(100% 0 0 / 0.05);
+
     /* See the light block: the direction is the same (further from the page),
        the room is not. This is the floor. */
     --surface-chip-focus: oklch(5% 0.008 245);
-    --surface-toggle-overlay: oklch(100% 0 0 / 0.06);
     --surface-panel-head: oklch(31.4% 0.009 245);
     --surface-terminal: oklch(31.4% 0.009 245);
     --surface-code: oklch(100% 0 0 / 0.06);
@@ -401,11 +406,10 @@
     --success: oklch(74% 0.14 145);
     --error: oklch(74% 0.14 25);
     --overlay-scrim: rgba(0, 0, 0, 0.55);
-    --cal-event-waiting-bg: oklch(24% 0.03 30);
-    --error-text: oklch(74% 0.14 25);
+    --error-text: oklch(85% 0.07 25);
     --warn-border: oklch(40% 0.05 30);
 
-    --warn-text: oklch(82% 0.13 30);
+    --warn-text: oklch(85% 0.07 30);
     --success-text: oklch(82% 0.13 145);
     --error-soft: oklch(76% 0.13 25 / 0.18);
     --error-border: oklch(40% 0.05 25);

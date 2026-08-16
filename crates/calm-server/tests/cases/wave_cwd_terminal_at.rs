@@ -29,7 +29,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, WaveLifecycle, WavePatch};
+use calm_server::model::{CoveKind, NewCove, WaveLifecycle, WavePatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -237,6 +237,136 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1);
     assert_eq!(waves[0].cwd, "/srv/projects/alpha");
+}
+
+/// Issue #275 — the cove already claims *exactly* this cwd and the caller
+/// still sets `attach_folder = true`. The claim scan finds the same cove as
+/// the owner, so `attach_folder` is silently ignored and no second row is
+/// minted.
+///
+/// BEHAVIOR CHANGE (deliberate). Before this fix the in-tx insert ran
+/// unconditionally on the scan result: it re-inserted `/workspace`, hit
+/// `UNIQUE(cove_folders.path)`, and the whole request 409'd. A caller
+/// re-posting the folder it already owns is not a conflict, so 201 is the
+/// correct answer. This test pins the new outcome.
+#[tokio::test]
+async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() {
+    let boot = boot().await;
+
+    // The pre-seeded state below already satisfies `folders.len() == 1`,
+    // so this test would also pass if folder enforcement were skipped
+    // wholesale for this cove via the `is_system_cove` bypass in
+    // `routes::waves::create_wave`. Pin that the cove under test is NOT
+    // a system cove, so the assertions can only be explained by the
+    // enforcement path actually running.
+    let cove = boot.repo.cove_get(&boot.cove_id).await.unwrap().unwrap();
+    assert_eq!(
+        cove.kind,
+        CoveKind::User,
+        "this test only proves idempotency if folder enforcement is not bypassed"
+    );
+
+    boot.repo
+        .cove_folder_create(&boot.cove_id, "/workspace")
+        .await
+        .unwrap();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-reclaim-exact",
+            "cwd": "/workspace",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    // The invariant this test defends: re-claiming your own folder is
+    // NOT a conflict. (Stub daemon may still 500 post-commit.)
+    assert_ne!(
+        status,
+        StatusCode::CONFLICT,
+        "re-claiming the cove's own folder must not 409; body={body}"
+    );
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
+    );
+
+    // Exactly one claim row — no duplicate `/workspace`.
+    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(
+        folders.len(),
+        1,
+        "attach_folder on an already-owned exact path must not mint a second row; got {:?}",
+        folders.iter().map(|f| &f.path).collect::<Vec<_>>()
+    );
+    assert_eq!(folders[0].path, "/workspace");
+
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 1, "the wave must have landed");
+    assert_eq!(waves[0].cwd, "/workspace");
+}
+
+/// Issue #275 — the cove claims `/a` and the caller posts `cwd: "/a/b"`
+/// with `attach_folder = true`. The scan finds the same cove already
+/// covering the cwd, so nothing is minted.
+///
+/// BEHAVIOR CHANGE (deliberate), and the important one: before this fix
+/// the in-tx insert ran unconditionally on the scan result, so this
+/// request created `/a/b` alongside the existing `/a` — two rows that both
+/// cover `/a/b/...`. That is precisely the overlapping-claim corruption
+/// `cove_folders.rs::resolve_and_wave_create_agree_on_overlapping_rows`
+/// has to seed through the raw repo primitive to reproduce; this arm
+/// handed it to any caller over plain HTTP, single-threaded, with no
+/// concurrency at all. It was the larger of the two holes in the overlap
+/// invariant (the other being the scan/insert TOCTOU).
+#[tokio::test]
+async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
+    let boot = boot().await;
+
+    boot.repo
+        .cove_folder_create(&boot.cove_id, "/a")
+        .await
+        .unwrap();
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-reclaim-descendant",
+            "cwd": "/a/b",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_ne!(
+        status,
+        StatusCode::CONFLICT,
+        "a cwd already covered by this cove's own claim must not 409; body={body}"
+    );
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
+    );
+
+    // The overlapping row must NOT exist. `/a` alone still covers `/a/b`.
+    let folders = boot.repo.cove_folders_list_all().await.unwrap();
+    let paths: Vec<&str> = folders.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["/a"],
+        "attach_folder must not mint `/a/b` under a cove that already claims `/a` — \
+         two rows covering the same subtree is the corrupt state #275 exists to prevent"
+    );
+
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 1, "the wave must have landed");
+    assert_eq!(waves[0].cwd, "/a/b");
 }
 
 /// `attach_folder = false` with an unclaimed cwd is refused (409) —
@@ -757,9 +887,9 @@ async fn list_waves_window_inverted_returns_400() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
 }
 
-/// Empty query returns every wave (no filters applied).
+/// Empty query keeps ordinary waves visible when no window filters apply.
 #[tokio::test]
-async fn list_waves_window_no_params_returns_all_waves() {
+async fn list_waves_window_no_params_keeps_ordinary_waves_visible() {
     let boot = boot().await;
     seed_wave(&boot.repo, &boot.cove_id).await;
     seed_wave(&boot.repo, &boot.cove_id).await;
@@ -785,4 +915,161 @@ async fn list_waves_window_cove_id_filter() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().map(|a| a.len()), Some(2));
+}
+
+/// INV-CHAT-005 paired route-boundary contract: NULL-purpose ordinary waves
+/// and launchpads remain visible in both public lists, while only cove-chat is
+/// hidden. The repository still returns the full set.
+#[tokio::test]
+async fn public_wave_lists_hide_only_cove_chat_and_repo_keeps_full_set() {
+    let boot = boot().await;
+    let ordinary = seed_wave(&boot.repo, &boot.cove_id).await;
+    let launchpad = seed_wave(&boot.repo, &boot.cove_id).await;
+    let chat = seed_wave(&boot.repo, &boot.cove_id).await;
+    sqlx::query("UPDATE waves SET purpose = 'launchpad' WHERE id = ?1")
+        .bind(launchpad.id.as_str())
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(chat.id.as_str())
+        .execute(boot.sqlx_repo.pool())
+        .await
+        .unwrap();
+
+    let expected = [ordinary.id.as_str(), launchpad.id.as_str()];
+    for uri in [
+        format!("/api/coves/{}/waves", boot.cove_id),
+        format!("/api/waves?cove_id={}", boot.cove_id),
+    ] {
+        let (status, body) = get(boot.app.clone(), &uri).await;
+        assert_eq!(status, StatusCode::OK, "body={body}");
+        let ids: Vec<_> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|wave| wave["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids.len(), 2, "{uri}: only chat is hidden; ids={ids:?}");
+        for id in expected {
+            assert!(ids.contains(&id), "{uri}: expected visible wave {id}");
+        }
+        assert!(!ids.contains(&chat.id.as_str()), "{uri}: chat leaked");
+    }
+
+    let repo_waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(
+        repo_waves.len(),
+        3,
+        "repository readers require the full set"
+    );
+    assert!(repo_waves.iter().any(|wave| wave.id == chat.id));
+
+    let repo_window = boot
+        .repo
+        .waves_window(Some(&boot.cove_id), None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        repo_window.len(),
+        3,
+        "waves_window must also retain the repository's full set"
+    );
+    assert!(repo_window.iter().any(|wave| wave.id == chat.id));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #275 — the two resolvers must agree
+// ---------------------------------------------------------------------------
+
+/// `GET /api/coves/resolve` and the `POST /api/waves` owner scan are two
+/// separate readers of the same claim table. They must pick the **same**
+/// row for the same cwd, because the UI chains them: NewTaskForm resolves
+/// the cwd, auto-selects the cove it names, and posts the wave with that
+/// `cove_id`. A resolver that disagrees turns that chain into a 409 on a
+/// cove the user never chose.
+///
+/// The claim rules make overlapping rows unreachable over HTTP, so this
+/// test seeds them through the raw repo (`cove_folder_create`, the
+/// unchecked primitive) — the corrupt-DB state — and pins that even
+/// *there* the two answers are identical. This is the case that regressed
+/// when only one of the two scans dropped its longest-prefix tiebreak:
+/// resolve said `/a` (cove A) while wave-create said `/a/b` (cove B).
+#[tokio::test]
+async fn resolve_and_wave_create_agree_on_overlapping_rows() {
+    let boot = boot().await;
+
+    // Corrupt state: two claims cover `/a/b/c`, under different coves.
+    // `ORDER BY path ASC` puts `/a` first; `/a/b` is the longer prefix.
+    boot.repo
+        .cove_folder_create(&boot.cove_id, "/a")
+        .await
+        .unwrap();
+    boot.repo
+        .cove_folder_create(&boot.other_cove_id, "/a/b")
+        .await
+        .unwrap();
+
+    // Resolver 1 — the endpoint the frontend calls.
+    let (status, body) = get(boot.app.clone(), "/api/coves/resolve?path=/a/b/c").await;
+    assert_eq!(status, StatusCode::OK);
+    let resolved_cove = body["cove_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        body["folder_path"].as_str().unwrap(),
+        "/a",
+        "shared find_owner takes the first row in ORDER BY path ASC"
+    );
+    assert_eq!(resolved_cove, boot.cove_id);
+
+    // Resolver 2 — the wave-create owner scan. Posting with exactly the
+    // cove `/api/coves/resolve` just named must be accepted.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": resolved_cove,
+            "title": "w-agree",
+            "cwd": "/a/b/c",
+            "attach_folder": false,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    // The contract under test is "not a 409" — the two resolvers agree, so
+    // the owner scan must not refuse the cove the resolver just named. The
+    // 201-or-500 tolerance below is only the file's stub-daemon convention.
+    assert_ne!(
+        status,
+        StatusCode::CONFLICT,
+        "wave create must not refuse the cove `/api/coves/resolve` named for this cwd; \
+         body={body}"
+    );
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "wave create must accept the cove `/api/coves/resolve` named for this cwd; \
+         got {status} body={body}",
+    );
+    let waves = boot.repo.waves_by_cove(&resolved_cove).await.unwrap();
+    assert_eq!(waves.len(), 1, "the wave must have landed under that cove");
+    assert_eq!(waves[0].cwd, "/a/b/c");
+
+    // ...and the cove the resolver did NOT name must still be refused,
+    // so "they agree" is not vacuously true by accepting everything.
+    let (status, _body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.other_cove_id,
+            "title": "w-disagree",
+            "cwd": "/a/b/c",
+            "attach_folder": false,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::CONFLICT,
+        "the non-owning cove must still 409"
+    );
 }

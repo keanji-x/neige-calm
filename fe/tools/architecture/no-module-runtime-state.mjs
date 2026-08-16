@@ -255,6 +255,7 @@ export const noModuleRuntimeState = {
       ExpressionStatement(/** @type {any} */ node) {
         if (!isModuleEvaluationReachable(node)) return;
         const expression = unwrap(node.expression);
+        if (expression?.type === 'NewExpression') { report(expression); return; }
         if (expression?.type !== 'CallExpression') return;
         for (const argument of expression.arguments) if (argument.type !== 'SpreadElement' && isMutableValue(argument, bindings)) report(argument);
       },

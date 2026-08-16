@@ -54,6 +54,10 @@ function renderSidebar(props: Partial<Props> = {}) {
           onOpenSettings={merged.onOpenSettings ?? vi.fn()}
           onSignOut={merged.onSignOut ?? vi.fn()}
           userLabel={merged.userLabel}
+          readError={merged.readError}
+          activityError={merged.activityError}
+          readLoading={merged.readLoading}
+          onRetryRead={merged.onRetryRead}
         />
       </ThemeProvider>
     );
@@ -61,6 +65,26 @@ function renderSidebar(props: Partial<Props> = {}) {
   const result = render(build({}));
   return { ...result, update: (overrides: Partial<Props>) => result.rerender(build(overrides)) };
 }
+
+describe('workspace read feedback', () => {
+  it('shows loading, read failure, and retries the workspace read', async () => {
+    const onRetryRead = vi.fn();
+    const { update } = renderSidebar({ readLoading: true, onRetryRead });
+    expect(screen.getByRole('status').textContent).toContain('Loading workspace');
+    update({ readLoading: false, readError: 'coves down', onRetryRead });
+    expect(screen.getByRole('alert').textContent).toContain('coves down');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetryRead).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns that wave activity is unavailable and retries it', async () => {
+    const onRetryRead = vi.fn();
+    renderSidebar({ activityError: 'overlays down', onRetryRead });
+    expect(screen.getByRole('alert').textContent).toContain('Wave activity is unavailable: overlays down');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetryRead).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('cove disclosure', () => {
   it('collapses and re-expands a cove wave list from its chevron', async () => {
@@ -86,6 +110,12 @@ describe('cove disclosure', () => {
 });
 
 describe('cove row', () => {
+  it('excludes archived waves from shortcuts and cove groups', () => {
+    const archived = wave({ title: 'Filed away', lifecycle: 'blocked', archivedAt: 10, pinnedAt: 9 });
+    renderSidebar({ waves: [archived], wavesByCove: new Map([['c1', [archived]]]) });
+    expect(screen.queryByRole('button', { name: /Filed away/ })).toBeNull();
+  });
+
   /*
    * The count is gone, and this asserts its absence.
    *
@@ -172,7 +202,7 @@ describe('destructive confirms', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
-    expect(onDeleteWave.mock.calls).toEqual([['w1']]);
+    expect(onDeleteWave).toHaveBeenCalledWith('w1', expect.any(AbortSignal));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
@@ -191,12 +221,30 @@ describe('destructive confirms', () => {
 
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
     await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
-    expect(onDeleteCove.mock.calls).toEqual([['c1']]);
+    expect(onDeleteCove).toHaveBeenCalledWith('c1', expect.any(AbortSignal));
+  });
+
+  it('states that the cascade count is unknown when the cove wave query has no data', async () => {
+    renderSidebar({ wavesByCove: new Map() });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('The number of waves is not available.');
+    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
+  });
+
+  it('describes deletion of a genuinely empty cove without claiming it deletes zero waves', async () => {
+    renderSidebar({ wavesByCove: new Map([['c1', []]]) });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('This deletes the cove.');
+    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
   });
 
   it('keeps the confirm mounted while the delete is in flight and clears it on rejection', async () => {
     let reject: (reason: Error) => void = () => {};
-    const onDeleteWave = vi.fn(() => new Promise<void>((_resolve, rejectFn) => { reject = rejectFn; }));
+    let signal: AbortSignal | undefined;
+    const onDeleteWave = vi.fn((_id: string, requestSignal: AbortSignal) => {
+      signal = requestSignal;
+      return new Promise<void>((_resolve, rejectFn) => { reject = rejectFn; });
+    });
     renderSidebar({ waves: [wave({ id: 'w1', title: 'Task' })], onDeleteWave });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
@@ -207,11 +255,37 @@ describe('destructive confirms', () => {
     const confirm = screen.getByRole('button', { name: 'Deleting…' });
     expect(confirm.hasAttribute('disabled')).toBe(false);
     expect(confirm.getAttribute('aria-disabled')).toBe('true');
-    expect(screen.getByRole('button', { name: 'Cancel' }).hasAttribute('disabled')).toBe(false);
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(cancel.hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('dialog').textContent).toContain('Closing this dialog cancels the delete request.');
+    await userEvent.click(cancel);
+    expect(screen.queryByRole('dialog', { name: 'Delete this wave?' })).toBeNull();
+    expect(signal?.aborted).toBe(true);
 
-    reject(new Error('boom'));
+    reject(new DOMException('aborted', 'AbortError'));
     await screen.findByRole('button', { name: 'Delete Task' });
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('can delete a second target immediately after canceling the first request', async () => {
+    const deleted: string[] = [];
+    const onDeleteWave = vi.fn((id: string, signal: AbortSignal) => {
+      deleted.push(id);
+      if (id !== 'w1') return Promise.resolve();
+      return new Promise<void>((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+      });
+    });
+    renderSidebar({ waves: [wave({ id: 'w1', title: 'Alpha' }), wave({ id: 'w2', title: 'Beta' })], onDeleteWave });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Alpha' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete Beta' }));
+    expect(screen.getByRole('button', { name: 'Delete wave' }).getAttribute('aria-busy')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    expect(deleted).toEqual(['w1', 'w2']);
   });
 });
 
@@ -282,6 +356,7 @@ describe('collapse toggle', () => {
     // this surface greyscale apart from the current location and "waiting".
     const item = screen.getByRole('button', { name: 'Work' });
     expect(item.textContent).toBe('W');
+    expect(screen.getByRole('button', { name: 'Account menu for You' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Expand sidebar' }).getAttribute('aria-expanded')).toBe('false');
 
     update({ collapsed: false });

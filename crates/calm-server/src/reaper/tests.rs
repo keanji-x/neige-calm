@@ -3,10 +3,14 @@ use super::*;
 use std::{path::Path, process::Command};
 
 use crate::card_role_cache::CardRoleCache;
+use axum::extract::FromRef;
+use axum::extract::{Path as AxumPath, State};
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
 use calm_exec::WorkerProvider;
 use calm_truth::db::RepoEventWrite;
 use calm_truth::db::RepoSyncDomainRaw;
-use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx, task_insert_tx};
+use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx};
 use calm_truth::session_repo::SessionRepo;
 use calm_truth_test_harness::FakeProvider;
 use calm_types::ids::{CardId, WaveId};
@@ -59,6 +63,23 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
     )
     .await
     .expect("seed wave");
+    let spec_card = RepoSyncDomainRaw::card_create(
+        repo.as_ref(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            title: Some("spec".into()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        },
+    )
+    .await
+    .expect("seed spec card");
+    sqlx::query("UPDATE cards SET role = 'spec', deletable = 0 WHERE id = ?1")
+        .bind(spec_card.id.as_str())
+        .execute(repo.pool())
+        .await
+        .expect("mark seeded card as spec");
     (repo, wave.id)
 }
 
@@ -152,6 +173,36 @@ async fn write_context(repo: &SqlxRepo) -> WriteContext {
     WriteContext::new(role_cache, wave_cove_cache)
 }
 
+async fn route_state(repo: Arc<SqlxRepo>) -> crate::state::RouteState {
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let events = EventBus::new();
+    let roles = CardRoleCache::new();
+    let waves = WaveCoveCache::new();
+    repo.seed_card_role_cache(&roles).await.unwrap();
+    repo.seed_wave_cove_cache(&waves).await.unwrap();
+    let state = crate::state::AppState::from_parts(
+        repo_dyn.clone(),
+        events.clone(),
+        Arc::new(crate::state::DaemonClient {
+            data_dir: std::env::temp_dir().join("calm-reaper-ensure-test"),
+            proc_supervisor_sock: None,
+        }),
+        Arc::new(crate::plugin_host::PluginHost::new_full(
+            Arc::new(crate::plugin_host::PluginRegistry::empty()),
+            repo_dyn,
+            Path::new("").to_path_buf(),
+            std::env::temp_dir().join("calm-reaper-ensure-plugin-test"),
+            Vec::new(),
+            events,
+            WriteContext::new(roles.clone(), waves.clone()),
+        )),
+        Arc::new(crate::state::CodexClient::new_stub()),
+        Some(roles),
+        Some(waves),
+    );
+    crate::state::RouteState::from_ref(&state)
+}
+
 async fn set_wave_lifecycle(repo: &SqlxRepo, wave_id: &WaveId, lifecycle: WaveLifecycle) {
     sqlx::query("UPDATE waves SET lifecycle = ?1 WHERE id = ?2")
         .bind(lifecycle.as_db_str())
@@ -187,13 +238,14 @@ async fn insert_task(repo: &SqlxRepo, wave_id: &WaveId, key: &str, status: TaskS
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
     };
     let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-    task_insert_tx(&mut tx, &task).await.expect("insert task");
+    crate::test_support::insert_task_tx(&mut tx, &task)
+        .await
+        .expect("insert task");
     tx.commit().await.expect("commit tx");
     task
 }
@@ -342,6 +394,21 @@ async fn lifecycle_changes(repo: &SqlxRepo, wave_id: &WaveId) -> Vec<Event> {
 /// `dead_root_candidates` queries via `json_extract(payload_json,
 /// '$.wave_id')`.
 async fn insert_spec_harness_start_op(repo: &SqlxRepo, wave_id: &WaveId, phase: &str) {
+    let spec_card_id: String =
+        sqlx::query_scalar("SELECT id FROM cards WHERE wave_id = ?1 AND role = 'spec'")
+            .bind(wave_id.as_str())
+            .fetch_one(repo.pool())
+            .await
+            .expect("wave has a real spec card");
+    insert_harness_start_op_for_card(repo, wave_id, &spec_card_id, phase).await;
+}
+
+async fn insert_harness_start_op_for_card(
+    repo: &SqlxRepo,
+    wave_id: &WaveId,
+    card_id: &str,
+    phase: &str,
+) {
     let op_repo = SqlxOperationRepo::new(repo.pool().clone());
     let op_id = op_repo
         .insert_operation(
@@ -354,7 +421,7 @@ async fn insert_spec_harness_start_op(repo: &SqlxRepo, wave_id: &WaveId, phase: 
             json!({
                 "actor": ActorId::KernelDispatcher,
                 "wave_id": wave_id.as_str(),
-                "spec_card_id": "spec-card-1",
+                "spec_card_id": card_id,
                 "cwd": "/tmp",
             }),
         )
@@ -374,6 +441,46 @@ async fn insert_spec_harness_start_op(repo: &SqlxRepo, wave_id: &WaveId, phase: 
         .execute(repo.pool())
         .await
         .expect("stamp operation phase");
+}
+
+async fn insert_harness_start_op_with_payload(
+    repo: &SqlxRepo,
+    payload: serde_json::Value,
+    phase: &str,
+) {
+    let op_repo = SqlxOperationRepo::new(repo.pool().clone());
+    let op_id = op_repo
+        .insert_operation(
+            "spec-harness-start",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: format!("hash-{}", new_id()),
+            },
+            payload,
+        )
+        .await
+        .expect("insert malformed spec-harness-start operation");
+    sqlx::query("UPDATE operations SET phase = ?1, completed_at_ms = ?2 WHERE id = ?3")
+        .bind(phase)
+        .bind(if matches!(phase, "failed" | "succeeded") {
+            Some(now_ms())
+        } else {
+            None
+        })
+        .bind(op_id)
+        .execute(repo.pool())
+        .await
+        .expect("stamp malformed operation phase");
+}
+
+async fn set_wave_purpose(repo: &SqlxRepo, wave_id: &WaveId, purpose: &str) {
+    sqlx::query("UPDATE waves SET purpose = ?1 WHERE id = ?2")
+        .bind(purpose)
+        .bind(wave_id.as_str())
+        .execute(repo.pool())
+        .await
+        .expect("set wave purpose");
 }
 
 /// Insert a planner-contract session in `state` and (optionally) mark it the
@@ -466,6 +573,213 @@ async fn sweep_dead_roots_failed_start_draft_converges_to_failed() {
         .count();
     assert_eq!(task_failed, 0, "dead-root convergence emits no TaskFailed");
 
+    reset_reaper_boot_gate_for_test();
+}
+
+/// A failed start operation aimed at a Worker card is not a failed true-root
+/// start, even on an otherwise ordinary Draft wave.
+#[tokio::test]
+async fn sweep_dead_roots_failed_worker_start_stays_draft() {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    reset_reaper_boot_gate_for_test();
+
+    let (repo, wave_id) = seeded_repo().await;
+    let chat_card = RepoSyncDomainRaw::card_create(
+        repo.as_ref(),
+        NewCard {
+            wave_id: wave_id.clone(),
+            title: Some("chat".into()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        },
+    )
+    .await
+    .expect("seed chat card");
+    insert_harness_start_op_for_card(&repo, &wave_id, chat_card.id.as_str(), "failed").await;
+
+    let fake = Arc::new(FakeProvider::new());
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let reaper = Reaper::new(
+        repo_dyn,
+        registry(fake),
+        EventBus::new(),
+        write_context(&repo).await,
+    );
+    reaper_on_boot();
+    reaper.sweep_dead_roots().await;
+
+    assert_eq!(
+        wave_lifecycle_now(&repo, &wave_id).await,
+        WaveLifecycle::Draft
+    );
+    reset_reaper_boot_gate_for_test();
+}
+
+/// INV-CHAT-017(a,c): the purpose fence independently protects a chat wave
+/// whose failed start points at its own real spec card. The production ensure
+/// endpoint must then return that same usable Draft wave.
+#[tokio::test]
+async fn sweep_dead_roots_chat_failed_true_spec_stays_draft_and_ensure_returns_same_wave() {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    reset_reaper_boot_gate_for_test();
+
+    let (repo, wave_id) = seeded_repo().await;
+    set_wave_purpose(&repo, &wave_id, crate::COVE_CHAT_PURPOSE).await;
+    insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+
+    let fake = Arc::new(FakeProvider::new());
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let reaper = Reaper::new(
+        repo_dyn,
+        registry(fake),
+        EventBus::new(),
+        write_context(&repo).await,
+    );
+    reaper_on_boot();
+    reaper.sweep_dead_roots().await;
+
+    assert_eq!(
+        wave_lifecycle_now(&repo, &wave_id).await,
+        WaveLifecycle::Draft
+    );
+    let cove_id = repo
+        .wave_get(wave_id.as_str())
+        .await
+        .unwrap()
+        .unwrap()
+        .cove_id;
+    let state = route_state(repo.clone()).await;
+    let response = crate::routes::waves::ensure_cove_chat_wave(
+        State(state),
+        crate::actor::Actor(crate::actor::Actor::DEFAULT.into()),
+        AxumPath(cove_id.to_string()),
+    )
+    .await
+    .expect("ensure existing chat wave")
+    .into_response();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = http_body_util::BodyExt::collect(response.into_body())
+        .await
+        .unwrap()
+        .to_bytes();
+    let ensured: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(ensured["id"], wave_id.as_str());
+    assert_eq!(ensured["lifecycle"], "draft");
+    reset_reaper_boot_gate_for_test();
+}
+
+/// INV-CHAT-017(b,c): the lost-root Planning arm independently excludes the
+/// chat container, which remains discoverable by ensure semantics.
+#[tokio::test]
+async fn sweep_dead_roots_chat_planning_null_root_stays_nonterminal() {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    reset_reaper_boot_gate_for_test();
+
+    let (repo, wave_id) = seeded_repo().await;
+    set_wave_purpose(&repo, &wave_id, "cove-chat").await;
+    set_wave_lifecycle(&repo, &wave_id, WaveLifecycle::Planning).await;
+    let fake = Arc::new(FakeProvider::new());
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let reaper = Reaper::new(
+        repo_dyn,
+        registry(fake),
+        EventBus::new(),
+        write_context(&repo).await,
+    );
+    reaper_on_boot();
+    reaper.sweep_dead_roots().await;
+
+    assert_eq!(
+        wave_lifecycle_now(&repo, &wave_id).await,
+        WaveLifecycle::Planning
+    );
+    assert_eq!(
+        repo.wave_get(wave_id.as_str())
+            .await
+            .unwrap()
+            .unwrap()
+            .purpose
+            .as_deref(),
+        Some("cove-chat")
+    );
+    reset_reaper_boot_gate_for_test();
+}
+
+/// A newer Worker/chat start must not mask an older failed true-root start:
+/// the MAX(rowid) subquery considers only start ops for this wave's spec card.
+#[tokio::test]
+async fn sweep_dead_roots_newer_worker_start_does_not_hide_failed_true_root() {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    reset_reaper_boot_gate_for_test();
+
+    let (repo, wave_id) = seeded_repo().await;
+    insert_spec_harness_start_op(&repo, &wave_id, "failed").await;
+    let worker = RepoSyncDomainRaw::card_create(
+        repo.as_ref(),
+        NewCard {
+            wave_id: wave_id.clone(),
+            title: Some("worker".into()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        },
+    )
+    .await
+    .unwrap();
+    insert_harness_start_op_for_card(&repo, &wave_id, worker.id.as_str(), "succeeded").await;
+
+    let fake = Arc::new(FakeProvider::new());
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let reaper = Reaper::new(
+        repo_dyn,
+        registry(fake),
+        EventBus::new(),
+        write_context(&repo).await,
+    );
+    reaper_on_boot();
+    reaper.sweep_dead_roots().await;
+    assert_eq!(
+        wave_lifecycle_now(&repo, &wave_id).await,
+        WaveLifecycle::Failed
+    );
+    reset_reaper_boot_gate_for_test();
+}
+
+/// Non-string `spec_card_id` payloads are not true-root evidence. This pins
+/// the fail-closed type guard in the inner latest-true-root-op filter.
+#[tokio::test]
+async fn sweep_dead_roots_non_text_spec_card_id_fails_closed() {
+    let _guard = REAPER_TEST_LOCK.lock().await;
+    reset_reaper_boot_gate_for_test();
+
+    let (repo, wave_id) = seeded_repo().await;
+    sqlx::query("UPDATE cards SET id = '7' WHERE wave_id = ?1 AND role = 'spec'")
+        .bind(wave_id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    insert_harness_start_op_with_payload(
+        &repo,
+        json!({"wave_id": wave_id.as_str(), "spec_card_id": 7}),
+        "failed",
+    )
+    .await;
+
+    let fake = Arc::new(FakeProvider::new());
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let reaper = Reaper::new(
+        repo_dyn,
+        registry(fake),
+        EventBus::new(),
+        write_context(&repo).await,
+    );
+    reaper_on_boot();
+    reaper.sweep_dead_roots().await;
+    assert_eq!(
+        wave_lifecycle_now(&repo, &wave_id).await,
+        WaveLifecycle::Draft
+    );
     reset_reaper_boot_gate_for_test();
 }
 

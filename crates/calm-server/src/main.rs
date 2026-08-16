@@ -49,6 +49,12 @@ async fn main() -> anyhow::Result<()> {
 
     calm_server::assert_worker_sessions_card_id_complete_on_boot(&state).await?;
 
+    // #275 / #1109 — refuse to serve on an ambiguous `cove_folders`
+    // table. Overlapping claims are unreachable through today's atomic
+    // writer, but a pre-#275 database can hold them, and folder
+    // resolution would then hand a wave to an arbitrary cove.
+    calm_server::assert_cove_folders_disjoint_on_boot(&state).await?;
+
     // #410 — shared codex app-server boot/takeover. The shared daemon is the
     // only codex app-server path; failures are logged so boot can still bind
     // and routes surface the daemon failure when a codex card is used.
@@ -185,19 +191,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(auth_router)
         .layer(cors);
 
-    if let Some(web_dist) = &cfg.web_dist {
-        let index = web_dist.join("index.html");
-        tracing::info!(
-            web_dist = %web_dist.display(),
-            "serving built web bundle under /calm/"
-        );
-        app = app
-            .route("/", get(|| async { Redirect::temporary("/calm/") }))
-            .nest_service(
-                "/calm",
-                ServeDir::new(web_dist).fallback(ServeFile::new(index)),
-            );
-    }
+    app = mount_frontends(app, cfg.web_dist.as_deref(), cfg.fe_dist.as_deref());
 
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await?;
     tracing::info!(addr = %cfg.listen, "calm-server listening");
@@ -231,6 +225,40 @@ async fn main() -> anyhow::Result<()> {
     .await?;
 
     Ok(())
+}
+
+fn mount_frontends(
+    mut app: axum::Router,
+    web_dist: Option<&std::path::Path>,
+    fe_dist: Option<&std::path::Path>,
+) -> axum::Router {
+    if let Some(web_dist) = web_dist {
+        let index = web_dist.join("index.html");
+        tracing::info!(
+            web_dist = %web_dist.display(),
+            "serving built web bundle under /calm/"
+        );
+        app = app
+            .route("/", get(|| async { Redirect::temporary("/calm/") }))
+            .nest_service(
+                "/calm",
+                ServeDir::new(web_dist).fallback(ServeFile::new(index)),
+            );
+    }
+
+    if let Some(fe_dist) = fe_dist {
+        let index = fe_dist.join("index.html");
+        tracing::info!(
+            fe_dist = %fe_dist.display(),
+            "serving built next-generation frontend bundle under /next/"
+        );
+        app = app.nest_service(
+            "/next",
+            ServeDir::new(fe_dist).fallback(ServeFile::new(index)),
+        );
+    }
+
+    app
 }
 
 /// #954 defect 4 — bound on the post-signal HTTP drain. A code invariant
@@ -306,7 +334,119 @@ fn warn_if_worker_hook_callback_is_not_loopback(cfg: &Config) {
 
 #[cfg(test)]
 mod tests {
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Method, Request, StatusCode};
+    use clap::Parser;
+    use std::sync::Arc;
     use std::time::Duration;
+    use tower::ServiceExt;
+
+    async fn response_body(app: axum::Router, uri: &str) -> (StatusCode, Vec<u8>) {
+        response_body_with_method(app, Method::GET, uri).await
+    }
+
+    async fn response_body_with_method(
+        app: axum::Router,
+        method: Method,
+        uri: &str,
+    ) -> (StatusCode, Vec<u8>) {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, body)
+    }
+
+    #[tokio::test]
+    async fn configured_fe_dist_preserves_real_api_internal_and_legacy_routes() {
+        let web = tempfile::tempdir().unwrap();
+        let fe = tempfile::tempdir().unwrap();
+        let runtime = tempfile::tempdir().unwrap();
+        let legacy_index = b"legacy-index-exact\n";
+        std::fs::write(web.path().join("index.html"), legacy_index).unwrap();
+        std::fs::write(web.path().join("asset.txt"), b"legacy-asset-exact\n").unwrap();
+        std::fs::write(fe.path().join("index.html"), b"next-index-exact\n").unwrap();
+
+        let mut cfg = calm_server::config::Config::parse_from(["calm-server"]);
+        cfg.data_dir = Some(runtime.path().join("data"));
+        cfg.plugins_dir = Some(runtime.path().join("plugins"));
+        cfg.plugins_data_dir = Some(runtime.path().join("plugins-data"));
+        let repo: Arc<dyn calm_server::db::Repo> = Arc::new(
+            calm_server::db::sqlite::SqlxRepo::open("sqlite::memory:")
+                .await
+                .unwrap(),
+        );
+        let state = calm_server::state::AppState::new(&cfg, repo).await.unwrap();
+        let routes = calm_server::routes::router().with_state(state);
+        let baseline = routes.clone();
+        let app = super::mount_frontends(routes, Some(web.path()), Some(fe.path()));
+
+        for (method, uri) in [
+            (Method::GET, "/api/version"),
+            (Method::GET, "/api/openapi.json"),
+            (Method::POST, "/internal/codex/hook"),
+            (Method::POST, "/internal/claude/hook"),
+        ] {
+            assert_eq!(
+                response_body_with_method(app.clone(), method.clone(), uri).await,
+                response_body_with_method(baseline.clone(), method, uri).await,
+                "mounting the frontends changed the real {uri} route",
+            );
+        }
+        let root = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(root.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(root.headers()[axum::http::header::LOCATION], "/calm/");
+        assert_eq!(
+            response_body(app.clone(), "/calm/wave/deep-link").await,
+            (StatusCode::OK, legacy_index.to_vec())
+        );
+        assert_eq!(
+            response_body(app.clone(), "/calm/asset.txt").await,
+            (StatusCode::OK, b"legacy-asset-exact\n".to_vec())
+        );
+        assert_eq!(
+            response_body(app, "/next/wave/deep-link").await,
+            (StatusCode::OK, b"next-index-exact\n".to_vec())
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_fe_dist_serves_assets_and_deep_links_alongside_legacy() {
+        let web = tempfile::tempdir().unwrap();
+        let fe = tempfile::tempdir().unwrap();
+        std::fs::write(web.path().join("index.html"), b"legacy-index\n").unwrap();
+        std::fs::write(fe.path().join("index.html"), b"next-index\n").unwrap();
+        std::fs::write(fe.path().join("asset.txt"), b"next-asset\n").unwrap();
+
+        let app = super::mount_frontends(axum::Router::new(), Some(web.path()), Some(fe.path()));
+        assert_eq!(
+            response_body(app.clone(), "/calm/wave/deep-link").await,
+            (StatusCode::OK, b"legacy-index\n".to_vec())
+        );
+        assert_eq!(
+            response_body(app.clone(), "/next/wave/deep-link").await,
+            (StatusCode::OK, b"next-index\n".to_vec())
+        );
+        assert_eq!(
+            response_body(app, "/next/asset.txt").await,
+            (StatusCode::OK, b"next-asset\n".to_vec())
+        );
+    }
 
     /// #954 defect 4 — the drain is BOUNDED: a serve future held open past
     /// the signal (long-lived WS) is abandoned `drain_max` after the

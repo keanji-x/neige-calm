@@ -158,6 +158,19 @@ describe('oracle rule fixtures', () => {
     );
   });
 
+  it.each([
+    ['empty-reason-baseline.json', 'reason'], ['invalid-expiry-baseline.json', 'expiry format'],
+    ['expired-baseline.json', 'expired'],
+  ])('rejects a baseline fixture violating only %s (%s)', (file) => {
+    const violations = validateOracle({
+      repoRoot: fixtures, oracleDir: resolve(fixtures, 'source-anchor/negative'),
+      ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+      anchorBaselinePath: resolve(fixtures, 'source-anchor', file), today: '2026-08-13',
+    });
+    expect(violations.some(({ message }) => message.includes('unbaselined range-miss'))).toBe(true);
+    expect(violations.some(({ message }) => message.includes('baseline count must equal actual count'))).toBe(true);
+  });
+
   it('rejects duplicate ids in the unsupported account', () => {
     const root = resolve(fixtures, 'source-anchor/positive');
     const violations = validateOracle({

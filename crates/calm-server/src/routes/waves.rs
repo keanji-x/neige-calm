@@ -28,13 +28,14 @@
 //! so a missed cleanup surfaces as a transaction-level error rather
 //! than a silent daemon-process leak.
 
+use crate::COVE_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
     MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx,
-    cove_folder_create_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx,
-    overlay_upsert_tx, project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
-    wave_update_tx,
+    cove_folder_create_tx, cove_folders_list_all_tx, overlay_delete_by_entity_tx,
+    overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx, project_tasks_tx,
+    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
 use crate::db::write_with_actor_events_typed;
 use crate::error::{CalmError, ErrorBody, Result};
@@ -55,7 +56,7 @@ use crate::plugin_host::manifest::WorkflowDescriptor;
 use crate::plugin_host::workflow_input::validate_workflow_input;
 use crate::report_backlinks;
 use crate::routes::cards::interrupt_shared_card_active_turn;
-use crate::routes::cove_folders::{is_descendant_of, normalize_path};
+use crate::routes::cove_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -85,6 +86,47 @@ use std::collections::HashMap;
 use std::sync::{Mutex as StdMutex, OnceLock};
 #[cfg(feature = "fixtures")]
 use tokio::sync::Notify;
+
+#[cfg(feature = "fixtures")]
+fn chat_wave_ensure_barriers()
+-> &'static StdMutex<HashMap<String, std::sync::Arc<tokio::sync::Barrier>>> {
+    static BARRIERS: OnceLock<StdMutex<HashMap<String, std::sync::Arc<tokio::sync::Barrier>>>> =
+        OnceLock::new();
+    BARRIERS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_chat_wave_ensure_barrier_for_test(
+    cove_id: &str,
+    barrier: std::sync::Arc<tokio::sync::Barrier>,
+) {
+    chat_wave_ensure_barriers()
+        .lock()
+        .expect("chat-wave ensure barrier lock poisoned")
+        .insert(cove_id.to_string(), barrier);
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn remove_chat_wave_ensure_barrier_for_test(cove_id: &str) {
+    chat_wave_ensure_barriers()
+        .lock()
+        .expect("chat-wave ensure barrier lock poisoned")
+        .remove(cove_id);
+}
+
+#[cfg(feature = "fixtures")]
+async fn wait_at_chat_wave_ensure_barrier(cove_id: &str) {
+    let barrier = chat_wave_ensure_barriers()
+        .lock()
+        .expect("chat-wave ensure barrier lock poisoned")
+        .get(cove_id)
+        .cloned();
+    if let Some(barrier) = barrier {
+        barrier.wait().await;
+    }
+}
 
 mod fork_guard;
 
@@ -198,6 +240,23 @@ pub fn router() -> Router<AppState> {
         .route("/api/waves/{id}/files/ls", get(list_wave_files))
         .route("/api/waves/{id}/files/cat", get(cat_wave_file))
         .route("/api/coves/{cove_id}/waves", get(list_waves_by_cove))
+        .route(
+            "/api/coves/{cove_id}/chat-wave/ensure",
+            axum::routing::post(ensure_cove_chat_wave),
+        )
+}
+
+fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
+    let CalmError::Db(sqlx::Error::Database(error)) = error else {
+        return false;
+    };
+    error.is_unique_violation() && error.message().contains(constraint)
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn is_unique_constraint_for_test(error: &CalmError, constraint: &str) -> bool {
+    is_unique_constraint(error, constraint)
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -305,8 +364,26 @@ pub(crate) async fn list_waves_by_cove(
     State(s): State<RouteState>,
     Path(cove_id): Path<String>,
 ) -> Result<Json<Vec<Wave>>> {
-    let waves = s.repo.waves_by_cove(&cove_id).await?;
+    let mut waves = s.repo.waves_by_cove(&cove_id).await?;
+    waves.retain(user_visible_wave);
     Ok(Json(waves))
+}
+
+/// Public wave lists hide only the cove conversation container. Keep this at
+/// the route boundary: repository readers such as cove deletion and backlink
+/// resolution require the complete set.
+///
+/// The `match` is spelled out rather than written `!= Some(COVE_CHAT_PURPOSE)`
+/// purely for readability — both forms already keep NULL-purpose waves
+/// visible, because Rust comparison against `Option` is total. The three-valued
+/// logic trap this must not be confused with lives in SQL, where
+/// `purpose <> 'cove-chat'` drops NULL rows; the two hand-written predicates
+/// that must spell out `purpose IS NULL OR ...` are in `session_repo_impl.rs`.
+fn user_visible_wave(wave: &Wave) -> bool {
+    match wave.purpose.as_deref() {
+        None => true,
+        Some(purpose) => purpose != COVE_CHAT_PURPOSE,
+    }
 }
 
 /// Issue #250 PR 2 — calendar window query parameters for
@@ -371,10 +448,11 @@ pub(crate) async fn list_waves_window(
             "window query: `since` ({since}) must be <= `until` ({until})"
         )));
     }
-    let waves = state
+    let mut waves = state
         .repo
         .waves_window(q.cove_id.as_deref(), q.since, q.until)
         .await?;
+    waves.retain(user_visible_wave);
     Ok(Json(waves))
 }
 
@@ -510,102 +588,48 @@ pub(crate) async fn create_wave(
     let attach_folder = p.attach_folder;
     let body_cove_id = p.cove_id.as_str().to_string();
 
-    if !is_system_cove {
-        // Pre-tx claim scan. The route runs every cwd-vs-folder check
-        // outside the tx so the structured 409 (`FolderConflict`) can be
-        // returned without a custom in-tx error variant. The UNIQUE
-        // constraint on `cove_folders.path` provides a concurrent-insert
-        // backstop inside the tx; concurrent `attach_folder = true`
-        // requests for the same cwd surface as a generic 409 from the
-        // sqlite layer.
-        let existing_folders = s.repo.cove_folders_list_all().await?;
-
-        // Step 1 — find a covering folder (cwd is descendant of or equal
-        // to some claim). At most one row qualifies as the *longest*
-        // prefix; ancestor/equal claims under different coves are a
-        // hard conflict, under the same cove are a silent no-op.
-        let owner = existing_folders
-            .iter()
-            .filter(|f| is_descendant_of(&f.path, &normalized_cwd))
-            .max_by_key(|f| f.path.len());
-        if let Some(f) = owner {
-            if f.cove_id.as_str() != body_cove_id {
-                let body = FolderConflict {
-                    folder_id: f.id,
-                    cove_id: f.cove_id.clone(),
-                    conflict_path: f.path.clone(),
-                    // `Descendant` is the right label from the cwd's
-                    // point of view: the cwd is a descendant of an
-                    // existing folder owned by another cove.
-                    conflict_kind: FolderConflictKind::Descendant,
-                };
-                return Ok((StatusCode::CONFLICT, Json(body)).into_response());
-            }
-            // Same cove already covers it — silently ignore
-            // `attach_folder`. Fall through to wave-only create.
-        } else if attach_folder {
-            // Step 2 — no claim covers the cwd, but the caller wants to
-            // mint one. Re-check for the *reverse* overlap: any existing
-            // folder that is a descendant of the proposed cwd. This is
-            // the `/a/b exists, claim /a` case that the cove_folders
-            // route refuses with `FolderConflictKind::Ancestor`. We
-            // refuse here for the same reason — silently widening an
-            // existing narrower claim would make resolution ambiguous.
-            if let Some(f) = existing_folders
-                .iter()
-                .find(|f| is_descendant_of(&normalized_cwd, &f.path))
-            {
-                let body = FolderConflict {
-                    folder_id: f.id,
-                    cove_id: f.cove_id.clone(),
-                    conflict_path: f.path.clone(),
-                    conflict_kind: FolderConflictKind::Ancestor,
-                };
-                return Ok((StatusCode::CONFLICT, Json(body)).into_response());
-            }
-            // Cwd is fully unclaimed (no ancestor, no descendant) — the
-            // in-tx `cove_folder_create_tx` will insert the row.
-        } else {
-            // No claim covers the cwd and the caller didn't opt in to
-            // attach. Refuse so accidentally typing a stray path doesn't
-            // create a "homeless" wave.
-            return Err(CalmError::Conflict(format!(
-                "wave create: cwd `{normalized_cwd}` is not claimed by any cove. \
-                 Set `attach_folder: true` to claim it for cove `{body_cove_id}`."
-            )));
+    // Issue #275 — the whole cwd-vs-claim decision (covering-folder scan,
+    // reverse-overlap check, and the INSERT when `attach_folder`) now runs
+    // inside the wave-create transaction. It used to be a pre-tx scan on a
+    // separate pooled connection, which let two concurrent creates for
+    // `/a` and `/a/b` both pass an empty-table scan and commit overlapping
+    // claims — `UNIQUE(cove_folders.path)` only rejects *equal* paths.
+    // Overlapping rows made the two resolvers disagree, and the wave
+    // create then 409'd on a cove the UI had just been told to use.
+    //
+    // The tx is already `BEGIN IMMEDIATE` (see
+    // `SqlxRepo::write_with_actor_events`), so this adds one SELECT under
+    // a writer lock the create was taking anyway — it does not widen the
+    // lock window with any new I/O.
+    let conflict = FolderConflictSlot::default();
+    let folder_claim = if is_system_cove {
+        FolderClaim::Skip
+    } else {
+        FolderClaim::Enforce {
+            attach: attach_folder,
+            conflict: conflict.clone(),
         }
-    }
+    };
 
-    // Git probing must finish before `write_with_events_typed` opens its
-    // SQLite write transaction. The resolved value then commits with the
-    // folder and wave rows.
-    let repo_identity = attach_folder
-        .then(|| {
-            calm_truth::repo_identity::probe_repo_identity(std::path::Path::new(&normalized_cwd))
-        })
-        .flatten();
-    let repo_identity_probed_at = attach_folder.then(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64
-    });
-    create_wave_with_spec_harness(
+    let created = create_wave_with_spec_harness(
         s,
         actor,
         p,
         CreateWaveOptions {
-            attach_folder,
+            folder_claim,
             body_cove_id,
             normalized_cwd,
-            repo_identity: AttachRepoIdentity {
-                identity: repo_identity,
-                probed_at: repo_identity_probed_at,
-            },
             fork_report_from,
         },
     )
-    .await
+    .await;
+    match created {
+        Err(error) => match conflict.take() {
+            Some(body) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
+            None => Err(error),
+        },
+        ok => ok,
+    }
 }
 
 /// Resolve `workflow_id` to its descriptor iff a running **trusted** plugin
@@ -669,16 +693,52 @@ fn validate_workflow_input_binding(
     }
 }
 
-struct AttachRepoIdentity {
-    identity: Option<String>,
-    probed_at: Option<i64>,
+/// Issue #275 — the cwd claim scan runs **inside** the wave-create
+/// transaction, so its structured 409 (`FolderConflict`, not the generic
+/// `{error, code}` envelope) has to travel back out through `Err`. The
+/// closure parks the body here; [`create_wave`] picks it up and renders
+/// it. `Mutex` is only ever locked between `await` points.
+#[derive(Clone, Default)]
+struct FolderConflictSlot(std::sync::Arc<std::sync::Mutex<Option<FolderConflict>>>);
+
+impl FolderConflictSlot {
+    /// Park `body` and return the error that unwinds (and rolls back)
+    /// the transaction. The message is a fallback only: the route reads
+    /// the slot first and never surfaces this string.
+    fn park(&self, body: FolderConflict) -> CalmError {
+        let message = format!(
+            "wave create: cwd conflicts with folder claim `{}` (cove `{}`)",
+            body.conflict_path, body.cove_id
+        );
+        *self.0.lock().expect("folder conflict slot poisoned") = Some(body);
+        CalmError::Conflict(message)
+    }
+
+    fn take(&self) -> Option<FolderConflict> {
+        self.0.lock().expect("folder conflict slot poisoned").take()
+    }
+}
+
+/// Issue #275 — what the wave-create transaction does about `cove_folders`.
+enum FolderClaim {
+    /// Don't scan, don't insert. The system cove is exempt from the claim
+    /// namespace entirely, and `ensure_cove_chat_wave_inner` derives its
+    /// cwd from claims that already exist.
+    Skip,
+    /// Scan inside the wave tx (`BEGIN IMMEDIATE`, so scan and insert are
+    /// atomic against a concurrent claim) and act on the result:
+    /// `attach` mints the claim when nothing covers the cwd; without it a
+    /// cwd no cove claims is refused rather than making a homeless wave.
+    Enforce {
+        attach: bool,
+        conflict: FolderConflictSlot,
+    },
 }
 
 struct CreateWaveOptions {
-    attach_folder: bool,
+    folder_claim: FolderClaim,
     body_cove_id: String,
     normalized_cwd: String,
-    repo_identity: AttachRepoIdentity,
     fork_report_from: Option<String>,
 }
 
@@ -689,16 +749,156 @@ async fn create_wave_with_spec_harness(
     p: NewWave,
     options: CreateWaveOptions,
 ) -> Result<Response> {
+    let (wave, _, spec_card_id, report_card_id) =
+        create_wave_structure(s.clone(), actor.clone(), p, options, None).await?;
+    start_spec_harness(&s, &actor, &wave, spec_card_id, report_card_id).await?;
+    Ok((StatusCode::CREATED, Json(wave)).into_response())
+}
+
+/// Ensure the cove's single chat wave exists.
+///
+/// The cwd is selected only while creating the wave: it is the claimed path
+/// with the fewest path components, breaking ties lexicographically. Cove
+/// folder claims cannot be equal, ancestors, or descendants of one another,
+/// so "closest to the cove root" is defined here as this deterministic shallow
+/// path ordering rather than containment. Once created, later folder claims or
+/// changes deliberately do not update the wave cwd, so an existing conversation
+/// cannot drift between working directories from one message to the next.
+#[utoipa::path(
+    post,
+    path = "/api/coves/{cove_id}/chat-wave/ensure",
+    tag = "waves",
+    params(("cove_id" = String, Path, description = "Cove id")),
+    responses(
+        (status = 200, description = "Existing chat wave", body = Wave),
+        (status = 201, description = "Chat wave created", body = Wave),
+        (status = 409, description = "Cove has no claimed folder", body = ErrorBody),
+        (status = 404, description = "Cove not found", body = ErrorBody),
+    ),
+)]
+#[allow(deprecated)]
+pub(crate) async fn ensure_cove_chat_wave(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(cove_id): Path<String>,
+) -> Result<Response> {
+    let (wave, created) = ensure_cove_chat_wave_inner(&s, actor, &cove_id).await?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(wave)).into_response())
+}
+
+/// The body of [`ensure_cove_chat_wave`], shared with
+/// `POST /api/coves/{cove_id}/conversations` (#1098 slice 3). Returns the
+/// wave and whether this call is the one that created it.
+///
+/// Both callers must agree byte-for-byte on the cwd rule and the concurrent
+/// ensure race resolution, so there is exactly one implementation of them.
+#[allow(deprecated)]
+pub(crate) async fn ensure_cove_chat_wave_inner(
+    s: &RouteState,
+    actor: Actor,
+    cove_id: &str,
+) -> Result<(Wave, bool)> {
+    let cove_id = cove_id.to_string();
+    if s.repo.cove_get(&cove_id).await?.is_none() {
+        return Err(CalmError::NotFound(format!("cove {cove_id}")));
+    }
+    // Preserve the existing wave (and therefore its cwd) before consulting
+    // current folder claims. The partial unique index closes the concurrent
+    // ensure race; the loser reads and returns the winner below.
+    if let Some(wave) = s
+        .repo
+        .waves_by_cove(&cove_id)
+        .await?
+        .into_iter()
+        .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
+    {
+        return Ok((wave, false));
+    }
+
+    #[cfg(feature = "fixtures")]
+    wait_at_chat_wave_ensure_barrier(&cove_id).await;
+
+    let cwd = s
+        .repo
+        .cove_folders_by_cove(&cove_id)
+        .await?
+        .into_iter()
+        .min_by(|left, right| {
+            std::path::Path::new(&left.path)
+                .components()
+                .count()
+                .cmp(&std::path::Path::new(&right.path).components().count())
+                .then_with(|| left.path.cmp(&right.path))
+        })
+        .map(|folder| folder.path)
+        .ok_or_else(|| {
+            CalmError::Conflict(format!(
+                "chat wave ensure: cove `{cove_id}` has no claimed folder; claim a folder for this cove before starting a conversation"
+            ))
+        })?;
+    let p = NewWave {
+        cove_id: cove_id.clone().into(),
+        title: "Cove chat".into(),
+        sort: None,
+        cwd: cwd.clone(),
+        workflow_id: None,
+        workflow_input: None,
+        attach_folder: false,
+        theme: RequestTheme::default_dark(),
+    };
+    let attempt = create_wave_structure(
+        s.clone(),
+        actor,
+        p,
+        CreateWaveOptions {
+            // The cwd was just picked from this cove's own existing
+            // claims, so there is nothing to scan and nothing to mint.
+            folder_claim: FolderClaim::Skip,
+            body_cove_id: cove_id.clone(),
+            normalized_cwd: cwd,
+            fork_report_from: None,
+        },
+        Some(COVE_CHAT_PURPOSE),
+    )
+    .await;
+    let (wave, created) = match attempt {
+        Ok((wave, _, _, _)) => (wave, true),
+        Err(error) if is_unique_constraint(&error, "waves.cove_id") => {
+            let wave = s
+                .repo
+                .waves_by_cove(&cove_id)
+                .await?
+                .into_iter()
+                .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
+                .ok_or_else(|| CalmError::Internal("chat wave ensure race had no winner".into()))?;
+            (wave, false)
+        }
+        Err(error) => return Err(error),
+    };
+    Ok((wave, created))
+}
+
+#[allow(deprecated)]
+async fn create_wave_structure(
+    s: RouteState,
+    actor: Actor,
+    p: NewWave,
+    options: CreateWaveOptions,
+    purpose: Option<&'static str>,
+) -> Result<(Wave, bool, String, String)> {
     let CreateWaveOptions {
-        attach_folder,
+        folder_claim,
         body_cove_id,
         normalized_cwd,
-        repo_identity,
         fork_report_from,
     } = options;
     let spec_card_id = new_id();
     let report_card_id = new_id();
-    let actor_for_hash = actor.as_str().to_string();
     let actor_id = actor.to_actor_id();
     let actor_id_for_tx = actor_id.clone();
     let write_for_tx = s.write.clone();
@@ -706,32 +906,96 @@ async fn create_wave_with_spec_harness(
     let report_card_id_for_tx = report_card_id.clone();
     let cove_id_for_attach = body_cove_id;
     let normalized_cwd_for_tx = normalized_cwd;
-    let repo_identity_for_tx = repo_identity.identity;
-    let repo_identity_probed_at = repo_identity.probed_at;
-    let fork_author = if actor.as_str() == Actor::DEFAULT {
-        EditAuthor::User
-    } else {
-        EditAuthor::Spec
-    };
-    let ((wave,), _event_ids) = write_with_actor_events_typed(
+    // #1115 — the fork path deliberately derives no `EditAuthor`. It used to
+    // (`User` when no `X-Calm-Actor` header was present, `Spec` otherwise) and
+    // hand it to `fork_guard::guard_forked_blocks`, which made that guard a
+    // no-op for the browser fork — the single most common fork there is. The
+    // fork's normalization and its belt are both author-independent now, so
+    // nothing here may classify the caller.
+    let ((wave, created), _event_ids) = write_with_actor_events_typed(
         s.repo.as_ref(),
         None,
         &s.events,
         &s.write,
         move |tx| {
             Box::pin(async move {
-                if attach_folder {
-                    cove_folder_create_tx(
-                        tx,
-                        &cove_id_for_attach,
-                        &normalized_cwd_for_tx,
-                        repo_identity_for_tx.as_deref(),
-                        repo_identity_probed_at.expect("attach probe timestamp"),
-                    )
-                    .await?;
+                // #275 — claim scan + claim insert, atomic with the wave
+                // row because they share this BEGIN IMMEDIATE tx. Must
+                // stay first: every branch below either rolls the tx back
+                // or leaves the claim table consistent for `wave_create_tx`.
+                if let FolderClaim::Enforce { attach, conflict } = &folder_claim {
+                    let existing = cove_folders_list_all_tx(tx).await?;
+                    match find_owner(&existing, &normalized_cwd_for_tx) {
+                        // Some other cove already covers this cwd.
+                        // `Descendant` is the right label from the cwd's
+                        // point of view: the cwd is a descendant of an
+                        // existing folder owned by another cove.
+                        Some(f) if f.cove_id.as_str() != cove_id_for_attach => {
+                            return Err(conflict.park(FolderConflict {
+                                folder_id: f.id,
+                                cove_id: f.cove_id.clone(),
+                                conflict_path: f.path.clone(),
+                                conflict_kind: FolderConflictKind::Descendant,
+                            }));
+                        }
+                        // Same cove already covers it — `attach_folder` is a
+                        // no-op, create the wave only.
+                        //
+                        // #275 behavior change. Before this fix the insert
+                        // ran unconditionally on the scan result, so this
+                        // arm fell through into `cove_folder_create_tx`:
+                        //   - cwd == the existing claim → UNIQUE(path) →
+                        //     409 for re-claiming your own folder;
+                        //   - cwd under the existing claim → a second,
+                        //     overlapping row, minted from plain HTTP with
+                        //     no concurrency at all.
+                        // The latter is the larger hole in the "at most one
+                        // claim covers any path" invariant — bigger and far
+                        // easier to reach than the scan/insert TOCTOU.
+                        // Pinned by `post_api_waves_attach_folder_*` in
+                        // `tests/cases/wave_cwd_terminal_at.rs`.
+                        Some(_) => {}
+                        None if *attach => {
+                            // No claim covers the cwd and the caller wants
+                            // to mint one. Check the *reverse* overlap
+                            // first: an existing folder that is a
+                            // descendant of the proposed cwd (`/a/b`
+                            // exists, claim `/a`). Refused for the same
+                            // reason the cove_folders route refuses it —
+                            // silently widening a narrower claim would
+                            // make resolution ambiguous.
+                            if let Some(f) = existing
+                                .iter()
+                                .find(|f| is_descendant_of(&normalized_cwd_for_tx, &f.path))
+                            {
+                                return Err(conflict.park(FolderConflict {
+                                    folder_id: f.id,
+                                    cove_id: f.cove_id.clone(),
+                                    conflict_path: f.path.clone(),
+                                    conflict_kind: FolderConflictKind::Ancestor,
+                                }));
+                            }
+                            cove_folder_create_tx(
+                                tx,
+                                &cove_id_for_attach,
+                                &normalized_cwd_for_tx,
+                            )
+                            .await?;
+                        }
+                        // Nothing covers the cwd and the caller didn't opt
+                        // in to attach. Refuse so accidentally typing a
+                        // stray path doesn't create a "homeless" wave.
+                        None => {
+                            return Err(CalmError::Conflict(format!(
+                                "wave create: cwd `{normalized_cwd_for_tx}` is not claimed by \
+                                 any cove. Set `attach_folder: true` to claim it for cove \
+                                 `{cove_id_for_attach}`."
+                            )));
+                        }
+                    }
                 }
 
-                let wave = wave_create_tx(tx, p, write_for_tx.cove_cache()).await?;
+                let wave = wave_create_tx(tx, p, purpose, write_for_tx.cove_cache()).await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
                 let goal = wave.title.trim().to_string();
@@ -766,7 +1030,6 @@ async fn create_wave_with_spec_harness(
                         blocks,
                         source_wave_id,
                         wave_id.as_str(),
-                        fork_author,
                     )?)
                 } else {
                     None
@@ -902,15 +1165,25 @@ async fn create_wave_with_spec_harness(
                     }
                     events.extend(projection.kernel_events);
                 }
-                Ok(((wave,), events))
+                Ok(((wave, true), events))
             })
         },
     )
     .await?;
 
+    Ok((wave, created, spec_card_id, report_card_id))
+}
+
+async fn start_spec_harness(
+    s: &RouteState,
+    actor: &Actor,
+    wave: &Wave,
+    spec_card_id: String,
+    report_card_id: String,
+) -> Result<()> {
     let goal = wave.title.trim().to_string();
     let request = SpecHarnessStartOperationPayload {
-        actor: actor_id,
+        actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
         spec_card_id: CardId::from(spec_card_id.clone()),
         report_card_id: Some(report_card_id),
@@ -919,10 +1192,13 @@ async fn create_wave_with_spec_harness(
         goal: (!goal.is_empty()).then_some(goal),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
-        "actor": actor_for_hash,
+        "actor": actor.as_str(),
         "request": &request,
     }))?;
     match s
@@ -980,7 +1256,7 @@ async fn create_wave_with_spec_harness(
         ),
     }
 
-    Ok((StatusCode::CREATED, Json(wave)).into_response())
+    Ok(())
 }
 
 type ForkReportSnapshot = (
@@ -1023,7 +1299,6 @@ fn prepare_fork_report(
     mut blocks: Vec<ReportBlock>,
     source_wave_id: &str,
     target_wave_id: &str,
-    author: EditAuthor,
 ) -> Result<ForkReportSnapshot> {
     use std::collections::HashSet;
 
@@ -1093,9 +1368,67 @@ fn prepare_fork_report(
                 serde_json::Value::String("spec".into()),
             );
             if tombstone {
+                // #1111 — `tombstoned_by` is the second *attribution* field on
+                // a task block: `wave_report_edit_guard::guard_task_declarations`
+                // treats `declared_by == "user" || tombstoned_by == "user"` as
+                // user-owned, and `tombstoned_by` is immutable once a block is
+                // a tombstone. Copying a template's `tombstoned_by: "user"`
+                // would hand every forked wave a block no spec author can ever
+                // edit or delete — the same template-as-backdoor hole §7.2
+                // closed for `declared_by`. Normalize both together.
+                //
+                // Non-tombstone blocks are deliberately left alone: a residual
+                // `tombstoned_by` there is rejected by `validate_payload`
+                // ("must be absent from a non-tombstone task") a few lines
+                // below, so a corrupt source fails the fork closed instead of
+                // being silently repaired into a shape it never validly had.
+                //
+                // `released_by_user` is the third privilege field; it is
+                // normalized in the `else` arm below, because the tombstone
+                // schema (`report_blocks/kinds.rs:158-166`) forbids the field
+                // outright — see that arm's comment.
+                payload.insert(
+                    "tombstoned_by".into(),
+                    serde_json::Value::String("spec".into()),
+                );
                 payload.remove("ready");
             } else {
                 payload.insert("ready".into(), serde_json::Value::Bool(false));
+                // #1115 — `released_by_user` is the third and last privilege
+                // field on a task block, and the one that answers "did a HUMAN
+                // approve this task in THIS wave". `declared_by` is rewritten to
+                // `"spec"` two lines up, which is exactly the shape
+                // `declare_and_wait` exists to hold back
+                // (`task_projection.rs:709-719`: `effective_wait &&
+                // declared_by == "spec" && !released_by_user && !tombstone`).
+                // Copying a template's `released_by_user: true` would hand the
+                // copy a standing exemption from a decision the new wave's user
+                // never made — and `report-blocks/task.tsx:185` would then hide
+                // the "Allow this task" button from her, because the flag is
+                // already set. Same source semantics as `ready: false` above:
+                // nothing in a template was decided for *this* wave.
+                //
+                // Removed rather than written as an explicit `false`. Absent and
+                // `false` are identical to every reader (`tasks.rs:732-734`
+                // `.unwrap_or(false)`; `task.tsx:185` tests falsiness), but they
+                // are NOT identical to `wave_report_edit_guard.rs:162-167`,
+                // which compares the raw `Option<&Value>` and rejects any
+                // non-user edit that changes it. Blocks produced by the
+                // plan-template generator carry no such key
+                // (`plan_template_task_block_payload`; `plan.rs:917-925` lists
+                // `released_by_user` among the template exclusions, pinned by a
+                // field-set equality meta-test) — that is a property of that
+                // one generator, not a global invariant, since an agent writing
+                // blocks over MCP could schema-legally include an explicit
+                // `false`. Absent is nonetheless the canonical shape, so
+                // writing an explicit `false` here would make forked blocks the
+                // only ones a spec author must echo the field back on —
+                // re-creating, on this field, the "template block the spec can
+                // never edit" failure #1111 just closed. `ready` is written explicitly only because
+                // `kinds.rs:243-245` makes it *required* on a live task; this
+                // one is optional, so the absent form is available and is the
+                // one that matches a fresh declaration byte for byte.
+                payload.remove("released_by_user");
             }
         }
 
@@ -1124,7 +1457,7 @@ fn prepare_fork_report(
         )));
     }
 
-    guard_forked_blocks(&blocks, author)?;
+    guard_forked_blocks(&blocks)?;
     let doc = ReportDoc::from_blocks_exact(&summary, &blocks).map_err(|error| {
         CalmError::BadRequest(format!(
             "wave create: invalid fork report snapshot: {error}"
@@ -1210,6 +1543,16 @@ pub(crate) async fn update_wave(
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    // The guard fires on *mentioning* `lifecycle`, not on changing it: a PATCH
+    // that re-sends the wave's current lifecycle is 403 too. That is
+    // deliberate — the chat wave has no lifecycle the user may drive, so
+    // accepting a no-op write would advertise an editable field, and the FSM
+    // would then have to be trusted to keep every such write a no-op forever.
+    if existing.purpose.as_deref() == Some(COVE_CHAT_PURPOSE) && p.lifecycle.is_some() {
+        return Err(CalmError::Forbidden(
+            "cove chat wave lifecycle cannot be changed".into(),
+        ));
+    }
     let scope = EventScope::Wave {
         wave: existing.id.clone(),
         cove: existing.cove_id.clone(),
@@ -1842,7 +2185,6 @@ mod tests {
     };
     use crate::db::prelude::*;
     use crate::db::sqlite::SqlxRepo;
-    use crate::event::EditAuthor;
     use crate::model::{NewCard, NewCove, NewWave};
     use crate::routes::theme::RequestTheme;
     use crate::wave_report::{ReportBlock, WaveReportPayload};
@@ -1863,15 +2205,9 @@ mod tests {
                 "declared_by": "user"
             }),
         };
-        let error = prepare_fork_report(
-            "summary".into(),
-            vec![invalid],
-            "source",
-            "target",
-            EditAuthor::User,
-        )
-        .err()
-        .expect("invalid copied task must abort fork");
+        let error = prepare_fork_report("summary".into(), vec![invalid], "source", "target")
+            .err()
+            .expect("invalid copied task must abort fork");
         assert!(error.to_string().contains("invalid forked report block"));
     }
 

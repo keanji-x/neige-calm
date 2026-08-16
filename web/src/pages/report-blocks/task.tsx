@@ -91,7 +91,13 @@ const taskDiagnosticCopy = Object.freeze({
   reference_chain_too_large: () => 'The reference chain is too deep or wide, so this task is treated as invalid to stay safe. Gather the needed context into fewer blocks.',
   tombstone_blocks_redeclaration: (d: Diagnostic) => `A “do not do” record left by ${textArg(d, 'tombstoned_by') === 'user' ? 'you' : 'the AI'} blocks this task key. Remove that record to allow this key again; restoring automatic AI tasks is separate and keeps the rejection record.`,
   declare_and_wait: () => 'AI-proposed tasks in this wave wait for you. Use “Allow this task” below, or restore automatic AI tasks for the wave.',
-  context_stale_reference: () => 'A referenced block changed after work started, so this run can no longer be checked safely. Relink the intended context and create a task with a new key.',
+  context_stale_reference: (d: Diagnostic) => {
+    const status = textArg(d, 'status');
+    if (['done', 'failed', 'canceled'].includes(status)) {
+      return 'This task ended while its saved reference context was stale. Review the worker output and the current declaration, then create a task with a new key if more work is needed.';
+    }
+    return 'This task’s saved reference context no longer matches its frozen closure. If the task is still in progress and no other condition blocks restoration, restoring the same block identity and prior content makes the system check again. If it remains stale, review the declaration and create a task with a new key.';
+  },
   declaration_changed_in_flight: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
   context_stale_declaration: () => 'This task card changed after work started. The worker output is still available in its card and logs, but it has not been verified. Review the output, then create a task with a new key if needed.',
   task_key_completed: () => 'This task key has already been delivered. Create a new task card with a new key for more work.',

@@ -9,12 +9,47 @@
 // trap would mean you cannot click the next wave without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
-import { useEffect, useRef, type ReactNode, type UIEvent } from 'react';
+import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
 
+import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
-export function Drawer({ open, title, onClose, children, footer }: {
+/**
+ * A control in the drawer's head, beside the close.
+ *
+ * It is a companion component rather than a free `ReactNode` for the reason
+ * `PanelAction` is one: the geometry belongs to the head — a 28px hit area
+ * carried on the title's first line — and a caller composing its own button
+ * would have to restate it, which is the drift the role/tier split exists to
+ * prevent (§4.1).
+ *
+ * `danger` is §4.3's tier and it is red **at rest**: a warning that appears
+ * only under the pointer is missing at the moment of the decision, and missing
+ * from the keyboard path entirely. Icon-only, so the label is the whole of what
+ * a screen reader gets — it must name the object, not just the verb.
+ */
+export function DrawerAction({ label, onClick, danger = false, children }: {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: ReactElement;
+}) {
+  return (
+    <button
+      type="button"
+      data-nc-role="icon"
+      className={`${styles.action} ${danger ? styles.actionDanger : ''}`}
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+export function Drawer({ open, title, onClose, children, footer, headAction }: {
   open: boolean;
   /**
    * The whole head — one grey line on the close button's row.
@@ -36,11 +71,22 @@ export function Drawer({ open, title, onClose, children, footer }: {
    * the bottom of a long transcript is a message box you cannot reach.
    */
   footer?: ReactNode;
+  /**
+   * One control beside the close, for something that belongs to the surface
+   * rather than to what is in it — today, the conversation's reset.
+   *
+   * It is a head slot and not a footer button because the footer is where you
+   * *work*: a destructive action standing next to the message box is one
+   * mis-click away from the most routine thing on the surface, and it inherits
+   * the visual weight of a control you press every turn.
+   */
+  headAction?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
-  const [scrolled, setScrolled] = useState(false);
   const [closing, setClosing] = useState(false);
   const wasOpen = useRef(open);
+  const shouldRestoreFocus = useRef(false);
+  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
 
   /*
    * What a retracting drawer shows.
@@ -52,9 +98,11 @@ export function Drawer({ open, title, onClose, children, footer }: {
    * snapshot of the last frame that had content, and it must never cause a
    * render of its own.
    */
-  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode }>({ title, children, footer });
-  if (open) lastFrame.current = { title, children, footer };
-  const frame = open ? { title, children, footer } : lastFrame.current;
+  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode; headAction?: ReactNode }>(
+    { title, children, footer, headAction },
+  );
+  if (open) lastFrame.current = { title, children, footer, headAction };
+  const frame = open ? { title, children, footer, headAction } : lastFrame.current;
 
   /*
    * The retraction starts **during render**, not in an effect, and that is the
@@ -75,20 +123,37 @@ export function Drawer({ open, title, onClose, children, footer }: {
     // Only a true → false edge retracts; mounting closed does not.
     const retracts = wasOpen.current && !open
       && !globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    shouldRestoreFocus.current = wasOpen.current && !open;
     wasOpen.current = open;
     setClosing(retracts);
   }
 
   useEffect(() => {
     if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
+      if (layers.item(layers.length - 1) === panelRef.current) onClose();
+    };
     document.addEventListener('keydown', onKeyDown);
     return () => { document.removeEventListener('keydown', onKeyDown); };
   }, [open, onClose]);
 
   // Focus moves in, because the drawer is what the click asked for; it is not
   // held there, because the drawer is not modal.
-  useEffect(() => { if (open) panelRef.current?.focus(); }, [open]);
+  useEffect(() => {
+    if (open) {
+      previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
+      panelRef.current?.focus();
+      return;
+    }
+    if (!shouldRestoreFocus.current) return;
+    shouldRestoreFocus.current = false;
+    const target = previouslyFocusedRef.current;
+    const fallback = document.querySelector<HTMLElement>('[data-nc-page-title]');
+    const destination = target && document.contains(target) ? target : fallback;
+    if (destination && document.contains(destination)) destination.focus();
+  }, [open]);
 
   /*
    * The drawer **retracts**; it does not vanish.
@@ -98,8 +163,8 @@ export function Drawer({ open, title, onClose, children, footer }: {
    * for a dialog, which is a thing that was in the way and is now gone. It is
    * wrong for a panel attached to an edge: the whole point of an edge panel is
    * that it is *still there*, pushed off-screen, and an instant disappearance
-   * says it was destroyed. The control says the same thing — `›`, the direction
-   * it goes, the same glyph the rail's own collapse uses.
+   * says it was destroyed. The control says the same thing — a right-facing
+   * chevron, the direction it goes.
    *
    * So closing holds the element mounted for one animation. Reduced motion
    * skips the phase entirely rather than waiting on an `animationend` that a
@@ -111,35 +176,31 @@ export function Drawer({ open, title, onClose, children, footer }: {
       ref={panelRef}
       className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
       role="complementary"
+      data-nc-escape-layer={open ? '' : undefined}
       aria-label={frame.title}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
-      {...(scrolled ? { 'data-nc-scrolled': '' } : {})}
     >
-      <div className={styles.head}>
-        <h2 className={styles.title}>{frame.title}</h2>
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={styles.close}
-          aria-label="Close conversation"
-          title="Close"
-          onClick={onClose}
-        >
-          ›
-        </button>
-      </div>
-      <div
-        className={styles.body}
-        onScroll={(event: UIEvent<HTMLDivElement>) => {
-          // The head's rule appears only once something is under it. Compared
-          // against the current value so a scroll event per frame does not
-          // become a render per frame.
-          const past = event.currentTarget.scrollTop > 0;
-          if (past !== scrolled) setScrolled(past);
-        }}
-      >
-        {frame.children}
+      <div className={styles.scroll}>
+        <div className={styles.head}>
+          <h2 className={styles.title}>{frame.title}</h2>
+          <div className={styles.headActions}>
+            {frame.headAction}
+            <button
+              type="button"
+              data-nc-role="icon"
+              className={styles.close}
+              aria-label="Close conversation"
+              title="Close"
+              onClick={onClose}
+            >
+              <Icon name="chevron-right" />
+            </button>
+          </div>
+        </div>
+        <div className={styles.bodyInner}>
+          {frame.children}
+        </div>
       </div>
       {frame.footer}
     </div>

@@ -977,7 +977,9 @@ describe('WaveReportPage', () => {
     const alerts = within(task).getAllByRole('alert');
     expect(alerts).toHaveLength(2);
     expect(alerts[0]).toHaveTextContent('AI-proposed tasks in this wave wait for you');
-    expect(alerts[1]).toHaveTextContent('A referenced block changed after work started');
+    expect(alerts[1]).toHaveTextContent(
+      'saved reference context no longer matches its frozen closure',
+    );
     expect(within(task).getByRole('link', { name: 'b_cafe' })).toHaveAttribute(
       'href', '/wave/wave_2#b_cafe',
     );

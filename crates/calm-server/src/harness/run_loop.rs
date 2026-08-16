@@ -1090,28 +1090,40 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             return Ok(());
         }
     }
+    let plain_chat = match inner.repo.card_get(inner.card_id.as_str()).await? {
+        Some(card) => crate::plain_chat::card_is_plain_chat(
+            &card,
+            inner.repo.card_role_get(card.id.as_str()).await?,
+            true,
+        ),
+        None => false,
+    };
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
-    let refresh_repo = Arc::clone(&inner.repo);
-    let refresh_wave_id = inner.wave_id.clone();
-    let refresh_head = transcript_refresh_with_timeout(
-        write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
-            Box::pin(async move {
-                wave_vcs::snapshot_transcripts_for_cards_in_wave(
-                    tx,
-                    &refresh_wave_id,
-                    None,
-                    wave_vcs::MANIFEST_SCHEMA_VERSION,
-                )
-                .await
-                .map_err(CalmError::from)
-            })
-        }),
-        TRANSCRIPT_REFRESH_TIMEOUT,
-        &inner.runtime_id,
-        inner.card_id.as_str(),
-        inner.wave_id.as_str(),
-    )
-    .await;
+    let refresh_head = if plain_chat {
+        None
+    } else {
+        let refresh_repo = Arc::clone(&inner.repo);
+        let refresh_wave_id = inner.wave_id.clone();
+        transcript_refresh_with_timeout(
+            write_in_tx_typed::<wave_vcs::CommitHash, _>(refresh_repo.as_ref(), move |tx| {
+                Box::pin(async move {
+                    wave_vcs::snapshot_transcripts_for_cards_in_wave(
+                        tx,
+                        &refresh_wave_id,
+                        None,
+                        wave_vcs::MANIFEST_SCHEMA_VERSION,
+                    )
+                    .await
+                    .map_err(CalmError::from)
+                })
+            }),
+            TRANSCRIPT_REFRESH_TIMEOUT,
+            &inner.runtime_id,
+            inner.card_id.as_str(),
+            inner.wave_id.as_str(),
+        )
+        .await
+    };
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,
@@ -1121,7 +1133,11 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    let diff = diff_with_timeout(inner, refresh_head.as_ref()).await;
+    let diff = if plain_chat {
+        wave_vcs::SinceLastTurnBlock::empty()
+    } else {
+        diff_with_timeout(inner, refresh_head.as_ref()).await
+    };
     tracing::debug!(
         target: "calm_server::spec_harness_issue",
         runtime_id = %inner.runtime_id,

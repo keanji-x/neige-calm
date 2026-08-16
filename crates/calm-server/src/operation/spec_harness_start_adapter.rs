@@ -7,14 +7,15 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    card_update_tx, harness_items_delete_by_card_tx, session_bind_attribution_tx,
-    session_delete_tx, session_fail_if_active_runtime_tx, session_prepare_deferred_spec_tx,
+    append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
+    harness_items_delete_by_card_tx, session_bind_attribution_tx, session_delete_tx,
+    session_fail_if_active_runtime_tx, session_prepare_deferred_spec_tx,
     session_projection_active_for_card_tx, session_restore_from_superseded_runtime_tx,
     session_set_handle_state_tx, session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
-use crate::event::Event;
+use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::forge_trust::trusted_forge_plugin;
 use crate::harness::{
     HARNESS_MODE, HarnessConfig, HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, SpecHarness,
@@ -24,7 +25,7 @@ use crate::ids::{ActorId, CardId, WaveId};
 use crate::mcp_server::wiring::{
     mint_card_mcp_token_pair, mirror_session_mcp_token, persist_card_mcp_token_hash,
 };
-use crate::model::{Card, CardPatch, CardRole, new_id, now_ms};
+use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 // Issue #649 i2 lifted the per-card lock-map machinery that used to live in
 // this module into `crate::per_card_lock` so the `/spec/input` lazy-recovery
 // path can share it. Same semantics: guards self-clean their entry on drop.
@@ -37,6 +38,7 @@ use crate::session_projection_repo::{
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
 use crate::wave_cove_cache::WaveCoveCache;
+use calm_truth::decision_gate::PermissiveGate;
 
 use super::{
     AppServerInteractKind, AppServerInteractOutcome, CompensationStateVersioned, CompensationStep,
@@ -188,6 +190,14 @@ struct BoundWorkflow {
     input: Option<serde_json::Value>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HarnessProfile {
+    #[default]
+    Spec,
+    PlainChat,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SpecHarnessStartOperationPayload {
     pub actor: ActorId,
@@ -204,6 +214,54 @@ pub struct SpecHarnessStartOperationPayload {
     pub reset_harness_items: bool,
     #[serde(default)]
     pub force_new_thread: bool,
+    #[serde(default)]
+    pub profile: HarnessProfile,
+    /// #1098 §5.6 — "mint the card only on the first message".
+    ///
+    /// `Some` asks this operation to create `spec_card_id` itself, inside the
+    /// same transaction that writes the session row, so a failed `thread/start`
+    /// can take the card back out again (the compensation chain unconditionally
+    /// prepends a `delete_card` step). `None` keeps the historical contract
+    /// verbatim: the card must already exist.
+    ///
+    /// Like every other field here it is `#[serde(default)]` because
+    /// `abandoned_running_operations_on_boot` re-drives payloads written by
+    /// older binaries.
+    #[serde(default)]
+    pub create_card: Option<PlainChatCardSeed>,
+    /// #1098 slice 3, round-3 Y1 — SHA-256 (lower-case hex) of the cove
+    /// conversation's first message, set only by
+    /// `POST /api/coves/{cove_id}/conversations`.
+    ///
+    /// This field is **never read** by this adapter. It exists so the first
+    /// message body reaches `stable_payload_hash`, which is what makes
+    /// `OperationRuntime::submit` answer 409 when one `Idempotency-Key` is
+    /// replayed with a different body instead of silently replaying the
+    /// earlier conversation (see `driver.rs::submit`, which compares
+    /// `payload_hash` before anything else runs).
+    ///
+    /// A hash, not the text: this payload is persisted verbatim in
+    /// `operations.payload_json`, and storing the body would copy every user
+    /// message into a second table with a different retention story.
+    ///
+    /// `skip_serializing_if` keeps every non-cove caller's payload bytes
+    /// byte-identical to what older binaries wrote, so adding this field
+    /// cannot move their `payload_hash` and turn an in-flight retry into a
+    /// spurious 409. `#[serde(default)]` because
+    /// `abandoned_running_operations_on_boot` re-drives old payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_message_sha256: Option<String>,
+}
+
+/// The user-supplied part of a lazily minted plain-chat card. Everything the
+/// kernel owns (kind, role, `deletable`, the persisted `harness_profile`
+/// marker) is pinned by the adapter and deliberately absent here.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct PlainChatCardSeed {
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub sort: Option<f64>,
 }
 
 pub(crate) fn render_spec_developer_instructions(
@@ -291,8 +349,50 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
 
     async fn validate(&self, input: &Value) -> Result<()> {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(input.clone())?;
-        if self.repo.wave_get(&payload.wave_id).await?.is_none() {
-            return Err(CalmError::NotFound(format!("wave {}", payload.wave_id)));
+        let wave = self
+            .repo
+            .wave_get(&payload.wave_id)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("wave {}", payload.wave_id)))?;
+        // #1098 §5.6 — the lazy-mint branch. `validate` runs BEFORE the
+        // operation row is inserted, so the usual "card must exist + its role
+        // cache entry must match" assertions are not merely wrong here, they
+        // are unsatisfiable: the card is this operation's own output. The
+        // checks below are the fail-closed replacement, and they must stay
+        // strictly narrower than the ordinary branch — a caller must not be
+        // able to conjure a chat card onto an arbitrary wave.
+        if payload.create_card.is_some() {
+            if payload.profile != HarnessProfile::PlainChat {
+                return Err(CalmError::BadRequest(format!(
+                    "card {} can only be minted by this operation under the plain-chat profile",
+                    payload.spec_card_id
+                )));
+            }
+            if wave.purpose.as_deref() != Some(crate::COVE_CHAT_PURPOSE) {
+                return Err(CalmError::Forbidden(format!(
+                    "wave {} is not a cove chat wave; chat cards are only minted there",
+                    wave.id
+                )));
+            }
+            // An existing row means this is not a first mint. A genuine retry
+            // is deduplicated far earlier, by the operation idempotency key in
+            // `submit`; reaching here with the card already present would mean
+            // adopting somebody else's card, so it is a conflict.
+            if self
+                .repo
+                .card_get(payload.spec_card_id.as_str())
+                .await?
+                .is_some()
+            {
+                return Err(CalmError::Conflict(format!(
+                    "card {} already exists; refusing to re-mint a chat conversation card",
+                    payload.spec_card_id
+                )));
+            }
+            if !self.daemon.is_running() {
+                return Err(self.daemon.not_running_error());
+            }
+            return Ok(());
         }
         let Some(card) = self.repo.card_get(payload.spec_card_id.as_str()).await? else {
             return Err(CalmError::NotFound(format!(
@@ -306,10 +406,39 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 card.id, card.wave_id, payload.wave_id
             )));
         }
-        if self.card_role_cache.get(&card.id) != Some(CardRole::Spec) {
-            return Err(CalmError::BadRequest(format!(
-                "card {} is not a spec card",
-                card.id
+        let expected_role = match payload.profile {
+            HarnessProfile::Spec => CardRole::Spec,
+            HarnessProfile::PlainChat
+                if crate::plain_chat::card_is_plain_chat(
+                    &card,
+                    self.card_role_cache.get(&card.id),
+                    true,
+                ) =>
+            {
+                CardRole::Worker
+            }
+            HarnessProfile::PlainChat => {
+                return Err(CalmError::BadRequest(format!(
+                    "card {} is not marked for plain chat",
+                    card.id
+                )));
+            }
+        };
+        if self.card_role_cache.get(&card.id) != Some(expected_role) {
+            let message = match payload.profile {
+                HarnessProfile::Spec => format!("card {} is not a spec card", card.id),
+                HarnessProfile::PlainChat => {
+                    format!("card {} is not marked for plain chat", card.id)
+                }
+            };
+            return Err(CalmError::BadRequest(message));
+        }
+        if expected_role == CardRole::Spec
+            && wave.purpose.as_deref() == Some(crate::COVE_CHAT_PURPOSE)
+        {
+            return Err(CalmError::Forbidden(format!(
+                "spec harness is disabled for cove chat wave {}",
+                wave.id
             )));
         }
         if !self.daemon.is_running() {
@@ -331,6 +460,71 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = payload.wave_id;
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
+        let session_kind = match payload.profile {
+            HarnessProfile::Spec => WorkerSessionKind::SharedSpec,
+            HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
+        };
+        // #1098 §5.6 — mint the chat card in this very transaction, so the
+        // card and its session row commit together and compensation can undo
+        // both. The SELECT below then reads the row we just wrote and every
+        // downstream step is unchanged.
+        let mut post_commit_events = Vec::new();
+        if let Some(seed) = payload.create_card.as_ref() {
+            let scope = card_scope(
+                self.repo.as_ref(),
+                card_id.clone(),
+                WaveId::from(wave_id.clone()),
+            )
+            .await?;
+            let created = card_create_with_id_tx(
+                tx,
+                card_id.to_string(),
+                NewCard {
+                    wave_id: WaveId::from(wave_id.clone()),
+                    kind: "codex".into(),
+                    sort: seed.sort,
+                    // Pinned by the kernel, not by the caller. Note the absent
+                    // `spec_harness` key (INV-CHAT-016) and the unchanged
+                    // `schemaVersion`: a chat card is a v1 codex card that
+                    // carries one extra marker, not a new payload dialect.
+                    payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+                    title: seed.title.clone(),
+                },
+                CardRole::Worker,
+                // Deleting a single conversation is its own issue; until it
+                // exists the card is kernel-owned so `DELETE /api/cards/:id`
+                // cannot orphan a live harness.
+                false,
+                &self.card_role_cache,
+            )
+            .await?;
+            let event = Event::CardAdded(created);
+            if let Err(violation) = crate::role_gate::enforce_role(
+                &payload.actor,
+                &event,
+                &scope,
+                &self.card_role_cache,
+                &self.wave_cove_cache,
+            ) {
+                return Err(CalmError::Forbidden(violation.to_string()));
+            }
+            let event_id = append_decision_event_in_tx(
+                tx,
+                &PermissiveGate,
+                &payload.actor,
+                &scope,
+                None,
+                &event,
+            )
+            .await?;
+            post_commit_events.push(BroadcastEnvelope {
+                id: event_id,
+                event_version: SYNC_EVENT_VERSION,
+                actor: payload.actor.clone(),
+                scope,
+                event,
+            });
+        }
         let card = sqlx::query_as::<_, crate::db::rows::CardRow>(
             r#"SELECT id, wave_id, kind, sort, payload, title, deletable, created_at, updated_at
                  FROM cards
@@ -378,7 +572,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_init = WorkerSessionInit {
             id: runtime_id.clone(),
             card_id: card.id.to_string(),
-            kind: WorkerSessionKind::SharedSpec,
+            kind: session_kind,
             agent_provider: Some(AgentProvider::Codex),
             status: WorkerSessionState::Starting,
             terminal_run_id: None,
@@ -412,6 +606,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             Some(card.id.to_string()),
             serde_json::to_value(&card)?,
         );
+        output.post_commit_events = post_commit_events;
         output.data = json!({
             "card_id": card.id,
             "wave_id": wave_id,
@@ -444,6 +639,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let payload: SpecHarnessStartOperationPayload = serde_json::from_value(op.payload.clone())?;
         let reset_harness_items = payload.reset_harness_items;
         let force_new_thread = payload.force_new_thread;
+        let profile = payload.profile;
+        let session_kind = match profile {
+            HarnessProfile::Spec => WorkerSessionKind::SharedSpec,
+            HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
+        };
+        let card_role = match profile {
+            HarnessProfile::Spec => CardRole::Spec,
+            HarnessProfile::PlainChat => CardRole::Worker,
+        };
         let card_id = output.output_string("card_id", "spec harness")?;
         let wave_id = output.output_string("wave_id", "spec harness")?;
         let runtime_id = output.output_string("runtime_id", "spec harness")?;
@@ -502,14 +706,18 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             thread_id
         } else {
-            let bound_workflow = self.bound_workflow(&wave_id).await?;
-            let developer_instructions = render_spec_developer_instructions(
-                &wave_id,
-                bound_workflow.as_ref().map(|bound| &bound.descriptor),
-                bound_workflow
-                    .as_ref()
-                    .and_then(|bound| bound.input.as_ref()),
-            );
+            let developer_instructions = if matches!(profile, HarnessProfile::PlainChat) {
+                None
+            } else {
+                let bound_workflow = self.bound_workflow(&wave_id).await?;
+                Some(render_spec_developer_instructions(
+                    &wave_id,
+                    bound_workflow.as_ref().map(|bound| &bound.descriptor),
+                    bound_workflow
+                        .as_ref()
+                        .and_then(|bound| bound.input.as_ref()),
+                ))
+            };
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
             let socket_path = self.mcp_socket_path_for_thread()?;
@@ -523,10 +731,13 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 cwd,
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
-                developer_instructions: Some(developer_instructions),
-                config: ThreadConfig::McpShell {
-                    socket_path: PathBuf::from(&socket_path),
-                    raw_token: raw,
+                developer_instructions,
+                config: match profile {
+                    HarnessProfile::Spec => ThreadConfig::McpShell {
+                        socket_path: PathBuf::from(&socket_path),
+                        raw_token: raw,
+                    },
+                    HarnessProfile::PlainChat => ThreadConfig::NoMcp,
                 },
             };
             if runtime_deferred {
@@ -535,7 +746,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     .await?
             } else {
                 self.daemon
-                    .thread_start_for_card(&card_id, CardRole::Spec, Some(&wave_id), params)
+                    .thread_start_for_card(&card_id, card_role, Some(&wave_id), params)
                     .await?
             }
         };
@@ -589,7 +800,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         let runtime_init = WorkerSessionInit {
                             id: runtime_id.clone(),
                             card_id: card_id.clone(),
-                            kind: WorkerSessionKind::SharedSpec,
+                            kind: session_kind,
                             agent_provider: Some(AgentProvider::Codex),
                             status: WorkerSessionState::Starting,
                             terminal_run_id: None,
@@ -763,6 +974,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         Ok(SpawnOutcome::Ready(SpawnHandle::Harness { runtime_id }))
     }
 
+    /// Boundary this compensation inherits (pre-existing driver semantics, NOT
+    /// introduced with lazy card minting): `Driver::apply_compensation` marks
+    /// the operation `Stuck` on the FIRST error from any step and boot recovery
+    /// skips `Stuck` rows, so a compensation is never re-driven. If
+    /// `delete_card` fails before its delete commits, the lazily minted card
+    /// stays — and it carries `deletable: false`, so the user cannot remove it
+    /// either. Every adapter shares this; making compensation retryable is a
+    /// driver-level change, tracked separately.
     async fn plan_compensation(
         &self,
         from_phase: PhaseTag,
@@ -775,15 +994,43 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let runtime_id = output.output_string("runtime_id", "spec harness")?;
         let thread_id = output.output_optional_string("codex_thread_id", "spec harness")?;
         let mut steps = Vec::new();
-        if from_phase == PhaseTag::AppServerInteract
-            && is_reusable_thread_missing_card_mcp_token_failure(reason)
-        {
-            return Ok(CompensationStateVersioned {
+        // #1098 §5.6 — a card this operation minted must come back out on
+        // EVERY failure path. The step is built here, before any early return,
+        // and appended by `finish` at the single point where each return path
+        // materializes its state — including the zero-step
+        // `is_reusable_thread_missing_card_mcp_token_failure` exit below, which
+        // would otherwise leave an orphan card with no session behind it. It is
+        // deliberately unconditional rather than a patch on that one arm: a
+        // future early return that goes through `finish` cannot silently
+        // reintroduce the orphan.
+        //
+        // It runs LAST rather than first: on the `SpawnStarted`/`SpawnSucceeded`
+        // arms the harness task is still alive, and deleting the card (plus its
+        // session and cascaded `harness_items`) out from under a running run
+        // loop is the wrong order. Stop the task, then remove the row.
+        let delete_card_step = match payload.create_card.is_some() {
+            true => {
+                let wave_id = output.output_string("wave_id", "spec harness")?;
+                Some(CompensationStep::new(
+                    "delete_card",
+                    json!({ "card_id": card_id, "wave_id": wave_id }),
+                ))
+            }
+            false => None,
+        };
+        let finish = |mut steps: Vec<CompensationStep>| {
+            steps.extend(delete_card_step.clone());
+            CompensationStateVersioned {
                 version: 1,
                 from_phase,
                 reason: reason.to_string(),
                 steps,
-            });
+            }
+        };
+        if from_phase == PhaseTag::AppServerInteract
+            && is_reusable_thread_missing_card_mcp_token_failure(reason)
+        {
+            return Ok(finish(steps));
         }
         if matches!(
             from_phase,
@@ -832,12 +1079,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 }),
             ));
         }
-        Ok(CompensationStateVersioned {
-            version: 1,
-            from_phase,
-            reason: reason.to_string(),
-            steps,
-        })
+        Ok(finish(steps))
     }
 
     async fn compensate_step(
@@ -878,6 +1120,48 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     })
                 })
                 .await
+            }
+            // #1098 §5.6 — undo the lazily minted chat card. Tolerant of an
+            // already-absent row so a re-driven compensation is idempotent;
+            // emits `card.deleted` because `card.added` was already broadcast
+            // at commit, and a client that saw the add must see the removal.
+            "delete_card" => {
+                let card_id = step.arg_string("card_id", "spec harness")?;
+                let wave_id = step.arg_string("wave_id", "spec harness")?;
+                if ctx.repo.card_get(&card_id).await?.is_none() {
+                    return Ok(());
+                }
+                let card_id = CardId::from(card_id);
+                let wave_id = WaveId::from(wave_id);
+                let scope = card_scope(ctx.repo.as_ref(), card_id.clone(), wave_id.clone()).await?;
+                let write =
+                    WriteContext::new(self.card_role_cache.clone(), self.wave_cove_cache.clone());
+                let write_for_tx = write.clone();
+                // Narrow to the single deprecated call. A function-level allow
+                // here would silently cover every other arm of this match.
+                #[allow(deprecated)]
+                let (_unit, _id) = write_with_event_typed(
+                    ctx.repo.as_ref(),
+                    ActorId::Kernel,
+                    scope,
+                    None,
+                    &ctx.events,
+                    &write,
+                    move |tx| {
+                        Box::pin(async move {
+                            card_delete_tx(tx, card_id.as_str(), write_for_tx.role_cache()).await?;
+                            Ok((
+                                (),
+                                Event::CardDeleted {
+                                    id: card_id,
+                                    wave_id,
+                                },
+                            ))
+                        })
+                    },
+                )
+                .await?;
+                Ok(())
             }
             "restore_old_runtime" => {
                 let runtime_id = step.arg_string("runtime_id", "spec harness")?;
@@ -1022,6 +1306,7 @@ mod tests {
     use crate::event::EventBus;
     use crate::mcp_server::tools::plan::{GateInput, GateStepInput, PlanTaskInput};
     use crate::model::{NewCove, NewPlugin, NewWave};
+    use crate::operation::Phase;
     use crate::plugin_host::{Manifest, PluginRegistry, PluginRuntimeStatus};
     use crate::routes::theme::RequestTheme;
     use tokio::time::{Instant, sleep};
@@ -1423,5 +1708,218 @@ mod tests {
             candidate.display()
         );
         candidate
+    }
+
+    /// #1098 INV-CHAT-013(a), zero-step arm.
+    ///
+    /// `plan_compensation` returns EARLY with no steps when a thread reuse hit
+    /// the missing-per-card-MCP-token fence. That early return predates lazy
+    /// card minting; without an unconditional `delete_card` prepended before
+    /// it, this exact failure would leave a card with no session behind.
+    ///
+    /// The arm is unreachable from the conversations route (it mints with
+    /// `force_new_thread`, so nothing is ever reused), which is precisely why
+    /// it is pinned here rather than only through an end-to-end failure.
+    #[tokio::test]
+    async fn missing_mcp_token_early_return_still_deletes_a_lazily_minted_card() {
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite repo"),
+        );
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let host = Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo_dyn,
+            PathBuf::new(),
+            std::env::temp_dir().join(format!("calm-plan-compensation-{}", new_id())),
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+        ));
+        let adapter = adapter_for(repo.clone(), host);
+        let reason = format!(
+            "spec card conv-1 reuses thread t-1 with {REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR} (re-run to mint a fresh thread)"
+        );
+        assert!(
+            is_reusable_thread_missing_card_mcp_token_failure(&reason),
+            "test reason must hit the zero-step arm"
+        );
+
+        let mut output = TxOutput::new("card", Some("conv-1".into()), json!({}));
+        output.data = json!({
+            "card_id": "conv-1",
+            "wave_id": "wave-1",
+            "runtime_id": "runtime-1",
+        });
+
+        let with_seed = plan_compensation_for(&adapter, &output, &reason, true).await;
+        assert_eq!(
+            with_seed
+                .steps
+                .iter()
+                .map(|step| step.op.as_str())
+                .collect::<Vec<_>>(),
+            vec!["delete_card"],
+            "a lazily minted card must be deleted even on the zero-step early return"
+        );
+        assert_eq!(with_seed.steps[0].args["card_id"], json!("conv-1"));
+        assert_eq!(with_seed.steps[0].args["wave_id"], json!("wave-1"));
+
+        // Counterexample: without `create_card` the historical zero-step
+        // contract is preserved verbatim.
+        let without_seed = plan_compensation_for(&adapter, &output, &reason, false).await;
+        assert!(
+            without_seed.steps.is_empty(),
+            "operations that did not mint a card must keep the zero-step early return: {:?}",
+            without_seed.steps
+        );
+    }
+
+    /// #1098 — `delete_card` is unconditional AND ordered after
+    /// `abort_harness_task`.
+    ///
+    /// On the spawn arms the harness run loop is still alive; removing the
+    /// card (and, by cascade, its session and `harness_items`) out from under
+    /// it is the wrong order. The exact sequence is pinned, not merely
+    /// "contains delete_card": ordering is the whole point of this test.
+    #[tokio::test]
+    async fn lazily_minted_card_is_deleted_after_the_harness_task_is_aborted() {
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite repo"),
+        );
+        let repo_dyn: Arc<dyn Repo> = repo.clone();
+        let host = Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo_dyn,
+            PathBuf::new(),
+            std::env::temp_dir().join(format!("calm-compensation-order-{}", new_id())),
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+        ));
+        let adapter = adapter_for(repo.clone(), host);
+
+        let mut output = TxOutput::new("card", Some("conv-1".into()), json!({}));
+        output.data = json!({
+            "card_id": "conv-1",
+            "wave_id": "wave-1",
+            "runtime_id": "runtime-1",
+        });
+
+        let planned = plan_compensation_from(
+            &adapter,
+            PhaseTag::SpawnStarted,
+            &output,
+            "spawn blew up",
+            true,
+        )
+        .await;
+        assert_eq!(
+            planned
+                .steps
+                .iter()
+                .map(|step| step.op.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "abort_harness_task",
+                "interrupt_thread",
+                "fail_runtime",
+                "delete_card"
+            ],
+            "the minted card must be removed only after the run loop is stopped"
+        );
+
+        // Counterexample: the same phase without a minted card keeps the
+        // historical step list untouched.
+        let without_seed = plan_compensation_from(
+            &adapter,
+            PhaseTag::SpawnStarted,
+            &output,
+            "spawn blew up",
+            false,
+        )
+        .await;
+        assert_eq!(
+            without_seed
+                .steps
+                .iter()
+                .map(|step| step.op.as_str())
+                .collect::<Vec<_>>(),
+            vec!["abort_harness_task", "interrupt_thread", "fail_runtime"],
+        );
+    }
+
+    async fn plan_compensation_for(
+        adapter: &SpecHarnessStartAdapter,
+        output: &TxOutput,
+        reason: &str,
+        create_card: bool,
+    ) -> CompensationStateVersioned {
+        plan_compensation_from(
+            adapter,
+            PhaseTag::AppServerInteract,
+            output,
+            reason,
+            create_card,
+        )
+        .await
+    }
+
+    async fn plan_compensation_from(
+        adapter: &SpecHarnessStartAdapter,
+        from_phase: PhaseTag,
+        output: &TxOutput,
+        reason: &str,
+        create_card: bool,
+    ) -> CompensationStateVersioned {
+        let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+            actor: ActorId::User,
+            wave_id: "wave-1".into(),
+            spec_card_id: CardId::from("conv-1"),
+            report_card_id: None,
+            sort: None,
+            cwd: "/tmp".into(),
+            goal: None,
+            reset_harness_items: false,
+            force_new_thread: false,
+            profile: HarnessProfile::PlainChat,
+            create_card: create_card.then(PlainChatCardSeed::default),
+            first_message_sha256: None,
+        })
+        .expect("payload serializes");
+        adapter
+            .plan_compensation(from_phase, reason, output, &operation_with_payload(payload))
+            .await
+            .expect("plan compensation")
+    }
+
+    fn operation_with_payload(payload: Value) -> Operation {
+        Operation {
+            id: "op-1".into(),
+            operation_key: "op-key".into(),
+            kind: "spec-harness-start".into(),
+            idempotency_key: None,
+            payload_hash: String::new(),
+            target_type: "card".into(),
+            target_id: Some("conv-1".into()),
+            target: json!({}),
+            payload,
+            tx_output: None,
+            phase: Phase::AppServerInteract {
+                kind: AppServerInteractKind::MintAndAwait { thread_id: None },
+            },
+            phase_detail: None,
+            attempt: 1,
+            last_error: None,
+            compensation_state: None,
+            lease_owner: None,
+            lease_until_ms: None,
+            spawn_artifacts: None,
+            parked_at_ms: None,
+            parked_deadline_ms: None,
+        }
     }
 }

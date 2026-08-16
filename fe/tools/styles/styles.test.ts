@@ -10,9 +10,19 @@ import { auditCssImports, auditDataAttributes, auditModuleLayer, auditStyleRepos
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 const read = (path: string): string => readFileSync(resolve(fixtures, path), 'utf8');
 const productionEntry = resolve(import.meta.dirname, '../../web/src/styles/entry.css');
+const productionTokens = resolve(import.meta.dirname, '../../web/src/styles/tokens.css');
 const order = layerOrder(readFileSync(productionEntry, 'utf8'));
 const jsdomModule: unknown = createRequire(import.meta.url)('jsdom');
 const JSDOM = (jsdomModule as { JSDOM: new (html: string) => { window: { document: RuntimeDocument } } }).JSDOM;
+
+it('real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground', () => {
+  const tokens = readFileSync(productionTokens, 'utf8');
+  const light = Number(/:root\s*\{[\s\S]*?--bg:\s*oklch\(([\d.]+)%/.exec(tokens)?.[1]);
+  const dark = Number(/\[data-theme="dark"\]\s*\{[\s\S]*?--bg:\s*oklch\(([\d.]+)%/.exec(tokens)?.[1]);
+  expect(Number.isFinite(light)).toBe(true);
+  expect(Number.isFinite(dark)).toBe(true);
+  expect(dark).toBeLessThan(light);
+});
 
 async function lintCss(code: string, filename: string, exceptions: string[] = []) {
   return stylelint.lint({

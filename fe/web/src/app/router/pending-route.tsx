@@ -16,7 +16,7 @@ export function PendingRoute({ label, owner, missing = false }: {
   const go = useGo();
   return (
     <section className={styles.panel} aria-label={missing ? `${label} not found` : `${label} not rewritten yet`}>
-      <h1 className={styles.title}>{missing ? `That ${label.toLowerCase()} isn't here anymore.` : label}</h1>
+      <h1 className={styles.title} data-nc-page-title="" tabIndex={-1}>{missing ? `That ${label.toLowerCase()} isn't here anymore.` : label}</h1>
       <p className={styles.body}>
         {missing
           ? 'It may have been deleted, or the link is stale.'

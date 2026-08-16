@@ -1,5 +1,12 @@
 import type { z } from 'zod';
 
+/** Platform-neutral subset used to relay request cancellation to an adapter. */
+export type ApiAbortSignal = Readonly<{
+  aborted: boolean;
+  addEventListener(type: 'abort', listener: () => void, options?: { once?: boolean }): void;
+  removeEventListener(type: 'abort', listener: () => void): void;
+}>;
+
 export type ApiMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
 /** Platform adapters must preserve session cookies on every API request. */
@@ -9,6 +16,7 @@ export type ApiRequest = Readonly<{
   credentials: 'include';
   headers?: Readonly<Record<string, string>>;
   body?: unknown;
+  signal?: ApiAbortSignal;
 }>;
 
 export type ApiTransportResponse = Readonly<{
@@ -62,4 +70,15 @@ export type ApiOperation<T> = Readonly<{
   path: string;
   responseSchema: z.ZodType<T>;
   body?: unknown;
+  /**
+   * Request headers the operation itself needs, merged over the `content-type`
+   * the client adds for a body.
+   *
+   * Here rather than folded into `body` because `POST
+   * /api/coves/{id}/conversations` takes `Idempotency-Key` as a *header* and
+   * rejects the request without it (400) — an operation that cannot express a
+   * header cannot call it at all.
+   */
+  headers?: Readonly<Record<string, string>>;
+  signal?: ApiAbortSignal;
 }>;

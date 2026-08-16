@@ -1,0 +1,10 @@
+@layer ui {
+  .dot {
+    display: inline-block;
+    vertical-align: middle;
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: currentColor;
+  }
+}

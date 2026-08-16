@@ -44,6 +44,10 @@ pub struct Config {
     #[arg(long, env = "CALM_WEB_DIST")]
     pub web_dist: Option<PathBuf>,
 
+    /// Optional built next-generation frontend bundle to serve under `/next/`.
+    #[arg(long, env = "CALM_FE_DIST")]
+    pub fe_dist: Option<PathBuf>,
+
     /// Plugin install root (read-only code). Defaults to
     /// `<XDG_CONFIG_HOME>/neige-calm/plugins` or `~/.config/neige-calm/plugins`.
     #[arg(long, env = "CALM_PLUGINS_DIR")]

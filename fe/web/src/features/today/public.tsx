@@ -12,10 +12,11 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import {
-  activeWavesOn, isRunning, needsUserAttention, type Wave,
+  activeWavesOn, isRunning, needsUserAttention, visibleWaves, type Wave,
 } from '../../../../core/domain/wave.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
+import { Icon } from '../../ui/icon/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './today.module.css';
@@ -67,7 +68,6 @@ export type TodayPageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   /** Tests pin "now" so assertions cannot drift across midnight or DST. */
   nowMs?: number;
 }>;
@@ -110,7 +110,7 @@ function formatHour(hour: number): string {
 
 export function TodayPage({
   waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
-  pageTitleRef, nowMs,
+  nowMs,
 }: TodayPageProps) {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
 
@@ -129,14 +129,15 @@ export function TodayPage({
     return start;
   }, [now]);
 
-  const waiting = waves.filter(needsUserAttention);
-  const running = waves.filter((wave) => isRunning(wave.lifecycle) && !needsUserAttention(wave));
+  const shownWaves = visibleWaves(waves);
+  const waiting = shownWaves.filter(needsUserAttention);
+  const running = shownWaves.filter((wave) => isRunning(wave.lifecycle) && !needsUserAttention(wave));
   // RECENT shares the same wave list — no second request — and excludes anything
   // already shown above: one wave appearing twice on a page distorts both the
   // counts and the scan.
   const shown = new Set([...waiting, ...running].map((wave) => wave.id));
-  const recent = waves
-    .filter((wave) => wave.archivedAt === null && !shown.has(wave.id))
+  const recent = shownWaves
+    .filter((wave) => !shown.has(wave.id))
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, RECENT_LIMIT);
 
@@ -147,7 +148,7 @@ export function TodayPage({
       <div className={styles.page}>
         <TodayHeader
           today={today} waiting={waiting.length} running={running.length}
-          pageTitleRef={pageTitleRef} now={now}
+          now={now}
         />
         <div className={styles.emptyPage}>
           <p className={styles.hero}>Nothing here yet.</p>
@@ -160,12 +161,12 @@ export function TodayPage({
     <div className={styles.page}>
       <TodayHeader
         today={today} waiting={waiting.length} running={running.length}
-        pageTitleRef={pageTitleRef} now={now}
+        now={now}
       />
       <div className={styles.content}>
-        {/* Decision first, ambience after: the two attention sections take as
-            much height as they need, the terminal takes a fixed 240 slot, and
-            RECENT absorbs whatever is left. */}
+        {/* Decision first, ambience after. Every row follows its content while
+            the unwired terminal keeps its route anchor without reserving a
+            full terminal-height track. */}
         <div className={styles.mainColumn}>
           {/* An empty section renders nothing at all — no label, no dashed box.
               The absence is the message. */}
@@ -190,7 +191,7 @@ export function TodayPage({
             <PanelModule title="Calendar">
               <Calendar
                 today={today}
-                waves={waves}
+                waves={shownWaves}
                 coves={coves}
                 scheduledEvents={scheduledEvents}
                 renderWaveRow={renderWaveRow}
@@ -205,11 +206,10 @@ export function TodayPage({
   );
 }
 
-function TodayHeader({ today, waiting, running, pageTitleRef, now }: {
+function TodayHeader({ today, waiting, running, now }: {
   today: Date;
   waiting: number;
   running: number;
-  pageTitleRef?: React.RefObject<HTMLElement | null>;
   now: Date;
 }) {
   return (
@@ -217,7 +217,7 @@ function TodayHeader({ today, waiting, running, pageTitleRef, now }: {
       // One row only: Today is the root, so there is no breadcrumb, and it has
       // no machine identifier. --header-h is 32.
       title={
-        <PageTitle titleRef={pageTitleRef as React.RefObject<HTMLHeadingElement | null>}>
+        <PageTitle>
           {today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
         </PageTitle>
       }
@@ -312,12 +312,12 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
             side and drop every column from 42px to 40. */}
         <div className={styles.weekHead}>
           <button type="button" data-nc-role="icon" className={styles.navButton}
-            aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}>‹</button>
+            aria-label="Previous week" onClick={() => setSelected(addDays(selected, -7))}><Icon name="chevron-left" /></button>
           <span className={styles.monthLabel}>
             {weekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
           </span>
           <button type="button" data-nc-role="icon" className={styles.navButton}
-            aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}>›</button>
+            aria-label="Next week" onClick={() => setSelected(addDays(selected, 7))}><Icon name="chevron-right" /></button>
         </div>
 
         <div className={styles.dayNames} aria-hidden="true">

@@ -377,7 +377,6 @@ async fn gated_self_report_predicate() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -419,7 +418,7 @@ async fn gated_self_report_predicate() {
                 &gated_done,
                 &ungated_failed,
             ] {
-                crate::db::sqlite::task_insert_tx(tx, t).await?;
+                crate::test_support::insert_task_tx(tx, t).await?;
             }
             Ok(())
         })

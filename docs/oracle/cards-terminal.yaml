@@ -3301,13 +3301,13 @@
     spec harness 不是用户可见面板，只是让 wave 知道有这个 agent 存在；
     有 UI 会在网格里占位
   source: web/src/cards/builtins/spec.tsx:43-51
-  authoritative_test: NONE
-  owner_slice: features/spec/card
+  authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:42,48
+  owner_slice: systems/cards/builtins
   intentional_omission: true
-  runtime_layer: features
-  verification_owner: e2e
-  test_tier: browser
-  migration: pending
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
 
 - id: INV-CARD-182
   kind: invariant
@@ -3318,13 +3318,13 @@
   why: >
     kernel kind 是 'codex'；判别符是唯一区分点。加别的条件会让部分 spec 卡漏判
   source: web/src/cards/builtins/spec.tsx:33-41,55
-  authoritative_test: web/src/cards/builtins/spec.test.tsx:112
-  owner_slice: features/spec/card
+  authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:11,19,28,37
+  owner_slice: systems/cards/builtins
   intentional_omission: false
-  runtime_layer: features
+  runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: CAP-CARD-183
   kind: capability
@@ -3336,12 +3336,22 @@
     无头卡片在 WaveList 里仍会占一行，读屏需要有意义的名字
   source: web/src/cards/builtins/spec.tsx:49-50
   authoritative_test: NONE
-  owner_slice: features/spec/card
+  owner_slice: systems/cards/builtins
   intentional_omission: false
-  runtime_layer: features
-  verification_owner: unit
+  runtime_layer: systems
+  verification_owner: null
   test_tier: jsdom
-  migration: pending
+  migration: skipped
+  skip_reason: >
+    前提已为假：spec entry 声明 `headless: true`，`partitionWaveCards`
+    （`INV-CARD-226`）据此把它从 CARDS 面板剔除，今天 fe 里这个 accessible name
+     零消费者——生产 entry 取常量 `accessibleName: () => 'Spec harness'`
+    （fe/web/src/systems/cards/builtins/spec.ts:45），既不读 goal 也无处播报。
+    需求的后继者是 conversation 行：用户看到的 spec 名字来自
+    `fe/web/src/app/router/public.tsx:181` 的会话命名路径，不是卡片的 accessibleName。
+    注意本条只陈述今天的事实：S2 的 grid 尚未写，没有任何机器手段保证它会从
+    `partitionWaveCards` 的 visible 分支渲染而不是直接遍历原始 `cards`；
+    S2 必须走 visible 分支，否则本条前提重新成立，须连同措辞一起重开重定
 
 # ─────────────────────────────────────────────────────────────────────
 # family: card-kind-iframe
@@ -3656,13 +3666,13 @@
   why: >
     issue #229 PR B —— 每个 wave 只有一张，内容由报告视图渲染，网格里不占面板
   source: web/src/cards/builtins/wave-report.tsx:213-221
-  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:115
-  owner_slice: features/report/card
+  authoritative_test: fe/web/src/systems/cards/builtins/wave-report.test.ts:8,18,24
+  owner_slice: systems/cards/builtins
   intentional_omission: true
-  runtime_layer: features
+  runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: GATE-CARD-202
   kind: gate
@@ -4088,9 +4098,13 @@
   owner_slice: systems/cards/builtins
   intentional_omission: false
   runtime_layer: systems
-  verification_owner: unit
+  verification_owner: null
   test_tier: jsdom
-  migration: pending
+  migration: skipped
+  skip_reason: >
+    模块级 `registered` 布尔守卫与 `no-module-runtime-state` 冲突，生产 TS 不允许；
+    registry 已改为 factory 实例持有可变 Map，重复注册同一 type 直接覆盖，
+    幂等性由实例本身提供，不需要也不得再加模块级一次性守卫
 
 - id: INV-CARD-225
   kind: invariant
@@ -4122,13 +4136,13 @@
     spec 的 kernel kind 是 'codex' + spec_harness，没有 payload 就无法在
     unknown 分支识别 —— 这是已知且接受的缺口
   source: web/src/cards/excludeReportCards.ts:8-24
-  authoritative_test: web/src/cards/excludeReportCards.test.ts:59,74
-  owner_slice: features/report/exclude-cards
+  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75 fe/web/src/systems/cards/builtins/register.contract.test.ts:126,149,198 fe/web/src/app/router/wave-cards-panel.test.tsx:136,148,157,162,169
+  owner_slice: systems/cards/builtins
   intentional_omission: true
-  runtime_layer: features
+  runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-CARD-227
   kind: invariant

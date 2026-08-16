@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CONVERSATION_GAP_MS,
-  type Conversation, type ConversationTurn,
+  type Conversation, type ConversationActivity, type ConversationTurn,
 } from '../../../../../core/domain/conversation.ts';
 import { ChatComposer, ChatThread } from './public.tsx';
 
@@ -25,6 +25,13 @@ function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
   return { id: 't1', author: 'you', text: 'Do the thing.', atMs: NOW, ...overrides };
 }
 
+function activity(overrides: Partial<ConversationActivity> = {}): ConversationActivity {
+  return {
+    id: 'a1', author: 'activity', verb: 'Ran', target: 'npm test', state: 'done', atMs: NOW,
+    ...overrides,
+  };
+}
+
 describe('ChatThread', () => {
   it('renders the empty state before anything is said', () => {
     render(<ChatThread conversation={conversation()} turns={[]} />);
@@ -34,6 +41,22 @@ describe('ChatThread', () => {
   it('shows the live mark in an empty pending conversation', () => {
     render(<ChatThread conversation={conversation()} turns={[]} pending />);
     expect(screen.getByLabelText('Working')).toBeTruthy();
+  });
+
+  /* A conversation with no live session reads exactly like an idle one, because
+     that is all `null` says: no live session was found. It is not a claim that
+     the session exited — a card minted two seconds ago arrives the same way. */
+  it('renders a stateless conversation exactly like an idle one', () => {
+    const { container: idle } = render(
+      <ChatThread conversation={conversation({ state: 'idle' })} turns={[turn()]} />,
+    );
+    const idleHtml = idle.innerHTML;
+    cleanup();
+    const { container: stateless } = render(
+      <ChatThread conversation={conversation({ state: null })} turns={[turn()]} />,
+    );
+    expect(stateless.innerHTML).toBe(idleHtml);
+    expect(screen.queryByLabelText('Working')).toBeNull();
   });
 
   it('keeps each turn verbatim and marks who wrote it', () => {
@@ -91,6 +114,47 @@ describe('ChatThread', () => {
     expect(screen.getAllByLabelText('Working').length).toBe(1);
 
     rerender(<ChatThread conversation={conversation()} turns={turns} />);
+    expect(screen.queryByLabelText('Working')).toBeNull();
+  });
+
+  it('states failure in text and exposes activity state through the shared attribute', () => {
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ state: 'failed' })]} />,
+    );
+    expect(screen.getByText('Failed')).toBeTruthy();
+    expect(container.querySelector('[data-nc-state="failed"]')).toBeTruthy();
+    expect(container.querySelector('[data-nc-activity]')).toBeNull();
+  });
+
+  it('shows exactly one live mark after a completed activity while live', () => {
+    render(<ChatThread conversation={conversation()} turns={[activity()]} pending />);
+    expect(screen.getAllByLabelText('Working')).toHaveLength(1);
+  });
+
+  it('shows exactly one live mark on a trailing agent turn while live', () => {
+    render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn({ author: 'agent', text: 'Still working.' })]}
+        pending
+      />,
+    );
+    expect(screen.getAllByLabelText('Working')).toHaveLength(1);
+  });
+
+  it('shows exactly one live mark on a running activity while live', () => {
+    render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[activity({ state: 'running', verb: 'Running' })]}
+        pending
+      />,
+    );
+    expect(screen.getAllByLabelText('Working')).toHaveLength(1);
+  });
+
+  it('shows no live mark when the conversation is not live', () => {
+    render(<ChatThread conversation={conversation()} turns={[activity({ state: 'running' })]} />);
     expect(screen.queryByLabelText('Working')).toBeNull();
   });
 });

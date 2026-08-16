@@ -105,6 +105,14 @@ describe('activeWavesOn', () => {
     expect(activeWavesOn([before, after], day, now)).toEqual([]);
   });
 
+  it('uses updatedAt as the end of a terminal wave when terminalAt is absent', () => {
+    const staleDone = wave({
+      id: 'done-with-defaulted-terminal', lifecycle: 'done',
+      createdAt: dayStart - 3 * DAY, updatedAt: dayStart - 2 * DAY, terminalAt: null,
+    });
+    expect(activeWavesOn([staleDone], day, now)).toEqual([]);
+  });
+
   it('orders oldest first and breaks ties by id', () => {
     const b = wave({ id: 'b', createdAt: dayStart + 10 });
     const a = wave({ id: 'a', createdAt: dayStart + 10 });

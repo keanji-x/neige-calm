@@ -28,7 +28,6 @@ export function ChatList({
   conversations, activeId = null, showWave = true, onOpen,
 }: ChatListProps) {
   if (conversations.length === 0) {
-    // No endpoint serves these yet — see the note in core/domain/conversation.ts.
     // One short sentence, no slice name, no apology (§5.3).
     return <PanelEmpty>No conversations yet.</PanelEmpty>;
   }
@@ -38,6 +37,14 @@ export function ChatList({
       {conversations.toSorted(byRecency).map((conversation) => {
         const live = isLiveConversation(conversation.state);
         const active = conversation.id === activeId;
+        /* Both are optional and both are said only when known: a row whose wave
+           has no title the reader may see says nothing about a wave, and a row
+           with no turn count says nothing about turns. Interpolating them
+           unguarded reads "on undefined" / "undefined turns"; defaulting them
+           to `''` and `0` is worse, because `0 turns` is a claim. */
+        const waveTitle = conversation.waveTitle;
+        const turns = conversation.turns;
+        const name = conversationName(conversation);
         return (
           <li key={conversation.id} className={styles.item}>
             <button
@@ -45,13 +52,14 @@ export function ChatList({
               data-nc-role="row"
               className={`${styles.row} ${active ? styles.rowActive : ''}`}
               aria-current={active ? 'true' : undefined}
-              aria-label={`Conversation ${conversationName(conversation)}`
-                + (showWave ? `, on ${conversation.waveTitle}` : '')
-                + `, ${conversation.turns} turns${live ? ', live' : ''}`}
+              aria-label={`Conversation ${name}`
+                + (showWave && waveTitle !== undefined ? `, on ${waveTitle}` : '')
+                + (turns === undefined ? '' : `, ${turns} turns`)
+                + (live ? ', live' : '')}
               onClick={() => onOpen(conversation)}
             >
               <span className={styles.label}>
-                {showWave ? conversation.waveTitle : conversationName(conversation)}
+                {showWave && waveTitle !== undefined ? waveTitle : name}
               </span>
             </button>
             {/* Trailing, outside the button — the same shape a wave row takes in

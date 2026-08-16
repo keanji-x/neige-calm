@@ -12,8 +12,12 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
-import { createAppRouter } from '../router/public.tsx';
+import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { APP_BASEPATH, createAppRouter } from '../router/public.tsx';
+import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+
+const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 
 afterEach(() => { cleanup(); delete document.documentElement.dataset.theme; });
 
@@ -52,9 +56,11 @@ function harness() {
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
   };
-  window.history.pushState({}, '', '/cove/c1');
+  window.history.pushState({}, '', `${APP_BASEPATH}/cove/c1`);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const router = createAppRouter({ transport, client, onSignOut: vi.fn() });
+  const router = createAppRouter({
+    transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn(),
+  });
   render(
     <QueryClientProvider client={client}>
       <ThemeProvider storage={memoryStorage()}>

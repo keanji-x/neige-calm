@@ -75,6 +75,18 @@ describe('Today clock', () => {
 });
 
 describe('Today agenda', () => {
+  it('excludes archived waves from counts, sections, calendar dots, and agenda', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow}
+      waves={[wave({ title: 'Archived attention', lifecycle: 'blocked', archivedAt: NOW - DAY })]}
+      coves={[cove()]}
+      nowMs={NOW}
+    />);
+    expect(screen.getByRole('banner').textContent).toContain('0waiting');
+    expect(screen.queryByText('Archived attention')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Monday, Aug 10' })).toBeTruthy();
+  });
+
   // Navigation moved into the injected row (app/router owns the destination),
   // so what Today still owns is *which* wave it hands to the renderer and in
   // which variant. That is what this asserts.

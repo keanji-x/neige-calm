@@ -308,11 +308,11 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Issue #250 PR 1 — folders claimed by a single cove, sorted by
     /// path for stable UI ordering.
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>>;
-    /// Issue #250 PR 1 — every folder across every cove. Used by the
-    /// resolve endpoint to do longest-prefix matching application-side
-    /// (SQLite has no native prefix function fast enough to outweigh
-    /// a Rust-side O(N) scan at the table sizes we expect — folders are
-    /// minted manually by users, not auto-discovered).
+    /// Issue #250 PR 1 — every folder across every cove, `ORDER BY path
+    /// ASC`. Used by the resolve endpoint to find the covering claim
+    /// application-side (SQLite has no native prefix function fast enough
+    /// to outweigh a Rust-side O(N) scan at the table sizes we expect —
+    /// folders are minted manually by users, not auto-discovered).
     async fn cove_folders_list_all(&self) -> Result<Vec<CoveFolder>>;
     /// Issue #250 PR 1 — single-row fetch for the DELETE handler's
     /// existence check.
@@ -360,8 +360,17 @@ pub trait RepoRead: Send + Sync + 'static {
     /// The JOIN is a correctness guard: stale index rows never revive a
     /// terminal or deleted task.
     async fn task_contexts_by_dst_wave(&self, dst_wave_id: &str) -> Result<Vec<TaskContextRow>>;
+    /// Explicit recovery candidates affected by an edit to `dst_wave_id`.
+    /// Kept separate from the fresh pass so stale rows never re-enter material
+    /// classification or its retry budget.
+    async fn stale_task_contexts_by_dst_wave(
+        &self,
+        dst_wave_id: &str,
+    ) -> Result<Vec<TaskContextRow>>;
     /// Sweep source. Deliberately reads tasks rather than the reverse index.
     async fn task_contexts_inflight_fresh(&self) -> Result<Vec<TaskContextRow>>;
+    /// Recovery sweep source for non-terminal rows that already carry stale.
+    async fn task_contexts_inflight_stale(&self) -> Result<Vec<TaskContextRow>>;
     /// Minimal operation lookup for session-owned worker convergence:
     /// `worker_sessions.spawn_op_id` resolves to `operations.idempotency_key`,
     /// which is the immutable task id the worker operation was submitted with.
@@ -1023,15 +1032,56 @@ pub trait RepoOutOfDomain: RepoRead {
     // path (no `Event::CoveFolderAdded`-style variants land in PR 1).
     // Treated like terminals / plugins: server-private state, REST writes
     // straight against the row without an event-log entry.
-    /// Insert a folder under `cove_id`. The caller is responsible for
-    /// path normalization + conflict detection — both run at the route
-    /// layer (`routes::cove_folders::create_folder`) so the structured
-    /// 409 body can be assembled with the conflicting row's metadata.
+    /// Insert a folder under `cove_id` with **no** overlap check. The
+    /// caller owns path normalization and conflict detection.
+    ///
+    /// Not reachable from HTTP: `POST /api/coves/{id}/folders` goes
+    /// through [`Self::cove_folder_create_checked`] because a scan on one
+    /// pooled connection followed by an INSERT on another lets two
+    /// concurrent requests both claim overlapping paths (#275). This
+    /// primitive survives for tests and seeds that deliberately want to
+    /// build states the checked writer refuses.
     async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder>;
-    /// Re-probe a folder outside a write transaction, then atomically replace
-    /// its cached identity and probe timestamp. Existing rows are refreshed on
-    /// demand; migration 0063 deliberately performs no filesystem backfill.
-    async fn cove_folder_refresh_repo_identity(&self, id: i64) -> Result<CoveFolder>;
+    /// Issue #275 — atomically claim `path` for `cove_id`: the overlap
+    /// scan and the INSERT run inside one `BEGIN IMMEDIATE` transaction,
+    /// so no concurrent writer can slip an ancestor/descendant claim
+    /// between them. `UNIQUE(cove_folders.path)` only catches *equal*
+    /// paths and is therefore not sufficient on its own.
+    ///
+    /// This is what makes "at most one claim covers any path" a real
+    /// invariant, which in turn is what lets
+    /// [`crate::cove_folder_claim::find_owner`] serve both resolvers
+    /// without a tiebreak.
+    ///
+    /// Returns `Conflict` (not `Err`) for overlap so the route can render
+    /// the structured 409 body; a missing `cove_id` is still `Err(NotFound)`.
+    /// The transaction does nothing but two SQL statements — no I/O — so
+    /// the writer-lock window stays as short as the plain INSERT's.
+    ///
+    /// # Precondition
+    ///
+    /// `path` MUST already be normalized — i.e. the output of
+    /// [`crate::cove_folder_claim::normalize_path`]. The overlap
+    /// classification is pure string comparison: `Equal` is `f.path ==
+    /// path` and the ancestor/descendant arms are prefix tests. A
+    /// non-normalized input is silently *mis*classified rather than
+    /// rejected — `"/a/b/"` against a stored `"/a/b"` compares unequal,
+    /// skips `Equal`, and falls into the descendant arm — so normalizing
+    /// is the caller's job, not this method's.
+    ///
+    /// Debug builds assert `path == normalize_path(path)`, which
+    /// machine-checks **only the trailing-slash form**: `normalize_path`
+    /// strips one trailing slash and does nothing else, so a path
+    /// carrying `.` / `..` segments (`"/a/./b"`) is its own fixed point —
+    /// it passes the `debug_assert` and still misclassifies against a
+    /// stored `"/a/b"`. Callers that can produce such segments must
+    /// canonicalize before they get here; nothing in this layer catches
+    /// it.
+    async fn cove_folder_create_checked(
+        &self,
+        cove_id: &str,
+        path: &str,
+    ) -> Result<crate::cove_folder_claim::CoveFolderClaim>;
     /// Delete a folder by integer id. Returns `NotFound` when no row
     /// exists. PR 2 will add a "has live wave referencing this path"
     /// guard at the route layer; the repo primitive stays narrow.

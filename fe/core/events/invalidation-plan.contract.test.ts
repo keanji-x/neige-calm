@@ -1,12 +1,14 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
-import type { WireEvent } from '../api/schemas.js';
+import { wireEventSchema, type WireEvent } from '../api/schemas.js';
 import {
   defineInvalidationPolicies,
   invalidationPlanFor,
   noop,
+  WAVE_FILES_DERIVED_KINDS,
   type EventKind,
   type InvalidationPolicy,
+  type WaveFilesDerivedKind,
 } from './invalidation-plan.js';
 
 describe('invalidation plan contract', () => {
@@ -24,10 +26,19 @@ describe('invalidation plan contract', () => {
       { ev: 'wave.report_edited' }
     >;
     expect(invalidationPlanFor(event)).toEqual({
-      invalidate: [['wave-files', 'wave-7'], ['wave-backlinks']],
+      invalidate: [['wave-files', 'wave-7'], ['wave-report', 'wave-7'], ['wave-backlinks']],
       remove: [],
       writeThrough: [],
     });
+  });
+
+  it('pins wave-report invalidation to exactly the derived kinds plus report edits', () => {
+    const allEventKinds = wireEventSchema.options.map((schema) => schema.shape.ev.value);
+    const actual = new Set(allEventKinds.filter((kind) => invalidationPlanFor(
+      { ev: kind, data: {} } as WireEvent,
+    ).invalidate.some((key) => key[0] === 'wave-report')));
+    expect(actual).toEqual(new Set([...WAVE_FILES_DERIVED_KINDS, 'wave.report_edited']));
+    expectTypeOf<typeof WAVE_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<WaveFilesDerivedKind>();
   });
 
   it('[type-only] rejects a policy map missing any wire event kind', () => {
