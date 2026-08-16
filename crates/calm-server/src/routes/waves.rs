@@ -1371,13 +1371,18 @@ fn prepare_fork_report(
                 // `.unwrap_or(false)`; `task.tsx:185` tests falsiness), but they
                 // are NOT identical to `wave_report_edit_guard.rs:162-167`,
                 // which compares the raw `Option<&Value>` and rejects any
-                // non-user edit that changes it. A natively spec-declared task
-                // carries no such key (`plan.rs:917-925` excludes
-                // `released_by_user` from every generated task block), so an
-                // explicit `false` would make forked blocks the only ones a spec
-                // author must echo the field back on — re-creating, on this
-                // field, the "template block the spec can never edit" failure
-                // #1111 just closed. `ready` is written explicitly only because
+                // non-user edit that changes it. Blocks produced by the
+                // plan-template generator carry no such key
+                // (`plan_template_task_block_payload`; `plan.rs:917-925` lists
+                // `released_by_user` among the template exclusions, pinned by a
+                // field-set equality meta-test) — that is a property of that
+                // one generator, not a global invariant, since an agent writing
+                // blocks over MCP could schema-legally include an explicit
+                // `false`. Absent is nonetheless the canonical shape, so
+                // writing an explicit `false` here would make forked blocks the
+                // only ones a spec author must echo the field back on —
+                // re-creating, on this field, the "template block the spec can
+                // never edit" failure #1111 just closed. `ready` is written explicitly only because
                 // `kinds.rs:243-245` makes it *required* on a live task; this
                 // one is optional, so the absent form is available and is the
                 // one that matches a fresh declaration byte for byte.

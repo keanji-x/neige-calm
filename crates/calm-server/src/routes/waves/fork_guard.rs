@@ -14,8 +14,10 @@ use crate::error::CalmError;
 ///
 /// It is also a fail-closed **belt** over the release normalization in
 /// `super::prepare_fork_report`: no forked task block may reach a new wave
-/// carrying `released_by_user`, no matter who forks it. The check takes no
-/// author on purpose — see [`guard_forked_blocks_impl`].
+/// carrying a **truthy** `released_by_user`, no matter who forks it. An absent
+/// key (the canonical normalized shape) and an explicit `false` both pass — see
+/// [`guard_forked_blocks_impl`], which also explains why the check takes no
+/// author.
 pub(in crate::routes::waves) fn guard_forked_blocks(
     after: &[ReportBlock],
 ) -> Result<(), CalmError> {
@@ -26,7 +28,17 @@ fn guard_forked_blocks_impl(after: &[ReportBlock]) -> Result<(), CalmError> {
     // With an empty `before`, the ordinary guard's only post-Rule-1 constraint
     // is Rule 5 (`released_by_user` is user-only). What runs here is strictly
     // stronger than §3.7 Rule 5: it holds for **every** author, so no task
-    // block may be forked with the flag set at all.
+    // block may be forked with the flag *set* at all.
+    //
+    // "Set" means truthy: the loop rejects only `!= Bool(false)`, so an absent
+    // key and an explicit `released_by_user: false` both pass. That is
+    // deliberate. The belt's job is to catch a regression in the normalization
+    // — a template's *release* leaking into a new wave — not to legislate how
+    // "not released" is encoded. Absent is the canonical shape today (see the
+    // `payload.remove` in `prepare_fork_report`), but an explicit `false` is
+    // semantically identical to every reader, so a strictly
+    // key-must-be-absent belt would turn a harmless future change of encoding
+    // into a spurious 400.
     //
     // #1115 — this is a belt over the normalization in
     // `super::prepare_fork_report`, not a restatement of Rule 5.
@@ -92,14 +104,27 @@ mod tests {
     /// while the release belt bites. #1115: it bites for the **user** author
     /// too — that is the whole difference from §3.7 Rule 5, and the case a
     /// browser fork actually takes.
+    ///
+    /// Two accepted shapes, pinned separately: the **absent** key — the
+    /// canonical post-normalization shape, since `prepare_fork_report` removes
+    /// it and a natively spec-declared block never grows it — and an **explicit
+    /// `false`**, which the belt also lets through on purpose. The belt exists
+    /// to catch a normalization regression, not to legislate the encoding of
+    /// "not released"; if normalization ever switched to writing an explicit
+    /// `false` (semantically identical for every reader), a strictly
+    /// key-must-be-absent belt would fire on a harmless change.
     #[test]
     fn fork_guard_exempts_rule_one_but_belts_release_for_every_author() {
         let copied = task(json!({"key": "build", "declared_by": "spec"}));
         guard_forked_blocks(std::slice::from_ref(&copied)).unwrap();
 
-        let mut absent_is_fine = copied.clone();
-        absent_is_fine.payload["released_by_user"] = Value::Bool(false);
-        guard_forked_blocks(&[absent_is_fine]).unwrap();
+        let absent_is_fine = copied.clone();
+        assert!(absent_is_fine.payload.get("released_by_user").is_none());
+        guard_forked_blocks(std::slice::from_ref(&absent_is_fine)).unwrap();
+
+        let mut explicit_false_is_fine = copied.clone();
+        explicit_false_is_fine.payload["released_by_user"] = Value::Bool(false);
+        guard_forked_blocks(&[explicit_false_is_fine]).unwrap();
 
         let mut released = copied;
         released.payload["released_by_user"] = Value::Bool(true);

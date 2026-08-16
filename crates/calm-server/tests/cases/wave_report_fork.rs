@@ -1197,32 +1197,40 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
-/// Issue #1115 — the other half of the release normalization: a NON-user fork
-/// of a template holding a released task must succeed.
+/// Issue #1115 — the other half of the release normalization: a template that
+/// holds a user-released task is still forkable, and the fork lands without the
+/// release.
 ///
 /// This test used to be `non_user_fork_rejects_user_released_task_and_rolls_
 /// back_every_created_row` and pinned the opposite outcome (400 + zero
 /// residue). That outcome was not a contract: it was the observable face of the
 /// same missing normalization. `prepare_fork_report` left `released_by_user`
-/// alone, so a template that any user had ever released became **un-forkable by
-/// any agent** — Rule 5 rejected the whole wave creation, with no repair path
-/// short of a human editing the template. Now the flag is normalized away
-/// before `guard_forked_blocks` ever sees it, so nothing is left for Rule 5 to
-/// reject and the AI-fork DoS is gone.
+/// alone, so a template that any user had ever released became **un-forkable**
+/// — Rule 5 rejected the whole wave creation, with no repair path short of a
+/// human editing the template. Now the flag is normalized away before
+/// `guard_forked_blocks` ever sees it, so nothing is left for Rule 5 to reject.
 ///
 /// The privilege that the old 400 nominally protected is not weakened: no
 /// forked block reaches the new wave carrying a release, whoever forks it.
 ///
-/// The actor is `ai:claude`, not `ai:codex`, and the difference is not
-/// cosmetic. Both are non-`user` for the fork's purposes, but `actor.rs:98-101`
-/// maps `ai:codex` alone onto `ActorId::AiCodex(CardId::from(""))`, which
-/// `role_gate` rejects outright (`EmptyAiCardId`) when the wave-create event
-/// emits. Under `ai:codex` this route therefore cannot reach 201 whatever the
-/// report holds — the old 400 was simply an earlier stop on a request that was
-/// going to 403 anyway. `ai:codex` is kept out of this test so it pins the fork
-/// behavior rather than that identity gate.
+/// **This test does not claim to cover a non-`User` identity, and the name no
+/// longer says it does.** It sends `X-Calm-Actor: ai:claude`, but
+/// `actor.rs:106-110`'s defensive default maps every header value other than
+/// `user` / `ai:codex` onto `ActorId::User` — at the identity layer this
+/// request *is* a `User`. What the test actually pins is the fork contract:
+/// **a template carrying a release is no longer rejected wholesale, and the
+/// copy arrives without the release.**
+///
+/// A truly non-`User` identity is not reachable on this route at all, which is
+/// why no variant of this test asserts one. `ai:codex` is the only header form
+/// that maps onto a real AI `ActorId` (`actor.rs:98-104`,
+/// `ActorId::AiCodex(CardId::from(""))`), and it carries an empty card id, so
+/// `role_gate.rs:197` answers `EmptyAiCardId` → 403 when the wave-create event
+/// emits. Under `ai:codex` this route cannot reach 201 whatever the report
+/// holds — the old 400 was simply an earlier stop on a request that was going
+/// to 403 anyway.
 #[tokio::test]
-async fn non_user_fork_of_a_released_template_succeeds_without_the_release() {
+async fn fork_of_a_released_template_succeeds_and_drops_the_release() {
     let boot = boot().await;
     seed_user_released_task(&boot, "allowed-upstream").await;
 
@@ -1259,7 +1267,7 @@ async fn non_user_fork_of_a_released_template_succeeds_without_the_release() {
     assert_ne!(
         forked["payload"]["released_by_user"],
         json!(true),
-        "an AI fork must not import a release either: {forked}"
+        "a fork of a released template must not import the release: {forked}"
     );
 }
 

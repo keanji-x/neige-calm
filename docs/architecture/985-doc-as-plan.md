@@ -280,7 +280,7 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 | 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由。该析取项**只**对本 wave 里人真正下的否决成立：fork 过来的模板墓碑已在 §7.2 被归一化为 `"spec"`，不落入本条 |
 | 4 | User 删除一个活的 task 块 ⇒ 改写为**原位墓碑**（`tombstoned_by: "user"`）|
 | 4′ | **主条款**：`author == User` 时，`before` 里任何非墓碑 `task` 块若在 `after` 中消失，则 `after` **必须存在同 `key` 且 `tombstoned_by=="user"` 的墓碑**，否则拒绝，**错误文案指向块级 DELETE 端点**（规则 4 只覆盖块级 DELETE，整文档路径必须 fail-closed）。**补丁**：满足它的墓碑必须是**本次编辑新立的**。live → tombstone 时 `tombstoned_by` 必须等于本次编辑的 author：没有它，spec 能伪造人的否决（终局、不可撤回，且规则 3 之后对 spec 永久锁死），人也能自废 §6.1 的防线。**且不得被一个早已存在的同 key 用户墓碑满足**——否则 fail-closed 兜底在它真正要生效的那天不成立 |
-| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变**。**fork 更严**：任何作者 fork 出来的块都不得携带该位（§7.2 / #1115），归一化在前、`fork_guard` 的腰带在后 |
+| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变**。**fork 更严**：任何作者 fork 出来的块都不得携带**为真的**该位（§7.2 / #1115），归一化在前（删键）、`fork_guard` 的腰带在后（判「不等于 `false`」，故显式 `false` 也放行）|
 | 6 | 既有块上 `key` 不可就地改写（§3.3）|
 
 **收口的完整性**（逐条查过绕过面）：`apply_report_op` 只在
@@ -1146,8 +1146,11 @@ REST 400 校验、OpenAPI / zod / web 生成物。
   `.unwrap_or(false)`，前端判 falsy），但对
   `wave_report_edit_guard.rs` 的规则 5 后续编辑分支**不等价** —— 它比较的是原始
   `Option<&Value>`，缺席 ≠ `Some(false)`，且任何非 User 作者改变该 Option 一律拒绝。
-  原生 spec 声明出来的 task 块**不带**这个键（`plan.rs` 的模板映射把
-  `released_by_user` 列为排除字段），所以写显式 `false` 会让 fork 出来的块成为
+  经 **plan-template 生成器**（`plan.rs` 的 `plan_template_task_block_payload`）
+  声明出来的 task 块**不带**这个键（该映射把 `released_by_user` 列为排除字段，有
+  字段集相等的元测试钉住）。**这是那一个生成器的性质，不是全局不变量** —— 经 MCP
+  直接写块的 agent 理论上可以自己塞一个 `released_by_user: false`（schema 允许），
+  只是没有理由这么做。规范形状仍是**无键**，所以写显式 `false` 会让 fork 出来的块成为
   「spec 每次改写都必须原样回填该字段」的唯一一类块 —— 在这个字段上重演 #1111 刚
   关掉的「模板块 spec 永远改不动」故障类。`ready` 之所以写显式 `false`，只是因为
   `kinds.rs` 把它列为 live task 的**必填**字段，这里没有这个约束。
@@ -1164,8 +1167,13 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 意思」）。两组的差就是 `ready`。
 
 **归一化之后还有一条 fail-closed 腰带**（`fork_guard::guard_forked_blocks`，#1115）：
-**任何** fork 出来的 task 块都不得携带 `released_by_user`，**不分作者**，否则整条
-wave 创建 400。它比 §3.7 规则 5 严格（规则 5 只咬 `author != User`），且**刻意不再
+**任何** fork 出来的 task 块都不得携带**为真的**放行位，**不分作者**，否则整条
+wave 创建 400。**判据是「不等于 `false`」而不是「键存在」** —— 键缺席（归一化之后
+的规范形状）与显式 `released_by_user: false` 都放行。这是刻意的：腰带的用途是抓
+归一化的回归（模板的**放行**漏进新 wave），不是规定「未放行」该怎么编码；显式
+`false` 对所有读者与缺席等价（`tasks.rs` 的 `.unwrap_or(false)`、前端判 falsy），
+若将来归一化改成写显式 `false`（语义无害），一条严格要求「键必须缺席」的腰带就会
+把一次无害的编码变更判成 400。它比 §3.7 规则 5 严格（规则 5 只咬 `author != User`），且**刻意不再
 接收 author 参数** —— 旧形状正是栽在这里：浏览器 fork 不带 `X-Calm-Actor` 头，wave
 创建路径把它判成 `User`，于是规则 5 对最常见的那条路径恒不成立，守卫等于空转。
 腰带在正常路径上永远查不到东西（归一化排在它前面），**这个恒真是它的稳态而不是它
@@ -1175,7 +1183,8 @@ wave 创建 400。它比 §3.7 规则 5 严格（规则 5 只咬 `author != User
 诊断为空而为真）和 `report-blocks/task.tsx`（放行位为真则隐藏放行按钮）读取。
 
 **副作用（一个真实的行为收窄的反面）**：旧的「非 User fork 遇到带放行位的模板 ⇒
-整条 400」随之消失。那不是一条契约，而是同一个缺口的另一面：任何被用过一次
+整条 400」随之消失（这里的「非 User」是 `EditAuthor` 意义上的 —— 只要请求带了
+`X-Calm-Actor: ai:*` 头就落入该分支，与 `actor.rs` 在**身份**层怎么归类无关）。那不是一条契约，而是同一个缺口的另一面：任何被用过一次
 「Allow this task」的模板，对 agent 就**永久不可 fork**，且除了人去改模板之外没有
 修复路径。归一化把放行位在守卫看到之前就清掉了，所以没有东西可拒；特权本身一分
 未松 —— 无论谁 fork，都没有块能带着放行位进入新 wave。
@@ -2055,7 +2064,11 @@ TS / 所有 `query_as::<Task>` 的连带面。**在 migration 旁注明这是刻
 `released_by_user` 键（#1115；墓碑块上的该字段不清，同样由 `validate_payload`
 打断整条 fork），并覆盖「模板放行位 ⇒ 用户 fork ⇒ 新 wave 收紧成
 `declare-and-wait` ⇒ 该 task 仍带 `declare_and_wait` 诊断且不可调度」与
-「非 User fork 不再被整条拒绝」两条；`fork_guard` 腰带对**所有**作者生效；
+「带放行位的模板不再被整条拒绝、且副本落地时不带放行位」两条（后者带
+`X-Calm-Actor: ai:claude` 发出，但 `actor.rs` 的 defensive default 把它归成
+`ActorId::User`，所以它钉的是 fork 契约、**不**声称覆盖非 User 身份；唯一映射到
+真实 AI `ActorId` 的 `ai:codex` 携带空 card id，`role_gate` 会先以
+`EmptyAiCardId` 403，那条路根本到不了 201）；`fork_guard` 腰带对**所有**作者生效；
 fork 自跑 `validate_payload` 与 guard；
 **规则 1 豁免点的枚举测试**（全仓恰好一处：`Fork`）；
 `calm.plan.upsert` 隐藏 shim 返回迁移指引且零写入。
