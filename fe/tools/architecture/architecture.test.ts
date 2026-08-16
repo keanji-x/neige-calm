@@ -233,6 +233,15 @@ describe('architecture fixtures', () => {
     ['test-module-runtime-state-exemption', 'architecture/'],
   ]);
 
+  // Timeout rationale (measured, not guessed): every case that routes through `cruise` into an
+  // ESLint branch constructs a fresh `new ESLint(...)` and re-resolves the whole flat config, so the
+  // first such case in a run absorbs that cold start. Measured on an idle machine:
+  // `markdown-micromark-attributes-import` (the first micromark case) 2090ms, while its already-warm
+  // siblings `markdown-micromark-import` 400ms and `markdown-micromark-template-import` 284ms.
+  // 2090ms is 42% of vitest's 5000ms default, which leaves no room once CI runs this file under
+  // parallel load. 30000ms gives ~14x headroom over the measured worst case. This only widens the
+  // clock; no assertion below is relaxed and no retry is configured.
+  const fixtureCaseTimeoutMs = 30_000;
   for (const caseName of readdirSync(fixtures)) {
     if (caseName === '_syntax-shapes') continue;
     it(`${caseName}: accepts the positive and rejects the negative fixture`, async () => {
@@ -272,7 +281,7 @@ describe('architecture fixtures', () => {
             `${caseName}: ${fixturePath} must participate in a violation`).toBe(true);
         }
       }
-    });
+    }, fixtureCaseTimeoutMs);
   }
 });
 

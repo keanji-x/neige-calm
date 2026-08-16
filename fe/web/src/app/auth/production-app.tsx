@@ -13,6 +13,8 @@ import { AppProviders, type ProviderRuntime } from '../providers/public.tsx';
 import { logoutOperation, runOperation, serverVersionOperation } from '../providers/queries.ts';
 import { createFetchTransport } from '../providers/transport.ts';
 import { createAppRouter } from '../router/public.tsx';
+import { createCardHost, createCardRegistry } from '../../systems/cards/public.js';
+import { bootCards } from '../cards.ts';
 
 export function ProductionApp({ transport, unauthorized, client, runtime, cursorStore, router, renderEventBridge,
   renderLogin, renderError }: Readonly<{
@@ -36,7 +38,15 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   const transport = createFetchTransport();
   const client = new QueryClient();
   const events = createBrowserEventComposition({ storage: browser.storage, transport, unauthorizedChannel: unauthorized });
-  const router = createAppRouter({ transport, unauthorized, client, onSignOut: () => {
+  // The one place the card runtime is assembled. `bootCards` is called exactly
+  // once, on this instance — there is no module-level registry and no
+  // module-level "already registered" guard (`INV-CARD-224` is retired); a
+  // second boot would be a second registry, which is what the contract test
+  // pins.
+  const registry = createCardRegistry();
+  bootCards(registry);
+  const host = createCardHost(registry);
+  const router = createAppRouter({ transport, unauthorized, client, cards: { registry, host }, onSignOut: () => {
     void runOperation(transport, logoutOperation(), unauthorized).finally(browser.reload);
   } });
   const runtime: ProviderRuntime = {

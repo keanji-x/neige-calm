@@ -1059,5 +1059,24 @@
       "web/src/app/auth/session-gate.contract.test.tsx"
     ],
     "why_more_than_one": "Only the cache assertion should turn red; login rendering remains independently functional after the cache clear is removed."
+  },
+  {
+    "mutation_id": "cards-headless-filter-display-index",
+    "defends": [
+      "oracle:INV-CARD-226"
+    ],
+    "target": "web/src/systems/cards/builtins/headless-filter.ts",
+    "patch": "diff --git a/web/src/systems/cards/builtins/headless-filter.ts b/web/src/systems/cards/builtins/headless-filter.ts\n--- a/web/src/systems/cards/builtins/headless-filter.ts\n+++ b/web/src/systems/cards/builtins/headless-filter.ts\n@@ -79,7 +79,7 @@ export function partitionWaveCards(\n   cards.forEach((wire, originalIndex) => {\n     const card = registry.resolve({ id: wire.id, kind: wire.kind, payload: wire.payload });\n     if (card === null) {\n-      if (wire.kind !== 'wave-report') unknown.push(Object.freeze({ wire, originalIndex }));\n+      if (wire.kind !== 'wave-report') unknown.push(Object.freeze({ wire, originalIndex: unknown.length }));\n       return;\n     }\n     // Back to the entry that minted this card, so the declaration is read off\n@@ -95,7 +95,7 @@ export function partitionWaveCards(\n     // entry, because an entry annotated as a bare `CardEntry` would drop that\n     // compile-time tie without any other signal.\n     if (registry.get(card.type)?.headless === true) return;\n-    visible.push(Object.freeze({ card, wire, originalIndex }));\n+    visible.push(Object.freeze({ card, wire, originalIndex: visible.length }));\n   });\n   return Object.freeze({ visible: Object.freeze(visible), unknown: Object.freeze(unknown) });\n }\n",
+    "expected_red": [
+      "headless card filtering [INV-CARD-226] binds originalIndex before filtering, so surviving cards still address the wire array",
+      "headless card filtering [INV-CARD-226] filters raw wave-report kinds out of the unknown branch defensively",
+      "headless card filtering routes cards with a surface into the visible branch with their wire and index",
+      "wave route CARDS panel [INV-CARD-226] renders exactly the surviving cards in the kernel wire order"
+    ],
+    "selection_paths": [
+      "web/src/systems/cards/builtins/headless-filter.test.ts",
+      "web/src/app/router/wave-cards-panel.test.tsx"
+    ],
+    "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card; nothing else should notice."
   }
 ]

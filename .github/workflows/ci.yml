@@ -639,7 +639,21 @@ jobs:
   fe-mutation-shard:
     name: fe-mutation shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 15 → 25 (kept from main's #1091 measurement; the headroom stays even
+    # though #1119 makes hitting it far less likely).
+    # This job is inherently expensive: tools/mutation/run.mjs re-runs the
+    # ENTIRE vitest suite once per mutation entry (it shells out to a bare
+    # `npx vitest run`; the manifest's `selection_paths` is metadata and does
+    # not narrow the run), so a shard's cost tracks total suite size, not the
+    # size of the PR under test.
+    # Measured on the old fixed 6-way matrix, shard 3/6: origin/main runs took
+    # 12m58s, 13m06s, 14m17s and 14m50s, and one run hit 15m16s and was
+    # CANCELLED by the old 15m ceiling — the worst shard carried 11 entries.
+    # #1119 caps a shard at ~4 entries (fe/tools/mutation/runner.ts
+    # entriesPerShard) until the manifest passes 128 selected entries, after
+    # which the plan job emits a ::warning:: naming the real entries-per-shard.
+    # 25m is the backstop for that clamped regime.
+    timeout-minutes: 25
     needs: fe-mutation-plan
     strategy:
       fail-fast: false

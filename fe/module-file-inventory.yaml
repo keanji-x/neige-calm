@@ -50,7 +50,6 @@
 - { path: fe/core/types, type: directory, owner: core/types, readonly: false, basis: "architecture §8.7" }
 
 # App composition (§2: router/providers/theme/shell/DI and §4.7 events).
-- { path: fe/web/src/app/cards.contract.test.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
 - { path: fe/web/src/app/cards.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
 - { path: fe/web/src/app/composition.test.tsx, type: file, owner: app/composition, readonly: false, basis: "architecture §2 dependency injection; issue #1057" }
 - { path: fe/web/src/app/composition.ts, type: file, owner: app/composition, readonly: false, basis: "architecture §2 dependency injection; issue #1057" }
