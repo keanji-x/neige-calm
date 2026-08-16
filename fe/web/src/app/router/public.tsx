@@ -21,6 +21,8 @@ import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import {
   toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
+import type { CardHost, CardRegistry } from '../../systems/cards/public.js';
+import { partitionWaveCards } from '../../systems/cards/public.js';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
@@ -411,14 +413,24 @@ type ConversationDraft = Readonly<{
  *  is why `rekeyDraft` and `markDraftSent` are the only doors to them. */
 type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'error' | 'remedy'>>;
 
+/**
+ * The card runtime, created once at boot and injected like every other
+ * instance-owned dependency. `host` has no consumer inside the router yet —
+ * mounting cards into the grid overlay is #1091 S2 — but it is created and
+ * owned alongside the registry so there is exactly one assembly point rather
+ * than two boot-order-sensitive ones.
+ */
+export type CardRuntime = Readonly<{ registry: CardRegistry; host: CardHost }>;
+
 export type AppRouterDeps = Readonly<{
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   client: QueryClient;
   onSignOut: () => void;
+  cards: CardRuntime;
 }>;
 
-export function createRouteTree({ transport, unauthorized, client, onSignOut }: AppRouterDeps): AnyRoute {
+export function createRouteTree({ transport, unauthorized, client, onSignOut, cards }: AppRouterDeps): AnyRoute {
   const rootRoute = createRootRoute({ component: () => <ShellRoute transport={transport} unauthorized={unauthorized} onSignOut={onSignOut} /> });
 
   const indexRoute = createRoute({
@@ -443,7 +455,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut }: 
   const waveRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/wave/$waveId',
-    component: () => <WaveRoute transport={transport} unauthorized={unauthorized} />,
+    component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRegistry={cards.registry} />,
   });
 
   const settingsRoute = createRoute({
@@ -1309,7 +1321,9 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
  * the fetching and the returns, and the half below owns the hooks that need a
  * wave.
  */
-function WaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+function WaveRoute({ transport, unauthorized, cardRegistry }: {
+  transport: ApiTransportPort; unauthorized: UnauthorizedChannel; cardRegistry: CardRegistry;
+}) {
   const waveId = useRouteParam('/wave/');
   const workspace = useWorkspace(transport, unauthorized);
   const registry = useConversationRegistry();
@@ -1347,16 +1361,18 @@ function WaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
       wave={wave}
       cove={coveOf(wave.coveId, workspace.coves)}
       cards={detail.data.cards}
+      cardRegistry={cardRegistry}
     />
   );
 }
 
-function WaveRouteBody({ transport, unauthorized, wave, cove, cards }: {
+function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRegistry }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   wave: Wave;
   cove: Cove | undefined;
   cards: WaveDetailWire['cards'];
+  cardRegistry: CardRegistry;
 }) {
   const waveMutations = useWaveMutations(transport, unauthorized);
   const go = useGo();
@@ -1387,6 +1403,21 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards }: {
       outline: deriveReportOutline(nextReport?.blocks ?? null),
     };
   }, [cards]);
+  /*
+   * INV-CARD-226 — the CARDS module lists cards that have a surface. `spec` and
+   * `wave-report` resolve to headless adapters and are dropped; anything no
+   * adapter claimed stays, because an unlisted card is worse than an
+   * unrecognised one. Both branches carry `originalIndex`, bound before the
+   * filter, and the merge re-sorts on it so the panel keeps the wire order the
+   * kernel sent — a post-filter index here would address the wrong card the
+   * moment remove/action callbacks land (S2).
+   */
+  const panelCards = useMemo(() => {
+    const { visible, unknown } = partitionWaveCards(cardRegistry, cards);
+    return [...visible, ...unknown]
+      .sort((left, right) => left.originalIndex - right.originalIndex)
+      .map((slot) => slot.wire);
+  }, [cardRegistry, cards]);
   const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
@@ -1411,7 +1442,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards }: {
     <>
     <WavePage
       wave={wave}
-      cards={cards}
+      cards={panelCards}
       report={<ReportDocument
         report={report}
         rail={<ReportOutline items={outline} />}

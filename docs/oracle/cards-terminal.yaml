@@ -3318,13 +3318,13 @@
   why: >
     kernel kind 是 'codex'；判别符是唯一区分点。加别的条件会让部分 spec 卡漏判
   source: web/src/cards/builtins/spec.tsx:33-41,55
-  authoritative_test: web/src/cards/builtins/spec.test.tsx:112
+  authoritative_test: fe/web/src/systems/cards/builtins/spec.test.ts:11,19,28,37
   owner_slice: features/spec/card
   intentional_omission: false
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: CAP-CARD-183
   kind: capability
@@ -3656,13 +3656,13 @@
   why: >
     issue #229 PR B —— 每个 wave 只有一张，内容由报告视图渲染，网格里不占面板
   source: web/src/cards/builtins/wave-report.tsx:213-221
-  authoritative_test: web/src/cards/builtins/wave-report.test.tsx:115
+  authoritative_test: fe/web/src/systems/cards/builtins/wave-report.test.ts:8,18
   owner_slice: features/report/card
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: GATE-CARD-202
   kind: gate
@@ -4122,13 +4122,13 @@
     spec 的 kernel kind 是 'codex' + spec_harness，没有 payload 就无法在
     unknown 分支识别 —— 这是已知且接受的缺口
   source: web/src/cards/excludeReportCards.ts:8-24
-  authoritative_test: web/src/cards/excludeReportCards.test.ts:59,74
+  authoritative_test: fe/web/src/systems/cards/builtins/headless-filter.test.ts:22,48,61,75
   owner_slice: features/report/exclude-cards
   intentional_omission: true
   runtime_layer: features
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-CARD-227
   kind: invariant

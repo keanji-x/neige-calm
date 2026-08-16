@@ -9,6 +9,7 @@ import { SessionGate } from './session-gate.tsx';
 import type { ProviderRuntime } from '../providers/public.tsx';
 import { ProductionApp } from './production-app.tsx';
 import { createAppRouter } from '../router/public.tsx';
+import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 
 afterEach(cleanup);
 const identity = { userId: 'u', displayName: 'Owner', role: 'admin', sessionId: 's' };
@@ -21,7 +22,7 @@ describe('session gate contracts', () => {
     const fetchVersion = vi.fn();
     const runtime: ProviderRuntime = { fetchVersion, reload: vi.fn(), deleteDatabase: vi.fn(), idbDatabaseName: 'calm', storage: { getItem: () => null, setItem: vi.fn(), removeItem: vi.fn() } };
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-    const router = createAppRouter({ transport, unauthorized, client, onSignOut: vi.fn() });
+    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: vi.fn() });
     render(<ProductionApp transport={transport} client={client} unauthorized={unauthorized} runtime={runtime}
       cursorStore={{ clear: vi.fn() }} router={router} renderLogin={() => <b>login</b>} renderError={() => <b>retry</b>} />);
     expect(paths).toEqual(['/api/auth/whoami']);
