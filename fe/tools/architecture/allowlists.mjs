@@ -8,6 +8,7 @@
  */
 export const moduleRuntimeStateExceptions = Object.freeze([
   Object.freeze({ path: 'web/src/main.tsx', reason: 'App bootstrap must retain the browser mount node while composing React.' }),
+  Object.freeze({ path: 'web/src/app/router/idempotency-key.ts', reason: 'The fallback mint counter must outlive every panel mount: the conversation panel is a per-page hook, so a remount-scoped counter would re-mint a key the same cove already used.' }),
 ]);
 export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExceptions.map(({ path }) => path));
 

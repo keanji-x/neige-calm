@@ -129,15 +129,21 @@ describe('spec conversation regressions', () => {
     expect(requests.some(({ path }) => path.includes('/api/cards//'))).toBe(false);
   });
 
-  it('navigates from a cove conversation to its wave before opening it', async () => {
+  /*
+   * A cove lists its *own* conversations, from the server (#1098) — never the
+   * spec conversations of the waves inside it. Those hang off a wave and are
+   * read on that wave's page; listing them here would put rows in a panel whose
+   * drawer this route deliberately opens in place, on a card it has no scope
+   * for. Today is still where a remembered wave conversation shows up.
+   */
+  it('does not list a wave spec conversation on that wave\'s cove', async () => {
     setup();
     await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
     fireEvent.click(screen.getByRole('button', { name: 'Work' }));
-    fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Spec chat, on Test wave, 0 turns',
-    }));
-    await screen.findByRole('complementary', { name: 'Spec chat' });
-    expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w1`);
+    await screen.findByText('No conversations yet.');
+    expect(screen.queryByRole('button', { name: /Conversation Spec chat/ })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 0 turns' });
   });
 
   it('does not retain the pre-reset turn count on Today', async () => {
