@@ -125,13 +125,29 @@ export function validateManifest(
   if (entries.length === 0) throw new Error('manifest must contain at least one mutation');
   const ids = new Set<string>();
   for (const entry of entries) {
+    // The manifest is JSON.parse'd, so the declared types buy nothing at runtime. mutation_id in
+    // particular MUST be a string: a JSON number past Number.MAX_SAFE_INTEGER collapses onto its
+    // neighbours, which would make the canonical base/head comparison silently skip entries.
+    if (typeof entry.mutation_id !== 'string' || entry.mutation_id.trim() === '') {
+      throw new Error(`manifest entry has a non-string mutation_id: ${JSON.stringify(entry.mutation_id)}`);
+    }
     if (ids.has(entry.mutation_id)) throw new Error(`duplicate mutation_id: ${entry.mutation_id}`);
     ids.add(entry.mutation_id);
+    if (typeof entry.target !== 'string' || entry.target.trim() === '') {
+      throw new Error(`${entry.mutation_id}: target must be a non-empty string`);
+    }
+    if (typeof entry.patch !== 'string') throw new Error(`${entry.mutation_id}: patch must be a string`);
     if (parsePatchTarget(entry.patch) !== entry.target) throw new Error(`${entry.mutation_id}: patch target differs from target`);
     if (!Array.isArray(entry.defends) || entry.defends.length === 0 || !Array.isArray(entry.expected_red)
       || !Array.isArray(entry.selection_paths) || entry.selection_paths.length === 0
       || typeof entry.why_more_than_one !== 'string' || entry.why_more_than_one.trim() === '') {
       throw new Error(`${entry.mutation_id}: incomplete structured manifest entry`);
+    }
+    for (const path of entry.selection_paths) {
+      if (typeof path !== 'string' || path.trim() === '') throw new Error(`${entry.mutation_id}: selection_paths must be non-empty strings`);
+    }
+    for (const testId of entry.expected_red) {
+      if (typeof testId !== 'string' || testId.trim() === '') throw new Error(`${entry.mutation_id}: expected_red must be non-empty strings`);
     }
     for (const path of [entry.target, ...entry.selection_paths]) {
       if (!trackedPaths.has(path)) throw new Error(`${entry.mutation_id}: path is not tracked: ${path}`);
@@ -171,6 +187,8 @@ function canonicalJson(value: unknown): string {
 
 /**
  * Head entry ids whose evidence the base manifest cannot vouch for: absent from base, or canonically different.
+ * mutation_id must be a string (validateManifest enforces it): canonical comparison is keyed by id, and a
+ * numeric id past Number.MAX_SAFE_INTEGER would compare equal to its neighbour and silently skip the entry.
  * Entries removed from base are irrelevant — there is nothing left to run for them.
  * Duplicate mutation_ids in base make per-id comparison meaningless, so every head id is reported (fail closed).
  */
@@ -191,21 +209,30 @@ export function selectedEntries(
   const changed = new Set(fePaths);
   // Runner code changed: every recorded verdict is suspect, so nothing may be skipped.
   if (runnerCodeChanged(fePaths)) return [...entries];
-  const manifestTouched = changed.has(manifestRelativePath);
-  // No readable baseline to diff the manifest against — fail closed.
-  if (manifestTouched && baseManifest === null) return [...entries];
-  const drifted = manifestTouched ? entryIdsDriftedFromBase(baseManifest ?? [], entries) : new Set<string>();
+  let drifted = new Set<string>();
+  if (changed.has(manifestRelativePath)) {
+    // The single fail-closed mechanism for a missing baseline: without it `baseManifest` stays
+    // nullable and entryIdsDriftedFromBase below does not type-check, so it cannot be dropped silently.
+    if (baseManifest === null) return [...entries];
+    drifted = entryIdsDriftedFromBase(baseManifest, entries);
+  }
   // Filtering over `entries` preserves manifest order, which shardEntries relies on for a deterministic split.
   return entries.filter((entry) => drifted.has(entry.mutation_id)
     || [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
 }
 
 export const entriesPerShard = 4;
-export const maxShards = 20;
+export const maxShards = 32;
 
-export function shardPlan(selectedCount: number): { total: number; shards: number[] } {
-  const total = Math.min(maxShards, Math.max(1, Math.ceil(selectedCount / entriesPerShard)));
-  return { total, shards: Array.from({ length: total }, (_value, index) => index + 1) };
+/**
+ * `clamped` is true when the cap forces more than `entriesPerShard` entries onto a shard — past that
+ * point the per-shard wall clock stops being flat and drifts towards the shard job timeout, so the
+ * plan step surfaces it as a warning instead of letting it show up as a mystery timeout.
+ */
+export function shardPlan(selectedCount: number): { total: number; shards: number[]; clamped: boolean } {
+  const wanted = Math.max(1, Math.ceil(selectedCount / entriesPerShard));
+  const total = Math.min(maxShards, wanted);
+  return { total, shards: Array.from({ length: total }, (_value, index) => index + 1), clamped: wanted > maxShards };
 }
 
 export function parseShard(value: string): { index: number; total: number } {

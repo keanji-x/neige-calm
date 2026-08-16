@@ -595,17 +595,34 @@ jobs:
       - name: Plan mutation shards
         id: plan
         run: |
+          set -euo pipefail
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             plan=$(npm run --silent test:mutation:plan -- --base "$BASE_SHA")
           else
             plan=$(npm run --silent test:mutation:plan)
           fi
           echo "plan=$plan"
-          # The plan JSON is the only stdout line; tail -n 1 keeps this robust
-          # if npm ever prefixes anything.
-          line=$(printf '%s\n' "$plan" | tail -n 1)
-          echo "shards=$(printf '%s' "$line" | jq -c '.shards')" >> "$GITHUB_OUTPUT"
-          echo "total=$(printf '%s' "$line" | jq -r '.total')" >> "$GITHUB_OUTPUT"
+          # jq parses the WHOLE captured stdout, so any extra line (prefix OR suffix) is a parse
+          # error rather than a silently wrong plan. Each value is its own assignment so `set -e`
+          # actually fires on a jq failure — inside `echo "x=$(...)"` the status was discarded and
+          # the run only died much later at fromJSON('') in the shard matrix, off the required check.
+          shards=$(printf '%s' "$plan" | jq -c '.shards')
+          total=$(printf '%s' "$plan" | jq -r '.total')
+          selected=$(printf '%s' "$plan" | jq -r '.selected')
+          clamped=$(printf '%s' "$plan" | jq -r '.clamped')
+          case "$total" in ''|*[!0-9]*) total='' ;; esac
+          if [ -z "$shards" ] || [ -z "$total" ] || [ "$total" = "0" ] || [ "${shards#\[}" = "$shards" ]; then
+            echo "mutation plan did not produce a usable shard matrix; raw plan: $plan" >&2
+            exit 1
+          fi
+          # Visibility only, never a gate: past the cap the shards stop being ~4 entries each and
+          # a full run drifts towards the 15min shard timeout, which would read as flake.
+          if [ "$clamped" = "true" ]; then
+            per_shard=$(( (selected + total - 1) / total ))
+            echo "::warning::fe-mutation: $selected selected entries exceed the $total-shard cap; ~$per_shard entries per shard (cap keeps wall clock from being flat — consider raising maxShards in fe/tools/mutation/runner.ts)"
+          fi
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
 
   fe-mutation-shard:
     name: fe-mutation shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}

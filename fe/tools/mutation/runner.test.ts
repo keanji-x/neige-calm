@@ -92,6 +92,23 @@ describe('selection and manifest judgments', () => {
     expect(() => validateManifest([{ ...structuredEntry, selection_paths: ['tools/missing.ts'] }], namespaces, tracked))
       .toThrow('path is not tracked: tools/missing.ts');
   });
+  // The manifest is JSON.parse'd: the declared types are erased at runtime, so these are load-bearing.
+  it.each([
+    ['numeric mutation_id', { mutation_id: Number('9007199254740993') }, /non-string mutation_id/],
+    ['empty mutation_id', { mutation_id: '  ' }, /non-string mutation_id/],
+    ['null mutation_id', { mutation_id: null }, /non-string mutation_id/],
+    ['numeric target', { target: 42 }, /target must be a non-empty string/],
+    ['numeric patch', { patch: 7 }, /patch must be a string/],
+    ['numeric selection path', { selection_paths: [3] }, /selection_paths must be non-empty strings/],
+    ['numeric expected_red', { expected_red: [3] }, /expected_red must be non-empty strings/],
+  ] as const)('rejects a %s at runtime', (_name, override, message) => {
+    const entry = { ...structuredEntry, ...override } as unknown as MutationEntry;
+    expect(() => validateManifest([entry], namespaces, new Set([...tracked, ...structuredEntry.selection_paths])))
+      .toThrow(message);
+  });
+  it('accepts the same entry with a string mutation_id', () => {
+    expect(() => validateManifest([{ ...structuredEntry, mutation_id: '9007199254740993' }], namespaces, tracked)).not.toThrow();
+  });
 });
 
 describe('manifest is data, not runner infrastructure', () => {
@@ -132,6 +149,19 @@ describe('manifest is data, not runner infrastructure', () => {
     'fe/tools/mutation/fixtures/valid/source.ts',
   ])('selects every entry when runner code %s changes', (path) => {
     expect(ids(selectedEntries([alpha, beta, gamma], [path], [alpha, beta, gamma]))).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  // Why validateManifest insists mutation_id is a string: two distinct integers past
+  // Number.MAX_SAFE_INTEGER JSON.parse to the SAME Number, so canonical comparison would call an
+  // edited entry unchanged and skip it. As strings they stay distinct and the edit is caught.
+  it('distinguishes ids that collide once parsed as numbers, because they are strings', () => {
+    expect(Number('9007199254740992')).toBe(Number('9007199254740993'));
+    const numericBase = { ...entry('x'), mutation_id: Number('9007199254740992') } as unknown as MutationEntry;
+    const numericHead = { ...entry('x'), mutation_id: Number('9007199254740993') } as unknown as MutationEntry;
+    expect([...entryIdsDriftedFromBase([numericBase], [numericHead])]).toEqual([]);
+    const stringBase = { ...entry('x'), mutation_id: '9007199254740992' };
+    const stringHead = { ...entry('x'), mutation_id: '9007199254740993' };
+    expect([...entryIdsDriftedFromBase([stringBase], [stringHead])]).toEqual(['9007199254740993']);
   });
 
   it('fails closed to the full manifest when the base manifest is unreadable', () => {
@@ -187,15 +217,28 @@ describe('runner code versus manifest data', () => {
 });
 
 describe('dynamic shard plan', () => {
-  it.each([[0, 1], [1, 1], [4, 1], [5, 2], [65, 17], [80, 20], [400, 20]])(
-    '%i selected entries plan %i shards', (selectedCount, total) => {
-      expect(shardPlan(selectedCount)).toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1) });
+  it.each([[0, 1], [1, 1], [4, 1], [5, 2], [65, 17], [80, 20], [128, 32]])(
+    '%i selected entries plan %i shards without clamping', (selectedCount, total) => {
+      expect(shardPlan(selectedCount))
+        .toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1), clamped: false });
     });
   it('never plans fewer than one shard nor more than the cap', () => {
     expect(entriesPerShard).toBe(4);
-    expect(maxShards).toBe(20);
+    expect(maxShards).toBe(32);
     expect(shardPlan(0).shards).toEqual([1]);
     expect(shardPlan(10_000).total).toBe(maxShards);
+  });
+  // Past the cap the shards stop being ~entriesPerShard each; the plan says so out loud.
+  it.each([[128, false], [129, true], [400, true], [10_000, true]])(
+    '%i selected entries reports clamped=%s', (selectedCount, clamped) => {
+      const plan = shardPlan(selectedCount);
+      expect(plan.clamped).toBe(clamped);
+      expect(plan.total).toBe(clamped ? maxShards : Math.ceil(selectedCount / entriesPerShard));
+    });
+  it('never reports clamped below the cap', () => {
+    for (let selectedCount = 0; selectedCount <= maxShards * entriesPerShard; selectedCount += 1) {
+      expect(shardPlan(selectedCount).clamped).toBe(false);
+    }
   });
 });
 

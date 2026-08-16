@@ -22,7 +22,9 @@ const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.
 
 /** @param {string[]} args */
 function git(args) {
-  return spawnSync('git', args, { cwd: feRoot, encoding: 'utf8' });
+  // `ls-files --cached` and `show <base>:manifest.json` are already >100 KB; past the 1 MiB default
+  // maxBuffer git output truncates and status becomes null, which would silently look like "no baseline".
+  return spawnSync('git', args, { cwd: feRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
 /** @param {string[]} args */
@@ -71,8 +73,8 @@ const changed = mergeBase === null ? [] : changedPaths(mergeBase);
 const selected = mergeBase === null ? manifest : selectedEntries(manifest, changed, baseManifestAt(mergeBase));
 // --plan shares this exact selection path, so a plan can never drift from the run it schedules.
 if (values.plan) {
-  const { total, shards } = shardPlan(selected.length);
-  console.log(JSON.stringify({ selected: selected.length, total, shards }));
+  const { total, shards, clamped } = shardPlan(selected.length);
+  console.log(JSON.stringify({ selected: selected.length, total, shards, clamped }));
   process.exit(0);
 }
 const entriesToRun = shardEntries(selected, shard);
