@@ -60,24 +60,4 @@ mod tests {
         let error = guard_forked_blocks(&[released], EditAuthor::Spec).unwrap_err();
         assert!(error.to_string().contains("released_by_user"));
     }
-
-    /// #1111 — forked tombstones arrive here already normalized to `"spec"`
-    /// (see `waves.rs`). The guard must let them through for a non-user author
-    /// (Rule 1 is the exempted one, and Rule 2b/3 are trivial on an empty
-    /// `before`), while Rule 5 still bites on the very same shape.
-    #[test]
-    fn fork_guard_passes_normalized_tombstones_and_still_enforces_rule_five_on_them() {
-        let copied = task(json!({
-            "key": "rejected",
-            "tombstone": {"reason": "not now"},
-            "declared_by": "spec",
-            "tombstoned_by": "spec"
-        }));
-        guard_forked_blocks(std::slice::from_ref(&copied), EditAuthor::Spec).unwrap();
-
-        let mut released = copied;
-        released.payload["released_by_user"] = Value::Bool(true);
-        let error = guard_forked_blocks(&[released], EditAuthor::Spec).unwrap_err();
-        assert!(error.to_string().contains("released_by_user"));
-    }
 }

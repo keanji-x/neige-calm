@@ -501,7 +501,11 @@ fn block_index(report: &Value) -> Vec<(String, u64)> {
         .collect()
 }
 
-async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64) {
+/// Counts every table the fork persistence path writes, so a "zero residue"
+/// assertion covers the whole surface: the wave row, the attached cove folder,
+/// both cards (spec + reportcard), the overlays, and the `tasks` rows that
+/// `persist_fork_report_and_project_tasks_tx` projects out of the copied report.
+async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64, i64) {
     calm_server::db::write_in_tx_typed(repo, |tx| {
         Box::pin(async move {
             let waves = sqlx::query_scalar("SELECT COUNT(*) FROM waves")
@@ -520,7 +524,10 @@ async fn fork_row_counts(repo: &dyn Repo) -> (i64, i64, i64, i64, i64) {
             let overlays = sqlx::query_scalar("SELECT COUNT(*) FROM overlays")
                 .fetch_one(&mut **tx)
                 .await?;
-            Ok((waves, folders, spec_cards, report_cards, overlays))
+            let tasks = sqlx::query_scalar("SELECT COUNT(*) FROM tasks")
+                .fetch_one(&mut **tx)
+                .await?;
+            Ok((waves, folders, spec_cards, report_cards, overlays, tasks))
         })
     })
     .await
@@ -1105,6 +1112,7 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
+    assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
 /// Issue #1111 — the companion half of the tombstone normalization: fork
@@ -1113,6 +1121,19 @@ async fn invalid_fork_payload_rest_path_rolls_back_every_created_row() {
 /// fork's own `validate_payload` breaks the whole wave creation fail-closed,
 /// rather than silently repairing a corrupt source into a shape it never
 /// validly had.
+///
+/// **This shape is unreachable in production — this is not a realistic
+/// regression.** Every write surface that can produce a stored report runs
+/// `validate_payload` first: the whole-document path via
+/// `wave_report.rs:392,409 → wave_report_guard.rs:38`, and the block-level
+/// upsert path via `calm-types/src/report_blocks/mod.rs:214-216`. Nor can
+/// `normalize_report_op` emit it. The fixture below therefore forges the shape
+/// with raw SQL (`UPDATE cards ...`), bypassing every production writer.
+///
+/// What it pins is the **fail-closed safety net against legacy rows or a
+/// database corrupted from outside the server**: should such a payload ever
+/// reach fork, the whole creation must abort with zero residue rather than be
+/// quietly normalized. Do not read this test as a production regression.
 #[tokio::test]
 async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
     let boot = boot().await;
@@ -1173,6 +1194,7 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
     assert_eq!(after.2, before.2, "failed fork left a spec card");
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
+    assert_eq!(after.5, before.5, "failed fork left a tasks row");
 }
 
 #[tokio::test]

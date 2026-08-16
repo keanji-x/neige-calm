@@ -1139,6 +1139,14 @@ REST 400 校验、OpenAPI / zod / web 生成物。
   fail-closed 地打断**整条** fork：损坏的源报告应当让 wave 创建 400，而不是被
   静默修补成它从未合法拥有过的形状。
 
+**第四个特权字段 `released_by_user` 目前不归一化 —— 这是已知缺口，不是设计意图**
+（追踪于 **#1115**）。fork 只改写上面三个字段，模板里 `released_by_user: true` 的
+任务会**原样承接**这个放行标记进入新 wave。它之所以没被 §3.7 规则 5 拦下：
+`fork_author` 在浏览器 fork（无 `X-Calm-Actor` 头）时判定为 `User`
+（`waves.rs:711-715`），而规则 5 只咬 `author != User`，于是 `guard_forked_blocks`
+放行。缓解只有一层——`ready` 已被强制压成 `false`，任务不会在 wave 创建事务里被派发。
+**读者不要默认 fork 已经清洗了全部特权字段。**
+
 **归一化刻意授予的能力**：模板墓碑对新 wave 的 spec 降级为**建议**而非绑定 ——
 spec 可以改 `tombstone.reason`、可以**删除**该墓碑块；删除后可以用**新的 block id**
 重新声明同一个 `key`。但重新声明出来的 task 照样 `declared_by == "spec"`、照样计入
