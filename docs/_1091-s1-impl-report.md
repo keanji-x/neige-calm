@@ -717,3 +717,29 @@ plain_chat 卡的 payload 是 `{"schemaVersion":1,"harness_profile":"plain_chat"
 `GET /api/waves/{id}` 不做 `user_visible_wave` 过滤，且 wave detail wire 不带 `purpose`
 （`fe/core/domain/wave.ts:22-33`），所以前端即使想拦也拦不住 —— 手敲 chat wave 的 URL 能渲染出
 标题为 "Cove chat" 的 wave 页。这是 #1098 的边界，S1 前后行为一致。
+
+## 附：CI `fe-mutation` 超时预算（PR #1114 解封）
+
+`fe-mutation` 是 6 路分片矩阵；每片把自己的 manifest 条目交给 `tools/mutation/run.mjs`，
+而该 runner 对**每一条** mutation 条目都跑一遍**完整** vitest 套件（裸 `npx vitest run`；
+manifest 里的 `selection_paths` 只是元数据，不做筛选）。最差的 shard 3 有 11 条条目
+⇒ 11 次全量套件。因此该 job 的耗时随**套件总规模**增长，与本 PR 改动大小无关。
+
+实测（shard 3/6）：
+
+| 来源 | 耗时 |
+| --- | --- |
+| 本分支最新一次运行 | 15m16s —— 被 15 分钟 job timeout **CANCELLED** |
+| origin/main 近期 | 12m58s |
+| origin/main 近期 | 13m06s |
+| origin/main 近期 | 14m17s |
+| origin/main 近期 | 14m50s |
+
+即：main 上早已贴着 15m 天花板（最近一次只差 10 秒），这是**共享的、既有的**预算问题，
+不是本切片引入的。近期两处套件增长（#1098 切片 4，已在 main；以及本切片）把 shard 3 顶过线。
+
+处置：`.github/workflows/ci.yml` 中 `fe-mutation` 的 `timeout-minutes` 由 15 提到 25，
+并在原地留下带实测数字的注释。分片数、runner、任何测试、其他 job 的 timeout 均未改动。
+
+更耐久的修法（**本 PR 不做**，另开 issue）：把分片数从 6 提到 8 —— 单片成本随套件增长，
+抬 timeout 只是买时间，降低每片条目数才是压住斜率的办法。
