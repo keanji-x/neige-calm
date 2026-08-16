@@ -41,7 +41,7 @@ function card(overrides: Partial<CardWire> & Pick<CardWire, 'id' | 'kind'>): Car
 const SPEC_CARD = card({ id: 'card-spec', kind: 'codex', title: 'Spec chat', payload: { spec_harness: true }, sort: 1 });
 const UNKNOWN_TERMINAL = card({ id: 'card-term', kind: 'terminal', title: 'Terminal one', sort: 2 });
 const REPORT_CARD = card({ id: 'card-report', kind: 'wave-report', title: 'Report card', sort: 3, payload: { body: '' } });
-const VISIBLE_CARD = card({ id: 'card-viewer', kind: 'file-viewer', title: 'Viewer', sort: 4 });
+const VISIBLE_CARD = card({ id: 'card-surface', kind: 'panel-surface', title: 'Surface', sort: 4 });
 const ORDINARY_CODEX = card({ id: 'card-codex', kind: 'codex', title: 'Codex chat', sort: 5, payload: {} });
 const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_CODEX];
 
@@ -51,16 +51,27 @@ const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_
  * everything else — registry, built-ins, route, panel — is production code.
  * Without it the test could not tell "kept every non-headless card" apart from
  * "kept only the cards no adapter claimed".
+ *
+ * The type is deliberately **not** a member of `BUILTIN_CARD_ORDER`. Registry
+ * registration is keyed by type and overwrites, and this runs after
+ * `bootTestCardRuntime()`, so naming it e.g. `file-viewer` would silently
+ * shadow that entry the day S3c/the viewer epic lands it — the test would keep
+ * exercising the stub with no signal at all. `headless-filter.test.ts` keeps
+ * `surface-fixture` out of the tuple for the same reason.
+ *
+ * It also actually renders something. The whole point of the fixture is "a card
+ * that owns a surface"; a `() => null` component would be the same shape as the
+ * headless entries it is here to be distinguished from.
  */
-type ViewerFixtureCard = Readonly<{ type: 'file-viewer'; id: string }>;
-const VIEWER_FIXTURE_ENTRY: CardEntry<ViewerFixtureCard> = {
-  type: 'file-viewer',
-  component: () => null,
+type SurfaceFixtureCard = Readonly<{ type: 'panel-surface-fixture'; id: string }>;
+const SURFACE_FIXTURE_ENTRY: CardEntry<SurfaceFixtureCard> = {
+  type: 'panel-surface-fixture',
+  component: ({ card: value }) => <div>{`surface for ${value.id}`}</div>,
   defaultSize: { w: 4, h: 6, minW: 3, minH: 3 },
-  title: () => 'Viewer',
-  accessibleName: () => 'Viewer',
+  title: () => 'Surface',
+  accessibleName: () => 'Surface',
   create: { mode: 'kernel-minted-only' },
-  fromKernel: (raw) => (raw.kind === 'file-viewer' ? { type: 'file-viewer', id: raw.id } : null),
+  fromKernel: (raw) => (raw.kind === 'panel-surface' ? { type: 'panel-surface-fixture', id: raw.id } : null),
 };
 
 function setup(cards: readonly CardWire[] = CARDS, { withVisibleFixture = true } = {}) {
@@ -84,7 +95,7 @@ function setup(cards: readonly CardWire[] = CARDS, { withVisibleFixture = true }
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
   const runtime = bootTestCardRuntime();
-  if (withVisibleFixture) runtime.registry.register(VIEWER_FIXTURE_ENTRY as unknown as CardEntry);
+  if (withVisibleFixture) runtime.registry.register(SURFACE_FIXTURE_ENTRY as unknown as CardEntry);
   const router = createAppRouter({ transport, unauthorized, client, cards: runtime, onSignOut: vi.fn() });
   render(<QueryClientProvider client={client}><ThemeProvider storage={themeStorage}>
     <RouterProvider router={router} />
@@ -138,14 +149,14 @@ describe('wave route CARDS panel', () => {
 
   it('[INV-CARD-226] renders exactly the surviving cards in the kernel wire order', async () => {
     setup();
-    expect(await inventoryLabels()).toEqual(['Terminal one', 'Viewer', 'Codex chat']);
+    expect(await inventoryLabels()).toEqual(['Terminal one', 'Surface', 'Codex chat']);
   });
 
   it('[INV-CARD-226] keeps a card with a surface, so the filter is headless-only and not adapter-only', async () => {
     const { runtime } = setup();
-    expect(runtime.registry.resolve({ id: VISIBLE_CARD.id, kind: 'file-viewer', payload: {} })?.type)
-      .toBe('file-viewer');
-    expect(await inventoryLabels()).toContain('Viewer');
+    expect(runtime.registry.resolve({ id: VISIBLE_CARD.id, kind: 'panel-surface', payload: {} })?.type)
+      .toBe('panel-surface-fixture');
+    expect(await inventoryLabels()).toContain('Surface');
   });
 
   it('[INV-CARD-226] shows the empty state when every card the wave has is headless', async () => {

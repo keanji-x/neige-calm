@@ -43,4 +43,4 @@ export type {
   VisibleCardSlot,
   WaveCardPartition,
 } from './builtins/headless-filter.js';
-export { HEADLESS_CARD_TYPES, partitionWaveCards } from './builtins/headless-filter.js';
+export { partitionWaveCards } from './builtins/headless-filter.js';

@@ -25,6 +25,10 @@ export type WaveReportCard = Readonly<{ type: 'wave-report'; id: string }>;
 export const WAVE_REPORT_CARD_ENTRY: CardEntry<WaveReportCard> = Object.freeze({
   type: 'wave-report',
   component: () => null,
+  // The declaration `partitionWaveCards` reads. Dropping it puts the report
+  // back into the CARDS list as an empty panel beside the document that
+  // already renders it.
+  headless: true,
   defaultSize: Object.freeze({ w: 1, h: 1, minW: 1, minH: 1 }),
   title: () => 'Report',
   accessibleName: () => 'Wave report',

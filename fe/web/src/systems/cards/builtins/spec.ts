@@ -37,6 +37,9 @@ export function isSpecHarnessPayload(payload: unknown): boolean {
 export const SPEC_CARD_ENTRY: CardEntry<SpecCard> = Object.freeze({
   type: 'spec',
   component: () => null,
+  // The declaration `partitionWaveCards` reads. Dropping it puts a card that
+  // renders nothing into the CARDS list and the grid.
+  headless: true,
   defaultSize: Object.freeze({ w: 1, h: 1, minW: 1, minH: 1 }),
   title: () => 'Spec',
   accessibleName: () => 'Spec harness',

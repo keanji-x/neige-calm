@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardEntry } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
-import { HEADLESS_CARD_TYPES } from './headless-filter.js';
+import { partitionWaveCards } from './headless-filter.js';
+import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
@@ -10,6 +11,7 @@ import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
 declare module '../registry.js' {
   interface CardDataMap {
     bootCodexFixture: { readonly type: 'boot-codex'; readonly id: string };
+    declaredHeadlessFixture: { readonly type: 'declared-headless-fixture'; readonly id: string };
   }
 }
 
@@ -85,57 +87,71 @@ describe('builtin card composition contract', () => {
   });
 
   /*
-   * `HEADLESS_CARD_TYPES` is a hand-written list, and being wrong either way
-   * deletes cards from the product: a missing member puts a card that renders
-   * nothing into the CARDS list and the grid; a spurious member deletes every
-   * card of that type from both the moment its entry lands. Neither direction
-   * has a type-level guard, so this pins the list against the *observable*
-   * fact — what the production entries actually are — rather than against a
-   * copy of itself.
+   * `CardEntry.headless` is optional, so both mistakes are silent at the type
+   * level and both delete cards from the product: a missing declaration puts a
+   * card that renders nothing into the CARDS list and the grid; a spurious one
+   * deletes every card of that type from both the moment its entry lands.
+   *
+   * The expectation below is written per built-in **type**, decided from the
+   * oracle rather than read back off the entries, and covers all eight — so a
+   * later slice cannot land an entry whose headlessness nobody decided. Nothing
+   * here executes a component: an entry is a plain object and calling its
+   * component outside a renderer would throw for any entry that uses a hook.
    */
-  describe('headless classification is set-equal to the registry', () => {
+  describe('headless is declared on the entry, and the declaration is what filters', () => {
+    // Source of truth: `INV-CARD-181` (spec) and `INV-CARD-201` (wave-report)
+    // are headless; every other built-in owns a surface.
+    const HEADLESS_BY_TYPE: Readonly<Record<BuiltinCardType, boolean>> = Object.freeze({
+      terminal: false, codex: false, spec: true, claude: false,
+      'wave-report': true, 'file-viewer': false, iframe: false, 'plugin-iframe': false,
+    });
     const bootedProductionRegistry = () => {
       const registry = createCardRegistry();
       registerAvailableBuiltinCards(registry);
       return registry;
     };
-    // Headless is observable, not declared: no surface and the 1x1 placeholder
-    // size. An entry that renders something is not headless whatever the list says.
-    const rendersNothing = (entry: CardEntry) =>
-      (entry.component as unknown as (props: unknown) => unknown)({}) === null;
-    const isOneByOne = (entry: CardEntry) => entry.defaultSize.w === 1 && entry.defaultSize.h === 1
-      && entry.defaultSize.minW === 1 && entry.defaultSize.minH === 1;
 
-    it('[INV-CARD-226] classifies every registered entry by what it observably is', () => {
+    it('[INV-CARD-225] decides headlessness for every type in the order tuple, and only those', () => {
+      expect(Object.keys(HEADLESS_BY_TYPE).sort()).toEqual([...BUILTIN_CARD_ORDER].sort());
+    });
+
+    it('[INV-CARD-226] declares headless on exactly the entries that are headless', () => {
       const entries = bootedProductionRegistry().entries();
       expect(entries.length).toBeGreaterThan(0);
       for (const entry of entries) {
-        const declaredHeadless = (HEADLESS_CARD_TYPES as readonly string[]).includes(entry.type);
-        const observablyHeadless = rendersNothing(entry) && isOneByOne(entry);
+        const expected = HEADLESS_BY_TYPE[entry.type as BuiltinCardType];
+        expect(expected, `${entry.type} is registered but not in the headless decision table`).toBeTypeOf('boolean');
         expect(
-          declaredHeadless,
-          declaredHeadless
-            ? `${entry.type} is listed headless but renders a surface — it would vanish from the wave`
-            : `${entry.type} renders nothing at 1x1 but is not listed headless — it would occupy an empty slot`,
-        ).toBe(observablyHeadless);
+          entry.headless === true,
+          expected
+            ? `${entry.type} is headless but does not declare it — it would occupy an empty slot`
+            : `${entry.type} declares headless but owns a surface — it would vanish from the wave`,
+        ).toBe(expected);
       }
     });
 
-    it('[INV-CARD-226] names only types that are really registered, so no member sits inert', () => {
-      // The failure this catches: a type added to the list before its entry
-      // exists resolves to `null`, never reaches the headless branch, and every
-      // test stays green — right up until the entry lands and the card
-      // disappears from the product.
-      const registered = new Set(bootedProductionRegistry().entries().map((entry) => entry.type));
-      for (const type of HEADLESS_CARD_TYPES) {
-        expect(registered.has(type), `${type} is listed headless but no builtin registers it`).toBe(true);
-      }
-    });
-
-    it('[INV-CARD-225] names only types the order tuple knows about', () => {
-      for (const type of HEADLESS_CARD_TYPES) {
-        expect((BUILTIN_CARD_ORDER as readonly string[]).includes(type), `${type} is not a builtin`).toBe(true);
-      }
+    it('[INV-CARD-226] filters on that declaration, not on the type name', () => {
+      // A surface-sized entry with a type no filter could special-case: if the
+      // partition read anything other than `entry.headless` this card would
+      // survive into the visible branch.
+      const registry = createCardRegistry();
+      registry.register({
+        type: 'declared-headless-fixture',
+        component: () => null,
+        headless: true,
+        defaultSize: { w: 4, h: 6, minW: 3, minH: 3 },
+        title: () => 'fixture',
+        accessibleName: () => 'fixture',
+        create: { mode: 'kernel-minted-only' },
+        fromKernel: (raw) => (raw.kind === 'declared' ? { type: 'declared-headless-fixture', id: raw.id } : null),
+      });
+      const wire = {
+        id: 'd1', kind: 'declared', wave_id: 'w1', title: null, sort: 0, payload: null,
+        deletable: true, created_at: 0, updated_at: 0,
+      };
+      const { visible, unknown } = partitionWaveCards(registry, [wire]);
+      expect(visible).toEqual([]);
+      expect(unknown).toEqual([]);
     });
   });
 
