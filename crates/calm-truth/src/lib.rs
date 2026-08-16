@@ -7,13 +7,13 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub mod card_kind;
 pub mod card_role_cache;
+pub mod cove_folder_claim;
 pub mod db;
 pub mod decision_gate;
 pub mod event_bus;
 pub mod events_prune;
 pub mod mcp_auth;
 pub mod model;
-pub mod repo_identity;
 pub mod role_gate;
 pub mod session_projection_lookup;
 pub mod session_projection_repo;

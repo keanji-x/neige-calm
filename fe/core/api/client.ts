@@ -25,16 +25,22 @@ export async function performApiRequest<T>(
   unauthorized?: UnauthorizedChannel,
 ): Promise<ApiResult<T>> {
   let response;
+  /* A body implies `content-type`; the operation's own headers are merged over
+     it. The key is built first and spread only when it has entries, so a GET
+     with neither still sends no `headers` at all (`client.contract.test.ts`
+     asserts the absent key, not an empty object). */
+  const headers: Record<string, string> = {
+    ...(operation.body === undefined ? {} : { 'content-type': 'application/json' }),
+    ...operation.headers,
+  };
   try {
     response = await transport.send({
       method: operation.method,
       path: operation.path,
       credentials: 'include',
       ...(operation.signal === undefined ? {} : { signal: operation.signal }),
-      ...(operation.body === undefined ? {} : {
-        headers: { 'content-type': 'application/json' },
-        body: operation.body,
-      }),
+      ...(Object.keys(headers).length === 0 ? {} : { headers }),
+      ...(operation.body === undefined ? {} : { body: operation.body }),
     });
   } catch (cause) {
     const message = isTimeoutError(cause)

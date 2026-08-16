@@ -1,7 +1,7 @@
 //! Integration tests for the cove ↔ folder mapping surface introduced
 //! in issue #250 PR 1.
 //!
-//! Coverage matrix (17 cases):
+//! Coverage matrix (18 cases):
 //!
 //!   1. `post_then_get_returns_the_folder`
 //!   2. `post_same_path_twice_409_equal`
@@ -12,7 +12,7 @@
 //!   7. `delete_removes_the_folder`
 //!   8. `resolve_hits_self`
 //!   9. `resolve_hits_descendant`
-//!  10. `resolve_picks_longest_prefix`
+//!  10. `resolve_tolerates_corrupt_overlapping_rows`
 //!  11. `resolve_miss_returns_200_null`
 //!  12. `resolve_non_absolute_path_400`
 //!  13. `cascade_delete_cove_drops_its_folders`
@@ -20,6 +20,7 @@
 //!  15. `get_returns_only_own_cove_folders`
 //!  16. `cross_cove_overlap_409_descendant`
 //!  17. `delete_with_mismatched_cove_id_returns_404`
+//!  18. `overlapping_claim_cannot_slip_between_scan_and_insert`
 //!
 //! No daemon binary is required — cove_folders is pure CRUD against
 //! the sqlite repo, no card / terminal side-effects.
@@ -27,7 +28,6 @@
 #![cfg(unix)]
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -175,62 +175,11 @@ async fn post_then_get_returns_the_folder() {
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert_eq!(body["path"].as_str().unwrap(), "/a");
     assert_eq!(body["cove_id"].as_str().unwrap(), b.cove_id);
-    assert!(body["repo_identity"].is_null());
-    assert!(body["repo_identity_probed_at"].is_number());
 
     let (status, body) = get(b.app.clone(), &format!("/api/coves/{}/folders", b.cove_id)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["path"].as_str().unwrap(), "/a");
-    assert!(body[0]["repo_identity"].is_null());
-    assert!(body[0]["repo_identity_probed_at"].is_number());
-}
-
-#[tokio::test]
-async fn git_identity_commits_with_folder_and_round_trips() {
-    let b = boot().await;
-    let folder_path = b._tmp.path().join("repo");
-    std::fs::create_dir(&folder_path).unwrap();
-    assert!(
-        Command::new("git")
-            .args(["init", "--quiet"])
-            .arg(&folder_path)
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .args(["-C"])
-            .arg(&folder_path)
-            .args([
-                "remote",
-                "add",
-                "origin",
-                "https://user:secret@github.com/Owner/Repo.git",
-            ])
-            .status()
-            .unwrap()
-            .success()
-    );
-
-    let uri = format!("/api/coves/{}/folders", b.cove_id);
-    let (status, created) = post(
-        b.app.clone(),
-        &uri,
-        json!({"path": folder_path.to_str().unwrap()}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body: {created}");
-    assert_eq!(created["repo_identity"], "Owner/Repo");
-    assert!(!created.to_string().contains("secret"));
-
-    let (_, listed) = get(b.app.clone(), &uri).await;
-    assert_eq!(listed[0]["repo_identity"], "Owner/Repo");
-    assert_eq!(
-        listed[0]["repo_identity_probed_at"],
-        created["repo_identity_probed_at"]
-    );
 }
 
 // (2) ---------------------------------------------------------------
@@ -367,24 +316,122 @@ async fn resolve_hits_descendant() {
 // (10) --------------------------------------------------------------
 
 #[tokio::test]
-async fn resolve_picks_longest_prefix() {
-    // The route-level conflict check forbids ancestor/descendant
-    // overlap across the table, so `/a` and `/a/b` can never both be
-    // present via the public surface. To still exercise the
-    // longest-prefix branch of the resolve algorithm, this test seeds
-    // both rows through the raw repo (the same code path replay
-    // would use to restore a corrupted DB) and then asks the resolve
-    // endpoint to pick the more specific claim. The test guards
-    // against a future regression where the resolve handler ignores
-    // path length and returns the first match it sees.
+async fn resolve_tolerates_corrupt_overlapping_rows() {
+    // `cove_folder_create_checked` rejects ancestor/descendant overlap
+    // inside the same transaction as its INSERT, so `/a` and `/a/b` can
+    // never both be present via the public HTTP surface — `find_owner`
+    // is a uniqueness oracle and carries no tiebreak (#275). This test
+    // seeds both rows through the raw repo (the unchecked primitive: a
+    // state only a corrupted / hand-edited DB could reach) to pin the
+    // degenerate answer.
+    //
+    // The winner IS a contract, and it is `/a`: `cove_folders_list_all`
+    // is `ORDER BY path ASC` and `find_owner` takes the first match. It
+    // must be pinned because `resolve_and_wave_create_agree_on_overlapping_rows`
+    // depends on both resolvers landing on the *same* row — changing the
+    // ORDER BY (or reintroducing a tiebreak on one side only) must break
+    // a test rather than silently re-split the two answers.
     let b = boot().await;
     b.repo.cove_folder_create(&b.cove_id, "/a").await.unwrap();
     b.repo.cove_folder_create(&b.cove_id, "/a/b").await.unwrap();
 
     let (status, body) = get(b.app.clone(), "/api/coves/resolve?path=/a/b/c").await;
     assert_eq!(status, StatusCode::OK);
-    // More-specific (longest-prefix) wins.
-    assert_eq!(body["folder_path"].as_str().unwrap(), "/a/b");
+    assert_eq!(
+        body["folder_path"].as_str().unwrap(),
+        "/a",
+        "ORDER BY path ASC + first-match must resolve to the shortest claim"
+    );
+    assert_eq!(body["cove_id"].as_str().unwrap(), b.cove_id);
+}
+
+// (18) --------------------------------------------------------------
+
+/// #275 — the conflict scan and the INSERT must share ONE
+/// `BEGIN IMMEDIATE` transaction. Split across two pooled connections,
+/// two concurrent requests claiming `/a` and `/a/b` both pass a scan
+/// that saw an empty table and both commit: `UNIQUE(cove_folders.path)`
+/// only rejects *equal* paths, never overlap.
+///
+/// Forced deterministically rather than by racing threads: another
+/// connection holds an open `BEGIN IMMEDIATE` that has already inserted
+/// `/a/b` but not committed, then the claim for the overlapping `/a` is
+/// issued. An atomic writer cannot begin until that commit lands, so it
+/// sees `/a/b` and reports a conflict. A writer that scans first on a
+/// separate connection reads the pre-commit snapshot (WAL readers don't
+/// block), sees nothing, and then inserts `/a` once the lock frees —
+/// leaving two rows that both cover `/a/b/c`.
+///
+/// On-disk DB on purpose: it is the production shape, and shared-cache
+/// `sqlite::memory:` gives readers table-level locks that would mask the
+/// difference this test is trying to observe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_claim_cannot_slip_between_scan_and_insert() {
+    use calm_server::cove_folder_claim::CoveFolderClaim;
+    use calm_server::db::sqlite::begin_immediate_tx;
+
+    let tmp = TempDir::new().expect("tempdir");
+    let url = format!("sqlite://{}?mode=rwc", tmp.path().join("calm.db").display());
+    let repo = Arc::new(SqlxRepo::open(&url).await.expect("open on-disk sqlite"));
+    let cove = repo
+        .cove_create(NewCove {
+            name: "atomic-claim".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let cove_id = cove.id.to_string();
+
+    // Writer A: holds the writer lock with `/a/b` staged but uncommitted.
+    let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
+    sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
+        .bind(&cove_id)
+        .bind("/a/b")
+        .bind(0_i64)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    // Writer B: claims the overlapping ancestor `/a` through the real
+    // repo method the route uses.
+    let repo_b = repo.clone();
+    let cove_b = cove_id.clone();
+    let claim = tokio::spawn(async move { repo_b.cove_folder_create_checked(&cove_b, "/a").await });
+
+    // Let B get as far as it can, then release the lock.
+    //
+    // The sleep is load-bearing ONLY for the mutant. The green path does
+    // not depend on it: `cove_folder_create_checked` takes the writer lock
+    // *before* its scan, so however this sleep is scheduled, B's SELECT can
+    // only run after this commit and must see `/a/b`. (No leak either way —
+    // `busy_timeout=5000` plus `begin_immediate_tx`'s ~560 ms retry backoff
+    // leave ample headroom over these 150 ms.) The sleep exists so that a
+    // *non-atomic* implementation — scan on one pooled connection, insert on
+    // another — reliably lands on the wrong side of the race: it gets its
+    // pre-commit empty-table snapshot in, then inserts `/a` once the lock
+    // frees. Without the pause the mutant would sometimes serialize by luck
+    // and the test would pass against a broken implementation. There is no
+    // deterministic barrier available here: B blocks inside SQLite's own
+    // lock acquisition, which exposes no observable "now waiting" edge
+    // without adding a test-only hook to production code.
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    tx.commit().await.unwrap();
+
+    let outcome = claim.await.unwrap().expect("claim must not error");
+    assert!(
+        matches!(outcome, CoveFolderClaim::Conflict(_)),
+        "claiming `/a` must see the just-committed `/a/b`; a scan on a \
+         separate connection would have missed it and created the row"
+    );
+
+    let all = repo.cove_folders_list_all().await.unwrap();
+    let paths: Vec<&str> = all.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["/a/b"],
+        "exactly one claim may survive; overlapping rows are the corrupt state"
+    );
 }
 
 // (11) --------------------------------------------------------------

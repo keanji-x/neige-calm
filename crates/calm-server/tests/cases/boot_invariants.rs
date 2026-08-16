@@ -109,6 +109,116 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
     );
 }
 
+/// Seed `n` coves and give each one the matching path via the
+/// **unchecked** repo primitive (`cove_folder_create`), which is exactly
+/// the writer that a pre-#275 database's overlapping rows came from —
+/// today's `cove_folder_create_checked` would refuse them, so the fence
+/// could not be tested through it.
+/// Returns the seeded `cove_id`s, positionally matching `paths`.
+async fn seed_folders(repo: &SqlxRepo, paths: &[&str]) -> Vec<String> {
+    let mut cove_ids = Vec::new();
+    for (i, path) in paths.iter().enumerate() {
+        let cove = repo
+            .cove_create(NewCove {
+                name: format!("cove-{i}"),
+                color: "#222222".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        repo.cove_folder_create(cove.id.as_str(), path)
+            .await
+            .unwrap();
+        cove_ids.push(cove.id.as_str().to_string());
+    }
+    cove_ids
+}
+
+#[tokio::test]
+async fn boot_fence_rejects_overlapping_cove_folder_claims() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove_ids = seed_folders(&repo, &["/a", "/a/b"]).await;
+
+    let state = app_state(repo).await;
+    let err = calm_server::assert_cove_folders_disjoint_on_boot(&state)
+        .await
+        .expect_err("overlapping cove_folders claims must fail the boot fence");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cove_folders boot fence failed"),
+        "unexpected fence error: {msg}"
+    );
+    // Actionability: both sides of the pair must be nameable by an
+    // operator straight from the message.
+    assert!(msg.contains("path=`/a`"), "fence must name /a: {msg}");
+    assert!(msg.contains("path=`/a/b`"), "fence must name /a/b: {msg}");
+    for cove_id in &cove_ids {
+        assert!(
+            msg.contains(cove_id.as_str()),
+            "fence must name cove_id {cove_id}: {msg}"
+        );
+    }
+    // Row ids too, so the operator can `DELETE ... WHERE id = ?`.
+    assert!(msg.contains("id=1"), "fence must name row ids: {msg}");
+    assert!(msg.contains("id=2"), "fence must name row ids: {msg}");
+}
+
+#[tokio::test]
+async fn boot_fence_passes_on_disjoint_cove_folder_claims() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    seed_folders(&repo, &["/a", "/b", "/c/d/e"]).await;
+
+    let state = app_state(repo).await;
+    calm_server::assert_cove_folders_disjoint_on_boot(&state)
+        .await
+        .expect("disjoint cove_folders claims must pass the boot fence");
+}
+
+/// The adjacent case the fence must NOT trip on: sibling paths that
+/// share a *string* prefix but not a *path* prefix. Tripping here would
+/// brick booting on a perfectly valid table.
+#[tokio::test]
+async fn boot_fence_passes_on_string_prefix_siblings() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    seed_folders(&repo, &["/a", "/ab", "/home/ken", "/home/kenji"]).await;
+
+    let state = app_state(repo).await;
+    calm_server::assert_cove_folders_disjoint_on_boot(&state)
+        .await
+        .expect("string-prefix siblings are disjoint paths and must pass the fence");
+}
+
+/// An empty table is trivially disjoint — a fresh install must boot.
+#[tokio::test]
+async fn boot_fence_passes_on_empty_cove_folders() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let state = app_state(repo).await;
+    calm_server::assert_cove_folders_disjoint_on_boot(&state)
+        .await
+        .expect("empty cove_folders must pass the boot fence");
+}
+
+/// `UNIQUE(cove_folders.path)` makes the exact-equal overlap
+/// unreachable even through the unchecked primitive. Pinning that here
+/// documents *why* the DB-level fence test cannot cover `Equal` (the
+/// pure-function test in `cove_folder_claim` does).
+#[tokio::test]
+async fn equal_paths_are_unreachable_even_through_the_unchecked_primitive() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    seed_folders(&repo, &["/a"]).await;
+    let cove = repo
+        .cove_create(NewCove {
+            name: "dup".into(),
+            color: "#333333".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    repo.cove_folder_create(cove.id.as_str(), "/a")
+        .await
+        .expect_err("UNIQUE(cove_folders.path) rejects an exactly-equal claim");
+}
+
 #[tokio::test]
 async fn production_operation_runtime_recognizes_forge_action_kind() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());

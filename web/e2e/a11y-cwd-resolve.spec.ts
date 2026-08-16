@@ -24,16 +24,16 @@
 //     is NOT a match — the `is_descendant_of` guard requires a `/`
 //     boundary.
 //
-// Note on scope: the resolve handler's `max_by_key(|f| f.path.len())`
-// longest-prefix tiebreak is NOT covered here. That branch is dead
-// from the HTTP surface — the create endpoint rejects
-// ancestor/descendant overlap with 409 (see
-// `cove_folders.rs:135-156`), so the filter can never return more
-// than one row from any HTTP-constructible state. The unit test
-// `resolve_picks_longest_prefix` in
-// `crates/calm-server/tests/cove_folders.rs` exercises the branch by
-// seeding overlapping rows through the raw repo, which is the right
-// level for that kind of "what if the DB is corrupted" probe.
+// Note on scope: overlapping claims are NOT covered here. They are
+// unreachable from the HTTP surface — `cove_folder_create_checked`
+// classifies overlap and inserts inside one `BEGIN IMMEDIATE`
+// transaction and returns 409 (issue #275), so
+// `cove_folder_claim::find_owner` can never see more than one covering
+// row. `resolve_tolerates_corrupt_overlapping_rows` and
+// `overlapping_claim_cannot_slip_between_scan_and_insert` in
+// `crates/calm-server/tests/cases/cove_folders.rs` probe that
+// corrupt-DB / concurrent-writer territory, which is the right level
+// for it.
 //
 // Runs in the hermetic `a11y` Playwright project so the REST surface
 // is exercised against the in-memory replay binary (no `make dev`

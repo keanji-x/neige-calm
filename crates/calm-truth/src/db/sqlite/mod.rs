@@ -32,6 +32,7 @@ use crate::card_role_cache::CardRoleCache;
 use crate::error::{CalmError, Result};
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
+use calm_types::model::CoveFolder;
 
 // ---------------------------------------------------------------------------
 // Sub-trait impls — thin pool-wrapping wrappers around the `_tx` helpers,
@@ -397,6 +398,76 @@ pub async fn assert_worker_sessions_card_id_complete(pool: &SqlitePool) -> Resul
     }
 
     Ok(())
+}
+
+/// Boot fence: refuse to serve when `cove_folders` holds two rows where
+/// one is an ancestor of (or equal to) the other.
+///
+/// **Why a fence and not a repair.** #275 made overlap unreachable going
+/// forward — every writer now classifies and inserts inside one
+/// `BEGIN IMMEDIATE` transaction — and
+/// [`crate::cove_folder_claim::find_owner`] leans on that: it takes the
+/// *first* matching row instead of the longest-prefix match, because at
+/// most one row can match. Databases written before that landed can
+/// still carry overlap (the wave-attach path's in-tx insert was gated on
+/// the request flag, never on the scan result). On such a table
+/// `find_owner` answers `/a` where the old longest-prefix rule answered
+/// `/a/b`, i.e. it silently re-owns a real user directory — and every
+/// automatic repair has the same defect in a different place: deleting
+/// the ancestor or the descendant also silently re-owns one. So the
+/// ambiguity is refused, not guessed at, and a human decides which claim
+/// is the real one.
+///
+/// **Why boot-fatal rather than degraded.** This mirrors
+/// [`assert_worker_sessions_card_id_complete`]: an unresolvable truth
+/// table stops the process before it serves a request. Refusing to boot
+/// costs the operator nothing they need — the fix is a `DELETE` against
+/// `cove_folders` via sqlite3 or the admin CLI, neither of which needs
+/// calm-server running — whereas booting anyway would route waves and
+/// `GET /api/coves/resolve` to an arbitrarily-chosen cove for as long as
+/// nobody notices.
+///
+/// The error names every offending pair (`id`, `cove_id`, `path` on both
+/// sides) so the operator can act on it without re-deriving the overlap
+/// set by hand.
+pub async fn assert_cove_folders_disjoint(pool: &SqlitePool) -> Result<()> {
+    let rows = sqlx::query_as::<_, crate::db::rows::CoveFolderRow>(
+        r#"SELECT id, cove_id, path, created_at
+           FROM cove_folders ORDER BY path ASC"#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let folders: Vec<CoveFolder> = rows.into_iter().map(CoveFolder::from).collect();
+
+    let pairs = crate::cove_folder_claim::overlapping_pairs(&folders);
+    if pairs.is_empty() {
+        return Ok(());
+    }
+
+    let detail = pairs
+        .iter()
+        .map(|(row, conflict)| {
+            format!(
+                "id={} cove_id={} path=`{}` {:?}-of id={} cove_id={} path=`{}`",
+                row.id,
+                row.cove_id.as_str(),
+                row.path,
+                conflict.conflict_kind,
+                conflict.folder_id,
+                conflict.cove_id.as_str(),
+                conflict.conflict_path,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    Err(CalmError::Internal(format!(
+        "cove_folders boot fence failed: {} overlapping claim pair(s) — no single cove owns \
+         these paths, so folder resolution would silently pick an arbitrary winner. Delete the \
+         wrong claim(s) from `cove_folders` (sqlite3 / admin CLI) and restart. Offending pairs: {}",
+        pairs.len(),
+        detail
+    )))
 }
 
 impl Repo for SqlxRepo {

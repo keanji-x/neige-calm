@@ -22,6 +22,7 @@ import {
   toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
+import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
@@ -40,9 +41,10 @@ import {
   backlinkCountsByBlock, deriveReportOutline, readWaveReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
-  buildTranscript, conversationName, conversationNameFrom, harnessItemToTurn, mergeTranscript,
-  reconcileUserEchoes,
-  type Conversation, type ConversationTurn, type TranscriptEntry,
+  buildTranscript, conversationName, conversationNameFrom, coveConversationCardId,
+  coveConversationFailure, COVE_CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
+  type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
+  type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
@@ -50,10 +52,11 @@ import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback
 import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
-import { useState } from '../../ui/state/public.ts';
+import { useReducer, useState } from '../../ui/state/public.ts';
 import {
-  ApiError, harnessItemsQueryOptions, prefetchCoveList, settingsQueryOptions, specRunQueryOptions,
-  useCoveMutations, useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
+  ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
+  settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
+  useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveDetailQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell } from '../shell/public.tsx';
@@ -86,9 +89,21 @@ type ConversationStore = Readonly<{
   loadEarlier: () => void;
 }>;
 
-type ConversationRouteIntent = Readonly<
+/**
+ * Where a route's conversation list comes from.
+ *
+ * `'all'` and `'waves'` read the session registry — conversations this tab has
+ * opened — because no endpoint lists a wave's conversations. `'rows'` is the
+ * opposite: the server sends the list, so the registry is not consulted at all
+ * and nothing on the route is written back into it.
+ */
+type ConversationListIntent = Readonly<
   { kind: 'all' } | { kind: 'waves'; waveIds: readonly string[] }
 >;
+
+type ConversationRouteIntent =
+  | ConversationListIntent
+  | Readonly<{ kind: 'rows'; rows: readonly Conversation[] }>;
 
 export function pendingConversationIds(
   conversation: Conversation | null, working: boolean, sending: boolean,
@@ -122,6 +137,9 @@ export function useConversationStore(
   const waveTitle = scope?.title;
   const cardTitle = scope?.cardTitle;
   const scopeUpdatedAt = scope?.updatedAt;
+  const scopeKind = scope?.kind ?? 'shared-spec';
+  const scopeState = scope?.state ?? null;
+  const serverRows = routeIntent.kind === 'rows' ? routeIntent.rows : null;
   const history = useInfiniteQuery({
     ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
@@ -175,13 +193,36 @@ export function useConversationStore(
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
   const conversation = useMemo<Conversation | null>(() => waveId === undefined ? null : {
-    id: cardId, waveId, waveTitle: waveTitle ?? '',
+    id: cardId, waveId,
+    /* Absent, not `''`: a cove conversation's wave is hidden and has no title
+       to show. `ChatList` renders the difference; `''` would render a blank. */
+    ...(waveTitle === undefined ? {} : { waveTitle }),
     title: cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
-    kind: 'shared-spec', state: working ? 'running' : 'idle',
+    kind: scopeKind,
+    /* A chat card's state is the server's to report — `run_status_for` writes
+       `turn_pending`, never `running`, for a headless harness, and everything
+       outside the four live states arrives as `null`. The local phase still
+       wins while a turn is in flight, because the list would otherwise sit on
+       the state the last fetch happened to catch. */
+    state: scopeKind === 'shared-chat'
+      ? (working ? 'turn_pending' : scopeState)
+      : (working ? 'running' : 'idle'),
     updatedAt: turns.at(-1)?.atMs ?? scopeUpdatedAt ?? 0, turns: turns.length,
-  }, [cardId, cardTitle, scopeUpdatedAt, turns, waveId, waveTitle, working]);
+  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, turns, waveId, waveTitle, working]);
   useEffect(() => {
     if (conversation === null) return;
+    /*
+     * A server-listed conversation is never remembered.
+     *
+     * The registry exists so a conversation stays visible on routes that cannot
+     * fetch it — which is exactly what a `'rows'` route can do for itself. What
+     * remembering would add is a leak: these rows live on a cove's hidden chat
+     * wave, and Today lists everything the registry holds and navigates to
+     * `conversation.waveId` when a row is opened, which would walk the user
+     * into the hidden wave. This one gate is the whole defence; Today has no
+     * second filter, so removing it is immediately visible in the tests.
+     */
+    if (serverRows !== null) return;
     if (suppressRememberRef.current && suppressedRememberSnapshotRef.current !== null
       && sameConversationTurns(serverTurns, suppressedRememberSnapshotRef.current)) return;
     suppressRememberRef.current = false;
@@ -189,15 +230,22 @@ export function useConversationStore(
     // Remember the full transcript so reopening the conversation preserves its
     // activity lines and looks identical to the route the user just left.
     registry.remember(conversation, transcript);
-  }, [conversation, registry, serverTurns, transcript]);
+  }, [conversation, registry, serverRows, serverTurns, transcript]);
 
   const allConversations = conversation === null
     ? registry.conversations
     : [...registry.conversations.filter(({ id }) => id !== conversation.id), conversation];
   const waveIds = routeIntent.kind === 'waves' ? new Set(routeIntent.waveIds) : null;
-  const conversations = waveIds === null
-    ? allConversations
-    : allConversations.filter((candidate) => waveIds.has(candidate.waveId));
+  const conversations = serverRows !== null
+    /* The open row is replaced in place by the live one: same id, but with the
+       turns and the name this route can only know from the transcript it is
+       already reading (§7 — the server has no title to send). */
+    ? (conversation === null
+      ? serverRows
+      : serverRows.map((row) => row.id === conversation.id ? conversation : row))
+    : waveIds === null
+      ? allConversations
+      : allConversations.filter((candidate) => waveIds.has(candidate.waveId));
 
   const send = (_conversationId: string, text: string) => {
     if (sendingRef.current) return;
@@ -273,9 +321,95 @@ export function useConversationStore(
   };
 }
 
+/**
+ * The one conversation whose transcript is being read.
+ *
+ * `id` is the wave the card hangs off; `title` is that wave's title *when the
+ * surface knows one*, which a cove route does not — its chat wave is hidden on
+ * purpose. `kind` carries what the list row already knew, so opening a chat row
+ * cannot make it read as a spec one. `state` carries the row's server state as
+ * the *baseline*; the open row is the only one this route can watch live, so it
+ * — and only it — also picks up the local phase (`turn_pending` while a turn is
+ * in flight) and the name derived from its first message, which is why the open
+ * row can show a name and a dot the closed rows cannot (§7).
+ */
 type SpecConversationScope = Readonly<{
-  id: string; title: string; cardId: string; cardTitle: string | null; updatedAt: number;
+  id: string;
+  title?: string;
+  cardId: string;
+  cardTitle: string | null;
+  updatedAt: number;
+  kind?: ConversationKind;
+  state?: ConversationState | null;
 }>;
+
+/**
+ * What the panel is looking at — which is three different things, and they were
+ * previously told apart by whether `scope` was null.
+ *
+ * That conflated "there is a card open" with two facts that have nothing to do
+ * with a card: whether this route can *hold* a drawer at all, and where a new
+ * conversation would go. Today cannot hold one (it has no wave and no cove), so
+ * opening a row there navigates; a cove route can hold one for every row it
+ * lists, so opening one must not navigate — the wave it would navigate to is
+ * hidden.
+ */
+type ConversationPanelSource =
+  | Readonly<{ kind: 'elsewhere'; intent: ConversationListIntent }>
+  | Readonly<{ kind: 'card'; intent: ConversationListIntent; scope: SpecConversationScope }>
+  | Readonly<{
+    kind: 'rows';
+    coveId: string;
+    rows: readonly Conversation[];
+    scopeOf: (conversationId: string) => SpecConversationScope | null;
+    create: (text: string, idempotencyKey: string) => Promise<Conversation>;
+    refresh: () => Promise<readonly Conversation[]>;
+  }>;
+
+/** Which row is open, or the draft that has not become a row yet. */
+type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
+
+/**
+ * A conversation being written: one value, not five pieces of state.
+ *
+ * They were five (`draftKey`, `draftText`, `sentText`, `draftError`,
+ * `draftRemedy`) and every rule about them was a rule about *pairs* — "a new
+ * key means nothing was sent under it yet", "the words on screen are only an
+ * edit if a POST was made with different ones". Five independently settable
+ * fields make each such rule a thing to remember at every branch, and the two
+ * bugs this shape replaces were both one field moving without its partner.
+ *
+ * `coveId` is in here for the same reason: the panel is not remounted when the
+ * reader walks from one cove to another (proved by
+ * `keeps a failed draft to the cove it belongs to`), so a draft that does not
+ * name its cove is a draft any cove's `+` can pick up — and posting cove A's
+ * key and words to cove B mints a conversation in the wrong place.
+ */
+type ConversationDraft = Readonly<{
+  /** The cove this draft belongs to. It is only ever visible there. */
+  coveId: string;
+  /** Identifies the draft to the server for as long as it exists; minted when
+   *  the drawer opens and *never* per send. */
+  key: string;
+  /** The words the drawer is holding, kept because `ChatComposer` clears its
+   *  own field on send and returns void: without this the text is gone on any
+   *  failure. Set by anything that reaches the drawer, including a local
+   *  refusal that never became a request. */
+  text: string | null;
+  /** The words a POST was actually made with under `key`, which is a different
+   *  fact from the words on screen: only this one may decide "the reader
+   *  edited the text after a failure", the branch that is allowed to mint a
+   *  second key. Text refused locally (too long) never travelled, so it must
+   *  not count as an edit. */
+  sentText: string | null;
+  error: string | null;
+  remedy: 'retry' | 'new-conversation' | null;
+}>;
+
+/** What a caller may change without touching the draft's identity. `key` and
+ *  `sentText` are deliberately absent: they move together or not at all, which
+ *  is why `rekeyDraft` and `markDraftSent` are the only doors to them. */
+type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'error' | 'remedy'>>;
 
 export type AppRouterDeps = Readonly<{
   transport: ApiTransportPort;
@@ -343,33 +477,169 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
   );
 }
 
+/** Everything needed to say "is this still the draft I was working on?": the
+ *  cove it belongs to and the key that is the identity of its attempt. */
+type DraftId = Readonly<{ coveId: string; key: string }>;
+
+/**
+ * What the drawer is showing and which draft is held — **one** state, moved by
+ * one reducer.
+ *
+ * These were two `useState`s, and the split was the bug. A create is
+ * asynchronous, and by the time it answers the reader may have walked to
+ * another cove and started a draft there. Adopting the answer then meant two
+ * independent writes — clear the held draft, point the drawer at a row — with
+ * nothing tying either to the draft the request was made *for*: cove A's late
+ * success deleted cove B's brand-new draft and aimed the drawer at a row that
+ * is not on cove B.
+ *
+ * Merging them is what makes the guard expressible at all. Every move that a
+ * late answer can perform carries the `DraftId` it was computed from, and the
+ * reducer compares it against what is held *now*, in the same atomic update
+ * that would have applied it. A move whose draft is gone changes nothing —
+ * not "changes only the half that has a guard".
+ */
+type DrawerState = Readonly<{ open: OpenTarget | null; held: ConversationDraft | null }>;
+
+type DrawerMove = Readonly<
+  /** Point the drawer at an existing row. Touches no draft, so it needs no
+   *  identity: the reader pressed a row, or a card route opened its own one. */
+  | { kind: 'open-row'; id: string }
+  /** Reopen the held draft (`+` on a draft that was sent and failed). */
+  | { kind: 'open-draft' }
+  /** A brand-new draft, which by definition replaces whatever was held. */
+  | { kind: 'start-draft'; draft: ConversationDraft }
+  /** A whole-object edit of the draft `from`, applied only if it is still held. */
+  | { kind: 'edit-draft'; from: DraftId; next: (current: ConversationDraft) => ConversationDraft }
+  /** `from` became row `id`: drop it and open the row, or do neither. */
+  | { kind: 'adopt'; from: DraftId; id: string }
+  /** Close the drawer, discarding `discard` if it is still the held draft. */
+  | { kind: 'close'; discard: DraftId | null }
+>;
+
+const heldIs = (held: ConversationDraft | null, id: DraftId): held is ConversationDraft =>
+  held !== null && held.coveId === id.coveId && held.key === id.key;
+
+function moveDrawer(state: DrawerState, move: DrawerMove): DrawerState {
+  switch (move.kind) {
+    case 'open-row':
+      return { ...state, open: { kind: 'row', id: move.id } };
+    case 'open-draft':
+      return { ...state, open: { kind: 'draft' } };
+    case 'start-draft':
+      return { open: { kind: 'draft' }, held: move.draft };
+    case 'edit-draft':
+      return heldIs(state.held, move.from) ? { ...state, held: move.next(state.held) } : state;
+    case 'adopt':
+      /* Both halves or neither. This is the whole point of the merge. */
+      return heldIs(state.held, move.from) ? { open: { kind: 'row', id: move.id }, held: null } : state;
+    case 'close':
+      return {
+        open: null,
+        held: move.discard !== null && heldIs(state.held, move.discard) ? null : state.held,
+      };
+  }
+}
+
 /**
  * The conversation module, identical on all three routes: a list, a `+` in the
  * module head, and the drawer both of them open.
  *
- * `'new'` is a third open state, not a flag on the second. Starting a
- * conversation and reading one land in the same place — the drawer is *where a
- * conversation is*, so a new one has nowhere else to go — but they are not the
- * same object, and modelling "new" as a null conversation would put an
- * `open === null` check in every branch that reads one.
+ * A draft is a third open state, not a flag on the second. On a `'rows'` route
+ * the `+` cannot create anything: the card is minted by the *first message*, so
+ * until one is sent there is no conversation, no card id and nothing to fetch.
+ * The drawer is still where it belongs — it is *where a conversation is*, and a
+ * conversation being written is one — but it is not a `Conversation`, and
+ * modelling it as one would put a null check in every branch that reads one.
  */
 function useConversationPanel(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
-  scope: SpecConversationScope | null,
-  routeIntent: ConversationRouteIntent,
+  source: ConversationPanelSource,
   options?: { showWave?: boolean },
 ) {
+  /* One draft at a time, and it names the cove it belongs to — see
+     `ConversationDraft`. It shares a reducer with the drawer's target because
+     a late create has to move both or neither — see `DrawerState`. */
+  const [{ open: openTarget, held }, moveDrawerTo] = useReducer(
+    moveDrawer, { open: null, held: null } as DrawerState,
+  );
+  const [confirmingReset, setConfirmingReset] = useState(false);
+  /* State, not a ref, unlike `store.send`'s `sendingRef`: `creating` is read by
+     the render (it disables the composer and both remedy buttons) and a ref
+     would not re-render. The double-submit a ref guards against cannot mint a
+     second card here — both posts carry the same draft key, and the server
+     collapses them onto one operation — so the guard a ref would add is one the
+     idempotency key already provides. */
+  const [creating, setCreating] = useState(false);
+
+  const openRowId = openTarget?.kind === 'row' ? openTarget.id : null;
+  const scope: SpecConversationScope | null = source.kind === 'card'
+    ? source.scope
+    : source.kind === 'rows' && openRowId !== null ? source.scopeOf(openRowId) : null;
+  const routeIntent: ConversationRouteIntent = source.kind === 'rows'
+    ? { kind: 'rows', rows: source.rows }
+    : source.intent;
+
   const store = useConversationStore(transport, unauthorized, scope, routeIntent);
   const registry = useConversationRegistry();
   const go = useGo();
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [confirmingReset, setConfirmingReset] = useState(false);
-  const open = store.conversations.find((conversation) => conversation.id === openId) ?? null;
+  const open = store.conversations.find((conversation) => conversation.id === openRowId) ?? null;
+
+  /*
+   * The draft, if it belongs *here*.
+   *
+   * A held draft from another cove is not visible, not reopenable and not
+   * sendable on this one — it is simply not this route's business. It is kept
+   * rather than dropped so that walking back to its own cove still finds it;
+   * the one thing that discards it is starting a draft somewhere else, because
+   * only one is held at a time.
+   */
+  const draft = held !== null && source.kind === 'rows' && held.coveId === source.coveId ? held : null;
+
+  /*
+   * Every write to the draft goes through one of these three, and each is a
+   * single whole-object update. `amendDraft` cannot touch the key or the words
+   * a POST was made with; the two that can, move both at once.
+   *
+   * All three are no-ops when the draft they were computed from is no longer
+   * the one held. Note what that does and does not cover, because an earlier
+   * version of this comment claimed too much: walking to another cove does
+   * **not** by itself discard the draft — it stays held, just invisible here,
+   * so a late write from its own cove still lands on it, which is right. What
+   * makes a write a no-op is the draft actually being gone: adopted, closed,
+   * or replaced by a `+` pressed somewhere else. `adopt` is guarded the same
+   * way and by the same identity, in the same reducer.
+   */
+  const withDraft = (from: DraftId, next: (current: ConversationDraft) => ConversationDraft) => {
+    moveDrawerTo({ kind: 'edit-draft', from, next });
+  };
+  const amendDraft = (from: ConversationDraft, change: DraftEdit) => {
+    withDraft(from, (current) => ({ ...current, ...change }));
+  };
+  /*
+   * The only way to change the key — and it always clears `sentText`.
+   *
+   * A key is the identity of an attempt and `sentText` is what that attempt
+   * sent; carrying one across a change of the other leaves "did the reader edit
+   * the words?" comparing a brand-new key against the words some *other* key
+   * posted. That mismatch is not a hypothetical: it is what the `'exhausted'`
+   * arm used to do.
+   */
+  const rekeyDraft = (from: ConversationDraft, key: string, change: DraftEdit = {}): ConversationDraft => {
+    const next = { ...from, ...change, key, sentText: null };
+    withDraft(from, (current) => ({ ...current, ...change, key, sentText: null }));
+    return next;
+  };
+  /** Records that a POST is going out under this key with these words. Called
+   *  before the request, so a failure finds the right baseline. */
+  const markDraftSent = (from: ConversationDraft, text: string) => {
+    withDraft(from, (current) => ({ ...current, text, sentText: text }));
+  };
 
   useEffect(() => {
     if (scope === null || registry.requestedOpenId !== scope.cardId) return;
-    setOpenId(scope.cardId);
+    moveDrawerTo({ kind: 'open-row', id: scope.cardId });
     registry.clearOpenRequest();
   }, [registry, scope]);
 
@@ -395,16 +665,288 @@ function useConversationPanel(
   }, [confirmingReset, open, store]);
 
   /*
-   * The `+` starts a conversation *and* opens it. A control that creates a row
-   * you then have to find and click is two steps for one intention — and on a
-   * route with no wave in scope (Today) there is nothing to attach one to, so
-   * the action is simply not offered there rather than offered and refused.
+   * The `+` opens a conversation. On a wave that is the wave's one spec card,
+   * which already exists; on a cove it is a draft, because the card is minted
+   * by the first message and there is nothing to open until then. On Today
+   * there is neither a wave nor a cove to attach one to, so the action is not
+   * offered rather than offered and refused.
    */
   const start = () => {
-    if (scope === null) return;
-    const conversation = store.start();
-    if (conversation !== null) setOpenId(conversation.id);
+    if (source.kind === 'card') {
+      const conversation = store.start();
+      if (conversation !== null) moveDrawerTo({ kind: 'open-row', id: conversation.id });
+      return;
+    }
+    if (source.kind !== 'rows') return;
+    /*
+     * A draft that was sent and failed is still open business, and `+` is the
+     * only way back to it once the drawer was closed. Reopening it — same key,
+     * same words, same sentence explaining what went wrong — is what makes the
+     * key kept by `closeDrawer` mean anything: without this the next attempt
+     * would be a fresh key, and a fresh key on top of an attempt that may have
+     * committed is the second conversation this whole mechanism exists to stop.
+     */
+    if (draft !== null && draft.sentText !== null) {
+      moveDrawerTo({ kind: 'open-draft' });
+      return;
+    }
+    /*
+     * Otherwise this is a new draft, and the key is minted here, once, for it —
+     * not when send is pressed.
+     *
+     * A key minted per send is a different key on the retry, and a different
+     * key is a different derived card: one timeout followed by one retry would
+     * leave two conversations holding the same message. Binding it to the
+     * draft is the whole reason the server requires the header.
+     *
+     * `draft` is null here whenever the held draft belongs to another cove, so
+     * this branch — not the restore above — is what a `+` in a second cove
+     * gets, and the key it mints is that cove's.
+     */
+    moveDrawerTo({
+      kind: 'start-draft',
+      draft: {
+        coveId: source.coveId,
+        key: mintIdempotencyKey(),
+        text: null, sentText: null, error: null, remedy: null,
+      },
+    });
   };
+
+  /*
+   * The attempt `from` became row `row`: forget the draft and open the row.
+   *
+   * `from` is not decoration. This runs after an `await`, and by then the
+   * reader may be in another cove with another draft in hand; the reducer
+   * applies both halves only if `from` is still what is held, and otherwise
+   * applies neither — see `DrawerState`. Before that guard existed, cove A's
+   * late success deleted cove B's draft and pointed the drawer at a row cove B
+   * does not have.
+   */
+  const adopt = (from: DraftId, row: Conversation) => {
+    moveDrawerTo({ kind: 'adopt', from, id: row.id });
+  };
+
+  const UNCONFIRMED = 'Could not check whether the last attempt went through. Try again in a moment.';
+
+  /*
+   * Re-read the list and adopt **this draft's own row** if it is there.
+   *
+   * A 500, a 503 or a dropped connection does not mean nothing happened: the
+   * card can exist with the message already queued behind it. What is not
+   * allowed is answering that question with "the list grew". During the seconds
+   * an attempt is failing, another tab or another reader can add a conversation
+   * to the same cove, and adopting *that* row opens somebody else's chat as if
+   * it were the words just typed — while this draft's real card, if it exists,
+   * goes unclaimed.
+   *
+   * So the question asked is the exact one: the card id is a pure public
+   * function of `(coveId, key)` (`coveConversationCardId`, golden-tested against
+   * the server's own golden), so the row this attempt would have created can be
+   * named before looking, and only that id counts.
+   *
+   * Three answers, not two. `'unknown'` is the re-read *itself* failing, which
+   * is the likeliest thing to happen while the network is the reason we are
+   * here at all — and it is emphatically not `'absent'`. A caller that treats
+   * "I could not look" as "there is nothing there" mints a new key over an
+   * attempt that may well have committed, which is the second conversation.
+   */
+  const adoptIfItLanded = async (
+    refresh: () => Promise<readonly Conversation[]>, coveId: string, key: string,
+  ): Promise<'landed' | 'absent' | 'unknown'> => {
+    const rows = await refresh().catch(() => null);
+    if (rows === null) return 'unknown';
+    const cardId = coveConversationCardId(coveId, key);
+    const landed = rows.find((row) => row.id === cardId);
+    if (landed === undefined) return 'absent';
+    adopt({ coveId, key }, landed);
+    return 'landed';
+  };
+
+  const sendDraft = (text: string) => {
+    if (source.kind !== 'rows' || creating || draft === null) return;
+    const { create, refresh, coveId } = source;
+    /*
+     * Two different questions, and they are asked of two different strings —
+     * because the server asks them that way.
+     *
+     * `create_cove_conversation` refuses `text.trim().is_empty()` and then
+     * counts `text.chars().count()` on the **untrimmed** text. So the blank
+     * check trims and the length check does not; a message padded to the limit
+     * with spaces is over the limit there, and letting it through here would
+     * spend a key on a guaranteed 400.
+     *
+     * And the count is of Unicode scalar values, not UTF-16 code units:
+     * `chars()` gives 1 for an emoji where `String.length` gives 2.
+     * `Array.from` iterates code points, so it agrees. `.length` did not, and
+     * refused legal astral-plane messages at half the real limit.
+     */
+    if (text.trim() === '') return;
+    if (Array.from(text).length > COVE_CONVERSATION_TEXT_MAX) {
+      /* Shown back, but never recorded as sent: no request left the browser, so
+         the key is untouched and the next press is not "the text changed". */
+      amendDraft(draft, {
+        text,
+        error: `This message is too long — the limit is ${COVE_CONVERSATION_TEXT_MAX} characters.`,
+        remedy: null,
+      });
+      return;
+    }
+    const previousText = draft.sentText;
+    /* The draft this send is *for*, fixed here. Everything below writes through
+       it, so a send that outlives its draft — adopted, closed, or left behind by
+       a cove switch — changes nothing rather than writing into whatever is held
+       by then. */
+    let attempt = draft;
+    setCreating(true);
+    amendDraft(attempt, { text, error: null, remedy: null });
+    void (async () => {
+      try {
+        /*
+         * Editing the text after a failure is the one case that has to change
+         * the key, and it has to look at the list first: the old key may have
+         * succeeded with the *old* text and lost its answer, and minting a new
+         * key on top of that is how one message becomes two conversations.
+         * Only a re-read that came back and said "no new row" earns a new key.
+         */
+        if (previousText !== null && previousText !== text) {
+          const landing = await adoptIfItLanded(refresh, coveId, attempt.key);
+          if (landing === 'landed') return;
+          if (landing === 'unknown') {
+            amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
+            return;
+          }
+          attempt = rekeyDraft(attempt, mintIdempotencyKey());
+        }
+        markDraftSent(attempt, text);
+        attempt = { ...attempt, text, sentText: text };
+        adopt(attempt, await create(text, attempt.key));
+      } catch (error: unknown) {
+        await handleCreateFailure(error, refresh, coveId, attempt);
+      } finally {
+        setCreating(false);
+      }
+    })();
+  };
+
+  async function handleCreateFailure(
+    error: unknown,
+    refresh: () => Promise<readonly Conversation[]>,
+    coveId: string,
+    attempt: ConversationDraft,
+  ): Promise<void> {
+    const failure = error instanceof ApiError
+      ? coveConversationFailure(error.failure)
+      : { kind: 'retry' as const, message: errorMessage(error, 'Could not start the conversation.') };
+    const message = failure.message;
+    switch (failure.kind) {
+      case 'gone':
+        amendDraft(attempt, { error: message, remedy: null });
+        go({ name: 'today' });
+        return;
+      case 'exhausted':
+        /* A spent key can never succeed again, so a new one is minted — and it
+           takes `sentText` with it: nothing has been posted under this key, so
+           the next press must not be read as "the reader changed the words".
+           The words themselves are untouched, so that press is a genuinely new
+           conversation carrying them. */
+        rekeyDraft(attempt, mintIdempotencyKey(), { error: message, remedy: 'retry' });
+        return;
+      case 'stale-payload':
+        amendDraft(attempt, { error: message, remedy: 'new-conversation' });
+        return;
+      case 'blocked':
+        /* Nothing committed and the key is unspent, so both it and the words
+           are kept. Whether resending them unchanged can work depends on the
+           cause the sentence names — a 400 refuses the words themselves — and
+           the composer is open either way. */
+        amendDraft(attempt, { error: message, remedy: 'retry' });
+        return;
+      case 'exists': {
+        /* The derived card exists, so this key can never mint again. If the
+           re-read turns it up we open it; if it says there is none, only a new
+           key can go anywhere and the reader decides whether to spend one. If
+           the re-read could not answer, we are not entitled to offer that
+           choice yet — a new key here would be a second card next to the one
+           the server just told us exists. */
+        amendDraft(attempt, { error: message });
+        const landing = await adoptIfItLanded(refresh, coveId, attempt.key);
+        if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
+        if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
+        return;
+      }
+      case 'unavailable':
+      case 'retry':
+        /*
+         * Both are ambiguous and both are resolved by looking for *this key's*
+         * card. `'unavailable'` used to skip the look on the grounds that a 503
+         * means the request was never served — which is not what a 503 means,
+         * and on this endpoint it is usually false: the card is minted by the
+         * operation runtime and the 503 is raised afterwards, while the first
+         * message is being delivered. Skipping the look left that card
+         * unadopted; the reason the look was skipped (it might adopt a
+         * stranger's row) no longer exists now that the row is named by id.
+         *
+         * `'absent'` and `'unknown'` end the same way, and safely: the remedy
+         * is the same key and the same words again.
+         */
+        amendDraft(attempt, { error: message });
+        if (await adoptIfItLanded(refresh, coveId, attempt.key) !== 'landed') {
+          amendDraft(attempt, { remedy: 'retry' });
+        }
+        return;
+    }
+  }
+
+  const sendAsNewConversation = () => {
+    if (source.kind !== 'rows' || creating || draft === null || draft.text === null) return;
+    const { create, refresh, coveId } = source;
+    const text = draft.text;
+    let attempt = draft;
+    setCreating(true);
+    amendDraft(attempt, { error: null, remedy: null });
+    void (async () => {
+      try {
+        /* Pressed deliberately, but the same fence applies: a new key is only
+           safe once the list has actually said the old one produced nothing. */
+        const landing = await adoptIfItLanded(refresh, coveId, attempt.key);
+        if (landing === 'landed') return;
+        if (landing === 'unknown') {
+          amendDraft(attempt, { error: UNCONFIRMED, remedy: 'new-conversation' });
+          return;
+        }
+        attempt = rekeyDraft(attempt, mintIdempotencyKey());
+        markDraftSent(attempt, text);
+        attempt = { ...attempt, text, sentText: text };
+        adopt(attempt, await create(text, attempt.key));
+      } catch (error: unknown) {
+        await handleCreateFailure(error, refresh, coveId, attempt);
+      } finally {
+        setCreating(false);
+      }
+    })();
+  };
+
+  /* Retry means "the same draft again": same key, same words. It is the only
+     send path that does not go through the composer, which cleared its field
+     the moment the first attempt started. */
+  const retryDraft = () => {
+    if (draft === null || draft.text === null) return;
+    sendDraft(draft.text);
+  };
+
+  /* A draft no request was ever made for has no identity worth keeping, and
+     that includes one refused locally for being too long. One that was sent
+     and failed keeps its key *and* its words: dropping them would make the
+     next attempt a second conversation instead of a retry of this one, and
+     `start` reopens exactly this state when `+` is pressed again. */
+  const closeDrawer = () => {
+    moveDrawerTo({ kind: 'close', discard: draft !== null && draft.sentText === null ? draft : null });
+  };
+
+  /* A draft belonging to another cove is not open here even if the drawer was
+     left on one: `draft` is null on any route but its own. */
+  const draftOpen = openTarget?.kind === 'draft' && draft !== null;
 
   return {
     list: (
@@ -413,8 +955,11 @@ function useConversationPanel(
         activeId={open?.id ?? null}
         showWave={options?.showWave ?? true}
         onOpen={(conversation) => {
-          if (scope !== null) {
-            setOpenId(conversation.id);
+          /* Only a route that cannot hold the drawer sends the reader
+             somewhere else. A `'rows'` route holds one for every row it lists,
+             and the wave it would navigate to is hidden. */
+          if (source.kind !== 'elsewhere') {
+            moveDrawerTo({ kind: 'open-row', id: conversation.id });
             return;
           }
           registry.requestOpen(conversation.id);
@@ -424,15 +969,17 @@ function useConversationPanel(
     ),
     /* The module head's action, composed by the page — same slot the WAVES and
        CARDS modules already use, which is why this needed no new mechanism. */
-    action: scope === null
+    action: source.kind === 'elsewhere'
       ? undefined
       : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     drawer: (
       <>
       <Drawer
-        open={open !== null}
-        title={open === null ? '' : conversationName(open)}
-        onClose={() => setOpenId(null)}
+        open={open !== null || draftOpen}
+        /* A draft has no name yet, and naming it after the words being typed
+           would rename the drawer on every keystroke. */
+        title={open !== null ? conversationName(open) : draftOpen ? 'New conversation' : ''}
+        onClose={closeDrawer}
         /*
          * Reset lives in the head, not under the composer.
          *
@@ -451,7 +998,23 @@ function useConversationPanel(
             <Icon name="reset" />
           </DrawerAction>
         )}
-        footer={open === null ? undefined : (
+        footer={draftOpen ? (
+          <>
+            {/* No optimistic echo: the POST starts the thread *and* delivers
+                this message, so by the time it answers the message is already
+                persisted and the first item fetch on the new card carries it. */}
+            <ChatComposer disabled={creating} onSend={sendDraft} />
+            {draft?.error != null && <p role="alert">{draft.error}</p>}
+            {draft?.remedy === 'retry' && (
+              <button type="button" disabled={creating} onClick={retryDraft}>Try again</button>
+            )}
+            {draft?.remedy === 'new-conversation' && (
+              <button type="button" disabled={creating} onClick={sendAsNewConversation}>
+                Send as a new conversation
+              </button>
+            )}
+          </>
+        ) : open === null ? undefined : (
           <>
             <ChatComposer disabled={store.sending} onSend={(text) => store.send(open.id, text)} />
             {(store.working || store.stopping) && (
@@ -464,6 +1027,16 @@ function useConversationPanel(
           </>
         )}
       >
+        {/* The words are shown back because the composer clears its field on
+            send and a failed draft would otherwise be gone. Nothing here claims
+            they arrived — only `Sending…` while the request is open, and the
+            alert below when it came back. */}
+        {draftOpen && (draft?.text == null
+          ? <p>Nothing said yet. What you write starts the conversation.</p>
+          : <>
+            <p data-nc-turn="you">{draft.text}</p>
+            {creating && <p role="status">Sending…</p>}
+          </>)}
         {open !== null && (
           <>
             {store.hasEarlier && (
@@ -513,7 +1086,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
      a card, and cards belong to waves), and this route has no single wave in
      scope. The module still lists and still opens — it is the starting that
      needs somewhere to attach. */
-  const chat = useConversationPanel(transport, unauthorized, null, { kind: 'all' });
+  const chat = useConversationPanel(transport, unauthorized, {
+    kind: 'elsewhere', intent: { kind: 'all' },
+  });
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -578,14 +1153,38 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
   const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, coveId ?? '', signal));
   const go = useGo();
   const [creating, setCreating] = useState(false);
-  /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
-     a card, and cards belong to waves), and this route has no single wave in
-     scope. The module still lists and still opens — it is the starting that
-     needs somewhere to attach. */
-  const coveWaveIds = (workspace.wavesByCove.get(coveId ?? '') ?? []).map(({ id }) => id);
-  const chat = useConversationPanel(
-    transport, unauthorized, null, { kind: 'waves', waveIds: coveWaveIds },
-  );
+  /*
+   * A cove's conversations are its own, listed by the server (#1098). They are
+   * plain-chat cards on the cove's hidden chat wave, so nothing here reads the
+   * session registry and nothing here is written back into it: the wave they
+   * belong to is not a place the reader can be sent.
+   *
+   * The list is intentionally not the waves' spec conversations any more. Those
+   * belong to a wave and are read on that wave's page; mixing them in would put
+   * rows in this panel whose drawer this route cannot open.
+   */
+  const conversationsQuery = useQuery({
+    ...coveConversationsQueryOptions(transport, coveId ?? '', unauthorized),
+    enabled: coveId !== undefined,
+  });
+  const coveConversations = conversationsQuery.data ?? [];
+  const conversationMutations = useCoveConversationMutations(transport, coveId ?? '', unauthorized);
+  const chat = useConversationPanel(transport, unauthorized, {
+    kind: 'rows',
+    coveId: coveId ?? '',
+    rows: coveConversations,
+    scopeOf: (conversationId) => {
+      const row = coveConversations.find((candidate) => candidate.id === conversationId);
+      /* No `title`: the chat wave is hidden, so there is no wave name to pass
+         down, and `showWave: false` below is what keeps the rows honest. */
+      return row === undefined ? null : {
+        id: row.waveId, cardId: row.id, cardTitle: row.title,
+        updatedAt: row.updatedAt, kind: row.kind, state: row.state,
+      };
+    },
+    create: conversationMutations.create,
+    refresh: conversationMutations.refresh,
+  }, { showWave: false });
   const [submitting, setSubmitting] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -631,6 +1230,12 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
         onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
       />}
       {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
+      {/* Without this the panel would render "No conversations yet." over a
+          failed read, which is a different sentence from "we could not look". */}
+      {conversationsQuery.error instanceof Error && <ErrorBox
+        message={`Conversations are unavailable: ${conversationsQuery.error.message}`}
+        onRetry={() => { void conversationsQuery.refetch(); }}
+      />}
       <CovePage
         cove={cove}
         waveCount={waves.length}
@@ -763,11 +1368,16 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards }: {
   const chat = useConversationPanel(
     transport,
     unauthorized,
-    specCard === undefined ? null : {
-      id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
-      cardTitle: specCard.title, updatedAt: specCard.updated_at,
-    },
-    { kind: 'waves', waveIds: [wave.id] },
+    specCard === undefined
+      ? { kind: 'elsewhere', intent: { kind: 'waves', waveIds: [wave.id] } }
+      : {
+        kind: 'card',
+        intent: { kind: 'waves', waveIds: [wave.id] },
+        scope: {
+          id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
+          cardTitle: specCard.title, updatedAt: specCard.updated_at,
+        },
+      },
     { showWave: false },
   );
   const { report, outline } = useMemo(() => {

@@ -122,4 +122,12 @@ describe('conversation pending accounting', () => {
     expect(pendingConversationIds(conversation, true, false).has('c1')).toBe(true);
     expect(pendingConversationIds(conversation, false, false).has('c1')).toBe(false);
   });
+
+  /* Pending is what *this* tab is doing, so it cannot depend on the session
+     state the server last reported — including its absence on a chat row. */
+  it('accounts a conversation with no reported session the same way', () => {
+    const stateless = { ...conversation, kind: 'shared-chat' as const, state: null };
+    expect(pendingConversationIds(stateless, false, true).has('c1')).toBe(true);
+    expect(pendingConversationIds(stateless, false, false).has('c1')).toBe(false);
+  });
 });

@@ -4,6 +4,7 @@ use sqlx::Sqlite;
 use sqlx::Transaction;
 
 use super::{SqlxRepo, begin_immediate_tx};
+use crate::cove_folder_claim::CoveFolderClaim;
 use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::*;
@@ -579,9 +580,6 @@ impl RepoOutOfDomain for SqlxRepo {
 
     // ----------------------------------------------------- cove_folders
     async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder> {
-        // Probe before the INSERT acquires SQLite's writer lock.
-        let repo_identity = crate::repo_identity::probe_repo_identity(std::path::Path::new(path));
-        let probed_at = now_ms();
         // Parent cove must exist; surface as NotFound to mirror the
         // terminal_create precedent above (FK error message would be
         // less actionable for the REST caller).
@@ -593,17 +591,14 @@ impl RepoOutOfDomain for SqlxRepo {
             return Err(CalmError::NotFound(format!("cove {cove_id}")));
         }
         let now = now_ms();
-        // The UNIQUE constraint on `path` is the backstop here. The
-        // route layer has already done equality / ancestor / descendant
-        // conflict detection so a real-world INSERT failing the
-        // UNIQUE is a race (concurrent claim of the same path). Bubble
-        // it up as the generic Conflict so the surface is honest.
+        // Unchecked primitive: no overlap scan at all (see the trait
+        // doc). The UNIQUE constraint on `path` is the only guard, and
+        // it only rejects an *equal* path. HTTP callers go through
+        // `cove_folder_create_checked` instead (#275).
         let res =
-            sqlx::query("INSERT INTO cove_folders (cove_id, path, repo_identity, repo_identity_probed_at, created_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+            sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
                 .bind(cove_id)
                 .bind(path)
-                .bind(repo_identity.as_deref())
-                .bind(probed_at)
                 .bind(now)
                 .execute(&self.pool)
                 .await;
@@ -612,8 +607,6 @@ impl RepoOutOfDomain for SqlxRepo {
                 id: out.last_insert_rowid(),
                 cove_id: cove_id.to_string().into(),
                 path: path.to_string(),
-                repo_identity,
-                repo_identity_probed_at: Some(probed_at),
                 created_at: now,
             }),
             Err(sqlx::Error::Database(dbe)) if dbe.message().contains("UNIQUE") => Err(
@@ -623,28 +616,40 @@ impl RepoOutOfDomain for SqlxRepo {
         }
     }
 
-    async fn cove_folder_refresh_repo_identity(&self, id: i64) -> Result<CoveFolder> {
-        let folder = self
-            .cove_folder_get(id)
-            .await?
-            .ok_or_else(|| CalmError::NotFound(format!("cove_folder {id}")))?;
-        // As above, all filesystem/git work completes before the write.
-        let identity =
-            crate::repo_identity::probe_repo_identity(std::path::Path::new(&folder.path));
-        let probed_at = now_ms();
-        sqlx::query(
-            "UPDATE cove_folders SET repo_identity = ?1, repo_identity_probed_at = ?2 WHERE id = ?3",
-        )
-        .bind(identity.as_deref())
-        .bind(probed_at)
-        .bind(id)
-        .execute(&self.pool)
-        .await?;
-        Ok(CoveFolder {
-            repo_identity: identity,
-            repo_identity_probed_at: Some(probed_at),
-            ..folder
-        })
+    async fn cove_folder_create_checked(
+        &self,
+        cove_id: &str,
+        path: &str,
+    ) -> Result<CoveFolderClaim> {
+        // Precondition (see the trait doc): `path` is already normalized.
+        // `classify_conflict` is pure string comparison, so a trailing
+        // slash would silently *mis*classify rather than error out.
+        debug_assert_eq!(
+            path,
+            crate::cove_folder_claim::normalize_path(path),
+            "cove_folder_create_checked requires a normalized path; got `{path}`"
+        );
+        // #275 — BEGIN IMMEDIATE takes the writer lock *before* the scan,
+        // so the SELECT and the INSERT are one atomic step. Without it the
+        // scan and the insert land on two different pooled connections and
+        // concurrent `/a` + `/a/b` claims both pass an empty-table scan
+        // (UNIQUE(path) only rejects *equal* paths).
+        //
+        // Deliberately nothing but three statements in here: no git probe,
+        // no filesystem work, no plugin/network call. The writer-lock hold
+        // is the same order of magnitude as the bare INSERT it replaces.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let existing = super::cove_folders_list_all_tx(&mut tx).await?;
+        if let Some(conflict) = crate::cove_folder_claim::classify_conflict(&existing, path) {
+            // Read-only tx: rollback is the cheap, explicit close.
+            let _ = tx.rollback().await;
+            return Ok(CoveFolderClaim::Conflict(conflict));
+        }
+        // Shares the cove-exists check + UNIQUE-to-Conflict mapping with
+        // the wave-create attach path.
+        let folder = super::cove_folder_create_tx(&mut tx, cove_id, path).await?;
+        tx.commit().await?;
+        Ok(CoveFolderClaim::Created(folder))
     }
 
     async fn cove_folder_delete(&self, id: i64) -> Result<()> {
