@@ -206,6 +206,30 @@ pub async fn assert_worker_sessions_card_id_complete_on_boot(
         .map_err(Into::into)
 }
 
+/// #275 / #1109 — boot fence for overlapping `cove_folders` claims.
+///
+/// `find_owner` resolves a cwd by taking the first matching row, which
+/// is only sound because the atomic claim writer makes overlap
+/// unreachable. Legacy databases predate that writer and can hold
+/// overlap; on such a table the answer differs from the longest-prefix
+/// rule those rows were written under, i.e. a wave would silently land
+/// in the wrong cove. `?`-propagated from `main` so serving never starts
+/// on an unresolvable folder table — see
+/// [`calm_truth::db::sqlite::assert_cove_folders_disjoint`] for why the
+/// fence refuses instead of repairing.
+pub async fn assert_cove_folders_disjoint_on_boot(
+    state: &state::AppState,
+) -> crate::error::Result<()> {
+    let pool = state.sqlite_pool().ok_or_else(|| {
+        crate::error::CalmError::Internal(
+            "cove_folders boot fence requires sqlite-backed Repo".into(),
+        )
+    })?;
+    calm_truth::db::sqlite::assert_cove_folders_disjoint(&pool)
+        .await
+        .map_err(Into::into)
+}
+
 pub async fn recover_operations_on_boot(state: &state::AppState) -> crate::error::Result<()> {
     let plan = state.operation_runtime.recover_on_boot().await?;
     for item in &plan.items {
@@ -673,6 +697,30 @@ mod boot_order_tests {
         assert!(card_id_assert < reconcile);
         assert!(reconcile < recover);
         assert!(card_id_assert < recover);
+    }
+
+    /// #275 / #1109 — the cove_folders fence must be wired into main and
+    /// must be fatal. A warn-and-continue variant would leave folder
+    /// resolution silently picking an arbitrary owner.
+    #[test]
+    fn boot_cove_folders_fence_is_wired_and_fatal() {
+        let main_rs = include_str!("main.rs");
+        assert!(
+            main_rs.contains("assert_cove_folders_disjoint_on_boot(&state).await?"),
+            "cove_folders overlap fence must ?-propagate so serving never starts on an \
+             ambiguous folder table"
+        );
+        let card_id_assert = main_rs
+            .find("assert_worker_sessions_card_id_complete_on_boot(&state).await?")
+            .expect("main boot asserts worker_sessions.card_id completeness");
+        let folders_fence = main_rs
+            .find("assert_cove_folders_disjoint_on_boot(&state).await?")
+            .expect("main boot fences overlapping cove_folders claims");
+        let boot_harnesses = main_rs
+            .find("boot_harnesses(&state).await")
+            .expect("main boot starts daemon and gates spec harness recovery");
+        assert!(card_id_assert < folders_fence);
+        assert!(folders_fence < boot_harnesses);
     }
 
     #[test]

@@ -105,6 +105,39 @@ pub fn classify_conflict(existing: &[CoveFolder], normalized: &str) -> Option<Fo
     })
 }
 
+/// Every overlapping pair in `existing`, as `(row, conflict)` where
+/// `conflict` describes the *other* row of the pair from `row`'s point of
+/// view (so `conflict_kind` is `Descendant` when `row` sits under the
+/// other row, `Ancestor` when it sits above it, `Equal` when the paths
+/// are identical).
+///
+/// **Why this exists.** The atomic claim writer makes overlap
+/// unreachable *going forward* (#275), but databases created before it
+/// landed can already hold overlapping rows: the wave-attach path's
+/// in-tx insert was gated on the request flag alone, never on the scan
+/// result, so a cove claiming `/a` plus a wave with `cwd = "/a/b",
+/// attach_folder = true` minted an overlapping `/a/b` row from ordinary
+/// single-threaded HTTP. [`find_owner`] resolves such a table by
+/// iteration order, which silently picks a *different* owner than the
+/// longest-prefix rule those databases were written under — so the boot
+/// fence uses this to refuse the ambiguity instead of guessing (see
+/// [`crate::db::sqlite::assert_cove_folders_disjoint`]).
+///
+/// Pairs are enumerated once each (i < j), and the predicate is
+/// [`classify_conflict`] applied to a one-row slice — deliberately the
+/// *same* definition the writers enforce, never a second copy of it.
+pub fn overlapping_pairs(existing: &[CoveFolder]) -> Vec<(&CoveFolder, FolderConflict)> {
+    let mut pairs = Vec::new();
+    for (i, row) in existing.iter().enumerate() {
+        for other in &existing[i + 1..] {
+            if let Some(conflict) = classify_conflict(std::slice::from_ref(other), &row.path) {
+                pairs.push((row, conflict));
+            }
+        }
+    }
+    pairs
+}
+
 /// Outcome of an atomic claim attempt. `Conflict` is a normal (non-error)
 /// outcome so the route can render the structured 409 body; genuine
 /// failures (missing cove, sqlite errors) still come back as `Err`.
@@ -181,5 +214,82 @@ mod tests {
         let existing = vec![folder(1, "c1", "/a"), folder(2, "c2", "/a/b")];
         assert_eq!(find_owner(&existing, "/a/b/c").unwrap().path, "/a");
         assert!(find_owner(&existing, "/z").is_none());
+    }
+
+    #[test]
+    fn overlapping_pairs_empty_for_disjoint_table() {
+        let existing = vec![
+            folder(1, "c1", "/a"),
+            folder(2, "c2", "/b"),
+            folder(3, "c3", "/c/d"),
+        ];
+        assert!(overlapping_pairs(&existing).is_empty());
+    }
+
+    /// The string-prefix trap: `/a` is a string prefix of `/ab`, but not
+    /// a *path* prefix. Neither direction may register as an overlap.
+    #[test]
+    fn overlapping_pairs_ignores_shared_string_prefix_siblings() {
+        let existing = vec![folder(1, "c1", "/a"), folder(2, "c2", "/ab")];
+        assert!(overlapping_pairs(&existing).is_empty());
+        let deep = vec![folder(1, "c1", "/home/kenji"), folder(2, "c2", "/home/ken")];
+        assert!(overlapping_pairs(&deep).is_empty());
+    }
+
+    #[test]
+    fn overlapping_pairs_reports_ancestor_and_descendant_from_row_pov() {
+        // Rows arrive `ORDER BY path ASC`, so the ancestor comes first
+        // and the pair is labelled from `/a`'s point of view: `/a` is an
+        // *ancestor* of the `/a/b` row it collides with.
+        let existing = vec![folder(1, "c1", "/a"), folder(2, "c2", "/a/b")];
+        let pairs = overlapping_pairs(&existing);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0.id, 1);
+        assert_eq!(pairs[0].1.folder_id, 2);
+        assert_eq!(pairs[0].1.conflict_kind, FolderConflictKind::Ancestor);
+
+        // Reversed iteration order flips only the label, never the count.
+        let reversed = vec![folder(2, "c2", "/a/b"), folder(1, "c1", "/a")];
+        let pairs = overlapping_pairs(&reversed);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].1.conflict_kind, FolderConflictKind::Descendant);
+    }
+
+    /// `UNIQUE(cove_folders.path)` makes duplicate paths unreachable
+    /// through any writer, but the fence must not *depend* on that — a
+    /// hand-edited DB (or a future schema change) could still present
+    /// them, and they are the most ambiguous shape of all.
+    #[test]
+    fn overlapping_pairs_catches_equal_paths_even_though_unique_blocks_them() {
+        let existing = vec![folder(1, "c1", "/a"), folder(2, "c2", "/a")];
+        let pairs = overlapping_pairs(&existing);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].1.conflict_kind, FolderConflictKind::Equal);
+    }
+
+    #[test]
+    fn overlapping_pairs_enumerates_every_colliding_pair_once() {
+        // `/a` collides with both `/a/b` and `/a/b/c`; `/a/b` collides
+        // with `/a/b/c`. Three pairs, each reported exactly once.
+        let existing = vec![
+            folder(1, "c1", "/a"),
+            folder(2, "c2", "/a/b"),
+            folder(3, "c3", "/a/b/c"),
+            folder(4, "c4", "/z"),
+        ];
+        let pairs = overlapping_pairs(&existing);
+        assert_eq!(pairs.len(), 3);
+        let ids: Vec<(i64, i64)> = pairs.iter().map(|(r, c)| (r.id, c.folder_id)).collect();
+        assert_eq!(ids, vec![(1, 2), (1, 3), (2, 3)]);
+    }
+
+    /// Root is an ancestor of everything — a `/` claim alongside any
+    /// other claim is exactly the ambiguity the fence exists to catch.
+    #[test]
+    fn overlapping_pairs_catches_root_claim() {
+        let existing = vec![folder(1, "c1", "/"), folder(2, "c2", "/a")];
+        let pairs = overlapping_pairs(&existing);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].1.conflict_kind, FolderConflictKind::Ancestor);
     }
 }

@@ -29,7 +29,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{NewCove, WaveLifecycle, WavePatch};
+use calm_server::model::{CoveKind, NewCove, WaveLifecycle, WavePatch};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -252,6 +252,19 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
 #[tokio::test]
 async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() {
     let boot = boot().await;
+
+    // The pre-seeded state below already satisfies `folders.len() == 1`,
+    // so this test would also pass if folder enforcement were skipped
+    // wholesale for this cove via the `is_system_cove` bypass in
+    // `routes::waves::create_wave`. Pin that the cove under test is NOT
+    // a system cove, so the assertions can only be explained by the
+    // enforcement path actually running.
+    let cove = boot.repo.cove_get(&boot.cove_id).await.unwrap().unwrap();
+    assert_eq!(
+        cove.kind,
+        CoveKind::User,
+        "this test only proves idempotency if folder enforcement is not bypassed"
+    );
 
     boot.repo
         .cove_folder_create(&boot.cove_id, "/workspace")

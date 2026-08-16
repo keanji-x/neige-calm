@@ -1064,11 +1064,19 @@ pub trait RepoOutOfDomain: RepoRead {
     /// [`crate::cove_folder_claim::normalize_path`]. The overlap
     /// classification is pure string comparison: `Equal` is `f.path ==
     /// path` and the ancestor/descendant arms are prefix tests. A
-    /// non-normalized input (trailing slash, `.`/`..` segments) is
-    /// silently *mis*classified rather than rejected — `"/a/b/"` against a
-    /// stored `"/a/b"` compares unequal, skips `Equal`, and falls into the
-    /// descendant arm — so normalizing is the caller's job, not this
-    /// method's. Debug builds assert it.
+    /// non-normalized input is silently *mis*classified rather than
+    /// rejected — `"/a/b/"` against a stored `"/a/b"` compares unequal,
+    /// skips `Equal`, and falls into the descendant arm — so normalizing
+    /// is the caller's job, not this method's.
+    ///
+    /// Debug builds assert `path == normalize_path(path)`, which
+    /// machine-checks **only the trailing-slash form**: `normalize_path`
+    /// strips one trailing slash and does nothing else, so a path
+    /// carrying `.` / `..` segments (`"/a/./b"`) is its own fixed point —
+    /// it passes the `debug_assert` and still misclassifies against a
+    /// stored `"/a/b"`. Callers that can produce such segments must
+    /// canonicalize before they get here; nothing in this layer catches
+    /// it.
     async fn cove_folder_create_checked(
         &self,
         cove_id: &str,
