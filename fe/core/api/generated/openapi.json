@@ -825,7 +825,7 @@
           {
             "name": "path",
             "in": "query",
-            "description": "Absolute filesystem path to resolve against every cove's folder\nclaims. Returns the most-specific claim that covers it (longest\nprefix), or `null` if no claim covers the path.",
+            "description": "Absolute filesystem path to resolve against every cove's folder\nclaims. Returns the claim that covers it, or `null` if no claim\ncovers the path. At most one claim can cover a path: the create\nendpoint rejects ancestor/descendant overlap with a 409.",
             "required": true,
             "schema": {
               "type": "string"
@@ -834,7 +834,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Owning cove + folder, or null when no claim covers the path",
+            "description": "The cove + folder whose claim covers the path, or null when no claim covers it. Overlapping claims are rejected at create time, so at most one claim can match.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4632,7 +4632,7 @@
       },
       "CoveFolder": {
         "type": "object",
-        "description": "Issue #250 PR 1 — a filesystem path claimed by a cove.\n\nOne row per claimed directory; `path` is absolute and globally\nunique across the table. A folder transparently covers every\ndescendant path — the kernel resolves a `cwd` to its owning cove\nvia longest-prefix matching against this table (see\n`GET /api/coves/resolve`).\n\n`id` is an autoincrement integer rather than the kernel's usual\nuuid-shaped TEXT id because cove_folders is a small, kernel-internal\nmapping that never appears in the sync engine's event log — there's\nno replay scenario where two replicas mint divergent ids that must\nlater reconcile. The compact integer also keeps `/folders/:id` URLs\nreadable.",
+        "description": "Issue #250 PR 1 — a filesystem path claimed by a cove.\n\nOne row per claimed directory; `path` is absolute and globally\nunique across the table. A folder transparently covers every\ndescendant path — the kernel resolves a `cwd` to its owning cove by\nfinding the claim that covers it (see `GET /api/coves/resolve`).\nThe create endpoint rejects ancestor/descendant overlap with a 409,\nso at most one claim can cover any given path.\n\n`id` is an autoincrement integer rather than the kernel's usual\nuuid-shaped TEXT id because cove_folders is a small, kernel-internal\nmapping that never appears in the sync engine's event log — there's\nno replay scenario where two replicas mint divergent ids that must\nlater reconcile. The compact integer also keeps `/folders/:id` URLs\nreadable.",
         "required": [
           "id",
           "cove_id",
@@ -4653,21 +4653,6 @@
           },
           "path": {
             "type": "string"
-          },
-          "repo_identity": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Normalized `owner/name` from the folder's Git origin, when resolvable."
-          },
-          "repo_identity_probed_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "description": "Unix epoch milliseconds of the most recent identity probe."
           }
         }
       },
@@ -6035,7 +6020,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Absolute filesystem path to resolve against every cove's folder\nclaims. Returns the most-specific claim that covers it (longest\nprefix), or `null` if no claim covers the path."
+            "description": "Absolute filesystem path to resolve against every cove's folder\nclaims. Returns the claim that covers it, or `null` if no claim\ncovers the path. At most one claim can cover a path: the create\nendpoint rejects ancestor/descendant overlap with a 409."
           }
         }
       },

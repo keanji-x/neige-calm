@@ -12,7 +12,7 @@
 //!   7. `delete_removes_the_folder`
 //!   8. `resolve_hits_self`
 //!   9. `resolve_hits_descendant`
-//!  10. `resolve_picks_longest_prefix`
+//!  10. `resolve_tolerates_corrupt_overlapping_rows`
 //!  11. `resolve_miss_returns_200_null`
 //!  12. `resolve_non_absolute_path_400`
 //!  13. `cascade_delete_cove_drops_its_folders`
@@ -27,7 +27,6 @@
 #![cfg(unix)]
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 
 use axum::body::Body;
@@ -175,62 +174,11 @@ async fn post_then_get_returns_the_folder() {
     assert_eq!(status, StatusCode::CREATED, "body: {body}");
     assert_eq!(body["path"].as_str().unwrap(), "/a");
     assert_eq!(body["cove_id"].as_str().unwrap(), b.cove_id);
-    assert!(body["repo_identity"].is_null());
-    assert!(body["repo_identity_probed_at"].is_number());
 
     let (status, body) = get(b.app.clone(), &format!("/api/coves/{}/folders", b.cove_id)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 1);
     assert_eq!(body[0]["path"].as_str().unwrap(), "/a");
-    assert!(body[0]["repo_identity"].is_null());
-    assert!(body[0]["repo_identity_probed_at"].is_number());
-}
-
-#[tokio::test]
-async fn git_identity_commits_with_folder_and_round_trips() {
-    let b = boot().await;
-    let folder_path = b._tmp.path().join("repo");
-    std::fs::create_dir(&folder_path).unwrap();
-    assert!(
-        Command::new("git")
-            .args(["init", "--quiet"])
-            .arg(&folder_path)
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("git")
-            .args(["-C"])
-            .arg(&folder_path)
-            .args([
-                "remote",
-                "add",
-                "origin",
-                "https://user:secret@github.com/Owner/Repo.git",
-            ])
-            .status()
-            .unwrap()
-            .success()
-    );
-
-    let uri = format!("/api/coves/{}/folders", b.cove_id);
-    let (status, created) = post(
-        b.app.clone(),
-        &uri,
-        json!({"path": folder_path.to_str().unwrap()}),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body: {created}");
-    assert_eq!(created["repo_identity"], "Owner/Repo");
-    assert!(!created.to_string().contains("secret"));
-
-    let (_, listed) = get(b.app.clone(), &uri).await;
-    assert_eq!(listed[0]["repo_identity"], "Owner/Repo");
-    assert_eq!(
-        listed[0]["repo_identity_probed_at"],
-        created["repo_identity_probed_at"]
-    );
 }
 
 // (2) ---------------------------------------------------------------
@@ -367,24 +315,29 @@ async fn resolve_hits_descendant() {
 // (10) --------------------------------------------------------------
 
 #[tokio::test]
-async fn resolve_picks_longest_prefix() {
+async fn resolve_tolerates_corrupt_overlapping_rows() {
     // The route-level conflict check forbids ancestor/descendant
     // overlap across the table, so `/a` and `/a/b` can never both be
-    // present via the public surface. To still exercise the
-    // longest-prefix branch of the resolve algorithm, this test seeds
-    // both rows through the raw repo (the same code path replay
-    // would use to restore a corrupted DB) and then asks the resolve
-    // endpoint to pick the more specific claim. The test guards
-    // against a future regression where the resolve handler ignores
-    // path length and returns the first match it sees.
+    // present via the public HTTP surface — the filter in `resolve_path`
+    // is already a uniqueness oracle and carries no tiebreak (#275).
+    // This test seeds both rows through the raw repo (a state only a
+    // corrupted / hand-edited DB could reach) purely to pin that the
+    // endpoint still degrades gracefully: 200 with *a* covering claim,
+    // never a 500 and never a miss. Which of the two overlapping rows
+    // wins is deliberately NOT a contract — asserting an order here
+    // would fabricate a guarantee the implementation does not make.
     let b = boot().await;
     b.repo.cove_folder_create(&b.cove_id, "/a").await.unwrap();
     b.repo.cove_folder_create(&b.cove_id, "/a/b").await.unwrap();
 
     let (status, body) = get(b.app.clone(), "/api/coves/resolve?path=/a/b/c").await;
     assert_eq!(status, StatusCode::OK);
-    // More-specific (longest-prefix) wins.
-    assert_eq!(body["folder_path"].as_str().unwrap(), "/a/b");
+    let resolved = body["folder_path"].as_str().unwrap();
+    assert!(
+        resolved == "/a" || resolved == "/a/b",
+        "expected one of the two covering claims, got {resolved}"
+    );
+    assert_eq!(body["cove_id"].as_str().unwrap(), b.cove_id);
 }
 
 // (11) --------------------------------------------------------------

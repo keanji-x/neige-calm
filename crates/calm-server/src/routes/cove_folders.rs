@@ -3,10 +3,10 @@
 //!
 //! A `cove_folder` claims an absolute filesystem path for a cove and
 //! transparently covers every descendant. Given a `cwd`, the kernel
-//! resolves the owning cove by longest-prefix matching against every
-//! row in the table. Claims are exclusive: a path may be claimed by
-//! at most one cove, and ancestor/descendant overlap is rejected at
-//! create time.
+//! resolves the owning cove by finding the row whose claim covers it.
+//! Claims are exclusive: a path may be claimed by at most one cove, and
+//! ancestor/descendant overlap is rejected at create time — so the
+//! covering row is unique and needs no tiebreak (issue #275).
 //!
 //! These endpoints sit outside the event-sourced sync domain in PR 1
 //! — folders are operational mapping state, not co-edit content. PR 2+
@@ -199,8 +199,9 @@ pub(crate) async fn delete_folder(
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
 pub struct ResolveQuery {
     /// Absolute filesystem path to resolve against every cove's folder
-    /// claims. Returns the most-specific claim that covers it (longest
-    /// prefix), or `null` if no claim covers the path.
+    /// claims. Returns the claim that covers it, or `null` if no claim
+    /// covers the path. At most one claim can cover a path: the create
+    /// endpoint rejects ancestor/descendant overlap with a 409.
     pub path: String,
 }
 
@@ -210,7 +211,7 @@ pub struct ResolveQuery {
     tag = "cove_folders",
     params(ResolveQuery),
     responses(
-        (status = 200, description = "Owning cove + folder, or null when no claim covers the path", body = Option<CoveResolve>),
+        (status = 200, description = "The cove + folder whose claim covers the path, or null when no claim covers it. Overlapping claims are rejected at create time, so at most one claim can match.", body = Option<CoveResolve>),
         (status = 400, description = "Path is not absolute", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -227,12 +228,14 @@ pub(crate) async fn resolve_path(
     }
     let normalized = normalize_path(&q.path);
     let folders = s.repo.cove_folders_list_all().await?;
-    // Longest-prefix match: keep the folder whose `path` is an ancestor
-    // (or equal to) the query AND has the longest `path` among matches.
+    // `create_folder` rejects ancestor/descendant overlap with a 409
+    // `FolderConflict`, so from any HTTP-constructible state at most one
+    // row can be an ancestor of (or equal to) the query. The filter is
+    // therefore already a uniqueness oracle — no tiebreak is needed
+    // (issue #275).
     let best = folders
         .into_iter()
-        .filter(|f| is_descendant_of(&f.path, &normalized))
-        .max_by_key(|f| f.path.len());
+        .find(|f| is_descendant_of(&f.path, &normalized));
     Ok(Json(best.map(|f| CoveResolve {
         cove_id: f.cove_id,
         folder_id: f.id,

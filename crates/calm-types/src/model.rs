@@ -193,9 +193,10 @@ pub struct Cove {
 ///
 /// One row per claimed directory; `path` is absolute and globally
 /// unique across the table. A folder transparently covers every
-/// descendant path — the kernel resolves a `cwd` to its owning cove
-/// via longest-prefix matching against this table (see
-/// `GET /api/coves/resolve`).
+/// descendant path — the kernel resolves a `cwd` to its owning cove by
+/// finding the claim that covers it (see `GET /api/coves/resolve`).
+/// The create endpoint rejects ancestor/descendant overlap with a 409,
+/// so at most one claim can cover any given path.
 ///
 /// `id` is an autoincrement integer rather than the kernel's usual
 /// uuid-shaped TEXT id because cove_folders is a small, kernel-internal
@@ -210,10 +211,6 @@ pub struct CoveFolder {
     #[schema(value_type = String)]
     pub cove_id: CoveId,
     pub path: String,
-    /// Normalized `owner/name` from the folder's Git origin, when resolvable.
-    pub repo_identity: Option<String>,
-    /// Unix epoch milliseconds of the most recent identity probe.
-    pub repo_identity_probed_at: Option<i64>,
     pub created_at: i64,
 }
 

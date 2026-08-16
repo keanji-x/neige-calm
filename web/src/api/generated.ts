@@ -1225,9 +1225,10 @@ export interface components {
          *
          *     One row per claimed directory; `path` is absolute and globally
          *     unique across the table. A folder transparently covers every
-         *     descendant path — the kernel resolves a `cwd` to its owning cove
-         *     via longest-prefix matching against this table (see
-         *     `GET /api/coves/resolve`).
+         *     descendant path — the kernel resolves a `cwd` to its owning cove by
+         *     finding the claim that covers it (see `GET /api/coves/resolve`).
+         *     The create endpoint rejects ancestor/descendant overlap with a 409,
+         *     so at most one claim can cover any given path.
          *
          *     `id` is an autoincrement integer rather than the kernel's usual
          *     uuid-shaped TEXT id because cove_folders is a small, kernel-internal
@@ -1243,13 +1244,6 @@ export interface components {
             /** Format: int64 */
             id: number;
             path: string;
-            /** @description Normalized `owner/name` from the folder's Git origin, when resolvable. */
-            repo_identity?: string | null;
-            /**
-             * Format: int64
-             * @description Unix epoch milliseconds of the most recent identity probe.
-             */
-            repo_identity_probed_at?: number | null;
         };
         /**
          * @description Issue #175 — visibility / ownership gate persisted on each cove.
@@ -1883,8 +1877,9 @@ export interface components {
         ResolveQuery: {
             /**
              * @description Absolute filesystem path to resolve against every cove's folder
-             *     claims. Returns the most-specific claim that covers it (longest
-             *     prefix), or `null` if no claim covers the path.
+             *     claims. Returns the claim that covers it, or `null` if no claim
+             *     covers the path. At most one claim can cover a path: the create
+             *     endpoint rejects ancestor/descendant overlap with a 409.
              */
             path: string;
         };
@@ -3146,8 +3141,9 @@ export interface operations {
             query: {
                 /**
                  * @description Absolute filesystem path to resolve against every cove's folder
-                 *     claims. Returns the most-specific claim that covers it (longest
-                 *     prefix), or `null` if no claim covers the path.
+                 *     claims. Returns the claim that covers it, or `null` if no claim
+                 *     covers the path. At most one claim can cover a path: the create
+                 *     endpoint rejects ancestor/descendant overlap with a 409.
                  */
                 path: string;
             };
@@ -3157,7 +3153,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Owning cove + folder, or null when no claim covers the path */
+            /** @description The cove + folder whose claim covers the path, or null when no claim covers it. Overlapping claims are rejected at create time, so at most one claim can match. */
             200: {
                 headers: {
                     [name: string]: unknown;

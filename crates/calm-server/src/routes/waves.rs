@@ -654,20 +654,6 @@ pub(crate) async fn create_wave(
         }
     }
 
-    // Git probing must finish before `write_with_events_typed` opens its
-    // SQLite write transaction. The resolved value then commits with the
-    // folder and wave rows.
-    let repo_identity = attach_folder
-        .then(|| {
-            calm_truth::repo_identity::probe_repo_identity(std::path::Path::new(&normalized_cwd))
-        })
-        .flatten();
-    let repo_identity_probed_at = attach_folder.then(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as i64
-    });
     create_wave_with_spec_harness(
         s,
         actor,
@@ -676,10 +662,6 @@ pub(crate) async fn create_wave(
             attach_folder,
             body_cove_id,
             normalized_cwd,
-            repo_identity: AttachRepoIdentity {
-                identity: repo_identity,
-                probed_at: repo_identity_probed_at,
-            },
             fork_report_from,
         },
     )
@@ -747,16 +729,10 @@ fn validate_workflow_input_binding(
     }
 }
 
-struct AttachRepoIdentity {
-    identity: Option<String>,
-    probed_at: Option<i64>,
-}
-
 struct CreateWaveOptions {
     attach_folder: bool,
     body_cove_id: String,
     normalized_cwd: String,
-    repo_identity: AttachRepoIdentity,
     fork_report_from: Option<String>,
 }
 
@@ -877,10 +853,6 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
             attach_folder: false,
             body_cove_id: cove_id.clone(),
             normalized_cwd: cwd,
-            repo_identity: AttachRepoIdentity {
-                identity: None,
-                probed_at: None,
-            },
             fork_report_from: None,
         },
         Some(COVE_CHAT_PURPOSE),
@@ -915,7 +887,6 @@ async fn create_wave_structure(
         attach_folder,
         body_cove_id,
         normalized_cwd,
-        repo_identity,
         fork_report_from,
     } = options;
     let spec_card_id = new_id();
@@ -927,8 +898,6 @@ async fn create_wave_structure(
     let report_card_id_for_tx = report_card_id.clone();
     let cove_id_for_attach = body_cove_id;
     let normalized_cwd_for_tx = normalized_cwd;
-    let repo_identity_for_tx = repo_identity.identity;
-    let repo_identity_probed_at = repo_identity.probed_at;
     let fork_author = if actor.as_str() == Actor::DEFAULT {
         EditAuthor::User
     } else {
@@ -946,8 +915,6 @@ async fn create_wave_structure(
                         tx,
                         &cove_id_for_attach,
                         &normalized_cwd_for_tx,
-                        repo_identity_for_tx.as_deref(),
-                        repo_identity_probed_at.expect("attach probe timestamp"),
                     )
                     .await?;
                 }
