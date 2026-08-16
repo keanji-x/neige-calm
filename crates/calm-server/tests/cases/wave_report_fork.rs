@@ -1225,7 +1225,8 @@ async fn fork_fails_closed_on_residual_tombstoned_by_on_a_live_task() {
 /// why no variant of this test asserts one. `ai:codex` is the only header form
 /// that maps onto a real AI `ActorId` (`actor.rs:98-104`,
 /// `ActorId::AiCodex(CardId::from(""))`), and it carries an empty card id, so
-/// `role_gate.rs:197` answers `EmptyAiCardId` → 403 when the wave-create event
+/// `calm-truth/src/role_gate.rs:197` answers `EmptyAiCardId` → 403 when the
+/// wave-create event
 /// emits. Under `ai:codex` this route cannot reach 201 whatever the report
 /// holds — the old 400 was simply an earlier stop on a request that was going
 /// to 403 anyway.
@@ -1241,9 +1242,9 @@ async fn fork_of_a_released_template_succeeds_and_drops_the_release() {
         &boot.cookie,
         Some(json!({
             "cove_id": boot.cove_id,
-            "title": "non-user released fork",
+            "title": "released template fork",
             "sort": null,
-            "cwd": format!("{}-non-user-released", boot.target_cwd),
+            "cwd": format!("{}-released-template-fork", boot.target_cwd),
             "attach_folder": true,
             "theme": routes::theme::RequestTheme::default_dark(),
             "fork_report_from": boot.source_wave_id,

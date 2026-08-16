@@ -280,7 +280,7 @@ Tokio 任务 + 一整套 CRDT/vcs/session/token 行**。
 | 3 | **`author != User`** 时，不得删除、也不得修改任何满足 `declared_by == "user"` **或** `tombstoned_by == "user"` 的 `task` 块（**只能移动**）。**第二个析取项是必需的**：人否决 spec 声明的任务后，墓碑的 `declared_by` 仍是 `"spec"`，只靠第一个析取项 spec 可以直接删掉墓碑再重提，死循环原地复活。**主语是 `!= User` 而不是 `== Spec`**，与规则 1 同一形状同一理由。该析取项**只**对本 wave 里人真正下的否决成立：fork 过来的模板墓碑已在 §7.2 被归一化为 `"spec"`，不落入本条 |
 | 4 | User 删除一个活的 task 块 ⇒ 改写为**原位墓碑**（`tombstoned_by: "user"`）|
 | 4′ | **主条款**：`author == User` 时，`before` 里任何非墓碑 `task` 块若在 `after` 中消失，则 `after` **必须存在同 `key` 且 `tombstoned_by=="user"` 的墓碑**，否则拒绝，**错误文案指向块级 DELETE 端点**（规则 4 只覆盖块级 DELETE，整文档路径必须 fail-closed）。**补丁**：满足它的墓碑必须是**本次编辑新立的**。live → tombstone 时 `tombstoned_by` 必须等于本次编辑的 author：没有它，spec 能伪造人的否决（终局、不可撤回，且规则 3 之后对 spec 永久锁死），人也能自废 §6.1 的防线。**且不得被一个早已存在的同 key 用户墓碑满足**——否则 fail-closed 兜底在它真正要生效的那天不成立 |
-| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变**。**fork 更严**：任何作者 fork 出来的块都不得携带**为真的**该位（§7.2 / #1115），归一化在前（删键）、`fork_guard` 的腰带在后（判「不等于 `false`」，故显式 `false` 也放行）|
+| 5 | `released_by_user` **只有 `EditAuthor::User` 能写入或改变**。**fork 更严**：任何作者 fork 出来的块都不得携带**不等于 `false` 的**该位（§7.2 / #1115），归一化在前（删键）、`fork_guard` 的腰带在后（判「不等于 `false`」，故显式 `false` 也放行）|
 | 6 | 既有块上 `key` 不可就地改写（§3.3）|
 
 **收口的完整性**（逐条查过绕过面）：`apply_report_op` 只在
@@ -1167,13 +1167,17 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 意思」）。两组的差就是 `ready`。
 
 **归一化之后还有一条 fail-closed 腰带**（`fork_guard::guard_forked_blocks`，#1115）：
-**任何** fork 出来的 task 块都不得携带**为真的**放行位，**不分作者**，否则整条
-wave 创建 400。**判据是「不等于 `false`」而不是「键存在」** —— 键缺席（归一化之后
-的规范形状）与显式 `released_by_user: false` 都放行。这是刻意的：腰带的用途是抓
+**任何** fork 出来的 task 块都不得携带**不等于 `false` 的**放行位，**不分作者**，
+否则整条 wave 创建 400。**判据是「不等于 `false`」而不是「键存在」** —— 键缺席
+（归一化之后的规范形状）与显式 `released_by_user: false` 都放行；`null` 或字符串
+这类 schema 本就不允许的值（`kinds.rs:243-245` 要求 boolean）则一律被拒，方向是
+fail-closed。这是刻意的：腰带的用途是抓
 归一化的回归（模板的**放行**漏进新 wave），不是规定「未放行」该怎么编码；显式
 `false` 对所有读者与缺席等价（`tasks.rs` 的 `.unwrap_or(false)`、前端判 falsy），
 若将来归一化改成写显式 `false`（语义无害），一条严格要求「键必须缺席」的腰带就会
-把一次无害的编码变更判成 400。它比 §3.7 规则 5 严格（规则 5 只咬 `author != User`），且**刻意不再
+把一次无害的编码变更判成 400。同一条「不等于 `false`」判据（而非 `is_some()`）在
+普通守卫里已有先例：非 User 作者**新建** task 块时走的正是它
+（`wave_report_edit_guard.rs:111-115`）。它比 §3.7 规则 5 严格（规则 5 只咬 `author != User`），且**刻意不再
 接收 author 参数** —— 旧形状正是栽在这里：浏览器 fork 不带 `X-Calm-Actor` 头，wave
 创建路径把它判成 `User`，于是规则 5 对最常见的那条路径恒不成立，守卫等于空转。
 腰带在正常路径上永远查不到东西（归一化排在它前面），**这个恒真是它的稳态而不是它
