@@ -17,6 +17,8 @@ mod chat_wave_ensure;
 mod claude_fsm_overlay;
 #[path = "cases/claude_ingest.rs"]
 mod claude_ingest;
+#[path = "cases/cove_conversations.rs"]
+mod cove_conversations;
 #[path = "cases/cove_folders.rs"]
 mod cove_folders;
 #[path = "cases/cove_system_endpoint.rs"]

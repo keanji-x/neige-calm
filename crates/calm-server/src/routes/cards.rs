@@ -668,7 +668,7 @@ pub struct GetSpecRunResponse {
     pub phase: Option<HarnessPhaseTag>,
 }
 
-const MAX_SPEC_INPUT_CHARS: usize = 32_768;
+pub(crate) const MAX_SPEC_INPUT_CHARS: usize = 32_768;
 
 fn spec_input_audit_actor(actor: &Actor, card_id: &CardId) -> ActorId {
     match actor.to_actor_id() {
@@ -1315,6 +1315,8 @@ async fn reset_spec_harness_card(
         } else {
             HarnessProfile::Spec
         },
+        create_card: None,
+        first_message_sha256: None,
     };
     let start_payload = serde_json::to_value(start_request)?;
     run_spec_card_operation(&s, "spec-harness-start", start_payload).await?;

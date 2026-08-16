@@ -476,6 +476,41 @@ pub struct CardRuntimeView {
     pub thread_status: Option<String>,
 }
 
+/// One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
+///
+/// Deliberately absent:
+/// * `waveTitle` — every row belongs to the same hidden cove chat wave, so
+///   returning its title would leak an object the user is never shown.
+/// * `turns` — the server cannot produce a turn count that agrees with the
+///   drawer without re-parsing every `harness_items.params` blob; a number
+///   that silently disagrees is worse than no number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct CoveConversationSummary {
+    /// The chat card's id. This is the conversation's identity everywhere.
+    pub id: String,
+    pub wave_id: String,
+    /// The conversation's own name, or null before it has one. Never the
+    /// wave's title.
+    pub title: Option<String>,
+    /// Always `"shared-chat"`, derived from the card's persisted marker rather
+    /// than from the session kind (the session is an ordinary codex-card
+    /// session and says nothing about the conversation being a cove chat).
+    pub kind: String,
+    /// The live session's state, or **null when the card has no session row**.
+    ///
+    /// This must stay nullable and must never be filled with an invented
+    /// value. The list is a LEFT JOIN precisely so a card whose session is
+    /// gone (failed start, superseded runtime, shut-down harness) stays
+    /// visible; substituting `idle` or `exited` here would report a session
+    /// state that was never read.
+    pub state: Option<WorkerSessionState>,
+    /// The session's last update, falling back to the card's own — a card
+    /// minted seconds ago with no session yet still sorts sensibly.
+    pub updated_at: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Card {

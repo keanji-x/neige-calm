@@ -11,6 +11,7 @@ pub mod claude;
 pub mod claude_cards;
 pub mod codex;
 pub mod codex_cards;
+pub mod cove_conversations;
 pub mod cove_folders;
 pub mod coves;
 pub mod fs;
@@ -52,6 +53,7 @@ pub fn router() -> Router<AppState> {
 pub fn protected_router() -> Router<AppState> {
     Router::new()
         .merge(coves::router())
+        .merge(cove_conversations::router())
         .merge(cove_folders::router())
         .merge(waves::router())
         .merge(wave_report_blocks::router())

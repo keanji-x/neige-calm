@@ -371,10 +371,14 @@ pub(crate) async fn list_waves_by_cove(
 
 /// Public wave lists hide only the cove conversation container. Keep this at
 /// the route boundary: repository readers such as cove deletion and backlink
-/// resolution require the complete set. The explicit `None` arm is the Rust
-/// equivalent of SQL's
-/// `w.purpose IS NULL OR w.purpose <> 'cove-chat'`; ordinary NULL-purpose
-/// waves must remain visible.
+/// resolution require the complete set.
+///
+/// The `match` is spelled out rather than written `!= Some(COVE_CHAT_PURPOSE)`
+/// purely for readability — both forms already keep NULL-purpose waves
+/// visible, because Rust comparison against `Option` is total. The three-valued
+/// logic trap this must not be confused with lives in SQL, where
+/// `purpose <> 'cove-chat'` drops NULL rows; the two hand-written predicates
+/// that must spell out `purpose IS NULL OR ...` are in `session_repo_impl.rs`.
 fn user_visible_wave(wave: &Wave) -> bool {
     match wave.purpose.as_deref() {
         None => true,
@@ -796,6 +800,28 @@ pub(crate) async fn ensure_cove_chat_wave(
     actor: Actor,
     Path(cove_id): Path<String>,
 ) -> Result<Response> {
+    let (wave, created) = ensure_cove_chat_wave_inner(&s, actor, &cove_id).await?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(wave)).into_response())
+}
+
+/// The body of [`ensure_cove_chat_wave`], shared with
+/// `POST /api/coves/{cove_id}/conversations` (#1098 slice 3). Returns the
+/// wave and whether this call is the one that created it.
+///
+/// Both callers must agree byte-for-byte on the cwd rule and the concurrent
+/// ensure race resolution, so there is exactly one implementation of them.
+#[allow(deprecated)]
+pub(crate) async fn ensure_cove_chat_wave_inner(
+    s: &RouteState,
+    actor: Actor,
+    cove_id: &str,
+) -> Result<(Wave, bool)> {
+    let cove_id = cove_id.to_string();
     if s.repo.cove_get(&cove_id).await?.is_none() {
         return Err(CalmError::NotFound(format!("cove {cove_id}")));
     }
@@ -809,7 +835,7 @@ pub(crate) async fn ensure_cove_chat_wave(
         .into_iter()
         .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
     {
-        return Ok((StatusCode::OK, Json(wave)).into_response());
+        return Ok((wave, false));
     }
 
     #[cfg(feature = "fixtures")]
@@ -874,12 +900,7 @@ pub(crate) async fn ensure_cove_chat_wave(
         }
         Err(error) => return Err(error),
     };
-    let status = if created {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    Ok((status, Json(wave)).into_response())
+    Ok((wave, created))
 }
 
 #[allow(deprecated)]
@@ -1130,6 +1151,8 @@ async fn start_spec_harness(
         reset_harness_items: false,
         force_new_thread: false,
         profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
@@ -1421,6 +1444,11 @@ pub(crate) async fn update_wave(
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    // The guard fires on *mentioning* `lifecycle`, not on changing it: a PATCH
+    // that re-sends the wave's current lifecycle is 403 too. That is
+    // deliberate — the chat wave has no lifecycle the user may drive, so
+    // accepting a no-op write would advertise an editable field, and the FSM
+    // would then have to be trusted to keep every such write a no-op forever.
     if existing.purpose.as_deref() == Some(COVE_CHAT_PURPOSE) && p.lifecycle.is_some() {
         return Err(CalmError::Forbidden(
             "cove chat wave lifecycle cannot be changed".into(),

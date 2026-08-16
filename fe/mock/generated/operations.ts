@@ -1091,6 +1091,176 @@ export const mockOperations = [
         }
       }
     ],
+    "path": "/api/coves/{cove_id}/conversations",
+    "responses": [
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "items": {
+                "$ref": "#/components/schemas/CoveConversationSummary"
+              },
+              "type": "array"
+            }
+          }
+        ],
+        "status": "200"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "404"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "500"
+      }
+    ],
+    "template": [
+      {
+        "kind": "literal",
+        "value": "/api/coves/"
+      },
+      {
+        "kind": "parameter",
+        "name": "cove_id"
+      },
+      {
+        "kind": "literal",
+        "value": "/conversations"
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "parameters": [
+      {
+        "in": "path",
+        "name": "cove_id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "path": "/api/coves/{cove_id}/conversations",
+    "responses": [
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/CoveConversationSummary"
+            }
+          }
+        ],
+        "status": "201"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "400"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "404"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "409"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "500"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "503"
+      }
+    ],
+    "template": [
+      {
+        "kind": "literal",
+        "value": "/api/coves/"
+      },
+      {
+        "kind": "parameter",
+        "name": "cove_id"
+      },
+      {
+        "kind": "literal",
+        "value": "/conversations"
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "parameters": [
+      {
+        "in": "path",
+        "name": "cove_id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
     "path": "/api/coves/{cove_id}/folders",
     "responses": [
       {
@@ -4595,6 +4765,7 @@ export const schemaWireTypes = {
   "CardRole": "CardRole",
   "CardRuntimeView": "CardRuntimeView",
   "Cove": "Cove",
+  "CoveConversationSummary": "CoveConversationSummary",
   "CoveFolder": "CoveFolder",
   "CoveKind": "CoveKind",
   "CovePatch": null,
@@ -4625,6 +4796,7 @@ export const schemaWireTypes = {
   "NewClaudeCardBody": null,
   "NewCodexCardBody": null,
   "NewCove": null,
+  "NewCoveConversationBody": null,
   "NewCoveFolder": null,
   "NewOverlay": null,
   "NewTerminalCardBody": null,

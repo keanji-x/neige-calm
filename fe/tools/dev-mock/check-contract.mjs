@@ -37,8 +37,8 @@ if (unaccounted.length || staleExemptions.length) {
 function concrete(path) {
   return path.replace('{cove_id}', 'cove-atlas').replace('{id}', path.startsWith('/api/coves/') ? 'cove-atlas' : 'w-1');
 }
-async function invoke(method, path, body = {}) {
-  const req = new EventEmitter(); req.method = method; req.url = concrete(path);
+async function invoke(method, path, body = {}, headers = {}) {
+  const req = new EventEmitter(); req.method = method; req.url = concrete(path); req.headers = headers;
   const result = await new Promise((resolveResult) => {
     const headers = {}; const chunks = [];
     const res = { statusCode: 0, setHeader: (key, value) => { headers[key] = value; }, end: (chunk = '') => {
@@ -105,6 +105,23 @@ if (chatWaveCreated.status !== 201 || chatWaveExisting.status !== 200
   || !waveSchema.strict().safeParse(chatWaveCreated.body).success) {
   console.error('dev-mock-contract: invalid POST /api/coves/{cove_id}/chat-wave/ensure response'); process.exitCode = 1;
 }
+const conversationsEmpty = await invoke('GET', '/api/coves/{cove_id}/conversations');
+const conversationCreated = await invoke('POST', '/api/coves/{cove_id}/conversations', { text: 'first message' }, { 'idempotency-key': 'probe-1' });
+const conversationRetried = await invoke('POST', '/api/coves/{cove_id}/conversations', { text: 'first message' }, { 'idempotency-key': 'probe-1' });
+const conversationsListed = await invoke('GET', '/api/coves/{cove_id}/conversations');
+const conversationMissingKey = await invoke('POST', '/api/coves/{cove_id}/conversations', { text: 'first message' });
+if (conversationsEmpty.status !== 200 || !Array.isArray(conversationsEmpty.body) || conversationsEmpty.body.length !== 0
+  || conversationCreated.status !== 201 || conversationCreated.body?.kind !== 'shared-chat'
+  || typeof conversationCreated.body?.waveId !== 'string' || conversationCreated.body?.title !== null
+  || typeof conversationCreated.body?.updatedAt !== 'number'
+  || 'idempotencyKey' in (conversationCreated.body ?? {})
+  || conversationRetried.status !== 201 || conversationRetried.body?.id !== conversationCreated.body?.id
+  || conversationsListed.body?.length !== 1
+  || conversationsListed.body.some((row) => 'idempotencyKey' in row)
+  || conversationMissingKey.status !== 400) {
+  console.error('dev-mock-contract: invalid /api/coves/{cove_id}/conversations behaviour'); process.exitCode = 1;
+}
+
 for (const [method, path, body, schema] of [
   ['PATCH', '/api/coves/{id}', { name: 'atlas-probed' }, coveSchema.strict()],
   ['PATCH', '/api/waves/{id}', { title: 'wave-probed' }, waveSchema.strict()],
