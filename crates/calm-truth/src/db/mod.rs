@@ -308,8 +308,9 @@ pub trait RepoRead: Send + Sync + 'static {
     /// Issue #250 PR 1 — folders claimed by a single cove, sorted by
     /// path for stable UI ordering.
     async fn cove_folders_by_cove(&self, cove_id: &str) -> Result<Vec<CoveFolder>>;
-    /// Issue #250 PR 1 — every folder across every cove. Used by the
-    /// resolve endpoint to do longest-prefix matching application-side
+    /// Issue #250 PR 1 — every folder across every cove, `ORDER BY path
+    /// ASC`. Used by the resolve endpoint to find the covering claim
+    /// application-side
     /// (SQLite has no native prefix function fast enough to outweigh
     /// a Rust-side O(N) scan at the table sizes we expect — folders are
     /// minted manually by users, not auto-discovered).
@@ -1032,11 +1033,36 @@ pub trait RepoOutOfDomain: RepoRead {
     // path (no `Event::CoveFolderAdded`-style variants land in PR 1).
     // Treated like terminals / plugins: server-private state, REST writes
     // straight against the row without an event-log entry.
-    /// Insert a folder under `cove_id`. The caller is responsible for
-    /// path normalization + conflict detection — both run at the route
-    /// layer (`routes::cove_folders::create_folder`) so the structured
-    /// 409 body can be assembled with the conflicting row's metadata.
+    /// Insert a folder under `cove_id` with **no** overlap check. The
+    /// caller owns path normalization and conflict detection.
+    ///
+    /// Not reachable from HTTP: `POST /api/coves/{id}/folders` goes
+    /// through [`Self::cove_folder_create_checked`] because a scan on one
+    /// pooled connection followed by an INSERT on another lets two
+    /// concurrent requests both claim overlapping paths (#275). This
+    /// primitive survives for tests and seeds that deliberately want to
+    /// build states the checked writer refuses.
     async fn cove_folder_create(&self, cove_id: &str, path: &str) -> Result<CoveFolder>;
+    /// Issue #275 — atomically claim `path` for `cove_id`: the overlap
+    /// scan and the INSERT run inside one `BEGIN IMMEDIATE` transaction,
+    /// so no concurrent writer can slip an ancestor/descendant claim
+    /// between them. `UNIQUE(cove_folders.path)` only catches *equal*
+    /// paths and is therefore not sufficient on its own.
+    ///
+    /// This is what makes "at most one claim covers any path" a real
+    /// invariant, which in turn is what lets
+    /// [`crate::cove_folder_claim::find_owner`] serve both resolvers
+    /// without a tiebreak.
+    ///
+    /// Returns `Conflict` (not `Err`) for overlap so the route can render
+    /// the structured 409 body; a missing `cove_id` is still `Err(NotFound)`.
+    /// The transaction does nothing but two SQL statements — no I/O — so
+    /// the writer-lock window stays as short as the plain INSERT's.
+    async fn cove_folder_create_checked(
+        &self,
+        cove_id: &str,
+        path: &str,
+    ) -> Result<crate::cove_folder_claim::CoveFolderClaim>;
     /// Delete a folder by integer id. Returns `NotFound` when no row
     /// exists. PR 2 will add a "has live wave referencing this path"
     /// guard at the route layer; the repo primitive stays narrow.

@@ -5556,7 +5556,7 @@
         "properties": {
           "attach_folder": {
             "type": "boolean",
-            "description": "Issue #250 PR 2 — opt-in for \"claim this `cwd` for the body's\n`cove_id` as a new folder, in the same transaction as the\nwave-create write\". Default `false`: the cwd must already be\ncovered by some existing folder under the same cove (the\n`cove_folder_resolve` longest-prefix match runs at the route\nlayer). `true` adds a `cove_folder` row first and then the\nwave; folder-conflict rules (equal/ancestor/descendant of any\nexisting claim) still apply and roll the whole tx back on\nconflict."
+            "description": "Issue #250 PR 2 — opt-in for \"claim this `cwd` for the body's\n`cove_id` as a new folder, in the same transaction as the\nwave-create write\". Default `false`: the cwd must already be\ncovered by some existing folder under the same cove. Both the\ncovering scan and the claim insert run inside that one\ntransaction (issue #275), through the same\n[`crate::cove_folder_claim::find_owner`] rule\n`GET /api/coves/resolve` uses. `true` adds a `cove_folder` row\nfirst and then the wave; folder-conflict rules\n(equal/ancestor/descendant of any existing claim) still apply and\nroll the whole tx back on conflict."
           },
           "cove_id": {
             "type": "string"

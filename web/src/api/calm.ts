@@ -134,9 +134,10 @@ export const wavesInCove = (coveId: string) =>
   request<KernelWave[]>('GET', `/api/coves/${encodeURIComponent(coveId)}/waves`);
 
 /**
- * Issue #250 PR 3 — longest-prefix lookup for "which cove (if any)
- * already claims this absolute path?". Returns `null` when no cove
- * covers it; the caller then either picks an existing cove + opts in
+ * Issue #250 PR 3 — "which cove (if any) already claims this absolute
+ * path?". At most one claim can cover a path (overlap is rejected
+ * atomically at create time, issue #275), so there is no tiebreak and
+ * no ambiguity. Returns `null` when no cove covers it; the caller then either picks an existing cove + opts in
  * to `attach_folder: true` on the wave-create, or mints a fresh cove.
  *
  * NewTaskForm is the only consumer today — debounced cwd-input change

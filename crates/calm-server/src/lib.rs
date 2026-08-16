@@ -546,6 +546,10 @@ pub mod card_fsm;
 pub mod card_role_cache;
 pub mod codex_appserver;
 pub mod config;
+/// Issue #275 — cove folder claim rules (path normalization, overlap
+/// classification, the one covering-scan). Re-exported at the old crate
+/// path so routes and tests don't reach across into `calm_truth`.
+pub use calm_truth::cove_folder_claim;
 pub mod db;
 pub mod decision_sink;
 pub mod dispatcher;

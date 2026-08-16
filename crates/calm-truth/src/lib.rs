@@ -7,6 +7,7 @@ pub static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
 pub mod card_kind;
 pub mod card_role_cache;
+pub mod cove_folder_claim;
 pub mod db;
 pub mod decision_gate;
 pub mod event_bus;

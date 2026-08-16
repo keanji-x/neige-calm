@@ -4,6 +4,7 @@ use sqlx::Sqlite;
 use sqlx::Transaction;
 
 use super::{SqlxRepo, begin_immediate_tx};
+use crate::cove_folder_claim::CoveFolderClaim;
 use crate::db::{RepoOutOfDomain, RepoRead, SharedCodexDaemonUpdate};
 use crate::error::{CalmError, Result};
 use crate::model::*;
@@ -590,11 +591,10 @@ impl RepoOutOfDomain for SqlxRepo {
             return Err(CalmError::NotFound(format!("cove {cove_id}")));
         }
         let now = now_ms();
-        // The UNIQUE constraint on `path` is the backstop here. The
-        // route layer has already done equality / ancestor / descendant
-        // conflict detection so a real-world INSERT failing the
-        // UNIQUE is a race (concurrent claim of the same path). Bubble
-        // it up as the generic Conflict so the surface is honest.
+        // Unchecked primitive: no overlap scan at all (see the trait
+        // doc). The UNIQUE constraint on `path` is the only guard, and
+        // it only rejects an *equal* path. HTTP callers go through
+        // `cove_folder_create_checked` instead (#275).
         let res =
             sqlx::query("INSERT INTO cove_folders (cove_id, path, created_at) VALUES (?1, ?2, ?3)")
                 .bind(cove_id)
@@ -614,6 +614,34 @@ impl RepoOutOfDomain for SqlxRepo {
             ),
             Err(e) => Err(e.into()),
         }
+    }
+
+    async fn cove_folder_create_checked(
+        &self,
+        cove_id: &str,
+        path: &str,
+    ) -> Result<CoveFolderClaim> {
+        // #275 — BEGIN IMMEDIATE takes the writer lock *before* the scan,
+        // so the SELECT and the INSERT are one atomic step. Without it the
+        // scan and the insert land on two different pooled connections and
+        // concurrent `/a` + `/a/b` claims both pass an empty-table scan
+        // (UNIQUE(path) only rejects *equal* paths).
+        //
+        // Deliberately nothing but three statements in here: no git probe,
+        // no filesystem work, no plugin/network call. The writer-lock hold
+        // is the same order of magnitude as the bare INSERT it replaces.
+        let mut tx = begin_immediate_tx(&self.pool).await?;
+        let existing = super::cove_folders_list_all_tx(&mut tx).await?;
+        if let Some(conflict) = crate::cove_folder_claim::classify_conflict(&existing, path) {
+            // Read-only tx: rollback is the cheap, explicit close.
+            let _ = tx.rollback().await;
+            return Ok(CoveFolderClaim::Conflict(conflict));
+        }
+        // Shares the cove-exists check + UNIQUE-to-Conflict mapping with
+        // the wave-create attach path.
+        let folder = super::cove_folder_create_tx(&mut tx, cove_id, path).await?;
+        tx.commit().await?;
+        Ok(CoveFolderClaim::Created(folder))
     }
 
     async fn cove_folder_delete(&self, id: i64) -> Result<()> {

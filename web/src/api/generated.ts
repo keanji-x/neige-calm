@@ -1684,12 +1684,14 @@ export interface components {
              * @description Issue #250 PR 2 — opt-in for "claim this `cwd` for the body's
              *     `cove_id` as a new folder, in the same transaction as the
              *     wave-create write". Default `false`: the cwd must already be
-             *     covered by some existing folder under the same cove (the
-             *     `cove_folder_resolve` longest-prefix match runs at the route
-             *     layer). `true` adds a `cove_folder` row first and then the
-             *     wave; folder-conflict rules (equal/ancestor/descendant of any
-             *     existing claim) still apply and roll the whole tx back on
-             *     conflict.
+             *     covered by some existing folder under the same cove. Both the
+             *     covering scan and the claim insert run inside that one
+             *     transaction (issue #275), through the same
+             *     [`crate::cove_folder_claim::find_owner`] rule
+             *     `GET /api/coves/resolve` uses. `true` adds a `cove_folder` row
+             *     first and then the wave; folder-conflict rules
+             *     (equal/ancestor/descendant of any existing claim) still apply and
+             *     roll the whole tx back on conflict.
              */
             attach_folder?: boolean;
             cove_id: string;
