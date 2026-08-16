@@ -14,11 +14,15 @@ import { z } from 'zod';
 
 import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
+import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
   coveListOperation, createCoveOperation, deleteCoveOperation, sortedCoves, toCove,
   updateCoveOperation, visibleCoves,
   type Cove, type CovePatchBody, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
+import {
+  waveBacklinksOperation, type WaveBacklinks,
+} from '../../../../core/domain/report.ts';
 import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
@@ -27,7 +31,12 @@ import {
   waveActivityFrom, waveDetailOperation, wavesInCoveOperation,
   type NewWaveBody, type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody,
 } from '../../../../core/domain/wave.ts';
+import {
+  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, resetSpecOperation, sendSpecInputOperation,
+  specRunOperation,
+} from '../../../../core/domain/conversation.ts';
 import type { ServerVersionInfo } from './public.tsx';
+import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
 
 export class ApiError extends Error {
   readonly failure: ApiFailure;
@@ -43,8 +52,9 @@ export class ApiError extends Error {
 export async function runOperation<T>(
   transport: ApiTransportPort,
   operation: ApiOperation<T>,
+  unauthorized: UnauthorizedChannel | undefined,
 ): Promise<T> {
-  const result = await performApiRequest(transport, operation);
+  const result = await performApiRequest(transport, operation, unauthorized);
   if (result.status === 'failed') throw new ApiError(result.error);
   return result.value;
 }
@@ -55,9 +65,48 @@ export const queryKeys = Object.freeze({
   coves: () => ['coves'] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
+  waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  harnessItems: (cardId: string) => ['harness-items', cardId] as const,
+  specRun: (cardId: string) => ['spec-run', cardId] as const,
 });
+
+export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.harnessItems(cardId),
+    queryFn: ({ pageParam }: { pageParam: number }) => runOperation(
+      transport, harnessItemsOperation(cardId, pageParam, 'desc'), unauthorized,
+    ),
+    initialPageParam: 0,
+    getNextPageParam: (page: HarnessItem[]) =>
+      page.length === HARNESS_ITEMS_PAGE_LIMIT ? page[0]?.id : undefined,
+  };
+}
+
+export function specRunQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.specRun(cardId),
+    queryFn: () => runOperation(transport, specRunOperation(cardId), unauthorized),
+  };
+}
+
+export function useSpecMutations(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
+  const client = useQueryClient();
+  const refresh = () => Promise.all([
+    client.invalidateQueries({ queryKey: queryKeys.harnessItems(cardId) }),
+    client.invalidateQueries({ queryKey: queryKeys.specRun(cardId) }),
+  ]).then(() => undefined);
+  const refreshAfter = async <T,>(result: T): Promise<T> => {
+    await refresh();
+    return result;
+  };
+  return {
+    send: (text: string) => runOperation(transport, sendSpecInputOperation(cardId, text), unauthorized).then(refreshAfter),
+    interrupt: () => runOperation(transport, interruptSpecOperation(cardId), unauthorized).then(refreshAfter),
+    reset: () => runOperation(transport, resetSpecOperation(cardId), unauthorized).then(refreshAfter),
+  };
+}
 
 const serverVersionSchema = z.object({
   webCompatVersion: z.number(),
@@ -78,40 +127,54 @@ export function logoutOperation(): ApiOperation<undefined> {
 
 // ---------- reads ----------
 
-export function coveListQueryOptions(transport: ApiTransportPort) {
+export function coveListQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.coves(),
     queryFn: async (): Promise<Cove[]> =>
-      sortedCoves(visibleCoves((await runOperation(transport, coveListOperation())).map(toCove))),
+      sortedCoves(visibleCoves((await runOperation(transport, coveListOperation(), unauthorized)).map(toCove))),
   };
 }
 
-export function waveOverlaysQueryOptions(transport: ApiTransportPort) {
+export function waveOverlaysQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.overlaysByKind('wave'),
-    queryFn: (): Promise<OverlayWire[]> => runOperation(transport, overlaysByKindOperation('wave')),
+    queryFn: (): Promise<OverlayWire[]> => runOperation(transport, overlaysByKindOperation('wave'), unauthorized),
   };
 }
 
-export function wavesInCoveQueryOptions(transport: ApiTransportPort, coveId: string) {
+export function wavesInCoveQueryOptions(transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.wavesInCove(coveId),
     queryFn: async (): Promise<Wave[]> =>
-      (await runOperation(transport, wavesInCoveOperation(coveId))).map((wire) => toWave(wire)),
+      (await runOperation(transport, wavesInCoveOperation(coveId), unauthorized)).map((wire) => toWave(wire)),
   };
 }
 
-export function waveDetailQueryOptions(transport: ApiTransportPort, waveId: string) {
+export function waveDetailQueryOptions(transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.waveDetail(waveId),
-    queryFn: (): Promise<WaveDetailWire> => runOperation(transport, waveDetailOperation(waveId)),
+    queryFn: (): Promise<WaveDetailWire> => runOperation(transport, waveDetailOperation(waveId), unauthorized),
   };
 }
 
-export function settingsQueryOptions(transport: ApiTransportPort) {
+/**
+ * Who cites this wave (§8.3).
+ *
+ * Its own cache entry rather than a field on the detail: backlinks are written
+ * by *other* waves, so they go stale on edits this wave never sees, and folding
+ * them into the detail would tie the document's freshness to theirs.
+ */
+export function waveBacklinksQueryOptions(transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.waveBacklinks(waveId),
+    queryFn: (): Promise<WaveBacklinks> => runOperation(transport, waveBacklinksOperation(waveId), unauthorized),
+  };
+}
+
+export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.settings(),
-    queryFn: (): Promise<SettingsBag> => runOperation(transport, settingsOperation()),
+    queryFn: (): Promise<SettingsBag> => runOperation(transport, settingsOperation(), unauthorized),
   };
 }
 
@@ -120,6 +183,14 @@ export type Workspace = Readonly<{
   wavesByCove: ReadonlyMap<string, Wave[]>;
   waves: Wave[];
   covesLoading: boolean;
+  overlaysLoading: boolean;
+  covesError: Error | null;
+  overlaysError: Error | null;
+  waveErrorsByCove: ReadonlyMap<string, Error>;
+  wavesLoadingByCove: ReadonlyMap<string, boolean>;
+  retryCoves: () => void;
+  retryOverlays: () => void;
+  retryWaves: (coveId: string) => void;
 }>;
 
 /**
@@ -133,28 +204,47 @@ export type Workspace = Readonly<{
  * `anyCardNeedsInput` / progress / eta / now, rather than only the wave the
  * user happens to have open.
  */
-export function useWorkspace(transport: ApiTransportPort): Workspace {
-  const covesQuery = useQuery(coveListQueryOptions(transport));
-  const overlaysQuery = useQuery(waveOverlaysQueryOptions(transport));
+export function useWorkspace(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Workspace {
+  const covesQuery = useQuery(coveListQueryOptions(transport, unauthorized));
+  const overlaysQuery = useQuery(waveOverlaysQueryOptions(transport, unauthorized));
   const coves = covesQuery.data ?? [];
   const overlays = overlaysQuery.data ?? [];
   const waveQueries = useQueries({
-    queries: coves.map((cove) => wavesInCoveQueryOptions(transport, cove.id)),
+    queries: coves.map((cove) => wavesInCoveQueryOptions(transport, cove.id, unauthorized)),
   });
   const wavesByCove = new Map<string, Wave[]>();
+  const waveErrorsByCove = new Map<string, Error>();
+  const wavesLoadingByCove = new Map<string, boolean>();
   const waves: Wave[] = [];
   for (const [index, cove] of coves.entries()) {
-    const rows = (waveQueries[index]?.data ?? [])
-      .map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
-    wavesByCove.set(cove.id, rows);
-    waves.push(...rows);
+    const query = waveQueries[index];
+    wavesLoadingByCove.set(cove.id, query?.isLoading ?? false);
+    if (query?.error instanceof Error) waveErrorsByCove.set(cove.id, query.error);
+    if (query?.data !== undefined) {
+      const rows = query.data.map((wave) => ({ ...wave, ...waveActivityFrom(wave.id, overlays) }));
+      wavesByCove.set(cove.id, rows);
+      waves.push(...rows);
+    }
   }
-  return { coves, wavesByCove, waves, covesLoading: covesQuery.isLoading };
+  return {
+    coves, wavesByCove, waves, covesLoading: covesQuery.isLoading,
+    overlaysLoading: overlaysQuery.isLoading,
+    covesError: covesQuery.error instanceof Error ? covesQuery.error : null,
+    overlaysError: overlaysQuery.error instanceof Error ? overlaysQuery.error : null,
+    waveErrorsByCove,
+    wavesLoadingByCove,
+    retryCoves: () => { void covesQuery.refetch(); },
+    retryOverlays: () => { void overlaysQuery.refetch(); },
+    retryWaves: (coveId) => {
+      const index = coves.findIndex((cove) => cove.id === coveId);
+      if (index >= 0) void waveQueries[index]?.refetch();
+    },
+  };
 }
 
 /** Route loaders prime only this one list; see INV-APP-084 above. */
-export function prefetchCoveList(client: QueryClient, transport: ApiTransportPort): Promise<Cove[]> {
-  return client.ensureQueryData(coveListQueryOptions(transport));
+export function prefetchCoveList(client: QueryClient, transport: ApiTransportPort, unauthorized: UnauthorizedChannel): Promise<Cove[]> {
+  return client.ensureQueryData(coveListQueryOptions(transport, unauthorized));
 }
 
 // ---------- mutations ----------
@@ -166,33 +256,35 @@ export function prefetchCoveList(client: QueryClient, transport: ApiTransportPor
 export type CoveMutations = Readonly<{
   create: (body: NewCoveBody) => Promise<Cove>;
   rename: (coveId: string, body: CovePatchBody) => Promise<Cove>;
-  remove: (coveId: string) => Promise<void>;
+  remove: (coveId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
-export function useCoveMutations(transport: ApiTransportPort): CoveMutations {
+export function useCoveMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): CoveMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: (body: NewCoveBody) => runOperation(transport, createCoveOperation(body)),
+    mutationFn: (body: NewCoveBody) => runOperation(transport, createCoveOperation(body), unauthorized),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
   });
   const rename = useMutation({
     mutationFn: ({ coveId, body }: { coveId: string; body: CovePatchBody }) =>
-      runOperation(transport, updateCoveOperation(coveId, body)),
+      runOperation(transport, updateCoveOperation(coveId, body), unauthorized),
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
   });
   const remove = useMutation({
-    mutationFn: (coveId: string) => runOperation(transport, deleteCoveOperation(coveId)),
-    onSuccess: (_result, coveId) => {
-      void client.invalidateQueries({ queryKey: queryKeys.coves() });
+    mutationFn: ({ coveId, signal }: { coveId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteCoveOperation(coveId), signal }, unauthorized),
+    onSuccess: (_result, { coveId }) => {
       // The cove is gone; its wave list can never resolve again, so drop it
       // instead of leaving a permanently-stale entry behind.
       client.removeQueries({ queryKey: queryKeys.wavesInCove(coveId) });
     },
+    // Abort only ends the client wait: the server may already have committed.
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.coves() }); },
   });
   return {
     create: async (body) => toCove(await create.mutateAsync(body)),
     rename: async (coveId, body) => toCove(await rename.mutateAsync({ coveId, body })),
-    remove: async (coveId) => { await remove.mutateAsync(coveId); },
+    remove: async (coveId, signal) => { await remove.mutateAsync({ coveId, signal }); },
   };
 }
 
@@ -200,18 +292,18 @@ export type WaveMutations = Readonly<{
   create: (body: NewWaveBody) => Promise<Wave>;
   patch: (waveId: string, coveId: string, body: WavePatchBody) => Promise<Wave>;
   setPinned: (waveId: string, coveId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
-  remove: (waveId: string, coveId: string) => Promise<void>;
+  remove: (waveId: string, coveId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
-export function useWaveMutations(transport: ApiTransportPort): WaveMutations {
+export function useWaveMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): WaveMutations {
   const client = useQueryClient();
   const create = useMutation({
-    mutationFn: (body: NewWaveBody) => runOperation(transport, createWaveOperation(body)),
+    mutationFn: (body: NewWaveBody) => runOperation(transport, createWaveOperation(body), unauthorized),
     onSuccess: (wave) => { void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) }); },
   });
   const patch = useMutation({
     mutationFn: ({ waveId, body }: { waveId: string; coveId: string; body: WavePatchBody }) =>
-      runOperation(transport, updateWaveOperation(waveId, body)),
+      runOperation(transport, updateWaveOperation(waveId, body), unauthorized),
     onSuccess: (wave, variables) => {
       // Prefer the cove the server just reported: a patch can move the wave.
       void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) });
@@ -222,12 +314,15 @@ export function useWaveMutations(transport: ApiTransportPort): WaveMutations {
     },
   });
   const remove = useMutation({
-    mutationFn: ({ waveId }: { waveId: string; coveId: string }) =>
-      runOperation(transport, deleteWaveOperation(waveId)),
+    mutationFn: ({ waveId, signal }: { waveId: string; coveId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteWaveOperation(waveId), signal }, unauthorized),
     onSuccess: (_result, variables) => {
+      client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
+    },
+    // Reconcile both list-derived surfaces even if abort raced a committed DELETE.
+    onSettled: (_result, _error, variables) => {
       void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(variables.coveId) });
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
-      client.removeQueries({ queryKey: queryKeys.waveDetail(variables.waveId) });
     },
   });
   const patchWave = async (waveId: string, coveId: string, body: WavePatchBody) =>
@@ -239,14 +334,14 @@ export function useWaveMutations(transport: ApiTransportPort): WaveMutations {
     // null write rather than a delete of some separate row.
     setPinned: (waveId, coveId, pinned, nowMs) =>
       patchWave(waveId, coveId, { pinned_at: pinned ? nowMs : null }),
-    remove: async (waveId, coveId) => { await remove.mutateAsync({ waveId, coveId }); },
+    remove: async (waveId, coveId, signal) => { await remove.mutateAsync({ waveId, coveId, signal }); },
   };
 }
 
-export function useSettingsMutation(transport: ApiTransportPort): (patch: SettingsPatch) => Promise<SettingsBag> {
+export function useSettingsMutation(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): (patch: SettingsPatch) => Promise<SettingsBag> {
   const client = useQueryClient();
   const save = useMutation({
-    mutationFn: (patch: SettingsPatch) => runOperation(transport, putSettingsOperation(patch)),
+    mutationFn: (patch: SettingsPatch) => runOperation(transport, putSettingsOperation(patch), unauthorized),
     // PUT answers with the full bag, so writing it through avoids a refetch
     // that would briefly render the pre-save values.
     onSuccess: (bag) => { client.setQueryData(queryKeys.settings(), bag); },

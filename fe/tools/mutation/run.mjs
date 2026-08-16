@@ -51,7 +51,6 @@ if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runn
 const changed = values.base ? changedPaths() : [];
 const selected = values.base ? selectedEntries(manifest, changed) : manifest;
 const entriesToRun = shardEntries(selected, shard);
-const infrastructureChanged = changed.some((path) => path.startsWith('fe/tools/mutation/'));
 const report = [];
 const temporary = mkdtempSync(resolve(tmpdir(), 'neige-mutation-'));
 try {
@@ -104,9 +103,8 @@ try {
   rmSync(temporary, { recursive: true, force: true });
 }
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner left worktree dirty');
-const output = JSON.stringify({ shard, selected: selected.length, ran: entriesToRun.length, total: manifest.length, mutations: report }, null, 2);
+const output = JSON.stringify({ shard, selected: selected.length, ran: entriesToRun.length, total: manifest.length,
+  mutations: report }, null, 2);
 if (values.report) writeFileSync(resolve(feRoot, values.report), `${output}\n`);
 console.log(output);
-process.exitCode = mutationRunExitCode(
-  report.map(({ verdict }) => verdict), infrastructureChanged, Boolean(values.base), selected.length,
-);
+process.exitCode = mutationRunExitCode(report.map(({ verdict }) => verdict));

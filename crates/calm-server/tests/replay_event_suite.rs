@@ -1,3 +1,5 @@
+mod support;
+
 #[path = "cases/event_serde_goldens.rs"]
 mod event_serde_goldens;
 #[path = "cases/events_pruner.rs"]

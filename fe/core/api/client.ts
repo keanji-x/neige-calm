@@ -14,6 +14,10 @@ function normalizeHttpFailure(status: number, statusText: string, body: unknown)
   return { kind: 'http', status, code, message, body };
 }
 
+function isTimeoutError(cause: unknown): boolean {
+  return typeof cause === 'object' && cause !== null && 'name' in cause && cause.name === 'TimeoutError';
+}
+
 /** Executes exactly one transport attempt; retry policy belongs to end-side assembly. */
 export async function performApiRequest<T>(
   transport: ApiTransportPort,
@@ -26,13 +30,17 @@ export async function performApiRequest<T>(
       method: operation.method,
       path: operation.path,
       credentials: 'include',
+      ...(operation.signal === undefined ? {} : { signal: operation.signal }),
       ...(operation.body === undefined ? {} : {
         headers: { 'content-type': 'application/json' },
         body: operation.body,
       }),
     });
   } catch (cause) {
-    return { status: 'failed', error: { kind: 'transport', message: 'Transport request failed', cause } };
+    const message = isTimeoutError(cause)
+      ? 'Request timed out.'
+      : 'Transport request failed';
+    return { status: 'failed', error: { kind: 'transport', message, cause } };
   }
 
   if (response.status < 200 || response.status >= 300) {

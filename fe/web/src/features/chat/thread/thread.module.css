@@ -9,33 +9,37 @@
    * type; a report is published type. The measured tradeoff is recorded with
    * the reply rule below.
    *
-   * Who spoke is carried by **which side of the column it is on**, and by
-   * nothing else — no fill, no bubble, no label, no weight step:
+   * Who spoke is carried by **which side of the column it is on**, and only
+   * your turn moves:
    *
-   *   what you said   flush to the inline-end edge, sans 13
-   *   what came back  flush to the inline-start edge, the full column, serif 15
+   *   what you said   an object flush to the inline-end edge, sans 13
+   *   what came back  flush to the inline-start edge, the full column, sans 13
    *
    * Side is the strongest signal available and the cheapest: it costs no ink,
-   * no shape, and no width. Two devices this replaced were both weaker and both
-   * cost something —
+   * no shape, and no width. A 500-against-400 weight step at 13px was tried
+   * first and was weaker — it had to be *looked for*.
    *
-   *   a 500-against-400 weight step at 13px, which had to be *looked for*;
-   *   a `--surface-chip` block, which had to be looked for less but put a slab
-   *   of grey behind every other paragraph of a 364px column.
+   * Your turn carries one more thing on top of side: the faintest fill in the
+   * app (`--surface-said`). An earlier round used `--surface-chip` here and it
+   * was wrong for a reason worth keeping written down — chip is the composer's
+   * recessed well, and at that weight it put a slab of grey behind every other
+   * paragraph of a 364px column. The fill that works is one you have to look
+   * for. **The reply is never filled**: it is the long thing that is actually
+   * read, and it keeps the plain column.
    *
    * **Both turns are at full ink**, and that is deliberate. Your line spent one
    * round at `--text-2` on the theory that you already know what you wrote —
-   * but side, family and size had already separated the two turns three ways
-   * over, so the tone step bought nothing there and cost something elsewhere:
+   * but side and fill had already separated the two turns twice over, so the
+   * tone step bought nothing there and cost something elsewhere:
    * `--text-2` is the *label* rank, and it put your own words at the same
    * loudness as the drawer's header, which is a caption. Your message is
    * content. It sits on the content rank, and the header keeps the meta rank to
    * itself.
    *
-   * Your turn sets `text-align: end` rather than being a left-aligned block
-   * pushed right. Without a fill the block has no visible edges, so a
-   * `fit-content` box flush right with its text flush left would align to
-   * neither side and read as an accident; the flush right edge *is* the signal.
+   * Your turn is a `fit-content` box pushed right with its text flush left.
+   * That only became available *with* the fill: unfilled, such a block has no
+   * visible edges, aligns to neither side, and reads as an accident — which is
+   * why the version before this one had to set `text-align: end` instead.
    */
   .thread {
     display: flex;
@@ -57,17 +61,33 @@
 
   /*
    * The exchange is the unit: what you said, and everything that came back
-   * before you said the next thing. Tight inside (`--space-5` between a turn
-   * and the reply under it), loose between (`--space-10`). A flat list at one
-   * distance is what made the first version read as label/text, label/text
-   * rather than as a dialogue.
+   * before you said the next thing. `--space-5` is the base step inside one —
+   * between a reply and the action line under it — and the two rules below set
+   * the exchange's own boundaries. A flat list at one distance is what made the
+   * first version read as label/text, label/text rather than as a dialogue.
    */
   .thread > * + * {
     margin-block-start: var(--space-5);
   }
 
+  /*
+   * The asymmetry is the grouping, and it is stated on both sides of your turn
+   * rather than on one: **32 above, 12 below**.
+   *
+   * Your message is the thing that starts an exchange, so it belongs to what
+   * comes after it, not to what came before. At 24/10 the two gaps were close
+   * enough to read as one rhythm, and the transcript came back to looking like
+   * a flat list. Built and looked at, 8 below was too tight the other way — the
+   * bubble has its own 6px of bottom padding, so 8 of margin reads as 14 of
+   * *ink* distance and the reply sat on the box. 12 is the smallest gap that
+   * still clears the bubble's own inset while keeping the ratio unmistakable.
+   */
   .thread > * + .exchange {
-    margin-block-start: var(--space-10);
+    margin-block-start: var(--space-12);
+  }
+
+  .thread > .exchange + * {
+    margin-block-start: var(--space-6);
   }
 
   /*
@@ -76,47 +96,73 @@
    * on the same vertical and the only thing distinguishing them is where they
    * happen to *stop*.
    */
+  /*
+   * ── Your turn is the one object in the column ───────────────────────────
+   *
+   * The fill is `--surface-said`, the faintest tint in the app — under the code
+   * block, far under the composer well. It is not there to say "chat app"; it
+   * is there because your own words are the only thing in this column you scan
+   * *back* for, and a tint you have to look for is exactly the right cost for
+   * something you only occasionally look for.
+   *
+   * What the fill buys back is the text alignment. Flush-right ragged-left prose
+   * was the price of having no edges: without a box, a right-aligned block is
+   * the only way the side reads as deliberate. The box has edges, so the text
+   * goes back to flush left where it is read fastest, and the *box* carries the
+   * side. `width: fit-content` keeps a short line short — a full-width bubble
+   * would put both turns on the same two verticals again.
+   *
+   * `--radius-md` (12) against the composer well's `--radius-lg` (16): the well
+   * is the bigger object and stays the roundest thing in the drawer.
+   */
   .said {
+    inline-size: fit-content;
     max-inline-size: 88%;
     min-inline-size: 0;
     margin-inline-start: auto;
+    padding: var(--space-3) var(--space-5);
+    border-radius: var(--radius-md);
+    background: var(--surface-said);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text);
-    text-align: end;
   }
 
   /*
-   * The reply is set in the serif, one rank up. Side alone was too thin a
-   * signal in practice: both turns at 13px sans differ only in which edge they
-   * touch, so a transcript reads as one column of text that jumps sides for no
-   * reason. Two families is a **voice** difference, and it is the one axis that
-   * costs the text nothing — no ink, no shape, no width.
+   * The reply is the drawer's own type: sans 13, the same as your turn.
    *
-   * `--text-md` (15), not the report's `--text-lg` (18): the measure decides the
-   * size, and this column is 364px. Measured on a representative sentence
-   * (letter *frequency*, not the alphabet):
+   * It was 15px serif for one round, and the argument for that was sound while
+   * it was the only thing holding "who" up — two turns at 13px sans differ only
+   * in which edge they touch, so the transcript read as one column of text that
+   * jumped sides for no reason, and a family change is a *voice* difference
+   * that costs the text no ink, no shape and no width.
    *
-   *   18px serif in 364   50.1 characters a line
-   *   15px serif in 364   60.1
-   *   18px serif in 504   69.4   ← the report, inside the 65–75 band
+   * The fill removed that job. Side and a bubble already say who twice; family
+   * and size would have said it a third and fourth time, which is precisely
+   * what §3 spends its budget rule preventing. So the differentiation stays at
+   * two channels and the type goes back to one.
    *
-   * 60 is still under the band and this is the honest reading: 364px cannot
-   * hold a serif at the band. Closing the last 5 characters would mean ~13.7px,
-   * which is below where this serif holds together on screen. 15 is the closest
-   * the column allows, and it is 10 characters closer than the report's size
-   * would have been. It is the same serif voice as a report, spoken in a
-   * narrower column.
+   * What this costs, stated rather than glossed: the drawer no longer shares a
+   * voice with the report, and that shared voice was a real idea — a reply and
+   * a report are the same agent talking. The trade is deliberate. **A
+   * conversation is working type; a report is published type.** Setting the
+   * drawer in the report's serif was the narrower column pretending to be the
+   * document, and the measurement said so all along: 364px cannot hold this
+   * serif at the 65–75 band (15px reached 60.1, 18px only 50.1, and the report
+   * itself gets 69.4 at 504px). Sans at 13 is not a compromised serif; it is
+   * the right family for a 364px column.
+   *
+   * `--leading-base` (1.5), not the `--leading-snug` your turn uses: yours is
+   * usually one line and this is the paragraph that gets read.
    */
   .reply {
     min-inline-size: 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
-    font-family: var(--font-serif);
-    font-size: var(--text-md);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-base);
     color: var(--text);
@@ -139,6 +185,60 @@
 
 
 
+
+  /*
+   * ── What it did, between what it said ───────────────────────────────────
+   *
+   * One line per action, and the line is the *whole* rendering: a verb, and at
+   * most the one noun that makes the verb specific. No output, no diff, no
+   * arguments, no duration — this exists so the transcript stops lying by
+   * omission ("it answered by silently editing the report"), not so the drawer
+   * becomes a log viewer. A 364px column has room for a conversation or for a
+   * trace, and the conversation is what is read.
+   *
+   * It sits at the caption rank — 11px, `--text-3`, sans — under a reply set in
+   * 13px sans. That distance is the point: an action must be legible when
+   * looked at and invisible when not, because in a real session there are three
+   * of them for every sentence (§3, emphasis is a budget).
+   *
+   * It keeps the transcript's left edge rather than being indented under the
+   * turn it belongs to: an indent would claim these lines are subordinate to
+   * the *message*, and they are not — they are what happened next.
+   */
+  .activity {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-inline-size: 0;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  /* The noun is the machine's own string — a command, a tool name. Mono says
+     "this is quoted from somewhere else", which is exactly its status. */
+  .activityTarget {
+    overflow: hidden;
+    font-family: var(--font-mono);
+    color: var(--text-4);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /*
+   * Failure is the one state here worth colour, and it gets the *text* role
+   * rather than a fill or an icon: a failed shell run inside a conversation is
+   * information, not an alarm — the alarm, if there is one, is the wave going
+   * `failed`, and that is on the row in the rail.
+   */
+  .activityFailed {
+    color: var(--error-text);
+  }
+
+  .activityFailure {
+    color: var(--error-text);
+  }
 
   /* The same 6px accent dot and the same pulse a running wave takes. */
   .live {
@@ -163,9 +263,10 @@
     text-align: center;
   }
 
+  /* One voice in the drawer: this line used to be the serif's last outpost,
+     which made the empty state the only surface here set in the report's type. */
   .emptyLead {
-    font-family: var(--font-serif);
-    font-size: var(--text-md);
+    font-size: var(--text-base);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text-2);
@@ -322,7 +423,6 @@
     block-size: var(--control-h);
     border-radius: var(--radius-pill);
     background: none;
-    font-size: var(--glyph);
     line-height: var(--leading-none);
     color: var(--text);
     cursor: pointer;

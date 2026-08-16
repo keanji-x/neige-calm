@@ -775,6 +775,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await

@@ -4,7 +4,9 @@ use calm_server::db::sqlite::SqlxRepo;
 use calm_server::ids::ActorId;
 use calm_server::mcp_server::ToolCallIdentity;
 use calm_server::model::{CardRole, new_id};
-use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use calm_server::operation::spec_harness_start_adapter::{
+    HarnessProfile, SpecHarnessStartOperationPayload,
+};
 use calm_server::operation::{OperationKey, OperationOutcome};
 use calm_server::routes::terminal_cards::stable_payload_hash;
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionProjectionRepo};
@@ -26,6 +28,9 @@ pub async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
         goal: Some(goal),
         reset_harness_items: false,
         force_new_thread: true,
+        profile: HarnessProfile::Spec,
+        create_card: None,
+        first_message_sha256: None,
     };
     let payload = serde_json::to_value(&request).expect("spec-harness-start payload");
     let payload_hash = stable_payload_hash(&json!({ "request": &request }))

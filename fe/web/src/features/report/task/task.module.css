@@ -1,0 +1,110 @@
+@layer features {
+  /*
+   * A quoted record, not a form.
+   *
+   * The tint is the document's existing vocabulary for material it did not
+   * write in its own voice — the same `--surface-code` the code block uses.
+   * §6.5's ladder is satisfied at step ③ (a different *kind* of thing gets a
+   * different surface), which is also why there is no border: a boundary a
+   * fill already carries may not also be a line.
+   *
+   * The type is the document's serif, one step down, so the block reads as an
+   * inset paragraph rather than as an admin panel. Only literals — the key and
+   * the commands — are mono, because the font is what says "this is a string
+   * the machine cares about".
+   */
+  .task {
+    padding: var(--space-6) var(--space-7);
+    border-radius: var(--radius-sm);
+    background: var(--surface-code);
+    font-family: var(--font-serif);
+    font-size: var(--text-md);
+    line-height: var(--leading-normal);
+    color: var(--text-2);
+  }
+
+  .head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-4);
+  }
+
+  .spacer {
+    flex: 1;
+  }
+
+  /* Sentence case, in the quietest text tone: it labels the block without
+     announcing itself. Uppercase + tracking would be chrome (§2.2). */
+  .kindLabel {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  /* The key is a literal other reports and the kernel address this task by. */
+  .key {
+    font-family: var(--font-mono);
+    font-size: var(--text-base);
+    color: var(--text);
+  }
+
+  .kind,
+  .ready,
+  .notReady,
+  .withdrawn {
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  /* Ready carries a colour and Not ready does not: only one of the two is a
+     state you might act on, and colouring both would make the pair decorative. */
+  .ready {
+    color: var(--success-text);
+  }
+
+  .withdrawn {
+    text-decoration: line-through;
+  }
+
+  .goal {
+    margin-block: var(--space-4) 0;
+    color: var(--text);
+  }
+
+  /*
+   * Label / value, one label column — the shape a set of facts about a single
+   * object takes everywhere else in the app. The labels are the same serif at
+   * the smallest step, so the block still has one voice.
+   */
+  .fields {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: var(--space-7);
+    row-gap: var(--space-2);
+    margin-block: var(--space-5) 0;
+    font-size: var(--text-base);
+  }
+
+  .label {
+    color: var(--text-3);
+  }
+
+  .value {
+    margin: 0;
+  }
+
+  .step {
+    display: block;
+  }
+
+  /* A command is a literal; mono says so without spending a colour. */
+  .stepCmd {
+    display: block;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--row-h-sm);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}

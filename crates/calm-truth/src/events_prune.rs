@@ -92,6 +92,21 @@ pub const EVENTS_PRUNE_WATERMARK_KEY: &str = "events_prune_watermark";
 
 /// Exact-kind allowlist. Only these kinds are ever eligible for pruning;
 /// everything else in the events table is permanent by construction.
+///
+/// Reverse anchor — read before adding a kind here. Some readers depend on a
+/// kind's row being *permanent*, not merely long-lived:
+///
+///   * `harness.user_message.enqueued` is the only evidence that a cove
+///     conversation's card has already had a user message ACCEPTED INTO THE
+///     HARNESS QUEUE — `send_spec_input` writes it right after
+///     `harness.observe(UserMessage)` returns, so it proves the observation
+///     was enqueued, not that the agent has consumed it
+///     (`calm-server/src/routes/cove_conversations.rs::user_message_already_enqueued`).
+///     Adding it to this allowlist would, after the retention horizon,
+///     silently make a retry under the same `Idempotency-Key` send the first
+///     message to the agent a second time — a correctness regression with no
+///     failing test unless one is written. `first_message_dedup_kind_is_never_prunable`
+///     below is that test; it fails closed on exactly this mistake.
 pub const EVENTS_PRUNE_KINDS: &[&str] = &[
     "claude.hook",
     "codex.hook",
@@ -927,6 +942,49 @@ mod tests {
             Some(value) => set(EVENTS_PRUNE_BATCH_ENV, &value),
             None => remove(EVENTS_PRUNE_BATCH_ENV),
         }
+    }
+
+    /// Fail-closed anchor for the cove-conversation first-message dedup
+    /// (#1098 slice 3). `user_message_already_enqueued` in
+    /// `calm-server/src/routes/cove_conversations.rs` answers "has this
+    /// conversation's card ever had a user message enqueued into the harness?"
+    /// purely from the presence of a `harness.user_message.enqueued` row
+    /// (enqueued, not consumed by the agent). If that row can be
+    /// pruned, then after the retention horizon a retry under the same
+    /// `Idempotency-Key` sends the first message to the agent AGAIN — and
+    /// nothing else in the suite would go red, because the double-send only
+    /// happens on aged data.
+    ///
+    /// Both halves are load-bearing: the constant assertion states the
+    /// contract, and the prune pass proves an *aged* row of that kind really
+    /// does survive a full default-policy pass (i.e. no rule outside
+    /// `EVENTS_PRUNE_KINDS` sweeps it up either).
+    #[tokio::test]
+    async fn first_message_dedup_kind_is_never_prunable() {
+        assert!(
+            !EVENTS_PRUNE_KINDS.contains(&"harness.user_message.enqueued"),
+            "cove_conversations' first-message dedup reads this kind as permanent evidence; \
+             pruning it re-opens double-send after the horizon"
+        );
+
+        let repo = repo().await;
+        let pool = repo.pool();
+        let dedup_evidence =
+            insert_event(pool, "harness.user_message.enqueued", "{}", old(400)).await;
+        // A sibling `harness.*` kind that IS allowlisted, so the pass is
+        // proven to have actually done work rather than no-opped.
+        insert_event(pool, "harness.item.added", "{}", old(400)).await;
+
+        let pruned = prune_events_once(pool, &EventsRetentionPolicy::default())
+            .await
+            .expect("prune");
+
+        assert_eq!(pruned, 1, "the allowlisted sibling must be pruned");
+        assert_eq!(
+            remaining_ids(pool).await,
+            vec![dedup_evidence],
+            "a 400-day-old harness.user_message.enqueued must survive every prune pass"
+        );
     }
 
     #[test]

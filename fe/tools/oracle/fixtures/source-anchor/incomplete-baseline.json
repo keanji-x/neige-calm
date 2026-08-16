@@ -1,4 +1,14 @@
 [
-  { "id": "INV-TEST-001", "subtype": "range-miss" },
-  { "id": "INV-TEST-002", "subtype": "not-in-file" }
+  {
+    "id": "INV-TEST-001",
+    "subtype": "range-miss",
+    "reason": "test fixture",
+    "expiry": "2026-12-31"
+  },
+  {
+    "id": "INV-TEST-002",
+    "subtype": "not-in-file",
+    "reason": "test fixture",
+    "expiry": "2026-12-31"
+  }
 ]

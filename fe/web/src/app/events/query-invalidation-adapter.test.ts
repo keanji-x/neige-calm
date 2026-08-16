@@ -1,14 +1,18 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
+import type { CoveWire } from '../../../../core/domain/cove.ts';
+import type { WireEvent } from '../../../../core/api/schemas.ts';
+import type { CacheWrite } from '../../../../core/events/invalidation-plan.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
 import { queryKeys } from '../providers/queries.ts';
 import { applyEventEffects, mapPlannedQueryKey, type QueryCachePort } from './query-invalidation-adapter.ts';
 
-type Call = Readonly<{ op: 'invalidate' | 'remove' | 'clear'; queryKey?: readonly unknown[] }>;
+type Call = Readonly<{ op: 'invalidate' | 'remove' | 'set' | 'clear'; queryKey?: readonly unknown[] }>;
 
-function recordingClient() {
+function recordingClient(initialCoves?: readonly ReturnType<typeof import('../../../../core/domain/cove.ts').toCove>[]) {
   const calls: Call[] = [];
+  let coves = initialCoves;
   const client: QueryCachePort = {
     invalidateQueries: (filters?: { queryKey?: readonly unknown[] }) => {
       calls.push({ op: 'invalidate', queryKey: filters?.queryKey });
@@ -16,9 +20,14 @@ function recordingClient() {
     removeQueries: (filters: { queryKey: readonly unknown[] }) => {
       calls.push({ op: 'remove', queryKey: filters.queryKey });
     },
+    getQueryData: <T,>(key: readonly unknown[]) => key[0] === 'coves' ? coves as T | undefined : undefined,
+    setQueryData: <T,>(key: readonly unknown[], value: T) => {
+      calls.push({ op: 'set', queryKey: key });
+      if (key[0] === 'coves') coves = value as typeof coves;
+    },
     clear: () => { calls.push({ op: 'clear' }); },
   };
-  return { calls, client };
+  return { calls, client, coves: () => coves };
 }
 
 describe('query invalidation adapter', () => {
@@ -28,6 +37,8 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['wave', 'w1'])).toEqual(queryKeys.waveDetail('w1'));
     expect(mapPlannedQueryKey(['overlays', 'wave'])).toEqual(queryKeys.overlaysByKind('wave'));
     expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
+    expect(mapPlannedQueryKey(['harness-items', 'card-1'])).toEqual(queryKeys.harnessItems('card-1'));
+    expect(mapPlannedQueryKey(['spec-run', 'card-1'])).toEqual(queryKeys.specRun('card-1'));
     for (const dropped of [['wave-files'], ['wave-files', 'w1'], ['waves-range'], ['wave-backlinks'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
@@ -67,14 +78,40 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([{ op: 'remove', queryKey: ['wave', 'w1'] }]);
   });
 
-  it('ignores lifecycle and write-through effects, which are not cache work', () => {
+  it('ignores lifecycle effects, which are not cache work', () => {
     const { calls, client } = recordingClient();
     const effects: EventEffect[] = [
       { type: 'persist-cursor', id: 7 },
       { type: 'reconnect' },
-      { type: 'write-through', writes: [] },
     ];
     applyEventEffects(client, effects);
+    expect(calls).toEqual([]);
+  });
+
+  it('write-through replaces one existing cove and preserves every other row', () => {
+    expectTypeOf<CacheWrite['value']>().toEqualTypeOf<CoveWire>();
+    const old = { id: 'c1', name: 'old', color: '#111', sort: 1, kind: 'user', createdAt: 10, updatedAt: 20 } as const;
+    const other = { id: 'c2', name: 'other', color: '#222', sort: 2, kind: 'user', createdAt: 11, updatedAt: 21 } as const;
+    const { calls, client, coves } = recordingClient([old, other]);
+    applyEventEffects(client, [{ type: 'write-through', writes: [{
+      key: ['coves'], mode: 'replace-existing-cove',
+      value: { id: 'c1', name: 'new', color: '#abc', sort: 3, kind: 'user', created_at: 10, updated_at: 30 },
+    }] }]);
+    expect(coves()).toEqual([
+      { id: 'c1', name: 'new', color: '#abc', sort: 3, kind: 'user', createdAt: 10, updatedAt: 30 },
+      other,
+    ]);
+    expect(calls).toEqual([{ op: 'set', queryKey: ['coves'] }]);
+  });
+
+  it('write-through never creates a phantom cove when the row is absent', () => {
+    const existing = { id: 'c2', name: 'other', color: '#222', sort: 2, kind: 'user', createdAt: 11, updatedAt: 21 } as const;
+    const { calls, client, coves } = recordingClient([existing]);
+    applyEventEffects(client, [{ type: 'write-through', writes: [{
+      key: ['coves'], mode: 'replace-existing-cove',
+      value: { id: 'missing', name: 'phantom', color: '#abc', sort: 3, kind: 'user', created_at: 10, updated_at: 30 },
+    }] }]);
+    expect(coves()).toEqual([existing]);
     expect(calls).toEqual([]);
   });
 
@@ -94,6 +131,21 @@ describe('query invalidation adapter', () => {
     const { calls, client } = recordingClient();
     applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
     expect(calls).toEqual([{ op: 'invalidate', queryKey: queryKeys.coves() }]);
+  });
+
+  it('turns each real harness plan into its exact live query invalidations', () => {
+    const expected = [
+      ['harness.item.added', [queryKeys.harnessItems('card-1')]],
+      ['harness.phase.changed', [queryKeys.specRun('card-1')]],
+      ['harness.transcript.cleared', [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')]],
+      ['harness.user_message.enqueued', [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')]],
+    ] as const;
+    for (const [ev, keys] of expected) {
+      const plan = invalidationPlanFor({ ev, data: { card_id: 'card-1' } } as WireEvent);
+      const { calls, client } = recordingClient();
+      applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+      expect(calls).toEqual(keys.map((queryKey) => ({ op: 'invalidate', queryKey })));
+    }
   });
 
   it('turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal', () => {

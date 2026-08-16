@@ -2252,7 +2252,6 @@ async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now_ms(),
         updated_at_ms: now_ms(),
         finished_at_ms: None,
@@ -2260,7 +2259,7 @@ async fn seed_gated_task(boot: &Boot, key: &str, gate_attempt: i64) -> String {
     let id = task.id.clone();
     calm_server::db::write_in_tx_typed(boot.repo.as_ref(), move |tx| {
         Box::pin(async move {
-            calm_server::db::sqlite::task_insert_tx(tx, &task).await?;
+            crate::support::task::insert_task_tx(tx, &task).await?;
             Ok(())
         })
     })

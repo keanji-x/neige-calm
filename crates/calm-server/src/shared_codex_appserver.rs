@@ -705,10 +705,14 @@ pub struct SharedCodexAppServer {
 }
 
 #[cfg(feature = "fixtures")]
+pub type StartedThreadParam = (Option<String>, bool, Option<CardRole>);
+
+#[cfg(feature = "fixtures")]
 pub struct FakeSharedCodexAppServer {
     next_thread: AtomicU64,
     next_turn: AtomicU64,
     fail_next_thread_start: AtomicBool,
+    started_thread_params: std::sync::Mutex<Vec<StartedThreadParam>>,
     started_turns: std::sync::Mutex<Vec<(String, Vec<InputItem>)>>,
     interrupted_turns: std::sync::Mutex<Vec<(String, String)>>,
 }
@@ -720,6 +724,7 @@ impl FakeSharedCodexAppServer {
             next_thread: AtomicU64::new(1),
             next_turn: AtomicU64::new(1),
             fail_next_thread_start: AtomicBool::new(false),
+            started_thread_params: std::sync::Mutex::new(Vec::new()),
             started_turns: std::sync::Mutex::new(Vec::new()),
             interrupted_turns: std::sync::Mutex::new(Vec::new()),
         }
@@ -1062,6 +1067,17 @@ impl SharedCodexAppServer {
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.started_thread_params
+                .lock()
+                .expect("fake shared codex thread params mutex poisoned")
+                .push((
+                    params.developer_instructions.clone(),
+                    matches!(params.config, ThreadConfig::NoMcp),
+                    Some(_role),
+                ));
+        }
         let thread_id = self.thread_start_mint_inner(card_id, params).await?;
         tracing::info!(
             target = "shared_codex_daemon::thread_start",
@@ -1082,6 +1098,17 @@ impl SharedCodexAppServer {
         params: SharedThreadStartParams,
     ) -> Result<String> {
         let _start_guard = self.kernel_thread_start_serial.lock().await;
+        #[cfg(feature = "fixtures")]
+        if let Some(fake) = self.fake.as_ref() {
+            fake.started_thread_params
+                .lock()
+                .expect("fake shared codex thread params mutex poisoned")
+                .push((
+                    params.developer_instructions.clone(),
+                    matches!(params.config, ThreadConfig::NoMcp),
+                    None,
+                ));
+        }
         self.thread_start_mint_inner(card_id, params).await
     }
 
@@ -3266,6 +3293,19 @@ impl SharedCodexAppServer {
                 fake.started_turns
                     .lock()
                     .expect("fake shared codex started turns mutex poisoned")
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    #[cfg(feature = "fixtures")]
+    pub fn started_thread_params_for_test(&self) -> Vec<StartedThreadParam> {
+        self.fake
+            .as_ref()
+            .map(|fake| {
+                fake.started_thread_params
+                    .lock()
+                    .expect("fake shared codex thread params mutex poisoned")
                     .clone()
             })
             .unwrap_or_default()

@@ -1,4 +1,4 @@
-// 由 tools/mock/generate.mjs 根据 web/src/api/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。
+// 由 tools/mock/generate.mjs 根据 core/api/generated/openapi.json 与 core/api/generated/wire.ts 生成，禁止手改。
 export const mockOperations = [
   {
     "method": "GET",
@@ -1002,6 +1002,250 @@ export const mockOperations = [
       {
         "kind": "literal",
         "value": "/api/coves/system"
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "parameters": [
+      {
+        "in": "path",
+        "name": "cove_id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "path": "/api/coves/{cove_id}/chat-wave/ensure",
+    "responses": [
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/Wave"
+            }
+          }
+        ],
+        "status": "200"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/Wave"
+            }
+          }
+        ],
+        "status": "201"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "404"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "409"
+      }
+    ],
+    "template": [
+      {
+        "kind": "literal",
+        "value": "/api/coves/"
+      },
+      {
+        "kind": "parameter",
+        "name": "cove_id"
+      },
+      {
+        "kind": "literal",
+        "value": "/chat-wave/ensure"
+      }
+    ]
+  },
+  {
+    "method": "GET",
+    "parameters": [
+      {
+        "in": "path",
+        "name": "cove_id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "path": "/api/coves/{cove_id}/conversations",
+    "responses": [
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "items": {
+                "$ref": "#/components/schemas/CoveConversationSummary"
+              },
+              "type": "array"
+            }
+          }
+        ],
+        "status": "200"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "404"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "500"
+      }
+    ],
+    "template": [
+      {
+        "kind": "literal",
+        "value": "/api/coves/"
+      },
+      {
+        "kind": "parameter",
+        "name": "cove_id"
+      },
+      {
+        "kind": "literal",
+        "value": "/conversations"
+      }
+    ]
+  },
+  {
+    "method": "POST",
+    "parameters": [
+      {
+        "in": "path",
+        "name": "cove_id",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      },
+      {
+        "in": "header",
+        "name": "Idempotency-Key",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    ],
+    "path": "/api/coves/{cove_id}/conversations",
+    "responses": [
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/CoveConversationSummary"
+            }
+          }
+        ],
+        "status": "201"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "400"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "404"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "409"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "500"
+      },
+      {
+        "bodies": [
+          {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/ErrorBody"
+            }
+          }
+        ],
+        "status": "503"
+      }
+    ],
+    "template": [
+      {
+        "kind": "literal",
+        "value": "/api/coves/"
+      },
+      {
+        "kind": "parameter",
+        "name": "cove_id"
+      },
+      {
+        "kind": "literal",
+        "value": "/conversations"
       }
     ]
   },
@@ -4514,13 +4758,14 @@ export const mockOperations = [
 
 export const schemaWireTypes = {
   "AgentProvider": "AgentProvider",
-  "BacklinkQuote": null,
-  "BlockVerdict": null,
+  "BacklinkQuote": "BacklinkQuote",
+  "BlockVerdict": "BlockVerdict",
   "Card": "Card",
   "CardPatch": null,
   "CardRole": "CardRole",
   "CardRuntimeView": "CardRuntimeView",
   "Cove": "Cove",
+  "CoveConversationSummary": "CoveConversationSummary",
   "CoveFolder": "CoveFolder",
   "CoveKind": "CoveKind",
   "CovePatch": null,
@@ -4529,13 +4774,13 @@ export const schemaWireTypes = {
   "CreateReportBlockBody": null,
   "CreateWaveRequest": null,
   "DeleteReportBlockBody": null,
-  "Diagnostic": null,
-  "DirEntry": null,
+  "Diagnostic": "Diagnostic",
+  "DirEntry": "DirEntry",
   "ErrorBody": null,
   "FolderConflict": "FolderConflict",
   "FolderConflictKind": "FolderConflictKind",
   "GetSpecRunResponse": null,
-  "GitChangedFile": null,
+  "GitChangedFile": "GitChangedFile",
   "GitDiffResponse": null,
   "GitStatusResponse": null,
   "HarnessItem": "HarnessItem",
@@ -4551,6 +4796,7 @@ export const schemaWireTypes = {
   "NewClaudeCardBody": null,
   "NewCodexCardBody": null,
   "NewCove": null,
+  "NewCoveConversationBody": null,
   "NewCoveFolder": null,
   "NewOverlay": null,
   "NewTerminalCardBody": null,
@@ -4561,7 +4807,7 @@ export const schemaWireTypes = {
   "Plugin": null,
   "PluginDetail": null,
   "PluginListItem": null,
-  "RatifyCardDecision": null,
+  "RatifyCardDecision": "RatifyCardDecision",
   "RatifyCardRequest": null,
   "RatifyCardResponse": null,
   "ReadFileResponse": null,
@@ -4583,9 +4829,9 @@ export const schemaWireTypes = {
   "VersionInfo": null,
   "ViaToolCall": null,
   "ViewCatalogEntry": null,
-  "ViewSizeWire": null,
+  "ViewSizeWire": "ViewSizeWire",
   "Wave": "Wave",
-  "WaveBacklink": null,
+  "WaveBacklink": "WaveBacklink",
   "WaveBacklinksResponse": null,
   "WaveDetail": null,
   "WaveFsCardMeta": "WaveFsCardMeta",

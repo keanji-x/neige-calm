@@ -1,0 +1,63 @@
+@layer features {
+  .backlinks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-inline: calc(var(--space-2) * -1);
+  }
+
+  /*
+   * §6.0's generic row, at the same height and in the same register as the card
+   * rows above it — because it is the same kind of thing: one line naming one
+   * object you can open. It used to be a two-line block carrying a quote, which
+   * made this module the tallest thing in the panel and printed the same
+   * sentence twice whenever one report cited this one twice.
+   */
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+
+  .row:hover,
+  .row:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  .title {
+    min-inline-size: 0;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text);
+    text-align: start;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* How many separate places in that report mention this one. Same slot and
+     same register as the card rows' `kernel-owned`. */
+  .count {
+    flex: none;
+    font-family: var(--font-numeric);
+    font-size: var(--text-xs);
+    font-variant-numeric: tabular-nums;
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .note {
+    padding-inline: var(--space-2);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+}

@@ -11,10 +11,14 @@ mod auth;
 mod card_cascade_semantics;
 #[path = "cases/cards_deletable.rs"]
 mod cards_deletable;
+#[path = "cases/chat_wave_ensure.rs"]
+mod chat_wave_ensure;
 #[path = "cases/claude_fsm_overlay.rs"]
 mod claude_fsm_overlay;
 #[path = "cases/claude_ingest.rs"]
 mod claude_ingest;
+#[path = "cases/cove_conversations.rs"]
+mod cove_conversations;
 #[path = "cases/cove_folders.rs"]
 mod cove_folders;
 #[path = "cases/cove_system_endpoint.rs"]
@@ -29,10 +33,10 @@ mod dispatcher_role_scope;
 mod frozen_gate_vectors;
 #[path = "cases/frozen_gate_vectors_transport.rs"]
 mod frozen_gate_vectors_transport;
+#[path = "cases/head_schema_fixture.rs"]
+mod head_schema_fixture;
 #[path = "cases/in_process_renderer_e2e.rs"]
 mod in_process_renderer_e2e;
-#[path = "cases/migration_0068_projection_policy.rs"]
-mod migration_0068_projection_policy;
 #[path = "cases/neige_cli_task_report.rs"]
 mod neige_cli_task_report;
 #[path = "cases/openapi.rs"]

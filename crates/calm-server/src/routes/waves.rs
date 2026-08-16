@@ -28,6 +28,7 @@
 //! so a missed cleanup surfaces as a transaction-level error rather
 //! than a silent daemon-process leak.
 
+use crate::COVE_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
@@ -85,6 +86,47 @@ use std::collections::HashMap;
 use std::sync::{Mutex as StdMutex, OnceLock};
 #[cfg(feature = "fixtures")]
 use tokio::sync::Notify;
+
+#[cfg(feature = "fixtures")]
+fn chat_wave_ensure_barriers()
+-> &'static StdMutex<HashMap<String, std::sync::Arc<tokio::sync::Barrier>>> {
+    static BARRIERS: OnceLock<StdMutex<HashMap<String, std::sync::Arc<tokio::sync::Barrier>>>> =
+        OnceLock::new();
+    BARRIERS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_chat_wave_ensure_barrier_for_test(
+    cove_id: &str,
+    barrier: std::sync::Arc<tokio::sync::Barrier>,
+) {
+    chat_wave_ensure_barriers()
+        .lock()
+        .expect("chat-wave ensure barrier lock poisoned")
+        .insert(cove_id.to_string(), barrier);
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn remove_chat_wave_ensure_barrier_for_test(cove_id: &str) {
+    chat_wave_ensure_barriers()
+        .lock()
+        .expect("chat-wave ensure barrier lock poisoned")
+        .remove(cove_id);
+}
+
+#[cfg(feature = "fixtures")]
+async fn wait_at_chat_wave_ensure_barrier(cove_id: &str) {
+    let barrier = chat_wave_ensure_barriers()
+        .lock()
+        .expect("chat-wave ensure barrier lock poisoned")
+        .get(cove_id)
+        .cloned();
+    if let Some(barrier) = barrier {
+        barrier.wait().await;
+    }
+}
 
 mod fork_guard;
 
@@ -198,6 +240,23 @@ pub fn router() -> Router<AppState> {
         .route("/api/waves/{id}/files/ls", get(list_wave_files))
         .route("/api/waves/{id}/files/cat", get(cat_wave_file))
         .route("/api/coves/{cove_id}/waves", get(list_waves_by_cove))
+        .route(
+            "/api/coves/{cove_id}/chat-wave/ensure",
+            axum::routing::post(ensure_cove_chat_wave),
+        )
+}
+
+fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
+    let CalmError::Db(sqlx::Error::Database(error)) = error else {
+        return false;
+    };
+    error.is_unique_violation() && error.message().contains(constraint)
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn is_unique_constraint_for_test(error: &CalmError, constraint: &str) -> bool {
+    is_unique_constraint(error, constraint)
 }
 
 #[derive(Debug, Deserialize, IntoParams, ToSchema)]
@@ -305,8 +364,26 @@ pub(crate) async fn list_waves_by_cove(
     State(s): State<RouteState>,
     Path(cove_id): Path<String>,
 ) -> Result<Json<Vec<Wave>>> {
-    let waves = s.repo.waves_by_cove(&cove_id).await?;
+    let mut waves = s.repo.waves_by_cove(&cove_id).await?;
+    waves.retain(user_visible_wave);
     Ok(Json(waves))
+}
+
+/// Public wave lists hide only the cove conversation container. Keep this at
+/// the route boundary: repository readers such as cove deletion and backlink
+/// resolution require the complete set.
+///
+/// The `match` is spelled out rather than written `!= Some(COVE_CHAT_PURPOSE)`
+/// purely for readability — both forms already keep NULL-purpose waves
+/// visible, because Rust comparison against `Option` is total. The three-valued
+/// logic trap this must not be confused with lives in SQL, where
+/// `purpose <> 'cove-chat'` drops NULL rows; the two hand-written predicates
+/// that must spell out `purpose IS NULL OR ...` are in `session_repo_impl.rs`.
+fn user_visible_wave(wave: &Wave) -> bool {
+    match wave.purpose.as_deref() {
+        None => true,
+        Some(purpose) => purpose != COVE_CHAT_PURPOSE,
+    }
 }
 
 /// Issue #250 PR 2 — calendar window query parameters for
@@ -371,10 +448,11 @@ pub(crate) async fn list_waves_window(
             "window query: `since` ({since}) must be <= `until` ({until})"
         )));
     }
-    let waves = state
+    let mut waves = state
         .repo
         .waves_window(q.cove_id.as_deref(), q.since, q.until)
         .await?;
+    waves.retain(user_visible_wave);
     Ok(Json(waves))
 }
 
@@ -689,6 +767,150 @@ async fn create_wave_with_spec_harness(
     p: NewWave,
     options: CreateWaveOptions,
 ) -> Result<Response> {
+    let (wave, _, spec_card_id, report_card_id) =
+        create_wave_structure(s.clone(), actor.clone(), p, options, None).await?;
+    start_spec_harness(&s, &actor, &wave, spec_card_id, report_card_id).await?;
+    Ok((StatusCode::CREATED, Json(wave)).into_response())
+}
+
+/// Ensure the cove's single chat wave exists.
+///
+/// The cwd is selected only while creating the wave: it is the claimed path
+/// with the fewest path components, breaking ties lexicographically. Cove
+/// folder claims cannot be equal, ancestors, or descendants of one another,
+/// so "closest to the cove root" is defined here as this deterministic shallow
+/// path ordering rather than containment. Once created, later folder claims or
+/// changes deliberately do not update the wave cwd, so an existing conversation
+/// cannot drift between working directories from one message to the next.
+#[utoipa::path(
+    post,
+    path = "/api/coves/{cove_id}/chat-wave/ensure",
+    tag = "waves",
+    params(("cove_id" = String, Path, description = "Cove id")),
+    responses(
+        (status = 200, description = "Existing chat wave", body = Wave),
+        (status = 201, description = "Chat wave created", body = Wave),
+        (status = 409, description = "Cove has no claimed folder", body = ErrorBody),
+        (status = 404, description = "Cove not found", body = ErrorBody),
+    ),
+)]
+#[allow(deprecated)]
+pub(crate) async fn ensure_cove_chat_wave(
+    State(s): State<RouteState>,
+    actor: Actor,
+    Path(cove_id): Path<String>,
+) -> Result<Response> {
+    let (wave, created) = ensure_cove_chat_wave_inner(&s, actor, &cove_id).await?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(wave)).into_response())
+}
+
+/// The body of [`ensure_cove_chat_wave`], shared with
+/// `POST /api/coves/{cove_id}/conversations` (#1098 slice 3). Returns the
+/// wave and whether this call is the one that created it.
+///
+/// Both callers must agree byte-for-byte on the cwd rule and the concurrent
+/// ensure race resolution, so there is exactly one implementation of them.
+#[allow(deprecated)]
+pub(crate) async fn ensure_cove_chat_wave_inner(
+    s: &RouteState,
+    actor: Actor,
+    cove_id: &str,
+) -> Result<(Wave, bool)> {
+    let cove_id = cove_id.to_string();
+    if s.repo.cove_get(&cove_id).await?.is_none() {
+        return Err(CalmError::NotFound(format!("cove {cove_id}")));
+    }
+    // Preserve the existing wave (and therefore its cwd) before consulting
+    // current folder claims. The partial unique index closes the concurrent
+    // ensure race; the loser reads and returns the winner below.
+    if let Some(wave) = s
+        .repo
+        .waves_by_cove(&cove_id)
+        .await?
+        .into_iter()
+        .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
+    {
+        return Ok((wave, false));
+    }
+
+    #[cfg(feature = "fixtures")]
+    wait_at_chat_wave_ensure_barrier(&cove_id).await;
+
+    let cwd = s
+        .repo
+        .cove_folders_by_cove(&cove_id)
+        .await?
+        .into_iter()
+        .min_by(|left, right| {
+            std::path::Path::new(&left.path)
+                .components()
+                .count()
+                .cmp(&std::path::Path::new(&right.path).components().count())
+                .then_with(|| left.path.cmp(&right.path))
+        })
+        .map(|folder| folder.path)
+        .ok_or_else(|| {
+            CalmError::Conflict(format!(
+                "chat wave ensure: cove `{cove_id}` has no claimed folder; claim a folder for this cove before starting a conversation"
+            ))
+        })?;
+    let p = NewWave {
+        cove_id: cove_id.clone().into(),
+        title: "Cove chat".into(),
+        sort: None,
+        cwd: cwd.clone(),
+        workflow_id: None,
+        workflow_input: None,
+        attach_folder: false,
+        theme: RequestTheme::default_dark(),
+    };
+    let attempt = create_wave_structure(
+        s.clone(),
+        actor,
+        p,
+        CreateWaveOptions {
+            attach_folder: false,
+            body_cove_id: cove_id.clone(),
+            normalized_cwd: cwd,
+            repo_identity: AttachRepoIdentity {
+                identity: None,
+                probed_at: None,
+            },
+            fork_report_from: None,
+        },
+        Some(COVE_CHAT_PURPOSE),
+    )
+    .await;
+    let (wave, created) = match attempt {
+        Ok((wave, _, _, _)) => (wave, true),
+        Err(error) if is_unique_constraint(&error, "waves.cove_id") => {
+            let wave = s
+                .repo
+                .waves_by_cove(&cove_id)
+                .await?
+                .into_iter()
+                .find(|wave| wave.purpose.as_deref() == Some(COVE_CHAT_PURPOSE))
+                .ok_or_else(|| CalmError::Internal("chat wave ensure race had no winner".into()))?;
+            (wave, false)
+        }
+        Err(error) => return Err(error),
+    };
+    Ok((wave, created))
+}
+
+#[allow(deprecated)]
+async fn create_wave_structure(
+    s: RouteState,
+    actor: Actor,
+    p: NewWave,
+    options: CreateWaveOptions,
+    purpose: Option<&'static str>,
+) -> Result<(Wave, bool, String, String)> {
     let CreateWaveOptions {
         attach_folder,
         body_cove_id,
@@ -698,7 +920,6 @@ async fn create_wave_with_spec_harness(
     } = options;
     let spec_card_id = new_id();
     let report_card_id = new_id();
-    let actor_for_hash = actor.as_str().to_string();
     let actor_id = actor.to_actor_id();
     let actor_id_for_tx = actor_id.clone();
     let write_for_tx = s.write.clone();
@@ -713,7 +934,7 @@ async fn create_wave_with_spec_harness(
     } else {
         EditAuthor::Spec
     };
-    let ((wave,), _event_ids) = write_with_actor_events_typed(
+    let ((wave, created), _event_ids) = write_with_actor_events_typed(
         s.repo.as_ref(),
         None,
         &s.events,
@@ -731,7 +952,7 @@ async fn create_wave_with_spec_harness(
                     .await?;
                 }
 
-                let wave = wave_create_tx(tx, p, write_for_tx.cove_cache()).await?;
+                let wave = wave_create_tx(tx, p, purpose, write_for_tx.cove_cache()).await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
                 let goal = wave.title.trim().to_string();
@@ -902,15 +1123,25 @@ async fn create_wave_with_spec_harness(
                     }
                     events.extend(projection.kernel_events);
                 }
-                Ok(((wave,), events))
+                Ok(((wave, true), events))
             })
         },
     )
     .await?;
 
+    Ok((wave, created, spec_card_id, report_card_id))
+}
+
+async fn start_spec_harness(
+    s: &RouteState,
+    actor: &Actor,
+    wave: &Wave,
+    spec_card_id: String,
+    report_card_id: String,
+) -> Result<()> {
     let goal = wave.title.trim().to_string();
     let request = SpecHarnessStartOperationPayload {
-        actor: actor_id,
+        actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
         spec_card_id: CardId::from(spec_card_id.clone()),
         report_card_id: Some(report_card_id),
@@ -919,10 +1150,13 @@ async fn create_wave_with_spec_harness(
         goal: (!goal.is_empty()).then_some(goal),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     };
     let op_payload = serde_json::to_value(&request)?;
     let payload_hash = stable_payload_hash(&serde_json::json!({
-        "actor": actor_for_hash,
+        "actor": actor.as_str(),
         "request": &request,
     }))?;
     match s
@@ -980,7 +1214,7 @@ async fn create_wave_with_spec_harness(
         ),
     }
 
-    Ok((StatusCode::CREATED, Json(wave)).into_response())
+    Ok(())
 }
 
 type ForkReportSnapshot = (
@@ -1234,6 +1468,16 @@ pub(crate) async fn update_wave(
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+    // The guard fires on *mentioning* `lifecycle`, not on changing it: a PATCH
+    // that re-sends the wave's current lifecycle is 403 too. That is
+    // deliberate — the chat wave has no lifecycle the user may drive, so
+    // accepting a no-op write would advertise an editable field, and the FSM
+    // would then have to be trusted to keep every such write a no-op forever.
+    if existing.purpose.as_deref() == Some(COVE_CHAT_PURPOSE) && p.lifecycle.is_some() {
+        return Err(CalmError::Forbidden(
+            "cove chat wave lifecycle cannot be changed".into(),
+        ));
+    }
     let scope = EventScope::Wave {
         wave: existing.id.clone(),
         cove: existing.cove_id.clone(),

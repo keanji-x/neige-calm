@@ -279,6 +279,9 @@ pub(crate) async fn ensure_today_launchpad(
         goal: None,
         reset_harness_items: out.created || out.adopted_legacy,
         force_new_thread: out.created || out.adopted_legacy,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     };
     let start_mode = if out.created || out.adopted_legacy {
         "bootstrap"

@@ -51,10 +51,13 @@
     justify-content: space-between;
     gap: var(--space-4);
     min-block-size: var(--control-h-lg);
-    font-size: var(--text-base);
     font-weight: var(--weight-semibold);
     line-height: var(--leading-tight);
     color: var(--text);
+  }
+
+  .dialog-header > span {
+    font-size: var(--text-base);
   }
 
   .dialog-body {
@@ -119,8 +122,8 @@
     grid-area: label;
   }
 
-  [data-nc-state='busy'] .confirm-dialog-label > :first-child,
-  :not([data-nc-state='busy']) .confirm-dialog-label > :last-child {
+  [data-nc-state='busy'] > .confirm-dialog-label > :first-child,
+  [data-nc-action]:not([data-nc-state='busy']) > .confirm-dialog-label > :last-child {
     visibility: hidden;
   }
 

@@ -16,6 +16,12 @@ export const OWNERSHIP_RULES = Object.freeze([
 export const OWNERSHIP_YAML_FIELDS = Object.freeze([
   'entry.path', 'entry.type', 'entry.owner', 'entry.readonly',
 ] as const);
+export const OWNERSHIP_CONTROL_FILES = Object.freeze([
+  'fe/.dependency-cruiser.cjs', 'fe/eslint.config.js', 'fe/module-file-inventory.yaml',
+  'fe/ownership-manifest.d.mts', 'fe/ownership-manifest.mjs', 'fe/package.json', 'fe/package-lock.json',
+  'fe/stylelint.config.js', 'fe/tsconfig.app.json', 'fe/tsconfig.core.json', 'fe/tsconfig.json',
+  'fe/tsconfig.node.json', 'fe/vite.config.ts', 'fe/vitest.config.ts',
+] as const);
 
 function clean(path: string): string {
   return path.replaceAll('\\', '/').replace(/^\.\//, '').replace(/\/$/, '');
@@ -94,7 +100,7 @@ export function validateOwnership(
 
 export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string[]): string[] {
   const roots = ['fe/core', 'fe/mock', 'fe/web', 'fe/tools'];
-  const controls = ['fe/module-file-inventory.yaml', 'fe/ownership-manifest.mjs', 'fe/stylelint.config.js'];
+  const controls: readonly string[] = OWNERSHIP_CONTROL_FILES;
   const files = trackedFiles ?? execFileSync('git', ['ls-files', '--', ...roots, ...controls], {
     cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).split(/\r?\n/).filter(Boolean);
@@ -118,13 +124,36 @@ export function gitOwnershipCommits(repoRoot: string, baseSha: string, headRef =
 }
 
 export function ownershipCommitsForEvent(
-  eventName: string | undefined,
+  _eventName: string | undefined,
   load: () => readonly OwnershipCommit[],
 ): readonly OwnershipCommit[] {
-  return eventName === 'push' ? [] : load();
+  return load();
 }
 
-export function resolveOwnershipBase(repoRoot: string, injectedBase = process.env.OWNERSHIP_BASE_SHA ?? '', headRef = 'HEAD'): string {
+export function resolveOwnershipBase(
+  repoRoot: string,
+  injectedBase: string,
+  headRef = 'HEAD',
+  eventName?: string,
+  pushForced = false,
+): string {
+  if (eventName === 'push') {
+    if (pushForced) throw new Error('cannot audit ownership for a forced push');
+    if (!/^[0-9a-f]{40}$/i.test(injectedBase) || /^0{40}$/.test(injectedBase)) {
+      throw new Error('cannot audit ownership push: github.event.before is missing or zero');
+    }
+    if (!/^[0-9a-f]{40}$/i.test(headRef) || /^0{40}$/.test(headRef)) {
+      throw new Error('cannot audit ownership push: github.event.after is missing or zero');
+    }
+    try {
+      execFileSync('git', ['cat-file', '-e', `${injectedBase}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
+      execFileSync('git', ['cat-file', '-e', `${headRef}^{commit}`], { cwd: repoRoot, stdio: 'ignore' });
+      execFileSync('git', ['merge-base', '--is-ancestor', injectedBase, headRef], { cwd: repoRoot, stdio: 'ignore' });
+    } catch {
+      throw new Error(`cannot audit ownership push range ${injectedBase}..${headRef}; history is unavailable or non-linear`);
+    }
+    return injectedBase;
+  }
   if (injectedBase !== '') {
     try {
       if (!/^0{40}$/.test(injectedBase)) {

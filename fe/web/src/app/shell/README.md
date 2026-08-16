@@ -60,13 +60,13 @@ line, watch the named test go red) before landing.
   contract test proves only that the control is in the accessibility tree with
   its `aria-pressed` state in both cases. **The visual half is a `browser`-tier
   concern and is not covered here.**
-- **INV-CONFIRM-001** — both destructive confirms stay mounted for the whole
-  await: Confirm disabled, Cancel enabled, and a `finally` clears pending and
-  target so a rejected mutation cannot strand the dialog.
+- **INV-CONFIRM-001** — both destructive confirms always keep Cancel enabled.
+  Closing during the await aborts the request, dismisses its owning dialog and
+  releases pending immediately.
 
 ## Deliberate gaps
 
 - Cove rename and drag-reorder are not in the rail; renaming lives on the cove
   page (`features/cove/page`).
-- The new-cove colour is picked at random from `COVE_PALETTE`; the wave create
-  form picks deterministically. Only the palette values are shared (INV-DUP-006).
+- The sidebar's new-cove flow is the sole consumer of `COVE_PALETTE`; it picks
+  a colour at random and sends it to the kernel (INV-DUP-006).

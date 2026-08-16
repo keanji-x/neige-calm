@@ -15,25 +15,17 @@ import { useEffect, useRef } from 'react';
 
 import type { InvalidationContext } from '../../../../core/events/invalidation-plan.ts';
 import { initialEventState, reduceEventFrame, type EventState } from '../../../../core/events/reducer.ts';
+import type { SyncCursorPort } from '../../systems/events/cursor-port.ts';
 import type { UnconfiguredEventStream } from '../../systems/events/event-stream.ts';
 import { applyEventEffects } from './query-invalidation-adapter.ts';
-
-/**
- * Cursor persistence port. The implementation must store under
- * `SYNC_CURSOR_KEY` from `core/keys/storage.ts`; the bridge never touches
- * `localStorage` itself, which is why the port is injected rather than built
- * here.
- */
-export interface SyncCursorPort {
-  read(): number | null;
-  write(cursor: number | null): void;
-}
+import { waveLookupContext } from './wave-lookup.ts';
 
 export type EventBridgeProps = Readonly<{
   client: QueryClient;
   /** An unconfigured stream, created and owned by the caller — never a module singleton. */
   stream: UnconfiguredEventStream;
   syncEventVersion: number;
+  dbInstanceId: string;
   cursor: SyncCursorPort;
   /** Lets card-scoped events resolve their owning wave; defaults to "unknown". */
   context?: InvalidationContext;
@@ -43,24 +35,25 @@ export type EventBridgeProps = Readonly<{
  * Renders an inert marker so a contract test can assert *where* in the tree the
  * bridge sits, not merely that it ran.
  */
-export function EventBridge({ client, stream, syncEventVersion, cursor, context }: EventBridgeProps) {
+export function EventBridge({ client, stream, syncEventVersion, dbInstanceId, cursor, context }: EventBridgeProps) {
   // The connection depends only on stream identity and the negotiated protocol
   // ceiling. Cache client, cursor store and lookup context are read through a
   // ref so a re-render with fresh prop identities can never tear down and
   // reopen the socket (INV-APP-020: one start per stream instance).
-  const latest = useRef({ client, cursor, context });
+  const latest = useRef({ client, cursor, context, dbInstanceId });
   useEffect(() => {
-    latest.current = { client, cursor, context };
-  }, [client, cursor, context]);
+    latest.current = { client, cursor, context, dbInstanceId };
+  }, [client, cursor, context, dbInstanceId]);
 
   useEffect(() => {
+    latest.current.cursor.adopt(latest.current.dbInstanceId);
     let state: EventState = initialEventState(syncEventVersion, latest.current.cursor.read());
     // configure() only freezes version/topics (INV-APP-021); nothing connects
     // until start() below.
     const configured = stream.configure({ syncEventVersion, topics: ['*'] });
     const unsubscribe = stream.onFrame((frame) => {
       const current = latest.current;
-      const reduction = reduceEventFrame(state, frame, current.context);
+      const reduction = reduceEventFrame(state, frame, current.context ?? waveLookupContext(current.client));
       state = reduction.state;
       for (const effect of reduction.effects) {
         if (effect.type === 'persist-cursor') current.cursor.write(effect.id);

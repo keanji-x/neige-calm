@@ -55,7 +55,6 @@ fn task(key: &str, status: TaskStatus, deps: &[&str], priority: i64) -> Task {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: 1,
         updated_at_ms: 1,
         finished_at_ms: None,
@@ -525,7 +524,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
     running.created_at_ms = now;
     running.updated_at_ms = now;
     let task_id = running.id.clone();
-    calm_truth::db::sqlite::task_insert_tx(&mut tx, &running)
+    crate::test_support::insert_task_tx(&mut tx, &running)
         .await
         .expect("insert running claude task");
     tx.commit().await.expect("commit seed tx");
@@ -663,7 +662,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
     let mut tx = crate::db::sqlite::begin_immediate_tx(&pool)
         .await
         .expect("begin task tx");
-    calm_truth::db::sqlite::task_insert_tx(&mut tx, &stored)
+    crate::test_support::insert_task_tx(&mut tx, &stored)
         .await
         .expect("insert done task");
     tx.commit().await.expect("commit task tx");

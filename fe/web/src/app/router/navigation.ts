@@ -6,14 +6,15 @@ import { useCallback } from 'react';
 export type NavTarget =
   | Readonly<{ name: 'today' }>
   | Readonly<{ name: 'cove'; coveId: string }>
-  | Readonly<{ name: 'wave'; waveId: string }>
+  /** `blockId` lands the reader on one block of the wave's report (§8.3). */
+  | Readonly<{ name: 'wave'; waveId: string; blockId?: string }>
   | Readonly<{ name: 'settings' }>;
 
 export function pathFor(target: NavTarget): string {
   switch (target.name) {
     case 'today': return '/';
-    case 'cove': return `/cove/${target.coveId}`;
-    case 'wave': return `/wave/${target.waveId}`;
+    case 'cove': return `/cove/${encodeURIComponent(target.coveId)}`;
+    case 'wave': return `/wave/${encodeURIComponent(target.waveId)}`;
     case 'settings': return '/settings';
   }
 }
@@ -30,8 +31,20 @@ export function pathFor(target: NavTarget): string {
 export function useGo(): (target: NavTarget) => void {
   const navigate = useNavigate();
   return useCallback((target: NavTarget) => {
-    void navigate({ to: pathFor(target) });
+    // The block anchor rides in the hash rather than in component state,
+    // because it has to survive the navigation that carries it: the wave route
+    // remounts per wave, so state set before `go` would be discarded by the
+    // very move it was describing. A hash also makes the deep link real —
+    // pasting one lands on the same paragraph.
+    const hash = target.name === 'wave' ? target.blockId : undefined;
+    void navigate({ to: pathFor(target), hash });
   }, [navigate]);
+}
+
+/** The block anchor the current URL points at, or `null`. */
+export function useRouteHash(): string | null {
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  return hash === '' ? null : hash;
 }
 
 export function useCurrentPath(): string {
@@ -49,7 +62,16 @@ export function useCurrentPath(): string {
  */
 export function useRouteParam(prefix: '/cove/' | '/wave/'): string | undefined {
   const path = useCurrentPath();
+  return routeParamFromPath(path, prefix);
+}
+
+export function routeParamFromPath(path: string, prefix: '/cove/' | '/wave/'): string | undefined {
   if (!path.startsWith(prefix)) return undefined;
   const segment = path.slice(prefix.length).split('/', 1)[0];
-  return segment === '' ? undefined : decodeURIComponent(segment);
+  if (segment === '') return undefined;
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return undefined;
+  }
 }

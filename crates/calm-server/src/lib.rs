@@ -31,15 +31,21 @@ pub mod card_kind;
 pub mod forge_trust;
 pub mod harness;
 pub mod liveness_feeder;
+pub mod plain_chat;
 pub mod provider_registry;
 pub mod reaper;
 mod state_clients;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod worker_flow;
 use crate::session_projection_repo::WorkerSessionState;
 pub use reaper::reaper_on_boot;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+/// Kernel-owned purpose marker for the cove's inert conversation wave.
+pub const COVE_CHAT_PURPOSE: &str = "cove-chat";
 
 /// #388 Phase 3b — reconcile DB rows that still look live with the
 /// process supervisor's PTY registry. Production no longer respawns

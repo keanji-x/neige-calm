@@ -45,19 +45,19 @@ use crate::worker::WorkerSessionId;
 /// kernel treats the value as opaque; never parses it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CoveId(pub String);
 
 /// Wave identifier. See [`CoveId`] for the opacity contract.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveId(pub String);
 
 /// Card identifier. See [`CoveId`] for the opacity contract.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS)]
 #[serde(transparent)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CardId(pub String);
 
 /// Semantic identity of an event producer.
@@ -69,7 +69,7 @@ pub struct CardId(pub String);
 /// audit-log truth until PR3 swaps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(tag = "kind", content = "id")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum ActorId {
     User,
     Kernel,

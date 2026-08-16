@@ -15,6 +15,7 @@ use super::wave_tree::MAX_TREE_TASK_BUDGET;
 pub async fn wave_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewWave,
+    purpose: Option<&str>,
     wave_cove_cache: &WaveCoveCache,
 ) -> Result<Wave> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
@@ -57,7 +58,7 @@ pub async fn wave_create_tx(
     sqlx::query(
         r#"INSERT INTO waves
            (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, tree_task_budget, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, NULL, ?8, NULL, NULL, ?9, ?10)"#,
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)"#,
     )
     .bind(&id)
     .bind(p.cove_id.as_str())
@@ -66,6 +67,7 @@ pub async fn wave_create_tx(
     .bind(lifecycle.as_db_str())
     .bind(&p.cwd)
     .bind(p.workflow_id.as_deref())
+    .bind(purpose)
     .bind(p.workflow_input.as_ref().map(|v| v.to_string()))
     .bind(now)
     .bind(now)
@@ -87,7 +89,7 @@ pub async fn wave_create_tx(
         lifecycle,
         cwd: p.cwd,
         workflow_id: p.workflow_id,
-        purpose: None,
+        purpose: purpose.map(str::to_owned),
         workflow_input: p.workflow_input,
         terminal_at: None,
         created_at: now,

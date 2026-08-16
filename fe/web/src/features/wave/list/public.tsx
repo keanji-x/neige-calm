@@ -9,7 +9,7 @@
 //   - the row, which is `WaveRow` (INV-DUP-009).
 
 import { coveOf, type Cove } from '../../../../../core/domain/cove.ts';
-import { sortByLifecycleRank, type Wave } from '../../../../../core/domain/wave.ts';
+import { sortByLifecycleRank, visibleWaves, type Wave } from '../../../../../core/domain/wave.ts';
 import { PanelEmpty } from '../../../ui/panel-card/public.tsx';
 import { WaveRow } from '../row/public.tsx';
 import styles from './list.module.css';
@@ -40,7 +40,7 @@ export function WaveList({
   waves, coves, showCove = false, activeWaveId = null,
   onOpenWave, onSetPinned, onDeleteWave, nowMs, emptyMessage, variant = 'default',
 }: WaveListProps) {
-  const ordered = sortByLifecycleRank(waves);
+  const ordered = sortByLifecycleRank(visibleWaves(waves));
 
   if (ordered.length === 0) {
     // The same empty state the conversation module renders, because the two sit

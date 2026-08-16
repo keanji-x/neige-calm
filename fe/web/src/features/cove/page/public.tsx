@@ -12,15 +12,16 @@
 // list itself — `features/**` may not import a sibling feature domain, so
 // `app/router` composes `<CovePage waveList={<WaveList …/>} />`.
 
-import type { ReactNode, RefObject } from 'react';
+import type { ReactNode } from 'react';
 
 import type { Cove } from '../../../../../core/domain/cove.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { deleteCoveCopy } from '../../../ui/confirm-dialog/copy.ts';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
+import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelAction, PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
-import { useState } from '../../../ui/state/public.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../../ui/typed-confirm/public.tsx';
 import styles from './page.module.css';
 
@@ -35,10 +36,8 @@ export type CovePageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
-  /** CR-8 — after a successful delete, focus lands on the next page's title. */
-  pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameCove: (name: string) => void | Promise<void>;
-  onDeleteCove: () => void | Promise<void>;
+  onDeleteCove: (signal: AbortSignal) => void | Promise<void>;
   onRequestNewWave: () => void;
 }>;
 
@@ -46,35 +45,18 @@ export type CovePageProps = Readonly<{
  * INV-A11Y-061 — every affordance here is a `<button>` + callback. No `<a href>`
  * anywhere on this surface.
  *
- * INV-CONFIRM-001 — the destructive confirm stays mounted for the whole await:
+ * INV-CONFIRM-001 — the destructive confirm owns the request for its lifetime:
  * Confirm goes busy (not really `disabled` — that would drop focus out of the
- * trap), Cancel stays enabled so the user always keeps an exit, and a `finally`
- * clears both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
+ * trap), Cancel stays enabled and aborts the request, and a `finally` clears
+ * both flags so a *rejected* `onDeleteCove` cannot strand the dialog.
  */
 export function CovePage({
-  cove, waveCount, waveList, report, conversationList, conversationAction, pageTitleRef,
+  cove, waveCount, waveList, report, conversationList, conversationAction,
   onRenameCove, onDeleteCove, onRequestNewWave,
 }: CovePageProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-  const typed = useTypedConfirm(confirmOpen ? cove.name : '');
+  const deletion = useDeleteConfirm((_id, signal) => onDeleteCove(signal));
+  const typed = useTypedConfirm(deletion.open ? cove.name : '');
   const copy = deleteCoveCopy(cove.name, waveCount);
-
-  const confirmDelete = () => {
-    if (deleting) return;
-    setDeleting(true);
-    void (async () => {
-      try {
-        await onDeleteCove();
-      } catch {
-        // The caller owns surfacing the failure; this surface only has to make
-        // sure the dialog does not strand. See INV-CONFIRM-001.
-      } finally {
-        setDeleting(false);
-        setConfirmOpen(false);
-      }
-    })();
-  };
 
   return (
     <div className={styles.page}>
@@ -107,14 +89,14 @@ export function CovePage({
          * says it — at a glance, and with the names attached.
          */
         title={
-          <EditableTitle
+          <h1 className={styles.titleHeading}><EditableTitle
             value={cove.name}
             onCommit={onRenameCove}
             editLabel="Rename cove"
             inputLabel="Cove name"
             className={styles.title}
             isPageTitle
-          />
+          /></h1>
         }
         actions={
           /*
@@ -136,9 +118,9 @@ export function CovePage({
             className={`${styles.headerAction} ${styles.headerDelete}`}
             aria-label={`Delete cove ${cove.name}`}
             title="Delete cove"
-            onClick={() => setConfirmOpen(true)}
+            onClick={() => deletion.request(cove.id)}
           >
-            ×
+            <Icon name="close" />
           </button>
         }
       />
@@ -170,7 +152,7 @@ export function CovePage({
           <PanelCard>
             <PanelModule
               title="Waves"
-              action={<PanelAction label="New wave" onClick={onRequestNewWave}>+</PanelAction>}
+              action={<PanelAction label="New wave" onClick={onRequestNewWave}><Icon name="plus" size="sm" /></PanelAction>}
             >
               {waveList}
             </PanelModule>
@@ -183,7 +165,7 @@ export function CovePage({
           product that earns a typed confirm (§4.3 / §6.13). The rail's entry
           point opens the same dialog with the same copy. */}
       <ConfirmDialog
-        open={confirmOpen}
+        open={deletion.open}
         title={copy.title}
         description={<TypedDeleteBody
           copy={copy}
@@ -194,12 +176,12 @@ export function CovePage({
         />}
         confirmLabel={copy.confirmLabel}
         confirmBusyLabel="Deleting…"
-        confirmState={deleting ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
+        confirmState={deletion.pending ? 'busy' : (typed.matches ? 'ready' : 'blocked')}
         initialFocusRef={typed.inputRef}
-        restoreFocusRef={pageTitleRef}
-        onConfirm={confirmDelete}
-        onCancel={() => setConfirmOpen(false)}
+        onConfirm={deletion.confirm}
+        onCancel={deletion.cancel}
       />
+      <OperationFeedback feedback={deletion.feedback} />
     </div>
   );
 }

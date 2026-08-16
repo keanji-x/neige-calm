@@ -32,6 +32,17 @@ describe('WaveList', () => {
     expect(screen.getByText('No waves in this cove yet.')).toBeTruthy();
   });
 
+  it('does not list archived waves', () => {
+    render(<WaveList
+      waves={[wave({ title: 'Filed away', archivedAt: 42 })]}
+      coves={[cove()]}
+      onOpenWave={vi.fn()}
+      emptyMessage="No visible waves."
+    />);
+    expect(screen.queryByRole('button', { name: /Filed away/ })).toBeNull();
+    expect(screen.getByText('No visible waves.')).toBeTruthy();
+  });
+
   it('orders waiting before running before quiet', () => {
     render(<WaveList
       waves={[

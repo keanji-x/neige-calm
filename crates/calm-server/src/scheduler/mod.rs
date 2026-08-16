@@ -73,7 +73,7 @@ use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
-use crate::task_context::{ContextMetrics, FrozenClosure, TaskContextMonitor, context_ref};
+use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
 /// Kernel default per-wave task budget when `waves.task_budget` is NULL
@@ -1108,28 +1108,24 @@ impl Scheduler {
     /// (round-2 review F1), or the wave row was deleted. No event is
     /// persisted.
     async fn claim_task(&self, task: Task, wave: &Wave) -> Result<Option<Task>> {
-        let closure = if task.origin == "legacy" {
-            FrozenClosure::default()
-        } else {
-            let monitor = TaskContextMonitor::new_with_metrics(
-                Arc::clone(&self.repo),
-                self.events.clone(),
-                self.write.clone(),
-                Arc::clone(&self.context_metrics),
-            );
-            match monitor.resolve_task_closure(&task.wave_id, &task.key).await {
-                Ok(closure) => closure,
-                Err(error) => {
-                    let variant = error.variant();
-                    self.context_metrics.record_context_resolve_failure(variant);
-                    tracing::warn!(
-                        task_id = %task.id,
-                        resolve_error_variant = variant,
-                        error = ?error,
-                        "scheduler: claim context resolution failed; task stays pending"
-                    );
-                    return Ok(None);
-                }
+        let monitor = TaskContextMonitor::new_with_metrics(
+            Arc::clone(&self.repo),
+            self.events.clone(),
+            self.write.clone(),
+            Arc::clone(&self.context_metrics),
+        );
+        let closure = match monitor.resolve_task_closure(&task.wave_id, &task.key).await {
+            Ok(closure) => closure,
+            Err(error) => {
+                let variant = error.variant();
+                self.context_metrics.record_context_resolve_failure(variant);
+                tracing::warn!(
+                    task_id = %task.id,
+                    resolve_error_variant = variant,
+                    error = ?error,
+                    "scheduler: claim context resolution failed; task stays pending"
+                );
+                return Ok(None);
             }
         };
         let scope = EventScope::Wave {
@@ -1498,6 +1494,9 @@ impl Scheduler {
             goal: Some(seed.to_string()),
             reset_harness_items: false,
             force_new_thread: false,
+            profile: Default::default(),
+            create_card: None,
+            first_message_sha256: None,
         };
         let bootstrap_payload = serde_json::to_value(&bootstrap)?;
         let bootstrap_id = runtime

@@ -123,13 +123,11 @@
   kind: gate
   family: tokens-alias
   statement: >
-    ALIAS_TOKENS（--surface-paper/-bg/-hover-overlay、--text-label/-meta/-decorative）
-    必须在 `:root` 里声明为**裸** `var(--positional)` 引用，不带 fallback
+    已废弃的 token 必须从 `:root` 与 dark 主题的 `INVENTORY` 精确闭集中移除
   why: >
-    语义别名的价值就是"不硬编码值"。VAR_REF 正则刻意不接受 `var(--x, fallback)` 形式——
-    注释说 calm.css 里别名一律是裸形式，出现 fallback 就该有人来看一眼。#137。
-  source: web/src/calm-tokens.test.ts:96-107,318-322
-  authoritative_test: web/src/calm-tokens.test.ts:335-345
+    这组别名已由当前 token 取代；INVENTORY 的精确闭集会拒绝它们被重新声明。
+  source: fe/web/src/styles/tokens.contract.test.ts:83-91
+  authoritative_test: fe/web/src/styles/tokens.contract.test.ts:93-101
   owner_slice: styles/tokens
   intentional_omission: false
   runtime_layer: styles
@@ -321,8 +319,8 @@
   kind: gate
   family: tokens-misc
   statement: >
-    SEMANTIC_MISC_TOKENS（--overlay-scrim / --cal-event-waiting-bg / --error-text /
-    --warn-border）必须在 `:root` 和 dark 两侧都有声明
+    SEMANTIC_MISC_TOKENS（--overlay-scrim / --error-text / --warn-border / --warn-text /
+    --success-text / --error-soft / --error-border）必须在 `:root` 和 dark 两侧都有声明
   why: >
     与 POSITIONAL_TOKENS 同样的亮暗对等契约，但**单列**因为形状断言不同：--overlay-scrim
     是 rgba()，其余是 oklch。#137 slice 3d。

@@ -9,7 +9,7 @@ use ts_rs::TS;
 use utoipa::ToSchema;
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsCardMeta {
     pub created_at: i64,
     pub deletable: bool,
@@ -23,7 +23,7 @@ pub struct WaveFsCardMeta {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum WaveFsRunStatus {
     Completed,
     Failed,
@@ -51,14 +51,14 @@ impl fmt::Display for WaveFsRunStatus {
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsRunVerdictSummary {
     pub at: i64,
     pub status: String,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsRunVerdict {
     pub at: i64,
     #[schema(nullable = true, required = true)]
@@ -67,7 +67,7 @@ pub struct WaveFsRunVerdict {
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsRunIndexEntry {
     #[schema(nullable = true, required = true)]
     pub finished_at: Option<i64>,
@@ -83,7 +83,7 @@ pub struct WaveFsRunIndexEntry {
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsRunEventRef {
     pub created_at: i64,
     pub event_id: i64,
@@ -94,7 +94,7 @@ pub struct WaveFsRunEventRef {
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsRunEvents {
     #[schema(nullable = true, required = true)]
     pub completed: Option<WaveFsRunEventRef>,
@@ -107,7 +107,7 @@ pub struct WaveFsRunEvents {
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsRunDetail {
     pub events: WaveFsRunEvents,
     #[schema(nullable = true, required = true)]
@@ -127,7 +127,7 @@ pub struct WaveFsRunDetail {
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveFsHookEvent {
     pub created_at: i64,
     pub event_id: i64,

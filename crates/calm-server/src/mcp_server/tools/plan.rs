@@ -404,7 +404,6 @@ fn task_row_from_normalized(wave_id: &str, t: &NormalizedTask, now: i64) -> Task
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,

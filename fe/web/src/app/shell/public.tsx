@@ -7,16 +7,20 @@
 // session passes it in.
 
 import { Outlet } from '@tanstack/react-router';
+import { useEffect } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
+import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { useState } from '../../ui/state/public.ts';
 import { useCoveMutations, useWaveMutations, useWorkspace } from '../providers/queries.ts';
 import { useCurrentPath, useGo } from '../router/navigation.ts';
+import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
 import { Sidebar } from './sidebar.tsx';
 import styles from './shell.module.css';
 
 export type AppShellProps = Readonly<{
   transport: ApiTransportPort;
+  unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
   onSignOut: () => void;
   /** Pinned by tests so `pinned_at` assertions are stable. */
@@ -24,12 +28,14 @@ export type AppShellProps = Readonly<{
   userLabel?: string;
 }>;
 
-export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
-  const workspace = useWorkspace(transport);
-  const coveMutations = useCoveMutations(transport);
-  const waveMutations = useWaveMutations(transport);
+export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
+  const workspace = useWorkspace(transport, unauthorized);
+  const coveMutations = useCoveMutations(transport, unauthorized);
+  const waveMutations = useWaveMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
   const go = useGo();
+  const readError = workspace.covesError
+    ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
   /*
    * The collapsed flag lives here, not inside `Sidebar`, because collapsing is
@@ -37,11 +43,22 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
    * unless this element's `grid-template-columns` also changes, the column
    * stays 200px wide and the button appears to do nothing. That was the bug.
    *
-   * Manual choice always wins (§7.1). The sub-960px auto-collapse is a media
-   * query on the same grid and deliberately does not write this state, so
-   * widening the window restores whatever the user picked.
+   * The choice is tri-state: `null` follows the viewport, while either boolean
+   * is an explicit user choice and wins at every width. Thus the narrow-screen
+   * Expand control changes the UI immediately and widening never inherits a
+   * click that appeared to do nothing.
    */
-  const [railCollapsed, setRailCollapsed] = useState(false);
+  const [manualRailCollapsed, setManualRailCollapsed] = useState<boolean | null>(null);
+  const [narrowRail, setNarrowRail] = useState(() => globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY).matches ?? false);
+  useEffect(() => {
+    const media = globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY);
+    if (!media) return;
+    const sync = () => setNarrowRail(media.matches);
+    sync();
+    media.addEventListener('change', sync);
+    return () => media.removeEventListener('change', sync);
+  }, []);
+  const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   // Both wave mutations need the cove id to invalidate the right list, and the
   // rail only knows wave ids; the workspace read already has the mapping.
@@ -49,26 +66,34 @@ export function AppShell({ transport, onOpenSettings, onSignOut, nowMs, userLabe
     workspace.waves.find((wave) => wave.id === waveId)?.coveId;
 
   return (
-    <div className={`${styles.shell} ${railCollapsed ? styles.shellCollapsed : ''}`}>
+    <div className={`${styles.shell} ${railCollapsed ? styles.shellCollapsed : styles.shellExpanded}`}>
       <Sidebar
         collapsed={railCollapsed}
-        onToggleCollapsed={() => setRailCollapsed(!railCollapsed)}
+        onToggleCollapsed={() => setManualRailCollapsed(!railCollapsed)}
         coves={workspace.coves}
         wavesByCove={workspace.wavesByCove}
         waves={workspace.waves}
         currentPath={currentPath}
+        readError={readError?.message ?? null}
+        readLoading={workspace.covesLoading || workspace.overlaysLoading
+          || [...workspace.wavesLoadingByCove.values()].some(Boolean)}
+        activityError={workspace.overlaysError?.message ?? null}
+        onRetryRead={() => {
+          workspace.retryCoves(); workspace.retryOverlays();
+          for (const cove of workspace.coves) workspace.retryWaves(cove.id);
+        }}
         onGo={go}
         onCreateCove={async (name, color) => { await coveMutations.create({ name, color }); }}
-        onDeleteCove={(coveId) => coveMutations.remove(coveId)}
+        onDeleteCove={(coveId, signal) => coveMutations.remove(coveId, signal)}
         onSetPinned={async (waveId, pinned) => {
           const coveId = coveIdOf(waveId);
           if (coveId === undefined) return;
           await waveMutations.setPinned(waveId, coveId, pinned, nowMs ?? Date.now());
         }}
-        onDeleteWave={async (waveId) => {
+        onDeleteWave={async (waveId, signal) => {
           const coveId = coveIdOf(waveId);
           if (coveId === undefined) return;
-          await waveMutations.remove(waveId, coveId);
+          await waveMutations.remove(waveId, coveId, signal);
         }}
         onOpenSettings={onOpenSettings}
         onSignOut={onSignOut}

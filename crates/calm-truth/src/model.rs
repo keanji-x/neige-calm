@@ -25,8 +25,9 @@ pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 // definitions live in calm-types; do NOT re-declare them here (shim-window
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
 pub use calm_types::model::{
-    Card, CardRole, CardRuntimeView, Cove, CoveFolder, CoveKind, CoveResolve, FolderConflict,
-    FolderConflictKind, HarnessItem, Overlay, Wave, WaveLifecycle, default_deletable,
+    Card, CardRole, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
+    CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave, WaveLifecycle,
+    default_deletable,
 };
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
@@ -413,7 +414,6 @@ pub struct Task {
     /// Claim-frozen route selector. Deliberately not exposed through task
     /// read-state DTOs: it is written before claim, unlike child_wave_id.
     pub spawn: String,
-    pub origin: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub finished_at_ms: Option<i64>,

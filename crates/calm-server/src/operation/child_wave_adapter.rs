@@ -194,6 +194,7 @@ impl ProviderAdapter for ChildWaveAdapter {
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
+            None,
             &self.wave_cove_cache,
         )
         .await?;
@@ -455,6 +456,7 @@ mod tests {
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
+            None,
             repo.wave_cove_cache(),
         )
         .await
@@ -506,13 +508,12 @@ mod tests {
             context_stale_at_ms: stale.then_some(now),
             declared_by: "spec".into(),
             spawn: "sub-wave".into(),
-            origin: "block".into(),
             created_at_ms: now,
             updated_at_ms: now,
             finished_at_ms: None,
         };
         let mut tx = repo.pool().begin().await.unwrap();
-        crate::db::sqlite::task_insert_tx(&mut tx, &task)
+        crate::test_support::insert_task_tx(&mut tx, &task)
             .await
             .unwrap();
         tx.commit().await.unwrap();

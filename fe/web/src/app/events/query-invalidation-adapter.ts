@@ -8,6 +8,7 @@
 // must never invent a key shape of its own, and a plan key with no query behind
 // it is dropped here rather than turned into a fabricated key.
 
+import { toCove } from '../../../../core/domain/cove.ts';
 import type { QueryKey } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
 import { queryKeys } from '../providers/queries.ts';
@@ -15,11 +16,13 @@ import { queryKeys } from '../providers/queries.ts';
 /**
  * The slice of `QueryClient` the adapter is allowed to use. Narrowing it keeps
  * the module unit-testable with a recording fake and makes the blast radius of
- * an event frame readable: invalidate, remove, clear — nothing else.
+ * an event frame readable.
  */
 export interface QueryCachePort {
   invalidateQueries(filters?: { queryKey?: readonly unknown[] }): unknown;
   removeQueries(filters: { queryKey: readonly unknown[] }): unknown;
+  getQueryData<T>(queryKey: readonly unknown[]): T | undefined;
+  setQueryData<T>(queryKey: readonly unknown[], value: T): unknown;
   clear(): void;
 }
 
@@ -34,15 +37,16 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);
   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);
   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);
+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
+  if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);
   return null;
 }
 
 /**
  * Applies the effects of one reduction. `persist-cursor` and `reconnect` are
- * stream lifecycle, not cache work, so the bridge handles them; `write-through`
- * is deliberately ignored (README: the event payload is a wire cove, while the
- * cove list caches decoded domain coves, and the same event already invalidates
- * `['coves']`).
+ * stream lifecycle, not cache work, so the bridge handles them. Write-through
+ * updates only an existing cached cove; a missing row remains absent until the
+ * accompanying invalidation refetches authoritative data.
  */
 export function applyEventEffects(client: QueryCachePort, effects: readonly EventEffect[]): void {
   for (const effect of effects) {
@@ -60,6 +64,18 @@ export function applyEventEffects(client: QueryCachePort, effects: readonly Even
       for (const key of effect.keys) {
         const mapped = mapPlannedQueryKey(key);
         if (mapped !== null) void client.invalidateQueries({ queryKey: mapped });
+      }
+      continue;
+    }
+    if (effect.type === 'write-through') {
+      for (const write of effect.writes) {
+        if (write.mode !== 'replace-existing-cove') continue;
+        const mapped = mapPlannedQueryKey(write.key);
+        if (mapped === null) continue;
+        const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);
+        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;
+        const updated = toCove(write.value);
+        client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));
       }
       continue;
     }

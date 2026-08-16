@@ -46,7 +46,7 @@ describe('invalidation plan behavior', () => {
       event({ ev: 'runtime.started', data: { card_id: 'card-1' } }),
       { findWaveOwningCard: () => 'wave-1' },
     )).toEqual({
-      invalidate: [['wave', 'wave-1'], ['overlays', 'card'], ['wave-files', 'wave-1']],
+      invalidate: [['wave', 'wave-1'], ['overlays', 'card'], ['wave-files', 'wave-1'], ['wave-report', 'wave-1']],
       remove: [],
       writeThrough: [],
     });
@@ -66,18 +66,30 @@ describe('invalidation plan behavior', () => {
   it('uses wave_id, then card ownership, then the broad wave-files prefix', () => {
     const context = { findWaveOwningCard: (cardId: string) => cardId === 'card-1' ? 'wave-1' : null };
     expect(invalidationPlanFor(event({ ev: 'codex.hook', data: { wave_id: 'direct' } }), context).invalidate)
-      .toEqual([['wave-files', 'direct']]);
+      .toEqual([['wave-files', 'direct'], ['wave-report', 'direct']]);
     expect(invalidationPlanFor(event({ ev: 'codex.hook', data: { card_id: 'card-1' } }), context).invalidate)
-      .toEqual([['wave-files', 'wave-1']]);
+      .toEqual([['wave-files', 'wave-1'], ['wave-report', 'wave-1']]);
     expect(invalidationPlanFor(event({ ev: 'codex.hook', data: {} }), context).invalidate)
-      .toEqual([['wave-files']]);
+      .toEqual([['wave-files'], ['wave-report']]);
   });
 
   it('invalidates terminal runtime projection through card ownership', () => {
     expect(invalidationPlanFor(
       event({ ev: 'terminal.deleted', data: { card_id: 'card-1' } }),
       { findWaveOwningCard: () => 'wave-1' },
-    ).invalidate).toEqual([['wave-files', 'wave-1']]);
+    ).invalidate).toEqual([['wave-files', 'wave-1'], ['wave-report', 'wave-1']]);
+  });
+
+  it('plans each harness event against the projections it can change', () => {
+    const planned = (ev: WireEvent['ev']) => invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } })).invalidate;
+    expect(planned('harness.item.added')).toEqual([['harness-items', 'card-1']]);
+    expect(planned('harness.phase.changed')).toEqual([['spec-run', 'card-1']]);
+    expect(planned('harness.transcript.cleared')).toEqual([
+      ['harness-items', 'card-1'], ['spec-run', 'card-1'],
+    ]);
+    expect(planned('harness.user_message.enqueued')).toEqual([
+      ['harness-items', 'card-1'], ['spec-run', 'card-1'],
+    ]);
   });
 
   it('returns an empty plan for explicit no-op policies', () => {

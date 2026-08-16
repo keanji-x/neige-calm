@@ -95,6 +95,7 @@ pub(super) async fn create_card_in_tx(
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await
@@ -205,6 +206,7 @@ pub(super) async fn seed_terminal_runtime(
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await
@@ -267,6 +269,7 @@ pub(super) async fn seed_codex_terminal_card(
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
+        None,
         repo.wave_cove_cache(),
     )
     .await

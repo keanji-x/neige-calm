@@ -12,6 +12,8 @@
 //! Tests run against an in-memory `SqlxRepo` and stubbed worker spawn
 //! dependencies.
 
+mod support;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -488,24 +490,18 @@ async fn lagged_context_sweep_precedes_scheduler_resume() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "block".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
     };
     calm_server::db::write_in_tx_typed(repo.as_ref(), move |tx| {
         Box::pin(async move {
-            calm_server::db::sqlite::task_insert_tx(tx, &task).await?;
+            crate::support::task::insert_task_tx(tx, &task).await?;
             Ok(())
         })
     })
     .await
     .expect("seed pending task");
-    sqlx::query("UPDATE tasks SET origin = 'block' WHERE id = ?1")
-        .bind(&task_id)
-        .execute(&pool)
-        .await
-        .expect("mark block-origin");
 
     let spawned = Arc::new(AtomicUsize::new(0));
     let operation_repo = Arc::new(SqlxOperationRepo::new(pool.clone()));
@@ -816,19 +812,13 @@ async fn wave_updated_budget_raise_pokes_scheduler() {
         context_stale_at_ms: None,
         declared_by: "spec".into(),
         spawn: "in-wave".into(),
-        origin: "legacy".into(),
         created_at_ms: now,
         updated_at_ms: now,
         finished_at_ms: None,
     };
-    calm_server::db::write_in_tx_typed(repo.as_ref(), move |tx| {
-        Box::pin(async move {
-            calm_server::db::sqlite::task_insert_tx(tx, &task).await?;
-            Ok(())
-        })
-    })
-    .await
-    .expect("seed pending plan task");
+    crate::support::task::project_task(&repo.sqlite_pool().unwrap(), &task)
+        .await
+        .expect("project pending task block");
 
     let operation_repo = Arc::new(SqlxOperationRepo::new(
         repo.sqlite_pool()

@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
+import type { HarnessItem } from '../api/generated/wire.js';
 import {
-  CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
-  type Conversation,
+  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL,
+} from '../keys/mcp-tools.js';
+
+import {
+  buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
+  harnessItemToActivity, harnessItemToTurn, mergeTranscript, readableCommand,
+  reconcileUserEchoes, type Conversation, type ConversationTurn,
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -26,6 +32,22 @@ describe('conversationName', () => {
   });
 });
 
+describe('reconcileUserEchoes', () => {
+  const turn = (id: string, text: string): ConversationTurn => ({ id, author: 'you', text, atMs: 1 });
+
+  it('lets one server row consume only one of two identical echoes', () => {
+    expect(reconcileUserEchoes(
+      [turn('server-1', 'same')],
+      [turn('echo-1', 'same'), turn('echo-2', 'same')],
+    ).map((entry) => entry.id)).toEqual(['echo-2']);
+  });
+
+  it('does not reconcile against server rows outside the bounded lookback', () => {
+    const rows = [turn('old', 'same'), ...Array.from({ length: 50 }, (_, index) => turn(`recent-${index}`, `text-${index}`))];
+    expect(reconcileUserEchoes(rows, [turn('echo', 'same')])).toHaveLength(1);
+  });
+});
+
 describe('conversationNameFrom', () => {
   it('takes the first line, not the first paragraph', () => {
     expect(conversationNameFrom('Fix the resolver\n\nHere is the stack trace:\n  at walk()'))
@@ -43,9 +65,271 @@ describe('conversationNameFrom', () => {
     expect(conversationNameFrom(exact)).toBe(exact);
   });
 
-  /* A message can be sent with only whitespace trimmed away by the composer,
-     but this is a pure function and callers should not have to pre-check. */
   it.each([['empty', ''], ['whitespace', '   \n  ']])('has no name for a %s message', (_label, text) => {
     expect(conversationNameFrom(text)).toBeNull();
+  });
+});
+
+function item(overrides: Partial<HarnessItem> = {}): HarnessItem {
+  return {
+    id: 7, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+    turn_id: 'turn', item_uuid: 'item', item_type: 'agentMessage', method: 'item/completed',
+    params: JSON.stringify({ completedAtMs: 99, item: { text: 'answer' } }), created_at_ms: 50,
+    ...overrides,
+  };
+}
+
+describe('harnessItemToTurn', () => {
+  it('maps completed agent messages', () => {
+    expect(harnessItemToTurn(item())).toEqual({ id: '7', author: 'agent', text: 'answer', atMs: 99 });
+  });
+
+  it('strips the injected wave diff and user marker', () => {
+    const text = '## Wave state changes since your last turn\nchanged\n\n---\n\nUser says:\nhello';
+    expect(harnessItemToTurn(item({
+      item_type: 'userMessage', params: JSON.stringify({ item: { content: [{ type: 'text', text }] } }),
+    }))).toMatchObject({ author: 'you', text: 'hello' });
+  });
+
+  it('drops incomplete and unsupported entries', () => {
+    expect(harnessItemToTurn(item({ method: 'item/started' }))).toBeNull();
+    expect(harnessItemToTurn(item({ item_type: 'commandExecution' }))).toBeNull();
+    expect(harnessItemToTurn(item({ params: '{broken' }))).toBeNull();
+  });
+
+  /*
+   * Both rows below are **verbatim** captures from a live stack (`GET
+   * /api/cards/{id}/harness/items`), not hand-written shapes. The bug this
+   * guards against was invisible to hand-written fixtures precisely because the
+   * fixtures repeated the same invented spelling as the code under test.
+   */
+  describe('captured wire rows', () => {
+    const captured = (id: number, itemType: string, params: string): HarnessItem =>
+      item({ id, item_type: itemType, params, created_at_ms: 1786763298839 });
+
+    it('reads a real agent message', () => {
+      const row = captured(6, 'agentMessage', '{"completedAtMs":1786763298838,"item":{"id":"msg_0276","memoryCitation":null,"phase":"commentary","text":"我先确认这个 Wave 的当前状态。","type":"agentMessage"},"threadId":"01a0","turnId":"01a0"}');
+      expect(harnessItemToTurn(row)).toEqual({
+        id: '6', author: 'agent', text: '我先确认这个 Wave 的当前状态。', atMs: 1786763298838,
+      });
+    });
+
+    it('reads a real user message and keeps only what the human typed', () => {
+      const row = captured(28, 'userMessage', JSON.stringify({
+        completedAtMs: 1786763341752,
+        item: {
+          clientId: null,
+          content: [{
+            text: '## Wave state changes since your last turn (HEAD 32f19e5d -> 552cbdc9)\n- report.md edited\n\n---\n\nUser says:\nhello',
+            text_elements: [], type: 'text',
+          }],
+          id: '01a0', type: 'userMessage',
+        },
+      }));
+      expect(harnessItemToTurn(row)).toEqual({
+        id: '28', author: 'you', text: 'hello', atMs: 1786763341752,
+      });
+    });
+  });
+});
+
+describe('harnessItemToActivity', () => {
+  const row = (overrides: Partial<HarnessItem>): HarnessItem => ({
+    id: 7, runtime_id: 'runtime', card_id: 'card', wave_id: 'wave', thread_id: 'thread',
+    turn_id: 'turn', item_uuid: 'uuid', item_type: 'commandExecution', method: 'item/completed',
+    params: '{}', created_at_ms: 50, ...overrides,
+  });
+
+  it('reads a captured shell run and drops the bash wrapper', () => {
+    // Verbatim shape from a live stack, trimmed of its 3KB of output.
+    const activity = harnessItemToActivity(row({
+      params: JSON.stringify({
+        completedAtMs: 1786763301566,
+        item: {
+          command: "/usr/bin/bash -lc 'neige state'", aggregatedOutput: '{"cards": []}',
+          exitCode: 0, durationMs: 120, status: 'completed', type: 'commandExecution',
+        },
+      }),
+    }));
+    expect(activity).toMatchObject({ verb: 'Ran', target: 'neige state', state: 'done' });
+  });
+
+  it('says the report was written, because that is the answer', () => {
+    const activity = harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({
+        completedAtMs: 1786763335477,
+        item: {
+          server: 'calm', tool: REPORT_WRITE_TOOLS[3], arguments: { body: '# 概要' },
+          error: null, status: 'completed', durationMs: 15, type: 'mcpToolCall',
+        },
+      }),
+    }));
+    expect(activity).toMatchObject({ verb: 'Wrote report', target: null, state: 'done' });
+  });
+
+  it('tells a read of the report apart from a write of it', () => {
+    const read = harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ item: { tool: REPORT_READ_TOOLS[0], status: 'completed' } }),
+    }));
+    expect(read).toMatchObject({ verb: 'Read report', state: 'done' });
+  });
+
+  it.each([
+    [TASK_VERDICT_TOOL, 'Writing task verdict', 'Wrote task verdict'],
+    [PLAN_LIST_TOOL, 'Reading plan', 'Read plan'],
+  ])('renders the known %s tool in English', (tool, running, done) => {
+    expect(harnessItemToActivity(row({
+      item_type: 'mcpToolCall', method: 'item/started',
+      params: JSON.stringify({ item: { tool } }),
+    }))?.verb).toBe(running);
+    expect(harnessItemToActivity(row({
+      item_type: 'mcpToolCall', params: JSON.stringify({ item: { tool } }),
+    }))?.verb).toBe(done);
+  });
+
+  it('is running while only `item/started` has arrived', () => {
+    expect(harnessItemToActivity(row({
+      method: 'item/started',
+      params: JSON.stringify({ item: { command: 'ls', type: 'commandExecution' } }),
+    }))).toMatchObject({ verb: 'Running', state: 'running' });
+  });
+
+  it('does not claim that a started file change edited zero files', () => {
+    expect(harnessItemToActivity(row({
+      item_type: 'fileChange', method: 'item/started',
+      params: JSON.stringify({ item: { type: 'fileChange' } }),
+    }))).toMatchObject({ verb: 'Editing', target: null, state: 'running' });
+  });
+
+  it.each([
+    ['subAgentActivity', 'Delegating', 'Delegated'],
+    ['dynamicToolCall', 'Calling tool', 'Called tool'],
+    ['hookPrompt', 'Prompting', 'Prompted'],
+    ['imageView', 'Viewing image', 'Viewed image'],
+    ['enteredReviewMode', 'Entering review mode', 'Entered review mode'],
+    ['exitedReviewMode', 'Exiting review mode', 'Exited review mode'],
+    ['contextCompaction', 'Compacting', 'Compacted'],
+  ])('renders the known %s item type', (itemType, running, done) => {
+    const started = harnessItemToActivity(row({
+      item_type: itemType, method: 'item/started', params: JSON.stringify({ item: {} }),
+    }));
+    const completed = harnessItemToActivity(row({
+      item_type: itemType, params: JSON.stringify({ item: {} }),
+    }));
+    expect(started?.verb).toBe(running);
+    expect(completed?.verb).toBe(done);
+  });
+
+  it.each([
+    ['a non-zero exit', { command: 'false', exitCode: 1, status: 'completed' }],
+    ['an mcp error member', { tool: REPORT_WRITE_TOOLS[0], error: { message: 'nope' }, status: 'completed' }],
+    ['a failed status', { command: 'x', exitCode: 0, status: 'failed' }],
+  ])('reads failure from %s', (_label, item) => {
+    const itemType = 'tool' in item || 'error' in item ? 'mcpToolCall' : 'commandExecution';
+    expect(harnessItemToActivity(row({
+      item_type: itemType, params: JSON.stringify({ item }),
+    }))?.state).toBe('failed');
+  });
+
+  it('renders a neutral line for an item type this build has never seen', () => {
+    expect(harnessItemToActivity(row({
+      item_type: 'somethingNewInCodex', params: JSON.stringify({ item: {} }),
+    }))).toMatchObject({ verb: 'Worked', target: 'somethingNewInCodex', state: 'done' });
+  });
+
+  it('renders web search as an outside-world read instead of the generic fallback', () => {
+    expect(harnessItemToActivity(row({
+      item_type: 'webSearch', params: JSON.stringify({ item: {} }),
+    }))).toMatchObject({ verb: 'Searched the web', target: null, state: 'done' });
+  });
+
+  it('strips the wrapper only when the whole command is one quoted string', () => {
+    expect(readableCommand("/usr/bin/bash -lc 'neige ls /'")).toBe('neige ls /');
+    expect(readableCommand('bash -c "npm test"')).toBe('npm test');
+    expect(readableCommand('git status')).toBe('git status');
+  });
+});
+
+describe('buildTranscript', () => {
+  const row = (id: number, itemType: string, method: string, item: unknown, uuid = `u${id}`): HarnessItem => ({
+    id, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',
+    item_uuid: uuid, item_type: itemType, method,
+    params: JSON.stringify({ completedAtMs: 1000 + id, item }), created_at_ms: 1000 + id,
+  });
+
+  it('pairs started with completed into one line, in the started position', () => {
+    const entries = buildTranscript([
+      row(1, 'commandExecution', 'item/started', { command: 'ls', type: 'commandExecution' }),
+      row(2, 'agentMessage', 'item/completed', { text: 'done', type: 'agentMessage' }, 'u-msg'),
+      row(3, 'commandExecution', 'item/completed', { command: 'ls', exitCode: 0 }, 'u1'),
+    ]);
+    expect(entries.map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+      .toEqual(['Ran', 'done']);
+  });
+
+  it('keeps thinking while it is the last thing, and drops it once anything follows', () => {
+    const thinking = [
+      row(1, 'reasoning', 'item/completed', { summary: [], type: 'reasoning' }, 'u1'),
+      row(2, 'reasoning', 'item/completed', { summary: [], type: 'reasoning' }, 'u2'),
+    ];
+    expect(buildTranscript(thinking).map((entry) => entry.author === 'activity' && entry.verb))
+      .toEqual(['Thought']);
+    const answered = [...thinking, row(3, 'agentMessage', 'item/completed', { text: 'hi' }, 'u3')];
+    expect(buildTranscript(answered).map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+      .toEqual(['hi']);
+  });
+
+  it('orders by the wire id, not by arrival', () => {
+    const entries = buildTranscript([
+      row(9, 'agentMessage', 'item/completed', { text: 'second' }, 'u9'),
+      row(4, 'userMessage', 'item/completed', { content: [{ text: 'first' }] }, 'u4'),
+    ]);
+    expect(entries.map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+      .toEqual(['first', 'second']);
+  });
+
+  it('renders snake_case messages as turns, not generic activities', () => {
+    const entries = buildTranscript([
+      row(1, 'user_message', 'item/completed', { content: [{ text: 'question' }] }),
+      row(2, 'agent_message', 'item/completed', { text: 'answer' }),
+    ]);
+    expect(entries).toMatchObject([
+      { author: 'you', text: 'question' },
+      { author: 'agent', text: 'answer' },
+    ]);
+    expect(entries.every((entry) => entry.author !== 'activity')).toBe(true);
+  });
+
+  it('does not render a started agent message as an activity', () => {
+    expect(buildTranscript([
+      row(1, 'agentMessage', 'item/started', { text: 'still arriving' }),
+    ])).toEqual([]);
+  });
+
+  it('does not render empty completed messages as activities', () => {
+    expect(buildTranscript([
+      row(1, 'agentMessage', 'item/completed', { text: '' }),
+      row(2, 'userMessage', 'item/completed', {
+        content: [{ text: '## Wave state changes since your last turn\nchanged\n\n---\n\nUser says:\n' }],
+      }),
+    ])).toEqual([]);
+  });
+});
+
+describe('mergeTranscript', () => {
+  const thought = {
+    id: 'thought', author: 'activity' as const, verb: 'Thought', target: null,
+    state: 'done' as const, atMs: 1,
+  };
+  const echo: ConversationTurn = { id: 'echo', author: 'you', text: 'next', atMs: 2 };
+
+  it('drops a completed tail thought when an echo follows it', () => {
+    expect(mergeTranscript([thought], [echo])).toEqual([echo]);
+  });
+
+  it('keeps a completed tail thought until an echo exists', () => {
+    expect(mergeTranscript([thought], [])).toEqual([thought]);
   });
 });

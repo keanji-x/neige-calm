@@ -3,129 +3,171 @@
     "id": "CAP-A11Y-002",
     "locations": [
       "docs/a11y-contract.md:16"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "CAP-A11Y-093",
     "locations": [
       "docs/a11y-contract.md:213"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "CAP-UI-CONFIRM-068",
     "locations": [
       "web/src/ui/README.md:192-215"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "E2E-GATE-INFRA-035",
     "locations": [
       "web/e2e/README.md:84-112"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "E2E-INV-INFRA-036",
     "locations": [
       "web/e2e/README.md:105-110"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-CONFIRM-071",
     "locations": [
       "web/src/ui/README.md:185-215"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-076",
     "locations": [
       "web/src/ui/README.md:62-64",
       "web/src/ui/README.md:24-32"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-078",
     "locations": [
       "web/src/ui/README.md:48-51"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-079",
     "locations": [
       "web/src/ui/README.md:17-55"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-WIRE-003",
     "locations": [
       ".cargo/config.toml:19-25"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-WIRE-004",
     "locations": [
       ".cargo/config.toml:1-18"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-052",
     "locations": [
       "docs/a11y-contract.md:101"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-061",
     "locations": [
       "docs/a11y-contract.md:121"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-100",
     "locations": [
       "docs/a11y-contract.md:237"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-101",
     "locations": [
       "docs/a11y-contract.md:238"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-107",
     "locations": [
       "docs/a11y-contract.md:266"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-109",
     "locations": [
       "docs/a11y-contract.md:285-300"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-110",
     "locations": [
       "web/src/ui/README.md:217-289"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-EDITOR-002",
     "locations": [
       "web/src/editor/README.md:10-17"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-EDITOR-003",
     "locations": [
       "web/src/editor/README.md:23-25"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-UI-LAYER-080",
     "locations": [
       "web/src/ui/README.md:102-111",
       "web/src/ui/README.md:253-271"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-UI-LAYER-082",
@@ -134,62 +176,120 @@
       "web/src/ui/README.md:121-124",
       "web/src/ui/README.md:180-183",
       "web/src/ui/README.md:286-289"
-    ]
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-072",
-    "locations": ["web/src/ui/README.md:71-75"]
+    "locations": [
+      "web/src/ui/README.md:71-75"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-073",
-    "locations": ["web/src/ui/README.md:65-67"]
+    "locations": [
+      "web/src/ui/README.md:65-67"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-074",
-    "locations": ["web/src/ui/README.md:79-81"]
+    "locations": [
+      "web/src/ui/README.md:79-81"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-075",
-    "locations": ["web/src/ui/README.md:76-78"]
+    "locations": [
+      "web/src/ui/README.md:76-78"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "GATE-UI-LAYER-077",
-    "locations": ["web/src/ui/README.md:68-70"]
+    "locations": [
+      "web/src/ui/README.md:68-70"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-001",
-    "locations": ["docs/a11y-contract.md:11-14"]
+    "locations": [
+      "docs/a11y-contract.md:11-14"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-037",
-    "locations": ["docs/a11y-contract.md:67"]
+    "locations": [
+      "docs/a11y-contract.md:67"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-058",
-    "locations": ["docs/a11y-contract.md:111"]
+    "locations": [
+      "docs/a11y-contract.md:111"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-095",
-    "locations": ["docs/a11y-contract.md:219"]
+    "locations": [
+      "docs/a11y-contract.md:219"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-097",
-    "locations": ["docs/a11y-contract.md:223"]
+    "locations": [
+      "docs/a11y-contract.md:223"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-098",
-    "locations": ["docs/a11y-contract.md:225"]
+    "locations": [
+      "docs/a11y-contract.md:225"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-A11Y-106",
-    "locations": ["docs/a11y-contract.md:262"]
+    "locations": [
+      "docs/a11y-contract.md:262"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-EDITOR-001",
-    "locations": ["web/src/editor/README.md:19-21"]
+    "locations": [
+      "web/src/editor/README.md:19-21"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   },
   {
     "id": "INV-UI-LAYER-081",
-    "locations": ["web/src/ui/README.md:42-44"]
+    "locations": [
+      "web/src/ui/README.md:42-44"
+    ],
+    "reason": "#997 非 TS/CSS 锚点暂由人工复核",
+    "expiry": "2026-12-31"
   }
 ]

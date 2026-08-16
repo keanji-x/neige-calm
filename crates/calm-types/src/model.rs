@@ -54,13 +54,13 @@ use crate::worker::WorkerSessionState;
 /// Persisted as a lowercase string in `cards.role` (migration 0008). The
 /// serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
 /// stable; ts-rs exports the matching TS union (`"spec" | "worker" |
-/// "reportcard"`) into `web/src/api/generated-events.ts` so the
+/// "reportcard"`) into `fe/core/api/generated/wire.ts` so the
 /// frontend can adopt the enum once any UI lands.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
 )]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum CardRole {
     #[default]
     Worker,
@@ -122,7 +122,7 @@ impl TryFrom<String> for CardRole {
 /// Persisted as a lowercase string in `coves.kind` (migration 0009).
 /// The serde + sqlx `rename_all = "lowercase"` keeps the wire / storage
 /// shape stable; ts-rs exports the matching TS union
-/// (`"user" | "system"`) into `web/src/api/generated-events.ts` so the
+/// (`"user" | "system"`) into `fe/core/api/generated/wire.ts` so the
 /// frontend can validate against it. UI types intentionally don't
 /// surface `kind` — the server's default filter already hides system
 /// coves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /
@@ -131,7 +131,7 @@ impl TryFrom<String> for CardRole {
     Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
 )]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum CoveKind {
     #[default]
     User,
@@ -164,7 +164,7 @@ impl TryFrom<String> for CoveKind {
 // ---------------- Cove ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Cove {
     #[schema(value_type = String)]
     pub id: CoveId,
@@ -204,7 +204,7 @@ pub struct Cove {
 /// later reconcile. The compact integer also keeps `/folders/:id` URLs
 /// readable.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CoveFolder {
     pub id: i64,
     #[schema(value_type = String)]
@@ -223,7 +223,7 @@ pub struct CoveFolder {
 /// without re-parsing strings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum FolderConflictKind {
     /// Proposed path equals an existing folder's path exactly.
     Equal,
@@ -241,7 +241,7 @@ pub enum FolderConflictKind {
 /// Hand-written DTO so the frontend gets a structured shape rather
 /// than the generic `{error, code}` envelope.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct FolderConflict {
     pub folder_id: i64,
     #[schema(value_type = String)]
@@ -254,7 +254,7 @@ pub struct FolderConflict {
 /// resolve endpoint returns `null` (not 404) on miss; this struct is
 /// the `Some(_)` payload.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CoveResolve {
     #[schema(value_type = String)]
     pub cove_id: CoveId,
@@ -281,13 +281,13 @@ pub struct CoveResolve {
 /// Persisted as a lowercase string in `waves.lifecycle` (migration
 /// 0012). The serde + sqlx `rename_all = "lowercase"` keeps the wire
 /// and storage shape stable; ts-rs exports the matching TS union into
-/// `web/src/api/generated-events.ts` so the frontend can render the
+/// `fe/core/api/generated/wire.ts` so the frontend can render the
 /// badge against the same vocabulary.
 #[derive(
     Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
 )]
 #[serde(rename_all = "lowercase")]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum WaveLifecycle {
     /// New wave; user is editing goal/context and hasn't handed off to
     /// the Spec Agent yet. **Default for every newly minted wave.**
@@ -366,7 +366,7 @@ impl TryFrom<String> for WaveLifecycle {
 // ---------------- Wave ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Wave {
     #[schema(value_type = String)]
     pub id: WaveId,
@@ -451,7 +451,7 @@ pub struct Wave {
 /// result. Future cleanup (#581 item 4) will remove the legacy payload-key
 /// projection; this typed view is the forward-compatible reader path.
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct CardRuntimeView {
     pub runtime_id: String,
     pub kind: WorkerSessionKind,
@@ -476,8 +476,43 @@ pub struct CardRuntimeView {
     pub thread_status: Option<String>,
 }
 
+/// One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
+///
+/// Deliberately absent:
+/// * `waveTitle` — every row belongs to the same hidden cove chat wave, so
+///   returning its title would leak an object the user is never shown.
+/// * `turns` — the server cannot produce a turn count that agrees with the
+///   drawer without re-parsing every `harness_items.params` blob; a number
+///   that silently disagrees is worse than no number.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct CoveConversationSummary {
+    /// The chat card's id. This is the conversation's identity everywhere.
+    pub id: String,
+    pub wave_id: String,
+    /// The conversation's own name, or null before it has one. Never the
+    /// wave's title.
+    pub title: Option<String>,
+    /// Always `"shared-chat"`, derived from the card's persisted marker rather
+    /// than from the session kind (the session is an ordinary codex-card
+    /// session and says nothing about the conversation being a cove chat).
+    pub kind: String,
+    /// The live session's state, or **null when the card has no session row**.
+    ///
+    /// This must stay nullable and must never be filled with an invented
+    /// value. The list is a LEFT JOIN precisely so a card whose session is
+    /// gone (failed start, superseded runtime, shut-down harness) stays
+    /// visible; substituting `idle` or `exited` here would report a session
+    /// state that was never read.
+    pub state: Option<WorkerSessionState>,
+    /// The session's last update, falling back to the card's own — a card
+    /// minted seconds ago with no session yet still sorts sensibly.
+    pub updated_at: i64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Card {
     #[schema(value_type = String)]
     pub id: CardId,
@@ -533,7 +568,7 @@ pub fn default_deletable() -> bool {
 // ---------------- HarnessItem ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct HarnessItem {
     pub id: i64,
     pub runtime_id: String,
@@ -553,7 +588,7 @@ pub struct HarnessItem {
 // ---------------- Overlay ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
-#[ts(export, export_to = "web/src/api/generated-events.ts")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct Overlay {
     pub id: String,
     pub plugin_id: String,

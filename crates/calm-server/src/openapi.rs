@@ -13,9 +13,9 @@
 use crate::error::ErrorBody;
 use crate::harness::HarnessPhaseTag;
 use crate::model::{
-    Card, CardPatch, CardRuntimeView, Cove, CoveFolder, CoveKind, CovePatch, CoveResolve,
-    FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove, NewCoveFolder, NewOverlay,
-    NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
+    Card, CardPatch, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
+    CovePatch, CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove,
+    NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::cards::{
@@ -68,6 +68,9 @@ use utoipa::OpenApi;
         crate::routes::coves::update_cove,
         crate::routes::coves::delete_cove,
         // ---- cove_folders (#250 PR 1) ----
+        // ---- cove conversations (#1098) ----
+        crate::routes::cove_conversations::list_cove_conversations,
+        crate::routes::cove_conversations::create_cove_conversation,
         crate::routes::cove_folders::list_folders,
         crate::routes::cove_folders::create_folder,
         crate::routes::cove_folders::delete_folder,
@@ -77,6 +80,7 @@ use utoipa::OpenApi;
         crate::routes::waves::list_waves_window,
         crate::routes::waves::get_wave_detail,
         crate::routes::waves::create_wave,
+        crate::routes::waves::ensure_cove_chat_wave,
         crate::routes::waves::update_wave,
         crate::routes::waves::delete_wave,
         crate::routes::waves::get_wave_backlinks,
@@ -190,6 +194,8 @@ use utoipa::OpenApi;
         HarnessItemsQuery,
         SendSpecInputRequest,
         SendSpecInputResponse,
+        CoveConversationSummary,
+        crate::routes::cove_conversations::NewCoveConversationBody,
         InterruptSpecCardResponse,
         GetSpecRunResponse,
         HarnessPhaseTag,

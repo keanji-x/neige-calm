@@ -482,6 +482,15 @@ impl Dispatcher {
         Arc::clone(&self.context_monitor)
     }
 
+    /// Fixtures that exercise request handlers without scheduler behavior can
+    /// stop only the event listener before emitting any events. The dispatcher
+    /// handle remains available to satisfy `AppState`'s production-shaped
+    /// state, while `PlanUpdated` cannot race the fixture's next request.
+    #[cfg(any(test, feature = "fixtures"))]
+    pub fn abort_event_listener_for_test(&self) {
+        self.handle.abort();
+    }
+
     #[cfg(any(test, feature = "fixtures"))]
     pub async fn reconcile_tick_for_test(&self) {
         self.inner.reconcile_once().await;

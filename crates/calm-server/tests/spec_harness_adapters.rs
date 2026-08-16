@@ -18,7 +18,9 @@ use calm_server::mcp_server::auth;
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave, Wave, new_id, now_ms};
 use calm_server::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use calm_server::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
-use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
+use calm_server::operation::spec_harness_start_adapter::{
+    HarnessProfile, SpecHarnessStartOperationPayload,
+};
 use calm_server::operation::{OperationKey, OperationOutcome, PhaseTag, TxOutput};
 use calm_server::pending_codex_threads::PendingThreadStartRegistry;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
@@ -209,6 +211,54 @@ async fn seed_spec_card(repo: &SqlxRepo, role_cache: &CardRoleCache, wave: &Wave
     tx.commit().await.unwrap();
 }
 
+async fn seed_plain_chat_card(
+    repo: &SqlxRepo,
+    role_cache: &CardRoleCache,
+    wave: &Wave,
+    card_id: &str,
+) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.to_string(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        },
+        CardRole::Worker,
+        false,
+        role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
+#[test]
+fn legacy_start_payload_defaults_to_spec_profile() {
+    let mut payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::Kernel,
+        wave_id: "wave-old".into(),
+        spec_card_id: CardId::from("card-old".to_string()),
+        report_card_id: None,
+        sort: None,
+        cwd: "/tmp".into(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: HarnessProfile::PlainChat,
+        create_card: None,
+        first_message_sha256: None,
+    })
+    .unwrap();
+    payload.as_object_mut().unwrap().remove("profile");
+    let decoded: SpecHarnessStartOperationPayload = serde_json::from_value(payload).unwrap();
+    assert_eq!(decoded.profile, HarnessProfile::Spec);
+}
+
 fn key() -> OperationKey {
     OperationKey {
         operation_key: new_id(),
@@ -308,6 +358,9 @@ async fn start_interrupt_and_shutdown_adapters_drive_harness_lifecycle() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -474,6 +527,9 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let first_op = state
@@ -523,6 +579,9 @@ async fn fresh_thread_sends_per_card_mcp_config_and_rotates_hash() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let second_op = state
@@ -607,6 +666,9 @@ async fn spec_thread_start_carries_neige_mcp_exec_shell_env() {
         goal: Some("spec channel-3 point-of-use".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -672,6 +734,113 @@ async fn spec_thread_start_carries_neige_mcp_exec_shell_env() {
 }
 
 #[tokio::test]
+async fn plain_chat_thread_start_has_no_mcp_config() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_plain_chat_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile: HarnessProfile::PlainChat,
+        create_card: None,
+        first_message_sha256: None,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    let outcome = wait_op(&state, &op_id).await;
+    assert!(
+        matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "plain-chat start failed: {outcome:?}"
+    );
+
+    assert_eq!(
+        state
+            .shared_codex_appserver
+            .started_thread_params_for_test(),
+        vec![(None, true, None)],
+        // The deferred mint API does not receive a card role, so this path can
+        // only observe developer instructions and ThreadConfig::NoMcp. Role is
+        // observable only on the non-deferred path and is locked by
+        // plain_chat_non_deferred_thread_start_uses_worker_role.
+        "plain-chat thread/start must select ThreadConfig::NoMcp"
+    );
+    assert_eq!(
+        repo.card_get(&card_id)
+            .await
+            .unwrap()
+            .expect("plain-chat card after thread start")
+            .payload["harness_profile"],
+        "plain_chat",
+        "INV-CHAT-011 should turn red if thread start loses the boot-recovery marker"
+    );
+    assert!(card_mcp_hash(&repo, &card_id).await.is_some());
+    let runtime = repo
+        .session_projection_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("plain-chat runtime");
+    assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
+    assert!(
+        wave_root_session_id(&repo, wave.id.as_str())
+            .await
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn plain_chat_non_deferred_thread_start_uses_worker_role() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_plain_chat_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: false,
+        profile: HarnessProfile::PlainChat,
+        create_card: None,
+        first_message_sha256: None,
+    })
+    .unwrap();
+
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    let outcome = wait_op(&state, &op_id).await;
+    assert!(
+        matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "should turn red if non-deferred PlainChat uses the spec role: {outcome:?}"
+    );
+    assert_eq!(
+        state
+            .shared_codex_appserver
+            .started_thread_params_for_test(),
+        vec![(None, true, Some(CardRole::Worker))],
+        "non-deferred PlainChat must start without MCP config as a worker"
+    );
+}
+
+#[tokio::test]
 async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
     let (state, repo, role_cache) = state_with_fake_daemon().await;
     let wave = seed_wave(&repo).await;
@@ -732,6 +901,9 @@ async fn failed_thread_start_keeps_existing_token_hash_and_runtime() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -861,6 +1033,9 @@ async fn force_new_thread_kills_old_pty_immediately() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: true,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -955,6 +1130,9 @@ async fn fresh_start_supersedes_existing_shared_spec_runtime() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -1023,6 +1201,9 @@ async fn start_adapter_reuses_checkpointed_thread_on_recovery() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -1100,6 +1281,9 @@ async fn start_adapter_reuses_runtime_thread_when_output_lacks_thread_id() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -1200,6 +1384,9 @@ async fn reusable_thread_without_token_fails_op() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -1357,6 +1544,9 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         goal: Some("adapter goal".into()),
         reset_harness_items: false,
         force_new_thread: false,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
     })
     .unwrap();
     let op_id = state
@@ -1433,4 +1623,247 @@ async fn start_adapter_mints_new_thread_when_runtime_lacks_thread_id() {
         Some(card_id.as_str()),
         "recovery must mint and bind a runtime thread when runtime thread_id is absent"
     );
+}
+
+// ---------------------------------------------------------------------------
+// #1098 §5.6 — lazy chat-card minting (`create_card`). `validate` runs before
+// the operation row is inserted, so each rejection below surfaces straight out
+// of `submit`.
+// ---------------------------------------------------------------------------
+
+async fn chat_wave(repo: &SqlxRepo) -> Wave {
+    let wave = seed_wave(repo).await;
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(wave.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+    repo.wave_get(wave.id.as_str()).await.unwrap().unwrap()
+}
+
+fn lazy_mint_payload(wave: &Wave, card_id: &str, profile: HarnessProfile) -> Value {
+    serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.to_string()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.cwd.clone(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile,
+        create_card: Some(Default::default()),
+        first_message_sha256: None,
+    })
+    .unwrap()
+}
+
+#[tokio::test]
+async fn lazy_mint_requires_the_plain_chat_profile() {
+    let (state, repo, _role_cache) = state_with_fake_daemon().await;
+    let wave = chat_wave(&repo).await;
+    let error = state
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            key(),
+            lazy_mint_payload(&wave, "conv-profile", HarnessProfile::Spec),
+        )
+        .await
+        .expect_err("minting a card under the spec profile must be refused");
+    assert!(
+        matches!(error, calm_server::error::CalmError::BadRequest(_)),
+        "unexpected error: {error:?}"
+    );
+    assert!(repo.card_get("conv-profile").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn lazy_mint_refuses_a_wave_that_is_not_a_cove_chat_wave() {
+    let (state, repo, _role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let error = state
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            key(),
+            lazy_mint_payload(&wave, "conv-wave", HarnessProfile::PlainChat),
+        )
+        .await
+        .expect_err("chat cards may only be conjured onto a cove chat wave");
+    assert!(
+        matches!(error, calm_server::error::CalmError::Forbidden(_)),
+        "unexpected error: {error:?}"
+    );
+    assert!(repo.card_get("conv-wave").await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn lazy_mint_refuses_to_adopt_an_existing_card() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = chat_wave(&repo).await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        "conv-existing".into(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            title: Some("someone else's card".into()),
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        },
+        CardRole::Worker,
+        true,
+        &role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let error = state
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            key(),
+            lazy_mint_payload(&wave, "conv-existing", HarnessProfile::PlainChat),
+        )
+        .await
+        .expect_err("an existing card must not be adopted as a fresh conversation");
+    assert!(
+        matches!(error, calm_server::error::CalmError::Conflict(_)),
+        "unexpected error: {error:?}"
+    );
+    let card = repo.card_get("conv-existing").await.unwrap().unwrap();
+    assert_eq!(card.title.as_deref(), Some("someone else's card"));
+    assert_eq!(card.payload.get("harness_profile"), None);
+}
+
+/// Positive control for the three refusals above, and the shape pin for the
+/// minted card: Worker/codex, kernel-owned, marked, and carrying NO
+/// `spec_harness` key (INV-CHAT-016 — the old FE's spec renderer claims any
+/// card that has one).
+#[tokio::test]
+async fn lazy_mint_creates_a_marked_kernel_owned_worker_card() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = chat_wave(&repo).await;
+    let op_id = state
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            key(),
+            lazy_mint_payload(&wave, "conv-ok", HarnessProfile::PlainChat),
+        )
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            wait_op(&state, &op_id).await,
+            OperationOutcome::Succeeded { .. }
+        ),
+        "lazy mint must succeed on a chat wave"
+    );
+    let card = repo
+        .card_get("conv-ok")
+        .await
+        .unwrap()
+        .expect("minted card");
+    assert_eq!(card.kind, "codex");
+    assert!(
+        !card.deletable,
+        "conversation cards are kernel-owned for now"
+    );
+    assert_eq!(role_cache.get(&card.id), Some(CardRole::Worker));
+    assert_eq!(card.payload["harness_profile"], json!("plain_chat"));
+    assert_eq!(card.payload["schemaVersion"], json!(1));
+    assert_eq!(card.payload.get("spec_harness"), None);
+    let runtime = repo
+        .session_projection_active_for_card(&"conv-ok".to_string())
+        .await
+        .unwrap()
+        .expect("session row");
+    assert_eq!(runtime.kind, WorkerSessionKind::CodexCard);
+    if let Some(handle) = state.harness.remove(&runtime.id) {
+        let _ = handle.shutdown().await;
+    }
+}
+
+/// INV-CHAT-013(a) at the adapter boundary: a `thread/start` failure takes the
+/// lazily minted card back out, along with its session row.
+#[tokio::test]
+async fn lazy_mint_is_compensated_away_when_thread_start_fails() {
+    let (state, repo, _role_cache) = state_with_fake_daemon().await;
+    let wave = chat_wave(&repo).await;
+    state
+        .shared_codex_appserver
+        .fail_next_thread_start_for_test();
+    let op_id = state
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            key(),
+            lazy_mint_payload(&wave, "conv-doomed", HarnessProfile::PlainChat),
+        )
+        .await
+        .unwrap();
+    match wait_op(&state, &op_id).await {
+        OperationOutcome::Failed { from_phase, .. } => {
+            assert_eq!(from_phase, PhaseTag::AppServerInteract);
+        }
+        other => panic!("expected a failed thread/start, got {other:?}"),
+    }
+    assert!(
+        repo.card_get("conv-doomed").await.unwrap().is_none(),
+        "compensation must delete the card this operation minted"
+    );
+    let sessions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1")
+            .bind("conv-doomed")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(sessions, 0);
+}
+
+/// The lazy-mint branch keeps the ordinary branch's daemon preflight. Without
+/// it a down app-server would still mint and commit the card (broadcasting
+/// `card.added`), fail at `thread/start`, and only then compensate it away —
+/// a visible flicker and a 500 in place of a clean rejection.
+#[tokio::test]
+async fn lazy_mint_refuses_to_mint_while_the_app_server_is_down() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = WaveCoveCache::new();
+    let state = AppState::from_parts(
+        repo.clone(),
+        events.clone(),
+        Arc::new(DaemonClient::new_stub()),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo.clone(),
+            PathBuf::new(),
+            std::env::temp_dir().join(format!("calm-plugins-data-down-{}", new_id())),
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(card_role_cache),
+        Some(wave_cove_cache),
+    )
+    .with_shared_codex_appserver(SharedCodexAppServer::new_stub(repo.clone()));
+    assert!(!state.shared_codex_appserver.is_running());
+    let wave = chat_wave(&repo).await;
+    state
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            key(),
+            lazy_mint_payload(&wave, "conv-daemon-down", HarnessProfile::PlainChat),
+        )
+        .await
+        .expect_err("a down app-server must be refused before anything is minted");
+    assert!(repo.card_get("conv-daemon-down").await.unwrap().is_none());
 }

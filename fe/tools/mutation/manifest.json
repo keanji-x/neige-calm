@@ -1,61 +1,120 @@
 [
   {
+    "mutation_id": "login-success-drop-reload",
+    "defends": ["oracle:INV-LOGIN-001"],
+    "target": "web/src/features/auth/login-page/public.tsx",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..be25005b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -23,7 +23,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       void login(username, password).then((result) => {\n         if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n-        reload();\n+        setSubmitting(false);\n       }).catch((cause: unknown) => {\n         setError(cause instanceof Error && cause.message ? cause.message : 'Sign-in failed.');\n         setSubmitting(false);\n",
+    "expected_red": ["login page oracle contracts INV-LOGIN-001 reloads the whole document after successful login"],
+    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx"],
+    "why_more_than_one": "The success oracle alone should fail when the full-page reload is removed."
+  },
+  {
+    "mutation_id": "login-credentials-use-generic-error",
+    "defends": ["oracle:CAP-LOGIN-002"],
+    "target": "web/src/features/auth/login-page/public.tsx",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..0377347a 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -21,7 +21,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       if (submitting) return;\n       setSubmitting(true); setError(null);\n       void login(username, password).then((result) => {\n-        if (!result) { setError('Wrong username or password.'); setSubmitting(false); return; }\n+        if (!result) { setError('Sign-in failed.'); setSubmitting(false); return; }\n         // A reload resets every persisted and in-memory cache under the new identity (#189).\n         reload();\n       }).catch((cause: unknown) => {\n",
+    "expected_red": ["login page oracle contracts CAP-LOGIN-002 distinguishes rejected credentials, exceptions, and submitting state", "production login assembly CAP-LOGIN-002 maps a production 401 to credential copy without broadcasting"],
+    "selection_paths": ["web/src/features/auth/login-page/public.contract.test.tsx", "web/src/app/auth/login.contract.test.tsx"],
+    "why_more_than_one": "Both the component branch and production assembly oracle must reject generic copy for bad credentials."
+  },
+  {
+    "mutation_id": "login-drop-username-autocomplete",
+    "defends": ["oracle:INV-LOGIN-003"],
+    "target": "web/src/features/auth/login-page/public.tsx",
+    "patch": "diff --git a/web/src/features/auth/login-page/public.tsx b/web/src/features/auth/login-page/public.tsx\nindex 387c358a..3fc9d56b 100644\n--- a/web/src/features/auth/login-page/public.tsx\n+++ b/web/src/features/auth/login-page/public.tsx\n@@ -33,7 +33,7 @@ export function LoginPage({ login, reload }: LoginPageProps) {\n       {error !== null && <p role=\"alert\" className={styles.error}>{error}</p>}\n       <label htmlFor={`${prefix}-username`}>Username</label>\n       {/* eslint-disable-next-line jsx-a11y/no-autofocus -- Single-purpose login screen intentionally starts at its first field. */}\n-      <input id={`${prefix}-username`} name=\"username\" autoFocus autoComplete=\"username\" value={username} onChange={(event) => setUsername(event.target.value)} />\n+      <input id={`${prefix}-username`} name=\"username\" autoFocus value={username} onChange={(event) => setUsername(event.target.value)} />\n       <label htmlFor={`${prefix}-password`}>Password</label>\n       <input id={`${prefix}-password`} name=\"password\" type=\"password\" autoComplete=\"current-password\" value={password} onChange={(event) => setPassword(event.target.value)} />\n       <button type=\"submit\" disabled={submitting}>{submitting ? 'Signing in…' : 'Sign in'}</button>\n",
+    "expected_red": ["login page browser contract INV-LOGIN-003 focuses username and declares both credential autocomplete tokens"],
+    "selection_paths": ["web/src/features/auth/login-page/login-page.browser.test.tsx"],
+    "why_more_than_one": "Only the browser autocomplete oracle should fail when the username token is removed."
+  },
+  {
     "mutation_id": "no-class-dom-query-drop-closest",
-    "defends": ["arch-rule:no-class-dom-query"],
+    "defends": [
+      "arch-rule:no-class-dom-query"
+    ],
     "target": "tools/architecture/no-class-dom-query.mjs",
     "patch": "diff --git a/tools/architecture/no-class-dom-query.mjs b/tools/architecture/no-class-dom-query.mjs\nindex e3debb4d..e84dad83 100644\n--- a/tools/architecture/no-class-dom-query.mjs\n+++ b/tools/architecture/no-class-dom-query.mjs\n@@ -8,7 +8,7 @@ import selectorParser from 'postcss-selector-parser';\n  * application container prefix to limit their blast radius.\n  */\n \n-const selectorMethods = new Set(['querySelector', 'querySelectorAll', 'closest', 'matches']);\n+const selectorMethods = new Set(['querySelector', 'querySelectorAll', 'matches']);\n \n /** @param {any} member */\n function memberName(member) {\n",
-    "expected_red": ["architecture/no-class-dom-query rejects dom-selector/closest.ts"],
-    "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/closest.ts"],
+    "expected_red": [
+      "architecture/no-class-dom-query rejects dom-selector/closest.ts"
+    ],
+    "selection_paths": [
+      "tools/architecture/architecture-rules.test.ts",
+      "tools/architecture/rule-fixtures/dom-selector/closest.ts"
+    ],
     "why_more_than_one": "Only closest.ts should turn red; more than one means selector-method dispatch is coupled across syntax forms."
   },
   {
     "mutation_id": "no-class-dom-query-drop-classname-api",
-    "defends": ["arch-rule:no-class-dom-query"],
+    "defends": [
+      "arch-rule:no-class-dom-query"
+    ],
     "target": "tools/architecture/no-class-dom-query.mjs",
     "patch": "diff --git a/tools/architecture/no-class-dom-query.mjs b/tools/architecture/no-class-dom-query.mjs\nindex e3debb4d..693f25ea 100644\n--- a/tools/architecture/no-class-dom-query.mjs\n+++ b/tools/architecture/no-class-dom-query.mjs\n@@ -84,7 +84,7 @@ export const noClassDomQuery = {\n       CallExpression(/** @type {any} */ node) {\n         if (node.callee.type !== 'MemberExpression') return;\n         const method = memberName(node.callee);\n-        if (method === 'getElementsByClassName') {\n+        if (method === 'getElementsByClassNames') {\n           context.report({ node, messageId: 'classNameApi' });\n           return;\n         }\n",
-    "expected_red": ["architecture/no-class-dom-query rejects dom-selector/get-elements-by-class-name.ts"],
-    "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/get-elements-by-class-name.ts"],
+    "expected_red": [
+      "architecture/no-class-dom-query rejects dom-selector/get-elements-by-class-name.ts"
+    ],
+    "selection_paths": [
+      "tools/architecture/architecture-rules.test.ts",
+      "tools/architecture/rule-fixtures/dom-selector/get-elements-by-class-name.ts"
+    ],
     "why_more_than_one": "Only the dedicated DOM API fixture should turn red; extra reds expose coupling to CSS selector parsing."
   },
   {
     "mutation_id": "no-class-dom-query-drop-module-const-resolution",
-    "defends": ["arch-rule:no-class-dom-query"],
+    "defends": [
+      "arch-rule:no-class-dom-query"
+    ],
     "target": "tools/architecture/no-class-dom-query.mjs",
     "patch": "diff --git a/tools/architecture/no-class-dom-query.mjs b/tools/architecture/no-class-dom-query.mjs\nindex e3debb4d..f24496db 100644\n--- a/tools/architecture/no-class-dom-query.mjs\n+++ b/tools/architecture/no-class-dom-query.mjs\n@@ -27,7 +27,7 @@ function moduleConstLiteral(context, node) {\n     || definition?.type !== 'Variable' || definition.parent?.kind !== 'const'\n     || definition.node.init?.type !== 'Literal' || typeof definition.node.init.value !== 'string'\n     || resolved.references.filter((reference) => reference.isWrite()).length !== 1) return null;\n-  return definition.node.init.value;\n+  return null;\n }\n \n /** @param {string} selector */\n",
     "expected_red": [
       "architecture/no-class-dom-query accepts a module-scope single-assignment const string without a class",
       "architecture/no-class-dom-query rejects a class in a module-scope single-assignment const as a class selector"
     ],
-    "selection_paths": ["tools/architecture/architecture-rules.test.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-data.ts", "tools/architecture/rule-fixtures/dom-selector/module-const-class.ts"],
+    "selection_paths": [
+      "tools/architecture/architecture-rules.test.ts",
+      "tools/architecture/rule-fixtures/dom-selector/module-const-data.ts",
+      "tools/architecture/rule-fixtures/dom-selector/module-const-class.ts"
+    ],
     "why_more_than_one": "Both safe and unsafe module-const syntax forms must turn red because resolution is shared; any third red is coupling leakage."
   },
   {
     "mutation_id": "test-tier-map-jsdom-to-node",
-    "defends": ["oracle:INV-OVERLAY-006"],
+    "defends": [
+      "oracle:INV-OVERLAY-006"
+    ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -15,6 +15,6 @@ const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'playwright']),\n-  jsdom: Object.freeze(['web-dom', 'browser']),\n+  jsdom: Object.freeze(['web-dom']),\n   static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),\n   none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),\n } as const);\n",
     "expected_red": [
       "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser"
     ],
-    "selection_paths": ["tools/test-tier/checker.ts", "tools/test-tier/checker.test.ts"],
+    "selection_paths": [
+      "tools/test-tier/checker.ts",
+      "tools/test-tier/checker.test.ts"
+    ],
     "why_more_than_one": "Only the explicit higher-capability jsdom-to-browser case should turn red; any additional red indicates unrelated tier behavior changed."
   },
   {
     "mutation_id": "test-tier-allow-browser-overlap",
-    "defends": ["oracle:INV-OVERLAY-006"],
+    "defends": [
+      "oracle:INV-OVERLAY-006"
+    ],
     "target": "vitest.config.ts",
-    "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -15,7 +15,7 @@ export default defineConfig({\n           environment: 'node',\n           setupFiles,\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}'],\n+          exclude: [],\n         },\n       },\n       {\n",
+    "patch": "diff --git a/vitest.config.ts b/vitest.config.ts\nindex 8dbab0c4..5156ef01 100644\n--- a/vitest.config.ts\n+++ b/vitest.config.ts\n@@ -15,7 +15,7 @@ export default defineConfig({\n           environment: 'node',\n           setupFiles,\n           include: ['core/**/*.test.ts', 'tools/**/*.test.ts'],\n-          exclude: ['**/*.browser.test.{ts,tsx}', 'tools/architecture/fixtures/**'],\n+          exclude: ['tools/architecture/fixtures/**'],\n         },\n       },\n       {\n",
     "expected_red": [
       "test-tier-project fixtures accepts the positive directory",
       "uses a layout engine for rendered element geometry",
       "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once"
     ],
-    "selection_paths": ["tools/test-tier/checker.test.ts", "tools/test-tier/vitest-projects.test.ts"],
+    "selection_paths": [
+      "tools/test-tier/checker.test.ts",
+      "tools/test-tier/vitest-projects.test.ts"
+    ],
     "why_more_than_one": "The positive browser fixture and representative partition case independently detect the same browser overlap; any third red is unrelated coupling."
   },
   {
     "mutation_id": "test-tier-ignore-migrated",
-    "defends": ["oracle:INV-OVERLAY-006"],
+    "defends": [
+      "oracle:INV-OVERLAY-006"
+    ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -92,5 +92,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n   repoRoot: string, configRoot: string): TierViolation[] {\n   const violations: TierViolation[] = [];\n   for (const entry of entries) {\n-    if (entry.migration !== 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;\n+    if (entry.migration === 'migrated' || typeof entry.id !== 'string' || typeof entry.authoritative_test !== 'string') continue;\n     const expected = EXPECTED_PROJECTS[entry.test_tier as keyof typeof EXPECTED_PROJECTS];\n",
     "expected_red": [
@@ -64,20 +123,25 @@
       "test-tier-project fixtures checks whether browser tier has sufficient capability in web-dom",
       "test-tier-project fixtures checks whether jsdom tier has sufficient capability in platform-independent",
       "test-tier-project fixtures enforces tier mismatch only after migration",
+      "test-tier-project fixtures parses every authoritative location composition without textual path heuristics",
       "test-tier-project fixtures rejects a migrated jsdom authoritative test collected by platform-independent",
-      "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects a test collected by the expected project and an extra project",
       "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
+      "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects overlap for jsdom as well as browser",
-      "test-tier-project fixtures parses every authoritative location composition without textual path heuristics",
+      "test-tier-project fixtures rejects migrated entries without a real authoritative test",
       "tier gate decisions reports an oracle tier/project mismatch"
     ],
-    "selection_paths": ["tools/test-tier/checker.test.ts"],
+    "selection_paths": [
+      "tools/test-tier/checker.test.ts"
+    ],
     "why_more_than_one": "All migrated mismatch and overlap cases must turn red when migrated entries are skipped; pending-only coverage remains green."
   },
   {
     "mutation_id": "test-tier-ignore-capability",
-    "defends": ["oracle:INV-OVERLAY-006"],
+    "defends": [
+      "oracle:INV-OVERLAY-006"
+    ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -96,5 +96,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n     for (const source of new Set(referencedPaths(entry.authoritative_test))) {\n       const testPath = configRelativePath(repoRoot, configRoot, source);\n       const actual = testPath === null ? [] : projectsForPath(testPath, projects);\n-      if (actual.length !== 1 || !expected.some((project) => project === actual[0])) violations.push({\n+      if (actual.length !== 1) violations.push({\n         id: entry.id, rule: 'test-tier-project', source,\n",
     "expected_red": [
@@ -86,63 +150,30 @@
       "test-tier-project fixtures checks whether jsdom tier has sufficient capability in platform-independent",
       "test-tier-project fixtures enforces tier mismatch only after migration",
       "test-tier-project fixtures rejects a migrated jsdom authoritative test collected by platform-independent",
-      "test-tier-project fixtures rejects every negative source with its own rule",
       "test-tier-project fixtures rejects a wrong tier even when exactly one project collects the test",
+      "test-tier-project fixtures rejects every negative source with its own rule",
       "tier gate decisions reports an oracle tier/project mismatch"
     ],
-    "selection_paths": ["tools/test-tier/checker.test.ts"],
+    "selection_paths": [
+      "tools/test-tier/checker.test.ts"
+    ],
     "why_more_than_one": "Every isolated insufficient-capability and migrated mismatch case must turn red; overlap-only cases remain unaffected."
   },
   {
     "mutation_id": "test-tier-allow-overlap",
-    "defends": ["oracle:INV-OVERLAY-006"],
+    "defends": [
+      "oracle:INV-OVERLAY-006"
+    ],
     "target": "tools/test-tier/checker.ts",
     "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -96,5 +96,5 @@ export function checkTestTier(entries: readonly TierEntry[], projects: readonly\n     for (const source of new Set(referencedPaths(entry.authoritative_test))) {\n       const testPath = configRelativePath(repoRoot, configRoot, source);\n       const actual = testPath === null ? [] : projectsForPath(testPath, projects);\n-      if (actual.length !== 1 || !expected.some((project) => project === actual[0])) violations.push({\n+      if (!expected.some((project) => project === actual[0])) violations.push({\n         id: entry.id, rule: 'test-tier-project', source,\n",
     "expected_red": [
       "test-tier-project fixtures rejects a test collected by the expected project and an extra project",
       "test-tier-project fixtures rejects overlap for jsdom as well as browser"
     ],
-    "selection_paths": ["tools/test-tier/checker.test.ts"],
+    "selection_paths": [
+      "tools/test-tier/checker.test.ts"
+    ],
     "why_more_than_one": "The browser and jsdom overlap cases must both detect multiple collection; any third red indicates capability matching changed."
-  },
-  {
-    "mutation_id": "app-providers-retry-401-as-400",
-    "defends": [
-      "oracle:INV-APP-059"
-    ],
-    "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 90479d9..3148cf4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -22,7 +22,7 @@ export interface ProviderRuntime {\n }\n \n export function retryUnless401(failureCount: number, error: unknown): boolean {\n-  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n+  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 400) return false;\n   return failureCount < 1;\n }\n \n",
-    "selection_paths": [
-      "web/src/app/providers/public.contract.test.tsx"
-    ],
-    "expected_red": [
-      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
-    ],
-    "why_more_than_one": "Only the shared retry-policy contract should turn red; more than one would mean unrelated provider behavior depends on error classification."
-  },
-  {
-    "mutation_id": "app-providers-stop-exporting-retry-policy",
-    "defends": [
-      "oracle:INV-APP-060"
-    ],
-    "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..51cb5f3f 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -15,7 +15,7 @@ export interface ProviderRuntime {\n   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;\n }\n \n-export function retryUnless401(failureCount: number, error: unknown): boolean {\n+function retryUnless401(failureCount: number, error: unknown): boolean {\n   if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n   return failureCount < 1;\n }\n",
-    "selection_paths": [
-      "web/src/app/providers/public.contract.test.tsx"
-    ],
-    "expected_red": [
-      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
-    ],
-    "why_more_than_one": "Measured: removing the export only breaks the direct named-import retry-policy contract; the source-AST assertion remains green because export visibility is outside its semantics. Any additional red indicates unrelated provider behavior changed."
-  },
-  {
-    "mutation_id": "app-providers-replace-query-retry-policy-with-count",
-    "defends": ["oracle:INV-APP-059"],
-    "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -39,7 +39,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n   children: ReactNode; runtime: ProviderRuntime; client: QueryClient; renderEventBridge?: (syncEventVersion: number) => ReactNode;\n }) {\n   const [busted, setBusted] = useState(false);\n-  const query = useQuery({ queryKey: ['server-version'], queryFn: () => runtime.fetchVersion(), staleTime: 0, gcTime: 0, retry: retryUnless401, refetchInterval: false }, client);\n+  const query = useQuery({ queryKey: ['server-version'], queryFn: () => runtime.fetchVersion(), staleTime: 0, gcTime: 0, retry: 3, refetchInterval: false }, client);\n \n   useEffect(() => {\n     const id = query.data?.dbInstanceId;\n",
-    "selection_paths": ["web/src/app/providers/public.contract.test.tsx"],
-    "expected_red": ["app/providers contracts ServerCompatGate passes retryUnless401 as its query retry option"],
-    "why_more_than_one": "Review measured exactly this one source-shape assertion turning red; the orchestrator still needs to rerun and confirm the recorded red set."
   },
   {
     "mutation_id": "app-theme-accept-sepia-drop-system",
@@ -163,84 +194,850 @@
     "why_more_than_one": "The parser's exhaustive public-mode contract and invalid-persistence fallback independently turn red; any third failure would expose coupling outside mode validation."
   },
   {
-    "mutation_id": "app-theme-swap-light-dark-bg",
-    "defends": ["oracle:E2E-CAP-AXE-005"],
-    "target": "web/src/styles/tokens.css",
-    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** \u2014 see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 \u2014 which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
-    "selection_paths": ["web/src/app/theme/theme.browser.test.tsx"],
-    "expected_red": ["browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"],
-    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
-  },
-  {
     "mutation_id": "app-theme-freeze-dataset-mirror-after-mount",
-    "defends": ["oracle:E2E-CAP-THEME-011"],
+    "defends": [
+      "oracle:E2E-CAP-THEME-011"
+    ],
     "target": "web/src/app/theme/public.tsx",
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..a80a76e0 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -42,7 +42,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n-  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, [resolved]);\n+  useEffect(() => { if (typeof document !== 'undefined') document.documentElement.dataset.theme = resolved; }, []);\n \n   const setMode = useCallback((next: ThemeMode) => {\n     setModeState(next);\n",
-    "selection_paths": ["web/src/app/theme/public.test.tsx", "web/src/app/theme/public.contract.test.tsx"],
-    "expected_red": ["ThemeProvider behavior E2E-CAP-THEME-011 mirrors every explicit mode change to the document dataset", "app/theme contracts theme dataset writes are driven by an effect keyed only by resolved"],
+    "selection_paths": [
+      "web/src/app/theme/public.test.tsx",
+      "web/src/app/theme/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "ThemeProvider behavior E2E-CAP-THEME-011 mirrors every explicit mode change to the document dataset",
+      "app/theme contracts theme dataset writes are driven by an effect keyed only by resolved"
+    ],
     "why_more_than_one": "One implementation change is independently caught by E2E-CAP-THEME-011's behavioral mirror assertion and a local structural assertion; the latter does not claim INV-APP-070's unique-writer contract."
   },
   {
-    "mutation_id": "app-providers-drop-busted-state",
-    "defends": ["oracle:CAP-APP-010", "oracle:INV-APP-011", "oracle:INV-APP-014"],
-    "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..8af9d20d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -45,7 +45,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n     if (previous && previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n-      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n+      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); runtime.reload(); return;\n     }\n     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);\n   }, [client, query.data?.dbInstanceId, runtime]);\n",
-    "selection_paths": ["web/src/app/providers/public.test.tsx"],
-    "expected_red": ["provider behavior CAP-APP-010 INV-APP-011 INV-APP-014 silently busts all artifacts and hides children"],
-    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the consolidated blast-path contract failed because cleanup and reload still occurred, but children were no longer hidden."
-  },
-  {
-    "mutation_id": "app-providers-bust-first-visit",
-    "defends": ["oracle:INV-APP-012", "oracle:INV-APP-013"],
-    "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex c6b8e410..6a0efb31 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -43,7 +43,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = safeRead(runtime, DB_INSTANCE_ID_KEY);\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); safeRemove(runtime, SYNC_CURSOR_KEY); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
-    "selection_paths": ["web/src/app/providers/public.test.tsx"],
-    "expected_red": ["browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree", "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel", "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id", "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict"],
-    "why_more_than_one": "Removing the previous-id guard sends a first visit into the bust path: setBusted(true) makes ServerCompatGate return null, so the first-visit contract fails and the two CAP-APP-006 contracts that require the refresh overlay to render and avoid reloading fail with it. Re-measured after this PR added web/src/app/events/event-bridge.contract.test.tsx: a gate that returns null never mounts the bridge either, so the bridge-side statement of INV-APP-001 fails on its positive half. Four tests, one cause — the gate rendering nothing."
-  },
-  {
     "mutation_id": "app-theme-drop-match-media-unsubscribe",
-    "defends": ["oracle:CAP-APP-074"],
+    "defends": [
+      "oracle:CAP-APP-074"
+    ],
     "target": "web/src/app/theme/public.tsx",
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..ed28a80e 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -38,7 +38,7 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n     setSystemPreference(media.matches ? 'dark' : 'light');\n     const change = (event: MediaQueryListEvent) => setSystemPreference(event.matches ? 'dark' : 'light');\n     media.addEventListener('change', change);\n-    return () => media.removeEventListener('change', change);\n+    return undefined;\n   }, [mode]);\n \n   const resolved = mode === 'system' ? systemPreference : mode;\n",
-    "selection_paths": ["web/src/app/theme/public.test.tsx"],
-    "expected_red": ["ThemeProvider behavior CAP-APP-074 INV-APP-075 tracks system immediately and unsubscribes in explicit mode"],
+    "selection_paths": [
+      "web/src/app/theme/public.test.tsx"
+    ],
+    "expected_red": [
+      "ThemeProvider behavior CAP-APP-074 INV-APP-075 tracks system immediately and unsubscribes in explicit mode"
+    ],
     "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the listener-ownership contract failed when the stale listener remained registered."
   },
   {
     "mutation_id": "app-theme-drop-ssr-window-guard",
-    "defends": ["oracle:INV-APP-077"],
+    "defends": [
+      "oracle:INV-APP-077"
+    ],
     "target": "web/src/app/theme/public.tsx",
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..94d4a413 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -23,7 +23,7 @@ function readPersistedMode(storage: ThemeStorage | undefined): ThemeMode {\n }\n \n function readSystemPreference(): ResolvedTheme {\n-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return 'light';\n+  if (typeof window.matchMedia !== 'function') return 'light';\n   try { return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'; } catch { return 'light'; }\n }\n \n",
-    "selection_paths": ["web/src/app/theme/public.ssr.contract.test.tsx"],
-    "expected_red": ["ThemeProvider server contract INV-APP-077 renders without window, matchMedia, or document and has a positive light fallback"],
+    "selection_paths": [
+      "web/src/app/theme/public.ssr.contract.test.tsx"
+    ],
+    "expected_red": [
+      "ThemeProvider server contract INV-APP-077 renders without window, matchMedia, or document and has a positive light fallback"
+    ],
     "why_more_than_one": "Only the SSR contract fails because it alone evaluates ThemeProvider with window absent; the single failure shows the window guard has a deliberately narrow server-rendering responsibility."
   },
   {
     "mutation_id": "app-theme-drop-provider-remediation-path",
-    "defends": ["oracle:INV-APP-078"],
+    "defends": [
+      "oracle:INV-APP-078"
+    ],
     "target": "web/src/app/theme/public.tsx",
     "patch": "diff --git a/web/src/app/theme/public.tsx b/web/src/app/theme/public.tsx\nindex 247d8845..c02973a7 100644\n--- a/web/src/app/theme/public.tsx\n+++ b/web/src/app/theme/public.tsx\n@@ -64,6 +64,6 @@ export function ThemeProvider({ children, storage }: { children: ReactNode; stor\n \n export function useTheme(): ThemeContextValue {\n   const value = useContext(ThemeContext);\n-  if (!value) throw new Error('useTheme() requires <ThemeProvider>; mount it from web/src/app/providers/public.tsx.');\n+  if (!value) throw new Error('useTheme() requires <ThemeProvider>.');\n   return value;\n }\n",
-    "selection_paths": ["web/src/app/theme/public.test.tsx"],
-    "expected_red": ["ThemeProvider behavior INV-APP-078 fails descriptively outside the provider"],
+    "selection_paths": [
+      "web/src/app/theme/public.test.tsx"
+    ],
+    "expected_red": [
+      "ThemeProvider behavior INV-APP-078 fails descriptively outside the provider"
+    ],
     "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the diagnostic-path assertion depended on the remediation text."
   },
   {
-    "mutation_id": "app-providers-drop-bridge-data-guard",
-    "defends": ["oracle:INV-APP-001", "oracle:INV-APP-002"],
+    "mutation_id": "app-providers-remove-refresh-modal",
+    "defends": [
+      "oracle:CAP-APP-006"
+    ],
     "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..1e49b33d 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -52,7 +52,7 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n \n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{query.data && renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n+  return <>{renderEventBridge?.(query.data.syncEventVersion)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
-    "selection_paths": ["web/src/app/providers/public.test.tsx"],
-    "expected_red": ["provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain", "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict"],
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..4d3139e4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -56,10 +56,10 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n-  return <Dialog open title=\"Please refresh\" onClose={reload} hideTitleRow>\n+  return <section aria-label=\"Please refresh\">\n     <section aria-label=\"Please refresh\">\n-      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}; this browser provides compat v{WEB_COMPAT_VERSION}.</p>\n+      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}.</p>\n       <button type=\"button\" onClick={reload}>Refresh now</button>\n     </section>\n-  </Dialog>;\n+  </section>;\n }\n",
+    "selection_paths": [
+      "web/src/app/providers/public.test.tsx",
+      "web/src/app/providers/providers.browser.test.tsx"
+    ],
+    "expected_red": [
+      "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel",
+      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree",
+      "browser provider contracts INV-APP-009 routes button and Escape through the same reload handler"
+    ],
+    "why_more_than_one": "Removing Dialog and the client-version text simultaneously removes initial modal focus and dual-version reporting; the button still calls reload directly, but Escape no longer reaches the same handler, so the consolidated button-and-Escape routing contract also fails."
+  },
+  {
+    "mutation_id": "app-providers-stop-exporting-retry-policy",
+    "defends": [
+      "oracle:INV-APP-060"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -16,7 +16,7 @@\n   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;\n }\n \n-export function retryUnless401(failureCount: number, error: unknown): boolean {\n+function retryUnless401(failureCount: number, error: unknown): boolean {\n   if (typeof error === 'object' && error !== null && 'failure' in error) {\n     const failure = error.failure;\n     if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'unauthorized') return false;\n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "why_more_than_one": "Measured: removing the export only breaks the direct named-import retry-policy contract; the source-AST assertion remains green because export visibility is outside its semantics. Any additional red indicates unrelated provider behavior changed."
+  },
+  {
+    "mutation_id": "app-providers-replace-query-retry-policy-with-count",
+    "defends": [
+      "oracle:INV-APP-059"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -43,7 +43,7 @@\n }) {\n   const [busted, setBusted] = useState(false);\n   const [previousInstanceId] = useState(() => safeRead(runtime, DB_INSTANCE_ID_KEY));\n-  const query = useQuery({ queryKey: ['server-version'], queryFn: () => runtime.fetchVersion(), staleTime: 0, gcTime: 0, retry: retryUnless401, refetchInterval: false }, client);\n+  const query = useQuery({ queryKey: ['server-version'], queryFn: () => runtime.fetchVersion(), staleTime: 0, gcTime: 0, retry: 3, refetchInterval: false }, client);\n \n   useEffect(() => {\n     const id = query.data?.dbInstanceId;\n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts ServerCompatGate passes retryUnless401 as its query retry option"
+    ],
+    "why_more_than_one": "Review measured exactly this one source-shape assertion turning red; the orchestrator still needs to rerun and confirm the recorded red set."
+  },
+  {
+    "mutation_id": "app-providers-drop-busted-state",
+    "defends": [
+      "oracle:CAP-APP-010",
+      "oracle:INV-APP-011",
+      "oracle:INV-APP-014"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -51,7 +51,7 @@\n     const previous = previousInstanceId;\n     if (previous && previous !== id) {\n       client.clear(); cursorStore.clear(); safeDelete(runtime);\n-      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n+      safeWrite(runtime, DB_INSTANCE_ID_KEY, id); runtime.reload(); return;\n     }\n     if (!previous) safeWrite(runtime, DB_INSTANCE_ID_KEY, id);\n   }, [client, cursorStore, previousInstanceId, query.data?.dbInstanceId, runtime]);\n",
+    "selection_paths": [
+      "web/src/app/providers/public.test.tsx"
+    ],
+    "expected_red": [
+      "provider behavior CAP-APP-010 INV-APP-011 INV-APP-014 silently busts all artifacts and hides children"
+    ],
+    "why_more_than_one": "Measured: the actual red set exactly matched expected_red; only the consolidated blast-path contract failed because cleanup and reload still occurred, but children were no longer hidden."
+  },
+  {
+    "mutation_id": "app-providers-bust-first-visit",
+    "defends": [
+      "oracle:INV-APP-012",
+      "oracle:INV-APP-013"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -49,7 +49,7 @@\n     const id = query.data?.dbInstanceId;\n     if (!id) return;\n     const previous = previousInstanceId;\n-    if (previous && previous !== id) {\n+    if (previous !== id) {\n       client.clear(); cursorStore.clear(); safeDelete(runtime);\n       safeWrite(runtime, DB_INSTANCE_ID_KEY, id); setBusted(true); runtime.reload(); return;\n     }\n",
+    "selection_paths": [
+      "web/src/app/providers/public.test.tsx"
+    ],
+    "expected_red": [
+      "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict",
+      "browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree",
+      "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel",
+      "provider behavior INV-APP-012 INV-APP-013 preserves matching artifacts and first visit only records the id"
+    ],
+    "why_more_than_one": "Removing the previous-id guard sends a first visit into the bust path: setBusted(true) makes ServerCompatGate return null, so the first-visit contract fails and the two CAP-APP-006 contracts that require the refresh overlay to render and avoid reloading fail with it. Re-measured after this PR added web/src/app/events/event-bridge.contract.test.tsx: a gate that returns null never mounts the bridge either, so the bridge-side statement of INV-APP-001 fails on its positive half. Four tests, one cause — the gate rendering nothing."
+  },
+  {
+    "mutation_id": "app-providers-drop-bridge-data-guard",
+    "defends": [
+      "oracle:INV-APP-001",
+      "oracle:INV-APP-002"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -61,7 +61,7 @@\n     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}</>;\n+  return <>{renderEventBridge?.(query.data!)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
+    "selection_paths": [
+      "web/src/app/providers/public.test.tsx"
+    ],
+    "expected_red": [
+      "EventBridge contracts INV-APP-001 mounts inside ServerCompatGate and never exists before the compat verdict",
+      "provider behavior INV-APP-001 INV-APP-002 mounts the bridge only after a compatible verdict while children remain",
+      "provider behavior T-A2 never constructs the bridge when the persisted database instance has switched"
+    ],
     "why_more_than_one": "Measured, twice. The first measurement predated web/src/app/events/event-bridge.contract.test.tsx, so the red set was a single test. That file now states the same invariant from the bridge's side and renders the pending verdict, so dropping the guard dereferences an absent query.data there too — two tests, one invariant, approached from either end. Nothing else in the suite renders ServerCompatGate before its data arrives."
   },
   {
-    "mutation_id": "app-providers-remove-refresh-modal",
-    "defends": ["oracle:CAP-APP-006"],
+    "mutation_id": "app-cursor-read-from-storage",
+    "defends": [
+      "oracle:INV-APP-106"
+    ],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -54,7 +54,7 @@\n   };\n \n   return {\n-    read: () => adoptedInstanceId === null ? null : cursor,\n+    read: () => adoptedInstanceId === null ? null : persistedCursor(storage.getItem(SYNC_CURSOR_KEY), adoptedInstanceId),\n     write: (value) => {\n       cursor = value;\n       if (adoptedInstanceId === null) {\n",
+    "expected_red": [
+      "browser cursor store T-C1 write is synchronously visible from memory",
+      "browser cursor store T-C5 contains storage failures without losing the in-memory cursor"
+    ],
+    "selection_paths": [
+      "web/src/app/events/browser-cursor-store.test.ts"
+    ],
+    "why_more_than_one": "Only the synchronous memory-authority assertion reads before the queued idle flush."
+  },
+  {
+    "mutation_id": "app-cursor-drop-idle-batching",
+    "defends": [
+      "oracle:INV-APP-050"
+    ],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -67,7 +67,7 @@\n         try { storage.removeItem(SYNC_CURSOR_KEY); } catch { /* persistence is best-effort */ }\n         return;\n       }\n-      if (idleHandle === null) idleHandle = idle.schedule(flush);\n+      idleHandle = idle.schedule(flush);\n     },\n     adopt: (dbInstanceId) => {\n       const changed = adoptedInstanceId !== dbInstanceId;\n",
+    "expected_red": [
+      "browser cursor store T-C2 batches writes into one idle flush carrying the latest cursor"
+    ],
+    "selection_paths": [
+      "web/src/app/events/browser-cursor-store.test.ts"
+    ],
+    "why_more_than_one": "Only T-C2 performs multiple writes before draining idle work."
+  },
+  {
+    "mutation_id": "app-cursor-clear-allows-stale-flush",
+    "defends": [
+      "oracle:INV-APP-107"
+    ],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -47,7 +47,7 @@\n \n   const flush = (): void => {\n     idleHandle = null;\n-    if (adoptedInstanceId === null || cursor === null) return;\n+    if (adoptedInstanceId === null) return;\n     try {\n       storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n     } catch { /* persistence is best-effort; memory remains authoritative */ }\n@@ -81,7 +81,6 @@\n       catch { cursor = null; }\n     },\n     clear: () => {\n-      if (idleHandle !== null) idle.cancel(idleHandle);\n       idleHandle = null;\n       cursor = null;\n       writtenBeforeAdopt = false;\n",
+    "expected_red": [
+      "accepts all real oracle data without exceptions",
+      "browser cursor store T-C3 clear prevents even an already-dequeued idle callback from restoring a cursor"
+    ],
+    "selection_paths": [
+      "web/src/app/events/browser-cursor-store.test.ts"
+    ],
+    "why_more_than_one": "The combined patch removes both independent stale-flush defenses; deleting either one alone is intentionally absorbed by the other."
+  },
+  {
+    "mutation_id": "app-cursor-ignore-database-stamp",
+    "defends": [
+      "oracle:INV-APP-107"
+    ],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -28,7 +28,6 @@\n     const value: unknown = JSON.parse(raw);\n     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;\n     const record = value as Record<string, unknown>;\n-    if (record.dbInstanceId !== dbInstanceId) return null;\n     return typeof record.cursor === 'number' && Number.isSafeInteger(record.cursor) && record.cursor >= 0\n       ? record.cursor : null;\n   } catch {\n",
+    "expected_red": [
+      "accepts all real oracle data without exceptions",
+      "browser cursor store T-C4 rejects a persisted cursor stamped for another database instance"
+    ],
+    "selection_paths": [
+      "web/src/app/events/browser-cursor-store.test.ts"
+    ],
+    "why_more_than_one": "Only T-C4 supplies a valid persisted object stamped for a different instance."
+  },
+  {
+    "mutation_id": "app-cursor-let-flush-storage-error-escape",
+    "defends": [
+      "oracle:INV-APP-107"
+    ],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -48,9 +48,7 @@\n   const flush = (): void => {\n     idleHandle = null;\n     if (adoptedInstanceId === null || cursor === null) return;\n-    try {\n-      storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n-    } catch { /* persistence is best-effort; memory remains authoritative */ }\n+    storage.setItem(SYNC_CURSOR_KEY, JSON.stringify({ dbInstanceId: adoptedInstanceId, cursor }));\n   };\n \n   return {\n",
+    "expected_red": [
+      "accepts all real oracle data without exceptions",
+      "browser cursor store T-C5 contains storage failures without losing the in-memory cursor"
+    ],
+    "selection_paths": [
+      "web/src/app/events/browser-cursor-store.test.ts"
+    ],
+    "why_more_than_one": "Only T-C5 injects a setItem failure and drains the scheduled flush."
+  },
+  {
+    "mutation_id": "app-cursor-read-before-adopt",
+    "defends": [
+      "oracle:INV-APP-107"
+    ],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -54,7 +54,7 @@\n   };\n \n   return {\n-    read: () => adoptedInstanceId === null ? null : cursor,\n+    read: () => adoptedInstanceId === null ? (JSON.parse(storage.getItem(SYNC_CURSOR_KEY) ?? 'null')?.cursor ?? null) : cursor,\n     write: (value) => {\n       cursor = value;\n       if (adoptedInstanceId === null) {\n",
+    "expected_red": [
+      "browser cursor store T-C6 fails closed before adopt and does not persist pre-adopt writes"
+    ],
+    "selection_paths": [
+      "web/src/app/events/browser-cursor-store.test.ts"
+    ],
+    "why_more_than_one": "Only T-C6 reads a valid persisted object before adopt."
+  },
+  {
+    "mutation_id": "app-cursor-accept-bare-number",
+    "defends": [
+      "oracle:INV-APP-107"
+    ],
+    "target": "web/src/app/events/browser-cursor-store.ts",
+    "patch": "diff --git a/web/src/app/events/browser-cursor-store.ts b/web/src/app/events/browser-cursor-store.ts\n--- a/web/src/app/events/browser-cursor-store.ts\n+++ b/web/src/app/events/browser-cursor-store.ts\n@@ -26,6 +26,7 @@\n   if (raw === null) return null;\n   try {\n     const value: unknown = JSON.parse(raw);\n+    if (typeof value === 'number') return value;\n     if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;\n     const record = value as Record<string, unknown>;\n     if (record.dbInstanceId !== dbInstanceId) return null;\n",
+    "expected_red": [
+      "browser cursor store T-C7 rejects the legacy web bare-number value without throwing"
+    ],
+    "selection_paths": [
+      "web/src/app/events/browser-cursor-store.test.ts"
+    ],
+    "why_more_than_one": "Only T-C7 supplies the legacy bare-number representation."
+  },
+  {
+    "mutation_id": "app-providers-render-bridge-before-instance-verdict",
+    "defends": [
+      "oracle:INV-APP-107"
+    ],
     "target": "web/src/app/providers/public.tsx",
-    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\nindex 5e6a08be..4d3139e4 100644\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -56,10 +56,10 @@ export function ServerCompatGate({ children, runtime, client, renderEventBridge\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n-  return <Dialog open title=\"Please refresh\" onClose={reload} hideTitleRow>\n+  return <section aria-label=\"Please refresh\">\n     <section aria-label=\"Please refresh\">\n-      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}; this browser provides compat v{WEB_COMPAT_VERSION}.</p>\n+      <h1>Please refresh</h1><p>A new server requires compat v{server.minWebCompatVersion}.</p>\n       <button type=\"button\" onClick={reload}>Refresh now</button>\n     </section>\n-  </Dialog>;\n+  </section>;\n }\n",
-    "selection_paths": ["web/src/app/providers/public.test.tsx", "web/src/app/providers/providers.browser.test.tsx"],
-    "expected_red": ["browser provider contracts CAP-APP-006 reports both versions and removes the incompatible tree", "browser provider contracts INV-APP-009 routes button and Escape through the same reload handler", "provider behavior CAP-APP-006 initially focuses the refresh action and exposes exactly one focusable exit inside the panel"],
-    "why_more_than_one": "Removing Dialog and the client-version text simultaneously removes initial modal focus and dual-version reporting; the button still calls reload directly, but Escape no longer reaches the same handler, so the consolidated button-and-Escape routing contract also fails."
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -61,7 +61,7 @@\n     : previousInstanceId !== null && previousInstanceId !== id ? 'switched' : 'same';\n   if (busted) return null;\n   if (query.data && query.data.minWebCompatVersion > WEB_COMPAT_VERSION) return <RefreshRequiredOverlay server={query.data} reload={() => runtime.reload()} />;\n-  return <>{verdict === 'same' && renderEventBridge?.(query.data!)}{children}</>;\n+  return <>{query.data && renderEventBridge?.(query.data)}{children}</>;\n }\n \n export function RefreshRequiredOverlay({ server, reload }: { server: ServerVersionInfo; reload: () => void }) {\n",
+    "expected_red": [
+      "provider behavior T-A2 never constructs the bridge when the persisted database instance has switched"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/public.test.tsx"
+    ],
+    "why_more_than_one": "Only T-A2 combines a persisted old instance with a newly fetched instance and observes bridge construction during that render."
+  },
+  {
+    "mutation_id": "app-providers-retry-reads-top-level-status",
+    "defends": [
+      "oracle:INV-APP-059"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -17,10 +17,7 @@\n }\n \n export function retryUnless401(failureCount: number, error: unknown): boolean {\n-  if (typeof error === 'object' && error !== null && 'failure' in error) {\n-    const failure = error.failure;\n-    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'unauthorized') return false;\n-  }\n+  if (typeof error === 'object' && error !== null && 'status' in error && error.status === 401) return false;\n   return failureCount < 1;\n }\n \n",
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "why_more_than_one": "Only the retry-policy contract passes real ApiError instances whose HTTP status is nested under failure."
+  },
+  {
+    "mutation_id": "events-driver-drop-subscription",
+    "defends": [
+      "oracle:INV-APP-049"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,6 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
+      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
+      "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
+      "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D1 directly observes the first open publication."
+  },
+  {
+    "mutation_id": "events-driver-subscribe-first-open-only",
+    "defends": [
+      "oracle:INV-APP-055"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      if (this.retryDelay !== 500) socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
+      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
+      "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
+      "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D2 uniquely observes the second open."
+  },
+  {
+    "mutation_id": "events-driver-handmade-subscription",
+    "defends": [
+      "oracle:INV-APP-049"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -96,7 +96,7 @@\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n       this.retryDelay = 500;\n-      socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n+      socket.send(JSON.stringify({ sub: configuration.topics }));\n     };\n     socket.onmessage = (event) => {\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D1 T-D3 publishes the protocol subscription frame with the current cursor",
+      "WebSocketDriver contracts T-D2 publishes the sticky subscription again after reconnect",
+      "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id",
+      "event composition T-B3 snapshot-required clears once and bounces to exactly one since-zero socket"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "Both first and sticky subscription assertions consume the shared protocol frame."
+  },
+  {
+    "mutation_id": "events-driver-connect-on-open",
+    "defends": [
+      "oracle:INV-APP-044"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -95,6 +95,7 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n+      sink.connectionState('connected');\n       this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D4 stays connecting on open and becomes connected only before replay-complete delivery"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "Only T-D4 records state before replay completion."
+  },
+  {
+    "mutation_id": "events-driver-drop-retry-epoch-guards",
+    "defends": [
+      "oracle:INV-APP-108"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -82,7 +82,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    // mutated: connect guard removed\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -128,7 +128,7 @@\n     const delay = this.retryDelay;\n     this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n     this.retryTimer = setTimeout(() => {\n-      if (this.closed || epoch !== this.epoch) return;\n+      // mutated: timer guard removed\n       this.retryTimer = null;\n       this.connect(epoch);\n     }, delay);\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D5a rejects an already-dequeued retry callback after stop"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "Combined patch removes the timer closed check, timer epoch check, and connect entry check represented by the two compound guards."
+  },
+  {
+    "mutation_id": "events-driver-drop-clear-retry",
+    "defends": [
+      "oracle:INV-APP-109"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -68,7 +68,6 @@\n     ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n-    if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n     this.retryTimer = null;\n     const socket = this.socket;\n     this.socket = null;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D5b separately observes cancellation and live socket balance."
+  },
+  {
+    "mutation_id": "events-driver-stop-before-start-throws",
+    "defends": [
+      "oracle:INV-APP-109"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -65,6 +65,7 @@\n   }\n \n   stop(): void {\n+    if (this.socket === null) throw new Error('not started');\n     ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary",
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation",
+      "WebSocketDriver contracts T-D5a rejects an already-dequeued retry callback after stop",
+      "WebSocketDriver contracts T-D5b cancels pending retry and old close work cannot create a second live socket",
+      "WebSocketDriver contracts T-D5c stop is idempotent before start and after stop"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "Only T-D5c stops before start."
+  },
+  {
+    "mutation_id": "events-driver-remove-backoff-cap-reset",
+    "defends": [
+      "oracle:INV-APP-046"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -95,7 +95,6 @@\n     socket.onopen = () => {\n       if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n       opened = true;\n-      this.retryDelay = 500;\n       socket.send(JSON.stringify(eventSubscriptionFrame(configuration.topics, this.cursor.read())));\n     };\n     socket.onmessage = (event) => {\n@@ -126,7 +125,7 @@\n   private scheduleRetry(epoch: number): void {\n     if (this.closed || epoch !== this.epoch || this.retryTimer !== null) return;\n     const delay = this.retryDelay;\n-    this.retryDelay = Math.min(this.retryDelay * 2, 8000);\n+    this.retryDelay *= 2;\n     this.retryTimer = setTimeout(() => {\n       if (this.closed || epoch !== this.epoch) return;\n       this.retryTimer = null;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D6 backs off at 500/1000/2000/4000/8000/8000 and resets after open"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "The assertion locks both cap and open reset."
+  },
+  {
+    "mutation_id": "events-driver-probe-live-close",
+    "defends": [
+      "oracle:INV-APP-047"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,7 +114,7 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n-      if (!opened) this.probe(epoch);\n+      this.probe(epoch);\n       this.scheduleRetry(epoch);\n       sink.connectionState('connecting');\n     };\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D7 probes only a connection that closes before open"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D7 contrasts pre-open and post-open close."
+  },
+  {
+    "mutation_id": "events-driver-drop-probe-latch",
+    "defends": [
+      "oracle:INV-APP-048"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -135,7 +135,6 @@\n   }\n \n   private probe(epoch: number): void {\n-    if (this.probeInFlight) return;\n     this.probeInFlight = true;\n     void this.probeUnauthorized().then(() => {\n       if (this.closed || epoch !== this.epoch) return;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D8 permits only one unauthorized probe in flight"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D8 creates two closes while the first probe remains pending."
+  },
+  {
+    "mutation_id": "events-driver-notify-every-401",
+    "defends": [
+      "oracle:INV-APP-110"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -142,7 +142,7 @@\n       this.unauthorized = false;\n     }).catch((error: unknown) => {\n       if (this.closed || epoch !== this.epoch) return;\n-      if (isUnauthorized(error) && !this.unauthorized) {\n+      if (isUnauthorized(error)) {\n         this.unauthorized = true;\n         this.onUnauthorized();\n       }\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D9 continues normal retry and notifies only on an ok-to-unauthorized transition across epochs"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D9 observes repeated 401s within and across epochs."
+  },
+  {
+    "mutation_id": "events-driver-let-constructor-throw",
+    "defends": [
+      "oracle:INV-APP-108"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -87,8 +87,7 @@\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n     let socket: SocketPort;\n-    try { socket = this.socketFactory(this.url); }\n-    catch { this.scheduleRetry(epoch); return; }\n+    socket = this.socketFactory(this.url);\n     if (this.closed || epoch !== this.epoch) { socket.close(); return; }\n     this.socket = socket;\n     let opened = false;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D10 contains socket construction failures and retries"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "Only T-D10 injects a throwing constructor."
+  },
+  {
+    "mutation_id": "events-driver-old-probe-mutates-new-epoch",
+    "defends": [
+      "oracle:INV-APP-108"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -141,7 +141,7 @@\n       if (this.closed || epoch !== this.epoch) return;\n       this.unauthorized = false;\n     }).catch((error: unknown) => {\n-      if (this.closed || epoch !== this.epoch) return;\n+      // mutated: stale probe continuation allowed\n       if (isUnauthorized(error) && !this.unauthorized) {\n         this.unauthorized = true;\n         this.onUnauthorized();\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D11 resolves epoch one after epoch two starts."
+  },
+  {
+    "mutation_id": "app-composition-split-cursor-store",
+    "defends": [
+      "oracle:INV-APP-111"
+    ],
+    "target": "web/src/app/composition.ts",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -43,7 +43,7 @@\n   const store = createBrowserCursorStore(options.storage, options.idle);\n   const createDriver = options.driverFactory ?? ((driverOptions) => new WebSocketDriver(driverOptions));\n   const driver = createDriver({\n-    cursor: store,\n+    cursor: createBrowserCursorStore(options.storage, options.idle),\n     // The driver owns the single unauthorized notification for its probe.\n     probeUnauthorized: options.probeUnauthorized ?? (() => runOperation(options.transport, whoamiOperation(), undefined)),\n     onUnauthorized: options.onUnauthorized ?? (() => undefined),\n",
+    "expected_red": [
+      "event composition T-A1 shares one cursor store so reconnect subscribes from the synchronously delivered event id"
+    ],
+    "selection_paths": [
+      "web/src/app/composition.test.tsx"
+    ],
+    "why_more_than_one": "T-A1 writes through the bridge store before the idle flush and observes the driver store."
+  },
+  {
+    "mutation_id": "app-bridge-reopen-on-context-change",
+    "defends": [
+      "oracle:INV-APP-020"
+    ],
+    "target": "web/src/app/events/event-bridge.tsx",
+    "patch": "diff --git a/web/src/app/events/event-bridge.tsx b/web/src/app/events/event-bridge.tsx\n--- a/web/src/app/events/event-bridge.tsx\n+++ b/web/src/app/events/event-bridge.tsx\n@@ -65,7 +65,7 @@\n       unsubscribe();\n       configured.stop();\n     };\n-  }, [stream, syncEventVersion]);\n+  }, [stream, syncEventVersion, context]);\n \n   return <span data-nc-event-bridge=\"\" hidden />;\n }\n",
+    "expected_red": [
+      "EventBridge contracts INV-APP-020 starts exactly once per stream instance across re-renders and remounts"
+    ],
+    "selection_paths": [
+      "web/src/app/events/event-bridge.contract.test.tsx"
+    ],
+    "why_more_than_one": "The contract rerenders with fresh context identities."
+  },
+  {
+    "mutation_id": "app-adapter-drop-wave-invalidation",
+    "defends": [
+      "oracle:GATE-APP-029"
+    ],
+    "target": "web/src/app/events/query-invalidation-adapter.ts",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -35,7 +35,7 @@\n   const [head, first, second] = key;\n   if (head === 'coves' && key.length === 1) return queryKeys.coves();\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n-  if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n+  if (head === 'wave' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n",
+    "expected_red": [
+      "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
+      "event composition T-B2 carries a real socket card event through the bridge into wave invalidation",
+      "query invalidation adapter invalidates each mapped key of an invalidate effect",
+      "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
+      "query invalidation adapter preserves effect order across a snapshot-required style batch",
+      "query invalidation adapter removes mapped keys for a remove effect",
+      "query invalidation adapter turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal"
+    ],
+    "selection_paths": [
+      "web/src/app/composition.test.tsx"
+    ],
+    "why_more_than_one": "T-B2 follows a decoded socket event through reducer and adapter."
+  },
+  {
+    "mutation_id": "events-driver-drop-all-epoch-protection",
+    "defends": [
+      "oracle:INV-APP-108"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -53,7 +53,7 @@\n   }\n \n   start(configuration: EventStreamConfiguration, url: string, sink: EventStreamSink): void {\n-    const epoch = ++this.epoch;\n+    const epoch = this.epoch;\n     this.closed = false;\n     this.probeInFlight = false;\n     this.configuration = configuration;\n@@ -65,7 +65,6 @@\n   }\n \n   stop(): void {\n-    ++this.epoch;\n     this.closed = true;\n     this.probeInFlight = false;\n     if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n@@ -82,7 +81,7 @@\n   }\n \n   private connect(epoch: number): void {\n-    if (this.closed || epoch !== this.epoch) return;\n+    if (this.closed) return;\n     const configuration = this.configuration;\n     const sink = this.sink;\n     if (configuration === null || sink === null) return;\n@@ -112,7 +111,6 @@\n       sink.frame(decoded.frame);\n     };\n     socket.onclose = () => {\n-      if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-B3 rechecks epoch after connected delivery before delivering replay-complete",
+      "WebSocketDriver contracts T-B4 stop prevents any new socket construction from an in-flight old close continuation",
+      "WebSocketDriver contracts T-D11 ignores an old epoch probe continuation",
+      "accepts all real oracle data without exceptions"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "The combined mutation removes epoch advancement and representative callback/connect guards; T-B4 asserts construction count after stop."
+  },
+  {
+    "mutation_id": "events-reducer-reconnect-before-persist",
+    "defends": [
+      "oracle:INV-APP-113"
+    ],
+    "target": "core/events/reducer.ts",
+    "patch": "diff --git a/core/events/reducer.ts b/core/events/reducer.ts\n--- a/core/events/reducer.ts\n+++ b/core/events/reducer.ts\n@@ -32,7 +32,7 @@\n   if (frame.type === 'snapshot-required') {\n     return {\n       state: { ...state, cursor: null },\n-      effects: [{ type: 'persist-cursor', id: null }, { type: 'clear-cache' }, { type: 'reconnect' }],\n+      effects: [{ type: 'reconnect' }, { type: 'persist-cursor', id: null }, { type: 'clear-cache' }],\n     };\n   }\n   if (frame.type === 'replay-complete') {\n",
+    "expected_red": [
+      "event reducer behavior turns control frames into pure cache and reconnect effects"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "Reducer effect order is independently observable through the reconnect cursor."
+  },
+  {
+    "mutation_id": "events-driver-post-sink-close-write",
+    "defends": [
+      "oracle:INV-APP-108"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -114,9 +114,9 @@\n     socket.onclose = () => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (this.socket === socket) this.socket = null;\n+      sink.connectionState('connecting');\n       if (!opened) this.probe(epoch);\n       this.scheduleRetry(epoch);\n-      sink.connectionState('connecting');\n     };\n   }\n \n",
+    "expected_red": [
+      "WebSocketDriver contracts T-B3 completes close-side driver writes before the reentrant sink boundary"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "Moves close-side state writes after the first sink call and removes the recheck that would absorb the mutation."
+  },
+  {
+    "mutation_id": "events-driver-401-stops-retry",
+    "defends": [
+      "oracle:INV-APP-110"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -143,6 +143,8 @@\n     }).catch((error: unknown) => {\n       if (this.closed || epoch !== this.epoch) return;\n       if (isUnauthorized(error) && !this.unauthorized) {\n+        if (this.retryTimer !== null) clearTimeout(this.retryTimer);\n+        this.retryTimer = null;\n         this.unauthorized = true;\n         this.onUnauthorized();\n       }\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D9 continues normal retry and notifies only on an ok-to-unauthorized transition across epochs"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D9 observes construction continuing after unauthorized."
+  },
+  {
+    "mutation_id": "events-driver-401-expands-backoff",
+    "defends": [
+      "oracle:INV-APP-110"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -144,6 +144,7 @@\n       if (this.closed || epoch !== this.epoch) return;\n       if (isUnauthorized(error) && !this.unauthorized) {\n         this.unauthorized = true;\n+        this.retryDelay = 60_000;\n         this.onUnauthorized();\n       }\n     }).finally(() => {\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D9 continues normal retry and notifies only on an ok-to-unauthorized transition across epochs"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D9 locks the normal retry schedule after unauthorized."
+  },
+  {
+    "mutation_id": "events-driver-unauthorized-per-epoch",
+    "defends": [
+      "oracle:INV-APP-110"
+    ],
+    "target": "web/src/systems/events/websocket-driver.ts",
+    "patch": "diff --git a/web/src/systems/events/websocket-driver.ts b/web/src/systems/events/websocket-driver.ts\n--- a/web/src/systems/events/websocket-driver.ts\n+++ b/web/src/systems/events/websocket-driver.ts\n@@ -56,6 +56,7 @@\n     const epoch = ++this.epoch;\n     this.closed = false;\n     this.probeInFlight = false;\n+    this.unauthorized = false;\n     this.configuration = configuration;\n     this.url = url;\n     this.sink = sink;\n",
+    "expected_red": [
+      "WebSocketDriver contracts T-D9 continues normal retry and notifies only on an ok-to-unauthorized transition across epochs"
+    ],
+    "selection_paths": [
+      "web/src/systems/events/websocket-driver.contract.test.ts"
+    ],
+    "why_more_than_one": "T-D9 restarts and proves the transition latch is instance-scoped across epochs."
+  },
+  {
+    "mutation_id": "app-browser-composition-silence-unauthorized",
+    "defends": [
+      "oracle:INV-APP-112"
+    ],
+    "target": "web/src/app/composition.ts",
+    "patch": "diff --git a/web/src/app/composition.ts b/web/src/app/composition.ts\n--- a/web/src/app/composition.ts\n+++ b/web/src/app/composition.ts\n@@ -27,7 +27,7 @@\n   return createEventComposition({\n     storage: options.storage,\n     transport: options.transport,\n-    onUnauthorized: () => unauthorized.notify(),\n+    onUnauthorized: () => undefined,\n   });\n }\n \n",
+    "expected_red": [
+      "event composition T-A3 publishes driver unauthorized transitions through the browser channel"
+    ],
+    "selection_paths": [
+      "web/src/app/composition.test.tsx"
+    ],
+    "why_more_than_one": "T-A3 directly observes the browser composition's injected channel notification."
+  },
+  {
+    "mutation_id": "app-wave-lookup-always-misses",
+    "defends": [
+      "oracle:INV-APP-034",
+      "oracle:CAP-APP-036"
+    ],
+    "target": "web/src/app/events/wave-lookup.ts",
+    "patch": "diff --git a/web/src/app/events/wave-lookup.ts b/web/src/app/events/wave-lookup.ts\n--- a/web/src/app/events/wave-lookup.ts\n+++ b/web/src/app/events/wave-lookup.ts\n@@ -10,7 +10,7 @@\n       for (const [key, detail] of client.getQueriesData<WaveDetailWire>({ queryKey: ['wave'] })) {\n         if (detail?.cards.some((card) => card.id === cardId)) {\n           const waveId = key[1];\n-          return typeof waveId === 'string' ? waveId : null;\n+          return null;\n         }\n       }\n       return null;\n",
+    "expected_red": [
+      "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
+      "wave lookup context finds a card in cached wave details and returns null when it is absent"
+    ],
+    "selection_paths": [
+      "web/src/app/events/wave-lookup.test.ts",
+      "web/src/app/events/event-bridge.contract.test.tsx"
+    ],
+    "why_more_than_one": "T-G1 locks the lookup directly and through the production bridge default context."
+  },
+  {
+    "mutation_id": "app-adapter-write-through-drops-other-coves",
+    "defends": [
+      "oracle:INV-APP-030"
+    ],
+    "target": "web/src/app/events/query-invalidation-adapter.ts",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -73,7 +73,7 @@\n         const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);\n         if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;\n         const updated = toCove(write.value);\n-        client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));\n+        client.setQueryData(mapped, [updated]);\n       }\n       continue;\n     }\n",
+    "expected_red": [
+      "query invalidation adapter write-through replaces one existing cove and preserves every other row"
+    ],
+    "selection_paths": [
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
+    "why_more_than_one": "T-G2a observes the replaced row and an independent preserved row."
+  },
+  {
+    "mutation_id": "app-adapter-write-through-creates-phantom",
+    "defends": [
+      "oracle:INV-APP-031"
+    ],
+    "target": "web/src/app/events/query-invalidation-adapter.ts",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -71,7 +71,10 @@\n         const mapped = mapPlannedQueryKey(write.key);\n         if (mapped === null) continue;\n         const existing = client.getQueryData<readonly ReturnType<typeof toCove>[]>(mapped);\n-        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) continue;\n+        if (existing === undefined || !existing.some((cove) => cove.id === write.value.id)) {\n+          client.setQueryData(mapped, [toCove(write.value)]);\n+          continue;\n+        }\n         const updated = toCove(write.value);\n         client.setQueryData(mapped, existing.map((cove) => cove.id === updated.id ? updated : cove));\n       }\n",
+    "expected_red": [
+      "query invalidation adapter write-through never creates a phantom cove when the row is absent"
+    ],
+    "selection_paths": [
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
+    "why_more_than_one": "T-G2b starts with an unrelated cached row and rejects insertion of the event payload."
+  },
+  {
+    "mutation_id": "events-derived-kind-list-drops-gate-result",
+    "defends": [
+      "oracle:INV-APP-035"
+    ],
+    "target": "core/events/invalidation-plan.ts",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -61,7 +61,7 @@\n   'runtime.started', 'runtime.status_changed', 'runtime.superseded',\n   'terminal.deleted', 'codex.hook', 'claude.hook',\n   'codex.worker_requested', 'terminal.worker_requested',\n-  'task.completed', 'task.failed', 'task.dispatched', 'task.gate_result',\n+  'task.completed', 'task.failed', 'task.dispatched',\n ] as const);\n \n function derivedWaveId(data: unknown, context: InvalidationContext): string | null {\n",
+    "expected_red": [
+      "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
+    ],
+    "selection_paths": [
+      "core/events/invalidation-plan.contract.test.ts"
+    ],
+    "why_more_than_one": "T-G3a derives the actual set from all wire kinds, independently of the exported list."
+  },
+  {
+    "mutation_id": "events-derived-call-drops-report-key",
+    "defends": [
+      "oracle:INV-APP-035"
+    ],
+    "target": "core/events/invalidation-plan.ts",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -140,7 +140,7 @@\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   'workflow.registered': noop('No workflow catalog query exists.'),\n",
+    "expected_red": [
+      "invalidation plan behavior invalidates terminal runtime projection through card ownership",
+      "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
+    ],
+    "selection_paths": [
+      "core/events/invalidation-plan.contract.test.ts",
+      "core/events/invalidation-plan.test.ts"
+    ],
+    "why_more_than_one": "T-G3b makes production behavior disagree with the independently fixed expected set."
+  },
+  {
+    "mutation_id": "events-report-edited-drops-report-key",
+    "defends": [
+      "oracle:CAP-APP-037"
+    ],
+    "target": "core/events/invalidation-plan.ts",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -121,7 +121,7 @@\n   'harness.user_message.enqueued': plan((event) => result([\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],\n   ])),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
+    "expected_red": [
+      "invalidation plan contract pins ordinary query-key literals independently from production definitions",
+      "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
+    ],
+    "selection_paths": [
+      "core/events/invalidation-plan.contract.test.ts"
+    ],
+    "why_more_than_one": "T-G3c independently pins the report-edit plan and the all-kind wave-report set."
+  },
+  {
+    "mutation_id": "app-providers-retry-401-as-400",
+    "defends": [
+      "oracle:INV-APP-059"
+    ],
+    "target": "web/src/app/providers/public.tsx",
+    "patch": "diff --git a/web/src/app/providers/public.tsx b/web/src/app/providers/public.tsx\n--- a/web/src/app/providers/public.tsx\n+++ b/web/src/app/providers/public.tsx\n@@ -19,7 +19,7 @@ export function retryUnless401(failureCount: number, error: unknown): boolean {\n   if (typeof error === 'object' && error !== null && 'failure' in error) {\n     const failure = error.failure;\n-    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'unauthorized') return false;\n+    if (typeof failure === 'object' && failure !== null && 'kind' in failure && failure.kind === 'authorized') return false;\n   }\n   return failureCount < 1;\n }\n\n",
+    "selection_paths": [
+      "web/src/app/providers/public.contract.test.tsx"
+    ],
+    "expected_red": [
+      "app/providers contracts INV-APP-059 INV-APP-060 never retries 401 and retries other failures once"
+    ],
+    "why_more_than_one": "Only the shared retry-policy contract should turn red; more than one would mean unrelated provider behavior depends on error classification."
+  },
+  {
+    "mutation_id": "app-theme-swap-light-dark-bg",
+    "defends": [
+      "oracle:E2E-CAP-AXE-005"
+    ],
+    "target": "web/src/styles/tokens.css",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** — see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
+    "expected_red": [
+      "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground",
+      "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"
+    ],
+    "selection_paths": [
+      "tools/styles/styles.test.ts",
+      "web/src/app/theme/theme.browser.test.tsx"
+    ],
+    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
+  },
+  {
+    "mutation_id": "events-harness-item-plan-becomes-empty",
+    "defends": [
+      "oracle:CAP-CHATHIST-005"
+    ],
+    "target": "core/events/invalidation-plan.ts",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -113,7 +113,7 @@\n     const waveId = context.findWaveOwningCard(event.data.card_id);\n     return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);\n   }),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([['spec-run', event.data.card_id]])),\n   'harness.transcript.cleared': plan((event) => result([\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],\n",
+    "expected_red": [
+      "invalidation plan behavior plans each harness event against the projections it can change",
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+    ],
+    "selection_paths": [
+      "core/events/invalidation-plan.test.ts",
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
+    "why_more_than_one": "T-G4a independently observes the pure plan and its production adapter path."
+  },
+  {
+    "mutation_id": "app-adapter-drops-harness-items",
+    "defends": [
+      "oracle:CAP-CHATHIST-005",
+      "oracle:CAP-SPECCONVO-017"
+    ],
+    "target": "web/src/app/events/query-invalidation-adapter.ts",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   return null;\n }\n",
+    "expected_red": [
+      "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
+      "query invalidation adapter turns each real harness plan into its exact live query invalidations"
+    ],
+    "selection_paths": [
+      "web/src/app/events/query-invalidation-adapter.test.ts"
+    ],
+    "why_more_than_one": "T-G4b locks both the literal mapping and the end-to-end harness event path."
+  },
+  {
+    "mutation_id": "session-gate-drop-query-cache-clear",
+    "defends": [
+      "oracle:INV-APP-114"
+    ],
+    "target": "web/src/app/auth/session-gate.tsx",
+    "patch": "diff --git a/web/src/app/auth/session-gate.tsx b/web/src/app/auth/session-gate.tsx\nindex e557edb4..283a6a26 100644\n--- a/web/src/app/auth/session-gate.tsx\n+++ b/web/src/app/auth/session-gate.tsx\n@@ -42,7 +42,6 @@ export function SessionGate({ children, transport, unauthorized, client, renderL\n     epoch.current += 1;\n     activeProbe.current?.abort();\n     activeProbe.current = null;\n-    client.clear();\n     setState({ status: 'unauthed' });\n   }), [client, unauthorized]);\n   if (state.status === 'unknown') return null;\n",
+    "expected_red": [
+      "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401"
+    ],
+    "selection_paths": [
+      "web/src/app/auth/session-gate.contract.test.tsx"
+    ],
+    "why_more_than_one": "Only the cache assertion should turn red; login rendering remains independently functional after the cache clear is removed."
   }
 ]

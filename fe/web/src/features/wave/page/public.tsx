@@ -14,15 +14,16 @@
 // is no `<a href>` anywhere on this page, and `public.contract.test.tsx` holds
 // that line for the whole subtree.
 
-import type { ReactNode, RefObject } from 'react';
+import type { ReactNode } from 'react';
 
 import { waveDisplayTitle, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
+import { Icon } from '../../../ui/icon/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
+import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
-import { useState } from '../../../ui/state/public.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
 import styles from './page.module.css';
 
@@ -32,45 +33,22 @@ export type WavePageProps = Readonly<{
   /** The panel card's second module, composed by `app/router` (features/chat). */
   /** The report document, composed by `app/router` (features/report). */
   report?: ReactNode;
+  /** `REFERENCED BY` — omitted entirely when nothing cites this wave (§6.1). */
+  backlinks?: ReactNode;
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
-  pageTitleRef?: RefObject<HTMLElement | null>;
   onRenameWave: (title: string) => void | Promise<void>;
-  onDeleteWave: () => void | Promise<void>;
+  onDeleteWave: (signal: AbortSignal) => void | Promise<void>;
 }>;
 
 
 export function WavePage({
-  wave, cards, report, conversationList, conversationAction, pageTitleRef,
+  wave, cards, report, backlinks, conversationList, conversationAction,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-
-  /**
-   * The confirm stays mounted for the whole round trip — Confirm busy, Cancel
-   * still live — and `finally` clears both flags. A rejected `onDeleteWave`
-   * must not strand the dialog open around a dead Confirm button, which is what
-   * a `then`-only reset would do.
-   *
-   * Deleting a wave is a plain confirm, not a typed one: it is not the
-   * catastrophic, cascading operation that earns the third rung (§4.3).
-   */
-  const confirmDelete = () => {
-    setDeleting(true);
-    void Promise.resolve()
-      .then(() => onDeleteWave())
-      .catch(() => {
-        // The caller owns error surfacing; the dialog's job is to get out of the way.
-      })
-      .finally(() => {
-        setDeleting(false);
-        setConfirmOpen(false);
-      });
-  };
+  const deletion = useDeleteConfirm((_id, signal) => onDeleteWave(signal));
 
   return (
     <section className={styles.page} data-nc-wave-page="">
@@ -90,14 +68,14 @@ export function WavePage({
       <PageHeader
         align="document"
         title={
-          <EditableTitle
+          <h1 className={styles.titleHeading}><EditableTitle
             value={waveDisplayTitle(wave.title)}
             onCommit={onRenameWave}
             editLabel="Rename wave"
             inputLabel="Wave title"
             className={styles.title}
             isPageTitle
-          />
+          /></h1>
         }
         meta={
           <>
@@ -124,9 +102,9 @@ export function WavePage({
             className={styles.headerDelete}
             aria-label={`Delete wave ${waveDisplayTitle(wave.title)}`}
             title="Delete wave"
-            onClick={() => setConfirmOpen(true)}
+            onClick={() => deletion.request(wave.id)}
           >
-            ×
+            <Icon name="close" />
           </button>
         }
         /*
@@ -180,22 +158,49 @@ export function WavePage({
                   </ul>
                 )}
             </PanelModule>
+            {/*
+              The wave's folder. It has been homeless since the page header lost
+              its identity row: you choose it once at creation and then the app
+              never showed it again. It is one line, in mono because the font is
+              what says "literal" (§2.2), and it sits with CARDS because "what
+              this wave is made of" and "where it works" are the same question.
+
+              It is *not* a file browser. §8.3's FILES module was cut: a tree
+              plus a viewer makes the document slot mean two different things,
+              and a file has no block id, so every link, anchor and backlink in
+              the app stops working the moment you open one. Evidence a report
+              wants you to see belongs in the report, as a block.
+            */}
+            <PanelModule title="Folder">
+              {wave.cwd === ''
+                ? <PanelEmpty>No folder.</PanelEmpty>
+                : <p className={styles.cwd} title={wave.cwd}>{wave.cwd}</p>}
+            </PanelModule>
+            {/*
+              `REFERENCED BY` is absent, not empty, when nothing cites this wave
+              (§6.1: a section with zero rows is not rendered). Being uncited is
+              the normal state of a new wave, and a permanent "No backlinks yet."
+              would make the common case look like a deficiency.
+            */}
+            {backlinks !== undefined && (
+              <PanelModule title="Referenced by">{backlinks}</PanelModule>
+            )}
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
       </div>
 
       <ConfirmDialog
-        open={confirmOpen}
+        open={deletion.open}
         title={DELETE_WAVE_COPY.title}
         description={DELETE_WAVE_COPY.description}
         confirmLabel={DELETE_WAVE_COPY.confirmLabel}
         confirmBusyLabel="Deleting…"
-        confirmState={deleting ? 'busy' : 'ready'}
-        restoreFocusRef={pageTitleRef}
-        onConfirm={confirmDelete}
-        onCancel={() => setConfirmOpen(false)}
+        confirmState={deletion.pending ? 'busy' : 'ready'}
+        onConfirm={deletion.confirm}
+        onCancel={deletion.cancel}
       />
+      <OperationFeedback feedback={deletion.feedback} />
     </section>
   );
 }

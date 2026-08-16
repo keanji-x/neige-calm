@@ -77,6 +77,77 @@ async fn worker_flow_driver_boot_enumerates_active_codex_and_claude_runtimes() {
 }
 
 #[tokio::test]
+async fn plain_chat_is_excluded_at_all_worker_flow_attach_entries() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let seed = wf::seed_card_and_runtime(
+        &repo,
+        "card-plain-chat-worker-flow",
+        Some("thread-plain-chat-worker-flow"),
+    )
+    .await;
+    let mut tx = repo.pool().begin().await.unwrap();
+    let card = card_update_tx(
+        &mut tx,
+        seed.card.id.as_str(),
+        CardPatch {
+            payload: Some(json!({"schemaVersion": 1, "harness_profile": "plain_chat"})),
+            ..CardPatch::default()
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let state = wf::app_state(repo.clone(), events.clone());
+    state.worker_flow.start_on_boot().await.unwrap();
+    assert_eq!(state.worker_flow.tasks_alive_for_test().await, 0, "boot");
+
+    let entries = [
+        Event::RuntimeStarted {
+            runtime_id: seed.runtime.id.clone(),
+            card_id: seed.runtime.card_id.clone(),
+            kind: seed.runtime.kind.clone(),
+            agent_provider: seed.runtime.agent_provider.clone(),
+            status: WorkerSessionState::Running,
+        },
+        Event::RuntimeStatusChanged {
+            runtime_id: seed.runtime.id.clone(),
+            card_id: seed.runtime.card_id.clone(),
+            old_status: WorkerSessionState::Starting,
+            new_status: WorkerSessionState::Running,
+        },
+        Event::CardAdded(card),
+        Event::RuntimeSuperseded {
+            old_runtime_id: "old-plain-chat-runtime".into(),
+            new_runtime_id: seed.runtime.id.clone(),
+            card_id: seed.runtime.card_id.clone(),
+        },
+    ];
+    for (index, event) in entries.into_iter().enumerate() {
+        events.emit(ActorId::Kernel, event);
+        wf::wait_until(wf::LIVENESS_BUDGET, || {
+            let driver = state.worker_flow.clone();
+            async move { driver.events_handled_for_test() > index as u64 }
+        })
+        .await;
+        assert_eq!(
+            state.worker_flow.tasks_alive_for_test().await,
+            0,
+            "plain chat event entry {index}"
+        );
+    }
+    let items = repo
+        .worker_flow_item_list_by_card(seed.card.id.as_str(), 0, 100, false)
+        .await
+        .unwrap();
+    assert!(
+        items.is_empty(),
+        "PlainChat must not persist worker-flow items"
+    );
+}
+
+#[tokio::test]
 async fn worker_flow_driver_attaches_when_thread_arrives_on_running_status() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
     let events = EventBus::new();

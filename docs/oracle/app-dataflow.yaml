@@ -583,14 +583,14 @@
     实测有时 refetch 成功但 Sidebar 不刷新。write-through 让观察者
     （Sidebar 的 useCovesQuery）在下一次渲染就看到新名字，不依赖 HTTP。
     朴素的 `setQueryData([updated])` 会静默丢掉其他 cove，所以"保留其他行"必须一起锁。
-  source: web/src/app/invalidationPolicies.ts:120-133
-  authoritative_test: web/src/app/eventBridge.test.tsx:220
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:69-79
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:100
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-031
   kind: invariant
@@ -601,14 +601,14 @@
     issue #288 防御分支：客户端从未 fetch 过（或已被 GC）的 cove，事件 payload 不是
     完整真相来源；凭它塞一行进列表会画出一个幻影。正确路径是等旁路的 invalidate 触发
     refetch 把真相拉回来。
-  source: web/src/app/invalidationPolicies.ts:123-130
-  authoritative_test: web/src/app/eventBridge.test.tsx:285
+  source: fe/web/src/app/events/query-invalidation-adapter.ts:74-76
+  authoritative_test: fe/web/src/app/events/query-invalidation-adapter.test.ts:120
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: CAP-APP-032
   kind: capability
@@ -657,32 +657,33 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 wave。
     没有 wave 被加载时，用户根本看不到那个 wave 的 card overlay 变化，等下次 wave detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: web/src/app/eventBridge.tsx:29-36,256-269; web/src/app/invalidationPolicies.ts:45-52
-  authoritative_test: NONE
+  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:127-146
+  authoritative_test: fe/web/src/app/events/wave-lookup.test.ts:7
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
   runtime_layer: app
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-035
   kind: invariant
   family: app-invalidation-policy
   statement: >
-    `waveFilesDerivedEventKeys` 的降级链必须是：优先用 payload 的 `wave_id` →
-    否则用 `card_id` 反查所属 wave → 都没有则失效**全部** `['wave-files']` 前缀。
+    wave 文件与报告派生事件的降级链必须是：优先用 payload 的 `wave_id` →
+    否则用 `card_id` 反查所属 wave → 都没有则同时失效**全部** `['wave-files']`
+    与 `['wave-report']` 前缀。
   why: >
     runs/* 与 cards/* 的 hook 视图都从 kernel 投影的 wave 文件派生；反查失败时宁可
     宽失效也不能静默不失效（否则报告侧栏永远看不到新产物）。
-  source: web/src/app/invalidationPolicies.ts:67-96
-  authoritative_test: web/src/app/eventBridge.test.tsx:619,728
+  source: fe/core/events/invalidation-plan.ts:46-73
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:67; fe/core/events/invalidation-plan.contract.test.ts:36
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: jsdom
-  migration: pending
+  test_tier: static
+  migration: migrated
 
 - id: CAP-APP-036
   kind: capability
@@ -692,14 +693,14 @@
     所属 wave detail、`['overlays','card']` 与该 wave 的 wave-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: web/src/app/invalidationPolicies.ts:59-65,98-106,160-173
-  authoritative_test: web/src/app/eventBridge.test.tsx:390,418,445
+  source: fe/core/events/invalidation-plan.ts:104-118; fe/web/src/app/events/wave-lookup.ts:7-17
+  authoritative_test: fe/core/events/invalidation-plan.test.ts:44
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: jsdom
-  migration: pending
+  test_tier: static
+  migration: migrated
 
 - id: CAP-APP-037
   kind: capability
@@ -710,14 +711,14 @@
   why: >
     策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
     所以反链只能整片失效，不能按 wave 收窄。
-  source: web/src/app/invalidationPolicies.ts:189-197
-  authoritative_test: web/src/app/eventBridge.test.tsx:689-723
+  source: fe/core/events/invalidation-plan.ts:124-126
+  authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:20
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
   runtime_layer: app
   verification_owner: unit
-  test_tier: jsdom
-  migration: pending
+  test_tier: static
+  migration: migrated
 
 - id: CAP-APP-038
   kind: capability
@@ -874,13 +875,13 @@
   why: >
     不重置会让一次长断线后的后续抖动都以 8s 起步，恢复变慢。
   source: web/src/api/events.ts:182-183,320-322,356-357
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
   owner_slice: systems/events-transport/stream
   intentional_omission: false
   runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-047
   kind: invariant
@@ -893,29 +894,30 @@
     "close 而无先前 open"。只有这一种形态才可能是 401 cookie 失效，需要走 unauthorized 流程；
     活连接掉线是网络问题，探测只会制造噪声。
   source: web/src/api/events.ts:313-359
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
   owner_slice: systems/events-transport/stream
   intentional_omission: false
   runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-048
   kind: invariant
   family: app-event-stream
   statement: >
-    whoami 探测必须有模块级 in-flight 闩锁，防止多个 EventStream 同时重连时探测风暴。
+    fe 的 whoami 探测必须有 driver 实例级、per-epoch in-flight 闩锁；composition factory
+    每次只构造一个 event driver，因此同一事件流内的重复 close 不得堆叠探测。
   why: >
-    issue #189 注释明写：多个实例同时重连会堆叠冗余探测。
+    新架构不提供共享模块状态；由单 driver composition 前提与实例闩锁共同防止探测风暴。
   source: web/src/api/events.ts:551-579
-  authoritative_test: NONE
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1 + fe/web/src/app/composition.test.tsx:1
   owner_slice: systems/events-transport/stream
   intentional_omission: false
   runtime_layer: systems
   verification_owner: unit
   test_tier: jsdom
-  migration: pending
+  migration: migrated
 
 - id: INV-APP-049
   kind: invariant
@@ -1204,6 +1206,23 @@
   verification_owner: unit
   test_tier: jsdom
   migration: pending
+
+- id: INV-APP-114
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    新前端收到全局 unauthorized 信号时，必须清空 QueryClient 中的上一会话缓存，
+    再把会话态翻回 unauthed。
+  why: >
+    即使游标和 IndexedDB 的完整 legacy 清理尚未迁移，上一用户的私有 query 数据也不得在登录页后留存。
+  source: fe/web/src/app/auth/session-gate.tsx:16-18,41-49
+  authoritative_test: fe/web/src/app/auth/session-gate.contract.test.tsx:44-46
+  owner_slice: features/auth/session
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
 
 - id: INV-APP-065
   kind: invariant
@@ -1958,3 +1977,137 @@
     由 configure() 原子化取代（_fe-architecture.md §4.7.1）。新 API 不提供绕过配置的路径；
     测试逃生口改走 EventStream.forTest(url).configure({...}).start()，
     保留「不经 bridge 也能连」的能力，但不保留「跳过配置」的能力。
+
+- id: INV-APP-106
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    fe cursor store 的内存值是同步读取的唯一权威；write() 返回后、idle 落盘前，read() 必须立即返回新值。
+  why: >
+    reducer 投递与重连可能发生在同一任务内；回读 storage 会让下一条 socket 携带陈旧 cursor。
+  source: fe/web/src/app/events/browser-cursor-store.ts:41-91
+  authoritative_test: fe/web/src/app/events/browser-cursor-store.test.ts:1
+  owner_slice: app/events-glue/event-bridge
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-107
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    fe cursor store 在 adopt 前必须 fail-closed；持久值必须绑定匹配的 dbInstanceId 且 cursor 为非负安全整数；
+    clear() 必须取消 pending flush、清空持久值但保留 adopt 状态，实例切换裁决前不得挂载 EventBridge；
+    storage 读写是 best-effort，异常不得逃逸且内存值继续保持权威。
+  why: >
+    这些约束共同阻止跨数据库 cursor 重放、旧 idle 续体复活 cursor，以及实例切换首帧先建连。
+  source: fe/web/src/app/events/browser-cursor-store.ts:24-91; fe/web/src/app/providers/public.tsx:35-64
+  authoritative_test: fe/web/src/app/events/browser-cursor-store.test.ts:1 + fe/web/src/app/providers/public.test.tsx:1
+  owner_slice: app/events-glue/event-bridge
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-108
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    fe WebSocket driver 的 start/stop、socket 回调、timer 与 probe 续体必须受 epoch 隔离；
+    socket handler 的自身状态写入必须在第一次 sink 调用前完成；只有 replay-complete 的 connected sink 后仍有 frame
+    投递，因此该路径必须在 sink 返回后重核 epoch，message 的末次 frame sink 与 close 的末次 state sink 后结构上无续体；
+    构造异常不得向上逃逸。
+  why: >
+    StrictMode 与同步 sink 重入会让旧续体和新连接交错；缺少任一边界都会产生双 socket 或跨 epoch 字段污染。
+  source: fe/web/src/systems/events/websocket-driver.ts:52-150
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
+  owner_slice: systems/events-transport/stream
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-109
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    fe WebSocket driver stop() 必须可在 start 前及重复调用，取消 pending retry、摘除当前 socket 监听并关闭 socket。
+  why: >
+    EventStream port 与 React StrictMode 都要求 stop 幂等；残留 timer 或监听会在下一 epoch 重开连接。
+  source: fe/web/src/systems/events/websocket-driver.ts:66-81
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
+  owner_slice: systems/events-transport/stream
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-110
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    fe whoami probe 的 401 只在 ok→unauthorized 跃迁时通知一次；跃迁标志跨 epoch 保留且只由成功探测回落。
+    401 不得停止 retry 或改变 500..8000ms 退避参数。
+  why: >
+    持续重试保证 cookie 恢复后自愈；实例级跨 epoch 去重避免重复通知，同时不把认证状态混入连接退避。
+  source: fe/web/src/systems/events/websocket-driver.ts:134-150
+  authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
+  owner_slice: systems/events-transport/stream
+  runtime_layer: systems
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-111
+  kind: invariant
+  family: app-event-stream
+  statement: >
+    createEventComposition 每次调用必须只构造一个 WebSocketDriver，并把同一个 cursor store 实例交给 bridge 侧返回值与 driver。
+  why: >
+    分裂 store 会让同步投递后的立即重连携带旧 cursor；多个 driver 会破坏实例级 probe 闩锁的前提。
+  source: fe/web/src/app/composition.ts:15-37
+  authoritative_test: fe/web/src/app/composition.test.tsx:1
+  owner_slice: app/providers
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-112
+  kind: invariant
+  family: app-session-auth
+  statement: >
+    浏览器 composition 必须把 WebSocket driver 的 unauthorized 发布端接到真实 UnauthorizedChannel，不得使用默认 no-op。
+  why: >
+    即使订阅者由后续 session issue 实现，静音发布端也会永久丢失所有 probe 401 通知。
+  source: fe/web/src/app/composition.ts:18-31
+  authoritative_test: fe/web/src/app/composition.test.tsx:1
+  owner_slice: app/providers
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  intentional_omission: false
+  migration: migrated
+
+- id: INV-APP-113
+  kind: invariant
+  family: event-stream
+  statement: >
+    snapshot-required 的 reducer 效果顺序必须先持久化 null cursor，再清空 cache，最后 reconnect。
+  why: >
+    reconnect 必须在 cursor 清零后发生，否则新 socket 会携带旧续传点。
+  source: fe/core/events/reducer.ts:27-43
+  authoritative_test: fe/core/events/reducer.test.ts:1
+  owner_slice: app/events-glue/invalidation
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: static
+  intentional_omission: false
+  migration: migrated
