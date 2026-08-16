@@ -40,26 +40,54 @@ export type BuiltinCardType = (typeof BUILTIN_CARD_ORDER)[number];
  *    a bare `register` call. `BuiltinRegistrar.of` requires it, and an optional
  *    property is not assignable to a required one, so deleting `headless` from a
  *    built-in entry is a typecheck error at its map slot below.
- * 2. *Skipping `BuiltinRegistrar.of`.* The map's value type is this class, whose
- *    `#register` field makes it nominal: no object literal, arrow function or
- *    `Object.assign` shape is assignable to it, and the constructor is private,
- *    so `BuiltinRegistrar.of` is the only expression that produces one. A future
- *    slice writing `terminal: (target) => { target.register(TERMINAL_ENTRY); }`
- *    does not typecheck. The registry's generic stays per-entry: the entry is
- *    captured here with its own narrow `Card`, never widened to the whole
- *    `RegisteredCard` union.
+ * 2. *Ordinary structural stand-ins for `BuiltinRegistrar.of`.* The map's value
+ *    type is this class, and its `#register` field makes it nominal, so a bare
+ *    arrow function, an object literal carrying a `run` method, and
+ *    `Object.assign({}, { run })` are all rejected (`Property '#register' is
+ *    missing in type ... but required in type 'BuiltinRegistrar'`); the private
+ *    constructor additionally rejects `class X extends BuiltinRegistrar`. A
+ *    future slice writing `terminal: (target) => { target.register(ENTRY); }`
+ *    does not typecheck.
  *
- * What the types do *not* catch: a deliberate `as unknown as BuiltinRegistrar`
- * assertion inside this file. No in-language brand survives `as unknown`; that
- * is a visible, reviewable edit, not a silent omission.
+ * What the types do *not* catch — `of` is emphatically **not** provably the only
+ * expression of this type. Besides an explicit `as unknown as BuiltinRegistrar`
+ * (no in-language brand survives `as unknown`), the runtime object-construction
+ * APIs whose declarations hand back `any` or an identity `T` get through with no
+ * assertion at all, all three verified against this file:
+ *
+ *  - `Object.create(BuiltinRegistrar.prototype)` — `lib.es5.d.ts` types
+ *    `Object.create(o)` as `any`, so it assigns to a slot silently.
+ *  - `structuredClone(BuiltinRegistrar.of(entry))` — declared `T => T`, so the
+ *    slot keeps the static type `BuiltinRegistrar`.
+ *  - `Object.assign(Object.create(BuiltinRegistrar.prototype), { run })` —
+ *    `any & {...}` collapses to `any`.
+ *
+ * Two of those three die at boot on their own, so they cannot ship silently: the
+ * `Object.create` shape throws `TypeError: Cannot read private member #register
+ * from an object whose class did not declare it`, and the `structuredClone` copy
+ * is a plain object that carries neither the private field nor the prototype, so
+ * `run is not a function`. The remaining two escapes — the `as unknown`
+ * assertion and `Object.assign` over the prototype with an own `run` — *do* run,
+ * and register whatever entry they close over; nothing in this file stops them.
+ * What stops an entry smuggled in that way from skipping its headless
+ * declaration is the runtime `typeof entry.headless === 'boolean'` assertion in
+ * `register.contract.test.ts`, applied per entry to the real production
+ * registry. All five escapes are visible, reviewable edits to this file, not
+ * silent omissions.
+ *
+ * The registry generic is narrow *today* because of how the two entry constants
+ * are written, not because `of` forces it: both are object literals under
+ * `satisfies CardEntry<SpecCard>` / `CardEntry<WaveReportCard>`, so `of` infers
+ * each one's own narrow `Card`. A future entry annotated as a bare
+ * `CardEntry & { readonly headless: boolean }` already has `RegisteredCard` as
+ * its default generic, and `of` accepts it.
  *
  * What the tests catch: a *wrong* declaration. `headless: false` on a headless
  * card type compiles fine here and is caught one layer out by
  * `register.contract.test.ts`, whose `HEADLESS_BY_TYPE` table decides the answer
- * per type from the oracle and is set-equal to `BUILTIN_CARD_ORDER`. That file
- * also asserts `typeof entry.headless === 'boolean'` on every registered entry,
- * so an omission stays red even if the table were mis-edited the same way — and
- * that runtime assertion is what covers the assertion escape above.
+ * per type from the oracle and is set-equal to `BUILTIN_CARD_ORDER`. That file's
+ * separate `typeof entry.headless === 'boolean'` assertion keeps an omission red
+ * even if the table were mis-edited the same way.
  */
 class BuiltinRegistrar {
   readonly #register: (target: CardRegistry) => void;
@@ -89,9 +117,9 @@ class BuiltinRegistrar {
 export function registerAvailableBuiltinCards(registry: CardRegistry): void {
   // Keyed by `BuiltinCardType` and ordered like the tuple purely for reading;
   // the loop below, not this literal, decides the registration order. The value
-  // type is `BuiltinRegistrar`, so the only way to fill a slot is
-  // `BuiltinRegistrar.of(entry)` — see its doc comment for what that forces and
-  // what it does not.
+  // type is `BuiltinRegistrar`, so no ordinary structural value can fill a slot
+  // and `BuiltinRegistrar.of(entry)` is the practical way in — see its doc
+  // comment for what that forces and for the escapes it does not close.
   const registrars: Partial<Record<BuiltinCardType, BuiltinRegistrar>> = {
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
     'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
