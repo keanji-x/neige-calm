@@ -1121,7 +1121,8 @@ REST 400 校验、OpenAPI / zod / web 生成物。
 3. 豁免**只**豁免规则 1，且**只**在 fork 路径上 —— 不新增任何「跳过 guard」的
    可复用开关。
 
-**fork 强制改写三个字段**：
+**fork 强制改写三个字段**（`ready` / `declared_by` / `tombstoned_by`；下面四条里
+第二条是 `ready` 在墓碑上的特例，不是第四个字段）：
 
 - **live task 的 `ready` 降为 `false`** —— 没有任何东西是在「这次」被决定要做的；
   这也让「wave 创建事务里意外派发」在结构上不可能。
@@ -1139,12 +1140,26 @@ REST 400 校验、OpenAPI / zod / web 生成物。
   fail-closed 地打断**整条** fork：损坏的源报告应当让 wave 创建 400，而不是被
   静默修补成它从未合法拥有过的形状。
 
-**第四个特权字段 `released_by_user` 目前不归一化 —— 这是已知缺口，不是设计意图**
+**先把两组计数分清楚**（否则下面这条缺口会被读成「fork 少改了一个它本该改的字段
+之外还漏了别的」）：**特权/归属字段一共三个** —— `declared_by`、`tombstoned_by`、
+`released_by_user`；而 **fork 强制改写的是三个字段** —— `ready`、`declared_by`、
+`tombstoned_by`。`ready` 是被改写字段之一，但它**不是**特权/归属字段（它是执行就绪
+状态，不回答「这是谁的意思」）。两组的交集是 `declared_by` / `tombstoned_by`：三个
+特权字段里**前两个已归一化，第三个是缺口**。
+
+**第三个特权字段 `released_by_user` 目前不归一化 —— 这是已知缺口，不是设计意图**
 （追踪于 **#1115**）。fork 只改写上面三个字段，模板里 `released_by_user: true` 的
 任务会**原样承接**这个放行标记进入新 wave。它之所以没被 §3.7 规则 5 拦下：
 `fork_author` 在浏览器 fork（无 `X-Calm-Actor` 头）时判定为 `User`
 （`waves.rs:711-715`），而规则 5 只咬 `author != User`，于是 `guard_forked_blocks`
-放行。缓解只有一层——`ready` 已被强制压成 `false`，任务不会在 wave 创建事务里被派发。
+放行。缓解有两层，且**都不是修复**：
+
+1. `ready` 已被强制压成 `false`，任务不会在 wave 创建事务里被派发；
+2. 新 wave 建时 `automation_policy` 为 NULL ⇒ `effective_wait == false`
+   （`task_projection.rs:623`）⇒ 该标记**暂时惰性**：`declare_and_wait` 诊断整条不
+   触发，放行位无处生效。但一旦新 wave 的用户把策略收紧成 `declare-and-wait`，
+   这个从未经他同意的放行位就**永久生效**。
+
 **读者不要默认 fork 已经清洗了全部特权字段。**
 
 **归一化刻意授予的能力**：模板墓碑对新 wave 的 spec 降级为**建议**而非绑定 ——
