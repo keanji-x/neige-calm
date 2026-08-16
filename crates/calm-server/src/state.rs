@@ -104,7 +104,58 @@ pub struct RouteState {
     /// recovery. Concurrent Sends racing a registry miss must not both call
     /// `spawn_recovered_harness` (the second spawn shuts the first down
     /// mid-turn). Entries self-clean when the last guard drops.
+    ///
+    /// Lock order: this is the INNER of the two per-card maps. See
+    /// `conversation_first_message_locks` — `conversation_first_message_locks`
+    /// → `spec_recovery_locks` is the only order any path takes today, and a
+    /// path taking them in the reverse order would close a deadlock cycle
+    /// against it.
     pub(crate) spec_recovery_locks: crate::per_card_lock::PerCardLocks,
+    /// #1098 §5.6 — per-card claim serializing the "send the conversation's
+    /// first message" step of `POST /api/coves/{id}/conversations`. Two
+    /// concurrent POSTs under one `Idempotency-Key` share one operation, so
+    /// without this both would observe "no user message yet" and send the same
+    /// instruction twice.
+    ///
+    /// Deliberately a SEPARATE map from `spec_recovery_locks`: the claim is
+    /// held across the call into `send_spec_input`, whose
+    /// `ensure_live_spec_harness` takes `spec_recovery_locks` for the same
+    /// card on the registry-miss path. `tokio::sync::Mutex` is not reentrant,
+    /// so sharing one map would self-deadlock the request.
+    ///
+    /// **Two premises this lock's correctness rests on. Both are load-bearing;
+    /// neither is enforced by the type system.**
+    ///
+    /// 1. *In-process only.* This is an `Arc<DashMap<_, tokio::Mutex<_>>>`
+    ///    living in one `RouteState`. It serializes nothing across processes,
+    ///    so it is correct exactly because the deployment is ONE calm-server
+    ///    per SQLite data directory (the operation driver runs in this process
+    ///    too). Run two instances against one DB and the claim degrades to
+    ///    "each process reads `events` once": worst case one conversation's
+    ///    first message is delivered twice. It can still never mint a second
+    ///    card — that wall is the derived card id, which is independent of
+    ///    this lock. Multi-instance would need a DB-level claim, not a bigger
+    ///    map.
+    /// 2. *One permitted lock order:* `conversation_first_message_locks` →
+    ///    `spec_recovery_locks`, and never the reverse. The only nesting in
+    ///    the tree is `create_cove_conversation` holding this claim across
+    ///    `send_spec_input` → `ensure_live_spec_harness`. Two distinct facts,
+    ///    kept apart because round 3 caught them conflated:
+    ///    * *Sharing ONE map* for both purposes self-deadlocks a single
+    ///      request outright: it would re-enter the same `tokio::sync::Mutex`
+    ///      for the same card while still holding its guard, and
+    ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
+    ///      maps.
+    ///    * *Taking the two maps in the reverse order* does NOT self-deadlock
+    ///      — they are different mutexes, so one task alone completes fine.
+    ///      It deadlocks only when it runs concurrently with a
+    ///      forward-order holder for the same card, closing the cycle. That
+    ///      failure is intermittent and load-dependent, which is precisely
+    ///      why the order is stated here instead of being left to chance.
+    ///      Today no reverse-order path exists (boot replay, `/spec/input`
+    ///      and `/spec/reset` take only the recovery lock and never enter
+    ///      conversation create); any new caller must preserve this order.
+    pub(crate) conversation_first_message_locks: crate::per_card_lock::PerCardLocks,
 }
 
 /// #480 PR1 worker-facing state slice for dispatcher/background flows.
@@ -174,6 +225,7 @@ impl BootState {
             harness: self.harness.clone(),
             hook_ingest_cache,
             spec_recovery_locks: crate::per_card_lock::new_per_card_locks(),
+            conversation_first_message_locks: crate::per_card_lock::new_per_card_locks(),
         };
         let worker = WorkerState {
             repo: self.repo.clone(),

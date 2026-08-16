@@ -1193,6 +1193,8 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             reset_harness_items: false,
             force_new_thread: true,
             profile: Default::default(),
+            create_card: None,
+            first_message_sha256: None,
         })
         .unwrap();
         let mut output = TxOutput::new(

@@ -21,7 +21,8 @@ pub struct ErrorBody {
     /// Human-readable error message.
     pub error: String,
     /// Stable machine-readable code — one of `not_found`, `conflict`,
-    /// `idempotency_collision`, `bad_request`, `unauthorized`,
+    /// `idempotency_collision`, `idempotency_key_exhausted`,
+    /// `bad_request`, `unauthorized`,
     /// `forbidden`, `plugin_install`, `plugin_permission`,
     /// `plugin_conflict`, `plugin_kernel_too_old`,
     /// `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
@@ -49,6 +50,18 @@ pub enum CalmError {
     /// variant to clients — it never escapes the dispatcher closure.
     #[error("dispatch idempotency collision: {0}")]
     IdempotencyCollision(String),
+
+    /// 409 — an `Idempotency-Key` has used up its bounded number of retry
+    /// slots (`POST /api/coves/{cove_id}/conversations`, #1098 slice 3).
+    ///
+    /// Distinct from the generic [`CalmError::Conflict`] because the client
+    /// action differs and cannot be derived from the status: the other 409s on
+    /// that route mean "already exists / your body disagrees with the key" and
+    /// are either ignorable or fixed by correcting the request, while this one
+    /// means "this key is dead, mint a new one and resend". Same rationale as
+    /// [`CalmError::PluginConflict`] and [`CalmError::SpecHarnessDormant`].
+    #[error("idempotency key exhausted: {0}")]
+    IdempotencyKeyExhausted(String),
 
     #[error("bad request: {0}")]
     BadRequest(String),
@@ -143,6 +156,7 @@ impl CalmError {
             CalmError::NotFound(_) => "not_found",
             CalmError::Conflict(_) => "conflict",
             CalmError::IdempotencyCollision(_) => "idempotency_collision",
+            CalmError::IdempotencyKeyExhausted(_) => "idempotency_key_exhausted",
             CalmError::BadRequest(_) => "bad_request",
             CalmError::Unauthorized => "unauthorized",
             CalmError::Forbidden(_) => "forbidden",
@@ -168,6 +182,7 @@ impl CalmError {
             CalmError::NotFound(_) => StatusCode::NOT_FOUND,
             CalmError::Conflict(_)
             | CalmError::IdempotencyCollision(_)
+            | CalmError::IdempotencyKeyExhausted(_)
             | CalmError::PluginConflict(_)
             | CalmError::SpecHarnessDormant(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
@@ -272,7 +287,13 @@ impl From<CalmError> for calm_truth::TruthError {
             CalmError::Db(e) => calm_truth::TruthError::Db(e),
             CalmError::Io(e) => calm_truth::TruthError::Io(e),
             CalmError::Serde(e) => calm_truth::TruthError::Serde(e),
-            CalmError::PluginInstall(m)
+            // Route-only variants with no `CoreError`/`TruthError` twin
+            // collapse to Internal, exactly as `PluginConflict` and
+            // `SpecHarnessDormant` already do. `IdempotencyKeyExhausted` is
+            // raised in a route handler and never crosses back down into the
+            // truth layer, so this arm exists to keep the match exhaustive.
+            CalmError::IdempotencyKeyExhausted(m)
+            | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
             | CalmError::PluginKernelTooOld(m)

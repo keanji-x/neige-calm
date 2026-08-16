@@ -368,11 +368,15 @@ const coves = devMockCoves;
 const waves = devMockWaves;
 const overlays = devMockOverlays;
 const cards = devMockCards;
+/** Cove conversations minted by the mock, keyed by cove id. */
+const conversations = {};
+const stripKey = (row) => Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'idempotencyKey'));
 
 export const DEV_MOCK_ROUTES = Object.freeze([
   ['GET', '/api/version'], ['GET', '/api/settings'], ['PUT', '/api/settings'],
   ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
   ['GET', '/api/coves/{cove_id}/waves'], ['POST', '/api/coves/{cove_id}/chat-wave/ensure'],
+  ['GET', '/api/coves/{cove_id}/conversations'], ['POST', '/api/coves/{cove_id}/conversations'],
   ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
   ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
   ['GET', '/api/waves/{id}/backlinks'],
@@ -462,6 +466,41 @@ export async function handleDevMockRequest(req, res, next) {
           };
           waves.push(wave);
           return send(res, 201, wave);
+        }
+        const coveConversations = /^\/api\/coves\/([^/]+)\/conversations$/.exec(path);
+        if (coveConversations && (method === 'GET' || method === 'POST')) {
+          const id = decodeURIComponent(coveConversations[1]);
+          if (!coves.some((cove) => cove.id === id)) return send(res, 404, { message: 'no such cove' });
+          const rows = conversations[id] ?? [];
+          // `idempotencyKey` is mock bookkeeping, not part of the contract:
+          // strip it on the list too, not just on create.
+          if (method === 'GET') return send(res, 200, rows.map(stripKey));
+          const body = await readBody(req);
+          if (typeof body.text !== 'string' || body.text.trim() === '') return send(res, 400, { message: 'text must not be empty' });
+          if (typeof req.headers?.['idempotency-key'] !== 'string' || req.headers['idempotency-key'].trim() === '') {
+            return send(res, 400, { message: 'Idempotency-Key header is required' });
+          }
+          // Mirrors the kernel: the same key answers with the same row.
+          const key = req.headers['idempotency-key'];
+          const existing = rows.find((row) => row.idempotencyKey === key);
+          if (existing) return send(res, 201, stripKey(existing));
+          let wave = waves.find((candidate) => candidate.cove_id === id && candidate.purpose === 'cove-chat');
+          if (!wave) {
+            wave = {
+              id: `w-${Math.random().toString(36).slice(2, 8)}`, cove_id: id, title: 'Cove chat',
+              sort: waves.length, lifecycle: 'draft', cwd: cwdOf[id] ?? '', workflow_id: null,
+              purpose: 'cove-chat', workflow_input: null, archived_at: null, pinned_at: null,
+              terminal_at: null, created_at: Date.now(), updated_at: Date.now(),
+            };
+            waves.push(wave);
+          }
+          const row = {
+            id: `conv-${Math.random().toString(36).slice(2, 10)}`, waveId: wave.id, title: null,
+            kind: 'shared-chat', state: 'starting', updatedAt: Date.now(), idempotencyKey: key,
+          };
+          rows.push(row);
+          conversations[id] = rows;
+          return send(res, 201, stripKey(row));
         }
         const coveId = /^\/api\/coves\/([^/]+)$/.exec(path);
         if (coveId && (method === 'PATCH' || method === 'DELETE')) {

@@ -134,6 +134,48 @@ export type Cove = { id: CoveId, name: string, color: string, sort: number,
 kind: CoveKind, created_at: number, updated_at: number, };
 
 /**
+ * One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
+ *
+ * Deliberately absent:
+ * * `waveTitle` — every row belongs to the same hidden cove chat wave, so
+ *   returning its title would leak an object the user is never shown.
+ * * `turns` — the server cannot produce a turn count that agrees with the
+ *   drawer without re-parsing every `harness_items.params` blob; a number
+ *   that silently disagrees is worse than no number.
+ */
+export type CoveConversationSummary = { 
+/**
+ * The chat card's id. This is the conversation's identity everywhere.
+ */
+id: string, waveId: string, 
+/**
+ * The conversation's own name, or null before it has one. Never the
+ * wave's title.
+ */
+title: string | null, 
+/**
+ * Always `"shared-chat"`, derived from the card's persisted marker rather
+ * than from the session kind (the session is an ordinary codex-card
+ * session and says nothing about the conversation being a cove chat).
+ */
+kind: string, 
+/**
+ * The live session's state, or **null when the card has no session row**.
+ *
+ * This must stay nullable and must never be filled with an invented
+ * value. The list is a LEFT JOIN precisely so a card whose session is
+ * gone (failed start, superseded runtime, shut-down harness) stays
+ * visible; substituting `idle` or `exited` here would report a session
+ * state that was never read.
+ */
+state: WorkerSessionState | null, 
+/**
+ * The session's last update, falling back to the card's own — a card
+ * minted seconds ago with no session yet still sorts sensibly.
+ */
+updatedAt: number, };
+
+/**
  * Issue #250 PR 1 — a filesystem path claimed by a cove.
  *
  * One row per claimed directory; `path` is absolute and globally

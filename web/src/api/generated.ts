@@ -282,6 +282,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/coves/{cove_id}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_cove_conversations"];
+        put?: never;
+        /**
+         * Mint a conversation and deliver its first message.
+         * @description # What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)
+         *
+         *     A standard idempotency key promises "same key ⇒ same recorded result,
+         *     forever". This endpoint deliberately promises something weaker and more
+         *     useful: **same key = the same retryable draft**. Slice 4 binds the key to
+         *     the draft the user keeps pressing send on, so replaying a failure forever
+         *     would turn one bad attempt into a permanently dead compose box.
+         *
+         *     The full contract, all four arms:
+         *
+         *     | same key, previous attempt … | answer |
+         *     |---|---|
+         *     | succeeded | replays the same conversation, **does not re-send** the first message (201) |
+         *     | terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |
+         *     | `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |
+         *     | failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |
+         *
+         *     # Same key, different `text`
+         *
+         *     The first message's SHA-256 travels in the operation payload
+         *     (`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part
+         *     of `stable_payload_hash` and therefore part of what
+         *     `OperationRuntime::submit` compares before it does anything else. Reusing a
+         *     key with a different body is consequently a real 409 `conflict` — no card,
+         *     no message — rather than a silent 201 replaying whatever the key sent the
+         *     first time. Only the hash travels: the payload is persisted in
+         *     `operations.payload_json`, and the body has no business being copied there.
+         *
+         *     The one arm where a changed body is not rejected for the old hash is the
+         *     `Failed` row above: the retry submits under a fresh `#N` operation key,
+         *     which no prior payload hash is bound to. That is the intended behaviour, not
+         *     an oversight — arm (b) exists so an edited draft can be resent after a
+         *     failure. What it buys is a genuine re-execution, not a guaranteed 201: the
+         *     retry's final status is decided by that execution and can still be a failure
+         *     (a 409 `conflict` if the derived card already exists, say).
+         *
+         *     A concurrent laggard can also observe the 500 arm: if the predecessor it
+         *     shares an operation with ended terminally failed, the replayed failure is
+         *     what it gets while the leader's fresh attempt succeeds.
+         *
+         *     None of this can produce a second conversation: the **card id** is a pure
+         *     function of `(cove_id, Idempotency-Key)` and the `#N` suffix touches only
+         *     the *operation* key (see [`derive_conversation_keys`] and its golden test).
+         */
+        post: operations["create_cove_conversation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/coves/{cove_id}/folders": {
         parameters: {
             query?: never;
@@ -1126,6 +1188,39 @@ export interface components {
             updated_at: number;
         };
         /**
+         * @description One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
+         *
+         *     Deliberately absent:
+         *     * `waveTitle` — every row belongs to the same hidden cove chat wave, so
+         *       returning its title would leak an object the user is never shown.
+         *     * `turns` — the server cannot produce a turn count that agrees with the
+         *       drawer without re-parsing every `harness_items.params` blob; a number
+         *       that silently disagrees is worse than no number.
+         */
+        CoveConversationSummary: {
+            /** @description The chat card's id. This is the conversation's identity everywhere. */
+            id: string;
+            /**
+             * @description Always `"shared-chat"`, derived from the card's persisted marker rather
+             *     than from the session kind (the session is an ordinary codex-card
+             *     session and says nothing about the conversation being a cove chat).
+             */
+            kind: string;
+            state?: null | components["schemas"]["WorkerSessionState"];
+            /**
+             * @description The conversation's own name, or null before it has one. Never the
+             *     wave's title.
+             */
+            title?: string | null;
+            /**
+             * Format: int64
+             * @description The session's last update, falling back to the card's own — a card
+             *     minted seconds ago with no session yet still sorts sensibly.
+             */
+            updatedAt: number;
+            waveId: string;
+        };
+        /**
          * @description Issue #250 PR 1 — a filesystem path claimed by a cove.
          *
          *     One row per claimed directory; `path` is absolute and globally
@@ -1286,7 +1381,8 @@ export interface components {
         ErrorBody: {
             /**
              * @description Stable machine-readable code — one of `not_found`, `conflict`,
-             *     `idempotency_collision`, `bad_request`, `unauthorized`,
+             *     `idempotency_collision`, `idempotency_key_exhausted`,
+             *     `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
              *     `plugin_conflict`, `plugin_kernel_too_old`,
              *     `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
@@ -1534,6 +1630,15 @@ export interface components {
              * @description If absent, server appends to end.
              */
             sort?: number | null;
+        };
+        /** @description Body of `POST /api/coves/{cove_id}/conversations`: the first message. */
+        NewCoveConversationBody: {
+            /**
+             * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+             *     (non-blank after trim, at most 32768 chars) and validated *before*
+             *     anything is minted, so a rejected message leaves no card behind.
+             */
+            text: string;
         };
         NewCoveFolder: {
             /**
@@ -3160,6 +3265,131 @@ export interface operations {
             };
             /** @description Cove has no claimed folder */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_cove_conversations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Cove id */
+                cove_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Conversations on this cove's chat wave, newest activity first. Empty when the cove has no chat wave yet — this endpoint never creates one. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoveConversationSummary"][];
+                };
+            };
+            /** @description Cove not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_cove_conversation: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400: INV-CHAT-013(b) has to hold unconditionally, not only for callers who remember to opt in.
+                 *
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft".** Precisely: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES (the failed attempt was fully compensated, so replaying its failure would make the key a dead end) and may therefore return a different result, e.g. 201 where the first call gave 500 — a standard idempotency key would replay the failure instead; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed: compensation did not finish, so the card may still exist); (d) after 64 failed attempts under one key the key is exhausted and answers 409 `idempotency_key_exhausted` forever — use a new key; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), where the retry runs under a fresh `#N` operation key that no earlier payload hash is bound to, so an edited draft is no longer rejected *for the old hash* — the attempt genuinely re-executes and its final status is whatever that execution produces (201 on success). The derived card id never carries the retry suffix, so none of this can mint a second conversation.
+                 */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description Cove id */
+                cove_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewCoveConversationBody"];
+            };
+        };
+        responses: {
+            /** @description Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CoveConversationSummary"];
+                };
+            };
+            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Cove not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /**
+             * @description Distinguished by the body's `code`:
+             *     * `conflict` — the cove has no claimed folder (no cwd for the chat wave), or the derived card already exists.
+             *     * `conflict` (`operation idempotency key … already used with different payload`) — this `Idempotency-Key` was already used for a request whose first-message text differed. The text is bound into the operation payload as a SHA-256, so a changed body really does change the payload hash; the request is rejected instead of silently replaying the earlier conversation. Exception, and it is deliberate: if the previous attempt under this key ended terminally `Failed` it was compensated away and the retry runs under a fresh `#N` operation key, which no earlier payload hash is bound to — an edited draft resent after that failure is therefore **not** rejected for the old payload hash. It is not a promise of 201 either: the retry really re-executes, and its outcome is decided by that execution (201 on success; it can still fail, e.g. 409 `conflict` if the derived card already exists).
+             *     * `idempotency_key_exhausted` — the key used up its 64 retry slots after that many failed attempts; retry under a NEW `Idempotency-Key` (previously a generic 500, which read as "server broke" rather than "this key is used up").
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. Note the conversation is not necessarily empty: if `harness.observe` succeeded and only the audit write failed, the message is already in the harness queue even though no audit event records it. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Shared codex app-server not running — retry shortly */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

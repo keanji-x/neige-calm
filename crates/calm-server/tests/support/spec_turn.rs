@@ -29,6 +29,8 @@ pub async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
         reset_harness_items: false,
         force_new_thread: true,
         profile: HarnessProfile::Spec,
+        create_card: None,
+        first_message_sha256: None,
     };
     let payload = serde_json::to_value(&request).expect("spec-harness-start payload");
     let payload_hash = stable_payload_hash(&json!({ "request": &request }))
