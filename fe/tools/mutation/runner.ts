@@ -189,17 +189,20 @@ const evidenceInvalidatingDirectories = Object.freeze(['tools/mutation/', 'tools
 /**
  * fe-relative files whose contents govern how the evidence is produced.
  *
- * `tools/architecture/plugin.mjs` and `tools/architecture/allowlists.mjs` are here rather than in
- * any entry's `selection_paths` because they are dependencies of the RUNNER itself, not just of a
- * test file: `run.mjs:7` imports `architecturePlugin` from plugin.mjs to build the `arch-rule`
- * namespace that `validateManifest` checks `defends` against, so a rule rename there can invalidate
- * every entry at once. They are also imported by `tools/architecture/architecture-rules.test.ts`,
- * the `selection_paths` file of all three `arch-rule:` entries, whose expected_red sets are exactly
- * the rule verdicts these two modules produce.
+ * `tools/architecture/plugin.mjs` is here rather than in any entry's `selection_paths` because it is
+ * a dependency of the RUNNER itself, not just of a test file: `run.mjs:7` imports
+ * `architecturePlugin` from it to build the `arch-rule` namespace that `validateManifest` checks
+ * every entry's `defends` against, so a rule rename there fails validation for the whole manifest.
+ *
+ * Its neighbour `tools/architecture/allowlists.mjs` is deliberately NOT here (#1125). The runner
+ * never imports it; inside vitest its only importer is `tools/architecture/architecture-rules.test.ts`
+ * (the other is `eslint.config.js`, which no mutation run executes), and that test file is the
+ * `selection_paths` entry of exactly the three `arch-rule:` mutations. So it lives in THEIR
+ * `selection_paths`, like every other shared test-harness module. It is an allowlist that gets
+ * appended to routinely, and as a member of this set every such append cost a full-manifest sweep.
  */
 const evidenceInvalidatingFiles = Object.freeze([
-  'vitest.config.ts', 'package.json', 'package-lock.json',
-  'tools/architecture/plugin.mjs', 'tools/architecture/allowlists.mjs',
+  'vitest.config.ts', 'package.json', 'package-lock.json', 'tools/architecture/plugin.mjs',
 ] as const);
 
 /**
@@ -237,8 +240,9 @@ const feRootTsconfigPattern = /^tsconfig[^/]*\.json$/;
  *  - `package.json` / `package-lock.json` — a vitest / jsdom / React / testing-library bump changes
  *    behaviour and test-id formatting wholesale. This is the case that used to select ZERO entries.
  *  - fe-root `tsconfig*.json` — strictness / lib / paths, i.e. what compiles and therefore what runs.
- *  - `tools/architecture/plugin.mjs` / `allowlists.mjs` — the runner imports plugin.mjs to build its
- *    `arch-rule` namespace, and both back the lint verdicts the `arch-rule:` entries record.
+ *  - `tools/architecture/plugin.mjs` — run.mjs imports it to build the `arch-rule` namespace that
+ *    validateManifest checks EVERY entry's `defends` against. Its allowlist sibling is not in the
+ *    set: it reaches only the three `arch-rule:` entries, through their selection_paths (#1125).
  *
  * `.github/workflows/ci.yml` belongs to the same set but is repo-root-relative, so it is matched
  * separately in selectedEntries — see evidenceInvalidatingRepoPaths.

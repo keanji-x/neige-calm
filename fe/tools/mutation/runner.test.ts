@@ -234,18 +234,20 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
     'vitest.config.ts', 'tools/vitest/build-constants.ts',
     'package.json', 'package-lock.json',
     'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'tsconfig.core.json',
-    // run.mjs imports plugin.mjs to build the `arch-rule` namespace, and both modules produce the
-    // lint verdicts every `arch-rule:` entry records as expected_red.
-    'tools/architecture/plugin.mjs', 'tools/architecture/allowlists.mjs',
+    // run.mjs imports plugin.mjs to build the `arch-rule` namespace that validateManifest checks
+    // every entry's `defends` against.
+    'tools/architecture/plugin.mjs',
   ])('treats %s as evidence-invalidating infrastructure', (path) => {
     expect(evidenceInvalidatingInfraChanged([path])).toBe(true);
   });
   // Neighbours that must NOT trigger the sweep. `tools/vitestfoo.ts` / `tools/vitest-helpers/`
   // guard the startsWith prefix bug; `web/src/tsconfig.json` guards the fe-ROOT-only tsconfig rule;
-  // `tools/architecture/other.mjs` guards against widening the two named architecture modules into
-  // the whole directory.
+  // `tools/architecture/other.mjs` guards against widening the one named architecture module into
+  // the whole directory, and `allowlists.mjs` is the concrete file that widening cost ~10min a PR
+  // (#1125) — the runner does not import it, so it belongs to the three `arch-rule:` entries only.
   it.each([
     manifestRelativePath, 'web/src/app.ts', 'tools/architecture/other.mjs', 'tools/mutation-other/run.mjs',
+    'tools/architecture/allowlists.mjs',
     'tools/architecture/no-class-dom-query.mjs', 'tools/architecture/plugin.mjs.bak',
     'tools/vitestfoo.ts', 'tools/vitest-helpers/x.ts', 'tools/vitest.ts',
     'web/src/tsconfig.json', 'core/tsconfig.build.json', 'web/package.json', 'web/package-lock.json',
@@ -262,7 +264,7 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
   it.each([
     'fe/tools/mutation/runner.ts', 'fe/vitest.config.ts', 'fe/tools/vitest/build-constants.ts',
     'fe/package.json', 'fe/package-lock.json', 'fe/tsconfig.json', 'fe/tsconfig.app.json',
-    'fe/tools/architecture/plugin.mjs', 'fe/tools/architecture/allowlists.mjs',
+    'fe/tools/architecture/plugin.mjs',
     // Repo-root-relative, i.e. dropped by the `fe/` filter unless it is matched before it.
     '.github/workflows/ci.yml',
   ])('selects the full manifest when %s changes', (path) => {
@@ -323,6 +325,30 @@ describe('shared test-harness dependencies reach the entries that need them', ()
     'the neighbouring production path %s still selects nothing', (path) => {
       expect(select(path)).toEqual([]);
     });
+
+  // #1125: allowlists.mjs used to sit in the global fail-closed infra set, so a routine allowlist
+  // append swept all 66 entries (~10min). Its only vitest-side importer is
+  // architecture-rules.test.ts, the selection_paths file of exactly these three entries — so it
+  // must select THEM, not zero (which would leave their rule verdicts unverified) and not the whole
+  // manifest (which is the regression this pins).
+  it('the architecture allowlist selects exactly the three arch-rule entries', () => {
+    expect(select('tools/architecture/allowlists.mjs').sort()).toEqual([
+      'no-class-dom-query-drop-classname-api',
+      'no-class-dom-query-drop-closest',
+      'no-class-dom-query-drop-module-const-resolution',
+    ]);
+  });
+
+  // Its neighbour in the same directory that the RUNNER itself imports (run.mjs:7) stays global.
+  it('the architecture plugin still selects the whole manifest', () => {
+    expect(select('tools/architecture/plugin.mjs')).toHaveLength(manifest.length);
+  });
+
+  // Negative control for the pair above: a third file in that directory is neither, so it is a
+  // no-op — the demotion must not have widened the directory into selection_paths wholesale.
+  it('an unrelated architecture module selects nothing', () => {
+    expect(select('tools/architecture/other.mjs')).toEqual([]);
+  });
 });
 
 describe('dynamic shard plan', () => {
