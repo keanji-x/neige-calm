@@ -8,18 +8,23 @@ import { architecturePlugin } from '../architecture/plugin.mjs';
 // @ts-ignore Node 22+ strips erasable TypeScript syntax; the build intentionally does not emit tools.
 const mutationRunner = await import('./runner.ts');
 const {
-  byteSequencesEqual, gitApplyDirectory, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
-  parseShard, parseVitestReport, selectedEntries, shardEntries, trackedFixtureSetMatches, validateManifest,
+  byteSequencesEqual, gitApplyDirectory, judgeMutation, manifestRelativePath, mutationRunExitCode, oracleIdsFromDocuments,
+  parseShard, parseVitestReport, selectedEntries, shardEntries, shardPlan, trackedFixtureSetMatches, validateManifest,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
-const { values } = parseArgs({ options: { base: { type: 'string' }, report: { type: 'string' }, shard: { type: 'string' } } });
+const { values } = parseArgs({ options: {
+  base: { type: 'string' }, plan: { type: 'boolean' }, report: { type: 'string' }, shard: { type: 'string' },
+} });
+if (values.plan && (values.shard || values.report)) throw new Error('--plan cannot be combined with --shard or --report');
 const shard = values.shard ? parseShard(values.shard) : null;
 const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8'));
 
 /** @param {string[]} args */
 function git(args) {
-  return spawnSync('git', args, { cwd: feRoot, encoding: 'utf8' });
+  // `ls-files --cached` and `show <base>:manifest.json` are already >100 KB; past the 1 MiB default
+  // maxBuffer git output truncates and status becomes null, which would silently look like "no baseline".
+  return spawnSync('git', args, { cwd: feRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 }
 
 /** @param {string[]} args */
@@ -34,10 +39,25 @@ function validateTrackedFixtures() {
   if (!trackedFixtureSetMatches(tracked)) throw new Error('tracked fixture source set differs from the independent fixture catalog');
 }
 
-function changedPaths() {
-  if (!values.base) return [];
-  const mergeBase = checkedGit(['merge-base', values.base, 'HEAD']);
+/** @param {string} mergeBase */
+function changedPaths(mergeBase) {
   return checkedGit(['diff', '--no-renames', '--name-only', `${mergeBase}...HEAD`, '--']).split('\n').filter(Boolean);
+}
+
+/**
+ * The manifest as of the merge base, or null when it cannot be read or parsed as an array.
+ * null is the fail-closed signal: without a baseline, selection falls back to the full manifest.
+ * @param {string} mergeBase
+ */
+function baseManifestAt(mergeBase) {
+  const result = git(['show', `${mergeBase}:${gitApplyDirectory}/${manifestRelativePath}`]);
+  if (result.status !== 0) return null;
+  try {
+    const parsed = JSON.parse(result.stdout);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 const oracleRoot = resolve(feRoot, '../docs/oracle');
@@ -48,8 +68,15 @@ const trackedPaths = new Set(checkedGit(['ls-files', '--cached']).split('\n').fi
 validateManifest(manifest, { oracle: oracleIds, 'arch-rule': architectureRuleNames }, trackedPaths);
 validateTrackedFixtures();
 if (checkedGit(['status', '--porcelain']) !== '') throw new Error('mutation runner requires a clean worktree');
-const changed = values.base ? changedPaths() : [];
-const selected = values.base ? selectedEntries(manifest, changed) : manifest;
+const mergeBase = values.base ? checkedGit(['merge-base', values.base, 'HEAD']) : null;
+const changed = mergeBase === null ? [] : changedPaths(mergeBase);
+const selected = mergeBase === null ? manifest : selectedEntries(manifest, changed, baseManifestAt(mergeBase));
+// --plan shares this exact selection path, so a plan can never drift from the run it schedules.
+if (values.plan) {
+  const { total, shards, clamped } = shardPlan(selected.length);
+  console.log(JSON.stringify({ selected: selected.length, total, shards, clamped }));
+  process.exit(0);
+}
 const entriesToRun = shardEntries(selected, shard);
 const report = [];
 const temporary = mkdtempSync(resolve(tmpdir(), 'neige-mutation-'));

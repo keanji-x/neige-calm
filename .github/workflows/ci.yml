@@ -560,26 +560,105 @@ jobs:
       - name: npm run test:browser
         run: npm run test:browser
 
-  fe-mutation:
-    name: fe-mutation ${{ matrix.shard }}/6 (tracked evidence)
+  # #1119 — the shard count follows the selected-entry count instead of being
+  # frozen at 6. This job runs the SAME selection code path as the shards
+  # (`run.mjs --plan`), so the plan can never drift from what the shards run.
+  fe-mutation-plan:
+    name: fe-mutation-plan
     runs-on: ubuntu-latest
-    # 15 → 25. This job is inherently expensive: tools/mutation/run.mjs re-runs
-    # the ENTIRE vitest suite once per mutation entry (it shells out to a bare
+    timeout-minutes: 10
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+    defaults:
+      run:
+        working-directory: fe
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      total: ${{ steps.plan.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: fe/package-lock.json
+
+      - name: npm ci
+        run: npm ci
+
+      # Chromium is deliberately NOT installed here: --plan runs no vitest.
+      # `test:mutation:plan` also deliberately does NOT chain
+      # `test:mutation:fixtures` — the fixture e2e stays on the shard jobs.
+      - name: Plan mutation shards
+        id: plan
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            plan=$(npm run --silent test:mutation:plan -- --base "$BASE_SHA")
+          else
+            plan=$(npm run --silent test:mutation:plan)
+          fi
+          echo "plan=$plan"
+          # jq parses the WHOLE captured stdout, so any extra line (prefix OR suffix) is a parse
+          # error rather than a silently wrong plan. Each value is its own assignment so `set -e`
+          # actually fires on a jq failure — inside `echo "x=$(...)"` the status was discarded and
+          # the run only died much later at fromJSON('') in the shard matrix, off the required check.
+          shards=$(printf '%s' "$plan" | jq -c '.shards')
+          total=$(printf '%s' "$plan" | jq -r '.total')
+          selected=$(printf '%s' "$plan" | jq -r '.selected')
+          clamped=$(printf '%s' "$plan" | jq -r '.clamped')
+          # `selected` is validated alongside `total`: it is arithmetic input below, and under
+          # `set -eu` a non-numeric value aborts the step anyway — a malformed plan SHOULD fail here.
+          case "$total" in ''|*[!0-9]*) total='' ;; esac
+          case "$selected" in ''|*[!0-9]*) selected='' ;; esac
+          if [ -z "$shards" ] || [ -z "$total" ] || [ -z "$selected" ] || [ "$total" = "0" ] || [ "${shards#\[}" = "$shards" ]; then
+            echo "mutation plan did not produce a usable shard matrix; raw plan: $plan" >&2
+            exit 1
+          fi
+          # The shard list must be EXACTLY 1..total. `[` plus a digit-total is not enough:
+          # {"total":99999,"shards":[1]} passed both, and the single shard job then ran
+          # `--shard 1/99999` — about one of 65 entries — and the aggregate gate went green.
+          # plan-purity.mjs asserts the same identity but runs in the SHARD job, too late to stop this.
+          if ! printf '%s' "$plan" | jq -e '(.shards | length) == .total and .shards == [range(1; .total + 1)]' >/dev/null; then
+            echo "mutation plan shard list is not exactly 1..total; raw plan: $plan" >&2
+            exit 1
+          fi
+          # The warning below never fails the step; a malformed plan always does, above.
+          # Past the cap the shards stop being ~4 entries each and a full run drifts towards the
+          # 25min shard timeout (fe-mutation-shard timeout-minutes), which would read as flake.
+          if [ "$clamped" = "true" ]; then
+            per_shard=$(( (selected + total - 1) / total ))
+            echo "::warning::fe-mutation: $selected selected entries exceed the $total-shard cap; ~$per_shard entries per shard (cap keeps wall clock from being flat — consider raising maxShards in fe/tools/mutation/runner.ts)"
+          fi
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+
+  fe-mutation-shard:
+    name: fe-mutation shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }}
+    runs-on: ubuntu-latest
+    # 15 → 25 (kept from main's #1091 measurement; the headroom stays even
+    # though #1119 makes hitting it far less likely).
+    # This job is inherently expensive: tools/mutation/run.mjs re-runs the
+    # ENTIRE vitest suite once per mutation entry (it shells out to a bare
     # `npx vitest run`; the manifest's `selection_paths` is metadata and does
-    # not narrow the run), and the worst shard of this 6-way matrix carries 11
-    # entries — so shard 3 alone pays 11 full-suite runs. Its cost therefore
-    # tracks total suite size, not the size of the PR under test.
-    # Measured on shard 3/6: origin/main runs took 12m58s, 13m06s, 14m17s and
-    # 14m50s — already inside a minute of the old 15m ceiling before this PR —
-    # and the latest run on this branch hit 15m16s and was CANCELLED by the
-    # timeout. The budget was shared and already exhausted; recent suite growth
-    # (#1098 slice 4, already on main, plus this slice) pushed it over. 25m
-    # restores headroom without touching the shard count or the runner.
+    # not narrow the run), so a shard's cost tracks total suite size, not the
+    # size of the PR under test.
+    # Measured on the old fixed 6-way matrix, shard 3/6: origin/main runs took
+    # 12m58s, 13m06s, 14m17s and 14m50s, and one run hit 15m16s and was
+    # CANCELLED by the old 15m ceiling — the worst shard carried 11 entries.
+    # #1119 caps a shard at ~4 entries (fe/tools/mutation/runner.ts
+    # entriesPerShard) until the manifest passes 128 selected entries, after
+    # which the plan job emits a ::warning:: naming the real entries-per-shard.
+    # 25m is the backstop for that clamped regime.
     timeout-minutes: 25
+    needs: fe-mutation-plan
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: ${{ fromJSON(needs.fe-mutation-plan.outputs.shards) }}
     env:
       BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
     defaults:
@@ -604,11 +683,11 @@ jobs:
 
       - name: Run mutation evidence selected by PR target intersection
         if: github.event_name == 'pull_request'
-        run: npm run test:mutation -- --base "$BASE_SHA" --shard ${{ matrix.shard }}/6 --report /tmp/mutation-report-${{ matrix.shard }}.json
+        run: npm run test:mutation -- --base "$BASE_SHA" --shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }} --report /tmp/mutation-report-${{ matrix.shard }}.json
 
       - name: Run all mutation evidence on main
         if: github.event_name == 'push'
-        run: npm run test:mutation -- --shard ${{ matrix.shard }}/6 --report /tmp/mutation-report-${{ matrix.shard }}.json
+        run: npm run test:mutation -- --shard ${{ matrix.shard }}/${{ needs.fe-mutation-plan.outputs.total }} --report /tmp/mutation-report-${{ matrix.shard }}.json
 
       - name: Upload mutation report
         if: always()
@@ -617,6 +696,29 @@ jobs:
           name: mutation-report-${{ matrix.shard }}
           path: /tmp/mutation-report-${{ matrix.shard }}.json
           if-no-files-found: warn
+
+  # #1119 — THE required check. It exists so branch protection can pin ONE
+  # stable context name while the shard count floats with the manifest.
+  # Fail-closed: anything that is not exactly `success` (including skipped
+  # and cancelled) fails this job.
+  fe-mutation:
+    name: fe-mutation (tracked evidence)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [fe-mutation-plan, fe-mutation-shard]
+    if: always()
+    steps:
+      - name: Require plan and every shard to have succeeded
+        env:
+          PLAN_RESULT: ${{ needs.fe-mutation-plan.result }}
+          SHARD_RESULT: ${{ needs.fe-mutation-shard.result }}
+        run: |
+          echo "fe-mutation-plan: $PLAN_RESULT"
+          echo "fe-mutation-shard: $SHARD_RESULT"
+          if [ "$PLAN_RESULT" != "success" ] || [ "$SHARD_RESULT" != "success" ]; then
+            echo "fe-mutation evidence gate failed"
+            exit 1
+          fi
 
   # #903 — the rust-dependent half of the `web (build + test + a11y)` split
   # (parallel pair with `web-unit` above; `web-unit` carries no rust dep).

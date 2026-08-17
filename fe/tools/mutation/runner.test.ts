@@ -3,9 +3,11 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
-  byteSequencesEqual, declaredFixtureDirectories, judgeMutation, mutationRunExitCode, oracleIdsFromDocuments,
+  byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
+  evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, judgeMutation,
+  manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
   parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
-  trackedFixtureSetMatches, validateManifest,
+  shardPlan, trackedFixtureSetMatches, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
 
@@ -64,11 +66,11 @@ describe('tracked fixture inventory', () => {
 });
 
 describe('selection and manifest judgments', () => {
-  it('selects independently by target, selection path, and infrastructure', () => {
-    expect(selectedEntries([baseEntry], [`fe/${baseEntry.target}`])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], [`fe/${baseEntry.selection_paths[0]}`])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], ['fe/tools/mutation/manifest.json'])).toEqual([baseEntry]);
-    expect(selectedEntries([baseEntry], ['fe/unrelated.ts'])).toEqual([]);
+  it('selects independently by target, selection path, and runner code', () => {
+    expect(selectedEntries([baseEntry], [`fe/${baseEntry.target}`], [baseEntry])).toEqual([baseEntry]);
+    expect(selectedEntries([baseEntry], [`fe/${baseEntry.selection_paths[0]}`], [baseEntry])).toEqual([baseEntry]);
+    expect(selectedEntries([baseEntry], ['fe/tools/mutation/run.mjs'], [baseEntry])).toEqual([baseEntry]);
+    expect(selectedEntries([baseEntry], ['fe/unrelated.ts'], [baseEntry])).toEqual([]);
   });
   const structuredEntry = { ...baseEntry, patch: readFileSync(resolve(fixtureRoot, 'valid/mutation.diff'), 'utf8'),
     target: 'tools/mutation/fixtures/valid/source.ts' };
@@ -90,6 +92,262 @@ describe('selection and manifest judgments', () => {
     expect(() => validateManifest([], namespaces, tracked)).toThrow('manifest must contain');
     expect(() => validateManifest([{ ...structuredEntry, selection_paths: ['tools/missing.ts'] }], namespaces, tracked))
       .toThrow('path is not tracked: tools/missing.ts');
+  });
+  // The manifest is JSON.parse'd: the declared types are erased at runtime, so these are load-bearing.
+  it.each([
+    ['numeric mutation_id', { mutation_id: Number('9007199254740993') }, /non-string mutation_id/],
+    ['empty mutation_id', { mutation_id: '  ' }, /non-string mutation_id/],
+    ['null mutation_id', { mutation_id: null }, /non-string mutation_id/],
+    ['numeric target', { target: 42 }, /target must be a non-empty string/],
+    ['numeric patch', { patch: 7 }, /patch must be a string/],
+    ['numeric selection path', { selection_paths: [3] }, /selection_paths must be non-empty strings/],
+    ['numeric expected_red', { expected_red: [3] }, /expected_red must be non-empty strings/],
+  ] as const)('rejects a %s at runtime', (_name, override, message) => {
+    const entry = { ...structuredEntry, ...override } as unknown as MutationEntry;
+    expect(() => validateManifest([entry], namespaces, new Set([...tracked, ...structuredEntry.selection_paths])))
+      .toThrow(message);
+  });
+  it('accepts the same entry with a string mutation_id', () => {
+    expect(() => validateManifest([{ ...structuredEntry, mutation_id: '9007199254740993' }], namespaces, tracked)).not.toThrow();
+  });
+  // run.mjs interpolates mutation_id into `resolve(temporary, `${id}.diff`)`, so it is a path
+  // component: `../escaped` writes outside the temp dir and `sub/id` ENOENTs the whole shard.
+  it.each([
+    ['parent escape', '../escaped'], ['nested path', 'sub/id'], ['self', '.'], ['parent', '..'],
+    ['backslash', 'sub\\id'], ['leading dash', '-lead'], ['trailing dash', 'trail-'],
+    ['double dash', 'a--b'], ['uppercase', 'Alpha-Beta'], ['underscore', 'alpha_beta'],
+    ['dotted', 'alpha.beta'], ['spaced', 'alpha beta'], ['tilde', '~/id'], ['nul-ish', 'id%00'],
+  ] as const)('rejects a %s mutation_id', (_name, mutationId) => {
+    expect(() => validateManifest([{ ...structuredEntry, mutation_id: mutationId }], namespaces, tracked))
+      .toThrow(/non-slug mutation_id/);
+  });
+  it('rejects an empty mutation_id before it can reach the slug check', () => {
+    expect(() => validateManifest([{ ...structuredEntry, mutation_id: '' }], namespaces, tracked))
+      .toThrow(/non-string mutation_id/);
+  });
+  it.each(['login-success-drop-reload', 'app-cursor-accept-bare-number', 'a', '9007199254740993', 'a1-b2'])(
+    'accepts the real-shaped mutation_id %s', (mutationId) => {
+      expect(() => validateManifest([{ ...structuredEntry, mutation_id: mutationId }], namespaces, tracked)).not.toThrow();
+    });
+  it('accepts every id in the real manifest', () => {
+    const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8')) as MutationEntry[];
+    expect(manifest.length).toBeGreaterThan(0);
+    expect(manifest.filter(({ mutation_id }) => !mutationIdPattern.test(mutation_id))).toEqual([]);
+  });
+});
+
+describe('manifest is data, not runner infrastructure', () => {
+  const manifestPath = `fe/${manifestRelativePath}`;
+  const entry = (id: string): MutationEntry => ({
+    ...baseEntry, mutation_id: id, target: `web/src/${id}.ts`, selection_paths: [`web/src/${id}.test.ts`],
+  });
+  const [alpha, beta, gamma] = ['alpha', 'beta', 'gamma'].map(entry);
+  const ids = (entries: readonly MutationEntry[]): string[] => entries.map(({ mutation_id }) => mutation_id);
+
+  it('selects only the added entry when the manifest is the only changed path', () => {
+    expect(ids(selectedEntries([alpha, beta, gamma], [manifestPath], [alpha, beta]))).toEqual(['gamma']);
+  });
+
+  it('selects only the edited entry when an existing patch changes', () => {
+    const editedBeta = { ...beta, patch: 'diff --git a/web/src/beta.ts b/web/src/beta.ts' };
+    expect(ids(selectedEntries([alpha, editedBeta, gamma], [manifestPath], [alpha, beta, gamma]))).toEqual(['beta']);
+  });
+
+  it('does not select an entry identical to base whose paths are untouched', () => {
+    expect(selectedEntries([alpha], [manifestPath], [alpha])).toEqual([]);
+  });
+
+  it('treats a pure object-key reorder as no drift at all', () => {
+    const reordered = ['alpha', 'beta'].map((id) => {
+      const { mutation_id, defends, target, patch, expected_red, selection_paths, why_more_than_one } = entry(id);
+      return { why_more_than_one, selection_paths, expected_red, patch, target, defends, mutation_id };
+    });
+    expect(selectedEntries([alpha, beta], [manifestPath], reordered)).toEqual([]);
+    expect([...entryIdsDriftedFromBase(reordered, [alpha, beta])]).toEqual([]);
+  });
+
+  it.each([
+    'fe/tools/mutation/run.mjs',
+    'fe/tools/mutation/runner.ts',
+    'fe/tools/mutation/runner.test.ts',
+    'fe/tools/mutation/fixture-e2e.mjs',
+    'fe/tools/mutation/fixtures/valid/source.ts',
+  ])('selects every entry when runner code %s changes', (path) => {
+    expect(ids(selectedEntries([alpha, beta, gamma], [path], [alpha, beta, gamma]))).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  // Why validateManifest insists mutation_id is a string: two distinct integers past
+  // Number.MAX_SAFE_INTEGER JSON.parse to the SAME Number, so canonical comparison would call an
+  // edited entry unchanged and skip it. As strings they stay distinct and the edit is caught.
+  it('distinguishes ids that collide once parsed as numbers, because they are strings', () => {
+    expect(Number('9007199254740992')).toBe(Number('9007199254740993'));
+    const numericBase = { ...entry('x'), mutation_id: Number('9007199254740992') } as unknown as MutationEntry;
+    const numericHead = { ...entry('x'), mutation_id: Number('9007199254740993') } as unknown as MutationEntry;
+    expect([...entryIdsDriftedFromBase([numericBase], [numericHead])]).toEqual([]);
+    const stringBase = { ...entry('x'), mutation_id: '9007199254740992' };
+    const stringHead = { ...entry('x'), mutation_id: '9007199254740993' };
+    expect([...entryIdsDriftedFromBase([stringBase], [stringHead])]).toEqual(['9007199254740993']);
+  });
+
+  it('fails closed to the full manifest when the base manifest is unreadable', () => {
+    expect(ids(selectedEntries([alpha, beta, gamma], [manifestPath], null))).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('fails closed to the full manifest when the base contains duplicate mutation ids', () => {
+    const base = [alpha, alpha, beta, gamma];
+    expect(ids(selectedEntries([alpha, beta, gamma], [manifestPath], base))).toEqual(['alpha', 'beta', 'gamma']);
+    expect([...entryIdsDriftedFromBase(base, [alpha, beta, gamma])].sort()).toEqual(['alpha', 'beta', 'gamma']);
+  });
+
+  it('still selects purely by path intersection when the manifest is untouched', () => {
+    expect(ids(selectedEntries([alpha, beta, gamma], ['fe/web/src/beta.ts'], [alpha, beta, gamma]))).toEqual(['beta']);
+    expect(ids(selectedEntries([alpha, beta, gamma], ['fe/web/src/gamma.test.ts'], [alpha, beta, gamma]))).toEqual(['gamma']);
+    expect(selectedEntries([alpha, beta, gamma], ['fe/web/src/unrelated.ts'], [alpha, beta, gamma])).toEqual([]);
+  });
+
+  it('unions drift and path selection without duplicates, in manifest order', () => {
+    const driftedGamma = { ...gamma, patch: 'diff --git a/web/src/gamma.ts b/web/src/gamma.ts' };
+    const selected = selectedEntries(
+      [alpha, beta, driftedGamma], [manifestPath, 'fe/web/src/gamma.test.ts', 'fe/web/src/alpha.ts'],
+      [alpha, beta, gamma],
+    );
+    expect(ids(selected)).toEqual(['alpha', 'gamma']);
+  });
+
+  it('ignores entries deleted from the manifest without shifting the survivors', () => {
+    const removed = entry('removed');
+    const driftedBeta = { ...beta, patch: 'diff --git a/web/src/beta.ts b/web/src/beta.ts' };
+    const selected = selectedEntries(
+      [alpha, driftedBeta, gamma], [manifestPath, 'fe/web/src/alpha.test.ts'], [removed, alpha, beta, gamma],
+    );
+    expect(ids(selected)).toEqual(['alpha', 'beta']);
+  });
+});
+
+describe('evidence-invalidating infrastructure versus manifest data', () => {
+  // Every path here governs which tests exist or how vitest runs them, so every recorded
+  // expected_red set becomes unverifiable and selection must fail closed to the whole manifest.
+  it.each([
+    'tools/mutation/run.mjs', 'tools/mutation/runner.ts', 'tools/mutation/runner.test.ts',
+    'tools/mutation/fixture-e2e.mjs', 'tools/mutation/fixtures/valid/source.ts', 'tools/mutation/plan-purity.mjs',
+    'tools/mutation/fixtures/impure-plan.mjs',
+    'vitest.config.ts', 'tools/vitest/build-constants.ts',
+    'package.json', 'package-lock.json',
+    'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'tsconfig.core.json',
+    // run.mjs imports plugin.mjs to build the `arch-rule` namespace, and both modules produce the
+    // lint verdicts every `arch-rule:` entry records as expected_red.
+    'tools/architecture/plugin.mjs', 'tools/architecture/allowlists.mjs',
+  ])('treats %s as evidence-invalidating infrastructure', (path) => {
+    expect(evidenceInvalidatingInfraChanged([path])).toBe(true);
+  });
+  // Neighbours that must NOT trigger the sweep. `tools/vitestfoo.ts` / `tools/vitest-helpers/`
+  // guard the startsWith prefix bug; `web/src/tsconfig.json` guards the fe-ROOT-only tsconfig rule;
+  // `tools/architecture/other.mjs` guards against widening the two named architecture modules into
+  // the whole directory.
+  it.each([
+    manifestRelativePath, 'web/src/app.ts', 'tools/architecture/other.mjs', 'tools/mutation-other/run.mjs',
+    'tools/architecture/no-class-dom-query.mjs', 'tools/architecture/plugin.mjs.bak',
+    'tools/vitestfoo.ts', 'tools/vitest-helpers/x.ts', 'tools/vitest.ts',
+    'web/src/tsconfig.json', 'core/tsconfig.build.json', 'web/package.json', 'web/package-lock.json',
+    'web/vitest.config.ts', 'tools/vitest.config.ts', 'tsconfig.json.bak', 'package.json5',
+  ])('does not treat %s as evidence-invalidating infrastructure', (path) => {
+    expect(evidenceInvalidatingInfraChanged([path])).toBe(false);
+  });
+  it('detects infrastructure alongside a manifest edit', () => {
+    expect(evidenceInvalidatingInfraChanged([manifestRelativePath, 'tools/mutation/runner.ts'])).toBe(true);
+    expect(evidenceInvalidatingInfraChanged([manifestRelativePath, 'package-lock.json'])).toBe(true);
+    expect(evidenceInvalidatingInfraChanged([])).toBe(false);
+  });
+  // The whole point: the sweep must reach selectedEntries, not just the predicate.
+  it.each([
+    'fe/tools/mutation/runner.ts', 'fe/vitest.config.ts', 'fe/tools/vitest/build-constants.ts',
+    'fe/package.json', 'fe/package-lock.json', 'fe/tsconfig.json', 'fe/tsconfig.app.json',
+    'fe/tools/architecture/plugin.mjs', 'fe/tools/architecture/allowlists.mjs',
+    // Repo-root-relative, i.e. dropped by the `fe/` filter unless it is matched before it.
+    '.github/workflows/ci.yml',
+  ])('selects the full manifest when %s changes', (path) => {
+    const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
+    expect(selectedEntries(entries, [path], entries)).toEqual(entries);
+    // …and with the manifest ALSO edited, where per-entry diff would otherwise have narrowed it.
+    expect(selectedEntries(entries, [path, `fe/${manifestRelativePath}`], entries)).toEqual(entries);
+  });
+  it.each([
+    'fe/tools/vitest-helpers/x.ts', 'fe/tools/vitestfoo.ts', 'fe/web/src/tsconfig.json',
+    'fe/tools/architecture/other.mjs',
+    // Only ci.yml governs how vitest runs; sibling GitHub config does not, and neither does an
+    // arbitrary repo-root path — all three must stay a no-op, not become a free full sweep.
+    '.github/workflows/other.yml', '.github/dependabot.yml', 'calm-server/src/main.rs',
+  ])('does not sweep the manifest when the neighbouring path %s changes', (path) => {
+    const entries = ['alpha', 'beta', 'gamma'].map((id) => ({ ...baseEntry, mutation_id: id }));
+    expect(selectedEntries(entries, [path], entries)).toEqual([]);
+  });
+  // The `fe/` stripping must survive the repo-root check placed in front of it: a genuine fe path
+  // alongside a repo-root path still selects by intersection, and `fe/` is stripped exactly once.
+  it('keeps fe-relative selection working beside repo-root paths', () => {
+    const entries = ['alpha', 'beta'].map((id) => ({
+      ...baseEntry, mutation_id: id, target: `web/src/${id}.ts`, selection_paths: [`web/src/${id}.test.ts`],
+    }));
+    expect(selectedEntries(entries, ['.github/dependabot.yml', 'fe/web/src/beta.ts'], entries)
+      .map(({ mutation_id }) => mutation_id)).toEqual(['beta']);
+    expect(selectedEntries(entries, ['fe/fe/web/src/beta.ts'], entries)).toEqual([]);
+  });
+  it.each(['.github/workflows/ci.yml'])('treats the repo-root path %s as evidence-invalidating', (path) => {
+    expect(evidenceInvalidatingRepoPathChanged([path])).toBe(true);
+  });
+  it.each(['.github/workflows/other.yml', '.github/dependabot.yml', 'fe/.github/workflows/ci.yml',
+    'docs/.github/workflows/ci.yml', 'workflows/ci.yml'])(
+    'does not treat the repo-root path %s as evidence-invalidating', (path) => {
+      expect(evidenceInvalidatingRepoPathChanged([path])).toBe(false);
+    });
+});
+
+// The manifest's selection_paths is a HAND-MAINTAINED list, not a computed dependency closure. These
+// pin the shared test-harness modules that were measured selecting ZERO entries: a change to any of
+// them can flip the recorded expected_red of an entry whose own files did not move.
+describe('shared test-harness dependencies reach the entries that need them', () => {
+  const manifest = JSON.parse(readFileSync(resolve(import.meta.dirname, 'manifest.json'), 'utf8')) as MutationEntry[];
+  const select = (path: string): string[] =>
+    selectedEntries(manifest, [`fe/${path}`], manifest).map(({ mutation_id }) => mutation_id);
+
+  it.each([
+    ['web/src/app/router/test-card-runtime.ts',
+      ['session-gate-drop-query-cache-clear', 'cards-headless-filter-display-index']],
+    ['web/src/systems/cards/builtins/register.ts', ['cards-headless-filter-display-index']],
+    ['web/src/systems/cards/registry.ts', ['cards-headless-filter-display-index']],
+  ] as const)('%s selects exactly %j', (path, expected) => {
+    expect(select(path).sort()).toEqual([...expected].sort());
+  });
+
+  // Negative control against widening selection_paths to production modules generally.
+  it.each(['web/src/app/router/other.ts', 'web/src/systems/cards/builtins/other.ts'])(
+    'the neighbouring production path %s still selects nothing', (path) => {
+      expect(select(path)).toEqual([]);
+    });
+});
+
+describe('dynamic shard plan', () => {
+  it.each([[0, 1], [1, 1], [4, 1], [5, 2], [65, 17], [80, 20], [128, 32]])(
+    '%i selected entries plan %i shards without clamping', (selectedCount, total) => {
+      expect(shardPlan(selectedCount))
+        .toEqual({ total, shards: Array.from({ length: total }, (_v, i) => i + 1), clamped: false });
+    });
+  it('never plans fewer than one shard nor more than the cap', () => {
+    expect(entriesPerShard).toBe(4);
+    expect(maxShards).toBe(32);
+    expect(shardPlan(0).shards).toEqual([1]);
+    expect(shardPlan(10_000).total).toBe(maxShards);
+  });
+  // Past the cap the shards stop being ~entriesPerShard each; the plan says so out loud.
+  it.each([[128, false], [129, true], [400, true], [10_000, true]])(
+    '%i selected entries reports clamped=%s', (selectedCount, clamped) => {
+      const plan = shardPlan(selectedCount);
+      expect(plan.clamped).toBe(clamped);
+      expect(plan.total).toBe(clamped ? maxShards : Math.ceil(selectedCount / entriesPerShard));
+    });
+  it('never reports clamped below the cap', () => {
+    for (let selectedCount = 0; selectedCount <= maxShards * entriesPerShard; selectedCount += 1) {
+      expect(shardPlan(selectedCount).clamped).toBe(false);
+    }
   });
 });
 

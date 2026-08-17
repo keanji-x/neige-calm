@@ -1056,7 +1056,8 @@
       "session gate contracts renders login on 401, error with retry on transport failure, and clears on broadcast 401"
     ],
     "selection_paths": [
-      "web/src/app/auth/session-gate.contract.test.tsx"
+      "web/src/app/auth/session-gate.contract.test.tsx",
+      "web/src/app/router/test-card-runtime.ts"
     ],
     "why_more_than_one": "Only the cache assertion should turn red; login rendering remains independently functional after the cache clear is removed."
   },
@@ -1075,7 +1076,10 @@
     ],
     "selection_paths": [
       "web/src/systems/cards/builtins/headless-filter.test.ts",
-      "web/src/app/router/wave-cards-panel.test.tsx"
+      "web/src/app/router/wave-cards-panel.test.tsx",
+      "web/src/app/router/test-card-runtime.ts",
+      "web/src/systems/cards/builtins/register.ts",
+      "web/src/systems/cards/registry.ts"
     ],
     "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card; nothing else should notice."
   }
