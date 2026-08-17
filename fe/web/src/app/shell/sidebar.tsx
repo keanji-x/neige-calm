@@ -37,6 +37,10 @@ export type SidebarProps = Readonly<{
   /** Colour is picked here, at random from `COVE_PALETTE` (INV-DUP-006). */
   onCreateCove: (name: string, color: string) => void | Promise<void>;
   onDeleteCove: (coveId: string, signal: AbortSignal) => void | Promise<void>;
+  /** Opens the shell's New wave dialog with this cove preselected. The rail
+   *  does not own the dialog — `AppShell` does, because the cove page's `+`
+   *  opens the same one. */
+  onNewWave: (coveId: string) => void;
   onSetPinned: (waveId: string, pinned: boolean) => void | Promise<void>;
   onDeleteWave: (waveId: string, signal: AbortSignal) => void | Promise<void>;
   onOpenSettings: () => void;
@@ -84,7 +88,7 @@ function randomCoveColor(): string {
  */
 export function Sidebar({
   coves, wavesByCove, waves, currentPath, onGo,
-  onCreateCove, onDeleteCove, onSetPinned, onDeleteWave,
+  onCreateCove, onDeleteCove, onNewWave, onSetPinned, onDeleteWave,
   onOpenSettings, onSignOut, collapsed, onToggleCollapsed,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
@@ -291,6 +295,7 @@ export function Sidebar({
                     expanded={expandedOverride.get(cove.id) ?? true}
                     onToggle={(next) => setExpandedOverride((current) => new Map(current).set(cove.id, next))}
                     onRequestDelete={coveConfirm.request}
+                    onNewWave={onNewWave}
                     {...rowProps}
                   />
                 ))}
@@ -410,15 +415,33 @@ function WaveSection({ title, waves, coves, onGo, nowMs, onSetPinned, onDelete }
   );
 }
 
-/** INV-A11Y-061 — navigation is `<button>` + `onGo`, never a native `<a href>`. */
+/**
+ * INV-A11Y-061 — navigation is `<button>` + `onGo`, never a native `<a href>`.
+ * That holds for the `+` too: it opens a dialog, so it is a button and a
+ * callback, not a link to a "new wave" URL that does not exist.
+ *
+ * INV-SIDEBAR-013 — the row carries **two** trailing controls, and only one of
+ * them is hover-revealed. The `+` is permanent because starting a wave is the
+ * rail's one creative action and a control you have to discover by hovering is
+ * a control most people never find; the `×` stays revealed because a
+ * cove-deleting button permanently on every row is a row of loaded guns.
+ *
+ * They do not share a slot, and neither ever moves: `+` sits at the trailing
+ * edge, `×` one control-step inboard, and the row reserves both gutters at
+ * rest. The wave row's status dot/delete pair *does* share one slot — that
+ * works because the two marks are the same size and mean the same place. Two
+ * live buttons cannot do that, so this row spends the second 20px instead.
+ */
 function CoveGroup({
-  cove, coveWaves, expanded, onToggle, onRequestDelete, currentPath, onGo, nowMs, onSetPinned, onDelete,
+  cove, coveWaves, expanded, onToggle, onRequestDelete, onNewWave,
+  currentPath, onGo, nowMs, onSetPinned, onDelete,
 }: RowProps & {
   cove: Cove;
   coveWaves: readonly Wave[];
   expanded: boolean;
   onToggle: (expanded: boolean) => void;
   onRequestDelete: (coveId: string) => void;
+  onNewWave: (coveId: string) => void;
 }) {
   const active = routeParamFromPath(currentPath, '/cove/') === cove.id;
 
@@ -460,6 +483,21 @@ function CoveGroup({
           onClick={() => onRequestDelete(cove.id)}
         >
           <Icon name="close" size="sm" />
+        </button>
+        {/* The accessible name names the cove, and it has to: the rail now
+            carries one of these per cove, and N controls all called "New wave"
+            is a list a screen-reader user cannot choose from. `title` is the
+            sighted hover label — §4.4 requires both, because a tooltip may not
+            stand in for the accessible name. */}
+        <button
+          type="button"
+          data-nc-role="icon"
+          className={styles.coveNew}
+          aria-label={`New wave in ${cove.name}`}
+          title="New wave"
+          onClick={() => onNewWave(cove.id)}
+        >
+          <Icon name="plus" size="sm" />
         </button>
       </div>
       {expanded && (

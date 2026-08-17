@@ -88,6 +88,69 @@ export function deleteCoveOperation(coveId: string): ApiOperation<undefined> {
   return { method: 'DELETE', path: `/api/coves/${encodeURIComponent(coveId)}`, responseSchema: z.undefined() };
 }
 
+/**
+ * A folder a cove has claimed. The kernel's `cove_folders` mapping, decoded.
+ *
+ * `id` is an autoincrement integer here rather than the usual uuid-shaped TEXT
+ * because the row never enters the sync engine's event log — that is the
+ * kernel's reason (see `CoveFolder` in `core/api/generated/wire.ts`), repeated
+ * here only so a reader does not "fix" the type.
+ *
+ * `repo_identity` / `repo_identity_probed_at` are `null` until the kernel has
+ * probed the folder's Git origin, so they stay nullable through the decode
+ * rather than being defaulted into a lie.
+ */
+export const coveFolderWireSchema = z.object({
+  id: z.number(),
+  cove_id: z.string(),
+  path: z.string(),
+  repo_identity: z.string().nullable().default(null),
+  repo_identity_probed_at: z.number().nullable().default(null),
+  created_at: z.number(),
+});
+export type CoveFolderWire = z.infer<typeof coveFolderWireSchema>;
+
+export type CoveFolder = Readonly<{
+  id: number;
+  coveId: string;
+  path: string;
+  repoIdentity: string | null;
+  repoIdentityProbedAt: number | null;
+  createdAt: number;
+}>;
+
+export function toCoveFolder(wire: CoveFolderWire): CoveFolder {
+  return {
+    id: wire.id,
+    coveId: wire.cove_id,
+    path: wire.path,
+    repoIdentity: wire.repo_identity,
+    repoIdentityProbedAt: wire.repo_identity_probed_at,
+    createdAt: wire.created_at,
+  };
+}
+
+export function coveFoldersOperation(coveId: string): ApiOperation<CoveFolderWire[]> {
+  return {
+    method: 'GET',
+    path: `/api/coves/${encodeURIComponent(coveId)}/folders`,
+    responseSchema: z.array(coveFolderWireSchema),
+  };
+}
+
+/**
+ * INV-NEWWAVE-003 — `path` ascending, ties broken by `id`. The new-wave form
+ * picks `[0]` as the folder a wave runs in when the user is shown no choice, so
+ * "the first one" has to mean the same thing on every render and in every
+ * browser: the kernel returns insertion order, which is neither stable across a
+ * re-claim nor meaningful to the person reading the list.
+ */
+export function sortedCoveFolders(folders: readonly CoveFolder[]): CoveFolder[] {
+  return [...folders].sort((left, right) => (left.path !== right.path
+    ? (left.path < right.path ? -1 : 1)
+    : left.id - right.id));
+}
+
 /** The eight identity slots. A cove's colour is a slot, never a free hex (§6.2). */
 export const COVE_SLOT_COUNT = 8;
 

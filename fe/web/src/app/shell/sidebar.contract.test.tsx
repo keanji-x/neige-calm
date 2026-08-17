@@ -41,6 +41,7 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
         onGo={props.onGo ?? vi.fn()}
         onCreateCove={props.onCreateCove ?? vi.fn()}
         onDeleteCove={props.onDeleteCove ?? vi.fn()}
+        onNewWave={props.onNewWave ?? vi.fn()}
         onSetPinned={props.onSetPinned ?? vi.fn()}
         onDeleteWave={props.onDeleteWave ?? vi.fn()}
         collapsed={props.collapsed ?? false}
@@ -94,6 +95,51 @@ describe('INV-SIDEBAR-012 the pin button is always in the accessibility tree', (
     const pinned = screen.getAllByRole('button', { name: 'Unpin Stuck' });
     expect(pinned).toHaveLength(2);
     for (const node of pinned) expect(node.getAttribute('aria-pressed')).toBe('true');
+  });
+});
+
+describe('INV-SIDEBAR-013 every cove row carries a permanent New wave control', () => {
+  const coves = [cove(), cove({ id: 'c2', name: 'Reading', sort: 2 })];
+  const wavesByCove = new Map([['c1', []], ['c2', []]]);
+
+  /*
+   * The rail now has one of these per cove, so `"New wave"` alone would be N
+   * identically-named controls — a list a screen-reader user cannot choose
+   * from. §4.4 also forbids the tooltip standing in for the accessible name, so
+   * both are asserted: the name identifies the cove, the title is the sighted
+   * hover label.
+   */
+  it('names each one for its own cove and still carries a tooltip', () => {
+    renderSidebar({ coves, wavesByCove });
+    for (const coveName of ['Work', 'Reading']) {
+      const button = screen.getByRole('button', { name: `New wave in ${coveName}` });
+      expect(button.getAttribute('title')).toBe('New wave');
+      expect(button.tagName).toBe('BUTTON');
+    }
+    expect(screen.queryByRole('button', { name: 'New wave' })).toBeNull();
+  });
+
+  /*
+   * Permanently visible, unlike the `×` beside it. jsdom applies no CSS Module,
+   * so "visible" cannot be read off a computed style here; what this pins is
+   * the fact the reveal is *built* on — `.coveDelete` carries the opacity rule
+   * and `.coveNew` does not, so the two controls cannot silently converge on
+   * one behaviour. The `browser` tier owns the rendered opacity.
+   */
+  it('leaves the New wave control out of the hover-revealed class the delete uses', () => {
+    renderSidebar({ coves, wavesByCove });
+    const create = screen.getByRole('button', { name: 'New wave in Work' });
+    const remove = screen.getByRole('button', { name: 'Delete cove Work' });
+    expect(create.className).not.toBe(remove.className);
+    expect(create.className.split(/\s+/).some((token) => remove.className.split(/\s+/).includes(token)))
+      .toBe(false);
+  });
+
+  /** The collapsed rail gets none: it has room for one glyph per cove, and that
+   *  glyph is the cove. */
+  it('offers no New wave control in the collapsed icon strip', () => {
+    renderSidebar({ coves, wavesByCove, collapsed: true });
+    expect(screen.queryByRole('button', { name: /^New wave/ })).toBeNull();
   });
 });
 

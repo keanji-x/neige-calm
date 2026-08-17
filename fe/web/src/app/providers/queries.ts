@@ -16,9 +16,9 @@ import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  coveListOperation, createCoveOperation, deleteCoveOperation, sortedCoves, toCove,
-  updateCoveOperation, visibleCoves,
-  type Cove, type CovePatchBody, type NewCoveBody,
+  coveFoldersOperation, coveListOperation, createCoveOperation, deleteCoveOperation, sortedCoveFolders,
+  sortedCoves, toCove, toCoveFolder, updateCoveOperation, visibleCoves,
+  type Cove, type CoveFolder, type CovePatchBody, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
 import {
   waveBacklinksOperation, type WaveBacklinks,
@@ -64,6 +64,7 @@ export async function runOperation<T>(
 export const queryKeys = Object.freeze({
   serverVersion: () => ['server-version'] as const,
   coves: () => ['coves'] as const,
+  coveFolders: (coveId: string) => ['cove-folders', coveId] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
@@ -191,6 +192,43 @@ export function coveListQueryOptions(transport: ApiTransportPort, unauthorized: 
     queryFn: async (): Promise<Cove[]> =>
       sortedCoves(visibleCoves((await runOperation(transport, coveListOperation(), unauthorized)).map(toCove))),
   };
+}
+
+/**
+ * The folders a cove has already claimed.
+ *
+ * Its own cache entry rather than a field on the workspace read: only the
+ * new-wave dialog needs it, and folding it into `useWorkspace` would put one
+ * request per cove behind every route commit for a fact no route renders.
+ */
+export function coveFoldersQueryOptions(
+  transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel,
+) {
+  return {
+    queryKey: queryKeys.coveFolders(coveId),
+    queryFn: async (): Promise<CoveFolder[]> =>
+      sortedCoveFolders((await runOperation(transport, coveFoldersOperation(coveId), unauthorized)).map(toCoveFolder)),
+  };
+}
+
+export type CoveFolders = Readonly<{ folders: readonly CoveFolder[]; loading: boolean }>;
+
+/**
+ * INV-NEWWAVE-002 — the caller is deciding between "run in a folder this cove
+ * already owns" and "claim the cove's first folder", and those are different
+ * forms. `loading` is reported rather than swallowed so the form can refuse to
+ * submit while the answer is unknown: a `folders.length === 0` read of an
+ * unresolved query would send `attach_folder: true` for a cove that already
+ * has one.
+ */
+export function useCoveFolders(
+  transport: ApiTransportPort, coveId: string | null, unauthorized: UnauthorizedChannel,
+): CoveFolders {
+  const query = useQuery({
+    ...coveFoldersQueryOptions(transport, coveId ?? '', unauthorized),
+    enabled: coveId !== null,
+  });
+  return { folders: query.data ?? [], loading: coveId !== null && query.data === undefined && !query.isError };
 }
 
 export function waveOverlaysQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {

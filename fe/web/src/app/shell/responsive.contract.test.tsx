@@ -13,7 +13,11 @@ vi.mock('../providers/queries.ts', () => ({
     retryCoves: vi.fn(), retryOverlays: vi.fn(), retryWaves: vi.fn(),
   }),
   useCoveMutations: () => ({ create: vi.fn(), remove: vi.fn() }),
-  useWaveMutations: () => ({ setPinned: vi.fn(), remove: vi.fn() }),
+  useWaveMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
+  // The shell owns the New wave dialog; this test only drives the rail grid, so
+  // the folder read is stubbed closed rather than exercised (see public.test.tsx).
+  useCoveFolders: () => ({ folders: [], loading: false }),
+  ApiError: class ApiError extends Error {},
 }));
 vi.mock('../router/navigation.ts', () => ({ useCurrentPath: () => '/', useGo: () => vi.fn() }));
 vi.mock('./sidebar.tsx', () => ({ Sidebar: ({ collapsed, onToggleCollapsed }: {
