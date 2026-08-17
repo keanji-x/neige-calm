@@ -387,6 +387,7 @@ export const DEV_MOCK_ROUTES = Object.freeze([
   ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
   ['GET', '/api/coves/{cove_id}/waves'], ['POST', '/api/coves/{cove_id}/chat-wave/ensure'],
   ['GET', '/api/coves/{cove_id}/conversations'], ['POST', '/api/coves/{cove_id}/conversations'],
+  ['GET', '/api/coves/{cove_id}/folders'],
   ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
   ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
   ['GET', '/api/waves/{id}/backlinks'],
