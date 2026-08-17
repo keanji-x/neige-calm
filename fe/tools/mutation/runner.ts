@@ -117,6 +117,15 @@ export function parseFailedTestIds(json: string): string[] {
   return parseVitestReport(json).failedTestIds;
 }
 
+/**
+ * `mutation_id` is interpolated straight into temp *filenames* by run.mjs
+ * (`resolve(temporary, `${mutation_id}.diff`)`), so it is a path component, not free text.
+ * A lowercase dash-slug has no `.`, no `/` and no `\`, which makes `../escaped` (writes outside the
+ * temp dir), `sub/id` (ENOENT that kills the whole shard) and `.`/`..` structurally impossible.
+ * All 65 manifest ids already match; new ids must keep the shape.
+ */
+export const mutationIdPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 export function validateManifest(
   entries: MutationEntry[],
   namespaces: { oracle: ReadonlySet<string>; 'arch-rule': ReadonlySet<string> },
@@ -125,13 +134,32 @@ export function validateManifest(
   if (entries.length === 0) throw new Error('manifest must contain at least one mutation');
   const ids = new Set<string>();
   for (const entry of entries) {
+    // The manifest is JSON.parse'd, so the declared types buy nothing at runtime. mutation_id in
+    // particular MUST be a string: a JSON number past Number.MAX_SAFE_INTEGER collapses onto its
+    // neighbours, which would make the canonical base/head comparison silently skip entries.
+    if (typeof entry.mutation_id !== 'string' || entry.mutation_id.trim() === '') {
+      throw new Error(`manifest entry has a non-string mutation_id: ${JSON.stringify(entry.mutation_id)}`);
+    }
+    if (!mutationIdPattern.test(entry.mutation_id)) {
+      throw new Error(`manifest entry has a non-slug mutation_id (it becomes a temp filename, so it must match ${String(mutationIdPattern)}): ${JSON.stringify(entry.mutation_id)}`);
+    }
     if (ids.has(entry.mutation_id)) throw new Error(`duplicate mutation_id: ${entry.mutation_id}`);
     ids.add(entry.mutation_id);
+    if (typeof entry.target !== 'string' || entry.target.trim() === '') {
+      throw new Error(`${entry.mutation_id}: target must be a non-empty string`);
+    }
+    if (typeof entry.patch !== 'string') throw new Error(`${entry.mutation_id}: patch must be a string`);
     if (parsePatchTarget(entry.patch) !== entry.target) throw new Error(`${entry.mutation_id}: patch target differs from target`);
     if (!Array.isArray(entry.defends) || entry.defends.length === 0 || !Array.isArray(entry.expected_red)
       || !Array.isArray(entry.selection_paths) || entry.selection_paths.length === 0
       || typeof entry.why_more_than_one !== 'string' || entry.why_more_than_one.trim() === '') {
       throw new Error(`${entry.mutation_id}: incomplete structured manifest entry`);
+    }
+    for (const path of entry.selection_paths) {
+      if (typeof path !== 'string' || path.trim() === '') throw new Error(`${entry.mutation_id}: selection_paths must be non-empty strings`);
+    }
+    for (const testId of entry.expected_red) {
+      if (typeof testId !== 'string' || testId.trim() === '') throw new Error(`${entry.mutation_id}: expected_red must be non-empty strings`);
     }
     for (const path of [entry.target, ...entry.selection_paths]) {
       if (!trackedPaths.has(path)) throw new Error(`${entry.mutation_id}: path is not tracked: ${path}`);
@@ -148,11 +176,147 @@ export function validateManifest(
   }
 }
 
-export function selectedEntries(entries: MutationEntry[], changedPaths: readonly string[]): MutationEntry[] {
+/** fe-relative path of the mutation manifest; it is DATA, not runner infrastructure. */
+export const manifestRelativePath = 'tools/mutation/manifest.json';
+
+/**
+ * fe-relative directories whose contents govern how the evidence is produced. Trailing slash is
+ * load-bearing: it matches the DIRECTORY, so a `tools/vitestfoo.ts` or `tools/vitest-helpers/x.ts`
+ * sibling does not accidentally trigger a full sweep.
+ */
+const evidenceInvalidatingDirectories = Object.freeze(['tools/mutation/', 'tools/vitest/'] as const);
+
+/**
+ * fe-relative files whose contents govern how the evidence is produced.
+ *
+ * `tools/architecture/plugin.mjs` and `tools/architecture/allowlists.mjs` are here rather than in
+ * any entry's `selection_paths` because they are dependencies of the RUNNER itself, not just of a
+ * test file: `run.mjs:7` imports `architecturePlugin` from plugin.mjs to build the `arch-rule`
+ * namespace that `validateManifest` checks `defends` against, so a rule rename there can invalidate
+ * every entry at once. They are also imported by `tools/architecture/architecture-rules.test.ts`,
+ * the `selection_paths` file of all three `arch-rule:` entries, whose expected_red sets are exactly
+ * the rule verdicts these two modules produce.
+ */
+const evidenceInvalidatingFiles = Object.freeze([
+  'vitest.config.ts', 'package.json', 'package-lock.json',
+  'tools/architecture/plugin.mjs', 'tools/architecture/allowlists.mjs',
+] as const);
+
+/**
+ * Repo-root-relative (NOT fe-relative) paths that decide how the evidence is produced from OUTSIDE
+ * `fe/`. `.github/workflows/ci.yml` pins `node-version: "22"`, runs `npm ci` and installs the
+ * Playwright browser — the interpreter, the dependency tree and the browser every recorded
+ * `expected_red` was measured under. It must be matched BEFORE `selectedEntries` strips the `fe/`
+ * prefix, because that filter drops every non-`fe/` path on the floor: without this check a PR
+ * touching only the workflow selected zero entries.
+ *
+ * Sibling workflows (`.github/workflows/other.yml`) and `.github/dependabot.yml` are deliberately
+ * NOT in the set — they do not run vitest, so they cannot invalidate a recorded verdict.
+ */
+export const evidenceInvalidatingRepoPaths = Object.freeze(['.github/workflows/ci.yml'] as const);
+
+/** @see evidenceInvalidatingRepoPaths — matched against repo-root-relative paths, before any `fe/` stripping. */
+export function evidenceInvalidatingRepoPathChanged(changedPaths: readonly string[]): boolean {
+  return changedPaths.some((path) => (evidenceInvalidatingRepoPaths as readonly string[]).includes(path));
+}
+
+/** fe-ROOT tsconfigs only (`tsconfig.json`, `tsconfig.app.json`, …); `web/src/tsconfig.json` is not one. */
+const feRootTsconfigPattern = /^tsconfig[^/]*\.json$/;
+
+/**
+ * Evidence-invalidating infrastructure changed: every recorded `expected_red` becomes a claim we can
+ * no longer trust, so selection must fail closed to the WHOLE manifest. Each member of the set governs
+ * which tests exist and/or how vitest runs them, which is exactly what an `expected_red` set encodes:
+ *
+ *  - `tools/mutation/**` except `manifest.json` — the runner code that applies patches and judges
+ *    verdicts. The manifest is DATA, diffed entry by entry instead (see entryIdsDriftedFromBase).
+ *  - `vitest.config.ts` — projects, include globs, environment, pool. Changing it changes which test
+ *    ids even exist, so every recorded id may now be stale.
+ *  - `tools/vitest/**` — the global `setupFiles` (build-constants.ts). It runs before every test file
+ *    in every project; a change there can flip any assertion in the suite.
+ *  - `package.json` / `package-lock.json` — a vitest / jsdom / React / testing-library bump changes
+ *    behaviour and test-id formatting wholesale. This is the case that used to select ZERO entries.
+ *  - fe-root `tsconfig*.json` — strictness / lib / paths, i.e. what compiles and therefore what runs.
+ *  - `tools/architecture/plugin.mjs` / `allowlists.mjs` — the runner imports plugin.mjs to build its
+ *    `arch-rule` namespace, and both back the lint verdicts the `arch-rule:` entries record.
+ *
+ * `.github/workflows/ci.yml` belongs to the same set but is repo-root-relative, so it is matched
+ * separately in selectedEntries — see evidenceInvalidatingRepoPaths.
+ *
+ * DELIBERATE COST, do not "optimize" away: a dependency bump now runs all 65 entries (17 shards,
+ * ~5.5 min). That is the correct price for a change that invalidates every recorded verdict, and it
+ * is rare. Narrowing this set trades a visible 5 minutes for an invisible always-green gate.
+ */
+export function evidenceInvalidatingInfraChanged(fePaths: readonly string[]): boolean {
+  return fePaths.some((path) => {
+    if (path === manifestRelativePath) return false;
+    return evidenceInvalidatingDirectories.some((directory) => path.startsWith(directory))
+      || (evidenceInvalidatingFiles as readonly string[]).includes(path)
+      || feRootTsconfigPattern.test(path);
+  });
+}
+
+/** Deep JSON with object keys sorted, so a pure key reorder is not drift but any value change is. Array order is significant. */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+    return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/**
+ * Head entry ids whose evidence the base manifest cannot vouch for: absent from base, or canonically different.
+ * mutation_id must be a string (validateManifest enforces it): canonical comparison is keyed by id, and a
+ * numeric id past Number.MAX_SAFE_INTEGER would compare equal to its neighbour and silently skip the entry.
+ * Entries removed from base are irrelevant — there is nothing left to run for them.
+ * Duplicate mutation_ids in base make per-id comparison meaningless, so every head id is reported (fail closed).
+ */
+export function entryIdsDriftedFromBase(
+  baseManifest: readonly MutationEntry[], entries: readonly MutationEntry[],
+): Set<string> {
+  const allHeadIds = new Set(entries.map((entry) => entry.mutation_id));
+  if (duplicates(baseManifest.map((entry) => entry.mutation_id)).length > 0) return allHeadIds;
+  const base = new Map(baseManifest.map((entry) => [entry.mutation_id, canonicalJson(entry)]));
+  return new Set(entries.filter((entry) => base.get(entry.mutation_id) !== canonicalJson(entry))
+    .map((entry) => entry.mutation_id));
+}
+
+export function selectedEntries(
+  entries: MutationEntry[], changedPaths: readonly string[], baseManifest: readonly MutationEntry[] | null,
+): MutationEntry[] {
+  // Repo-root paths FIRST: the `fe/` filter below discards them, so a workflow-only PR would
+  // otherwise select nothing at all.
+  if (evidenceInvalidatingRepoPathChanged(changedPaths)) return [...entries];
   const fePaths = changedPaths.filter((path) => path.startsWith('fe/')).map((path) => path.slice(3));
   const changed = new Set(fePaths);
-  if (fePaths.some((path) => path.startsWith('tools/mutation/'))) return [...entries];
-  return entries.filter((entry) => [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
+  // Evidence-invalidating infrastructure changed: every recorded verdict is suspect, nothing may be skipped.
+  if (evidenceInvalidatingInfraChanged(fePaths)) return [...entries];
+  let drifted = new Set<string>();
+  if (changed.has(manifestRelativePath)) {
+    // The single fail-closed mechanism for a missing baseline: without it `baseManifest` stays
+    // nullable and entryIdsDriftedFromBase below does not type-check, so it cannot be dropped silently.
+    if (baseManifest === null) return [...entries];
+    drifted = entryIdsDriftedFromBase(baseManifest, entries);
+  }
+  // Filtering over `entries` preserves manifest order, which shardEntries relies on for a deterministic split.
+  return entries.filter((entry) => drifted.has(entry.mutation_id)
+    || [entry.target, ...entry.selection_paths].some((path) => changed.has(path)));
+}
+
+export const entriesPerShard = 4;
+export const maxShards = 32;
+
+/**
+ * `clamped` is true when the cap forces more than `entriesPerShard` entries onto a shard — past that
+ * point the per-shard wall clock stops being flat and drifts towards the shard job timeout, so the
+ * plan step surfaces it as a warning instead of letting it show up as a mystery timeout.
+ */
+export function shardPlan(selectedCount: number): { total: number; shards: number[]; clamped: boolean } {
+  const wanted = Math.max(1, Math.ceil(selectedCount / entriesPerShard));
+  const total = Math.min(maxShards, wanted);
+  return { total, shards: Array.from({ length: total }, (_value, index) => index + 1), clamped: wanted > maxShards };
 }
 
 export function parseShard(value: string): { index: number; total: number } {
