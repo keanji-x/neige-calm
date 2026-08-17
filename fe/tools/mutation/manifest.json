@@ -58,6 +58,7 @@
     ],
     "selection_paths": [
       "tools/architecture/architecture-rules.test.ts",
+      "tools/architecture/allowlists.mjs",
       "tools/architecture/rule-fixtures/dom-selector/closest.ts"
     ],
     "why_more_than_one": "Only closest.ts should turn red; more than one means selector-method dispatch is coupled across syntax forms."
@@ -74,6 +75,7 @@
     ],
     "selection_paths": [
       "tools/architecture/architecture-rules.test.ts",
+      "tools/architecture/allowlists.mjs",
       "tools/architecture/rule-fixtures/dom-selector/get-elements-by-class-name.ts"
     ],
     "why_more_than_one": "Only the dedicated DOM API fixture should turn red; extra reds expose coupling to CSS selector parsing."
@@ -91,6 +93,7 @@
     ],
     "selection_paths": [
       "tools/architecture/architecture-rules.test.ts",
+      "tools/architecture/allowlists.mjs",
       "tools/architecture/rule-fixtures/dom-selector/module-const-data.ts",
       "tools/architecture/rule-fixtures/dom-selector/module-const-class.ts"
     ],
