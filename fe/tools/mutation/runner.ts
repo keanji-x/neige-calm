@@ -194,12 +194,22 @@ const evidenceInvalidatingDirectories = Object.freeze(['tools/mutation/', 'tools
  * `architecturePlugin` from it to build the `arch-rule` namespace that `validateManifest` checks
  * every entry's `defends` against, so a rule rename there fails validation for the whole manifest.
  *
- * Its neighbour `tools/architecture/allowlists.mjs` is deliberately NOT here (#1125). The runner
- * never imports it; inside vitest its only importer is `tools/architecture/architecture-rules.test.ts`
- * (the other is `eslint.config.js`, which no mutation run executes), and that test file is the
- * `selection_paths` entry of exactly the three `arch-rule:` mutations. So it lives in THEIR
- * `selection_paths`, like every other shared test-harness module. It is an allowlist that gets
- * appended to routinely, and as a member of this set every such append cost a full-manifest sweep.
+ * Its neighbour `tools/architecture/allowlists.mjs` is deliberately NOT here (#1125). Correcting the
+ * record: it IS loaded on every mutation run — `tools/architecture/architecture.test.ts` matches the
+ * `platform-independent` project's `tools` test glob, it constructs `new ESLint({ cwd: <fe root> })`,
+ * and that resolves `eslint.config.js:9`, which imports the two allowlists. Do not re-derive an
+ * "unreachable, so safe to narrow" model from this entry and apply it elsewhere.
+ *
+ * It is out of the set because its reachable blast radius is bounded and LOUD, not because it is
+ * unreachable. The only thing the config does with it is feed the `ignores` of
+ * `architecture/no-module-runtime-state` and `architecture/no-create-context-outside-allowlist`
+ * (`eslint.config.js:58` / `:76`), plus the allowlist self-check tests in
+ * `architecture-rules.test.ts`. Those tests run in EVERY mutation run, so a bad allowlist edit shows
+ * up as extra reds (or a harness error) on whichever entries are selected — over-red, which the
+ * exact-red-set judging already fails closed on. It cannot silently flip a recorded `expected_red`:
+ * no entry outside the three `no-class-dom-query-*` ones records any allowlist-affected test, so
+ * there is no fourth entry this narrowing drops. Meanwhile it is an allowlist appended to routinely,
+ * and as a member of this set every such append cost a full-manifest sweep.
  */
 const evidenceInvalidatingFiles = Object.freeze([
   'vitest.config.ts', 'package.json', 'package-lock.json', 'tools/architecture/plugin.mjs',

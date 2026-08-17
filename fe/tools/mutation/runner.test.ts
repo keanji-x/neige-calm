@@ -244,7 +244,8 @@ describe('evidence-invalidating infrastructure versus manifest data', () => {
   // guard the startsWith prefix bug; `web/src/tsconfig.json` guards the fe-ROOT-only tsconfig rule;
   // `tools/architecture/other.mjs` guards against widening the one named architecture module into
   // the whole directory, and `allowlists.mjs` is the concrete file that widening cost ~10min a PR
-  // (#1125) — the runner does not import it, so it belongs to the three `arch-rule:` entries only.
+  // (#1125) — it IS loaded every run via eslint.config.js, but only to feed two rules' `ignores`,
+  // so a bad edit can only add reds (loud) on the three `arch-rule:` entries that own it.
   it.each([
     manifestRelativePath, 'web/src/app.ts', 'tools/architecture/other.mjs', 'tools/mutation-other/run.mjs',
     'tools/architecture/allowlists.mjs',
@@ -327,10 +328,13 @@ describe('shared test-harness dependencies reach the entries that need them', ()
     });
 
   // #1125: allowlists.mjs used to sit in the global fail-closed infra set, so a routine allowlist
-  // append swept all 66 entries (~10min). Its only vitest-side importer is
-  // architecture-rules.test.ts, the selection_paths file of exactly these three entries — so it
-  // must select THEM, not zero (which would leave their rule verdicts unverified) and not the whole
-  // manifest (which is the regression this pins).
+  // append swept all 66 entries (~10min). It is NOT unreachable from a mutation run —
+  // architecture.test.ts builds `new ESLint({ cwd: <fe root> })`, which loads it through
+  // eslint.config.js:9 — but there it only feeds two rules' `ignores`, and the allowlist self-checks
+  // in architecture-rules.test.ts run every time, so a bad edit surfaces as over-red (fail-closed),
+  // never as a silently flipped expected_red. architecture-rules.test.ts is the selection_paths file
+  // of exactly these three entries — so it must select THEM, not zero (which would leave their rule
+  // verdicts unverified) and not the whole manifest (which is the regression this pins).
   it('the architecture allowlist selects exactly the three arch-rule entries', () => {
     expect(select('tools/architecture/allowlists.mjs').sort()).toEqual([
       'no-class-dom-query-drop-classname-api',
