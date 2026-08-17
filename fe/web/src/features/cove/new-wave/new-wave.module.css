@@ -19,22 +19,28 @@
     font-size: var(--text-base);
   }
 
-  /* Rule, box and colour come from base.css's one text-field recipe. */
-  .textarea,
+  /* Rule, box and colour come from base.css's one text-field recipe.
+     Size is §6.8's dialog variant: `--control-h-lg` tall, no block padding.
+     Input and select share the declaration because §6.8 asks for them to be
+     pixel-identical in height, and both of these sit in the same dialog. */
   .input,
   .select {
-    padding-block: var(--space-2);
+    block-size: var(--control-h-lg);
+    padding-block: 0;
     font: inherit;
     font-size: var(--text-base);
     width: 100%;
   }
 
-  .textarea {
-    font-family: var(--font-mono);
-    resize: vertical;
-  }
+  /* No `.textarea`: the Task field is a single-line input now. The value is
+     the wave's `title`, which the sidebar, the wave list and the page header
+     all render as one truncated line — a three-row box was the only place in
+     the app treating it as prose. */
 
-  .input {
+  /* `fe-design.md:869` permits `--font-mono` in a field only when it carries a
+     prompt or a path. The cove's first folder is a path, so it keeps mono; the
+     Task field is a title and inherits the form's sans. */
+  .pathInput {
     font-family: var(--font-mono);
   }
 

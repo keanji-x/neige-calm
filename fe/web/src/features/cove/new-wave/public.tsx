@@ -116,10 +116,19 @@ export function NewWaveForm({
 
       <div className={styles.field}>
         <label className={styles.label} htmlFor={titleId}>Task</label>
-        <textarea
+        {/* Single-line, not a textarea: this value is the wave's `title`, and
+            every other place that shows it — sidebar, wave list, page header —
+            renders it as one truncated line, and the wave page edits it through
+            the single-line `EditableTitle`. A three-row box was this one entry
+            point promising a shape the rest of the app cannot keep.
+
+            No `--font-mono` either: `fe-design.md:869` allows mono in a field
+            only when it holds a prompt or a path, and a wave title is neither.
+            It inherits the form's sans. */}
+        <input
           id={titleId}
-          className={styles.textarea}
-          rows={3}
+          className={styles.input}
+          type="text"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
         />
@@ -151,7 +160,7 @@ export function NewWaveForm({
           <label className={styles.label} htmlFor={folderId}>Folder</label>
           <input
             id={folderId}
-            className={styles.input}
+            className={`${styles.input} ${styles.pathInput}`}
             type="text"
             value={cwd}
             aria-invalid={cwdInvalid}

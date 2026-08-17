@@ -65,6 +65,26 @@ describe('NewWaveForm with exactly one claimed folder', () => {
     renderForm();
     expect(submitButton().disabled).toBe(true);
   });
+
+  /*
+   * Single line, not a textarea. The value becomes the wave's `title`, and
+   * every other surface renders it as one truncated line — sidebar, wave list,
+   * page header — while the wave page edits it through the single-line
+   * `EditableTitle`. `getByRole('textbox')` is true of both elements, so this
+   * asserts the tag itself; anything weaker would stay green on a textarea.
+   *
+   * The class matters too: `fe-design.md:869` allows `--font-mono` only for a
+   * prompt or a path, so the mono class belongs to the folder input and not to
+   * this one.
+   */
+  it('asks for the task on one line, in the form\'s own sans', () => {
+    renderForm({ folders: [] });
+    const task = screen.getByLabelText('Task');
+    expect(task).toHaveProperty('tagName', 'INPUT');
+    expect(task).toHaveProperty('type', 'text');
+    expect(task.className).not.toMatch(/pathInput/);
+    expect(screen.getByLabelText('Folder').className).toMatch(/pathInput/);
+  });
 });
 
 describe('NewWaveForm with several claimed folders', () => {
