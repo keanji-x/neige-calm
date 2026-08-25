@@ -13,7 +13,8 @@
 //      the other's sort value. The component does NOT optimistically
 //      reorder its own props (that's `useUpdateCardMutation`'s job inside
 //      the cache); we only assert on the API calls.
-//   4. **Delete removes the focused card.** Mirrors the `×` button.
+//   4. **Delete removes the focused row only.** Descendant controls retain
+//      Delete, Backspace, and navigation keys without removing a card.
 //
 // The `useUpdateCardMutation` and `useOverlayState` hooks are not stubbed —
 // we mock `api/calm.ts` at the module boundary (same pattern as
@@ -53,10 +54,17 @@ vi.mock('./XtermView', async () => {
       ref: React.Ref<{ refresh(): void }>,
     ) => {
       React.useImperativeHandle(ref, () => ({ refresh: () => {} }), []);
-      return React.createElement('div', {
-        'data-testid': 'xterm-view-stub',
-        'data-terminal-id': props.terminalId,
-      });
+      return React.createElement(
+        'div',
+        {
+          'data-testid': 'xterm-view-stub',
+          'data-terminal-id': props.terminalId,
+        },
+        React.createElement('textarea', {
+          className: 'xterm-helper-textarea',
+          'aria-label': 'Terminal input',
+        }),
+      );
     },
   );
   return { XtermView };
@@ -128,6 +136,20 @@ function slot(
       ? { type: 'codex', id }
       : { type: 'terminal', id, title: id, lines: [], terminalId: undefined };
   return { kind: 'card', card: data, sort };
+}
+
+function liveTerminalSlot(id: string, sort: number): WaveCardSlot {
+  return {
+    kind: 'card',
+    sort,
+    card: {
+      type: 'terminal',
+      id,
+      title: id,
+      lines: [],
+      terminalId: `term-${id}`,
+    },
+  };
 }
 
 function visibilitySlot(id: string, sort: number): WaveCardSlot {
@@ -611,6 +633,98 @@ describe('WaveList — remove via Delete', () => {
     items[1].focus();
     fireEvent.keyDown(items[1], { key: 'Delete' });
     expect(onRemoveCard).toHaveBeenCalledWith(1);
+  });
+
+  it('Backspace on the focused row is not a delete shortcut', () => {
+    const onRemoveCard = vi.fn();
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveList
+          waveId="w1"
+          cards={[slot('a', 10)]}
+          onRemoveCard={onRemoveCard}
+        />
+      </Wrapper>,
+    );
+
+    const item = screen.getByRole('listitem');
+    item.focus();
+    expect(fireEvent.keyDown(item, { key: 'Backspace' })).toBe(true);
+    expect(onRemoveCard).not.toHaveBeenCalled();
+  });
+
+  it.each(['Backspace', 'Delete'])(
+    '%s in the xterm textarea does not remove the card or prevent input',
+    async (key) => {
+      const onRemoveCard = vi.fn();
+      render(
+        <Wrapper client={makeClient()}>
+          <WaveList
+            waveId="w1"
+            cards={[liveTerminalSlot('a', 10)]}
+            onRemoveCard={onRemoveCard}
+          />
+        </Wrapper>,
+      );
+
+      const terminalInput = await screen.findByRole('textbox', {
+        name: 'Terminal input',
+      });
+      terminalInput.focus();
+      expect(fireEvent.keyDown(terminalInput, { key })).toBe(true);
+      expect(onRemoveCard).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['input', 'textarea', 'button', 'contenteditable'])(
+    'Delete from a nested %s does not remove the card or prevent defaults',
+    (control) => {
+      const onRemoveCard = vi.fn();
+      render(
+        <Wrapper client={makeClient()}>
+          <WaveList
+            waveId="w1"
+            cards={[slot('a', 10)]}
+            onRemoveCard={onRemoveCard}
+          />
+        </Wrapper>,
+      );
+
+      const item = screen.getByRole('listitem');
+      const child = document.createElement(
+        control === 'contenteditable' ? 'div' : control,
+      );
+      if (control === 'contenteditable') child.contentEditable = 'true';
+      item.appendChild(child);
+
+      expect(fireEvent.keyDown(child, { key: 'Delete' })).toBe(true);
+      expect(onRemoveCard).not.toHaveBeenCalled();
+    },
+  );
+
+  it('navigation keys from xterm stay inside the terminal', async () => {
+    const onRemoveCard = vi.fn();
+    render(
+      <Wrapper client={makeClient()}>
+        <WaveList
+          waveId="w1"
+          cards={[liveTerminalSlot('a', 10), slot('b', 20)]}
+          onRemoveCard={onRemoveCard}
+        />
+      </Wrapper>,
+    );
+
+    const terminalInput = await screen.findByRole('textbox', {
+      name: 'Terminal input',
+    });
+    terminalInput.focus();
+    expect(fireEvent.keyDown(terminalInput, { key: 'ArrowDown' })).toBe(true);
+    expect(
+      fireEvent.keyDown(terminalInput, { key: 'ArrowDown', altKey: true }),
+    ).toBe(true);
+    expect(document.activeElement).toBe(terminalInput);
+    expect(api.updateCard).not.toHaveBeenCalled();
+    expect(onRemoveCard).not.toHaveBeenCalled();
   });
 
   it('Remove × button click also fires onRemoveCard', () => {

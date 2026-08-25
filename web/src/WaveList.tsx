@@ -203,6 +203,12 @@ export function WaveList({
           // we keep its handler for those and only branch on the keys
           // it doesn't claim.
           const onKeyDown = (e: React.KeyboardEvent<HTMLLIElement>) => {
+            // Card-level shortcuts only apply while the row itself owns
+            // focus. Keyboard events from xterm's helper textarea or any
+            // other control inside the card bubble through this <li>; those
+            // controls must retain their native editing/navigation behavior.
+            if (e.target !== e.currentTarget) return;
+
             // Alt+ArrowUp: swap with previous (move card up in list).
             if (e.altKey && e.key === 'ArrowUp') {
               e.preventDefault();
@@ -215,10 +221,9 @@ export function WaveList({
               swap(i, i + 1);
               return;
             }
-            // Delete / Backspace: remove the focused card. Mirrors the
-            // grid view's `×` button (no confirmation — grid view
-            // doesn't confirm, so list view doesn't either).
-            if (e.key === 'Delete' || e.key === 'Backspace') {
+            // Delete removes the focused card. Backspace is intentionally
+            // not a destructive shortcut because it is an editing key.
+            if (e.key === 'Delete') {
               e.preventDefault();
               onRemoveCard(i);
               return;
