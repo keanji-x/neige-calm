@@ -10,7 +10,11 @@ import {
   createXtermWheelTarget,
   type XtermWheelTarget,
 } from './input/xtermAdapter';
-import { createOsc52Handler } from './input/osc52';
+import {
+  copyTextToClipboard,
+  createOsc52Handler,
+  osc52HostMayWrite,
+} from './input/osc52';
 import type {
   ClientMsg,
   DaemonMsg,
@@ -450,10 +454,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     term.parser.registerOscHandler(10, () => true);
     term.parser.registerOscHandler(11, () => true);
     term.parser.registerOscHandler(12, () => true);
-    // OSC 52 clipboard write. Grok/tmux/vim copy through this; xterm.js
-    // has no built-in handler, so without it `y` and similar never reach
-    // the browser clipboard. Queries are consumed and ignored (see osc52.ts).
-    term.parser.registerOscHandler(52, createOsc52Handler());
+    term.parser.registerOscHandler(
+      52,
+      createOsc52Handler(copyTextToClipboard, () =>
+        osc52HostMayWrite(container),
+      ),
+    );
     // #554 — port VS Code's default Mac sendSequence keybindings.
     // VS Code ships `registerSendSequenceKeybinding('\x01', { mac: Cmd+Left })`
     // (and ^E/^U for Cmd+Right / Cmd+Backspace) in
@@ -465,10 +471,9 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // non-Mac and modifier-combo cases pass through untouched, so zero regression.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
-      // xterm.js collapses Shift+Enter to the same CR as Enter. Grok (and
-      // other TUIs hosted in VS Code's xterm) use Alt+Enter (`ESC CR`) for
-      // a newline; map Shift+Enter to that sequence so a web-hosted TUI
-      // can insert a line without sending.
+      if (e.isComposing) return true;
+      // xterm.js sends CR for both Enter and Shift+Enter. This host maps
+      // Shift+Enter to ESC CR (the chord hosted TUIs use for a newline).
       if (
         e.key === 'Enter' &&
         e.shiftKey &&

@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   OSC52_MAX_DECODED_BYTES,
+  OSC52_MAX_ENCODED_CHARS,
   createOsc52Handler,
+  osc52HostMayWrite,
   parseOsc52Payload,
 } from './osc52';
 
@@ -75,6 +77,12 @@ describe('parseOsc52Payload', () => {
       kind: 'ignore',
     });
   });
+
+  it('ignores oversized encoded payloads before decode', () => {
+    expect(
+      parseOsc52Payload(`c;${'A'.repeat(OSC52_MAX_ENCODED_CHARS + 1)}`),
+    ).toEqual({ kind: 'ignore' });
+  });
 });
 
 describe('createOsc52Handler', () => {
@@ -97,5 +105,29 @@ describe('createOsc52Handler', () => {
     const handler = createOsc52Handler(writeText);
     expect(handler('c;?')).toBe(true);
     expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('consumes writes without calling writeText when gated off', () => {
+    const writeText = vi.fn();
+    const handler = createOsc52Handler(writeText, () => false);
+    expect(handler(`c;${b64('copied')}`)).toBe(true);
+    expect(writeText).not.toHaveBeenCalled();
+  });
+});
+
+describe('osc52HostMayWrite', () => {
+  it('requires a focused host that contains the active element', () => {
+    const host = document.createElement('div');
+    const inner = document.createElement('textarea');
+    host.append(inner);
+    document.body.append(host);
+    try {
+      expect(osc52HostMayWrite(host)).toBe(false);
+      inner.focus();
+      expect(osc52HostMayWrite(host)).toBe(true);
+      expect(osc52HostMayWrite(null)).toBe(false);
+    } finally {
+      host.remove();
+    }
   });
 });

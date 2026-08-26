@@ -1396,9 +1396,6 @@ describe('XtermView v3 resize wiring', () => {
 describe('XtermView #177 OSC suppressor', () => {
   it('registers no-op handlers on slots 10, 11, 12 after term.open', () => {
     render(<XtermView terminalId="term_test" />);
-    // Color slots 10/11/12 plus OSC 52 clipboard. Returning `true` is the
-    // "we consumed it, don't reply / don't paint" signal to xterm.js.
-    expect(mockTerm.__oscHandlers.size).toBe(4);
     for (const slot of [10, 11, 12]) {
       const handler = mockTerm.__oscHandlers.get(slot);
       expect(handler, `OSC handler for slot ${slot}`).toBeDefined();
@@ -1407,6 +1404,16 @@ describe('XtermView #177 OSC suppressor', () => {
     expect(mockTerm.__oscHandlers.get(52)).toBeDefined();
   });
 });
+
+function focusXtermContainer(): HTMLElement {
+  const container = document.querySelector('.xterm-container');
+  if (!(container instanceof HTMLElement)) {
+    throw new Error('expected .xterm-container');
+  }
+  container.tabIndex = 0;
+  container.focus();
+  return container;
+}
 
 describe('XtermView OSC 52 clipboard', () => {
   it('writes decoded OSC 52 payload to the browser clipboard', async () => {
@@ -1417,6 +1424,7 @@ describe('XtermView OSC 52 clipboard', () => {
     });
     try {
       render(<XtermView terminalId="term_test" />);
+      focusXtermContainer();
       const handler = mockTerm.__oscHandlers.get(52);
       expect(handler).toBeDefined();
       expect(handler!(`c;${btoa('hello from grok')}`)).toBe(true);
@@ -1427,15 +1435,37 @@ describe('XtermView OSC 52 clipboard', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('consumes OSC 52 without writing when the xterm is unfocused', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText },
+    });
+    try {
+      render(<XtermView terminalId="term_test" />);
+      const handler = mockTerm.__oscHandlers.get(52);
+      expect(handler).toBeDefined();
+      expect(handler!(`c;${btoa('hello from grok')}`)).toBe(true);
+      await Promise.resolve();
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe('XtermView Shift+Enter', () => {
-  it('sends ESC CR so TUIs can insert a newline', () => {
-    render(<XtermView terminalId="term_test" />);
-    const keyHandler = mockTerm.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+  function keyHandler(): (e: KeyboardEvent) => boolean {
+    const handler = mockTerm.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
       | ((e: KeyboardEvent) => boolean)
       | undefined;
-    expect(keyHandler).toBeTypeOf('function');
+    expect(handler).toBeTypeOf('function');
+    return handler!;
+  }
+
+  it('sends ESC CR so TUIs can insert a newline', () => {
+    render(<XtermView terminalId="term_test" />);
     const event = {
       type: 'keydown',
       key: 'Enter',
@@ -1443,11 +1473,46 @@ describe('XtermView Shift+Enter', () => {
       ctrlKey: false,
       metaKey: false,
       altKey: false,
+      isComposing: false,
       preventDefault: vi.fn(),
     } as unknown as KeyboardEvent;
-    expect(keyHandler!(event)).toBe(false);
+    expect(keyHandler()(event)).toBe(false);
     expect(event.preventDefault).toHaveBeenCalled();
     expect(mockTerm.input).toHaveBeenCalledWith('\x1b\r', true);
+  });
+
+  it('leaves unmodified Enter to xterm as CR', () => {
+    render(<XtermView terminalId="term_test" />);
+    const event = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      isComposing: false,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    expect(keyHandler()(event)).toBe(true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(mockTerm.input).not.toHaveBeenCalled();
+  });
+
+  it('does not remap Shift+Enter while an IME is composing', () => {
+    render(<XtermView terminalId="term_test" />);
+    const event = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      isComposing: true,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    expect(keyHandler()(event)).toBe(true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(mockTerm.input).not.toHaveBeenCalled();
   });
 });
 

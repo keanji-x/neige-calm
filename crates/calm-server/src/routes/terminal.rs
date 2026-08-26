@@ -102,24 +102,7 @@ pub(crate) async fn spawn_terminal_with_parts(
 
     // #177 PR2 — `term.theme_fg/_bg` are the single source of truth for
     // startup OSC 10/11 reply colors. Thread them into every renderer spawn.
-    //
-    // Do not spoof `TERM_PROGRAM=vscode`. That opts interactive shells into
-    // VS Code shell integration (OSC 633) and makes grok remap interject to
-    // Ctrl+L, which the browser address bar steals. Mouse tracking and OSC 52
-    // are advertised by implementing them in the browser xterm, not by
-    // pretending to be another emulator. Caller `env` can still set extra
-    // vars (including TERM_PROGRAM) on top of this base.
-    let mut envs = vec![
-        ("TERM".to_string(), "xterm-256color".to_string()),
-        ("COLORTERM".to_string(), "truecolor".to_string()),
-    ];
-    if let Some(map) = env.as_object() {
-        for (k, v) in map {
-            if let Some(val) = v.as_str() {
-                envs.push((k.clone(), val.to_string()));
-            }
-        }
-    }
+    let envs = terminal_child_envs(env);
 
     renderer
         .ensure(RendererConfig {
@@ -139,6 +122,25 @@ pub(crate) async fn spawn_terminal_with_parts(
         .map_err(|e| CalmError::Internal(e.to_string()))
 }
 
+/// Overlay `TERM` / `COLORTERM` / `TERM_PROGRAM=neige` so a server launched
+/// from VS Code does not inherit `TERM_PROGRAM=vscode`. Caller pairs are
+/// appended last and win on conflict.
+pub(crate) fn terminal_child_envs(env: &serde_json::Value) -> Vec<(String, String)> {
+    let mut envs = vec![
+        ("TERM".to_string(), "xterm-256color".to_string()),
+        ("COLORTERM".to_string(), "truecolor".to_string()),
+        ("TERM_PROGRAM".to_string(), "neige".to_string()),
+    ];
+    if let Some(map) = env.as_object() {
+        for (k, v) in map {
+            if let Some(val) = v.as_str() {
+                envs.push((k.clone(), val.to_string()));
+            }
+        }
+    }
+    envs
+}
+
 fn parse_rgb(s: &str) -> std::result::Result<(u8, u8, u8), String> {
     let parts: Vec<&str> = s.split(',').collect();
     if parts.len() != 3 {
@@ -153,4 +155,18 @@ fn parse_rgb(s: &str) -> std::result::Result<(u8, u8, u8), String> {
             .map_err(|e| format!("channel {i} ({:?}): {e}", parts[i]))
     };
     Ok((parse(0)?, parse(1)?, parse(2)?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::terminal_child_envs;
+    use serde_json::json;
+
+    #[test]
+    fn pins_term_program_neige_unless_caller_overrides() {
+        let envs = terminal_child_envs(&json!({}));
+        assert!(envs.contains(&("TERM_PROGRAM".into(), "neige".into())));
+        let over = terminal_child_envs(&json!({ "TERM_PROGRAM": "vscode" }));
+        assert_eq!(over.last(), Some(&("TERM_PROGRAM".into(), "vscode".into())));
+    }
 }

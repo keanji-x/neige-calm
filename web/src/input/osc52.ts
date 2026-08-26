@@ -1,10 +1,11 @@
-// OSC 52 clipboard writes from PTY apps (tmux, vim, grok `y`, …).
-// xterm.js does not implement this by default; without a handler the
-// sequence is dropped (or worse, painted) and never reaches the browser
-// clipboard. Query (`Pd = ?`) is refused: a page must not be able to
-// read the system clipboard just because a child printed an escape.
+// OSC 52 clipboard writes from PTY apps. Query (`Pd = ?`) is refused so a
+// child cannot read the system clipboard just by printing an escape.
 
 export const OSC52_MAX_DECODED_BYTES = 1024 * 1024;
+// 3 bytes → 4 base64 chars; reject before `atob` so a 10MB OSC frame
+// does not allocate a decoded buffer we then throw away.
+export const OSC52_MAX_ENCODED_CHARS =
+  Math.ceil((OSC52_MAX_DECODED_BYTES * 4) / 3) + 4;
 
 export type Osc52Action =
   | { kind: 'write'; text: string }
@@ -26,6 +27,7 @@ export function parseOsc52Payload(data: string): Osc52Action {
   const payload = data.slice(sep + 1).replace(/\s+/g, '');
   if (payload === '?') return { kind: 'ignore' };
   if (payload === '') return { kind: 'clear' };
+  if (payload.length > OSC52_MAX_ENCODED_CHARS) return { kind: 'ignore' };
   let binary: string;
   try {
     binary = atob(payload);
@@ -73,15 +75,27 @@ function fallbackExecCommandCopy(text: string): boolean {
   return ok;
 }
 
+export function osc52HostMayWrite(host: ParentNode | null): boolean {
+  if (typeof document === 'undefined' || host === null) return false;
+  if (document.hidden) return false;
+  if (typeof document.hasFocus === 'function' && !document.hasFocus()) {
+    return false;
+  }
+  const active = document.activeElement;
+  return active !== null && host.contains(active);
+}
+
 export function createOsc52Handler(
   writeText: (text: string) => void | Promise<unknown> = copyTextToClipboard,
+  mayWrite: () => boolean = () => true,
 ): (data: string) => boolean {
   return (data) => {
     const action = parseOsc52Payload(data);
-    if (action.kind === 'write') {
-      void Promise.resolve(writeText(action.text));
-    } else if (action.kind === 'clear') {
-      void Promise.resolve(writeText(''));
+    if (action.kind === 'write' || action.kind === 'clear') {
+      if (!mayWrite()) return true;
+      void Promise.resolve(
+        writeText(action.kind === 'write' ? action.text : ''),
+      );
     }
     return true;
   };

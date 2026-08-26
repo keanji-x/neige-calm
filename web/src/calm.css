@@ -5680,10 +5680,7 @@ textarea.new-task-form-rawjson-text {
 .xterm-container .xterm,
 .xterm-container .xterm-viewport,
 .xterm-container .xterm-screen { background: transparent !important; }
-/* xterm.js uses `.xterm-viewport` as a dummy native scrollbar. A visible
-   overflow scroller wins the card wheel router as native-scroll and
-   swallows mouse-report wheels for split-pane TUIs. Scrollback still
-   works: the wheel router calls `term.scrollLines` on the normal buffer. */
+/* Dummy xterm scrollbar; hide it so it cannot become a native-scroll target. */
 .xterm-container .xterm-viewport {
   overflow-y: hidden !important;
 }
