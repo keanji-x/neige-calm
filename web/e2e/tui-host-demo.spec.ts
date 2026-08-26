@@ -44,11 +44,11 @@ test('split-pane TUI wheel reports the content pane and OSC 52 hits the clipboar
   page,
   context,
 }) => {
-  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
-    origin: 'http://localhost:4041',
-  });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto('/calm/?testMounts=1', { waitUntil: 'domcontentloaded' });
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], {
+    origin: new URL(page.url()).origin,
+  });
   await login(page);
 
   const suffix = Date.now();
