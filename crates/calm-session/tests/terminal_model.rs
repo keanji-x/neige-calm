@@ -153,6 +153,41 @@ fn alternate_screen_is_noop() {
         s.contains("alt"),
         "alt-screen text should leak into main grid in PR-2: {s:?}"
     );
+    assert!(
+        !s.contains("\u{1b}[?1049h"),
+        "1049l must clear the restore flag: {s:?}"
+    );
+}
+
+#[test]
+fn snapshot_vt_restores_mouse_and_alt_modes() {
+    // Browser refresh builds a blank xterm.js and feeds snapshot_vt.
+    // Grok-style TUIs enable alt-screen + SGR mouse; if those CSI are
+    // missing from the snapshot, wheel/clicks never reach the child.
+    let mut m = TerminalModel::new(20, 3, 100);
+    m.feed(b"\x1b[?1049h\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004hhi");
+    let bytes = m.snapshot_vt(20, 3);
+    let snap = String::from_utf8_lossy(&bytes);
+    for needle in [
+        "\u{1b}[?1049h",
+        "\u{1b}[?1000h",
+        "\u{1b}[?1002h",
+        "\u{1b}[?1006h",
+        "\u{1b}[?2004h",
+    ] {
+        assert!(
+            snap.contains(needle),
+            "snapshot missing {needle:?}: {snap:?}"
+        );
+    }
+    assert!(snap.contains("hi"), "snapshot missing grid text: {snap:?}");
+    let prefix = snap.split("hi").next().unwrap_or("");
+    let idx_1049 = prefix.find("\u{1b}[?1049h").expect("1049h");
+    let idx_clear = prefix.find("\u{1b}[2J").expect("ED2");
+    assert!(
+        idx_1049 < idx_clear,
+        "alt-screen restore must precede the screen clear: {snap:?}"
+    );
 }
 
 #[test]

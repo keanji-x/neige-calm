@@ -116,17 +116,32 @@ describe('createOsc52Handler', () => {
 });
 
 describe('osc52HostMayWrite', () => {
-  it('requires a focused host that contains the active element', () => {
+  it('allows a focused tab even before the card is clicked', () => {
     const host = document.createElement('div');
-    const inner = document.createElement('textarea');
-    host.append(inner);
     document.body.append(host);
+    const hasFocus = vi.spyOn(document, 'hasFocus').mockReturnValue(true);
     try {
-      expect(osc52HostMayWrite(host)).toBe(false);
-      inner.focus();
       expect(osc52HostMayWrite(host)).toBe(true);
       expect(osc52HostMayWrite(null)).toBe(false);
     } finally {
+      hasFocus.mockRestore();
+      host.remove();
+    }
+  });
+
+  it('rejects a hidden document', () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const desc = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true,
+    });
+    try {
+      expect(osc52HostMayWrite(host)).toBe(false);
+    } finally {
+      if (desc) Object.defineProperty(document, 'hidden', desc);
+      else delete (document as { hidden?: boolean }).hidden;
       host.remove();
     }
   });

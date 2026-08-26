@@ -36,6 +36,8 @@ enum Call {
     SetCursorVisible(bool),
     EnterAltScreen,
     ExitAltScreen,
+    SetMouseMode(u16, bool),
+    SetBracketedPaste(bool),
     SetFocusEventTracking(bool),
     OscColorQuery(u8),
 }
@@ -108,6 +110,12 @@ impl TerminalHandler for MockHandler {
     }
     fn exit_alt_screen(&mut self) {
         self.calls.push(Call::ExitAltScreen);
+    }
+    fn set_mouse_mode(&mut self, code: u16, enabled: bool) {
+        self.calls.push(Call::SetMouseMode(code, enabled));
+    }
+    fn set_bracketed_paste(&mut self, enabled: bool) {
+        self.calls.push(Call::SetBracketedPaste(enabled));
     }
     fn set_focus_event_tracking(&mut self, enabled: bool) {
         self.calls.push(Call::SetFocusEventTracking(enabled));
@@ -248,6 +256,26 @@ fn decset_1049_routes_to_enter_exit_alt_screen() {
     // future PR can wire alt-screen without re-touching `VteProcessor`.
     assert_eq!(drive(b"\x1b[?1049h"), vec![Call::EnterAltScreen]);
     assert_eq!(drive(b"\x1b[?1049l"), vec![Call::ExitAltScreen]);
+}
+
+#[test]
+fn decset_mouse_and_paste_route_to_mode_setters() {
+    assert_eq!(
+        drive(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[?2004h"),
+        vec![
+            Call::SetMouseMode(1000, true),
+            Call::SetMouseMode(1002, true),
+            Call::SetMouseMode(1006, true),
+            Call::SetBracketedPaste(true),
+        ],
+    );
+    assert_eq!(
+        drive(b"\x1b[?1000l\x1b[?2004l"),
+        vec![
+            Call::SetMouseMode(1000, false),
+            Call::SetBracketedPaste(false),
+        ],
+    );
 }
 
 #[test]

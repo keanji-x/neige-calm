@@ -47,12 +47,16 @@
 //! - CSI SGR (m): full attribute set including 256-color and truecolor
 //! - DECSET/DECRST 25 (cursor visibility — tracked but not emitted to wire)
 //! - C0 controls: BS, HT, LF, CR, BEL
+//! - DECSET host modes 9/1000/1002/1003/1006 (mouse), 1004 (focus),
+//!   1049 (alt-screen *flag*), 2004 (bracketed paste) — tracked and
+//!   re-emitted at the front of `snapshot_vt` so a fresh xterm.js after
+//!   browser refresh re-enters the same modes. Alt-screen still shares
+//!   the main grid (no second buffer yet).
 //!
 //! **EXPERIMENTAL / first-pass only — known gaps**:
-//! - **Alternate screen (DECSET 1049)** — `noop`. vim / less / htop will
-//!   leak their alt-screen content into the main grid. Tracked as a
-//!   follow-up; the snapshot will look weird until then.
-//! - **Mouse / bracketed paste / focus events** — all ignored.
+//! - **Alternate screen buffer (DECSET 1049)** — we track the flag so
+//!   reconnects restore `CSI ?1049h`, but we do not swap grids. vim /
+//!   less / htop still leak alt-screen cells into the main grid.
 //! - **OSC** — OSC 10/11 color queries (`ESC ] N ; ? ESC \`) are answered
 //!   when default fg/bg are configured (used to follow the host page theme
 //!   — issue #177). Other OSC sequences (title, hyperlink, OSC 12 cursor
@@ -362,21 +366,21 @@ pub trait TerminalHandler {
     /// DECTCEM (CSI ?25 h/l) — show or hide the cursor.
     fn set_cursor_visible(&mut self, visible: bool);
 
-    /// DECSET 1049 — enter alternate screen. Currently a noop; the
-    /// method exists so a future PR can fill it in without touching the
-    /// parser/trait boundary again.
-    ///
-    /// Invariant: noop implementations MUST NOT bump the render rev — the
-    /// current `TerminalModel` impl is a noop and produces no visible
-    /// state change, so `rev()` must remain unchanged across this call.
-    /// A future real implementation with its own alt-screen grid would
-    /// bump rev only when the visible viewport actually changes.
+    /// DECSET 1049 — enter alternate screen. The current `TerminalModel`
+    /// impl records the flag for snapshot restore and does **not** swap
+    /// grids; `rev()` stays unchanged.
     fn enter_alt_screen(&mut self);
 
-    /// DECRST 1049 — exit alternate screen. Currently a noop.
-    ///
-    /// Same no-bump-rev invariant as [`Self::enter_alt_screen`].
+    /// DECRST 1049 — exit alternate screen. Clears the flag; still no
+    /// second grid. Same no-bump-rev invariant as enter.
     fn exit_alt_screen(&mut self);
+
+    /// DECSET/DECRST mouse reporting (`CSI ? 9/1000/1002/1003/1006 h/l`).
+    /// Default noop so test handlers that do not care can skip it.
+    fn set_mouse_mode(&mut self, _code: u16, _enabled: bool) {}
+
+    /// DECSET/DECRST 2004 — bracketed paste. Default noop.
+    fn set_bracketed_paste(&mut self, _enabled: bool) {}
 
     /// DECSET/DECRST 1004 — focus event reporting (`CSI ?1004 h/l`).
     /// `enabled = true` for `h` (the child opted in to receiving
@@ -508,8 +512,12 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
                         if let Some(&p) = s.first() {
                             match p {
                                 25 => self.handler.set_cursor_visible(true),
+                                9 | 1000 | 1002 | 1003 | 1006 => {
+                                    self.handler.set_mouse_mode(p, true)
+                                }
                                 1004 => self.handler.set_focus_event_tracking(true),
                                 1049 => self.handler.enter_alt_screen(),
+                                2004 => self.handler.set_bracketed_paste(true),
                                 _ => { /* unknown DECSET: noop */ }
                             }
                         }
@@ -520,8 +528,12 @@ impl<H: TerminalHandler + ?Sized> Perform for VteProcessor<'_, H> {
                         if let Some(&p) = s.first() {
                             match p {
                                 25 => self.handler.set_cursor_visible(false),
+                                9 | 1000 | 1002 | 1003 | 1006 => {
+                                    self.handler.set_mouse_mode(p, false)
+                                }
                                 1004 => self.handler.set_focus_event_tracking(false),
                                 1049 => self.handler.exit_alt_screen(),
+                                2004 => self.handler.set_bracketed_paste(false),
                                 _ => { /* unknown DECRST: noop */ }
                             }
                         }
@@ -670,6 +682,15 @@ pub struct TerminalModel {
     /// `render_plane` lock, no multi-client ambiguity. Not visible
     /// content, so it never bumps the render rev.
     focus_event_tracking: bool,
+    /// DECSET 1049 flag. We do not swap grids yet, but reconnect snapshots
+    /// must re-emit `CSI ?1049h` so xterm.js leaves the normal buffer.
+    alt_screen: bool,
+    mouse_x10: bool,
+    mouse_vt200: bool,
+    mouse_drag: bool,
+    mouse_any: bool,
+    mouse_sgr: bool,
+    bracketed_paste: bool,
     /// Default foreground/background RGB the daemon advertises to the
     /// PTY child in reply to OSC 10/11 color queries. `None` means
     /// "stay silent" — the child falls back to its built-in default,
@@ -695,6 +716,13 @@ impl TerminalModel {
             rev: 0,
             cursor_visible: true,
             focus_event_tracking: false,
+            alt_screen: false,
+            mouse_x10: false,
+            mouse_vt200: false,
+            mouse_drag: false,
+            mouse_any: false,
+            mouse_sgr: false,
+            bracketed_paste: false,
             default_fg: None,
             default_bg: None,
             pending_osc_replies: Vec::new(),
@@ -909,8 +937,42 @@ impl TerminalModel {
     /// If `target_cols/target_rows` differs from the internal grid we
     /// best-effort clip / pad — full geometry rebind (re-feeding the
     /// child's bytes at the new size) is out of scope; see module doc.
+    fn emit_host_modes(&self, out: &mut Vec<u8>) {
+        let mut push = |n: u16| {
+            out.extend_from_slice(format!("\x1b[?{n}h").as_bytes());
+        };
+        if self.alt_screen {
+            push(1049);
+        }
+        if self.mouse_x10 {
+            push(9);
+        }
+        if self.mouse_vt200 {
+            push(1000);
+        }
+        if self.mouse_drag {
+            push(1002);
+        }
+        if self.mouse_any {
+            push(1003);
+        }
+        if self.mouse_sgr {
+            push(1006);
+        }
+        if self.focus_event_tracking {
+            push(1004);
+        }
+        if self.bracketed_paste {
+            push(2004);
+        }
+    }
+
     pub fn snapshot_vt(&self, target_cols: u16, target_rows: u16) -> Vec<u8> {
         let mut out = Vec::with_capacity(target_cols as usize * target_rows as usize * 2);
+        // Re-enter host modes *before* painting. A remounted xterm.js starts
+        // in the normal buffer with mouse reporting off; without this prefix
+        // grok-style TUIs look painted but wheel/clicks never reach the child.
+        self.emit_host_modes(&mut out);
         // 1. Hide cursor while painting; clear screen; home.
         out.extend_from_slice(b"\x1b[?25l\x1b[2J\x1b[H");
 
@@ -1228,13 +1290,28 @@ impl TerminalHandler for TerminalModel {
     }
 
     fn enter_alt_screen(&mut self) {
-        // EXPERIMENTAL: alternate-screen is a noop in this implementation.
-        // See module-level "EXPERIMENTAL" note — vim / less / htop will
-        // bleed through into the main grid until a follow-up wires this.
+        // Flag only: we still paint into the main grid. Snapshot restore
+        // needs the flag so a remounted xterm.js switches to alt screen.
+        self.alt_screen = true;
     }
 
     fn exit_alt_screen(&mut self) {
-        // See `enter_alt_screen` — symmetric noop.
+        self.alt_screen = false;
+    }
+
+    fn set_mouse_mode(&mut self, code: u16, enabled: bool) {
+        match code {
+            9 => self.mouse_x10 = enabled,
+            1000 => self.mouse_vt200 = enabled,
+            1002 => self.mouse_drag = enabled,
+            1003 => self.mouse_any = enabled,
+            1006 => self.mouse_sgr = enabled,
+            _ => {}
+        }
+    }
+
+    fn set_bracketed_paste(&mut self, enabled: bool) {
+        self.bracketed_paste = enabled;
     }
 
     fn set_focus_event_tracking(&mut self, enabled: bool) {

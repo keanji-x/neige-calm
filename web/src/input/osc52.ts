@@ -82,7 +82,12 @@ export function osc52HostMayWrite(host: ParentNode | null): boolean {
     return false;
   }
   const active = document.activeElement;
-  return active !== null && host.contains(active);
+  if (active === null) return true;
+  if (host.contains(active)) return true;
+  // After a remount the helper textarea is tabindex=-1, so focus sits
+  // on <body> until the user clicks the card. A focused, visible tab is
+  // enough to accept a TUI clipboard write.
+  return active === document.body || active === document.documentElement;
 }
 
 export function createOsc52Handler(
