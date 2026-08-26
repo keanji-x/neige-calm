@@ -102,6 +102,13 @@ pub(crate) async fn spawn_terminal_with_parts(
 
     // #177 PR2 — `term.theme_fg/_bg` are the single source of truth for
     // startup OSC 10/11 reply colors. Thread them into every renderer spawn.
+    //
+    // Do not spoof `TERM_PROGRAM=vscode`. That opts interactive shells into
+    // VS Code shell integration (OSC 633) and makes grok remap interject to
+    // Ctrl+L, which the browser address bar steals. Mouse tracking and OSC 52
+    // are advertised by implementing them in the browser xterm, not by
+    // pretending to be another emulator. Caller `env` can still set extra
+    // vars (including TERM_PROGRAM) on top of this base.
     let mut envs = vec![
         ("TERM".to_string(), "xterm-256color".to_string()),
         ("COLORTERM".to_string(), "truecolor".to_string()),

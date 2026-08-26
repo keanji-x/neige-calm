@@ -34,7 +34,17 @@ function closestWithin(
   return null;
 }
 
+function isXtermInternal(el: HTMLElement): boolean {
+  // xterm.js's `.xterm-viewport` is `overflow-y: scroll` with a dummy
+  // tall child so the native scrollbar tracks buffer history. Treating
+  // that node as a native-scroll target steals wheel events from the
+  // xterm adapter — mouse-reporting TUIs (grok split panes, vim, less)
+  // never see the CSI mouse reports and their inner panes don't move.
+  return el.closest('.xterm') !== null;
+}
+
 function isScrollableY(el: HTMLElement): boolean {
+  if (isXtermInternal(el)) return false;
   const overflowY = getComputedStyle(el).overflowY;
   return (
     (overflowY === 'auto' || overflowY === 'scroll') &&
