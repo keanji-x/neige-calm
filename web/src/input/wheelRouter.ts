@@ -34,7 +34,13 @@ function closestWithin(
   return null;
 }
 
+function isXtermInternal(el: HTMLElement): boolean {
+  // Dummy overflow scroller inside `.xterm`; must not win native-scroll.
+  return el.closest('.xterm') !== null;
+}
+
 function isScrollableY(el: HTMLElement): boolean {
+  if (isXtermInternal(el)) return false;
   const overflowY = getComputedStyle(el).overflowY;
   return (
     (overflowY === 'auto' || overflowY === 'scroll') &&

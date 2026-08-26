@@ -5680,6 +5680,10 @@ textarea.new-task-form-rawjson-text {
 .xterm-container .xterm,
 .xterm-container .xterm-viewport,
 .xterm-container .xterm-screen { background: transparent !important; }
+/* Dummy xterm scrollbar; hide it so it cannot become a native-scroll target. */
+.xterm-container .xterm-viewport {
+  overflow-y: hidden !important;
+}
 .xterm-status {
   position: absolute;
   top: 8px; right: 12px;

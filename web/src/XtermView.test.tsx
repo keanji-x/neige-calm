@@ -63,18 +63,19 @@ interface MockTerm {
   loadAddon: ReturnType<typeof vi.fn>;
   dispose: ReturnType<typeof vi.fn>;
   attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+  input: ReturnType<typeof vi.fn>;
   /** #177 — xterm.js OSC suppressor surface. The component calls
    *  `term.parser.registerOscHandler(10|11|12, () => true)` to silence
    *  xterm.js's built-in OSC color reply so the daemon is the sole
-   *  responder. Mock records the registered handlers so tests can
-   *  inspect them. */
+   *  responder, plus OSC 52 for clipboard writes. Mock records the
+   *  registered handlers so tests can inspect them. */
   parser: {
     registerOscHandler: ReturnType<typeof vi.fn>;
   };
   /** Map from OSC ident → registered handler, populated by the mock's
    *  `parser.registerOscHandler`. Tests use this to simulate xterm.js
    *  delivering an OSC sequence and verify the suppressor returns true. */
-  __oscHandlers: Map<number, () => boolean>;
+  __oscHandlers: Map<number, (data: string) => boolean | Promise<boolean>>;
   onData: (cb: (d: string) => void) => { dispose: () => void };
   __dataCb?: (d: string) => void;
 }
@@ -100,21 +101,31 @@ vi.mock('@xterm/xterm', () => {
     loadAddon = vi.fn();
     dispose = vi.fn();
     attachCustomKeyEventHandler = vi.fn();
+    input = vi.fn();
     // xterm.js exposes `options` as a mutable bag; the live-theme effect
     // assigns `term.options.theme = ...` and the real impl picks it up
     // on the next render cycle. For the mock we just need the slot to
     // exist so the assignment doesn't throw.
     options: Record<string, unknown> = {};
     // #177 — minimal `parser.registerOscHandler` shim. The component
-    // calls this for slots 10/11/12 right after `term.open(container)`
-    // to silence xterm.js's built-in OSC color reply. The mock records
-    // each registered handler in `__oscHandlers` for inspection.
-    __oscHandlers = new Map<number, () => boolean>();
+    // calls this for slots 10/11/12/52 right after `term.open(container)`
+    // to silence xterm.js's built-in OSC color reply and to land OSC 52
+    // clipboard writes. The mock records each registered handler in
+    // `__oscHandlers` for inspection.
+    __oscHandlers = new Map<
+      number,
+      (data: string) => boolean | Promise<boolean>
+    >();
     parser = {
-      registerOscHandler: vi.fn((ident: number, handler: () => boolean) => {
-        this.__oscHandlers.set(ident, handler);
-        return { dispose: () => this.__oscHandlers.delete(ident) };
-      }),
+      registerOscHandler: vi.fn(
+        (
+          ident: number,
+          handler: (data: string) => boolean | Promise<boolean>,
+        ) => {
+          this.__oscHandlers.set(ident, handler);
+          return { dispose: () => this.__oscHandlers.delete(ident) };
+        },
+      ),
     };
     onData(cb: (d: string) => void): { dispose: () => void } {
       // Expose the callback so a test can simulate typing.
@@ -1385,14 +1396,123 @@ describe('XtermView v3 resize wiring', () => {
 describe('XtermView #177 OSC suppressor', () => {
   it('registers no-op handlers on slots 10, 11, 12 after term.open', () => {
     render(<XtermView terminalId="term_test" />);
-    // Three slots, all returning `true` (the "we consumed it, don't reply"
-    // signal to xterm.js's parser).
-    expect(mockTerm.__oscHandlers.size).toBe(3);
     for (const slot of [10, 11, 12]) {
       const handler = mockTerm.__oscHandlers.get(slot);
       expect(handler, `OSC handler for slot ${slot}`).toBeDefined();
-      expect(handler!()).toBe(true);
+      expect(handler!('')).toBe(true);
     }
+    expect(mockTerm.__oscHandlers.get(52)).toBeDefined();
+  });
+});
+
+function focusXtermContainer(): HTMLElement {
+  const container = document.querySelector('.xterm-container');
+  if (!(container instanceof HTMLElement)) {
+    throw new Error('expected .xterm-container');
+  }
+  container.tabIndex = 0;
+  container.focus();
+  return container;
+}
+
+describe('XtermView OSC 52 clipboard', () => {
+  it('writes decoded OSC 52 payload to the browser clipboard', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText },
+    });
+    try {
+      render(<XtermView terminalId="term_test" />);
+      focusXtermContainer();
+      const handler = mockTerm.__oscHandlers.get(52);
+      expect(handler).toBeDefined();
+      expect(handler!(`c;${btoa('hello from grok')}`)).toBe(true);
+      await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith('hello from grok');
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('consumes OSC 52 without writing when the xterm is unfocused', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', {
+      ...navigator,
+      clipboard: { writeText },
+    });
+    try {
+      render(<XtermView terminalId="term_test" />);
+      const handler = mockTerm.__oscHandlers.get(52);
+      expect(handler).toBeDefined();
+      expect(handler!(`c;${btoa('hello from grok')}`)).toBe(true);
+      await Promise.resolve();
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe('XtermView Shift+Enter', () => {
+  function keyHandler(): (e: KeyboardEvent) => boolean {
+    const handler = mockTerm.attachCustomKeyEventHandler.mock.calls[0]?.[0] as
+      | ((e: KeyboardEvent) => boolean)
+      | undefined;
+    expect(handler).toBeTypeOf('function');
+    return handler!;
+  }
+
+  it('sends ESC CR so TUIs can insert a newline', () => {
+    render(<XtermView terminalId="term_test" />);
+    const event = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      isComposing: false,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    expect(keyHandler()(event)).toBe(false);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(mockTerm.input).toHaveBeenCalledWith('\x1b\r', true);
+  });
+
+  it('leaves unmodified Enter to xterm as CR', () => {
+    render(<XtermView terminalId="term_test" />);
+    const event = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: false,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      isComposing: false,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    expect(keyHandler()(event)).toBe(true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(mockTerm.input).not.toHaveBeenCalled();
+  });
+
+  it('does not remap Shift+Enter while an IME is composing', () => {
+    render(<XtermView terminalId="term_test" />);
+    const event = {
+      type: 'keydown',
+      key: 'Enter',
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      isComposing: true,
+      preventDefault: vi.fn(),
+    } as unknown as KeyboardEvent;
+    expect(keyHandler()(event)).toBe(true);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(mockTerm.input).not.toHaveBeenCalled();
   });
 });
 
