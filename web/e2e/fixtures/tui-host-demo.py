@@ -199,9 +199,12 @@ def run(fd: int) -> None:
         if not chunk:
             return
         pending.extend(chunk)
-        for button, col, _row, kind in parse_sgr(pending):
+        for button, col, row, kind in parse_sgr(pending):
             if kind == "M" and button in (64, 65):
                 demo.wheel(col, button)
+            else:
+                demo.last = f"MOUSE btn={button} col={col} row={row} {kind}"
+                demo.draw()
         # Remaining bytes may include keys. Keep it tiny: q / Ctrl-C / y / ESC CR.
         text = bytes(pending)
         if b"q" in text or b"\x03" in text:
