@@ -189,17 +189,30 @@ const evidenceInvalidatingDirectories = Object.freeze(['tools/mutation/', 'tools
 /**
  * fe-relative files whose contents govern how the evidence is produced.
  *
- * `tools/architecture/plugin.mjs` and `tools/architecture/allowlists.mjs` are here rather than in
- * any entry's `selection_paths` because they are dependencies of the RUNNER itself, not just of a
- * test file: `run.mjs:7` imports `architecturePlugin` from plugin.mjs to build the `arch-rule`
- * namespace that `validateManifest` checks `defends` against, so a rule rename there can invalidate
- * every entry at once. They are also imported by `tools/architecture/architecture-rules.test.ts`,
- * the `selection_paths` file of all three `arch-rule:` entries, whose expected_red sets are exactly
- * the rule verdicts these two modules produce.
+ * `tools/architecture/plugin.mjs` is here rather than in any entry's `selection_paths` because it is
+ * a dependency of the RUNNER itself, not just of a test file: `run.mjs:7` imports
+ * `architecturePlugin` from it to build the `arch-rule` namespace that `validateManifest` checks
+ * every entry's `defends` against, so a rule rename there fails validation for the whole manifest.
+ *
+ * Its neighbour `tools/architecture/allowlists.mjs` is deliberately NOT here (#1125). Correcting the
+ * record: it IS loaded on every mutation run — `tools/architecture/architecture.test.ts` matches the
+ * `platform-independent` project's `tools` test glob, it constructs `new ESLint({ cwd: <fe root> })`,
+ * and that resolves `eslint.config.js:9`, which imports the two allowlists. Do not re-derive an
+ * "unreachable, so safe to narrow" model from this entry and apply it elsewhere.
+ *
+ * It is out of the set because its reachable blast radius is bounded and LOUD, not because it is
+ * unreachable. The only thing the config does with it is feed the `ignores` of
+ * `architecture/no-module-runtime-state` and `architecture/no-create-context-outside-allowlist`
+ * (`eslint.config.js:58` / `:76`), plus the allowlist self-check tests in
+ * `architecture-rules.test.ts`. Those tests run in EVERY mutation run, so a bad allowlist edit shows
+ * up as extra reds (or a harness error) on whichever entries are selected — over-red, which the
+ * exact-red-set judging already fails closed on. It cannot silently flip a recorded `expected_red`:
+ * no entry outside the three `no-class-dom-query-*` ones records any allowlist-affected test, so
+ * there is no fourth entry this narrowing drops. Meanwhile it is an allowlist appended to routinely,
+ * and as a member of this set every such append cost a full-manifest sweep.
  */
 const evidenceInvalidatingFiles = Object.freeze([
-  'vitest.config.ts', 'package.json', 'package-lock.json',
-  'tools/architecture/plugin.mjs', 'tools/architecture/allowlists.mjs',
+  'vitest.config.ts', 'package.json', 'package-lock.json', 'tools/architecture/plugin.mjs',
 ] as const);
 
 /**
@@ -237,8 +250,9 @@ const feRootTsconfigPattern = /^tsconfig[^/]*\.json$/;
  *  - `package.json` / `package-lock.json` — a vitest / jsdom / React / testing-library bump changes
  *    behaviour and test-id formatting wholesale. This is the case that used to select ZERO entries.
  *  - fe-root `tsconfig*.json` — strictness / lib / paths, i.e. what compiles and therefore what runs.
- *  - `tools/architecture/plugin.mjs` / `allowlists.mjs` — the runner imports plugin.mjs to build its
- *    `arch-rule` namespace, and both back the lint verdicts the `arch-rule:` entries record.
+ *  - `tools/architecture/plugin.mjs` — run.mjs imports it to build the `arch-rule` namespace that
+ *    validateManifest checks EVERY entry's `defends` against. Its allowlist sibling is not in the
+ *    set: it reaches only the three `arch-rule:` entries, through their selection_paths (#1125).
  *
  * `.github/workflows/ci.yml` belongs to the same set but is repo-root-relative, so it is matched
  * separately in selectedEntries — see evidenceInvalidatingRepoPaths.
