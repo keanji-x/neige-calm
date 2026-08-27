@@ -163,6 +163,29 @@ describe('delete mutation wiring', () => {
   });
 });
 
+describe('wave create folders cache', () => {
+  it('drops a successful empty folders cache after attach_folder create', async () => {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    client.setQueryData(queryKeys.coveFolders('c1'), []);
+    const transport: ApiTransportPort = {
+      send: () => Promise.resolve(ok({
+        id: 'w1', cove_id: 'c1', title: 'Ship', sort: 0, created_at: 1, updated_at: 1,
+      })),
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useWaveMutations(transport, unauthorized), { wrapper });
+    await act(() => result.current.create({
+      cove_id: 'c1',
+      title: 'Ship',
+      cwd: '/tmp/x',
+      theme: { fg: [1, 2, 3], bg: [4, 5, 6] },
+      attach_folder: true,
+    }));
+    expect(client.getQueryData(queryKeys.coveFolders('c1'))).toBeUndefined();
+  });
+});
+
 describe('spec history pagination', () => {
   it('uses the first (oldest) row from the ascending first page as the second-page after_id', async () => {
     const firstPage = Array.from({ length: 300 }, (_, index) => ({

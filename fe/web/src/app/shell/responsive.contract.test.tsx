@@ -16,7 +16,7 @@ vi.mock('../providers/queries.ts', () => ({
   useWaveMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
   // The shell owns the New wave dialog; this test only drives the rail grid, so
   // the folder read is stubbed closed rather than exercised (see public.test.tsx).
-  useCoveFolders: () => ({ folders: [], loading: false }),
+  useCoveFolders: () => ({ folders: [], loading: false, error: null }),
   ApiError: class ApiError extends Error {},
 }));
 vi.mock('../router/navigation.ts', () => ({ useCurrentPath: () => '/', useGo: () => vi.fn() }));

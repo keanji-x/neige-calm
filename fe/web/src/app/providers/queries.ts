@@ -211,15 +211,17 @@ export function coveFoldersQueryOptions(
   };
 }
 
-export type CoveFolders = Readonly<{ folders: readonly CoveFolder[]; loading: boolean }>;
+export type CoveFolders = Readonly<{
+  folders: readonly CoveFolder[];
+  loading: boolean;
+  error: Error | null;
+}>;
 
 /**
- * INV-NEWWAVE-002 — the caller is deciding between "run in a folder this cove
- * already owns" and "claim the cove's first folder", and those are different
- * forms. `loading` is reported rather than swallowed so the form can refuse to
- * submit while the answer is unknown: a `folders.length === 0` read of an
- * unresolved query would send `attach_folder: true` for a cove that already
- * has one.
+ * INV-NEWWAVE-002 — `loading` is `!isSuccess`, not merely "no data yet". A
+ * 5xx/network failure also leaves `data` undefined; treating that as zero
+ * folders would submit `attach_folder: true` for a cove that may already own
+ * one. Error is unknown, same as pending.
  */
 export function useCoveFolders(
   transport: ApiTransportPort, coveId: string | null, unauthorized: UnauthorizedChannel,
@@ -228,7 +230,11 @@ export function useCoveFolders(
     ...coveFoldersQueryOptions(transport, coveId ?? '', unauthorized),
     enabled: coveId !== null,
   });
-  return { folders: query.data ?? [], loading: coveId !== null && query.data === undefined && !query.isError };
+  return {
+    folders: query.data ?? [],
+    loading: coveId !== null && !query.isSuccess,
+    error: coveId !== null && query.error instanceof Error ? query.error : null,
+  };
 }
 
 export function waveOverlaysQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
@@ -399,7 +405,14 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: (body: NewWaveBody) => runOperation(transport, createWaveOperation(body), unauthorized),
-    onSuccess: (wave) => { void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) }); },
+    onSuccess: (wave, body) => {
+      void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) });
+      // Disabled while the dialog is closed, so invalidateQueries would leave
+      // a successful cache of `[]` for the next open to paint as 0-folder.
+      if (body.attach_folder) {
+        client.removeQueries({ queryKey: queryKeys.coveFolders(body.cove_id) });
+      }
+    },
   });
   const patch = useMutation({
     mutationFn: ({ waveId, body }: { waveId: string; coveId: string; body: WavePatchBody }) =>

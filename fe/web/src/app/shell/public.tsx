@@ -186,7 +186,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
             folders={coveFolders.folders}
             foldersLoading={coveFolders.loading}
             submitting={creating}
-            error={createError}
+            error={createError ?? coveFolders.error?.message ?? null}
             onCancel={() => setNewWaveCoveId(null)}
             onSubmit={submitNewWave}
           />
