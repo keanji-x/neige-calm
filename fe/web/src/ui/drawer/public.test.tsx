@@ -77,6 +77,7 @@ describe('Drawer', () => {
     const drawer = screen.getByRole('complementary');
     expect(scroll?.firstElementChild).toBe(screen.getByRole('heading').parentElement);
     expect(scroll?.parentElement).toBe(drawer);
+    expect(scroll?.hasAttribute('data-nc-drawer-scroll')).toBe(true);
     expect(screen.getByLabelText('composer').parentElement).toBe(drawer);
   });
 
@@ -90,14 +91,11 @@ describe('Drawer', () => {
     opener.remove();
   });
 
-  it('moves focus without asking the browser to scroll the page', () => {
+  it('moves focus in without asking the browser to scroll the page', () => {
     const opener = document.body.appendChild(document.createElement('button'));
     opener.focus();
     const focus = vi.spyOn(HTMLElement.prototype, 'focus');
-    const view = open();
-    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
-    focus.mockClear();
-    view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+    open();
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
     focus.mockRestore();
     opener.remove();

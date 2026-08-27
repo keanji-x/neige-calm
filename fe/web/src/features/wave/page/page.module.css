@@ -17,7 +17,8 @@
      * has for its labels (§6.16): every pixel the measure takes is a pixel off
      * a section title.
      *
-     *   (1180 − 3×24 − 280 − 568) / 2 = 130
+     *   leftover = (100cqi − 3×24 − panel-span − 568) / 2
+     *   at 1440 / rail 200: (1240 − 72 − 310 − 568) / 2 = 145
      *
      * `ui/page-header` reads `--document-start` too, which is what puts the
      * page title on the first character of the prose.
@@ -96,8 +97,8 @@
     }
   }
 
-  /* Main column plus a 308 panel column, separated by the standard 24px gutter.
-     At 1440 that is 848 / 24 / 308 = 1180. */
+  /* Main column plus the `--panel-span` track, separated by the standard
+     24px gutter. At 1440 / rail 200 that is leftover / 24 / 310. */
   /*
    * One row, and it fills. Left implicit, the row is sized by its tallest item
    * — the panel card — so the document column ended where the card ended and an

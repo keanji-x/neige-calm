@@ -7,11 +7,11 @@
  */
 @layer features {
   /*
-   * `block-size`, not `min-block-size`. With a minimum the whole app becomes one
-   * scrolling document: the rail scrolls away, the page header cannot stick, and
-   * a short page leaves a screen of empty ground below the fold. There are
-   * exactly two scroll containers — the rail and the main region — and <body>
-   * is never one of them.
+   * A used `block-size`, not a minimum alone. A minimum-only shell grows with
+   * content and the whole app becomes one scrolling document: the rail scrolls
+   * away, the page header cannot stick, and a short page leaves a screen of
+   * empty ground below the fold. There are exactly two scroll containers —
+   * the rail and the page — and <body> is never one of them.
    */
   .shell {
     display: grid;
@@ -20,9 +20,15 @@
        row is sized by content, so page-level `1fr` / `flex: 1` / `100%` all
        collapsed to the document's intrinsic height. */
     grid-template-rows: minmax(0, 1fr);
+    /* Fill `#root` when the reset height chain is in place. `100dvh` is the
+       floor so a probe (or a parent whose percentage is auto) still gets a
+       definite viewport height — otherwise the rail collapses and the fixed
+       account menu sits below it. */
     block-size: 100%;
-    min-block-size: 100%;
-    overflow: hidden;
+    min-block-size: 100dvh;
+    /* Same as `.main`: `hidden` is still a scrollport, and the entering
+       drawer overflows this edge too. Rail and page keep their own `auto`. */
+    overflow: clip;
   }
 
   /* The manual collapse. Without this rule the toggle only swapped the rail's

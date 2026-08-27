@@ -83,8 +83,8 @@
   /* The font itself declares "this is a literal", so it spends no size, weight
      or colour doing it. */
 
-  /* Main column plus a 308 panel column, separated by the standard 24px gutter
-     — the same content grid every route uses (§7.2). */
+  /* Main column plus the `--panel-span` track, separated by the standard
+     24px gutter — the same content grid every route uses (§7.2). */
   /*
    * One row, and it fills. Left implicit, the row is sized by its tallest item
    * — the panel card — so the document column ended where the card ended and an
@@ -104,8 +104,11 @@
      word and the panel card — the two things on the page that carry content
      were the two things furthest apart. */
   .doc {
+    display: flex;
+    flex-direction: column;
     max-inline-size: var(--measure-doc);
     min-inline-size: 0;
+    min-block-size: 0;
     margin-inline: auto;
   }
 

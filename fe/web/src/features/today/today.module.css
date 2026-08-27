@@ -17,8 +17,9 @@
     padding-inline: var(--space-10);
   }
 
-  /* 848 / 24 / 308 at 1440. Start-aligned, not centred: with a permanent left
-     rail, centring decouples the content from the navigation. */
+  /* Start-aligned, not centred: with a permanent left rail, centring
+     decouples the content from the navigation. At 1440 / rail 200 the painted
+     split is leftover / 24 / `--panel-span` (858 / 24 / 310), not 848 / 24 / 308. */
   .content {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);

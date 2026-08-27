@@ -33,31 +33,13 @@
   }
 
   /*
-   * The document routes' offset, derived rather than typed: the main column is
-   * the page's inner width less the panel and its gutter, and the prose is
-   * centred in it, so the title's start is half the difference.
-   *
-   *   (1180 − 3×24 − 280 − 504) / 2 = 162
+   * The document routes' offset. The page publishes `--document-start` as the
+   * leftover in its document track (half of main minus pad, panel, measure).
+   * Unpublished → 0: do not revive the retired 1180/280 page-cap math.
    *
    * `padding-inline-start`, not a max-width — the sticky header's background
    * must still span the full page, or content scrolls out from under it at the
    * edges.
-   */
-  /*
-   * **The page it labels owns this number.** A document route sets
-   * `--document-start` on its own root to the distance from the content edge to
-   * the first character of its prose, and the title lands on exactly that —
-   * because a page title that is not on the same vertical as the text below it
-   * reads as two documents, whatever the reasoning behind the offset was.
-   *
-   * The fallback is the old derivation, kept for a route that publishes
-   * nothing: the prose measure centred in the main column.
-   *
-   * The title used to *hang* one gutter short of the prose, so the header read
-   * as the page's label rather than as the document's first line. Measured
-   * against a real document that distinction was not worth the misalignment it
-   * bought — the hang is gone, and the rank difference (18px sans chrome
-   * against 18px serif prose, §2.2) carries it instead.
    */
   .header[data-nc-align='document'] {
     /* Routes that need this publish `--document-start`. Do not fall back to

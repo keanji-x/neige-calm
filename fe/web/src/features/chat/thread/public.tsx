@@ -64,7 +64,8 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
    * Scroll only the drawer's own pane. `scrollIntoView` walks every ancestor
    * scrollport, and `.main` used to be one — opening a conversation then
    * panned the page toward the centre for a frame. The pane is marked
-   * `data-nc-drawer-scroll`; jsdom has no layout, so this is a no-op in tests.
+   * `data-nc-drawer-scroll`; tests that stamp the marker see the `scrollTop`
+   * write, and a missing marker is a silent no-op.
    */
   useEffect(() => {
     const end = endRef.current;

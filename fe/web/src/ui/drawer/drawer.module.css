@@ -46,8 +46,9 @@
        (280, 396, 1180) cannot do that. */
     --nc-drawer-w: calc(var(--panel-span, 25cqi) + var(--space-10));
 
-    /* Absolute to `.main` (position: relative + container-type), not `fixed`
-       to the viewport, so `25cqi` is 25% of the main column, not 25vw. */
+    /* Absolute to `.main` because it is `position: relative` (that is the
+       containing block). `container-type` is why `25cqi` is 25% of the main
+       column, not 25vw — not why the drawer is positioned here. */
     position: absolute;
     inset-block: 0;
     inset-inline-end: 0;
