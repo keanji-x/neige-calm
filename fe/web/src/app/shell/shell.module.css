@@ -7,17 +7,28 @@
  */
 @layer features {
   /*
-   * `block-size`, not `min-block-size`. With a minimum the whole app becomes one
-   * scrolling document: the rail scrolls away, the page header cannot stick, and
-   * a short page leaves a screen of empty ground below the fold. There are
-   * exactly two scroll containers — the rail and the main region — and <body>
-   * is never one of them.
+   * A used `block-size`, not a minimum alone. A minimum-only shell grows with
+   * content and the whole app becomes one scrolling document: the rail scrolls
+   * away, the page header cannot stick, and a short page leaves a screen of
+   * empty ground below the fold. There are exactly two scroll containers —
+   * the rail and the page — and <body> is never one of them.
    */
   .shell {
     display: grid;
     grid-template-columns: var(--rail-w) minmax(0, 1fr);
-    block-size: 100dvh;
-    overflow: hidden;
+    /* One flex-sized row so `.main` has a definite height. An implicit `auto`
+       row is sized by content, so page-level `1fr` / `flex: 1` / `100%` all
+       collapsed to the document's intrinsic height. */
+    grid-template-rows: minmax(0, 1fr);
+    /* Fill `#root` when the reset height chain is in place. `100dvh` is the
+       floor so a probe (or a parent whose percentage is auto) still gets a
+       definite viewport height — otherwise the rail collapses and the fixed
+       account menu sits below it. */
+    block-size: 100%;
+    min-block-size: 100dvh;
+    /* Same as `.main`: `hidden` is still a scrollport, and the entering
+       drawer overflows this edge too. Rail and page keep their own `auto`. */
+    overflow: clip;
   }
 
   /* The manual collapse. Without this rule the toggle only swapped the rail's
@@ -31,8 +42,30 @@
   }
 
   .main {
+    /*
+     * Container for `--panel-span` (25cqi). The trailing card and the
+     * conversation drawer both read this, so they stay the same fraction of
+     * the main column at every window width instead of a 280px / 1180px pair.
+     */
+    position: relative;
+    container-type: inline-size;
+    --panel-span: max(15rem, 25cqi);
+    display: flex;
+    flex-direction: column;
     min-inline-size: 0;
-    overflow: auto;
+    min-block-size: 0;
+    /* Clip, do not scroll. `hidden` still makes a scroll container, so focusing
+       the conversation drawer while it is translated off-edge would pan this
+       region and the page would jump. `clip` paints the same crop without a
+       scrollport. The page inside `.stage` is the only scroller. */
+    overflow: clip;
+  }
+
+  .stage {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .rail {

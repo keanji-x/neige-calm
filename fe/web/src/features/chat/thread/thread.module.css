@@ -54,8 +54,9 @@
      * exchanges in a 900px drawer left roughly 60% of it empty above the first
      * thing anyone said, which reads as a broken surface, not as a calm one.
      * Every serious agent surface top-anchors for exactly this reason. The
-     * newest turn is still followed on arrival; that is `scrollIntoView`'s job,
-     * and it only has work to do once the transcript actually overflows.
+     * newest turn is still followed on arrival; that is the drawer's scroller's
+     * job (`data-nc-drawer-scroll`), and it only has work to do once the
+     * transcript actually overflows.
      */
   }
 

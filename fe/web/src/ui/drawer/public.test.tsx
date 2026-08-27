@@ -77,6 +77,7 @@ describe('Drawer', () => {
     const drawer = screen.getByRole('complementary');
     expect(scroll?.firstElementChild).toBe(screen.getByRole('heading').parentElement);
     expect(scroll?.parentElement).toBe(drawer);
+    expect(scroll?.hasAttribute('data-nc-drawer-scroll')).toBe(true);
     expect(screen.getByLabelText('composer').parentElement).toBe(drawer);
   });
 
@@ -87,6 +88,16 @@ describe('Drawer', () => {
     expect(document.activeElement).toBe(screen.getByRole('complementary'));
     view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
     expect(document.activeElement).toBe(opener);
+    opener.remove();
+  });
+
+  it('moves focus in without asking the browser to scroll the page', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    opener.focus();
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    open();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    focus.mockRestore();
     opener.remove();
   });
 

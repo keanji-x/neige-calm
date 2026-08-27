@@ -61,14 +61,18 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
    * re-render that changes nothing does not yank the view out from under
    * someone reading back through the thread.
    *
-   * `block: 'end'` with no smooth behaviour: this is the app's own chrome
-   * moving, and principle 3 ("stay quiet through continuous change") applies to
-   * it as much as to anything else.
+   * Scroll only the drawer's own pane. `scrollIntoView` walks every ancestor
+   * scrollport, and `.main` used to be one — opening a conversation then
+   * panned the page toward the centre for a frame. The pane is marked
+   * `data-nc-drawer-scroll`; tests that stamp the marker see the `scrollTop`
+   * write, and a missing marker is a silent no-op.
    */
   useEffect(() => {
-    // Optional call: `scrollIntoView` is a layout API, and the DOM this runs
-    // in during tests has no layout to scroll.
-    endRef.current?.scrollIntoView?.({ block: 'end' });
+    const end = endRef.current;
+    if (end == null) return;
+    const scroller = end.closest<HTMLElement>('[data-nc-drawer-scroll]');
+    if (scroller == null) return;
+    scroller.scrollTop = scroller.scrollHeight;
   }, [turns.length]);
 
   if (turns.length === 0) {

@@ -8,13 +8,13 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
-    max-inline-size: var(--measure-page);
+    max-inline-size: none;
+    inline-size: 100%;
+    --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--measure-doc)) / 2));
 
-    /* Fills the scroll region rather than hugging its content. Without it the
-       page's own `1fr` row resolves against nothing — the grid was 308 tall
-       inside a 900 tall main — so the document column had no space to centre an
-       empty state in. Content taller than the region still grows it. */
-    min-block-size: 100%;
+    flex: 1 1 auto;
+    min-block-size: 0;
+    overflow: auto;
     padding-block: 0 var(--space-11);
     padding-inline: var(--space-10);
   }
@@ -83,8 +83,8 @@
   /* The font itself declares "this is a literal", so it spends no size, weight
      or colour doing it. */
 
-  /* Main column plus a 308 panel column, separated by the standard 24px gutter
-     — the same content grid every route uses (§7.2). */
+  /* Main column plus the `--panel-span` track, separated by the standard
+     24px gutter — the same content grid every route uses (§7.2). */
   /*
    * One row, and it fills. Left implicit, the row is sized by its tallest item
    * — the panel card — so the document column ended where the card ended and an
@@ -93,7 +93,7 @@
    */
   .content {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
     grid-template-rows: minmax(0, 1fr);
     gap: var(--space-10);
     min-block-size: 0;
@@ -104,8 +104,11 @@
      word and the panel card — the two things on the page that carry content
      were the two things furthest apart. */
   .doc {
+    display: flex;
+    flex-direction: column;
     max-inline-size: var(--measure-doc);
     min-inline-size: 0;
+    min-block-size: 0;
     margin-inline: auto;
   }
 

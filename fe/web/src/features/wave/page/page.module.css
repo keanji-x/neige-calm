@@ -17,26 +17,27 @@
      * has for its labels (§6.16): every pixel the measure takes is a pixel off
      * a section title.
      *
-     *   (1180 − 3×24 − 280 − 568) / 2 = 130
+     *   leftover = (100cqi − 3×24 − panel-span − 568) / 2
+     *   at 1440 / rail 200: (1240 − 72 − 310 − 568) / 2 = 145
      *
      * `ui/page-header` reads `--document-start` too, which is what puts the
      * page title on the first character of the prose.
      */
     --document-measure: calc(var(--measure-prose) + var(--space-12) * 2);
-    --document-start: calc(
-      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--document-measure)) / 2
-    );
+    /* Leftover in the document track, not (1180 − 280) / 2. 100cqi is `.main`. */
+    --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--document-measure)) / 2));
 
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
-    max-inline-size: var(--measure-page);
+    /* Same as Today: fill `.main` so the panel sits on the trailing page pad
+       (24px), not 24px plus leftover from a 1180px page cap. */
+    max-inline-size: none;
+    inline-size: 100%;
 
-    /* Fills the scroll region rather than hugging its content. Without it the
-       page's own `1fr` row resolves against nothing — the grid was 308 tall
-       inside a 900 tall main — so the document column had no space to centre an
-       empty state in. Content taller than the region still grows it. */
-    min-block-size: 100%;
+    flex: 1 1 auto;
+    min-block-size: 0;
+    overflow: auto;
     padding-block: 0 var(--space-11);
     padding-inline: var(--space-10);
   }
@@ -96,8 +97,8 @@
     }
   }
 
-  /* Main column plus a 308 panel column, separated by the standard 24px gutter.
-     At 1440 that is 848 / 24 / 308 = 1180. */
+  /* Main column plus the `--panel-span` track, separated by the standard
+     24px gutter. At 1440 / rail 200 that is leftover / 24 / 310. */
   /*
    * One row, and it fills. Left implicit, the row is sized by its tallest item
    * — the panel card — so the document column ended where the card ended and an
@@ -106,7 +107,7 @@
    */
   .content {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
     grid-template-rows: minmax(0, 1fr);
     gap: var(--space-10);
     min-block-size: 0;
@@ -122,7 +123,10 @@
    * page it is the content of.
    */
   .doc {
+    display: flex;
+    flex-direction: column;
     min-inline-size: 0;
+    min-block-size: 0;
   }
 
 
