@@ -278,6 +278,7 @@ pub struct ViaToolCall {
     ),
 )]
 #[allow(deprecated)]
+#[allow(clippy::result_large_err)]
 pub(crate) async fn create_card(
     State(s): State<AppState>,
     actor: Actor,
@@ -367,6 +368,7 @@ pub(crate) async fn create_card(
 ///   * tool succeeded but omitted `_meta.ui.resourceUri` → 422
 ///     `{"error":"...","code":"not_a_card_tool"}`
 #[allow(deprecated)]
+#[allow(clippy::result_large_err)]
 async fn create_via_tool_call(
     s: &AppState,
     wave_id: String,
