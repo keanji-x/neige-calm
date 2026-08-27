@@ -233,6 +233,36 @@ describe('resolveWheelRoute', () => {
     expect(route).toEqual({ kind: 'native-scroll', target: textarea });
   });
 
+  it('does not treat xterm internals as native-scroll so mouse-reporting TUIs keep the wheel', () => {
+    const { scrollRoot, activeCard } = fixture();
+    const xterm = document.createElement('div');
+    xterm.className = 'xterm';
+    const viewport = document.createElement('div');
+    viewport.className = 'xterm-viewport';
+    viewport.style.overflowY = 'scroll';
+    setScrollSize(viewport, 4000, 200);
+    xterm.append(viewport);
+    activeCard.append(xterm);
+    const xtermTarget: XtermWheelTarget = {
+      root: document.createElement('div'),
+      decide: () => ({ kind: 'pass', reason: 'passthrough' }),
+      apply: () => undefined,
+    };
+    registerXtermShell(activeCard, xtermTarget);
+
+    try {
+      expect(
+        resolveWheelRoute({
+          scrollRoot,
+          activeCard,
+          eventTarget: viewport,
+        }),
+      ).toEqual({ kind: 'xterm', target: xtermTarget });
+    } finally {
+      unregisterXtermShell(activeCard);
+    }
+  });
+
   it('sinks when the active card has no native scrollable target or xterm hint', () => {
     const { scrollRoot, activeCard } = fixture();
     const body = document.createElement('div');

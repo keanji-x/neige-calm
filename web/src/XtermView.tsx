@@ -10,6 +10,11 @@ import {
   createXtermWheelTarget,
   type XtermWheelTarget,
 } from './input/xtermAdapter';
+import {
+  copyTextToClipboard,
+  createOsc52Handler,
+  osc52HostMayWrite,
+} from './input/osc52';
 import type {
   ClientMsg,
   DaemonMsg,
@@ -449,6 +454,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     term.parser.registerOscHandler(10, () => true);
     term.parser.registerOscHandler(11, () => true);
     term.parser.registerOscHandler(12, () => true);
+    term.parser.registerOscHandler(
+      52,
+      createOsc52Handler(copyTextToClipboard, () =>
+        osc52HostMayWrite(container),
+      ),
+    );
     // #554 — port VS Code's default Mac sendSequence keybindings.
     // VS Code ships `registerSendSequenceKeybinding('\x01', { mac: Cmd+Left })`
     // (and ^E/^U for Cmd+Right / Cmd+Backspace) in
@@ -460,6 +471,20 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // non-Mac and modifier-combo cases pass through untouched, so zero regression.
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
+      if (e.isComposing) return true;
+      // xterm.js sends CR for both Enter and Shift+Enter. This host maps
+      // Shift+Enter to ESC CR (the chord hosted TUIs use for a newline).
+      if (
+        e.key === 'Enter' &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        term.input('\x1b\r', true);
+        e.preventDefault();
+        return false;
+      }
       if (!e.metaKey || e.ctrlKey || e.altKey) return true;
       if (e.key === 'ArrowLeft') {
         term.input('\x01', true);
