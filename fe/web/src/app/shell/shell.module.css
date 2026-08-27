@@ -48,9 +48,11 @@
     flex-direction: column;
     min-inline-size: 0;
     min-block-size: 0;
-    /* Clip, do not scroll: a `position: absolute` drawer is a child of `.stage`
-       and would otherwise scroll away. The page inside `.stage` is the scroller. */
-    overflow: hidden;
+    /* Clip, do not scroll. `hidden` still makes a scroll container, so focusing
+       the conversation drawer while it is translated off-edge would pan this
+       region and the page would jump. `clip` paints the same crop without a
+       scrollport. The page inside `.stage` is the only scroller. */
+    overflow: clip;
   }
 
   .stage {

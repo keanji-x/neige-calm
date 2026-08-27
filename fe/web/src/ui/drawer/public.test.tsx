@@ -90,6 +90,19 @@ describe('Drawer', () => {
     opener.remove();
   });
 
+  it('moves focus without asking the browser to scroll the page', () => {
+    const opener = document.body.appendChild(document.createElement('button'));
+    opener.focus();
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    const view = open();
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    focus.mockClear();
+    view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    focus.mockRestore();
+    opener.remove();
+  });
+
   it('closes a real topmost dialog without closing the drawer below it', () => {
     const onDrawerClose = vi.fn();
     function Layers() {

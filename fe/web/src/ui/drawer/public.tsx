@@ -141,10 +141,18 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
 
   // Focus moves in, because the drawer is what the click asked for; it is not
   // held there, because the drawer is not modal.
+  //
+  // `preventScroll` is load-bearing. The panel is `position: absolute` inside
+  // `.main` and enters by translating in from its own width, so the first
+  // painted box is off the inline-end edge. A default `focus()` asks the
+  // browser to scroll that box into view, which pans `.main` (and the page
+  // sitting in it) toward the centre for a frame — the jump clicking a
+  // conversation card used to make. Restoring focus has the same option so
+  // closing does not pan either.
   useEffect(() => {
     if (open) {
       previouslyFocusedRef.current = document.activeElement as HTMLElement | null;
-      panelRef.current?.focus();
+      panelRef.current?.focus({ preventScroll: true });
       return;
     }
     if (!shouldRestoreFocus.current) return;
@@ -152,7 +160,7 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
     const target = previouslyFocusedRef.current;
     const fallback = document.querySelector<HTMLElement>('[data-nc-page-title]');
     const destination = target && document.contains(target) ? target : fallback;
-    if (destination && document.contains(destination)) destination.focus();
+    if (destination && document.contains(destination)) destination.focus({ preventScroll: true });
   }, [open]);
 
   /*
@@ -181,7 +189,7 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
     >
-      <div className={styles.scroll}>
+      <div className={styles.scroll} data-nc-drawer-scroll="">
         <div className={styles.head}>
           <h2 className={styles.title}>{frame.title}</h2>
           <div className={styles.headActions}>

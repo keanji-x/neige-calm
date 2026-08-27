@@ -59,6 +59,34 @@ describe('ChatThread', () => {
     expect(screen.queryByLabelText('Working')).toBeNull();
   });
 
+  it('scrolls only the drawer pane when a new turn arrives', () => {
+    const pane = document.createElement('div');
+    pane.setAttribute('data-nc-drawer-scroll', '');
+    Object.defineProperty(pane, 'scrollHeight', { configurable: true, value: 800 });
+    const setPaneScroll = vi.fn();
+    Object.defineProperty(pane, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+      set: setPaneScroll,
+    });
+    const outer = document.createElement('div');
+    const setOuterScroll = vi.fn();
+    Object.defineProperty(outer, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+      set: setOuterScroll,
+    });
+    document.body.append(outer);
+    outer.append(pane);
+    render(
+      <ChatThread conversation={conversation()} turns={[turn()]} />,
+      { container: pane },
+    );
+    expect(setPaneScroll).toHaveBeenCalledWith(800);
+    expect(setOuterScroll).not.toHaveBeenCalled();
+    outer.remove();
+  });
+
   it('keeps each turn verbatim and marks who wrote it', () => {
     const { container } = render(
       <ChatThread
