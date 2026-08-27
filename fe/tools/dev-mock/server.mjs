@@ -24,6 +24,16 @@ export const devMockCoves = [
 
 const cwdOf = { 'cove-atlas': '/srv/atlas', 'cove-ledger': '/srv/ledger', 'cove-notes': '/home/kenji/notes' };
 
+// The folders each cove has claimed, which is what the New wave dialog keys its
+// shape on. Two for atlas (so the `Folder` select is reachable), one for ledger
+// (so the form is just the task), none for field-notes (so the claim-the-first-
+// folder branch is reachable too).
+const folderSeed = {
+  'cove-atlas': ['/srv/atlas', '/srv/atlas-docs'],
+  'cove-ledger': ['/srv/ledger'],
+  'cove-notes': [],
+};
+
 const waveSeed = [
   ['w-1', 'cove-atlas', 'Reference resolver: this round of fixes', 'blocked', 40 * 60_000, true],
   ['w-2', 'cove-atlas', 'Referenced side: valuation conclusion', 'reviewing', 2 * HOUR, false],
@@ -377,6 +387,7 @@ export const DEV_MOCK_ROUTES = Object.freeze([
   ['GET', '/api/overlays'], ['GET', '/api/coves'], ['POST', '/api/coves'],
   ['GET', '/api/coves/{cove_id}/waves'], ['POST', '/api/coves/{cove_id}/chat-wave/ensure'],
   ['GET', '/api/coves/{cove_id}/conversations'], ['POST', '/api/coves/{cove_id}/conversations'],
+  ['GET', '/api/coves/{cove_id}/folders'],
   ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
   ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
   ['GET', '/api/waves/{id}/backlinks'],
@@ -446,6 +457,20 @@ export async function handleDevMockRequest(req, res, next) {
           };
           coves.push(cove);
           return send(res, 201, cove);
+        }
+
+        // The New wave dialog reads this to decide whether it has to ask for a
+        // path at all. `cove-notes` is deliberately left with no folder so the
+        // zero-folder branch (claim the cove's first folder) is reachable in the
+        // mock, and `cove-atlas` has two so the `Folder` select is too.
+        const coveFolders = /^\/api\/coves\/([^/]+)\/folders$/.exec(path);
+        if (coveFolders && method === 'GET') {
+          const id = decodeURIComponent(coveFolders[1]);
+          const paths = folderSeed[id] ?? [];
+          return send(res, 200, paths.map((folderPath, index) => ({
+            id: index + 1, cove_id: id, path: folderPath,
+            repo_identity: null, repo_identity_probed_at: null, created_at: now - 30 * DAY,
+          })));
         }
 
         const coveWaves = /^\/api\/coves\/([^/]+)\/waves$/.exec(path);

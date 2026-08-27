@@ -14,6 +14,7 @@ export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExcep
 
 export const createContextExceptions = Object.freeze([
   Object.freeze({ path: 'web/src/app/conversations/public.tsx', reason: 'The visit-scoped conversation registry provider must sit above the route outlet so navigation cannot discard remembered conversations.' }),
+  Object.freeze({ path: 'web/src/app/shell/public.tsx', reason: 'The shell owns the New wave dialog because the rail and the cove page both open it; the cove route renders inside <Outlet /> and there is no prop path from the shell to it. The context carries one callback and is provided by the shell alone.' }),
   Object.freeze({ path: 'web/src/app/theme/public.tsx', reason: 'App theme provider owns the document dataset mirror.' }),
   Object.freeze({ path: 'web/src/ui/dialog/public.tsx', reason: 'Issue #997 permits context in the primitive directory while consumers remain in ui.' }),
 ]);

@@ -5,7 +5,16 @@ route's outlet.
 
 `AppShell` owns the workspace read (`useWorkspace`) **and** the cove/wave
 mutations, and hands `Sidebar` plain callbacks — the rail stays presentational,
-so a jsdom test drives it without a `QueryClient`. `onOpenSettings` /
+so a jsdom test drives it without a `QueryClient`.
+
+It also owns the **New wave dialog**, for the same reason: two surfaces open it
+— every cove row's `+` in the rail, and the cove page's WAVES module head — and
+the rail is a sibling of the outlet, so a dialog owned by the cove route was
+reachable from exactly one of them. The rail gets the opener as a prop
+(`onNewWave`); the route gets it through `useRequestNewWave()`, the one context
+this module publishes, because there is no prop path across `<Outlet />`. The
+dialog reads `GET /api/coves/{id}/folders` for whichever cove its select shows —
+see `features/cove/README.md` for the shape that read decides. `onOpenSettings` /
 `onSignOut` are injected: the shell never signs out itself. `nowMs` exists so a
 test can pin the `pinned_at` stamp.
 
@@ -60,6 +69,17 @@ line, watch the named test go red) before landing.
   contract test proves only that the control is in the accessibility tree with
   its `aria-pressed` state in both cases. **The visual half is a `browser`-tier
   concern and is not covered here.**
+- **INV-SIDEBAR-013** — every cove row carries a **permanently visible** `+`
+  whose accessible name is per-cove (`New wave in <cove>`), plus a `title`; the
+  rail has one per cove, so a shared `"New wave"` name would be N
+  indistinguishable controls (§4.4 also forbids the tooltip standing in for the
+  name). It sits at the trailing edge with the hover-revealed `×` one
+  control-step inboard, and `.coveRow` reserves both gutters at rest, so neither
+  control moves on hover. Both marks are stroked `ui/icon` glyphs, not literal
+  characters — an icon box with bare text is a source-contract violation. The
+  collapsed strip gets no `+`: one glyph per cove, and that glyph is the cove.
+  As with INV-SIDEBAR-012 the *visual* reveal is CSS and `browser`-tier; jsdom
+  pins the names and that the two controls do not share a class.
 - **INV-CONFIRM-001** — both destructive confirms always keep Cancel enabled.
   Closing during the await aborts the request, dismisses its owning dialog and
   releases pending immediately.

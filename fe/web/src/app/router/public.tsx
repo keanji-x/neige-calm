@@ -23,10 +23,8 @@ import {
 } from '../../../../core/domain/wave.ts';
 import type { CardHost, CardRegistry } from '../../systems/cards/public.js';
 import { isSpecHarnessPayload, partitionWaveCards } from '../../systems/cards/public.js';
-import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
-import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
@@ -48,7 +46,7 @@ import {
   type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
   type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
-import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
+import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
 import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
@@ -61,7 +59,7 @@ import {
   useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveDetailQueryOptions,
 } from '../providers/queries.ts';
-import { AppShell } from '../shell/public.tsx';
+import { AppShell, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
@@ -1164,7 +1162,12 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
   const waveMutations = useWaveMutations(transport, unauthorized);
   const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, coveId ?? '', signal));
   const go = useGo();
-  const [creating, setCreating] = useState(false);
+  /* The New wave dialog is the shell's, not this route's. Two surfaces open it
+     — every cove row's `+` in the rail and this page's WAVES module head — and
+     the rail is a sibling of the outlet, so a dialog owned here was reachable
+     from exactly one of them. One dialog, one set of strings; this route only
+     says which cove to preselect. */
+  const requestNewWave = useRequestNewWave();
   /*
    * A cove's conversations are its own, listed by the server (#1098). They are
    * plain-chat cards on the cove's hidden chat wave, so nothing here reads the
@@ -1197,8 +1200,6 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
     create: conversationMutations.create,
     refresh: conversationMutations.refresh,
   }, { showWave: false });
-  const [submitting, setSubmitting] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
 
   const cove = coveId === undefined ? undefined : coveOf(coveId, workspace.coves);
   if (cove === undefined) {
@@ -1216,24 +1217,6 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
   />;
   if (workspace.wavesLoadingByCove.get(cove.id) || !workspace.wavesByCove.has(cove.id)) return null;
   const waves = workspace.wavesByCove.get(cove.id) ?? [];
-  const submit = (draft: NewWaveDraft) => {
-    setSubmitting(true);
-    setCreateError(null);
-    void waveMutations.create({
-      cove_id: draft.coveId,
-      title: draft.title,
-      cwd: draft.cwd,
-      theme: readHostThemeRgb(),
-      attach_folder: draft.attachFolder,
-    }).then((wave) => {
-      setCreating(false);
-      go({ name: 'wave', waveId: wave.id });
-    }).catch((error: unknown) => {
-      // The 409 body names the cove the directory would have to be claimed
-      // for, so the raw server sentence is more useful than a generic line.
-      setCreateError(error instanceof ApiError ? error.message : 'Could not create the wave.');
-    }).finally(() => { setSubmitting(false); });
-  };
 
   return (
     <>
@@ -1270,7 +1253,7 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
         onDeleteCove={(signal) => coveMutations.remove(cove.id, signal).then(() => {
           if (!signal.aborted) go({ name: 'today' });
         })}
-        onRequestNewWave={() => { setCreateError(null); setCreating(true); }}
+        onRequestNewWave={() => requestNewWave(cove.id)}
         conversationList={chat.list}
         conversationAction={chat.action}
         waveList={(
@@ -1288,16 +1271,6 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
           />
         )}
       />
-      <Dialog open={creating} onClose={() => setCreating(false)} title="New wave">
-        <NewWaveForm
-          coves={workspace.coves}
-          defaultCoveId={cove.id}
-          submitting={submitting}
-          error={createError}
-          onCancel={() => setCreating(false)}
-          onSubmit={submit}
-        />
-      </Dialog>
       <ConfirmDialog
         open={waveDeletion.open}
         title={DELETE_WAVE_COPY.title}

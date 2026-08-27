@@ -128,7 +128,7 @@
   why: >
     版本不匹配时守护进程回 ProtocolError(UnsupportedVersion)。3→4 是 #388 Phase 3c
     删除 chat-mode 线格变体导致 bincode discriminant 位移
-  source: web/src/XtermView.tsx:108-117
+  source: web/src/XtermView.tsx:113-122
   authoritative_test: web/src/XtermView.test.tsx:568
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -165,7 +165,7 @@
   why: >
     randomUUID 只在 secure context 可用；LAN http://192.168.x.x:4040 场景会抛
     TypeError。守护进程的 OwnerRegistry 以 client_id 为键，拿不到就丢所有权
-  source: web/src/XtermView.tsx:565-573
+  source: web/src/XtermView.tsx:590-598
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -201,7 +201,7 @@
   why: >
     StrictMode 双调用下，上一轮的 teardown 可能在下一轮 mount 装好新实例之后才跑；
     无守卫会把新实例清成 null
-  source: web/src/XtermView.tsx:1029-1040
+  source: web/src/XtermView.tsx:1054-1065
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -220,7 +220,7 @@
     theme 进依赖会让主题切换重建 WS + Terminal（#177 e2e 用 __xtermMounts__ 钉死
     “主题切换不 remount”）；status 进依赖会让任何状态跃迁触发 cleanup→term.dispose()
     从而抹掉缓冲区，违背 #306 的 warp 式“退出后缓冲区保留”
-  source: web/src/XtermView.tsx:1066-1080
+  source: web/src/XtermView.tsx:1091-1105
   authoritative_test: web/src/XtermView.test.tsx:1263
   owner_slice: systems/terminal/xterm-view
   intentional_omission: true
@@ -256,7 +256,7 @@
     不得删除兄弟卡片的条目
   why: >
     钩子按 terminalId 分键；误删会让并行 e2e 断言拿不到另一张卡的缓冲区
-  source: web/src/XtermView.tsx:366-372,1025-1028
+  source: web/src/XtermView.tsx:371-377,1050-1053
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -396,7 +396,7 @@
   why: >
     RGL 的 resize 手柄在每个 mousemove 都触发 ResizeObserver；不合帧会导致终端
     持续重 fit 重绘，表现为内层 canvas 1-2px 抖动
-  source: web/src/XtermView.tsx:922-943
+  source: web/src/XtermView.tsx:947-968
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
@@ -414,7 +414,7 @@
   why: >
     fit() 会原地改本地 xterm；即使抑制了 ResizeCommit，本地缓冲区也会停在 2x1，
     在下一次观察前用错误几何解释 RenderPatch 字节
-  source: web/src/XtermView.tsx:944-958
+  source: web/src/XtermView.tsx:969-983
   authoritative_test: web/src/XtermView.test.tsx:703
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
@@ -448,7 +448,7 @@
   why: >
     lastCols/lastRows 保持不变，等价于“什么都没发生”；多余的 commit 会触发守护
     进程侧模型重排 + 全量快照
-  source: web/src/XtermView.tsx:969-1001
+  source: web/src/XtermView.tsx:994-1026
   authoritative_test: web/src/XtermView.test.tsx:740
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
@@ -482,7 +482,7 @@
     ResizeApplied 必须直接丢弃
   why: >
     慢网络下乱序到达的旧 applied 会覆盖已更新的本地几何
-  source: web/src/XtermView.tsx:574-577,752-762
+  source: web/src/XtermView.tsx:599-602,777-787
   authoritative_test: web/src/XtermView.test.tsx:1356
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -500,7 +500,7 @@
     ResizeObserver 意图
   why: >
     纯扩张不会裁剪权威恢复模型；而 remount 时的收缩 / 混轴变化会销毁历史
-  source: web/src/XtermView.tsx:692-708
+  source: web/src/XtermView.tsx:717-733
   authoritative_test: web/src/XtermView.test.tsx:684
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
@@ -517,7 +517,7 @@
     不得在 ServerHello resize 之后再读 term.cols 当作 desired
   why: >
     ServerHello 可能先把本地 xterm 拉回权威 PTY 几何，之后再判断纯扩张就恒为假
-  source: web/src/XtermView.tsx:578-582
+  source: web/src/XtermView.tsx:603-607
   authoritative_test: web/src/XtermView.test.tsx:684
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
@@ -533,7 +533,7 @@
     初次 fit() 抛异常时必须吞掉（容器可能首帧还没布局），不得让挂载失败
   why: >
     首帧未布局是正常时序；后续 ResizeObserver 会补
-  source: web/src/XtermView.tsx:502-513
+  source: web/src/XtermView.tsx:527-538
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
@@ -629,7 +629,7 @@
   why: >
     #177 —— 主题在 new WebSocket(…) 与 onopen 之间切换是真实竞态；pre-#177 的
     send() 会在 readyState 检查处丢帧，守护进程的 OSC 10/11 默认值永远不更新
-  source: web/src/XtermView.tsx:535-549,637-648
+  source: web/src/XtermView.tsx:560-574,662-673
   authoritative_test: web/src/XtermView.test.tsx:1514
   owner_slice: systems/terminal/xterm-theme
   intentional_omission: false
@@ -680,7 +680,7 @@
     深 fg [216,219,226] bg [15,20,24]）
   why: >
     守护进程用这两个值合成 OSC 10/11 回复；数值漂移会让 TUI 看到错误的宿主表面色
-  source: web/src/XtermView.tsx:19,325-328
+  source: web/src/XtermView.tsx:24,330-333
   authoritative_test: web/src/XtermView.test.tsx:1400
   owner_slice: systems/terminal/xterm-theme
   intentional_omission: false
@@ -715,7 +715,7 @@
   why: >
     bridge-mount effect 故意不把 theme 放进依赖；闭包里的值会是挂载那一刻的旧值，
     reconnect / layoutRetry 后会用错主题构造
-  source: web/src/XtermView.tsx:208-213,390-392
+  source: web/src/XtermView.tsx:213-218,395-397
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-theme
   intentional_omission: false
@@ -771,7 +771,7 @@
     不得写换行填充
   why: >
     没有历史就没有被擦除的风险；多余的 rows 行换行会白白推走首屏内容
-  source: web/src/XtermView.tsx:678-686
+  source: web/src/XtermView.tsx:703-711
   authoritative_test: web/src/XtermView.test.tsx:839
   owner_slice: systems/terminal/xterm-data
   intentional_omission: false
@@ -789,7 +789,7 @@
   why: >
     #473 —— clear() 保留当前光标列；ServerHello 用的是全新 Terminal，而滞后恢复
     快照回放进的是已有会话，必须把恢复的历史从第 0 列开始。ED 2 擦除守卫同 #457
-  source: web/src/XtermView.tsx:733-744
+  source: web/src/XtermView.tsx:758-769
   authoritative_test: web/src/XtermView.test.tsx:1037
   owner_slice: systems/terminal/xterm-data
   intentional_omission: false
@@ -805,7 +805,7 @@
     RenderSnapshot.scrollback 为 null 时不得调用 term.clear()，只写一次 data
   why: >
     无历史可恢复时清屏纯属丢失用户可见内容
-  source: web/src/XtermView.tsx:733-747
+  source: web/src/XtermView.tsx:758-772
   authoritative_test: web/src/XtermView.test.tsx:1071
   owner_slice: systems/terminal/xterm-data
   intentional_omission: false
@@ -839,7 +839,7 @@
     term.resize 到快照尺寸并同步 lastCols/lastRows，再写回放
   why: >
     尺寸不匹配会让光标定位错位；lastCols/Rows 不同步则后续 resize 比较基线错误
-  source: web/src/XtermView.tsx:671-677,727-732
+  source: web/src/XtermView.tsx:696-702,752-757
   authoritative_test: web/src/XtermView.test.tsx:866
   owner_slice: systems/terminal/xterm-data
   intentional_omission: false
@@ -856,7 +856,7 @@
     render_rev / pty_seq
   why: >
     客户端只声明了 Vt 能力；把未知编码字节直接喂给 xterm 会渲染成乱码
-  source: web/src/XtermView.tsx:713-721
+  source: web/src/XtermView.tsx:738-746
   authoritative_test: web/src/XtermView.test.tsx:986
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -873,7 +873,7 @@
     不得自行请求或重连
   why: >
     守护进程已决定要下发全量快照；客户端只需清干净本地状态
-  source: web/src/XtermView.tsx:764-769
+  source: web/src/XtermView.tsx:789-794
   authoritative_test: NONE
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -905,7 +905,7 @@
     Vec<u8> 线格必须以普通 JS Array<number> 传输，写入前用 Uint8Array.from 转换
   why: >
     JSON 编码的 ClientMsg/DaemonMsg 无法承载二进制；xterm.write 需要 Uint8Array
-  source: web/src/XtermView.tsx:161-176,679,686,739,745
+  source: web/src/XtermView.tsx:166-181,704,711,764,770
   authoritative_test: web/src/XtermView.test.tsx:610
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -922,7 +922,7 @@
     RenderPatch / RenderSnapshot / ResizeApplied），即使当前无人消费
   why: >
     未来的 RenderAck 反压与 resume 路径依赖它们保持当前值；中断更新会让恢复点失效
-  source: web/src/XtermView.tsx:584-589,709-710,718-719,748-749,760-761
+  source: web/src/XtermView.tsx:609-614,734-735,743-744,773-774,785-786
   authoritative_test: NONE
   owner_slice: systems/terminal/protocol
   intentional_omission: false
@@ -946,7 +946,7 @@
     #306 —— 父组件的 onExitChange 是无去重的裸 setState。无条件触发会在正常
     happy path（TerminalExited(137) → 1000 child-exited close）把徽章从
     “exit 137”（错误色）刷回“exit”（中性色）并卡住
-  source: web/src/XtermView.tsx:883-899
+  source: web/src/XtermView.tsx:908-924
   authoritative_test: web/src/XtermView.test.tsx:1202
   owner_slice: systems/terminal/exit-badge
   intentional_omission: false
@@ -981,7 +981,7 @@
     'child-exited' 的关闭帧也必须触发 onExitChange({exit_code:null,signal_killed:false})
   why: >
     父卡片需要在任何退出路径上都能渲染徽章；见 ws/terminal.rs CLOSE_REASON_CHILD_EXITED
-  source: web/src/XtermView.tsx:872-899
+  source: web/src/XtermView.tsx:897-924
   authoritative_test: web/src/XtermView.test.tsx:1285
   owner_slice: systems/terminal/exit-badge
   intentional_omission: false
@@ -1016,7 +1016,7 @@
   why: >
     守护进程线格早于信号感知；更可靠的 signal_killed 走 REST 种子（父组件挂载时读
     terminal 行）。伪造 true 会让徽章语义错误
-  source: web/src/XtermView.tsx:770-787
+  source: web/src/XtermView.tsx:795-812
   authoritative_test: web/src/XtermView.test.tsx:1154
   owner_slice: systems/terminal/exit-badge
   intentional_omission: false
@@ -1051,7 +1051,7 @@
     需刷新，并提供一个 Refresh 按钮
   why: >
     协议错误是开发者向的红色错误（线格版本不匹配等），值得接管表面；其它状态不值得
-  source: web/src/XtermView.tsx:1133-1153
+  source: web/src/XtermView.tsx:1158-1178
   authoritative_test: web/src/XtermView.test.tsx:1130
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -1070,7 +1070,7 @@
     #421 —— 否则用户触发的 Refresh/Reset 会把上一次守护进程 attach 的退出徽章
     继承到新 attach 上（例如 Reset 收割旧 codex app-server 导致的 exit_code=1）。
     StrictMode 卸载或 terminalId 切换时根本不会有 close 帧
-  source: web/src/XtermView.tsx:1041-1064
+  source: web/src/XtermView.tsx:1066-1089
   authoritative_test: NONE
   owner_slice: systems/terminal/exit-badge
   intentional_omission: false
@@ -1108,7 +1108,7 @@
     发送 'OwnerClaim'，不得等第一个 owner-gated 帧失败再抢
   why: >
     上一任所有者的泵可能还没释放；懒抢会让用户第一次输入被 NotOwner 拒绝
-  source: web/src/XtermView.tsx:661-670
+  source: web/src/XtermView.tsx:686-695
   authoritative_test: web/src/XtermView.test.tsx:890
   owner_slice: systems/terminal/ownership
   intentional_omission: false
@@ -1125,7 +1125,7 @@
     一次 'OwnerClaim'
   why: >
     无主状态是抢占窗口；不抢会永远停在 Observer
-  source: web/src/XtermView.tsx:803-811
+  source: web/src/XtermView.tsx:828-836
   authoritative_test: web/src/XtermView.test.tsx:910
   owner_slice: systems/terminal/ownership
   intentional_omission: false
@@ -1159,7 +1159,7 @@
     上一条的 owner-claim ResizeCommit 必须在 term.cols<8 或 term.rows<4 时被抑制
   why: >
     退化几何提交上去会污染共享 PTY 模型（与挂载/resize 路径同一条下限）
-  source: web/src/XtermView.tsx:819-838
+  source: web/src/XtermView.tsx:844-863
   authoritative_test: web/src/XtermView.test.tsx:962
   owner_slice: systems/terminal/ownership
   intentional_omission: false
@@ -1177,7 +1177,7 @@
   why: >
     角色徽章活在父卡片的 CardHead status 槽里；XtermView 内部不再画角落覆盖层。
     null 代表“角色未知”，父组件据此清 pill
-  source: web/src/XtermView.tsx:66-78,839-841,900-901,908
+  source: web/src/XtermView.tsx:71-83,864-866,925-926,933
   authoritative_test: web/src/XtermView.test.tsx:437
   owner_slice: systems/terminal/ownership
   intentional_omission: false
@@ -1215,7 +1215,7 @@
   why: >
     issue #115 选项 (b)：守护进程写入字节后保持沉默，热路径上不发 InputAck。
     只有 kernel-originated 的瞬时客户端（inject_stdin）才用非零 seq
-  source: web/src/XtermView.tsx:911-920
+  source: web/src/XtermView.tsx:936-945
   authoritative_test: web/src/XtermView.test.tsx:1106
   owner_slice: systems/terminal/input
   intentional_omission: false
@@ -1233,7 +1233,7 @@
   why: >
     #554 —— 移植 VS Code 默认 Mac sendSequence 键位
     (terminalContrib/sendSequence 的 240-253 行)
-  source: web/src/XtermView.tsx:452-480
+  source: web/src/XtermView.tsx:463-505
   authoritative_test: NONE
   owner_slice: systems/terminal/input
   intentional_omission: false
@@ -1250,7 +1250,7 @@
     与任何修饰组合都必须原样透传
   why: >
     保证零回归：只接管纯 Cmd 场景
-  source: web/src/XtermView.tsx:461-479
+  source: web/src/XtermView.tsx:486-504
   authoritative_test: NONE
   owner_slice: systems/terminal/input
   intentional_omission: false
@@ -1288,7 +1288,7 @@
     issue #236 后续 / PR #239 —— 守护进程的粗体绿 runner@runner 提示符触发
     .xterm-fg-10.xterm-bold 对比度 2.81:1 违规。调色板改到 4.5:1 会破坏用户
     终端预期；语义正确的做法是把 AT 范围限定在画布之外的真实文本
-  source: web/src/XtermView.tsx:1084-1110
+  source: web/src/XtermView.tsx:1109-1135
   authoritative_test: NONE
   owner_slice: systems/terminal/a11y
   intentional_omission: false
@@ -1305,7 +1305,7 @@
   why: >
     .xterm-view 是滚轮路由识别“这是 xterm 卡片但 handle 尚未注册”的兜底选择器
     （见 wheelRouter XTERM_ROOT_SELECTOR）；data-terminal-id 供 e2e 定位
-  source: web/src/XtermView.tsx:1083
+  source: web/src/XtermView.tsx:1108
   authoritative_test: web/src/input/wheelRouter.test.ts:286
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false
@@ -1322,7 +1322,7 @@
     “connecting…” / “handshaking…”，且这两者必须在 geometryDeferred 为真时被抑制
   why: >
     延迟期还没开 WebSocket，显示 connecting 会误导；三个状态互斥
-  source: web/src/XtermView.tsx:1111-1121
+  source: web/src/XtermView.tsx:1136-1146
   authoritative_test: web/src/XtermView.test.tsx:601
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false

@@ -726,7 +726,7 @@
     又因为 xterm 把 Tab 转发给 PTY，只要 wave 里有任何 xterm-backed card，外层键盘导航就被
     困住。用户仍可点击进入（xterm 自己的 mousedown 会聚焦 textarea），之后所有按键
     （含 Tab → tab-completion）流向 PTY
-  source: web/src/XtermView.tsx:481-501
+  source: web/src/XtermView.tsx:506-526
   authoritative_test: NONE
   owner_slice: systems/terminal/xterm-view
   intentional_omission: false

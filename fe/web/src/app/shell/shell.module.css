@@ -292,7 +292,16 @@
        closer to its first wave than the waves sit to each other. */
     min-block-size: var(--row-h-sm);
     padding-block: 0;
-    padding-inline: calc(var(--space-2) + var(--control-h-sm) + var(--space-2)) var(--space-3);
+
+    /* Leading: one control gutter for the chevron (4 + 20 + 4). Trailing: two,
+       because the row carries `×` *and* a permanent `+` (4 + 20 + 4 + 20 + 4 =
+       52) — the same term the wave row spends on its two-controls-one-side
+       case. Both are reserved at rest, so the name ellipsizes at the same
+       column whether or not the `×` has been revealed: nothing in this row is
+       allowed to move on hover. */
+    padding-inline:
+      calc(var(--space-2) + var(--control-h-sm) + var(--space-2))
+      calc(var(--space-2) * 3 + var(--control-h-sm) * 2);
     border: 1px solid transparent;
     border-radius: var(--radius-sm);
     text-align: start;
@@ -407,10 +416,10 @@
    * the rail on one column. The same 4px is applied in
    * `features/wave/row/row.module.css`; both derive it, neither hardcodes it.
    */
-  .coveDelete {
+  .coveDelete,
+  .coveNew {
     position: absolute;
     inset-block-start: 50%;
-    inset-inline-end: var(--space-2);
     display: grid;
     place-items: center;
     inline-size: var(--control-h-sm);
@@ -418,11 +427,34 @@
     border-radius: var(--radius-sm);
     line-height: var(--leading-none);
     color: var(--text-3);
-    opacity: 0;
-    pointer-events: none;
     cursor: pointer;
     translate: 0 -50%;
     transition: opacity var(--motion-quick) ease-out;
+  }
+
+  /*
+   * Two trailing controls on one row, and the order is §4.5's: the one that
+   * persists at rest goes outermost, so a resting row shows a single glyph
+   * flush to the trailing gutter rather than one floating beside a gap. That is
+   * the `+`. The `×` takes the inboard slot — 4 + 20 + 4 — which is the same
+   * step `features/wave/row/row.module.css` puts between its pin and its
+   * delete, derived from the same two tokens.
+   *
+   * Both slots are reserved by `.coveRow`'s trailing padding, so revealing the
+   * `×` moves nothing.
+   */
+  .coveNew {
+    inset-inline-end: var(--space-2);
+  }
+
+  .coveDelete {
+    inset-inline-end: calc(var(--space-2) * 2 + var(--control-h-sm));
+
+    /* Hover-revealed, unlike its neighbour. `opacity: 0` is the *visual* state
+       only — the button stays in the accessibility tree and stays reachable by
+       Tab, which is what `:focus-within` below restores it for. */
+    opacity: 0;
+    pointer-events: none;
   }
 
   .coveDelete:hover,
@@ -439,6 +471,14 @@
     pointer-events: auto;
   }
 
+  /* Permanent, so it gets the quiet tone at rest and only picks up a fill on
+     hover — the rail is greyscale apart from §7.5's two exceptions, and a
+     create action is neither of them. */
+  .coveNew:hover,
+  .coveNew:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
 
 
   /*
@@ -577,6 +617,7 @@
   @media (prefers-reduced-motion: reduce) {
     .coveRow,
     .coveDelete,
+    .coveNew,
     .iconButton,
     .chevron {
       transition: none;

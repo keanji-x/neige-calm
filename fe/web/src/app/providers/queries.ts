@@ -16,9 +16,9 @@ import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  coveListOperation, createCoveOperation, deleteCoveOperation, sortedCoves, toCove,
-  updateCoveOperation, visibleCoves,
-  type Cove, type CovePatchBody, type NewCoveBody,
+  coveFoldersOperation, coveListOperation, createCoveOperation, deleteCoveOperation, sortedCoveFolders,
+  sortedCoves, toCove, toCoveFolder, updateCoveOperation, visibleCoves,
+  type Cove, type CoveFolder, type CovePatchBody, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
 import {
   waveBacklinksOperation, type WaveBacklinks,
@@ -64,6 +64,7 @@ export async function runOperation<T>(
 export const queryKeys = Object.freeze({
   serverVersion: () => ['server-version'] as const,
   coves: () => ['coves'] as const,
+  coveFolders: (coveId: string) => ['cove-folders', coveId] as const,
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
@@ -190,6 +191,49 @@ export function coveListQueryOptions(transport: ApiTransportPort, unauthorized: 
     queryKey: queryKeys.coves(),
     queryFn: async (): Promise<Cove[]> =>
       sortedCoves(visibleCoves((await runOperation(transport, coveListOperation(), unauthorized)).map(toCove))),
+  };
+}
+
+/**
+ * The folders a cove has already claimed.
+ *
+ * Its own cache entry rather than a field on the workspace read: only the
+ * new-wave dialog needs it, and folding it into `useWorkspace` would put one
+ * request per cove behind every route commit for a fact no route renders.
+ */
+export function coveFoldersQueryOptions(
+  transport: ApiTransportPort, coveId: string, unauthorized: UnauthorizedChannel,
+) {
+  return {
+    queryKey: queryKeys.coveFolders(coveId),
+    queryFn: async (): Promise<CoveFolder[]> =>
+      sortedCoveFolders((await runOperation(transport, coveFoldersOperation(coveId), unauthorized)).map(toCoveFolder)),
+  };
+}
+
+export type CoveFolders = Readonly<{
+  folders: readonly CoveFolder[];
+  loading: boolean;
+  error: Error | null;
+}>;
+
+/**
+ * INV-NEWWAVE-002 — `loading` is `!isSuccess`, not merely "no data yet". A
+ * 5xx/network failure also leaves `data` undefined; treating that as zero
+ * folders would submit `attach_folder: true` for a cove that may already own
+ * one. Error is unknown, same as pending.
+ */
+export function useCoveFolders(
+  transport: ApiTransportPort, coveId: string | null, unauthorized: UnauthorizedChannel,
+): CoveFolders {
+  const query = useQuery({
+    ...coveFoldersQueryOptions(transport, coveId ?? '', unauthorized),
+    enabled: coveId !== null,
+  });
+  return {
+    folders: query.data ?? [],
+    loading: coveId !== null && !query.isSuccess,
+    error: coveId !== null && query.error instanceof Error ? query.error : null,
   };
 }
 
@@ -361,7 +405,14 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
   const client = useQueryClient();
   const create = useMutation({
     mutationFn: (body: NewWaveBody) => runOperation(transport, createWaveOperation(body), unauthorized),
-    onSuccess: (wave) => { void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) }); },
+    onSuccess: (wave, body) => {
+      void client.invalidateQueries({ queryKey: queryKeys.wavesInCove(wave.cove_id) });
+      // Disabled while the dialog is closed, so invalidateQueries would leave
+      // a successful cache of `[]` for the next open to paint as 0-folder.
+      if (body.attach_folder) {
+        client.removeQueries({ queryKey: queryKeys.coveFolders(body.cove_id) });
+      }
+    },
   });
   const patch = useMutation({
     mutationFn: ({ waveId, body }: { waveId: string; coveId: string; body: WavePatchBody }) =>
