@@ -15,6 +15,18 @@
     padding: 0;
   }
 
+  /*
+   * A definite used height, not only a minimum. `min-block-size: 100dvh` on
+   * body left `#root` and every `1fr` / `flex: 1` / `block-size: 100%` below
+   * resolving against auto — Today and Wave hugged content and sat in the
+   * top half of the window.
+   */
+  html,
+  body,
+  #root {
+    block-size: 100%;
+  }
+
   body {
     min-block-size: 100dvh;
   }

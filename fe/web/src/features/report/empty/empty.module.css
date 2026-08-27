@@ -12,9 +12,11 @@
   .empty {
     display: flex;
     flex-direction: column;
+    flex: 1 1 auto;
     align-items: center;
     justify-content: center;
     gap: var(--space-8);
+    min-block-size: 0;
     block-size: 100%;
     max-inline-size: var(--measure-prose);
     margin-inline: auto;

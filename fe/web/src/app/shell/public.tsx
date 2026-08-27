@@ -173,9 +173,13 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           a plain prop, so `Sidebar` stays presentational and its tests keep
           driving it with no context above them. */}
       <main className={styles.main}>
-        <RequestNewWaveContext.Provider value={requestNewWave}>
-          <Outlet />
-        </RequestNewWaveContext.Provider>
+        {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
+            `:first-child` on `.main` would flex the banner, not the page. */}
+        <div className={styles.stage}>
+          <RequestNewWaveContext.Provider value={requestNewWave}>
+            <Outlet />
+          </RequestNewWaveContext.Provider>
+        </div>
       </main>
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave">
         {newWaveCoveId !== null && (

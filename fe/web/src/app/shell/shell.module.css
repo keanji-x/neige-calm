@@ -16,7 +16,12 @@
   .shell {
     display: grid;
     grid-template-columns: var(--rail-w) minmax(0, 1fr);
-    block-size: 100dvh;
+    /* One flex-sized row so `.main` has a definite height. An implicit `auto`
+       row is sized by content, so page-level `1fr` / `flex: 1` / `100%` all
+       collapsed to the document's intrinsic height. */
+    grid-template-rows: minmax(0, 1fr);
+    block-size: 100%;
+    min-block-size: 100%;
     overflow: hidden;
   }
 
@@ -31,8 +36,28 @@
   }
 
   .main {
+    /*
+     * Container for `--panel-span` (25cqi). The trailing card and the
+     * conversation drawer both read this, so they stay the same fraction of
+     * the main column at every window width instead of a 280px / 1180px pair.
+     */
+    position: relative;
+    container-type: inline-size;
+    --panel-span: max(15rem, 25cqi);
+    display: flex;
+    flex-direction: column;
     min-inline-size: 0;
-    overflow: auto;
+    min-block-size: 0;
+    /* Clip, do not scroll: a `position: absolute` drawer is a child of `.stage`
+       and would otherwise scroll away. The page inside `.stage` is the scroller. */
+    overflow: hidden;
+  }
+
+  .stage {
+    flex: 1 1 auto;
+    min-block-size: 0;
+    display: flex;
+    flex-direction: column;
   }
 
   .rail {

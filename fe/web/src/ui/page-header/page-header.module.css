@@ -60,9 +60,9 @@
    * against 18px serif prose, §2.2) carries it instead.
    */
   .header[data-nc-align='document'] {
-    padding-inline-start: var(--document-start, calc(
-      (var(--measure-page) - var(--space-10) * 3 - var(--panel-w) - var(--measure-prose)) / 2
-    ));
+    /* Routes that need this publish `--document-start`. Do not fall back to
+       the retired 1180/280 page-cap math. */
+    padding-inline-start: var(--document-start, 0px);
   }
 
   .header {

@@ -41,24 +41,16 @@
      * *this* drawer's relationship to *this* page's trailing column, not a new
      * global width.
      */
-    --nc-drawer-w: calc(var(--panel-w) + var(--space-10));
+    /* Same span as the panel column (`25cqi` of `.main`) plus the trailing
+       page pad, so the drawer covers the card at every width. Pixel widths
+       (280, 396, 1180) cannot do that. */
+    --nc-drawer-w: calc(var(--panel-span, 25cqi) + var(--space-10));
 
-    position: fixed;
+    /* Absolute to `.main` (position: relative + container-type), not `fixed`
+       to the viewport, so `25cqi` is 25% of the main column, not 25vw. */
+    position: absolute;
     inset-block: 0;
-
-    /*
-     * Aligned to the *page's* trailing edge, not the window's, so the drawer's
-     * leading edge lands exactly on the panel column's. Welded to the window it
-     * would have to be 396 wide just to reach across the slack between the
-     * content and the window — which is where that number came from — and it
-     * would still cover the card by a different amount at every window size.
-     *
-     * `max(0px, …)` is the narrow case: once the window is smaller than the
-     * page's own maximum there is no slack, the expression goes negative, and
-     * the drawer welds to the window edge as before. `--rail-w` follows the
-     * shell's actual column so wider collapsed layouts keep this edge aligned.
-     */
-    inset-inline-end: max(0px, calc(100vw - var(--rail-w) - var(--measure-page)));
+    inset-inline-end: 0;
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;

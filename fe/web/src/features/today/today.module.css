@@ -3,7 +3,16 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
-    max-inline-size: var(--measure-page);
+    /* Fill `.main`. `--measure-page` (1180) on a start-aligned page left a
+       ~60px dead strip at 1440 (1240 main − 1180), so the panel card sat 84px
+       in from the window — page pad 24 plus leftover 60 — which reads as a
+       fat right margin, not the 12px card inset. */
+    max-inline-size: none;
+    inline-size: 100%;
+
+    flex: 1 1 auto;
+    min-block-size: 0;
+    overflow: auto;
     padding-block: 0 var(--space-11);
     padding-inline: var(--space-10);
   }
@@ -12,18 +21,18 @@
      rail, centring decouples the content from the navigation. */
   .content {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
+    grid-template-rows: minmax(0, 1fr);
     gap: var(--space-10);
     min-block-size: 0;
   }
 
   .mainColumn {
-    display: grid;
-    /* The terminal is an intentional anchor, but its unwired placeholder must
-       follow its content instead of reserving a full terminal-height track. */
-    grid-auto-rows: min-content;
+    display: flex;
+    flex-direction: column;
     gap: var(--space-8);
     min-inline-size: 0;
+    min-block-size: 0;
   }
 
   .panelColumn {
@@ -31,6 +40,8 @@
     flex-direction: column;
     gap: var(--space-2);
     min-inline-size: 0;
+    min-block-size: 0;
+    align-self: start;
   }
 
   .section {
@@ -102,7 +113,9 @@
 
   .terminalSlot {
     display: grid;
+    flex: 1 1 auto;
     place-items: center;
+    min-block-size: var(--slot-h);
     padding-block: var(--space-4);
     border: 1px dashed var(--hairline);
     border-radius: var(--radius-md);

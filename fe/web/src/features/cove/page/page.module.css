@@ -8,13 +8,13 @@
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: var(--space-8);
-    max-inline-size: var(--measure-page);
+    max-inline-size: none;
+    inline-size: 100%;
+    --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--measure-doc)) / 2));
 
-    /* Fills the scroll region rather than hugging its content. Without it the
-       page's own `1fr` row resolves against nothing — the grid was 308 tall
-       inside a 900 tall main — so the document column had no space to centre an
-       empty state in. Content taller than the region still grows it. */
-    min-block-size: 100%;
+    flex: 1 1 auto;
+    min-block-size: 0;
+    overflow: auto;
     padding-block: 0 var(--space-11);
     padding-inline: var(--space-10);
   }
@@ -93,7 +93,7 @@
    */
   .content {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) var(--panel-w);
+    grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
     grid-template-rows: minmax(0, 1fr);
     gap: var(--space-10);
     min-block-size: 0;
