@@ -13,8 +13,8 @@ the rail is a sibling of the outlet, so a dialog owned by the cove route was
 reachable from exactly one of them. The rail gets the opener as a prop
 (`onNewWave`); the route gets it through `useRequestNewWave()`, the one context
 this module publishes, because there is no prop path across `<Outlet />`. The
-dialog reads `GET /api/coves/{id}/folders` for whichever cove its select shows —
-see `features/cove/README.md` for the shape that read decides. `onOpenSettings` /
+dialog is title-only; `cove_id` is the opener's cove and the POST omits `cwd` /
+`attach_folder` (#1131). `onOpenSettings` /
 `onSignOut` are injected: the shell never signs out itself. `nowMs` exists so a
 test can pin the `pinned_at` stamp.
 
