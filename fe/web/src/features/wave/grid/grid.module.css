@@ -1,0 +1,28 @@
+@layer features {
+  .stage {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-block-size: 0;
+    min-inline-size: 0;
+  }
+
+  .closed,
+  .open {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    min-inline-size: 0;
+    overflow: hidden;
+    background: var(--bg);
+  }
+
+  .closed {
+    visibility: hidden;
+    pointer-events: none;
+  }
+}

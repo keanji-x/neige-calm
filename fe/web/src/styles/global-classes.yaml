@@ -1,17 +1,57 @@
 # The closed list of global (non-module) CSS classes. `repository-check.mjs`
 # compares it against the actual non-module CSS both ways, so an unlisted class
-# and an unused entry both fail. A twelfth entry is a design-spec change.
+# and an unused entry both fail.
 #
 # base.css owns the first two; styles/dialog.css owns the nine the frozen dialog
-# primitive hard-codes (§0.2, §0.4 CR-4 / CR-7).
+# primitive hard-codes (§0.2, §0.4 CR-4 / CR-7). The xterm and react-grid-layout
+# names are the vendor class surfaces those ports restyle.
 - calm-prose
-- tnum
+- card-drag-handle
+- card-grid-close
+- card-head
+- card-head-icon
+- card-head-icon--c0
+- card-head-icon--c1
+- card-head-icon--c2
+- card-head-icon--c3
+- card-head-icon--c4
+- card-head-icon--c5
+- card-head-icon--c6
+- card-head-icon--c7
+- card-head-icon--claude
+- card-head-icon--codex
+- card-head-icon--letter
+- card-head-status
+- card-head-title
+- confirm-dialog-actions
+- confirm-dialog-label
+- cssTransforms
+- dialog-body
+- dialog-child-view
+- dialog-header
 - dialog-overlay
 - dialog-overlay-wide
 - dialog-panel
 - dialog-panel-wide
-- dialog-header
-- dialog-body
-- dialog-child-view
-- confirm-dialog-actions
-- confirm-dialog-label
+- live
+- live-dot
+- react-draggable-dragging
+- react-grid-item
+- react-grid-placeholder
+- react-resizable-handle
+- resizing
+- term
+- term-body
+- term-line
+- tnum
+- wave-card
+- wave-grid
+- wave-grid-wrap
+- xterm
+- xterm-container
+- xterm-restart
+- xterm-screen
+- xterm-status
+- xterm-status-closed
+- xterm-view
+- xterm-viewport

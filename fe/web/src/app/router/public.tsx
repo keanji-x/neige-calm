@@ -21,7 +21,7 @@ import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import {
   toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
-import type { CardHost, CardRegistry } from '../../systems/cards/public.js';
+import type { BoardHostItem, CardHost, CardRegistry } from '../../systems/cards/public.js';
 import { isSpecHarnessPayload, partitionWaveCards } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
@@ -30,6 +30,7 @@ import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
+import { CardGridOverlay, WaveStage } from '../../features/wave/grid/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
@@ -62,7 +63,8 @@ import {
 import { AppShell, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
-import { useGo, useRouteHash, useRouteParam } from './navigation.ts';
+import { useGo, useRouteCardId, useRouteHash, useRouteParam } from './navigation.ts';
+import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
 
@@ -413,10 +415,8 @@ type DraftEdit = Partial<Pick<ConversationDraft, 'text' | 'error' | 'remedy'>>;
 
 /**
  * The card runtime, created once at boot and injected like every other
- * instance-owned dependency. `host` has no consumer inside the router yet —
- * mounting cards into the grid overlay is #1091 S2 — but it is created and
- * owned alongside the registry so there is exactly one assembly point rather
- * than two boot-order-sensitive ones.
+ * instance-owned dependency. The wave route mounts visible cards into the
+ * grid overlay through `host`.
  */
 export type CardRuntime = Readonly<{ registry: CardRegistry; host: CardHost }>;
 
@@ -453,7 +453,11 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   const waveRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/wave/$waveId',
-    component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRegistry={cards.registry} />,
+    validateSearch: (search: Record<string, unknown>): { card?: string } => {
+      const card = search.card;
+      return typeof card === 'string' && card !== '' ? { card } : {};
+    },
+    component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
   });
 
   const settingsRoute = createRoute({
@@ -1294,8 +1298,8 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
  * the fetching and the returns, and the half below owns the hooks that need a
  * wave.
  */
-function WaveRoute({ transport, unauthorized, cardRegistry }: {
-  transport: ApiTransportPort; unauthorized: UnauthorizedChannel; cardRegistry: CardRegistry;
+function WaveRoute({ transport, unauthorized, cardRuntime }: {
+  transport: ApiTransportPort; unauthorized: UnauthorizedChannel; cardRuntime: CardRuntime;
 }) {
   const waveId = useRouteParam('/wave/');
   const workspace = useWorkspace(transport, unauthorized);
@@ -1332,21 +1336,23 @@ function WaveRoute({ transport, unauthorized, cardRegistry }: {
       wave={wave}
       cove={coveOf(wave.coveId, workspace.coves)}
       cards={detail.data.cards}
-      cardRegistry={cardRegistry}
+      cardRuntime={cardRuntime}
     />
   );
 }
 
-function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRegistry }: {
+function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime }: {
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   wave: Wave;
   cove: Cove | undefined;
   cards: WaveDetailWire['cards'];
-  cardRegistry: CardRegistry;
+  cardRuntime: CardRuntime;
 }) {
   const waveMutations = useWaveMutations(transport, unauthorized);
   const go = useGo();
+  const requestedCardId = useRouteCardId();
+  const cardRegistry = cardRuntime.registry;
   // `showWave: false` — on a wave's own page the wave's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
   // The same predicate the spec entry resolves by (`INV-CARD-182`), imported
@@ -1390,6 +1396,25 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRegistr
       .sort((left, right) => left.originalIndex - right.originalIndex)
       .map((slot) => slot.wire);
   }, [cardRegistry, cards]);
+  const gridItems: readonly BoardHostItem[] = useMemo(() => {
+    const { visible } = partitionWaveCards(cardRegistry, cards);
+    return [...visible]
+      .sort((left, right) => {
+        const sort = left.wire.sort - right.wire.sort;
+        return sort !== 0 ? sort : left.originalIndex - right.originalIndex;
+      })
+      .map((slot) => Object.freeze({
+        card: slot.card,
+        title: slot.wire.title ?? slot.wire.kind,
+        originalIndex: slot.originalIndex,
+      }));
+  }, [cardRegistry, cards]);
+  const knownCard = requestedCardId !== null
+    && gridItems.some((item) => item.card.id === requestedCardId);
+  useEffect(() => {
+    if (requestedCardId === null || knownCard) return;
+    go({ name: 'wave', waveId: wave.id }, { replace: true });
+  }, [go, knownCard, requestedCardId, wave.id]);
   const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
@@ -1412,9 +1437,37 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRegistr
 
   return (
     <>
+    <WaveStage>
     <WavePage
       wave={wave}
       cards={panelCards}
+      cardsAction={
+        <PanelAction
+          label="New terminal"
+          onClick={() => {
+            void waveMutations.createTerminal(wave.id, { theme: readHostThemeRgb() }).then((card) => {
+              go({ name: 'wave', waveId: wave.id, cardId: card.id });
+            });
+          }}
+        >
+          <Icon name="plus" />
+        </PanelAction>
+      }
+      onOpenCard={(cardId) => { go({ name: 'wave', waveId: wave.id, cardId }); }}
+      board={
+        <CardGridOverlay
+          open={knownCard}
+          items={gridItems}
+          host={cardRuntime.host}
+          activeCardId={requestedCardId}
+          onClose={knownCard
+            ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
+            : undefined}
+        />
+      }
+      onCloseBoard={knownCard
+        ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
+        : undefined}
       report={<ReportDocument
         report={report}
         rail={<ReportOutline items={outline} />}
@@ -1447,6 +1500,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRegistr
         else go({ name: 'today' });
       })}
     />
+    </WaveStage>
     {chat.drawer}
     </>
   );

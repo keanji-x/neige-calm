@@ -1,0 +1,61 @@
+/* Copied from web/src/calm.css xterm container block. Global class names
+   stay so the ported XtermView JSX is unchanged. */
+@layer overrides {
+  .xterm-view {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    block-size: 100%;
+    padding: var(--space-5) var(--space-7) var(--space-6);
+  }
+  .xterm-container {
+    width: 100%;
+    height: 100%;
+  }
+  .xterm-container .xterm,
+  .xterm-container .xterm-viewport,
+  .xterm-container .xterm-screen { background: transparent !important; }
+  .xterm-container .xterm-viewport {
+    overflow-y: hidden !important;
+  }
+  .xterm-status {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+    letter-spacing: var(--tracking-wider);
+    text-transform: lowercase;
+    pointer-events: none;
+  }
+  .xterm-status-closed {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-5);
+    pointer-events: auto;
+    /* stylelint-disable-next-line declaration-property-value-disallowed-list */
+    background: oklch(99% 0 0 / 0.6);
+    backdrop-filter: blur(2px);
+    text-transform: none;
+    font-size: var(--text-base);
+    letter-spacing: var(--tracking-normal);
+  }
+  /* stylelint-disable-next-line declaration-property-value-disallowed-list */
+  :root[data-theme="dark"] .xterm-status-closed { background: oklch(15% 0 0 / 0.55); }
+  .xterm-restart {
+    height: 28px;
+    padding: var(--space-0) var(--space-6);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    color: var(--text);
+    font: inherit;
+    font-size: var(--text-base);
+    cursor: pointer;
+  }
+}
