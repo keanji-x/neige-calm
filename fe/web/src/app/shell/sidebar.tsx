@@ -37,9 +37,9 @@ export type SidebarProps = Readonly<{
   /** Colour is picked here, at random from `COVE_PALETTE` (INV-DUP-006). */
   onCreateCove: (name: string, color: string) => void | Promise<void>;
   onDeleteCove: (coveId: string, signal: AbortSignal) => void | Promise<void>;
-  /** Opens the shell's New wave dialog with this cove preselected. The rail
-   *  does not own the dialog — `AppShell` does, because the cove page's `+`
-   *  opens the same one. */
+  /** Opens the shell's New wave dialog for this cove (hidden on the POST, not
+   *  a picker). The rail does not own the dialog — `AppShell` does, because
+   *  the cove page's `+` opens the same one. */
   onNewWave: (coveId: string) => void;
   onSetPinned: (waveId: string, pinned: boolean) => void | Promise<void>;
   onDeleteWave: (waveId: string, signal: AbortSignal) => void | Promise<void>;

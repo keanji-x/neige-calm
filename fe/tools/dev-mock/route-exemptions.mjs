@@ -13,10 +13,9 @@ const routeExemptions = [
   Object.freeze({ route: "GET /api/coves/resolve", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "POST /api/coves/system", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   // `GET /api/coves/{cove_id}/folders` left the exemption list when the mock
-  // grew a real handler for it: the new-wave form reads it to decide whether to
-  // ask for a path at all, so a mock without it cannot exercise the form's
-  // 0-folder / 1-folder / n-folder branches. It now lives in `DEV_MOCK_ROUTES`.
-  // The write routes stay exempt — claiming a folder needs the filesystem.
+  // grew a real handler for it. The new-wave dialog no longer reads folders
+  // (#1131); the GET stays implemented for other callers. Write routes stay
+  // exempt — claiming a folder needs the filesystem.
   Object.freeze({ route: "POST /api/coves/{cove_id}/folders", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "DELETE /api/coves/{cove_id}/folders/{folder_id}", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "GET /api/fs/gitdiff", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),

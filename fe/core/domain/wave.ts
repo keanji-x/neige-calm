@@ -149,8 +149,9 @@ export type NewWaveBody = Readonly<{
    * Issue #1131 — optional. The new FE omits it; the kernel then stores
    * `$HOME` and does not insert a `cove_folders` row. Present values
    * (including `""`) keep the pre-#1131 absolute-path + claim rules.
+   * `null` matches OpenAPI (`string | null`) and is the same omitted branch.
    */
-  cwd?: string;
+  cwd?: string | null;
   theme: ThemeRgb;
   /**
    * `false` requires `cwd` to already sit under a folder claimed by some cove;

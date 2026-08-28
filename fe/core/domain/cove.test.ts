@@ -85,8 +85,7 @@ describe('cove folders', () => {
     expect(coveFoldersOperation('c/1')).toMatchObject({ method: 'GET', path: '/api/coves/c%2F1/folders' });
   });
 
-  /* INV-NEWWAVE-003 — the new-wave form takes `[0]` as the folder a wave runs
-     in when it shows no choice, so "first" has to be one deterministic thing. */
+  /* Path ascending, ties broken by id — insertion order is not a display order. */
   it('orders by path and breaks ties by id without mutating the input', () => {
     const list = [folder({ id: 3, path: '/srv/b' }), folder({ id: 2, path: '/srv/a' }), folder({ id: 1, path: '/srv/a' })];
     expect(sortedCoveFolders(list).map((f) => f.id)).toEqual([1, 2, 3]);

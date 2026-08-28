@@ -26,18 +26,18 @@ test('creates a wave from the cove page and persists it', async ({ page, request
 
   const dialog = page.getByRole('dialog', { name: 'New wave' });
   const title = `FE e2e wave ${Date.now()}`;
-  const cwd = `/tmp/fe-e2e-${Date.now()}-${cove.id}`;
+  await expect(dialog.getByLabel('Task')).toBeVisible();
+  await expect(dialog.getByLabel('Folder')).toHaveCount(0);
   await dialog.getByLabel('Task').fill(title);
-  // Seeded cove owns no folder yet: the field is `Folder`, and the claim is
-  // derived (`attach_folder: true`), not a checkbox.
-  await dialog.getByLabel('Folder').fill(cwd);
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
     dialog.getByRole('button', { name: 'Create wave' }).click(),
   ]);
-  expect(createRequest.postDataJSON()).toMatchObject({
-    cove_id: cove.id, title, cwd, attach_folder: true,
-  });
+  const body = createRequest.postDataJSON() as Record<string, unknown>;
+  expect(body).toMatchObject({ cove_id: cove.id, title });
+  expect(body).toHaveProperty('theme');
+  expect(body).not.toHaveProperty('cwd');
+  expect(body).not.toHaveProperty('attach_folder');
 
   await expect(page).toHaveURL(/\/wave\/[0-9a-f-]+$/i);
   await expect(page.locator('[data-nc-page-title]', { hasText: title })).toBeVisible();
@@ -49,8 +49,6 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   );
   const foldersResponse = await request.get(`/api/coves/${cove.id}/folders`);
   expect(foldersResponse.ok()).toBe(true);
-  expect(await foldersResponse.json() as { path: string }[]).toEqual(
-    expect.arrayContaining([expect.objectContaining({ path: cwd })]),
-  );
+  expect(await foldersResponse.json()).toEqual([]);
   expect(errors).toEqual([]);
 });

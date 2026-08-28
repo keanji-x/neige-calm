@@ -139,11 +139,8 @@ export function coveFoldersOperation(coveId: string): ApiOperation<CoveFolderWir
 }
 
 /**
- * INV-NEWWAVE-003 — `path` ascending, ties broken by `id`. The new-wave form
- * picks `[0]` as the folder a wave runs in when the user is shown no choice, so
- * "the first one" has to mean the same thing on every render and in every
- * browser: the kernel returns insertion order, which is neither stable across a
- * re-claim nor meaningful to the person reading the list.
+ * `path` ascending, ties broken by `id`. The kernel returns insertion order,
+ * which is neither stable across a re-claim nor a useful display order.
  */
 export function sortedCoveFolders(folders: readonly CoveFolder[]): CoveFolder[] {
   return [...folders].sort((left, right) => (left.path !== right.path

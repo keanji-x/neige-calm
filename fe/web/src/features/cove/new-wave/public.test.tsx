@@ -64,7 +64,6 @@ describe('NewWaveForm is title-only', () => {
     const task = screen.getByLabelText('Task');
     expect(task).toHaveProperty('tagName', 'INPUT');
     expect(task).toHaveProperty('type', 'text');
-    expect(task.className).not.toMatch(/pathInput/);
   });
 
   it('flips the label and blocks submit while submitting', () => {
