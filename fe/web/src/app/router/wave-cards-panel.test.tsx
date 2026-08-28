@@ -47,11 +47,11 @@ const ORDINARY_CODEX = card({ id: 'card-codex', kind: 'codex', title: 'Codex cha
 const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_CODEX];
 
 /*
- * S1 lands no card with a surface, so the visible branch of the partition has
- * no production entry to exercise yet. This fixture is the *only* stub here:
- * everything else — registry, built-ins, route, panel — is production code.
- * Without it the test could not tell "kept every non-headless card" apart from
- * "kept only the cards no adapter claimed".
+ * Terminal now owns a surface; this extra fixture still covers the unknown
+ * adapter-miss branch so the panel test can tell "kept every non-headless
+ * card" apart from "kept only the cards no adapter claimed". This fixture
+ * is the *only* stub here: everything else — registry, built-ins, route,
+ * panel — is production code.
  *
  * The type is deliberately **not** a member of `BUILTIN_CARD_ORDER`. Registry
  * registration is keyed by type and overwrites, and this runs after
@@ -61,15 +61,8 @@ const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_
  * `surface-fixture` out of the tuple for the same reason.
  *
  * What makes it "a card with a surface" here is that it resolves and does not
- * declare `headless` — not its component. S1 mounts no card component at all:
- * the route maps every surviving slot back to `slot.wire` and the panel renders
- * `card.title ?? card.kind` (`app/router/public.tsx` `panelCards`,
- * `features/wave/page/public.tsx` CARDS module). The JSX below is therefore
- * never rendered by this test — the wire-order assertion reads `'Surface'`, the
- * wire title, and would read `surface for card-surface` if a component were
- * mounted. It is written as real markup only so the fixture stands in for the
- * surface-owning entry S2's grid will actually mount; nothing about a surface
- * is *proved* by rendering in this slice.
+ * declare `headless`. The panel itself still reads `card.title ?? card.kind`;
+ * the fixture's JSX is for the grid cell once a row is opened.
  */
 type SurfaceFixtureCard = Readonly<{ type: 'panel-surface-fixture'; id: string }>;
 const SURFACE_FIXTURE_ENTRY: CardEntry<SurfaceFixtureCard> = {
@@ -166,6 +159,26 @@ describe('wave route CARDS panel', () => {
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Back to wave' }));
+    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('does not mount the board until a card is opened, then keeps it after close', async () => {
+    setup();
+    await inventoryLabels();
+    expect(document.querySelector('[data-nc-card-board]')).toBeNull();
+    await userEvent.click(await screen.findByRole('button', { name: 'Terminal one' }));
+    expect(document.querySelector('[data-nc-card-board]')).toBeTruthy();
+    expect(document.querySelector('[data-nc-terminal-card]')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Back to wave' }));
+    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
+    expect(document.querySelector('[data-nc-card-board]')).toBeTruthy();
+  });
+
+  it('closes the open grid on Escape', async () => {
+    setup();
+    await userEvent.click(await screen.findByRole('button', { name: 'Terminal one' }));
+    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
+    await userEvent.keyboard('{Escape}');
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
   });
 

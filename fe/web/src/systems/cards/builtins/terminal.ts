@@ -1,6 +1,6 @@
 // The cooked-shell PTY card. Kernel kind `'terminal'`. Owns a surface.
 
-import type { CardEntry, KernelCardInput } from '../registry.js';
+import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
 import { TerminalCardView } from './terminal-card.tsx';
 
 declare module '../registry.js' {
@@ -24,7 +24,7 @@ function terminalIdFromPayload(payload: unknown): string | null {
 
 export const TERMINAL_CARD_ENTRY = Object.freeze({
   type: 'terminal',
-  component: (props: { card: TerminalCard }) => TerminalCardView(props),
+  component: (props: CardComponentProps<TerminalCard>) => TerminalCardView(props),
   headless: false,
   defaultSize: Object.freeze({ w: 6, h: 10, minW: 4, minH: 6 }),
   claim: Object.freeze({ mode: 'exact', kind: 'terminal' } as const),

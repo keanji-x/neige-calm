@@ -75,7 +75,8 @@ function fallbackExecCommandCopy(text: string): boolean {
   return ok;
 }
 
-export function osc52HostMayWrite(host: ParentNode | null): boolean {
+export function osc52HostMayWrite(host: ParentNode | null, visible = true): boolean {
+  if (!visible) return false;
   if (typeof document === 'undefined' || host === null) return false;
   if (document.hidden) return false;
   if (typeof document.hasFocus === 'function' && !document.hasFocus()) {

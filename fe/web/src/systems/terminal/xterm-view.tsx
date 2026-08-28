@@ -97,6 +97,11 @@ interface XtermViewProps {
    * badge immediately without waiting for the WS attach.
    */
   onExitChange?: (exit: ExitChange | null) => void;
+  /**
+   * Overlay visibility. The view stays mounted after the first open
+   * (keep-alive). Hidden cards must not ResizeCommit or accept OSC 52.
+   */
+  visible?: boolean;
 }
 
 export interface XtermViewHandle {
@@ -186,6 +191,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   theme = 'light',
   onRoleChange,
   onExitChange,
+  visible = true,
 }, ref) {
   // #177 — Playwright instrumentation. Gated on `?testMounts=1` so
   // production users never carry the side effect. A real mount bumps
@@ -218,6 +224,12 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
   // the Terminal on (re)mount or after a reconnect.
   const latestThemeRef = useRef<'light' | 'dark'>(theme);
   latestThemeRef.current = theme;
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const flushResizeRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (visible) flushResizeRef.current?.();
+  }, [visible]);
   const [status, setStatus] = useState<Status>('connecting');
   // #306 — `closeInfo` / `exitInfo` state retained as setter-only seams:
   // the WS handlers still write the latest values (useful for debug-
@@ -459,7 +471,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     term.parser.registerOscHandler(
       52,
       createOsc52Handler(copyTextToClipboard, () =>
-        osc52HostMayWrite(container),
+        osc52HostMayWrite(container, visibleRef.current),
       ),
     );
     // #554 — port VS Code's default Mac sendSequence keybindings.
@@ -967,6 +979,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
       pending = true;
       requestAnimationFrame(() => {
         pending = false;
+        if (!visibleRef.current) return;
         // Don't fit() against a collapsed container — fit() mutates the local
         // xterm in-place, so even if we suppress the daemon ResizeCommit the
         // local buffer would be left at e.g. 2x1 and interpret incoming
@@ -1028,6 +1041,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
         }
       });
     };
+    flushResizeRef.current = onResize;
     const ro = new ResizeObserver(onResize);
     ro.observe(container);
 
@@ -1037,6 +1051,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     void ptySeq;
 
     return () => {
+      if (flushResizeRef.current === onResize) flushResizeRef.current = null;
       ro.disconnect();
       dataSub.dispose();
       ws.onopen = null;

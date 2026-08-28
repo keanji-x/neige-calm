@@ -1460,6 +1460,9 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           items={gridItems}
           host={cardRuntime.host}
           activeCardId={requestedCardId}
+          onClose={knownCard
+            ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
+            : undefined}
         />
       }
       onCloseBoard={knownCard

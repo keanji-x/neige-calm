@@ -11,7 +11,10 @@ function readDocumentTheme(): 'light' | 'dark' {
   return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
 }
 
-export function TerminalSurface({ card }: { card: { readonly id: string; readonly terminalId: string | null } }) {
+export function TerminalSurface({ card, visible = true }: {
+  card: { readonly id: string; readonly terminalId: string | null };
+  visible?: boolean;
+}) {
   const [resolved, setResolved] = useState<'light' | 'dark'>(readDocumentTheme);
   useEffect(() => {
     const root = document.documentElement;
@@ -21,5 +24,5 @@ export function TerminalSurface({ card }: { card: { readonly id: string; readonl
     return () => observer.disconnect();
   }, []);
   if (card.terminalId === null) return null;
-  return <XtermView terminalId={card.terminalId} theme={resolved} />;
+  return <XtermView terminalId={card.terminalId} theme={resolved} visible={visible} />;
 }
