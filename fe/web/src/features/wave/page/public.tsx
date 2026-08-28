@@ -16,7 +16,7 @@
 
 import type { ReactNode } from 'react';
 
-import { waveDisplayTitle, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
+import { waveDisplayTitle, type CardWire, type Wave, type WaveLifecycle } from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
@@ -38,20 +38,41 @@ export type WavePageProps = Readonly<{
   conversationList?: ReactNode;
   /** The conversation module head's `+`, composed by `app/router`. */
   conversationAction?: ReactNode;
+  /** The Cards module head's `+`, composed by `app/router`. */
+  cardsAction?: ReactNode;
+  onOpenCard?: (cardId: string) => void;
+  /**
+   * The card grid, composed by `app/router`. Positioned over the document
+   * column so the page title stays the only title bar — a second overlay
+   * header was overflowing the measure.
+   */
+  board?: ReactNode;
+  onCloseBoard?: () => void;
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
   onRenameWave: (title: string) => void | Promise<void>;
   onDeleteWave: (signal: AbortSignal) => void | Promise<void>;
 }>;
 
 
+/** Draft / done / canceled are idle facts; they do not earn a header badge. */
+function headerLifecycle(lifecycle: WaveLifecycle): WaveLifecycle | null {
+  if (lifecycle === 'draft' || lifecycle === 'done' || lifecycle === 'canceled') return null;
+  return lifecycle;
+}
+
 export function WavePage({
   wave, cards, report, backlinks, conversationList, conversationAction,
-  onRenameWave, onDeleteWave,
+  cardsAction, onOpenCard, board, onCloseBoard, onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteWave(signal));
+  const boardOpen = onCloseBoard !== undefined;
+  const lifecycle = headerLifecycle(wave.lifecycle);
 
   return (
-    <section className={styles.page} data-nc-wave-page="">
+    <section
+      className={`${styles.page} ${boardOpen ? styles.pageBoard : ''}`}
+      data-nc-wave-page=""
+    >
       {/*
         One row, like every other route.
 
@@ -65,24 +86,41 @@ export function WavePage({
         was sitting next to the cove's own name — the same defect the cove page
         header had, one level down.
       */}
+      {/*
+        Page-aligned, not document-aligned. `align="document"` pushed the
+        title into the centred prose column, so it sat in the middle while
+        the outline hung in the empty gutter to its left and the panel card
+        sat on the right. The title belongs on the page's leading edge; the
+        outline then lives under this header in that same gutter.
+      */}
       <PageHeader
-        align="document"
         title={
-          <h1 className={styles.titleHeading}><EditableTitle
-            value={waveDisplayTitle(wave.title)}
-            onCommit={onRenameWave}
-            editLabel="Rename wave"
-            inputLabel="Wave title"
-            className={styles.title}
-            isPageTitle
-          /></h1>
+          <>
+            {onCloseBoard !== undefined && (
+              <button
+                type="button"
+                data-nc-role="icon"
+                className={styles.headerBack}
+                aria-label="Back to wave"
+                title="Back to wave"
+                onClick={onCloseBoard}
+              >
+                <Icon name="arrow-left" />
+              </button>
+            )}
+            <h1 className={styles.titleHeading}><EditableTitle
+              value={waveDisplayTitle(wave.title)}
+              onCommit={onRenameWave}
+              editLabel="Rename wave"
+              inputLabel="Wave title"
+              className={styles.title}
+              isPageTitle
+            /></h1>
+          </>
         }
         meta={
           <>
-            {/* Status is a different *kind* of thing from a title, so it is
-                carried by shape and semantic colour, never by size — which is
-                exactly why it can sit next to 18px type without competing. */}
-            <WaveLifecycleBadge lifecycle={wave.lifecycle} />
+            {lifecycle !== null && <WaveLifecycleBadge lifecycle={lifecycle} />}
             {wave.anyCardNeedsInput && (
               <span className={styles.needsInput}>
                 <span className={styles.needsInputDot} aria-hidden="true" />
@@ -125,6 +163,7 @@ export function WavePage({
          */
       />
 
+      <div className={styles.workspace}>
       <div className={styles.content}>
         {/*
           The wave report, composed by `app/router` from this wave's
@@ -144,17 +183,26 @@ export function WavePage({
         */}
         <aside className={styles.panel}>
           <PanelCard>
-            <PanelModule title="Cards">
+            <PanelModule title="Cards" action={cardsAction}>
               {cards.length === 0
                 ? <PanelEmpty>No cards yet.</PanelEmpty>
                 : (
                   <ul className={styles.cards} data-nc-card-inventory="">
-                    {cards.map((card) => (
-                      <li key={card.id} className={styles.cardRow}>
-                        <span className={styles.cardKind}>{card.title ?? card.kind}</span>
-                        {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
-                      </li>
-                    ))}
+                    {cards.map((card) => {
+                      const label = card.title ?? card.kind;
+                      return (
+                        <li key={card.id}>
+                          <button
+                            type="button"
+                            className={styles.cardRow}
+                            onClick={() => onOpenCard?.(card.id)}
+                          >
+                            <span className={styles.cardKind}>{label}</span>
+                            {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
+                          </button>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
             </PanelModule>
@@ -188,6 +236,8 @@ export function WavePage({
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
+      </div>
+      {board}
       </div>
 
       <ConfirmDialog

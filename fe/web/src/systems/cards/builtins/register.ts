@@ -13,6 +13,7 @@
 
 import type { CardEntry, CardRegistry, RegisteredCard } from '../registry.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
+import { TERMINAL_CARD_ENTRY } from './terminal.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
 
 export const BUILTIN_CARD_ORDER = Object.freeze([
@@ -168,6 +169,7 @@ export function registerAvailableBuiltinCards(registry: CardRegistry): void {
   // and `BuiltinRegistrar.of(entry)` is the practical way in — see its doc
   // comment for what that forces and for the escapes it does not close.
   const registrars: BuiltinRegistrarMap = {
+    terminal: BuiltinRegistrar.of(TERMINAL_CARD_ENTRY),
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
     'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
   };

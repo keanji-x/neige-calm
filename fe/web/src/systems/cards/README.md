@@ -2,7 +2,7 @@
 
 ## 用途
 
-`public.ts` 是 registry、kind resolver、host capability、资源生命周期**与内置卡片组合**的唯一公开入口。built-in 的集合、注册顺序与 kernel 解析适配器都归本模块所有，实现落在 `builtins/`（#1091）：卡片有独立资源生命周期，只有本模块能保证解析顺序与生命周期语义一致；页面布局仍属于 feature。terminal、codex、claude、iframe、file-viewer、plugin-iframe 的 entry 尚未落地，届时加入同一个 `builtins/` 组合，不另开注册路径。
+`public.ts` 是 registry、kind resolver、host capability、资源生命周期**与内置卡片组合**的唯一公开入口。built-in 的集合、注册顺序与 kernel 解析适配器都归本模块所有，实现落在 `builtins/`（#1091）：卡片有独立资源生命周期，只有本模块能保证解析顺序与生命周期语义一致；页面布局仍属于 feature。已落地：terminal、spec、wave-report。codex、claude、iframe、file-viewer、plugin-iframe 仍未注册，届时加入同一个 `builtins/` 组合，不另开注册路径。
 
 ## 契约
 

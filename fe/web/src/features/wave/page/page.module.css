@@ -51,7 +51,41 @@
     color: var(--text);
   }
 
-  .titleHeading { min-inline-size: 0; }
+  /* Grow so the rename control's max-inline-size: 100% has a definite
+     parent. Without flex-grow that 100% resolved against a 0-width box. */
+  .titleHeading {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+    overflow: hidden;
+  }
+
+  .pageBoard {
+    overflow: hidden;
+  }
+
+  .headerBack {
+    display: grid;
+    flex: none;
+    place-items: center;
+    inline-size: var(--control-h);
+    block-size: var(--control-h);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    cursor: pointer;
+  }
+
+  .headerBack:hover,
+  .headerBack:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  .workspace {
+    position: relative;
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    min-block-size: 0;
+    min-inline-size: 0;
+  }
 
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry
      a page's attention — unlike progress/eta/now, which have no writer at all. */
@@ -186,9 +220,18 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--space-2);
+    inline-size: 100%;
     min-block-size: var(--row-h-sm);
     padding-inline: var(--space-2);
     border-radius: var(--radius-sm);
+    color: inherit;
+    cursor: pointer;
+    text-align: start;
+  }
+
+  .cardRow:hover,
+  .cardRow:focus-visible {
+    background: var(--overlay-hover);
   }
 
   .cardKind {

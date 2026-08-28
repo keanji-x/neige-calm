@@ -31,9 +31,9 @@ describe('headless card filtering', () => {
     // Two headless cards sit in front. A display index would report 0 and 1
     // here, and `detail.cards[0]` is the spec card — removing `term-1` would
     // delete the harness instead.
-    expect(unknown.map((slot) => [slot.wire.id, slot.originalIndex])).toEqual([['term-1', 2], ['term-2', 3]]);
-    expect(visible).toEqual([]);
-    for (const slot of unknown) expect(cards[slot.originalIndex]).toBe(slot.wire);
+    expect(visible.map((slot) => [slot.wire.id, slot.originalIndex])).toEqual([['term-1', 2], ['term-2', 3]]);
+    expect(unknown).toEqual([]);
+    for (const slot of visible) expect(cards[slot.originalIndex]).toBe(slot.wire);
   });
 
   it('[INV-CARD-226] drops resolved spec and wave-report cards from both branches', () => {
@@ -79,8 +79,7 @@ describe('headless card filtering', () => {
   });
 
   it('routes cards with a surface into the visible branch with their wire and index', () => {
-    // No built-in has a surface in S1, so this exercises the branch with a
-    // registered adapter of its own rather than asserting an empty list.
+    // Extra surface adapter on top of the landed terminal entry.
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     registry.register({
@@ -99,8 +98,8 @@ describe('headless card filtering', () => {
     ];
     const { visible, unknown } = partitionWaveCards(registry, cards);
     expect(visible.map((slot) => [slot.card.type, slot.wire.id, slot.originalIndex]))
-      .toEqual([['surface-fixture', 'surface-1', 1]]);
-    expect(unknown.map((slot) => [slot.wire.id, slot.originalIndex])).toEqual([['term-1', 2]]);
+      .toEqual([['surface-fixture', 'surface-1', 1], ['terminal', 'term-1', 2]]);
+    expect(unknown).toEqual([]);
   });
 
   it('preserves arrival order and does not sort', () => {
@@ -108,8 +107,8 @@ describe('headless card filtering', () => {
       wire({ id: 'b', kind: 'terminal', sort: 9 }),
       wire({ id: 'a', kind: 'terminal', sort: 1 }),
     ];
-    const { unknown } = partitionWaveCards(bootedRegistry(), cards);
-    expect(unknown.map((slot) => slot.wire.id)).toEqual(['b', 'a']);
+    const { visible } = partitionWaveCards(bootedRegistry(), cards);
+    expect(visible.map((slot) => slot.wire.id)).toEqual(['b', 'a']);
   });
 
   it('returns empty branches for an empty wave', () => {

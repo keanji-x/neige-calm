@@ -6,6 +6,7 @@ import { partitionWaveCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
+import { TERMINAL_CARD_ENTRY } from './terminal.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
 
 declare module '../registry.js' {
@@ -15,7 +16,7 @@ declare module '../registry.js' {
   }
 }
 
-const LANDED_IN_S1 = ['spec', 'wave-report'] as const;
+const LANDED = ['terminal', 'spec', 'wave-report'] as const;
 
 describe('builtin card composition contract', () => {
   it('[INV-CARD-225] pins the eight-item order tuple', () => {
@@ -29,16 +30,17 @@ describe('builtin card composition contract', () => {
     expect(new Set(BUILTIN_CARD_ORDER).size).toBe(8);
   });
 
-  it('registers only the entries that exist, with no placeholders for the six that do not', () => {
+  it('registers only the entries that exist, with no placeholders for the five that do not', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
-    expect(registry.entries().map((entry) => entry.type)).toEqual([...LANDED_IN_S1]);
+    expect(registry.entries().map((entry) => entry.type)).toEqual([...LANDED]);
     for (const type of BUILTIN_CARD_ORDER) {
-      if ((LANDED_IN_S1 as readonly string[]).includes(type)) expect(registry.get(type)).toBeDefined();
+      if ((LANDED as readonly string[]).includes(type)) expect(registry.get(type)).toBeDefined();
       // A no-op/unknown placeholder would satisfy "eight entries" and then
       // swallow real kernel cards into a card that renders nothing.
       else expect(registry.get(type), `${type} must be absent, not a placeholder`).toBeUndefined();
     }
+    expect(registry.get('terminal')).toBe(TERMINAL_CARD_ENTRY);
     expect(registry.get('spec')).toBe(SPEC_CARD_ENTRY);
     expect(registry.get('wave-report')).toBe(WAVE_REPORT_CARD_ENTRY);
   });
@@ -52,7 +54,7 @@ describe('builtin card composition contract', () => {
     expect([...tupleIndexes]).toEqual([...tupleIndexes].sort((left, right) => left - right));
     // spec (index 2) and wave-report (index 4) are separated by `claude`, which
     // is skipped: the relative order must survive the hole.
-    expect(tupleIndexes).toEqual([2, 4]);
+    expect(tupleIndexes).toEqual([0, 2, 4]);
   });
 
   it('[INV-CARD-180] leaves the shared codex kind to a codex adapter first, then falls back to spec', () => {
@@ -184,7 +186,8 @@ describe('builtin card composition contract', () => {
   describe('every registered entry mints cards of its own type', () => {
     // Keyed by the landed types, so a slice that registers a new built-in must
     // hand it a probe rather than quietly leave it unasserted.
-    const PROBE_BY_TYPE: Readonly<Record<(typeof LANDED_IN_S1)[number], KernelCardInput>> = Object.freeze({
+    const PROBE_BY_TYPE: Readonly<Record<(typeof LANDED)[number], KernelCardInput>> = Object.freeze({
+      terminal: { id: 'probe-term', kind: 'terminal', payload: { terminal_id: 't1' } },
       spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
       'wave-report': { id: 'probe-report', kind: 'wave-report', payload: null },
     });
@@ -201,7 +204,7 @@ describe('builtin card composition contract', () => {
       const entries = registry.entries();
       expect(entries.length).toBeGreaterThan(0);
       for (const entry of entries) {
-        const probe = PROBE_BY_TYPE[entry.type as (typeof LANDED_IN_S1)[number]];
+        const probe = PROBE_BY_TYPE[entry.type as (typeof LANDED)[number]];
         expect(
           entry.fromKernel?.(probe)?.type,
           `${entry.type} must mint its own type, or the headless lookup reads another entry`,
@@ -220,7 +223,7 @@ describe('builtin card composition contract', () => {
     const second = createCardRegistry();
     registerAvailableBuiltinCards(first);
     registerAvailableBuiltinCards(second);
-    expect(second.entries().map((entry) => entry.type)).toEqual([...LANDED_IN_S1]);
+    expect(second.entries().map((entry) => entry.type)).toEqual([...LANDED]);
     expect(registerAvailableBuiltinCards).toHaveLength(1);
   });
 });

@@ -187,6 +187,27 @@ export function deleteWaveOperation(waveId: string): ApiOperation<undefined> {
   return { method: 'DELETE', path: `/api/waves/${encodeURIComponent(waveId)}`, responseSchema: z.undefined() };
 }
 
+export type NewTerminalCardBody = Readonly<{
+  theme: ThemeRgb;
+  cwd?: string;
+  program?: string;
+  title?: string | null;
+  sort?: number | null;
+  env?: Readonly<Record<string, string>>;
+}>;
+
+export function createTerminalCardOperation(
+  waveId: string,
+  body: NewTerminalCardBody,
+): ApiOperation<CardWire> {
+  return {
+    method: 'POST',
+    path: `/api/waves/${encodeURIComponent(waveId)}/terminal-cards`,
+    body,
+    responseSchema: cardWireSchema,
+  };
+}
+
 export function overlaysByKindOperation(entityKind: 'wave' | 'card'): ApiOperation<OverlayWire[]> {
   return {
     method: 'GET',

@@ -9,3 +9,5 @@
 @import "./astryx-theme.css" layer(astryx);
 /* The frozen dialog primitive's hard-coded global class names (§0.4 CR-4). */
 @import "./dialog.css" layer(ui);
+@import "./wave-grid.css" layer(overrides);
+@import "./xterm-view.css" layer(overrides);

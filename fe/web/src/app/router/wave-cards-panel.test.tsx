@@ -8,6 +8,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -148,8 +149,8 @@ describe('wave route CARDS panel', () => {
   it('[INV-CARD-226] keeps unclaimed cards, because an unlisted card is worse than an unrecognised one', async () => {
     setup();
     const labels = await inventoryLabels();
-    // Ordinary codex and terminal have no adapter in S1. They are unknown, not
-    // headless, and hiding them would lose real cards from the product.
+    // Ordinary codex still has no adapter. Terminal now owns a surface, so it
+    // stays listed as a real card rather than an unknown diagnostic.
     expect(labels.some((label) => label.includes('Codex chat'))).toBe(true);
     expect(labels.some((label) => label.includes('Terminal one'))).toBe(true);
   });
@@ -157,6 +158,15 @@ describe('wave route CARDS panel', () => {
   it('[INV-CARD-226] renders exactly the surviving cards in the kernel wire order', async () => {
     setup();
     expect(await inventoryLabels()).toEqual(['Terminal one', 'Surface', 'Codex chat']);
+  });
+
+  it('opens the card grid on the clicked terminal and can return', async () => {
+    setup();
+    await userEvent.click(await screen.findByRole('button', { name: 'Terminal one' }));
+    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
+    expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Back to wave' }));
+    expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
   it('[INV-CARD-226] keeps a card with a surface, so the filter is headless-only and not adapter-only', async () => {

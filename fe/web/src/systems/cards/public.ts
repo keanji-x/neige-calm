@@ -44,3 +44,8 @@ export type {
   WaveCardPartition,
 } from './builtins/headless-filter.js';
 export { partitionWaveCards } from './builtins/headless-filter.js';
+export { BoardHost } from './ui/board-host.js';
+export type { BoardHostItem } from './ui/board-host.js';
+export { GRID_COLS, GRID_MARGIN, GRID_ROW_HEIGHT, layoutToPositions, packCards, reconcileLayout } from './ui/layout.js';
+export type { GridPlacement, StoredPosition, StoredPositions } from './ui/layout.js';
+

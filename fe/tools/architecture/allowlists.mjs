@@ -9,6 +9,9 @@
 export const moduleRuntimeStateExceptions = Object.freeze([
   Object.freeze({ path: 'web/src/main.tsx', reason: 'App bootstrap must retain the browser mount node while composing React.' }),
   Object.freeze({ path: 'web/src/app/router/idempotency-key.ts', reason: 'The fallback mint counter must outlive every panel mount: the conversation panel is a per-page hook, so a remount-scoped counter would re-mint a key the same cove already used.' }),
+  Object.freeze({ path: 'web/src/systems/terminal/xterm-view.tsx', reason: 'Port of web/src/XtermView.tsx: palette tables, protocol constants, and the xterm.js Terminal constructor live at module scope in the original file.' }),
+  Object.freeze({ path: 'web/src/systems/terminal/theme-rgb.ts', reason: 'Port of web/src/api/themeRgb.ts; fg/bg tuples must stay mutable [number, number, number] for the terminal wire type.' }),
+  Object.freeze({ path: 'web/src/systems/terminal/osc52.ts', reason: 'Port of web/src/input/osc52.ts; encoded-length constant is derived at module scope in the original file.' }),
 ]);
 export const moduleRuntimeStateAllowlist = Object.freeze(moduleRuntimeStateExceptions.map(({ path }) => path));
 

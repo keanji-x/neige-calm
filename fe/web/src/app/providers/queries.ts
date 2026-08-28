@@ -27,9 +27,10 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  createWaveOperation, deleteWaveOperation, overlaysByKindOperation, toWave, updateWaveOperation,
-  waveActivityFrom, waveDetailOperation, wavesInCoveOperation,
-  type NewWaveBody, type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody,
+  createTerminalCardOperation, createWaveOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
+  updateWaveOperation, waveActivityFrom, waveDetailOperation, wavesInCoveOperation,
+  type CardWire, type NewTerminalCardBody, type NewWaveBody, type OverlayWire, type Wave,
+  type WaveDetailWire, type WavePatchBody,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, resetSpecOperation, sendSpecInputOperation,
@@ -398,6 +399,7 @@ export type WaveMutations = Readonly<{
   create: (body: NewWaveBody) => Promise<Wave>;
   patch: (waveId: string, coveId: string, body: WavePatchBody) => Promise<Wave>;
   setPinned: (waveId: string, coveId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
+  createTerminal: (waveId: string, body: NewTerminalCardBody) => Promise<CardWire>;
   remove: (waveId: string, coveId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
@@ -438,11 +440,24 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
     },
   });
+  const createTerminal = useMutation({
+    mutationFn: ({ waveId, body }: { waveId: string; body: NewTerminalCardBody }) =>
+      runOperation(transport, createTerminalCardOperation(waveId, body), unauthorized),
+    onSuccess: (card) => {
+      client.setQueryData(queryKeys.waveDetail(card.wave_id), (previous: WaveDetailWire | undefined) => {
+        if (previous === undefined) return previous;
+        if (previous.cards.some((existing) => existing.id === card.id)) return previous;
+        return { ...previous, cards: [...previous.cards, card] };
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+    },
+  });
   const patchWave = async (waveId: string, coveId: string, body: WavePatchBody) =>
     toWave(await patch.mutateAsync({ waveId, coveId, body }));
   return {
     create: async (body) => toWave(await create.mutateAsync(body)),
     patch: patchWave,
+    createTerminal: async (waveId, body) => createTerminal.mutateAsync({ waveId, body }),
     // `pinned_at` is both the flag and the ordering key, so unpinning is a
     // null write rather than a delete of some separate row.
     setPinned: (waveId, coveId, pinned, nowMs) =>

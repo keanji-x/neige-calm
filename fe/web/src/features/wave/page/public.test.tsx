@@ -15,6 +15,22 @@ describe('WavePage header', () => {
     expect(screen.getByRole('img', { name: 'Wave lifecycle: Blocked' })).toBeTruthy();
   });
 
+  it('does not put Draft in the header', () => {
+    renderPage({ wave: wave({ title: 'Ship the rewrite', lifecycle: 'draft' }) });
+    expect(screen.queryByRole('img', { name: 'Wave lifecycle: Draft' })).toBeNull();
+  });
+
+  it('hides done and canceled, and still shows failed', () => {
+    renderPage({ wave: wave({ lifecycle: 'done' }) });
+    expect(screen.queryByRole('img', { name: 'Wave lifecycle: Done' })).toBeNull();
+    cleanup();
+    renderPage({ wave: wave({ lifecycle: 'canceled' }) });
+    expect(screen.queryByRole('img', { name: 'Wave lifecycle: Canceled' })).toBeNull();
+    cleanup();
+    renderPage({ wave: wave({ lifecycle: 'failed' }) });
+    expect(screen.getByRole('img', { name: 'Wave lifecycle: Failed' })).toBeTruthy();
+  });
+
   it('falls back to the untitled label for a blank title', () => {
     renderPage({ wave: wave({ title: '  ' }) });
     expect(screen.getByRole('button', { name: 'Rename wave' }).textContent).toBe('Untitled wave');
@@ -29,6 +45,17 @@ describe('WavePage header', () => {
     renderPage({ wave: wave({ title: 'Ship the rewrite' }) });
     expect(screen.queryByRole('button', { name: 'Back to cove' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Today' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Back to wave' })).toBeNull();
+  });
+
+  it('puts Back on the page title row when the card grid is open', async () => {
+    const onCloseBoard = vi.fn();
+    renderPage({
+      board: <div data-nc-card-grid="">grid</div>,
+      onCloseBoard,
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Back to wave' }));
+    expect(onCloseBoard).toHaveBeenCalledOnce();
   });
 });
 
@@ -46,8 +73,18 @@ describe('WavePage card inventory', () => {
   // thing twice in a 308px panel column.
   it('labels a card by its title, and does not also print the kind', () => {
     renderPage({ cards: [card({ id: 'k1', kind: 'terminal', title: 'Build log' })] });
-    expect(screen.getByText('Build log')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Build log' })).toBeTruthy();
     expect(screen.queryByText('terminal')).toBeNull();
+  });
+
+  it('invokes onOpenCard with the wire id', async () => {
+    const onOpenCard = vi.fn();
+    renderPage({
+      cards: [card({ id: 'k1', kind: 'terminal', title: 'Build log' })],
+      onOpenCard,
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Build log' }));
+    expect(onOpenCard).toHaveBeenCalledWith('k1');
   });
 
   it('falls back to the kind when a card has no title', () => {
