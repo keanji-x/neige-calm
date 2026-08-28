@@ -1330,7 +1330,14 @@ export interface components {
         CreateWaveRequest: {
             attach_folder?: boolean;
             cove_id: string;
-            cwd: string;
+            /**
+             * @description Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
+             *     process cwd) on the wave row and skip `cove_folders`. Present values
+             *     (including the empty string) keep the pre-#1131 absolute-path + claim
+             *     rules. The SQLite column stays NOT NULL; only the request field is
+             *     optional.
+             */
+            cwd?: string | null;
             /**
              * @description One-time creation instruction: copy this wave's report snapshot into
              *     the new report inside the wave-create transaction.

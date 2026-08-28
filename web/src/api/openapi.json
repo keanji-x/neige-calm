@@ -4789,7 +4789,6 @@
         "required": [
           "cove_id",
           "title",
-          "cwd",
           "theme"
         ],
         "properties": {
@@ -4800,7 +4799,11 @@
             "type": "string"
           },
           "cwd": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else\nprocess cwd) on the wave row and skip `cove_folders`. Present values\n(including the empty string) keep the pre-#1131 absolute-path + claim\nrules. The SQLite column stays NOT NULL; only the request field is\noptional."
           },
           "fork_report_from": {
             "type": [

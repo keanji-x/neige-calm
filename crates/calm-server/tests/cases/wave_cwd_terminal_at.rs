@@ -142,6 +142,25 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     (status, json)
 }
 
+/// Mirror `routes::codex_cards::default_cwd` + the route's `normalize_path`
+/// (trim one trailing slash except `/`).
+fn expected_default_cwd() -> String {
+    let raw = std::env::var("HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string()
+        });
+    if raw == "/" {
+        "/".to_string()
+    } else {
+        raw.strip_suffix('/').unwrap_or(&raw).to_string()
+    }
+}
+
 async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
     let resp = app
         .oneshot(
@@ -574,6 +593,193 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
     let user_folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(user_folders.len(), 1);
     assert_eq!(user_folders[0].path, "/srv/projects/beta");
+}
+
+/// Issue #1131 — omitted `cwd` (and `attach_folder`) is not the same as
+/// sending `cwd: "$HOME"`. Omission stores `default_cwd()` / `$HOME` on
+/// the wave row and skips `cove_folders` entirely. An *explicit* HOME
+/// path with `attach_folder: false` and no prior claim still 409s —
+/// that is `post_api_waves_rejects_unclaimed_cwd_without_attach_folder`.
+/// Do not special-case an explicit HOME path; only omission takes this
+/// branch. Never claim `$HOME` into `cove_folders` (longest-prefix
+/// would poison every other cove).
+#[tokio::test]
+async fn post_api_waves_omitted_cwd_defaults_to_home_and_skips_cove_folders() {
+    let boot = boot().await;
+    assert_eq!(
+        boot.repo
+            .cove_folders_by_cove(&boot.cove_id)
+            .await
+            .unwrap()
+            .len(),
+        0,
+        "fixture cove must start with no claims so 'unchanged' is empty"
+    );
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-title-only",
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    // Stub daemon: spawn may 500 post-commit; wave row still lands.
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
+    );
+
+    let expected_cwd = expected_default_cwd();
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 1, "exactly one wave created");
+    assert_eq!(waves[0].cwd, expected_cwd);
+    assert_eq!(waves[0].title, "w-title-only");
+
+    let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
+    assert!(
+        folders.is_empty(),
+        "omitted cwd must not mint a cove_folders row; got {folders:?}"
+    );
+
+    // `cwd: null` is the same omitted branch as a missing key.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-null-cwd",
+            "cwd": null,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "null cwd: expected 201 or 500; got {status} body={body}",
+    );
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 2, "null cwd must also mint a wave");
+    assert!(waves.iter().all(|w| w.cwd == expected_cwd));
+    assert!(
+        boot.repo
+            .cove_folders_by_cove(&boot.cove_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "null cwd must not mint a cove_folders row"
+    );
+}
+
+/// Explicit `cwd: $HOME` is *not* the omitted-cwd branch. A user cove
+/// with no claims still 409s when `attach_folder` is false — production
+/// only skips the scan when `cwd` is missing/`null`. Do not special-case
+/// HOME as a present path; that would poison every other cove via
+/// longest-prefix if it ever claimed.
+#[tokio::test]
+async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_409() {
+    let boot = boot().await;
+    let home = expected_default_cwd();
+    assert!(
+        home.starts_with('/'),
+        "fixture HOME/default_cwd must be absolute so this hits the claim path, not the 400; got `{home}`"
+    );
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-explicit-home",
+            "cwd": home,
+            "attach_folder": false,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
+    assert_eq!(
+        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        0
+    );
+    assert_eq!(
+        boot.repo
+            .cove_folders_by_cove(&boot.cove_id)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+/// `cwd: ""` is present (Some), not omitted. Empty string is not
+/// absolute → 400, no wave row. Distinct from missing/`null`.
+#[tokio::test]
+async fn post_api_waves_empty_string_cwd_is_400() {
+    let boot = boot().await;
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-empty-cwd",
+            "cwd": "",
+            "attach_folder": false,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body = {body}");
+    assert_eq!(
+        boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
+        0
+    );
+    assert_eq!(
+        boot.repo
+            .cove_folders_by_cove(&boot.cove_id)
+            .await
+            .unwrap()
+            .len(),
+        0
+    );
+}
+
+/// Omitting cwd while sending `attach_folder: true` still cannot claim
+/// `$HOME`. `into_parts` forces attach_folder false and `FolderClaim::Skip`.
+#[tokio::test]
+async fn post_api_waves_omitted_cwd_ignores_attach_folder_true() {
+    let boot = boot().await;
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "w-omit-attach-true",
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert!(
+        status == StatusCode::CREATED || status == StatusCode::INTERNAL_SERVER_ERROR,
+        "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
+    );
+
+    let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
+    assert_eq!(waves.len(), 1, "wave must land");
+    assert_eq!(waves[0].cwd, expected_default_cwd());
+    assert!(
+        boot.repo
+            .cove_folders_by_cove(&boot.cove_id)
+            .await
+            .unwrap()
+            .is_empty(),
+        "attach_folder true must not claim HOME when cwd is omitted"
+    );
 }
 
 /// Non-absolute cwd → 400 before any DB write.

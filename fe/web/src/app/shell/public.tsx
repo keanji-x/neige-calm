@@ -12,7 +12,8 @@
 // strings. The rail is a sibling of the outlet, so a dialog living inside the
 // cove route was unreachable from it; the shell is the nearest place that sees
 // both, and it already holds `useWorkspace` + `useWaveMutations`, which is
-// everything the dialog needs.
+// everything the dialog needs. The form is title-only; `cove_id` is the
+// opener's cove (hidden), and the POST omits `cwd` / `attach_folder`.
 
 import { Outlet } from '@tanstack/react-router';
 import { createContext, useContext, useEffect } from 'react';
@@ -23,7 +24,7 @@ import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/pub
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, useCoveFolders, useCoveMutations, useWaveMutations, useWorkspace,
+  ApiError, useCoveMutations, useWaveMutations, useWorkspace,
 } from '../providers/queries.ts';
 import { useCurrentPath, useGo } from '../router/navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
@@ -51,7 +52,7 @@ export type AppShellProps = Readonly<{
  */
 const RequestNewWaveContext = createContext<((coveId: string) => void) | null>(null);
 
-/** Opens the shell's New wave dialog with `coveId` preselected. */
+/** Opens the shell's New wave dialog for `coveId` (hidden on the request). */
 export function useRequestNewWave(): (coveId: string) => void {
   const request = useContext(RequestNewWaveContext);
   // Outside the shell there is no dialog to open. Routes always render inside
@@ -95,15 +96,12 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   /*
-   * One state, and `null` is closed. The cove the dialog is *for* and the cove
-   * its select currently shows are the same fact — changing the select changes
-   * which folders are read — so modelling them separately would only create a
-   * pair that can disagree.
+   * One state, and `null` is closed. The cove is the opener's cove — the user
+   * does not pick one. The POST still requires `cove_id` this slice.
    */
   const [newWaveCoveId, setNewWaveCoveId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
-  const coveFolders = useCoveFolders(transport, newWaveCoveId, unauthorized);
 
   // Both wave mutations need the cove id to invalidate the right list, and the
   // rail only knows wave ids; the workspace read already has the mapping.
@@ -116,20 +114,17 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   };
 
   const submitNewWave = (draft: NewWaveDraft) => {
+    if (newWaveCoveId === null) return;
     setCreating(true);
     setCreateError(null);
     void waveMutations.create({
-      cove_id: draft.coveId,
+      cove_id: newWaveCoveId,
       title: draft.title,
-      cwd: draft.cwd,
       theme: readHostThemeRgb(),
-      attach_folder: draft.attachFolder,
     }).then((wave) => {
       setNewWaveCoveId(null);
       go({ name: 'wave', waveId: wave.id });
     }).catch((error: unknown) => {
-      // The 409 body names the cove the directory would have to be claimed
-      // for, so the raw server sentence is more useful than a generic line.
       setCreateError(error instanceof ApiError ? error.message : 'Could not create the wave.');
     }).finally(() => { setCreating(false); });
   };
@@ -184,13 +179,8 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave">
         {newWaveCoveId !== null && (
           <NewWaveForm
-            coves={workspace.coves}
-            coveId={newWaveCoveId}
-            onCoveIdChange={setNewWaveCoveId}
-            folders={coveFolders.folders}
-            foldersLoading={coveFolders.loading}
             submitting={creating}
-            error={createError ?? coveFolders.error?.message ?? null}
+            error={createError}
             onCancel={() => setNewWaveCoveId(null)}
             onSubmit={submitNewWave}
           />

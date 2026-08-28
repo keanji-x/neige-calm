@@ -145,13 +145,20 @@ export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: rea
 export type NewWaveBody = Readonly<{
   cove_id: string;
   title: string;
-  cwd: string;
+  /**
+   * Issue #1131 — optional. The new FE omits it; the kernel then stores
+   * `$HOME` and does not insert a `cove_folders` row. Present values
+   * (including `""`) keep the pre-#1131 absolute-path + claim rules.
+   * `null` matches OpenAPI (`string | null`) and is the same omitted branch.
+   */
+  cwd?: string | null;
   theme: ThemeRgb;
   /**
    * `false` requires `cwd` to already sit under a folder claimed by some cove;
    * the route answers 409 `conflict` naming the cove to claim it for. `true`
-   * claims it in the same transaction. There is no third option — omitting the
-   * field is `false`.
+   * claims it in the same transaction. Omitting `cwd` forces this to `false`
+   * on the kernel regardless of the field. When `cwd` is present, omitting
+   * `attach_folder` is `false`.
    */
   attach_folder?: boolean;
 }>;

@@ -1170,7 +1170,7 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
      — every cove row's `+` in the rail and this page's WAVES module head — and
      the rail is a sibling of the outlet, so a dialog owned here was reachable
      from exactly one of them. One dialog, one set of strings; this route only
-     says which cove to preselect. */
+     names the cove whose id the POST will send (hidden, not a form field). */
   const requestNewWave = useRequestNewWave();
   /*
    * A cove's conversations are its own, listed by the server (#1098). They are

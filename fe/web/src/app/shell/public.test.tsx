@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-// The shell's New wave dialog: one dialog, two entry points, and a body whose
-// `cwd` / `attach_folder` come from the target cove's claimed folders.
+// The shell's New wave dialog: one dialog, two entry points, title only.
+// `cove_id` is the opener's cove; the POST omits `cwd` / `attach_folder`.
 //
 // This drives the real router, the real QueryClient and the real form — the
 // wiring *is* the thing under test, and a fixture that re-implemented the
@@ -13,7 +13,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { queryKeys } from '../providers/queries.ts';
 import { APP_BASEPATH, createAppRouter } from '../router/public.tsx';
 import { bootTestCardRuntime } from '../router/test-card-runtime.ts';
 import { ThemeProvider } from '../theme/public.tsx';
@@ -33,29 +32,11 @@ function memoryStorage() {
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 
-function folderRow(id: number, coveId: string, path: string) {
-  return { id, cove_id: coveId, path, repo_identity: null, repo_identity_probed_at: null, created_at: 1 };
-}
-
-/** Folders per cove: `c1` owns one, `c2` owns none — the two branches. */
-const FOLDERS: Record<string, ReturnType<typeof folderRow>[]> = {
-  c1: [folderRow(1, 'c1', '/srv/work')],
-  c2: [],
-};
-
-function harness(options: {
-  onFolders?: (coveId: string) => ApiTransportResponse | Promise<ApiTransportResponse>;
-} = {}) {
+function harness() {
   const sent: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
-      const folders = /^\/api\/coves\/([^/]+)\/folders$/.exec(request.path);
-      if (folders) {
-        const coveId = folders[1] ?? '';
-        if (options.onFolders) return Promise.resolve(options.onFolders(coveId));
-        return Promise.resolve({ status: 200, statusText: 'OK', body: FOLDERS[coveId] ?? [] });
-      }
       const posted = request.body as { cove_id?: string } | undefined;
       const body = request.path === '/api/coves' ? [COVE, OTHER]
         : request.method === 'POST' && request.path === '/api/waves'
@@ -76,7 +57,7 @@ function harness(options: {
       </ThemeProvider>
     </QueryClientProvider>,
   );
-  return { sent, client };
+  return { sent };
 }
 
 function createdWaveBodies(sent: readonly ApiRequest[]): unknown[] {
@@ -95,107 +76,24 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     // The cove page's WAVES module head opens *the same* dialog — one title,
-    // one Cove select, one set of strings.
+    // one Task field, one set of strings.
     await userEvent.click(screen.getByRole('button', { name: 'New wave' }));
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
   });
 
-  it('preselects the cove the entry point named', async () => {
-    harness();
-    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    expect(screen.getByLabelText('Cove')).toHaveProperty('value', 'c2');
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    await userEvent.click(screen.getByRole('button', { name: 'New wave in Work' }));
-    expect(screen.getByLabelText('Cove')).toHaveProperty('value', 'c1');
-  });
-});
-
-describe('the dialog derives cwd and attach_folder from the cove\'s folders', () => {
-  it('sends the claimed folder and claims nothing when the cove already has one', async () => {
-    const { sent } = harness();
-    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Work' }));
-    await waitFor(() => expect(sent.some((request) => request.path === '/api/coves/c1/folders')).toBe(true));
-    // No path field at all: the cove owns exactly one folder, so there is
-    // nothing to ask and nothing for the user to retype.
-    await waitFor(() => expect(screen.queryByLabelText('Folder')).toBeNull());
-    await userEvent.type(screen.getByLabelText('Task'), 'Ship it');
-    await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
-    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
-    expect(createdWaveBodies(sent)[0]).toMatchObject({
-      cove_id: 'c1', title: 'Ship it', cwd: '/srv/work', attach_folder: false,
-    });
-  });
-
-  it('asks for a first folder and claims it when the cove has none', async () => {
+  it('posts the opener\'s cove_id and omits cwd / attach_folder', async () => {
     const { sent } = harness();
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    const field = await screen.findByLabelText('Folder');
+    expect(screen.queryByLabelText('Cove')).toBeNull();
+    expect(screen.queryByLabelText('Folder')).toBeNull();
     await userEvent.type(screen.getByLabelText('Task'), 'Read it');
-    await userEvent.type(field, '/home/reading');
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
-    expect(createdWaveBodies(sent)[0]).toMatchObject({
-      cove_id: 'c2', title: 'Read it', cwd: '/home/reading', attach_folder: true,
-    });
-  });
-
-  /* Changing the cove in the dialog re-reads folders, so the form's shape
-     follows the select rather than the entry point that opened it. */
-  it('re-evaluates the branch when the user changes cove mid-form', async () => {
-    const { sent } = harness();
-    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Work' }));
-    await waitFor(() => expect(sent.some((request) => request.path === '/api/coves/c1/folders')).toBe(true));
-    expect(screen.queryByLabelText('Folder')).toBeNull();
-
-    await userEvent.selectOptions(screen.getByLabelText('Cove'), 'c2');
-    expect(await screen.findByLabelText('Folder')).toBeTruthy();
-  });
-
-  it('blocks submit while the folders read is still in flight', async () => {
-    harness({ onFolders: () => new Promise(() => { /* hang */ }) });
-    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    expect(screen.queryByLabelText('Folder')).toBeNull();
-    expect(await screen.findByRole('button', { name: 'Create wave' })).toHaveProperty('disabled', true);
-  });
-
-  it('does not treat a folders read failure as zero folders', async () => {
-    const { sent } = harness({
-      onFolders: () => ({ status: 500, statusText: 'Server Error', body: { error: 'folders down' } }),
-    });
-    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('folders down');
-    await userEvent.type(screen.getByLabelText('Task'), 'Read it');
-    expect(screen.queryByLabelText('Folder')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Create wave' })).toHaveProperty('disabled', true);
-    expect(createdWaveBodies(sent)).toEqual([]);
-  });
-
-  it('does not reopen the 0-folder form from a cached empty folders list after claiming', async () => {
-    let c2Reads = 0;
-    const { sent, client } = harness({
-      onFolders: (coveId) => {
-        if (coveId !== 'c2') return { status: 200, statusText: 'OK', body: FOLDERS[coveId] ?? [] };
-        c2Reads += 1;
-        if (c2Reads === 1) return { status: 200, statusText: 'OK', body: [] };
-        // Hold the refetch: a kept cache of `[]` would still paint Folder.
-        return new Promise(() => { /* hang */ });
-      },
-    });
-    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    const field = await screen.findByLabelText('Folder');
-    await userEvent.type(screen.getByLabelText('Task'), 'Read it');
-    await userEvent.type(field, '/home/reading');
-    await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
-    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
-    expect(client.getQueryData(queryKeys.coveFolders('c2'))).toBeUndefined();
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-
-    await userEvent.click(screen.getByRole('button', { name: 'New wave in Reading' }));
-    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    expect(screen.queryByLabelText('Folder')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Create wave' })).toHaveProperty('disabled', true);
+    const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
+    expect(body).toMatchObject({ cove_id: 'c2', title: 'Read it' });
+    expect(body).toHaveProperty('theme');
+    expect(body).not.toHaveProperty('cwd');
+    expect(body).not.toHaveProperty('attach_folder');
   });
 });

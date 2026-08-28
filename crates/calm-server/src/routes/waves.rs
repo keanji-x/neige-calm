@@ -56,6 +56,7 @@ use crate::plugin_host::manifest::WorkflowDescriptor;
 use crate::plugin_host::workflow_input::validate_workflow_input;
 use crate::report_backlinks;
 use crate::routes::cards::interrupt_shared_card_active_turn;
+use crate::routes::codex_cards::default_cwd;
 use crate::routes::cove_folders::{find_owner, is_descendant_of, normalize_path};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
@@ -186,7 +187,13 @@ pub struct CreateWaveRequest {
     pub cove_id: crate::ids::CoveId,
     pub title: String,
     pub sort: Option<f64>,
-    pub cwd: String,
+    /// Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
+    /// process cwd) on the wave row and skip `cove_folders`. Present values
+    /// (including the empty string) keep the pre-#1131 absolute-path + claim
+    /// rules. The SQLite column stays NOT NULL; only the request field is
+    /// optional.
+    #[serde(default)]
+    pub cwd: Option<String>,
     #[serde(default)]
     pub workflow_id: Option<String>,
     #[serde(default)]
@@ -202,19 +209,28 @@ pub struct CreateWaveRequest {
 }
 
 impl CreateWaveRequest {
-    fn into_parts(self) -> (NewWave, Option<String>) {
+    /// `(body, fork_report_from, cwd_omitted)`. `cwd_omitted` is true when the
+    /// client sent no `cwd` / `null`; that is a different branch from an
+    /// explicit empty string, which still 400s.
+    fn into_parts(self) -> (NewWave, Option<String>, bool) {
+        let cwd_omitted = self.cwd.is_none();
         (
             NewWave {
                 cove_id: self.cove_id,
                 title: self.title,
                 sort: self.sort,
-                cwd: self.cwd,
+                cwd: self.cwd.unwrap_or_else(default_cwd),
                 workflow_id: self.workflow_id,
                 workflow_input: self.workflow_input,
-                attach_folder: self.attach_folder,
+                attach_folder: if cwd_omitted {
+                    false
+                } else {
+                    self.attach_folder
+                },
                 theme: self.theme,
             },
             self.fork_report_from,
+            cwd_omitted,
         )
     }
 }
@@ -506,7 +522,7 @@ pub(crate) async fn create_wave(
     actor: Actor,
     Json(request): Json<CreateWaveRequest>,
 ) -> Result<Response> {
-    let (mut p, fork_report_from) = request.into_parts();
+    let (mut p, fork_report_from, cwd_omitted) = request.into_parts();
     // PR6 (#136) — wave create now atomically mints a `CardRole::Spec`
     // codex card alongside the wave row. Both rows commit in one tx
     // and both `Event::WaveUpdated` + `Event::CardAdded` envelopes
@@ -514,21 +530,24 @@ pub(crate) async fn create_wave(
     // per-wave and per-card subscribers each see the relevant frame
     // without re-routing through ancestors.
     //
-    // Issue #250 PR 2 — the body now carries `cwd` (the wave's working
-    // directory) and `attach_folder`. The wave's cwd is the source of
-    // truth for the spec daemon's working directory (replacing the
-    // pre-#250 `routes::codex_cards::default_cwd()` = `$HOME`). The
-    // cwd must either resolve to the body's `cove_id` via the existing
-    // folder claims, or — when `attach_folder = true` — get atomically
-    // claimed as a new folder under that cove inside the same tx that
-    // mints the wave row.
+    // Issue #250 PR 2 — the body may carry `cwd` (the wave's working
+    // directory) and `attach_folder`. When `cwd` is present, it is the
+    // source of truth for the spec daemon's working directory and must
+    // either resolve to the body's `cove_id` via the existing folder
+    // claims, or — when `attach_folder = true` — get atomically claimed
+    // as a new folder under that cove inside the same tx that mints the
+    // wave row.
+    //
+    // Issue #1131 — when the client omits `cwd` (new FE title-only
+    // create), persist `default_cwd()` and skip the claim scan entirely.
+    // Legacy clients that still send `cwd` keep the #250 rules.
 
     // 0. Validate cwd up front before opening the tx. The route owns
     //    every cross-cove correctness check so the inner writer
     //    (`wave_create_tx`) stays a pure mechanical row insert. Order:
-    //    absolute-path shape → normalize → existing-claim resolution
-    //    → optional folder attach. All branches that surface a 4xx
-    //    short-circuit before any DB write.
+    //    omitted-cwd default → absolute-path shape → normalize →
+    //    existing-claim resolution → optional folder attach. All
+    //    branches that surface a 4xx short-circuit before any DB write.
     let workflow_descriptor = match p.workflow_id.as_deref() {
         Some(workflow_id) => {
             let unknown_workflow = || {
@@ -553,7 +572,14 @@ pub(crate) async fn create_wave(
     // so the inner writer persists the blob verbatim.
     validate_workflow_input_binding(workflow_descriptor.as_ref(), p.workflow_input.as_ref())?;
 
-    if !p.cwd.starts_with('/') {
+    // Issue #1131 — omitted / null cwd is a new branch *before* the
+    // user-cove claim scan (same spirit as the system-cove exemption
+    // below): store HOME, force attach_folder=false, do not insert a
+    // cove_folders row. Never claim `$HOME` — longest-prefix would
+    // poison every other cove. An *explicit* `cwd: "$HOME"` with
+    // `attach_folder: false` still 409s when unclaimed; only omission
+    // takes this branch.
+    if !cwd_omitted && !p.cwd.starts_with('/') {
         return Err(CalmError::BadRequest(format!(
             "wave create: `cwd` must be absolute (start with `/`); got `{}`",
             p.cwd
@@ -602,7 +628,7 @@ pub(crate) async fn create_wave(
     // a writer lock the create was taking anyway — it does not widen the
     // lock window with any new I/O.
     let conflict = FolderConflictSlot::default();
-    let folder_claim = if is_system_cove {
+    let folder_claim = if is_system_cove || cwd_omitted {
         FolderClaim::Skip
     } else {
         FolderClaim::Enforce {
