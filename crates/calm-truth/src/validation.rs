@@ -22,7 +22,7 @@
 //! | `Overlay.payload` | `"eta"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"now"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"layout"`    | `{ positions: { <card_id>: { x,y,w,h: u32 }, … } }` |
-//! | `Overlay.payload` | `"template"`  | `{ schemaVersion: 1 }` (kernel view marker; #1110 S1) |
+//! | `Overlay.payload` | `"template"`  | `{ schemaVersion: 1, template_key?: String }` (kernel view marker; #1110 S1/S6) |
 //! | `Overlay.payload` | `"any_card_needs_input"` | `{ value: bool }` (wave-scoped — see issue #254) |
 //!
 //! Anything else (`ui://*` cards, plugin-defined overlay kinds) is accepted
@@ -209,8 +209,22 @@ fn validate_template_overlay_payload(payload: &Value) -> Result<()> {
     struct TemplatePayload {
         #[serde(rename = "schemaVersion")]
         schema_version: u32,
+        /// Stable seeded-template identity (#1110 S6). Omitted on ordinary
+        /// `as_template` waves; required (non-empty) when present.
+        #[serde(default)]
+        template_key: Option<String>,
     }
-    validate_as::<TemplatePayload>("template", OVERLAY_TEMPLATE_SCHEMA_VERSION, payload)
+    check_schema_version("template", payload, OVERLAY_TEMPLATE_SCHEMA_VERSION)?;
+    let parsed: TemplatePayload = serde_json::from_value(payload.clone())
+        .map_err(|e| CalmError::BadRequest(format!("invalid template payload: {e}")))?;
+    if let Some(key) = parsed.template_key.as_deref()
+        && key.trim().is_empty()
+    {
+        return Err(CalmError::BadRequest(
+            "invalid template payload: template_key must be non-empty".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Payload written with the kernel view/template overlay (`schemaVersion: 1`).
@@ -218,11 +232,32 @@ pub fn template_overlay_payload() -> Value {
     serde_json::json!({ "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION })
 }
 
+/// Seeded-template overlay payload (`schemaVersion: 1` + `template_key`).
+pub fn template_overlay_payload_with_key(template_key: &str) -> Value {
+    serde_json::json!({
+        "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION,
+        "template_key": template_key,
+    })
+}
+
 /// True when `overlay` is the kernel view/template marker for a wave (#1110 S1).
 pub fn is_template_overlay(overlay: &Overlay) -> bool {
     overlay.plugin_id == OVERLAY_TEMPLATE_PLUGIN_ID
         && overlay.entity_kind == OVERLAY_TEMPLATE_ENTITY_KIND
         && overlay.kind == OVERLAY_TEMPLATE_KIND
+}
+
+/// `template_key` from a kernel view/template overlay, if present and non-empty.
+pub fn template_overlay_key(overlay: &Overlay) -> Option<&str> {
+    if !is_template_overlay(overlay) {
+        return None;
+    }
+    overlay
+        .payload
+        .get("template_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
 }
 
 fn validate_file_viewer_nav_overlay_payload(payload: &Value) -> Result<()> {
@@ -896,6 +931,16 @@ mod tests {
     fn template_overlay_requires_schema_version_and_denies_unknown_fields() {
         validate_overlay_payload("template", &json!({ "schemaVersion": 1 })).unwrap();
         validate_overlay_payload("template", &template_overlay_payload()).unwrap();
+        validate_overlay_payload(
+            "template",
+            &template_overlay_payload_with_key("issue-development"),
+        )
+        .unwrap();
+        validate_overlay_payload(
+            "template",
+            &json!({ "schemaVersion": 1, "template_key": "small-change" }),
+        )
+        .unwrap();
 
         let missing = validate_overlay_payload("template", &json!({})).unwrap_err();
         assert!(is_bad_request(&missing));
@@ -904,6 +949,13 @@ mod tests {
             validate_overlay_payload("template", &json!({ "schemaVersion": 1, "role": "plan" }))
                 .unwrap_err();
         assert!(is_bad_request(&extra));
+
+        let empty_key = validate_overlay_payload(
+            "template",
+            &json!({ "schemaVersion": 1, "template_key": "   " }),
+        )
+        .unwrap_err();
+        assert!(is_bad_request(&empty_key));
     }
 
     // ---------------- Overlay: status ----------------
