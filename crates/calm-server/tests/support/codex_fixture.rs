@@ -11,7 +11,7 @@ use calm_server::config::Config;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{SqlxRepo, session_start_runtime_tx};
 use calm_server::dispatcher::Dispatcher;
-use calm_server::event::{Event, EventBus, EventScope};
+use calm_server::event::EventBus;
 use calm_server::harness::HarnessRegistry;
 use calm_server::ids::{ActorId, CardId, CoveId, WaveId};
 use calm_server::mcp_server::registry::AppContext;

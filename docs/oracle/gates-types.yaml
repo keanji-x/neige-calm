@@ -1485,9 +1485,9 @@
     加一个缺字段 safeParse"）。缺了 reject 那一半，schema 退化成宽松形状时没人会发现。
     覆盖面包括 dispatcher/task 生命周期、proposal 通道（#955）、wave.report_edited（#247，
     含 author 判别式的四个取值 + #955 的 plugin 臂 author_plugin_id）、
-    harness transcript 事件、plugin.tool.registered / workflow.registered / forge.issue.read。
-  source: web/src/api/schemas.test.ts:277-283,528-533
-  authoritative_test: web/src/api/schemas.test.ts:284-526,534-650,763-853
+    harness transcript 事件、plugin.tool.registered / forge.issue.read。
+  source: web/src/api/schemas.test.ts:277-283,513-518
+  authoritative_test: web/src/api/schemas.test.ts:284-511,519-635,748-838
   owner_slice: core/schemas/wire-types
   intentional_omission: false
   runtime_layer: core

@@ -14,8 +14,7 @@ use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
 use super::agent_diag::panic_with_agent_diag;
-use super::codex_fixture::{Fixture, PLUGIN_ID, SPEC_SESSION_ID};
-use super::event_queries::event_payloads;
+use super::codex_fixture::{Fixture, SPEC_SESSION_ID};
 
 pub async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
     let request = SpecHarnessStartOperationPayload {
