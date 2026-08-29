@@ -122,7 +122,7 @@
     min-inline-size: 0;
     margin-inline-start: auto;
     padding: var(--space-3) var(--space-5);
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-chat, var(--radius-md));
     background: var(--surface-said);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
@@ -211,6 +211,7 @@
     align-items: baseline;
     gap: var(--space-2);
     min-inline-size: 0;
+    padding-inline: 0;
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
@@ -281,176 +282,33 @@
   }
 
   /*
-   * ── The composer is an object, not a bar ────────────────────────────────
-   *
-   * It was a full-bleed `--surface-chip` rectangle with square corners welded
-   * across the bottom of the drawer, so it read as a status bar you could not
-   * touch rather than a field you type in — and on focus it drew a 2px accent
-   * rectangle around the whole 396px width to say a caret had landed in it.
-   *
-   * Now it is a rounded well that floats clear of the drawer's edges, which is
-   * the shape every agent composer settled on:
-   *
-   *   gutter        `--space-8` (16) on both sides and the bottom
-   *   box edge      that 16 is the drawer body's own inset, so the well's *box*
-   *                 sits on the same vertical as the transcript — the well is
-   *                 an object in the column, not a bar under it
-   *   corner        `--radius-lg` (16), 40% of the well's own height
-   *
-   * The concentric rule (`inner = outer − gap`) has nothing to say here: the
-   * drawer has no corner radius at all, being a region welded to the window's
-   * edge rather than an object on a page. The well is the object, and it is
-   * rounded for the reason objects are.
-   *
-   * The fill is the recessed rank: the ladder says −1 is "behind the page", the
-   * drawer's own surface is `--paper`, and a well cut into it reads as somewhere
-   * you put things. That is elevation doing the job a `border-block-start`
-   * would otherwise do, which is this system's rule.
+   * Composer chrome is Astryx ChatComposer. This wrapper only insets it so
+   * the library well sits on the same column as the transcript.
    */
   .composer {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-3);
     flex: none;
-    margin: 0 var(--space-8) var(--space-8);
-    padding: var(--space-3) var(--space-3) var(--space-3) var(--space-6);
-    border-radius: var(--radius-lg);
+    padding: 0 var(--nc-card-inset, var(--space-4)) var(--nc-card-inset, var(--space-4));
+    /* Astryx ChatSendButton is primary/blue; send is a routine control here. */
+    --color-accent: var(--text-3);
+    /*
+     * Astryx paints the well with `--color-background-popover` (= `--paper`),
+     * which is the same rank as the card. Recess it one step to `--bg`, the
+     * page/report ground, so the well is a hole in the card.
+     *
+     * Radius lives on the inner body (`--_chat-composer-radius`). Do not paint
+     * the square root — that hides the rounding.
+     */
+    --color-background-popover: var(--bg);
+    --color-background-muted: var(--bg);
+    --color-background-surface: var(--bg);
+    --radius-chat: var(--nc-card-radius, var(--radius-lg));
+    --_chat-composer-radius: var(--radius-chat);
+  }
+
+  .composer :is(button[aria-label='Send']):not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
     background: var(--surface-chip);
-  }
-
-  /*
-   * Field-shaped, not input-shaped: no underline, no box. base.css gives every
-   * text field a bottom rule, which is right for a form with three fields in a
-   * row and wrong for the single field that fills a well — there is nothing for
-   * it to be distinguished *from*.
-   *
-   * `field-sizing: content` grows it with what you type; browsers without it
-   * keep the one-row `rows={1}` box and scroll, which is the honest fallback.
-   */
-  .field {
-    field-sizing: content;
-    flex: 1;
-    min-inline-size: 0;
-    min-block-size: var(--control-h);
-    max-block-size: calc(var(--control-h) * 5);
-    padding-block: var(--space-2);
-    padding-inline: var(--space-0);
-    border: none;
-    resize: none;
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-    line-height: var(--leading-snug);
     color: var(--text);
-  }
-
-  /*
-   * ── Focus is shown by the arrow, not by a ring ──────────────────────────
-   *
-   * A 2px accent outline around a 364px well is a lot of blue to say that a
-   * caret landed somewhere. It also stated the loudest thing on the surface,
-   * every time you clicked into the box — which is the opposite of what a quiet
-   * app should do with the most ordinary action it has.
-   *
-   * So the ring is gone and the send arrow carries it instead: **no focus, no
-   * arrow.** The well deepens one step at the same moment, so the state is
-   * carried by colour rather than by a line, which is this system's rule
-   * everywhere else.
-   *
-   * `--surface-chip-focus`, not an overlay: an overlay is defined against ink
-   * and therefore flips direction with the theme, which had focus *lowering*
-   * the well's contrast against the page in dark. See the token's own note,
-   * including why the dark half of it is honest rather than effective.
-   *
-   * There is one deliberate exception to "no focus, no arrow": a well holding
-   * an unsent draft keeps its arrow even when focus has gone. Hiding it there
-   * would leave text you can see and no visible way to send it.
-   */
-  .field:focus-visible {
-    outline: none;
-
-    /* base.css draws a focused field's rule as an inset shadow; without a ring
-       around the well, that shadow would be the only chrome left and would read
-       as an underline under a box that has no other lines. */
     box-shadow: none;
-  }
-
-  .composer:focus-within {
-    background: var(--surface-chip-focus);
-  }
-
-  .field::placeholder {
-    color: var(--text-4);
-  }
-
-  /*
-   * A round send, `data-nc-role="icon"` — a component geometry, not a bent
-   * `[data-nc-action]`. §4.1's four tiers are one fixed geometry on purpose and
-   * base.css says in as many words that a per-module copy is the drift its gate
-   * exists to catch; the old `.send` was already overriding that geometry's
-   * height and padding. A role carries its own §6 entry instead, which is the
-   * sanctioned way to be a different shape.
-   *
-   * It is still the surface's one primary action and still says "Send" — to a
-   * screen reader through `aria-label`, and to a pointer through the accent
-   * fill, which nothing else in the drawer wears.
-   */
-  /*
-   * ── The send is an arrow, and the arrow is the state ────────────────────
-   *
-   * It was an accent-filled circle, which made the surface's most routine
-   * control its loudest object — a solid blue disc sitting in the corner of a
-   * grey well whether or not there was anything to send. Now it is a glyph on
-   * no ground at all, and its **ink** is the entire state machine:
-   *
-   *   absent      nothing typed and focus elsewhere — there is nothing to do
-   *   `--text-4`  the well is live but empty; the arrow is there, greyed
-   *   `--text`    there is something to send: full ink, maximum against the
-   *               well in both themes (near-black on light, near-white on dark)
-   *
-   * `data-nc-role="icon"`, not `[data-nc-action]`: §4.1's four tiers are one
-   * fixed geometry and base.css says a per-module copy of it is the drift its
-   * gate exists to catch. A role carries its own §6 entry, which is how a
-   * control gets to be a different shape.
-   *
-   * It keeps the full 28px hit area (§5, 2.5.8) and its place in the focus
-   * order at every state — `aria-disabled`, never `disabled`, for the reason
-   * given at the markup.
-   */
-  .send {
-    display: grid;
-    place-items: center;
-    flex: none;
-    inline-size: var(--control-h);
-    block-size: var(--control-h);
-    border-radius: var(--radius-pill);
-    background: none;
-    line-height: var(--leading-none);
-    color: var(--text);
-    cursor: pointer;
-    transition: color var(--motion-quick) ease-out,
-      opacity var(--motion-quick) ease-out;
-  }
-
-  .send[aria-disabled='true'] {
-    color: var(--text-4);
-    cursor: default;
-  }
-
-  /*
-   * Hidden, not removed: `opacity` keeps it in the layout, in the focus order
-   * and in the accessibility tree, so tabbing into the composer still reaches
-   * Send — and the moment focus lands anywhere inside, `:focus-within` is true
-   * and the arrow is already visible.
-   */
-  .composer:not(:focus-within) .send[aria-disabled='true'] {
-    opacity: 0;
-  }
-
-  /* Keyboard focus still needs to be visible on the control itself; the arrow's
-     appearance says the *well* is live, not which control is focused. */
-  .send:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
   }
 
   @keyframes thread-pulse {

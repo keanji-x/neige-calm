@@ -203,7 +203,7 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
               title="Close"
               onClick={onClose}
             >
-              <Icon name="chevron-right" />
+              <Icon name="close" />
             </button>
           </div>
         </div>

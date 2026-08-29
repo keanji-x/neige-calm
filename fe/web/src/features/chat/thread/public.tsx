@@ -30,10 +30,14 @@
 // The unit is the **exchange** — one thing you said and everything that came
 // back — and the layout groups by it: tight inside, loose between.
 
-import { useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useRef } from 'react';
+import {
+  ChatComposer as AstryxChatComposer,
+  ChatComposerInput,
+  ChatSendButton,
+} from '@astryxdesign/core/Chat';
 
 import { useState } from '../../../ui/state/public.ts';
-import { Icon } from '../../../ui/icon/public.tsx';
 
 import {
   isLiveConversation, opensAfterGap, opensExchange,
@@ -103,9 +107,6 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
               data-nc-turn={turn.author}
             >
               {turn.text}
-              {/* The one live mark, and it is the same 6px accent dot that means
-                  "running" on a wave row. One vocabulary for "something is
-                  happening", not a second one for chat. */}
               {live && last && turn.author === 'agent' && (
                 <span className={styles.live} aria-label="Working" />
               )}
@@ -152,90 +153,49 @@ function ActivityLine({ activity, live }: {
 }
 
 /**
- * The composer.
- *
- * Enter sends and Shift+Enter breaks the line, which is the convention every
- * agent surface uses; the button exists anyway because a keyboard convention is
- * not an affordance, and it is the one primary action this surface has (§4.1 —
- * at most one per surface).
- *
- * The field grows with what you type, to a ceiling. A fixed three-row box is
- * wrong in both directions: it wastes two rows of a 396px drawer for the
- * one-line instruction that is the common case, and it still needs a scrollbar
- * for the long one.
+ * The composer is Astryx's ChatComposer: rounded well, auto-grow, send/stop
+ * geometry, Enter-to-send with IME guard. We own the value and the send
+ * callback so the kernel path stays a string.
  */
-export function ChatComposer({ onSend, disabled = false }: {
+export function ChatComposer({ onSend, onStop, stopping = false, disabled = false }: {
   onSend: (text: string) => void;
+  onStop?: () => void;
+  stopping?: boolean;
   disabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
-  const fieldRef = useRef<HTMLTextAreaElement | null>(null);
-  const ready = draft.trim() !== '' && !disabled;
-
-  const send = () => {
-    if (!ready) return;
-    onSend(draft.trim());
-    setDraft('');
-    // Focus stays in the field: sending one message is almost never the end of
-    // what you came to say.
-    fieldRef.current?.focus();
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== 'Enter' || event.shiftKey) return;
-    /*
-     * Enter belongs to the IME while it is composing.
-     *
-     * Typing Chinese, Japanese or Korean, Enter is how you accept the candidate
-     * the input method is offering — it is not how you send. Without this
-     * guard, typing `ceshi` and pressing Enter to pick 测试 sends the literal
-     * pinyin, and then the composition commits into the field that was just
-     * cleared, so the box refills the instant after it "sent". That is the
-     * "sending doesn't clear the box" report, and it is only reachable through
-     * an IME: reproduced with `Input.imeSetComposition`, which sent `ceshi` as
-     * a turn.
-     *
-     * `isComposing` lives on the native event; React's synthetic keyboard event
-     * does not surface it.
-     */
-    if (event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    send();
-  };
+  const stopShown = onStop != null;
 
   return (
-    <form
+    <div
       className={styles.composer}
       data-nc-composer=""
-      onSubmit={(event: FormEvent) => { event.preventDefault(); send(); }}
+      onKeyDownCapture={(event) => {
+        /* Astryx ChatComposerInput submits on Enter without an IME guard.
+           Enter while composing accepts the candidate, it must not send. */
+        if (event.key === 'Enter' && !event.shiftKey && event.nativeEvent.isComposing) {
+          event.stopPropagation();
+        }
+      }}
     >
-      <textarea
-        ref={fieldRef}
-        className={styles.field}
+      <AstryxChatComposer
+        density="compact"
         value={draft}
-        rows={1}
-        aria-label="Message"
+        onChange={setDraft}
         placeholder="Say something"
-        disabled={disabled}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={onKeyDown}
+        isDisabled={disabled}
+        isStopShown={stopShown}
+        onStop={onStop}
+        onSubmit={(value) => {
+          const text = value.trim();
+          if (text === '' || disabled || stopShown) return;
+          onSend(text);
+          setDraft('');
+        }}
+        input={<ChatComposerInput label="Message" placeholder="Say something" />}
+        sendButton={<ChatSendButton isDisabled={stopping} />}
       />
-      {/*
-        `aria-disabled`, not `disabled` — §5.1. A truly disabled button drops
-        focus the moment it becomes unusable, which here is the moment you send:
-        focus would land on `<body>` mid-conversation.
-      */}
-      <button
-        type="submit"
-        data-nc-role="icon"
-        aria-label="Send"
-        title="Send"
-        aria-disabled={ready ? undefined : 'true'}
-        className={styles.send}
-      >
-        <Icon name="arrow-up" />
-      </button>
-    </form>
+    </div>
   );
 }
 

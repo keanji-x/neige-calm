@@ -56,15 +56,14 @@ describe('Drawer', () => {
     expect(screen.getByRole('heading').textContent).toBe('Why the resolver drops a hop');
   });
 
-  /* The close control points the way it goes and says what it does to a screen
-     reader. Its explicit stroke makes it an optical peer of the reset. */
-  it('closes with a direction, not a dismissal', () => {
+  /* The close control dismisses a card, not a sliding edge panel. */
+  it('closes with a dismissal, not a direction', () => {
     const onClose = vi.fn();
     open({ onClose });
     const close = screen.getByRole('button', { name: 'Close conversation' });
     const glyph = close.querySelector('svg');
     expect(glyph).toBeTruthy();
-    expect(glyph?.querySelector('path')?.getAttribute('d')).toBe('M6 3.5 10.5 8 6 12.5');
+    expect(glyph?.querySelector('path')?.getAttribute('d')).toBe('M4 4l8 8');
     expect(close.textContent).not.toContain('›');
     close.click();
     expect(onClose).toHaveBeenCalled();

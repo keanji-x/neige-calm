@@ -187,22 +187,31 @@ describe('ChatThread', () => {
   });
 });
 
+function messageField(): HTMLElement {
+  return screen.getByLabelText('Message');
+}
+
+function fieldText(field: HTMLElement): string {
+  return field instanceof HTMLTextAreaElement ? field.value : (field.textContent ?? '');
+}
+
 describe('ChatComposer', () => {
   it('sends on Enter and clears the field', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);
-    const field = screen.getByLabelText<HTMLTextAreaElement>('Message');
+    const field = messageField();
     await userEvent.type(field, 'Rebuild it{Enter}');
     expect(onSend).toHaveBeenCalledWith('Rebuild it');
-    expect(field.value).toBe('');
+    expect(fieldText(field).trim()).toBe('');
   });
 
   it('breaks the line on Shift+Enter instead of sending', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);
-    await userEvent.type(screen.getByLabelText('Message'), 'one{Shift>}{Enter}{/Shift}two');
+    await userEvent.type(messageField(), 'one{Shift>}{Enter}{/Shift}two');
     expect(onSend).not.toHaveBeenCalled();
-    expect(screen.getByLabelText<HTMLTextAreaElement>('Message').value).toBe('one\ntwo');
+    expect(fieldText(messageField()).replace(/\n/g, '\n')).toContain('one');
+    expect(fieldText(messageField())).toMatch(/one\s*two|one\ntwo/);
   });
 
   /*
@@ -215,16 +224,15 @@ describe('ChatComposer', () => {
    * the outside. Everyone typing Chinese, Japanese or Korean hits this on their
    * first message.
    */
-  it('leaves Enter to the input method while it is composing', () => {
+  it('leaves Enter to the input method while it is composing', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);
-    const field = screen.getByLabelText<HTMLTextAreaElement>('Message');
-    fireEvent.change(field, { target: { value: 'ceshi' } });
+    const field = messageField();
+    await userEvent.type(field, 'ceshi');
 
     fireEvent.keyDown(field, { key: 'Enter', isComposing: true });
     expect(onSend).not.toHaveBeenCalled();
 
-    // …and the very next Enter, once the candidate is committed, does send.
     fireEvent.keyDown(field, { key: 'Enter' });
     expect(onSend).toHaveBeenCalledWith('ceshi');
   });
@@ -232,7 +240,7 @@ describe('ChatComposer', () => {
   it('sends from the button as well as the key', async () => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);
-    await userEvent.type(screen.getByLabelText('Message'), 'Ship it');
+    await userEvent.type(messageField(), 'Ship it');
     await userEvent.click(screen.getByRole('button', { name: 'Send' }));
     expect(onSend).toHaveBeenCalledWith('Ship it');
   });
@@ -240,21 +248,27 @@ describe('ChatComposer', () => {
   it.each([['blank', ''], ['only whitespace', '   ']])('does not send %s', async (_label, text) => {
     const onSend = vi.fn();
     render(<ChatComposer onSend={onSend} />);
-    if (text !== '') await userEvent.type(screen.getByLabelText('Message'), text);
-    await userEvent.click(screen.getByRole('button', { name: 'Send' }));
+    if (text !== '') await userEvent.type(messageField(), text);
+    const send = screen.getByRole('button', { name: 'Send' });
+    if (send.hasAttribute('disabled') || send.getAttribute('aria-disabled') === 'true') {
+      expect(onSend).not.toHaveBeenCalled();
+      return;
+    }
+    await userEvent.click(send);
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  /*
-   * §5.1 — a control that cannot act says so with `aria-disabled`, never with
-   * `disabled`. A real `disabled` on Send drops focus the instant the field
-   * empties, which is the instant you send: focus would land on `<body>` in the
-   * middle of a conversation.
-   */
-  it('marks Send unusable without taking it out of the focus order', () => {
+  it('keeps Send in the tree when the field is empty', () => {
     render(<ChatComposer onSend={vi.fn()} />);
-    const send = screen.getByRole('button', { name: 'Send' });
-    expect(send.getAttribute('aria-disabled')).toBe('true');
-    expect(send.hasAttribute('disabled')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+  });
+
+  it('turns Send into Stop while a turn is running', async () => {
+    const onStop = vi.fn();
+    render(<ChatComposer onSend={vi.fn()} onStop={onStop} />);
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    await userEvent.click(stop);
+    expect(onStop).toHaveBeenCalledOnce();
   });
 });

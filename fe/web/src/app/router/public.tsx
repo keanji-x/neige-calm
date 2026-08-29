@@ -1030,12 +1030,12 @@ function useConversationPanel(
           </>
         ) : open === null ? undefined : (
           <>
-            <ChatComposer disabled={store.sending} onSend={(text) => store.send(open.id, text)} />
-            {(store.working || store.stopping) && (
-              <button type="button" disabled={store.stopping} onClick={store.interrupt}>
-                {store.stopping ? 'Stopping…' : 'Stop'}
-              </button>
-            )}
+            <ChatComposer
+              disabled={store.sending}
+              onSend={(text) => store.send(open.id, text)}
+              onStop={store.working || store.stopping ? store.interrupt : undefined}
+              stopping={store.stopping}
+            />
             {store.actionError !== null && <p role="alert">{store.actionError}</p>}
             {store.actionMessage !== null && <p role="status">{store.actionMessage}</p>}
           </>
