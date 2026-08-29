@@ -361,6 +361,21 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
             .any(|tool| tool == "gh.issue.view"),
         "inspect-issue must keep context.tools; payload={inspect}"
     );
+    let implement = tasks
+        .iter()
+        .find(|task| task["key"] == "implement-change")
+        .expect("implement-change");
+    assert!(
+        implement.get("gate").is_none(),
+        "implement-change must not carry an executed gate; payload={implement}"
+    );
+    assert!(
+        implement["no_gate_reason"]
+            .as_str()
+            .unwrap_or("")
+            .contains("author a real gate"),
+        "implement-change must tell spec to author a real gate; payload={implement}"
+    );
 }
 
 #[tokio::test]
@@ -459,6 +474,94 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
             .unwrap_or_else(|| panic!("missing {task_key} for {key}; tasks={tasks:?}"));
         assert_eq!(first["ready"], false);
     }
+}
+
+#[tokio::test]
+async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
+    let boot = boot().await;
+    let (status, stolen) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "stolen-template",
+            json!({ "as_template": true }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={stolen}");
+    let stolen_id = stolen["id"].as_str().unwrap().to_string();
+    let (status, overlay) = post(
+        boot.app.clone(),
+        "/api/overlays",
+        json!({
+            "plugin_id": "kernel",
+            "entity_kind": "view",
+            "entity_id": stolen_id,
+            "kind": "template",
+            "payload": { "schemaVersion": 1, "template_key": ISSUE_DEVELOPMENT }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={overlay}");
+    let (stolen_wave, report_card, current) =
+        resolve_report_for_wave(boot.repo.as_ref(), &stolen_id)
+            .await
+            .expect("stolen report");
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        boot.repo.as_ref(),
+        &boot.state.events,
+        boot.state.write(),
+        ActorId::User,
+        EditAuthor::User,
+        stolen_wave,
+        report_card,
+        current,
+        WaveReportPayload::new(
+            "stolen user-cove template",
+            "# Stolen\n\nstolen-user-cove-plan\n",
+        ),
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await
+    .expect("stamp stolen report");
+
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "after-stolen-key",
+            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave_id = body["id"].as_str().expect("wave id");
+    let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    assert_eq!(status, StatusCode::OK, "detail={detail}");
+    let payload = report_card_payload(&detail);
+    assert!(
+        payload.body.contains("inspect-issue"),
+        "auto-fork must still use the kernel plan; body={}",
+        payload.body
+    );
+    assert!(
+        !payload.body.contains("stolen-user-cove-plan"),
+        "user-cove stolen template_key must not hijack auto-fork; body={}",
+        payload.body
+    );
+    let templates = seeded_templates(&boot.repo).await;
+    assert!(
+        templates
+            .iter()
+            .any(|(key, id)| key == ISSUE_DEVELOPMENT && id != &stolen_id),
+        "kernel seed must still mint a system-cove issue-development; templates={templates:?}"
+    );
 }
 
 #[tokio::test]

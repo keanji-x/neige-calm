@@ -5,9 +5,7 @@
 //! forks that report. Overlay payload `{schemaVersion:1, template_key}`
 //! is the stable lookup.
 
-use crate::mcp_server::tools::plan::{
-    GateInput, GateStepInput, PlanTaskInput, plan_template_task_block_payload,
-};
+use crate::mcp_server::tools::plan::{PlanTaskInput, plan_template_task_block_payload};
 use crate::wave_report::WaveReportPayload;
 use calm_types::report_blocks::render_fence;
 use serde_json::{Value, json};
@@ -51,17 +49,11 @@ pub fn workflow_template_report(key: &str) -> Option<WaveReportPayload> {
     }
 }
 
-fn toolchain_gate() -> GateInput {
-    GateInput {
-        cwd: None,
-        timeout_secs: None,
-        steps: vec![GateStepInput {
-            name: "test".into(),
-            cmd: "detect the repository toolchain and run its standard test/verification command"
-                .into(),
-        }],
-    }
-}
+/// Placeholder so `require_task_gates` does not treat these as scheduled
+/// work. Spec must replace the block with a real `gate` from the target
+/// repo before setting `ready: true`. Never an executed shell command.
+const AUTHOR_REAL_GATE: &str = "author a real gate from the target repo toolchain \
+(formatter, linter, tests) before activating; this reason is not a permanent skip";
 
 fn task(
     key: &str,
@@ -69,7 +61,6 @@ fn task(
     acceptance: &str,
     depends_on: &[&str],
     context: Option<Value>,
-    gate: Option<GateInput>,
     no_gate_reason: Option<&str>,
 ) -> PlanTaskInput {
     PlanTaskInput {
@@ -81,7 +72,7 @@ fn task(
         cwd: None,
         depends_on: depends_on.iter().map(|dep| (*dep).to_string()).collect(),
         priority: None,
-        gate,
+        gate: None,
         no_gate_reason: no_gate_reason.map(str::to_string),
     }
 }
@@ -113,7 +104,6 @@ fn issue_development_report() -> WaveReportPayload {
                 "The issue requirements and constraints are captured for the wave AND the wave cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
                 &[],
                 Some(json!({ "tools": ["gh.issue.view"] })),
-                None,
                 Some("inspect does not produce a repo change to verify"),
             ),
             task(
@@ -125,7 +115,6 @@ fn issue_development_report() -> WaveReportPayload {
                     "channel": "a",
                     "reviewer_role": "design-correctness"
                 })),
-                None,
                 Some("design review does not produce a repo change to verify"),
             ),
             task(
@@ -137,7 +126,6 @@ fn issue_development_report() -> WaveReportPayload {
                     "channel": "b",
                     "reviewer_role": "design-failure-path"
                 })),
-                None,
                 Some("design review does not produce a repo change to verify"),
             ),
             task(
@@ -146,8 +134,7 @@ fn issue_development_report() -> WaveReportPayload {
                 "The change is committed in the wave worktree.",
                 &["review-design-a", "review-design-b"],
                 Some(json!({ "tools": ["git.worktree.add", "git.commit"] })),
-                Some(toolchain_gate()),
-                None,
+                Some(AUTHOR_REAL_GATE),
             ),
             task(
                 "open-pr",
@@ -157,7 +144,6 @@ fn issue_development_report() -> WaveReportPayload {
                 Some(json!({
                     "tools": ["gh.pr.create", "gh.pr.list", "gh.pr.diff", "gh.pr.checks"]
                 })),
-                None,
                 Some("opening a PR is verified by forge status, not a local toolchain gate"),
             ),
             task(
@@ -169,7 +155,6 @@ fn issue_development_report() -> WaveReportPayload {
                     "channel": "a",
                     "reviewer_role": "pr-correctness"
                 })),
-                None,
                 Some("PR review does not produce a repo change to verify"),
             ),
             task(
@@ -181,7 +166,6 @@ fn issue_development_report() -> WaveReportPayload {
                     "channel": "b",
                     "reviewer_role": "pr-failure-path"
                 })),
-                None,
                 Some("PR review does not produce a repo change to verify"),
             ),
             task(
@@ -190,7 +174,6 @@ fn issue_development_report() -> WaveReportPayload {
                 "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the wave is parked at the merge_hold ratify request with no merge performed.",
                 &["review-pr-a", "review-pr-b"],
                 Some(json!({ "tools": ["gh.pr.merge", "gh.issue.close"] })),
-                None,
                 Some("merge is gated by review fence F4 and forge, not a local toolchain gate"),
             ),
         ],
@@ -203,8 +186,9 @@ fn small_change_report() -> WaveReportPayload {
         concat!(
             "# Plan\n\n",
             "Short inspect → implement → verify loop. Treat these task blocks as ",
-            "the authoritative pre-set plan. Activate by replacing them with ",
-            "`ready: true`. Do not mint duplicate tasks.\n"
+            "the authoritative pre-set plan. Activate by replacing them, authoring ",
+            "a real `gate` from the target repo toolchain (formatter, linter, tests), ",
+            "and setting `ready: true`. Do not mint duplicate tasks.\n"
         ),
         &[
             task(
@@ -212,7 +196,6 @@ fn small_change_report() -> WaveReportPayload {
                 "Read the requested change and the current code that it touches. Record constraints in this report before writing.",
                 "The change request and the current code path are captured in the wave report.",
                 &[],
-                None,
                 None,
                 Some("inspect does not produce a repo change to verify"),
             ),
@@ -222,8 +205,7 @@ fn small_change_report() -> WaveReportPayload {
                 "The change is committed in the wave worktree.",
                 &["inspect"],
                 None,
-                Some(toolchain_gate()),
-                None,
+                Some(AUTHOR_REAL_GATE),
             ),
             task(
                 "verify",
@@ -231,8 +213,7 @@ fn small_change_report() -> WaveReportPayload {
                 "The repository toolchain's standard test/verification command passed.",
                 &["implement"],
                 None,
-                Some(toolchain_gate()),
-                None,
+                Some(AUTHOR_REAL_GATE),
             ),
         ],
     )
@@ -256,7 +237,6 @@ fn investigation_report() -> WaveReportPayload {
                 "The relevant facts, file paths, and open questions are captured for the write-findings task.",
                 &[],
                 None,
-                None,
                 Some("investigation is read-only; no repo change to verify"),
             ),
             task(
@@ -264,7 +244,6 @@ fn investigation_report() -> WaveReportPayload {
                 "Write findings, remaining unknowns, and recommended next steps into this wave report. Do not open a PR or merge.",
                 "The report records findings and does not include a forge merge or pull request.",
                 &["gather-facts"],
-                None,
                 None,
                 Some("findings are report prose; no repo change to verify"),
             ),
@@ -377,6 +356,15 @@ mod tests {
         assert!(report.body.contains("gh.issue.view"));
         assert!(report.body.contains("\"ready\": false"));
         assert!(!report.body.contains("\"ready\": true"));
+        assert!(
+            !report.body.contains("\"gate\""),
+            "pre-S5 plan_template had no per-task gate; advisory prose stays in the intro"
+        );
+        assert!(
+            !report.body.contains("detect the repository toolchain"),
+            "advisory toolchain sentence must not become gate.cmd"
+        );
+        assert!(report.body.contains(AUTHOR_REAL_GATE));
     }
 
     #[test]
@@ -385,12 +373,18 @@ mod tests {
         assert!(small.body.contains("\"key\": \"inspect\""));
         assert!(small.body.contains("\"key\": \"implement\""));
         assert!(small.body.contains("\"key\": \"verify\""));
-        assert!(small.body.contains("\"name\": \"test\""));
+        assert!(
+            !small.body.contains("\"gate\""),
+            "small-change must not execute an advisory gate.cmd"
+        );
+        assert!(!small.body.contains("detect the repository toolchain"));
+        assert!(small.body.contains(AUTHOR_REAL_GATE));
 
         let investigation = investigation_report();
         assert!(investigation.body.contains("\"key\": \"gather-facts\""));
         assert!(investigation.body.contains("\"key\": \"write-findings\""));
         assert!(investigation.body.contains("Do not open a pull request"));
+        assert!(!investigation.body.contains("\"gate\""));
     }
 
     #[test]
