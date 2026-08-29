@@ -63,7 +63,8 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
-use crate::model::{CardRole, Wave};
+use crate::model::{Card, CardRole, Wave};
+use crate::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -99,6 +100,8 @@ fn wave_state_descriptor() -> ToolDescriptor {
              worker progress without a second call. Each card carries `id`, \
              `kind`, `role`, `sort`, `created_at`, `updated_at`, plus \
              `runtime` (typed `CardRuntimeView` or `null` when no runtime row). \
+             `report_startup_read_required` is true iff the wave-report \
+             summary/body is not the canonical empty initial report. \
              Callable by spec and worker cards alike; no event is emitted."
             .into(),
         input_schema: json!({
@@ -153,7 +156,20 @@ async fn wave_state(
     Ok(json!({
         "wave": wave,
         "cards": cards_json,
+        "report_startup_read_required": report_startup_read_required(&cards),
     }))
+}
+
+/// #1110 S3 — false only for the canonical empty initial report (or when
+/// the wave has no report card). Unparseable payloads are not that
+/// placeholder, so they require a startup read.
+fn report_startup_read_required(cards: &[Card]) -> bool {
+    match cards.iter().find(|card| card.kind == "wave-report") {
+        Some(card) => serde_json::from_value::<WaveReportPayload>(card.payload.clone())
+            .map(|payload| payload.report_startup_read_required())
+            .unwrap_or(true),
+        None => false,
+    }
 }
 
 // ---------------------------------------------------------------------------

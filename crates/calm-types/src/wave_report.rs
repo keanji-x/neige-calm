@@ -97,4 +97,46 @@ impl WaveReportPayload {
     pub fn initial() -> Self {
         Self::new("", "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n")
     }
+
+    /// #1110 S3 — whether spec's first turn must `calm.report.read`.
+    ///
+    /// False only when `summary` and `body` equal [`Self::initial()`].
+    /// `doc_rev` / `blocks` are ignored so a CRDT-materialized placeholder
+    /// stays false. Forked or edited content is true.
+    pub fn report_startup_read_required(&self) -> bool {
+        let initial = Self::initial();
+        self.summary != initial.summary || self.body != initial.body
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_startup_read_required_is_false_only_for_canonical_initial_content() {
+        let initial = WaveReportPayload::initial();
+        assert!(
+            !initial.report_startup_read_required(),
+            "canonical initial payload must not require a startup read"
+        );
+
+        let mut materialized = initial.clone();
+        materialized.doc_rev = 7;
+        materialized.blocks = Some(vec![]);
+        assert!(
+            !materialized.report_startup_read_required(),
+            "doc_rev/blocks must not flip the bit when summary/body are still initial"
+        );
+
+        assert!(
+            WaveReportPayload::new("", "edited body\n").report_startup_read_required(),
+            "an edited body is a pre-set plan"
+        );
+        assert!(
+            WaveReportPayload::new("fork source summary", initial.body.clone())
+                .report_startup_read_required(),
+            "a non-empty summary is not the canonical placeholder"
+        );
+    }
 }

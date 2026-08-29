@@ -282,42 +282,16 @@ pub(crate) fn render_spec_developer_instructions(
         crate::spec_card::SeededCardRole::Spec.prompt_template(),
         wave_id,
     );
-    let Some(workflow_descriptor) = workflow_descriptor else {
+    // #1110 S3 — `plan_template` / `gates` / `spec_instructions` stay on the
+    // parsed descriptor (git-forge must still install) but are no longer
+    // injected. Plan prose lives in the forked report; the remaining
+    // injected contract is the wave's validated `workflow_input`.
+    if workflow_descriptor.is_none() {
         return instructions;
-    };
-
-    if !workflow_descriptor.spec_instructions.is_empty() {
-        instructions.push_str("\n\n## Bound Workflow Instructions\n");
-        instructions.push_str(&crate::spec_card::render_system_prompt(
-            &workflow_descriptor.spec_instructions,
-            wave_id,
-        ));
-    }
-    if !workflow_descriptor.plan_template.is_empty() {
-        instructions.push_str("\n\n## Bound Workflow Plan Template\n");
-        instructions.push_str("```json\n");
-        let task_blocks: Vec<Value> = workflow_descriptor
-            .plan_template
-            .iter()
-            .map(crate::mcp_server::tools::plan::plan_template_task_block_payload)
-            .collect();
-        let plan_template_json =
-            serde_json::to_string_pretty(&task_blocks).expect("task-block payloads serialize");
-        instructions.push_str(&plan_template_json);
-        instructions.push_str("\n```");
-    }
-    if !workflow_descriptor.gates.is_empty() {
-        instructions.push_str("\n\n## Bound Workflow Gates\n");
-        instructions.push_str("```json\n");
-        let gates_json =
-            serde_json::to_string_pretty(&workflow_descriptor.gates).expect("GateInput serializes");
-        instructions.push_str(&gates_json);
-        instructions.push_str("\n```");
     }
     // #891 — the wave's validated workflow_input, verbatim. Deliberately
     // NOT passed through `render_system_prompt`: user-controlled JSON must
-    // not have literal `{wave_id}` substituted (same raw-JSON precedent as
-    // the plan_template / gates sections above).
+    // not have literal `{wave_id}` substituted.
     if let Some(input) = workflow_input {
         instructions.push_str("\n\n## Bound Workflow Input\n");
         instructions.push_str("```json\n");
@@ -1353,9 +1327,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn spec_developer_instructions_append_workflow_descriptor_when_bound() {
-        let workflow = WorkflowDescriptor {
+    fn populated_workflow_descriptor() -> WorkflowDescriptor {
+        WorkflowDescriptor {
             id: "issue-development".into(),
             spec_instructions: "Follow workflow instructions for wave {wave_id}.".into(),
             plan_template: vec![
@@ -1373,52 +1346,40 @@ mod tests {
             }],
             card_kinds: vec![],
             input_schema: None,
-        };
-
-        let out = render_spec_developer_instructions("wave-abc", Some(&workflow), None);
-
-        assert!(out.contains("Follow workflow instructions for wave wave-abc."));
-        assert!(!out.contains("{wave_id}"));
-        assert!(out.contains("## Bound Workflow Plan Template"));
-        assert!(out.contains("```json"));
-        assert!(out.contains(r#""key": "review-a""#));
-        assert!(out.contains(r#""goal": "do the thing""#));
-        assert!(out.contains(r#""context": {"#));
-        assert!(out.contains(r#""acceptance": "passes the requested gates""#));
-        assert!(out.contains(r#""cwd": "/workspace/repo""#));
-        assert!(out.contains(r#""priority": 10"#));
-        assert!(out.contains(r#""depends_on": ["#));
-        assert!(out.contains(r#""review-a""#));
-        assert!(out.contains(r#""gate": {"#));
-        assert!(out.contains(r#""timeout_secs": 120"#));
-        assert!(out.contains(r#""ready": true"#));
-        assert!(out.contains(r#""declared_by": "spec""#));
-        assert!(!out.contains(r#""acceptance_criteria""#));
-        assert!(!out.contains(r#""no_gate_reason": null"#));
-        assert!(out.contains("## Bound Workflow Gates"));
-        assert!(out.contains(r#""name": "fmt""#));
-        assert!(out.contains(r#""cmd": "cargo fmt --all --check""#));
-        assert!(out.contains(r#""timeout_secs": 300"#));
-        assert!(!out.contains(r#""id": "issue-development""#));
-        assert!(!out.contains(r#""card_kinds""#));
+        }
     }
 
     #[test]
-    fn spec_developer_instructions_skip_empty_workflow_instructions_section() {
-        let workflow = WorkflowDescriptor {
-            id: "issue-development".into(),
-            spec_instructions: String::new(),
-            plan_template: vec![plan_task("review-a", "codex", &[])],
-            gates: vec![],
-            card_kinds: vec![],
-            input_schema: None,
-        };
-
+    fn spec_developer_instructions_do_not_inject_workflow_plan_prose() {
+        let workflow = populated_workflow_descriptor();
         let out = render_spec_developer_instructions("wave-abc", Some(&workflow), None);
 
-        assert!(!out.contains("## Bound Workflow Instructions"));
-        assert!(out.contains("## Bound Workflow Plan Template"));
-        assert!(out.contains(r#""key": "review-a""#));
+        assert!(
+            !out.contains("## Bound Workflow Instructions"),
+            "S3 must not inject spec_instructions"
+        );
+        assert!(
+            !out.contains("## Bound Workflow Plan Template"),
+            "S3 must not inject plan_template"
+        );
+        assert!(
+            !out.contains("## Bound Workflow Gates"),
+            "S3 must not inject gates"
+        );
+        assert!(
+            !out.contains("Follow workflow instructions for wave"),
+            "descriptor prose must not leak into the spec prompt"
+        );
+        assert!(!out.contains(r#""key": "review-a""#));
+        assert!(!out.contains(r#""cmd": "cargo fmt --all --check""#));
+        assert!(!out.contains("## Bound Workflow Input"));
+        assert_eq!(
+            out,
+            crate::spec_card::render_system_prompt(
+                crate::spec_card::SeededCardRole::Spec.prompt_template(),
+                "wave-abc",
+            )
+        );
     }
 
     #[test]
@@ -1431,25 +1392,19 @@ mod tests {
         let out = render_spec_developer_instructions("wave-abc", None, None);
 
         assert_eq!(out, expected);
+        assert!(
+            expected.contains(
+                "If `report_startup_read_required` is true, first call `calm.report.read`."
+            ),
+            "base prompt must tell spec to read a non-empty forked report"
+        );
+        assert!(expected.contains("authoritative pre-set plan"));
+        assert!(expected.contains("Do not mint duplicate tasks"));
     }
 
     #[test]
     fn spec_developer_instructions_append_workflow_input_when_present() {
-        let workflow = WorkflowDescriptor {
-            id: "issue-development".into(),
-            spec_instructions: "Follow workflow instructions for wave {wave_id}.".into(),
-            plan_template: vec![plan_task("review-a", "codex", &[])],
-            gates: vec![GateInput {
-                cwd: Some("/workspace/repo".into()),
-                timeout_secs: Some(300),
-                steps: vec![GateStepInput {
-                    name: "fmt".into(),
-                    cmd: "cargo fmt --all --check".into(),
-                }],
-            }],
-            card_kinds: vec![],
-            input_schema: None,
-        };
+        let workflow = populated_workflow_descriptor();
         let input = json!({
             "issue_url": "https://github.com/o/r/issues/1",
             "repo": "o/r",
@@ -1459,12 +1414,15 @@ mod tests {
 
         let out = render_spec_developer_instructions("wave-abc", Some(&workflow), Some(&input));
 
-        // Section renders after the Gates section, fenced as JSON.
+        assert!(
+            !out.contains("## Bound Workflow Instructions")
+                && !out.contains("## Bound Workflow Plan Template")
+                && !out.contains("## Bound Workflow Gates"),
+            "input injection must not revive the retired plan-prose sections"
+        );
         let input_at = out
             .find("## Bound Workflow Input")
             .expect("workflow input section");
-        let gates_at = out.find("## Bound Workflow Gates").expect("gates section");
-        assert!(gates_at < input_at, "input section must follow gates");
         let rendered_input = out[input_at..]
             .strip_prefix("## Bound Workflow Input\n```json\n")
             .and_then(|section| section.strip_suffix("\n```"))
@@ -1475,9 +1433,8 @@ mod tests {
             rendered_input, input,
             "workflow input must round-trip in full"
         );
-        // User JSON is injected verbatim — no `{wave_id}` template substitution
-        // (the spec_instructions section above it IS substituted).
-        assert!(out.contains("Follow workflow instructions for wave wave-abc."));
+        // User JSON is injected verbatim — no `{wave_id}` template substitution.
+        assert!(out.contains("literal {wave_id} must survive"));
 
         // input = None renders no section at all.
         let without = render_spec_developer_instructions("wave-abc", Some(&workflow), None);

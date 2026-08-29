@@ -16,8 +16,10 @@ use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::wave_report_blocks::{
     TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_UPSERT,
 };
+use calm_server::mcp_server::tools::wave_state::TOOL_WAVE_STATE;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{CardRole, NewCard, NewCove, NewWave};
+use calm_server::operation::spec_harness_start_adapter::render_spec_developer_instructions_for_test;
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::session_projection_repo::AgentProvider;
@@ -1861,4 +1863,114 @@ async fn fork_fails_closed_on_a_tombstone_carrying_released_by_user() {
     assert_eq!(after.3, before.3, "failed fork left a report card");
     assert_eq!(after.4, before.4, "failed fork left an overlay");
     assert_eq!(after.5, before.5, "failed fork left a tasks row");
+}
+
+/// INV-1110-002: a forked wave's `neige state` / `calm.wave.state` bit is
+/// true, and the spec developer instructions (first-turn prompt) tell the
+/// agent to `calm.report.read` when that bit is set. This is not a live
+/// Codex turn; the fixture's spec harness uses a nonexistent binary.
+#[tokio::test]
+async fn inv_1110_002_forked_wave_requires_report_startup_read() {
+    let boot = boot().await;
+    let (status, target_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "startup-read fork target",
+            "sort": null,
+            "cwd": format!("{}-startup-read", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+            "fork_report_from": boot.source_wave_id,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {target_wave}");
+    let target_wave_id = target_wave["id"].as_str().unwrap().to_string();
+
+    let report_card = boot
+        .repo
+        .cards_by_wave(&target_wave_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .expect("forked wave has a report card");
+    let payload: WaveReportPayload =
+        serde_json::from_value(report_card.payload).expect("forked report payload");
+    assert!(
+        payload.report_startup_read_required(),
+        "forked report content must differ from WaveReportPayload::initial()"
+    );
+
+    let (ctx, registry, identity) = spec_tool_channel(&boot, &target_wave_id).await;
+    let state = call_spec_tool(&ctx, &registry, TOOL_WAVE_STATE, identity, json!({}))
+        .await
+        .expect("forked spec can read wave state");
+    assert_eq!(
+        state
+            .get("report_startup_read_required")
+            .and_then(Value::as_bool),
+        Some(true),
+        "forked wave state must require a startup report read: {state}"
+    );
+
+    let prompt = render_spec_developer_instructions_for_test(target_wave_id.as_str(), None, None);
+    assert!(
+        prompt
+            .contains("If `report_startup_read_required` is true, first call `calm.report.read`."),
+        "spec first-turn prompt must tell the agent to read a non-empty report"
+    );
+    assert!(prompt.contains("authoritative pre-set plan"));
+    assert!(prompt.contains("Do not mint duplicate tasks"));
+}
+
+#[tokio::test]
+async fn initial_wave_does_not_require_report_startup_read() {
+    let boot = boot().await;
+    let (status, source_wave) = request_json(
+        &boot.app,
+        "POST",
+        "/api/waves".into(),
+        &boot.cookie,
+        Some(json!({
+            "cove_id": boot.cove_id,
+            "title": "canonical initial source",
+            "sort": null,
+            "cwd": format!("{}-initial-state", boot.target_cwd),
+            "attach_folder": true,
+            "theme": routes::theme::RequestTheme::default_dark(),
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body = {source_wave}");
+    let wave_id = source_wave["id"].as_str().unwrap().to_string();
+
+    let report_card = boot
+        .repo
+        .cards_by_wave(&wave_id)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .expect("fresh wave has a report card");
+    let payload: WaveReportPayload =
+        serde_json::from_value(report_card.payload).expect("initial report payload");
+    assert_eq!(payload, WaveReportPayload::initial());
+    assert!(!payload.report_startup_read_required());
+
+    let (ctx, registry, identity) = spec_tool_channel(&boot, &wave_id).await;
+    let state = call_spec_tool(&ctx, &registry, TOOL_WAVE_STATE, identity, json!({}))
+        .await
+        .expect("fresh spec can read wave state");
+    assert_eq!(
+        state
+            .get("report_startup_read_required")
+            .and_then(Value::as_bool),
+        Some(false),
+        "canonical initial report must not require a startup read: {state}"
+    );
 }
