@@ -282,10 +282,9 @@ pub(crate) fn render_spec_developer_instructions(
         crate::spec_card::SeededCardRole::Spec.prompt_template(),
         wave_id,
     );
-    // #1110 S3 — `plan_template` / `gates` / `spec_instructions` stay on the
-    // parsed descriptor (git-forge must still install) but are no longer
-    // injected. Plan prose lives in the forked report; the remaining
-    // injected contract is the wave's validated `workflow_input`.
+    // #1110 S5 — the descriptor is an id handle only. Plan prose lives in
+    // the forked report; the remaining injected contract is the wave's
+    // validated `workflow_input`, gated on a resolved binding.
     if workflow_descriptor.is_none() {
         return instructions;
     }
@@ -1296,7 +1295,6 @@ mod tests {
     use crate::db::prelude::{ServerRepoOutOfDomainExt, ServerRepoSyncDomainRawExt};
     use crate::db::sqlite::SqlxRepo;
     use crate::event::EventBus;
-    use crate::mcp_server::tools::plan::{GateInput, GateStepInput, PlanTaskInput};
     use crate::model::{NewCove, NewPlugin, NewWave};
     use crate::operation::Phase;
     use crate::plugin_host::{Manifest, PluginRegistry, PluginRuntimeStatus};
@@ -1305,47 +1303,9 @@ mod tests {
 
     const WORKFLOW_ID: &str = "issue-development";
 
-    fn plan_task(key: &str, kind: &str, depends_on: &[&str]) -> PlanTaskInput {
-        PlanTaskInput {
-            key: key.into(),
-            kind: kind.into(),
-            goal: "do the thing".into(),
-            context: Some(json!({ "issue": 760, "slice": "5a" })),
-            acceptance_criteria: Some("passes the requested gates".into()),
-            cwd: Some("/workspace/repo".into()),
-            depends_on: depends_on.iter().map(|dep| (*dep).to_string()).collect(),
-            priority: Some(10),
-            gate: Some(GateInput {
-                cwd: Some("/workspace/repo".into()),
-                timeout_secs: Some(120),
-                steps: vec![GateStepInput {
-                    name: "test".into(),
-                    cmd: "cargo test -p calm-server".into(),
-                }],
-            }),
-            no_gate_reason: None,
-        }
-    }
-
     fn populated_workflow_descriptor() -> WorkflowDescriptor {
         WorkflowDescriptor {
             id: "issue-development".into(),
-            spec_instructions: "Follow workflow instructions for wave {wave_id}.".into(),
-            plan_template: vec![
-                plan_task("review-a", "codex", &[]),
-                plan_task("review-b", "claude", &["review-a"]),
-                plan_task("merge", "terminal", &["review-a", "review-b"]),
-            ],
-            gates: vec![GateInput {
-                cwd: Some("/workspace/repo".into()),
-                timeout_secs: Some(300),
-                steps: vec![GateStepInput {
-                    name: "fmt".into(),
-                    cmd: "cargo fmt --all --check".into(),
-                }],
-            }],
-            card_kinds: vec![],
-            input_schema: None,
         }
     }
 
@@ -1593,20 +1553,7 @@ mod tests {
             "display_name": "Workflow Resolver Stub",
             "entrypoint": { "command": "bin/stub" },
             "workflows": [
-                {
-                    "id": WORKFLOW_ID,
-                    "plan_template": [
-                        {
-                            "key": "inspect",
-                            "kind": "codex",
-                            "goal": "Inspect the issue.",
-                            "depends_on": []
-                        }
-                    ],
-                    "gates": [],
-                    "spec_instructions": "Use workflow {wave_id}.",
-                    "card_kinds": []
-                }
+                { "id": WORKFLOW_ID }
             ],
             "permissions": {}
         });

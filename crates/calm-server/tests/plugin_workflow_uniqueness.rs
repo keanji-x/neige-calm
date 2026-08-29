@@ -347,20 +347,7 @@ async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<P
             "display_name": "Workflow Uniqueness Stub",
             "entrypoint": { "command": "bin/stub" },
             "workflows": [
-                {
-                    "id": SHARED_WORKFLOW_ID,
-                    "plan_template": [
-                        {
-                            "key": "inspect",
-                            "kind": "codex",
-                            "goal": "Inspect the issue.",
-                            "depends_on": []
-                        }
-                    ],
-                    "gates": [],
-                    "spec_instructions": "Use workflow {wave_id}.",
-                    "card_kinds": []
-                }
+                { "id": SHARED_WORKFLOW_ID }
             ],
             "permissions": {}
         });

@@ -232,7 +232,6 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
-            descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
@@ -319,7 +318,6 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
-            descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
@@ -401,7 +399,6 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
-            descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
@@ -556,7 +553,6 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
-            descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
@@ -858,7 +854,6 @@ async fn real_spec_agent_autonomously_merges_pr_and_closes_issue_from_descriptor
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
-            descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
@@ -1322,7 +1317,6 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
             plan_source: PlanSource::RealSpecTurn,
             issue_body: None,
             require_task_gates: false,
-            descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
@@ -1985,13 +1979,10 @@ async fn wait_for_impl_review_round_on_subject(
 // proof lives in the oracle's diff invariant: the merged head's diff against
 // the seeded base must add `is_palindrome` to `src/lib.rs`.
 //
-// No-cargo discipline (P1 + checker pin d): the descriptor gate cmd is
-// test-patched BEFORE `Manifest::parse` (fixture `descriptor_gate_cmd`) with
-// a boot guard that no registered gate cmd contains `cargo`; repo seeding
-// preflights rustc under the gate wrapper's exact env-cleared conditions; and
-// the post-run oracle asserts no `tasks.gate_json` row contains `cargo`. A
-// bare `cargo test` gate dispatched from inside this suite is the #863-B
-// recursive-suite amplifier.
+// No-cargo discipline (P1 + checker pin d): #1110 S5 dropped descriptor
+// gates. Task-level `gate_json` is still asserted cargo-free by the
+// post-run oracle. A bare `cargo test` gate dispatched from inside this
+// suite is the #863-B recursive-suite amplifier.
 //
 // Run discipline (#863-D): the REAL capstone run happens ONLY inside the #863
 // isolation wrapper, setsid-detached, never harness-tracked, never on the
@@ -2043,7 +2034,6 @@ async fn real_spec_drives_issue_to_close_capstone() {
                 body: CAPSTONE_ISSUE_BODY.into(),
             }),
             require_task_gates: true,
-            descriptor_gate_cmd: Some(CAPSTONE_GATE_CMD.into()),
             repo_seed: RepoSeed::RustMicroCrate,
         },
         codex_bin,
@@ -2519,7 +2509,6 @@ async fn capstone_oracle(
     assert_event_skeleton_superset(
         &fx.repo,
         &[
-            RequiredEvent::any("workflow.registered"),
             RequiredEvent::any("plan.updated"),
             RequiredEvent::new("task.dispatched", |r| r.payload["kind"] == json!("codex")),
             RequiredEvent::any("workspace.leased"),
@@ -2835,69 +2824,20 @@ fn capstone_gate_script_is_hermetic_and_cargo_free() {
     );
 }
 
-/// The descriptor patch rewrites the shipped gate cmd to the hermetic
-/// capstone script before `Manifest::parse`, the boot guard rejects cargo
-/// gate cmds, and the UNPATCHED shipped gate cmd differs from the capstone
-/// cmd (i.e. the patch is live, not vacuous). #925: the shipped gate is now
-/// repo-agnostic prose, so non-vacuity is proven by `cmd != CAPSTONE_GATE_CMD`,
-/// not a `cargo` substring.
+/// #1110 S5 — shipped git-forge `workflows[]` is an id handle only. Gate
+/// cmds live in report task blocks (S6 templates), not the descriptor.
 #[test]
-fn descriptor_gate_patch_neutralizes_shipped_gate_and_guard_is_live() {
+fn shipped_git_forge_workflows_are_id_only() {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
-
-    let patched = patch_manifest_gate_cmd(&raw, CAPSTONE_GATE_CMD);
-    let manifest = Manifest::parse(&patched).expect("patched manifest parses");
-    assert_no_cargo_gate_cmds(&manifest);
-    let mut steps = 0usize;
-    for workflow in &manifest.workflows {
-        for gate in &workflow.gates {
-            for step in &gate.steps {
-                assert_eq!(step.cmd, CAPSTONE_GATE_CMD);
-                steps += 1;
-            }
-        }
-    }
-    assert!(steps > 0, "patched manifest must still carry gate steps");
-
-    // Everything except gate cmds stays value-identical (P1: plan_template,
-    // spec_instructions, cap, tools untouched).
-    let mut expected: Value = serde_json::from_str(&raw).expect("manifest json");
-    for workflow in expected["workflows"]
-        .as_array_mut()
-        .expect("workflows array")
-    {
-        if let Some(gates) = workflow.get_mut("gates").and_then(Value::as_array_mut) {
-            for gate in gates {
-                if let Some(steps) = gate.get_mut("steps").and_then(Value::as_array_mut) {
-                    for step in steps {
-                        step["cmd"] = json!(CAPSTONE_GATE_CMD);
-                    }
-                }
-            }
-        }
-    }
-    let patched_value: Value = serde_json::from_str(&patched).expect("patched json");
+    let value: Value = serde_json::from_str(&raw).expect("manifest json");
     assert_eq!(
-        patched_value, expected,
-        "gate-cmd patch must not disturb anything else in the manifest"
+        value["workflows"],
+        json!([{ "id": "issue-development" }]),
+        "S5 git-forge workflows[] must be id-only"
     );
-
-    // #925 — the shipped gate no longer pins `cargo test`, so patch
-    // liveness is proven by "shipped cmd != the hermetic capstone cmd"
-    // rather than a `cargo` substring. `.all()` at the step level means a
-    // future multi-step gate that is only partially patched (some step
-    // already == CAPSTONE_GATE_CMD) cannot satisfy the liveness proof.
-    let unpatched = Manifest::parse(&raw).expect("production manifest parses");
-    let patch_is_live = unpatched.workflows.iter().any(|w| {
-        w.gates
-            .iter()
-            .any(|g| g.steps.iter().all(|s| s.cmd != CAPSTONE_GATE_CMD))
-    });
-    assert!(
-        patch_is_live,
-        "shipped gate cmd already equals the capstone cmd; patch is vacuous — \
-         re-evaluate the capstone patch + #863-B posture"
-    );
+    let manifest = Manifest::parse(&raw).expect("production manifest parses");
+    assert_eq!(manifest.workflows.len(), 1);
+    assert_eq!(manifest.workflows[0].id, "issue-development");
 }
 
 /// gh shim `issue view --json body`: a seeded per-issue body file wins; absent

@@ -133,7 +133,6 @@ pub(crate) fn event_warrants_spec_push_with_role(
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
         | Event::PluginToolRegistered { .. }
-        | Event::WorkflowRegistered { .. }
         | Event::CodexWorkerRequested { .. }
         | Event::TerminalWorkerRequested { .. }
         | Event::PlanUpdated { .. }
@@ -1153,7 +1152,6 @@ impl Inner {
             | Event::TerminalDeleted { .. }
             | Event::PluginState { .. }
             | Event::PluginToolRegistered { .. }
-            | Event::WorkflowRegistered { .. }
             | Event::CodexWorkerRequested { .. }
             | Event::TerminalWorkerRequested { .. }
             | Event::TaskDispatched { .. }
@@ -1532,7 +1530,6 @@ pub(crate) fn harness_observation_from_event(
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
         | Event::PluginToolRegistered { .. }
-        | Event::WorkflowRegistered { .. }
         | Event::CodexWorkerRequested { .. }
         | Event::TerminalWorkerRequested { .. }
         | Event::PlanUpdated { .. }

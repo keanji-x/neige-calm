@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::db::{Repo, RouteRepo};
 use crate::dispatcher::Dispatcher;
 use crate::event::{Event, EventBus, EventScope};
-use crate::forge_trust::trusted_forge_plugin;
+
 use crate::harness::HarnessRegistry;
 use crate::ids::ActorId;
 use crate::mcp_server::McpServer;
@@ -1129,33 +1129,6 @@ impl AppState {
                         error = %e,
                         "plugin_tool_registered event log failed"
                     );
-                }
-            }
-            if trusted_forge_plugin(&plugin_id) {
-                for workflow in manifest.workflows {
-                    let workflow_id = workflow.id;
-                    if let Err(e) = repo
-                        .log_pure_event(
-                            ActorId::Kernel,
-                            EventScope::System,
-                            None,
-                            &events,
-                            &card_role_cache,
-                            &wave_cove_cache,
-                            Event::WorkflowRegistered {
-                                plugin_id: plugin_id.clone(),
-                                workflow_id: workflow_id.clone(),
-                            },
-                        )
-                        .await
-                    {
-                        tracing::warn!(
-                            plugin_id = %plugin_id,
-                            workflow_id = %workflow_id,
-                            error = %e,
-                            "workflow_registered event log failed"
-                        );
-                    }
                 }
             }
         }

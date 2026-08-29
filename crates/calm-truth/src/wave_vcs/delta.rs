@@ -423,8 +423,7 @@ pub(super) fn paths_changed_by_event(event: &Event, wave_id: &WaveId) -> PathDel
         | Event::OverlayDeleted { .. }
         | Event::TerminalDeleted { .. }
         | Event::PluginState { .. }
-        | Event::PluginToolRegistered { .. }
-        | Event::WorkflowRegistered { .. } => {}
+        | Event::PluginToolRegistered { .. } => {}
         // Issue #644 — the task plan has no wave-fs view yet (a
         // `plan/index.json` projection is a stated follow-up, design
         // §4.3); plan revisions therefore change no tracked path.

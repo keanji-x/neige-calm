@@ -1167,13 +1167,7 @@ mod workflow_conflict_tests {
             "display_name": "Workflow Conflict Stub",
             "entrypoint": { "command": "bin/stub" },
             "workflows": [
-                {
-                    "id": workflow_id,
-                    "plan_template": [],
-                    "gates": [],
-                    "spec_instructions": "",
-                    "card_kinds": []
-                }
+                { "id": workflow_id }
             ],
             "permissions": {}
         });

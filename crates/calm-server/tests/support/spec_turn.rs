@@ -14,8 +14,7 @@ use serde_json::{Value, json};
 use tokio::time::{Instant, sleep};
 
 use super::agent_diag::panic_with_agent_diag;
-use super::codex_fixture::{Fixture, PLUGIN_ID, SPEC_SESSION_ID};
-use super::event_queries::event_payloads;
+use super::codex_fixture::{Fixture, SPEC_SESSION_ID};
 
 pub async fn boot_spec_harness_via_start_op(fx: &Fixture, goal: String) {
     let request = SpecHarnessStartOperationPayload {
@@ -128,15 +127,6 @@ pub async fn assert_bound_issue_development_workflow_preconditions(fx: &Fixture)
         bound_workflow.as_deref(),
         Some("issue-development"),
         "wave must be bound to issue-development workflow",
-    );
-
-    let registered = event_payloads(&fx.repo, "workflow.registered").await;
-    assert!(
-        registered.iter().any(|payload| {
-            payload["pluginId"] == json!(PLUGIN_ID)
-                && payload["workflowId"] == json!("issue-development")
-        }),
-        "expected workflow.registered for {PLUGIN_ID}/issue-development, got {registered:?}"
     );
 }
 

@@ -16,13 +16,10 @@
 //! NOTE: This file is Slice A only. Slice B will read the parsed `Manifest`
 //! to spawn the process; Slice C will consult `Permissions` on every callback.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 
-use crate::card_kind::CardKindRegistry;
-use crate::mcp_server::tools::plan::{
-    GateInput, PlanTaskInput, key_is_valid, validate_gate_shape, validate_new_plan_batch,
-};
+use crate::mcp_server::tools::plan::key_is_valid;
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -86,10 +83,12 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
 
-    /// Trusted forge plugins may declare durable workflow descriptors. The
-    /// registry/binding layer ignores this field for untrusted plugins; the
-    /// manifest parser still validates the shape so broken descriptors fail
-    /// close to the authoring point.
+    /// Trusted forge plugins may declare workflow ids. Wave create binds
+    /// `workflow_id` to one of these so the kernel can copy the owning
+    /// plugin into `plugin_scope` and validate `workflow_input` against
+    /// this Manifest's `input_schema` (#1110 S2/S5). Untrusted plugins'
+    /// ids are ignored by the binding layer; the parser still checks id
+    /// shape so broken entries fail close to the authoring point.
     #[serde(default)]
     pub workflows: Vec<WorkflowDescriptor>,
 
@@ -228,35 +227,14 @@ pub struct ExposedTool {
     pub annotations: Option<Value>,
 }
 
+/// Wave-create handle that names a plugin-owned workflow id.
+///
+/// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, spec instructions,
+/// and card kinds left the parser; `input_schema` lives on [`Manifest`].
+/// Extra JSON keys are ignored (same forwards-compat as [`Manifest`]).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WorkflowDescriptor {
     pub id: String,
-    /// Transitional Tier-A field while workflow plan prose moves into report
-    /// templates. Keep parsing and validation for installed manifests.
-    #[serde(default)]
-    pub plan_template: Vec<PlanTaskInput>,
-    /// Transitional Tier-A advisory gate guidance — NOT an executable contract.
-    /// #1110 S3 stopped rendering this into the Spec prompt; the field is
-    /// still parsed so installed manifests (git-forge) keep installing until
-    /// S5 deletes it. NEVER executed as a shell command nor wired into a
-    /// task's `gate_json`/execution. The Spec authors each task block's real,
-    /// re-runnable `gate` from the target repo's toolchain via
-    /// `calm.report.blocks.upsert`.
-    #[serde(default)]
-    pub gates: Vec<GateInput>,
-    /// Transitional Tier-A prompt text while workflow instructions move into
-    /// report templates. Keep parsing and validation for installed manifests.
-    /// #1110 S3 stopped injecting this into spec developer instructions.
-    #[serde(default)]
-    pub spec_instructions: String,
-    #[serde(default)]
-    pub card_kinds: Vec<String>,
-    /// Pre-#1110 S2 location of the wave `workflow_input` contract.
-    /// `#[serde(default)]` keeps old fixtures deserializable; install
-    /// rejects a present value (`moved to the Manifest top-level
-    /// input_schema`). Create-time validation never reads this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_schema: Option<Value>,
 }
 
 /// Permissions the plugin requests. Kernel enforces at the callback dispatch
@@ -466,172 +444,14 @@ impl View {
 
 impl WorkflowDescriptor {
     fn validate(&self, idx: usize) -> Result<(), ManifestError> {
-        let path = |s: &str| format!("workflows[{idx}].{s}");
-
         if !key_is_valid(&self.id) {
             return Err(ManifestError::invalid(
-                path("id"),
+                format!("workflows[{idx}].id"),
                 "must match ^[a-z0-9][a-z0-9._-]{0,63}$",
             ));
         }
-
-        validate_new_plan_batch(&self.plan_template).map_err(|reason| {
-            ManifestError::invalid(
-                plan_template_error_field(idx, &self.plan_template, &reason),
-                reason,
-            )
-        })?;
-
-        for (gate_idx, gate) in self.gates.iter().enumerate() {
-            validate_gate_shape(&self.id, gate).map_err(|reason| {
-                ManifestError::invalid(
-                    gate_error_field(path(&format!("gates[{gate_idx}]")), &reason),
-                    reason,
-                )
-            })?;
-        }
-
-        if self.spec_instructions.len() > 8192 {
-            return Err(ManifestError::invalid(
-                path("spec_instructions"),
-                "must be at most 8192 bytes",
-            ));
-        }
-        if self
-            .spec_instructions
-            .chars()
-            .any(|c| c.is_control() && c != '\n' && c != '\t')
-        {
-            return Err(ManifestError::invalid(
-                path("spec_instructions"),
-                "must not contain control characters other than newline or tab",
-            ));
-        }
-
-        let builtins = CardKindRegistry::builtins();
-        for (kind_idx, kind) in self.card_kinds.iter().enumerate() {
-            if builtins.claims_kind(kind) {
-                return Err(ManifestError::invalid(
-                    path(&format!("card_kinds[{kind_idx}]")),
-                    format!("card kind `{kind}` collides with a built-in card kind"),
-                ));
-            }
-        }
-
-        // #1110 S2 — reject rather than ignore: a leftover workflow-level
-        // schema must not silently become the source of truth (or hide
-        // that the contract moved). Path stays `workflows[i].input_schema`
-        // so the author sees which field to delete.
-        if self.input_schema.is_some() {
-            return Err(ManifestError::invalid(
-                path("input_schema"),
-                "moved to the Manifest top-level `input_schema` (sibling of `exposes_tools`)",
-            ));
-        }
-
         Ok(())
     }
-}
-
-fn plan_template_error_field(workflow_idx: usize, tasks: &[PlanTaskInput], reason: &str) -> String {
-    let path = |s: &str| format!("workflows[{workflow_idx}].{s}");
-
-    if let Some(key) = backtick_value_after(reason, "invalid task key `") {
-        let task_idx = tasks
-            .iter()
-            .position(|task| task.key == key)
-            .or_else(|| tasks.iter().position(|task| !key_is_valid(&task.key)));
-        if let Some(task_idx) = task_idx {
-            return path(&format!("plan_template[{task_idx}].key"));
-        }
-    }
-
-    if let Some(key) = backtick_value_after(reason, "duplicate key `") {
-        let mut seen = HashSet::new();
-        for (task_idx, task) in tasks.iter().enumerate() {
-            let duplicate = !seen.insert(task.key.as_str());
-            if duplicate && task.key == key {
-                return path(&format!("plan_template[{task_idx}].key"));
-            }
-        }
-    }
-
-    let Some(key) = task_key_from_plan_error(reason) else {
-        return path("plan_template");
-    };
-    let Some(task_idx) = tasks.iter().position(|task| task.key == key) else {
-        return path("plan_template");
-    };
-
-    if reason.contains("unknown kind") {
-        return path(&format!("plan_template[{task_idx}].kind"));
-    }
-    if reason.contains("`goal`") {
-        return path(&format!("plan_template[{task_idx}].goal"));
-    }
-    if reason.contains("gate.") {
-        return gate_error_field(path(&format!("plan_template[{task_idx}].gate")), reason);
-    }
-    if reason.contains("cwd") {
-        return path(&format!("plan_template[{task_idx}].cwd"));
-    }
-    if reason.contains("unknown dependency")
-        && let Some(dep) = backtick_value_after(reason, "unknown dependency `")
-        && let Some(dep_idx) = tasks[task_idx]
-            .depends_on
-            .iter()
-            .position(|candidate| candidate == dep)
-    {
-        return path(&format!("plan_template[{task_idx}].depends_on[{dep_idx}]"));
-    }
-    if reason.contains("`no_gate_reason`") {
-        return path(&format!("plan_template[{task_idx}].no_gate_reason"));
-    }
-    if reason.contains("requires `context`") {
-        return path(&format!("plan_template[{task_idx}].context"));
-    }
-
-    path(&format!("plan_template[{task_idx}]"))
-}
-
-fn task_key_from_plan_error(reason: &str) -> Option<&str> {
-    reason
-        .strip_prefix("task ")?
-        .split_once(':')
-        .map(|(key, _)| key)
-}
-
-fn backtick_value_after<'a>(reason: &'a str, prefix: &str) -> Option<&'a str> {
-    let start = reason.find(prefix)? + prefix.len();
-    reason[start..].split_once('`').map(|(value, _)| value)
-}
-
-fn gate_error_field(base: String, reason: &str) -> String {
-    if reason.contains("gate.steps must be non-empty") {
-        return format!("{base}.steps");
-    }
-    if let Some(step_idx) = indexed_field(reason, "gate.steps[") {
-        if reason.contains(&format!("gate.steps[{step_idx}].name")) {
-            return format!("{base}.steps[{step_idx}].name");
-        }
-        if reason.contains(&format!("gate.steps[{step_idx}].cmd")) {
-            return format!("{base}.steps[{step_idx}].cmd");
-        }
-        return format!("{base}.steps[{step_idx}]");
-    }
-    if reason.contains("gate.timeout_secs") {
-        return format!("{base}.timeout_secs");
-    }
-    if reason.contains("gate.cwd") {
-        return format!("{base}.cwd");
-    }
-    base
-}
-
-fn indexed_field(reason: &str, needle: &str) -> Option<usize> {
-    let start = reason.find(needle)? + needle.len();
-    let end = reason[start..].find(']')?;
-    reason[start..start + end].parse().ok()
 }
 
 impl Permissions {
@@ -727,19 +547,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const GIVE_UP_PROTOCOL_GOLDEN: &str = concat!(
-        "If n == cap and the round is non-approving, do not merge. Either GIVE-UP by recording ",
-        "the terminal rationale in the report with calm.report.write and lifecycle failed for ",
-        "reviewing->failed; OR ASK-HUMAN by first moving reviewing->working with the normal ",
-        "lifecycle arg, then call calm.ratify.request with reason:\"cap_exhausted\" for ",
-        "working->blocked. On ratify.resolved grant the wave is already back in working; resume ",
-        "working->reviewing and continue reviewing the exhausted subject with cap = previous cap ",
-        "+ 2 on its next round. The kernel accepts this raise at most once per subject per grant; ",
-        "a grant may authorize this for each subject that was already cap-exhausted when it was ",
-        "issued. If the extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN ",
-        "again."
-    );
-
     const ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN: &str =
         include_str!("../../tests/goldens/issue_development_spec_prompt.txt");
 
@@ -800,23 +607,6 @@ mod tests {
     #[should_panic(expected = "full golden degenerate state")]
     fn full_golden_equality_rejects_empty_expected_and_actual() {
         assert_full_golden_eq("", "");
-    }
-
-    fn validate_give_up_contract(text: &str) -> Result<(), String> {
-        let start = text
-            .find("If n == cap and the round is non-approving")
-            .ok_or_else(|| "GIVE-UP protocol paragraph is missing".to_string())?;
-        let remainder = &text[start..];
-        let end = remainder
-            .find("\n\nRecord root_cause")
-            .ok_or_else(|| "GIVE-UP protocol paragraph terminator is missing".to_string())?;
-        let actual = &remainder[..end];
-        if actual != GIVE_UP_PROTOCOL_GOLDEN {
-            return Err(format!(
-                "GIVE-UP protocol differs from golden\nexpected: {GIVE_UP_PROTOCOL_GOLDEN:?}\nactual:   {actual:?}"
-            ));
-        }
-        Ok(())
     }
 
     fn hello_world() -> &'static str {
@@ -901,37 +691,7 @@ mod tests {
             "display_name": "Workflow Test",
             "entrypoint": { "command": "bin/workflow-test" },
             "workflows": [
-                {
-                    "id": "issue-development",
-                    "plan_template": [
-                        {
-                            "key": "inspect",
-                            "kind": "codex",
-                            "goal": "Inspect the issue.",
-                            "depends_on": [],
-                            "gate": {
-                                "steps": [
-                                    { "name": "test", "cmd": "cargo test" }
-                                ]
-                            }
-                        },
-                        {
-                            "key": "implement",
-                            "kind": "claude",
-                            "goal": "Implement the change.",
-                            "depends_on": ["inspect"]
-                        }
-                    ],
-                    "gates": [
-                        {
-                            "steps": [
-                                { "name": "fmt", "cmd": "cargo fmt --all --check" }
-                            ]
-                        }
-                    ],
-                    "spec_instructions": "Use the workflow descriptor for wave {wave_id}.\nKeep it concise.",
-                    "card_kinds": ["plugin:dev.neige.workflow-test:custom"]
-                }
+                { "id": "issue-development" }
             ],
             "permissions": {}
         })
@@ -941,32 +701,23 @@ mod tests {
         Manifest::parse(&serde_json::to_string(&v).expect("serialize manifest value"))
     }
 
-    fn context_str<'a>(task: &'a PlanTaskInput, key: &str) -> &'a str {
-        task.context
-            .as_ref()
-            .and_then(|context| context.get(key))
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("task {} missing context string {key}", task.key))
-    }
-
-    fn task<'a>(tasks: &'a HashMap<&str, &PlanTaskInput>, key: &str) -> &'a PlanTaskInput {
-        tasks
-            .get(key)
-            .copied()
-            .unwrap_or_else(|| panic!("missing task {key}"))
-    }
-
-    fn depends_on(task: &PlanTaskInput) -> Vec<&str> {
-        task.depends_on.iter().map(String::as_str).collect()
-    }
-
     #[test]
     fn parses_workflow_descriptor() {
         let m = parse_manifest_value(workflow_manifest_value()).expect("workflow manifest");
         assert_eq!(m.workflows.len(), 1);
         assert_eq!(m.workflows[0].id, "issue-development");
-        assert_eq!(m.workflows[0].plan_template.len(), 2);
-        assert_eq!(m.workflows[0].gates.len(), 1);
+    }
+
+    #[test]
+    fn extra_workflow_descriptor_fields_are_ignored() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["plan_template"] = json!([]);
+        v["workflows"][0]["gates"] = json!([]);
+        v["workflows"][0]["spec_instructions"] = json!("leftover");
+        v["workflows"][0]["card_kinds"] = json!(["terminal"]);
+        v["workflows"][0]["input_schema"] = json!({"type": "object"});
+        let m = parse_manifest_value(v).expect("S5 ignores retired descriptor fields");
+        assert_eq!(m.workflows[0].id, "issue-development");
     }
 
     #[test]
@@ -978,125 +729,13 @@ mod tests {
             .iter()
             .find(|workflow| workflow.id == "issue-development")
             .expect("issue-development workflow");
-        let tasks = workflow
-            .plan_template
-            .iter()
-            .map(|task| (task.key.as_str(), task))
-            .collect::<HashMap<_, _>>();
-
-        assert_eq!(workflow.plan_template.len(), 8);
-        assert_eq!(
-            depends_on(task(&tasks, "review-design-a")),
-            vec!["inspect-issue"]
-        );
-        assert_eq!(
-            depends_on(task(&tasks, "review-design-b")),
-            vec!["inspect-issue"]
-        );
-        assert_eq!(
-            depends_on(task(&tasks, "implement-change")),
-            vec!["review-design-a", "review-design-b"]
-        );
-        assert_eq!(
-            depends_on(task(&tasks, "open-pr")),
-            vec!["implement-change"]
-        );
-        assert_eq!(depends_on(task(&tasks, "review-pr-a")), vec!["open-pr"]);
-        assert_eq!(depends_on(task(&tasks, "review-pr-b")), vec!["open-pr"]);
-        assert_eq!(
-            depends_on(task(&tasks, "merge")),
-            vec!["review-pr-a", "review-pr-b"]
-        );
-        assert_eq!(
-            context_str(task(&tasks, "review-design-a"), "reviewer_role"),
-            "design-correctness"
-        );
-        assert_eq!(
-            context_str(task(&tasks, "review-design-b"), "reviewer_role"),
-            "design-failure-path"
-        );
-        assert_ne!(
-            context_str(task(&tasks, "review-design-a"), "reviewer_role"),
-            context_str(task(&tasks, "review-design-b"), "reviewer_role")
-        );
-        assert_eq!(
-            context_str(task(&tasks, "review-pr-a"), "reviewer_role"),
-            "pr-correctness"
-        );
-        assert_eq!(
-            context_str(task(&tasks, "review-pr-b"), "reviewer_role"),
-            "pr-failure-path"
-        );
-        assert_ne!(
-            context_str(task(&tasks, "review-pr-a"), "reviewer_role"),
-            context_str(task(&tasks, "review-pr-b"), "reviewer_role")
-        );
-        assert_eq!(context_str(task(&tasks, "review-design-a"), "channel"), "a");
-        assert_eq!(context_str(task(&tasks, "review-design-b"), "channel"), "b");
-        assert_eq!(context_str(task(&tasks, "review-pr-a"), "channel"), "a");
-        assert_eq!(context_str(task(&tasks, "review-pr-b"), "channel"), "b");
-        assert!(workflow.spec_instructions.len() <= 8192);
-        assert!(
-            !workflow
-                .spec_instructions
-                .chars()
-                .any(|c| c.is_control() && c != '\n' && c != '\t')
-        );
-        for needle in [
-            "calm.review.round",
-            "approved",
-            "changes_requested",
-            "cap is the fixed policy constant 8",
-            // #891 slice ② review fix — cap+2 is scoped to cap-exhaustion
-            // grants; a merge_hold/repo_mismatch grant licenses no raise.
-            "after a cap-exhaustion ratify grant it is the previous cap plus exactly 2",
-            "cap = previous cap + 2",
-            "Always re-review",
-            "expected_head_sha",
-            "calm.ratify.request",
-            "reason:\"cap_exhausted\"",
-            "root_cause",
-            // #891 slice ② — workflow-input ingest / repo cross-check /
-            // merge_policy semantics live in spec_instructions (agent
-            // policy, deliberately not kernel-enforced); pin their presence.
-            "Bound Workflow Input",
-            "gh.issue.view",
-            // Reason strings are a single free-form field on the kernel
-            // side; the descriptor prescribes prefix + detail encoding.
-            "reason:\"repo_mismatch: input.repo=",
-            "reason:\"merge_hold: pr #",
-            "also the semantics whenever merge_policy is absent",
-            // merge_hold lifecycle dance: ratify.request 400s unless the
-            // wave is `working`, so the hold must route through it.
-            "green checks, then move reviewing->working",
-            // #891 slice ② r2 — post-grant half of the merge_policy
-            // contract: the grant covers the already-converged head (no
-            // extra review round), and the wave resumes working->reviewing
-            // before merging per fence F4.
-            "no fresh review round is required for the hold itself",
-            "resume working->reviewing and call gh.pr.merge per fence F4",
-            // #925 — the gate guidance is repo-agnostic (detect the target
-            // toolchain), no longer a Rust-specific `cargo test`.
-            "detect it (Cargo / npm / pytest / go / Make, etc.)",
-        ] {
-            assert!(
-                workflow.spec_instructions.contains(needle),
-                "spec_instructions missing {needle}"
-            );
-        }
-
-        // #925 — the shipped gate is now repo-agnostic guidance, not the
-        // Rust-specific `cargo test`; lock the de-hardcoding at the source.
-        assert_ne!(workflow.gates[0].steps[0].cmd, "cargo test");
+        assert_eq!(m.workflows.len(), 1);
+        assert_eq!(workflow.id, "issue-development");
 
         // #1110 S2 — the shipped plugin's input contract lives on the
         // Manifest, not the workflow descriptor. Parsing via
         // `Manifest::parse` already ran `validate()`, so reaching here
         // proves the schema passes the subset validator.
-        assert!(
-            workflow.input_schema.is_none(),
-            "workflow-level input_schema moved to Manifest root"
-        );
         let schema = m
             .input_schema
             .as_ref()
@@ -1116,53 +755,17 @@ mod tests {
             schema["properties"]["merge_policy"]["enum"],
             serde_json::json!(["hold-for-ratify", "auto-merge"])
         );
-        // Documentation-only default (kernel never applies it; absent ⇒
-        // hold-for-ratify semantics are spelled out in spec_instructions).
         assert_eq!(
             schema["properties"]["merge_policy"]["default"],
             "hold-for-ratify"
         );
         assert_eq!(schema["properties"]["notes"]["type"], "string");
-
-        // Plan-template tweak (§2.3): inspect-issue references the bound
-        // input instead of assuming a pasted goal.
-        let inspect = task(&tasks, "inspect-issue");
-        assert!(inspect.goal.contains("bound workflow input"));
-        assert!(inspect.goal.contains("gh.issue.view"));
-        assert!(inspect.goal.contains("input.repo"));
-        let acceptance = inspect.acceptance_criteria.as_deref().unwrap_or("");
-        assert!(acceptance.contains("origin remote matches input.repo"));
-
-        // #891 slice ② review fix — the merge task is policy-conditional:
-        // its goal must not push agents past the hold-for-ratify gate, and
-        // parking at the merge_hold ratify request is an accepted outcome.
-        let merge = task(&tasks, "merge");
-        assert!(merge.goal.contains("merge_policy-required ratify grant"));
-        assert!(merge.goal.contains("park at the merge_hold ratify request"));
-        let merge_acceptance = merge.acceptance_criteria.as_deref().unwrap_or("");
-        assert!(merge_acceptance.contains("policy-required ratify grant"));
-        assert!(merge_acceptance.contains("no merge performed"));
     }
 
     #[test]
     fn shipped_git_forge_give_up_uses_retained_lifecycle_tool() {
-        let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+        Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
-        let instructions = &manifest
-            .workflows
-            .iter()
-            .find(|workflow| workflow.id == "issue-development")
-            .expect("issue-development workflow")
-            .spec_instructions;
-        assert!(!instructions.contains("calm.plan.upsert"));
-        assert!(
-            instructions.contains(
-                "GIVE-UP by recording the terminal rationale in the report with \
-                 calm.report.write and lifecycle failed"
-            ),
-            "GIVE-UP must remain reachable through the retained report write: {instructions}"
-        );
-
         let descriptor = crate::mcp_server::build_default_registry()
             .descriptors()
             .into_iter()
@@ -1176,25 +779,20 @@ mod tests {
             descriptor.input_schema
         );
 
-        let workflow = manifest
-            .workflows
-            .iter()
-            .find(|workflow| workflow.id == "issue-development")
-            .expect("issue-development workflow");
-        // S3 stopped injecting spec_instructions; the GIVE-UP contract still
-        // lives on the descriptor until S5/S6 move it into a template report.
-        validate_give_up_contract(instructions).unwrap_or_else(|error| panic!("{error}"));
+        let workflow = WorkflowDescriptor {
+            id: "issue-development".into(),
+        };
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-give-up",
-                Some(workflow),
+                Some(&workflow),
                 None,
             );
         crate::spec_card::validate_spec_prompt_contract(&rendered)
             .unwrap_or_else(|error| panic!("{error}"));
         assert!(
             !rendered.contains("If n == cap and the round is non-approving"),
-            "S3 must not inject workflow spec_instructions into the spec prompt"
+            "S5 descriptor has no spec_instructions to inject"
         );
     }
 
@@ -1256,132 +854,6 @@ mod tests {
                 "{label}: got {err:?}"
             );
         }
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["key"] = json!("Bad Key");
-        let err = parse_manifest_value(v).expect_err("bad plan key");
-        assert!(
-            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].key")
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][1]["depends_on"] = json!(["missing"]);
-        let err = parse_manifest_value(v).expect_err("missing dependency");
-        assert!(
-            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[1].depends_on[0]")
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["kind"] = json!("worker");
-        let err = parse_manifest_value(v).expect_err("unknown task kind");
-        assert!(
-            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].kind")
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["gates"][0]["steps"] = json!([]);
-        let err = parse_manifest_value(v).expect_err("empty workflow gate");
-        assert!(
-            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].gates[0].steps")
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["gate"]["steps"] = json!([]);
-        let err = parse_manifest_value(v).expect_err("empty task gate");
-        assert!(
-            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].plan_template[0].gate.steps")
-        );
-    }
-
-    #[test]
-    fn workflow_descriptor_rejects_plan_template_cycles() {
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["depends_on"] = json!(["implement"]);
-        v["workflows"][0]["plan_template"][1]["depends_on"] = json!(["inspect"]);
-        let err = parse_manifest_value(v).expect_err("cycle");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template" && reason.contains("dependency cycle")),
-            "got {err:?}"
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["depends_on"] = json!(["inspect"]);
-        let err = parse_manifest_value(v).expect_err("self dependency");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template" && reason.contains("dependency cycle: inspect -> inspect")),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn workflow_descriptor_rejects_plan_gate_content_like_plan_upsert() {
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["gate"]["steps"][0]["cmd"] = json!("  ");
-        let err = parse_manifest_value(v).expect_err("blank task gate cmd");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.steps[0].cmd" && reason.contains("cmd must be non-empty")),
-            "got {err:?}"
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["gate"]["steps"][0]["name"] = json!("");
-        let err = parse_manifest_value(v).expect_err("blank task gate name");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.steps[0].name" && reason.contains("name must be non-empty")),
-            "got {err:?}"
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"][0]["gate"]["timeout_secs"] = json!(7201);
-        let err = parse_manifest_value(v).expect_err("task gate timeout too high");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].plan_template[0].gate.timeout_secs" && reason.contains("1..=7200")),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn workflow_descriptor_rejects_workflow_gate_content_like_plan_upsert() {
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["gates"][0]["steps"][0]["cmd"] = json!("  ");
-        let err = parse_manifest_value(v).expect_err("blank workflow gate cmd");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].steps[0].cmd" && reason.contains("cmd must be non-empty")),
-            "got {err:?}"
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["gates"][0]["steps"][0]["name"] = json!("");
-        let err = parse_manifest_value(v).expect_err("blank workflow gate name");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].steps[0].name" && reason.contains("name must be non-empty")),
-            "got {err:?}"
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["gates"][0]["timeout_secs"] = json!(7201);
-        let err = parse_manifest_value(v).expect_err("workflow gate timeout too high");
-        assert!(
-            matches!(&err, ManifestError::Invalid { field, reason } if field == "workflows[0].gates[0].timeout_secs" && reason.contains("1..=7200")),
-            "got {err:?}"
-        );
-    }
-
-    #[test]
-    fn workflow_descriptor_rejects_bad_spec_instructions() {
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["spec_instructions"] = json!("x".repeat(8193));
-        let err = parse_manifest_value(v).expect_err("oversized spec instructions");
-        assert!(
-            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].spec_instructions")
-        );
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["spec_instructions"] = json!("bad\u{0007}");
-        let err = parse_manifest_value(v).expect_err("control char spec instructions");
-        assert!(
-            matches!(err, ManifestError::Invalid { field, .. } if field == "workflows[0].spec_instructions")
-        );
     }
 
     fn subset_input_schema() -> Value {
@@ -1404,45 +876,11 @@ mod tests {
     fn manifest_accepts_subset_input_schema_and_defaults_to_none() {
         let manifest = parse_manifest_value(workflow_manifest_value()).expect("valid manifest");
         assert!(manifest.input_schema.is_none());
-        assert!(manifest.workflows[0].input_schema.is_none());
 
         let mut v = workflow_manifest_value();
         v["input_schema"] = subset_input_schema();
         let manifest = parse_manifest_value(v).expect("subset input_schema accepted");
         assert!(manifest.input_schema.is_some());
-        assert!(manifest.workflows[0].input_schema.is_none());
-    }
-
-    /// #1110 S2 — leftover workflow-level `input_schema` is rejected at
-    /// parse/install so it cannot silently become the source of truth.
-    #[test]
-    fn workflow_level_input_schema_is_rejected_as_moved() {
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["input_schema"] = subset_input_schema();
-        let err = parse_manifest_value(v).expect_err("workflow-level input_schema");
-        assert!(
-            matches!(
-                &err,
-                ManifestError::Invalid { field, reason }
-                    if field == "workflows[0].input_schema"
-                        && reason.contains("moved to the Manifest top-level")
-            ),
-            "got {err:?}"
-        );
-
-        // Even a valid Manifest-level schema does not excuse a leftover
-        // workflow-level copy.
-        let mut v = workflow_manifest_value();
-        v["input_schema"] = subset_input_schema();
-        v["workflows"][0]["input_schema"] = subset_input_schema();
-        let err = parse_manifest_value(v).expect_err("duplicate locations");
-        assert!(
-            matches!(
-                &err,
-                ManifestError::Invalid { field, .. } if field == "workflows[0].input_schema"
-            ),
-            "got {err:?}"
-        );
     }
 
     /// #891 / #1110 S2 — the subset validator runs at manifest parse;
@@ -1501,22 +939,6 @@ mod tests {
             let err = parse_manifest_value(v).expect_err(label);
             assert!(
                 matches!(&err, ManifestError::Invalid { field, .. } if field == expected_field),
-                "{label}: got {err:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn workflow_descriptor_rejects_builtin_card_kind_collision() {
-        for (label, kind) in [
-            ("exact built-in", "terminal"),
-            ("builtin prefix", "ui://dev.neige.workflow-test/custom"),
-        ] {
-            let mut v = workflow_manifest_value();
-            v["workflows"][0]["card_kinds"] = json!([kind]);
-            let err = parse_manifest_value(v).expect_err(label);
-            assert!(
-                matches!(err, ManifestError::Invalid { ref field, .. } if field == "workflows[0].card_kinds[0]"),
                 "{label}: got {err:?}"
             );
         }

@@ -2547,20 +2547,5 @@ mod tests {
                 "workflow_input.merge_policy",
             );
         }
-
-        #[test]
-        fn workflow_only_input_schema_is_not_consulted() {
-            // Registry mutation that plants a leftover descriptor schema
-            // without a Manifest-level schema must not silently accept
-            // input. Install rejects this shape; this pins the create
-            // path independently.
-            let mut p = plugin(None);
-            p.workflows[0].input_schema = Some(schema(json!(["issue_url"])));
-            expect_bad_request(
-                Some(&p),
-                Some(&json!({ "issue_url": "u" })),
-                "does not declare an input_schema",
-            );
-        }
     }
 }

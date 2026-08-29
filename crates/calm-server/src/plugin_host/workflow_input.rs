@@ -22,9 +22,8 @@
 use serde_json::{Map, Value};
 
 /// Byte cap for both the serialized `input_schema` and the serialized
-/// `workflow_input` instance — mirrors the `spec_instructions` limit in
-/// `WorkflowDescriptor::validate`: both end up injected into the spec
-/// prompt, so user-controlled input must stay bounded.
+/// `workflow_input` instance. Bound input is injected into the spec
+/// prompt, so user-controlled JSON must stay bounded.
 pub const WORKFLOW_INPUT_MAX_BYTES: usize = 8192;
 
 const ROOT_KEYWORDS: [&str; 5] = [

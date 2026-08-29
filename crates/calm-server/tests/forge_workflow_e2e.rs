@@ -20,7 +20,7 @@ use calm_server::db::write_with_actor_events_typed;
 use calm_server::event::{
     ChannelVerdict, ChannelVerdictKind, Event, EventBus, EventScope, RatifyDecision,
 };
-use calm_server::forge_trust::trusted_forge_plugin;
+
 use calm_server::harness::{
     HarnessPhaseTag, HarnessRegistry, HarnessSnapshot, Observation, spawn_recovered_harness,
 };
@@ -125,9 +125,6 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     let trusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", PLUGIN_ID);
 
     let fx = boot_fixture().await;
-    let registered = wait_for_event_count(&fx.repo, "workflow.registered", 1).await;
-    assert_eq!(registered[0].payload["pluginId"], PLUGIN_ID);
-    assert_eq!(registered[0].payload["workflowId"], WORKFLOW_ID);
 
     let app = wave_router_for_fixture(&fx);
 
@@ -377,49 +374,6 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         wave_count_by_title(&fx.repo, "input against schema-less workflow").await,
         0,
         "schema-less-input 400 must not create a wave row"
-    );
-
-    // Leftover workflow-level schema is not consulted (no silent fallback).
-    let mut leftover = read_manifest();
-    leftover.input_schema = None;
-    leftover
-        .workflows
-        .iter_mut()
-        .find(|workflow| workflow.id == WORKFLOW_ID)
-        .expect("issue-development descriptor")
-        .input_schema = Some(json!({
-        "type": "object",
-        "properties": { "issue_url": { "type": "string" } },
-        "required": ["issue_url"],
-        "additionalProperties": false
-    }));
-    fx.plugin_host.registry().insert(leftover, None);
-    let leftover_dir = short_tempdir("wf-input-leftover").expect("leftover schema cwd");
-    let (status, body) = post_wave(
-        app.clone(),
-        json!({
-            "cove_id": fx.cove_id,
-            "title": "input against leftover workflow schema",
-            "cwd": leftover_dir.path().display().to_string(),
-            "attach_folder": true,
-            "workflow_id": WORKFLOW_ID,
-            "workflow_input": { "issue_url": "https://github.com/o/r/issues/1" },
-            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("does not declare an input_schema"),
-        "body={body}"
-    );
-    assert_eq!(
-        wave_count_by_title(&fx.repo, "input against leftover workflow schema").await,
-        0,
-        "leftover-schema 400 must not create a wave row"
     );
 
     // Schema-less bound create without input stays valid (design §1.4 row 4).
@@ -1621,14 +1575,6 @@ async fn boot_fixture() -> Fixture {
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
     wait_for_running(&plugin_host).await;
-    emit_workflow_registered_events_for_fixture(
-        &repo,
-        &events,
-        &card_role_cache,
-        &wave_cove_cache,
-        &plugin_host,
-    )
-    .await;
 
     let operation_repo = Arc::new(SqlxOperationRepo::new(sqlx_repo.pool().clone()));
     let completion = OperationCompletionBus::new();
@@ -1889,38 +1835,6 @@ async fn wave_count_by_title(repo: &SqlxRepo, title: &str) -> i64 {
         .fetch_one(repo.pool())
         .await
         .expect("count waves by title")
-}
-
-async fn emit_workflow_registered_events_for_fixture(
-    repo: &Arc<dyn Repo>,
-    events: &EventBus,
-    card_role_cache: &CardRoleCache,
-    wave_cove_cache: &calm_server::wave_cove_cache::WaveCoveCache,
-    plugin_host: &Arc<PluginHost>,
-) {
-    let running_plugin_ids = plugin_host.running_plugin_ids().await;
-    for manifest in plugin_host.registry().list() {
-        let plugin_id = manifest.id.clone();
-        if !running_plugin_ids.contains(&plugin_id) || !trusted_forge_plugin(&plugin_id) {
-            continue;
-        }
-        for workflow in manifest.workflows {
-            repo.log_pure_event(
-                ActorId::Kernel,
-                EventScope::System,
-                None,
-                events,
-                card_role_cache,
-                wave_cove_cache,
-                Event::WorkflowRegistered {
-                    plugin_id: plugin_id.clone(),
-                    workflow_id: workflow.id,
-                },
-            )
-            .await
-            .expect("log workflow.registered");
-        }
-    }
 }
 
 async fn boot_plugin_host(

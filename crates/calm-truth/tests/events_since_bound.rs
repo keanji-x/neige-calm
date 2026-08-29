@@ -118,6 +118,46 @@ async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
     ));
 }
 
+/// #1110 S5 — `Event::WorkflowRegistered` left the enum. Replay of an old
+/// `workflow.registered` envelope must skip the row, not fail the read.
+#[tokio::test]
+async fn events_since_skips_retired_workflow_registered_without_error() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open sqlite repo");
+    let before = seed_cove_updates(&repo, 1).await;
+    sqlx::query(
+        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+           VALUES (
+             'workflow.registered',
+             '{"pluginId":"dev.neige.git-forge","workflowId":"issue-development"}',
+             'kernel',
+             0,
+             9
+           )"#,
+    )
+    .execute(repo.pool())
+    .await
+    .expect("insert retired workflow.registered");
+    let after = seed_cove_updates(&repo, 1).await;
+
+    let rows = repo
+        .events_since(0, 100)
+        .await
+        .expect("replay of a WorkflowRegistered envelope must not fail");
+    let ids: Vec<i64> = rows.iter().map(|(id, _, _, _)| *id).collect();
+    assert_eq!(
+        ids,
+        [before[0], after[0]],
+        "retired kind is skipped, neighbors kept"
+    );
+    assert!(
+        rows.iter()
+            .all(|(_, _, _, ev)| ev.kind_tag() != "workflow.registered"),
+        "retired variant must not deserialize back into Event"
+    );
+}
+
 /// PR #867 review — the WS replay cap decision runs on
 /// `events_raw_window_since`, which must probe RAW rows (including ones
 /// `events_since` drops at deserialization time), report the raw window
