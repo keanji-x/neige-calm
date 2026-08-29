@@ -87,9 +87,14 @@
    * right; it is not reachable while a card covers it either.
    *
    * The selector crosses two CSS Modules, so neither end can be a local class:
-   * `ui/drawer` stamps `data-nc-drawer` on its root and the cove and wave pages
-   * stamp `data-nc-panel` on their `<aside>`. `.main` scopes it so this is a
-   * statement about one main region, not about the document.
+   * `ui/drawer` stamps `data-nc-drawer` on its root, and every route that has a
+   * trailing column stamps `data-nc-panel` on its `<aside>`. `.main` scopes it
+   * so this is a statement about one main region, not about the document.
+   *
+   * The marker is on all three of them — Today, cove, wave — and the set is
+   * exactly the set of routes that render `chat.drawer`, which is the invariant
+   * to re-check when a fourth route grows a panel column. Settings has neither
+   * and needs neither.
    */
   .main:has([data-nc-drawer]) [data-nc-panel] {
     visibility: hidden;

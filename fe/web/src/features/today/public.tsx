@@ -186,7 +186,17 @@ export function TodayPage({
           route; the conversation list is second and identical everywhere, so
           it can be found without reading it.
         */}
-        <aside className={styles.panelColumn}>
+        {/* `data-nc-panel` is how `app/shell` hides this while the conversation
+            drawer is open: the drawer is a card on this exact track, and a
+            panel left under it shows as a sliver along its edges. A local CSS
+            Module class is not nameable from the shell's stylesheet, so the
+            marker is the seam.
+
+            Today needs it more than the cove and wave pages do, not less. Their
+            panels are sticky at the same offset the drawer starts at, so they
+            stay behind it; this column is not sticky, so it scrolls up out from
+            under the drawer's top edge and would surface above it. */}
+        <aside className={styles.panelColumn} data-nc-panel="">
           <PanelCard>
             <PanelModule title="Calendar">
               <Calendar
