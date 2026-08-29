@@ -210,6 +210,7 @@ async fn read_only_deferred_wave_detail_closes_a_deadlock_cycle_with_the_wave_de
             sort: None,
             cwd: "/workspace".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

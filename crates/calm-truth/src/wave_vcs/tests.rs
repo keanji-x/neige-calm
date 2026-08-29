@@ -56,6 +56,7 @@ async fn forge_pr_merged_only_batch_does_not_advance_head() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -121,6 +122,7 @@ async fn worktree_committed_only_batch_does_not_advance_head() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -182,6 +184,7 @@ async fn review_ratify_only_batch_does_not_advance_head() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

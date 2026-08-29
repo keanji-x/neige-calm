@@ -86,6 +86,7 @@ async fn boot() -> Boot {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -421,6 +422,7 @@ async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -1128,6 +1130,7 @@ async fn seed_spec_wave_without_report_card(repo: &SqlxRepo) -> WaveId {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

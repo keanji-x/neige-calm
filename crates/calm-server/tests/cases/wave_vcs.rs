@@ -58,6 +58,7 @@ async fn make_wave(repo: &SqlxRepo, cove_id: &str) -> calm_server::model::Wave {
         sort: None,
         cwd: "/tmp".into(),
         workflow_id: None,
+        plugin_scope: None,
         attach_folder: false,
         theme: RequestTheme::default_dark(),
     })

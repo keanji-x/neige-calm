@@ -99,6 +99,7 @@ impl TestBoot {
                 sort: None,
                 cwd: tmp.path().display().to_string(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })

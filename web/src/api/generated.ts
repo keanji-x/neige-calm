@@ -1717,6 +1717,13 @@ export interface components {
              *     verbatim.
              */
             cwd: string;
+            /**
+             * @description #1110 S4 — copied from the owning Manifest at create. Not accepted on
+             *     `POST /api/waves` (CreateWaveRequest deny_unknown_fields); the route
+             *     stamps it from the resolved trusted plugin. `#[serde(default)]` keeps
+             *     direct repo callers additive under `deny_unknown_fields`.
+             */
+            plugin_scope?: string | null;
             /** Format: double */
             sort?: number | null;
             /**
@@ -1738,12 +1745,12 @@ export interface components {
             title: string;
             workflow_id?: string | null;
             /**
-             * @description Issue #891 — JSON input for the bound workflow. Only accepted when
-             *     `workflow_id` names a running trusted workflow whose descriptor
-             *     declares an `input_schema`; the `POST /api/waves` route validates the
-             *     value against that schema before any DB write. The kernel never
-             *     interprets the blob — it is persisted verbatim and injected into the
-             *     spec harness developer instructions at thread-mint time.
+             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
+             *     accepted when `workflow_id` names a running trusted workflow whose
+             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
+             *     route validates the value against that schema before any DB write. The
+             *     kernel never interprets the blob — it is persisted verbatim and injected
+             *     into the spec harness developer instructions at thread-mint time.
              *     `#[serde(default)]` keeps the field purely additive under
              *     `deny_unknown_fields`.
              */
@@ -2161,6 +2168,13 @@ export interface components {
             lifecycle?: components["schemas"]["WaveLifecycle"];
             /** Format: int64 */
             pinned_at?: number | null;
+            /**
+             * @description #1110 S4 — owning plugin id copied at create from the bound workflow's
+             *     Manifest. `Some(id)` limits plugin tools to that running plugin;
+             *     `None` is unbound (`All`). Immutable after create (not on `WavePatch`).
+             *     `#[serde(default)]` hydrates pre-S4 `wave.updated` replays as `None`.
+             */
+            plugin_scope?: string | null;
             /** @description Server-owned structural marker. Public wave creation cannot set this. */
             purpose?: string | null;
             /** Format: double */
@@ -2192,11 +2206,12 @@ export interface components {
             /** @description `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`. */
             workflow_id?: string | null;
             /**
-             * @description Issue #891 — input JSON for the bound workflow, validated against the
-             *     descriptor's `input_schema` at create time and persisted verbatim; the
-             *     kernel never interprets it. `#[serde(default)]` hydrates pre-#891
-             *     `wave.updated` replays as `None` (same pattern as `workflow_id`).
-             *     Explicit `unknown` override — see `Card.payload` for the rationale.
+             * @description Issue #891 / #1110 S2 — input JSON for the bound workflow, validated
+             *     against the owning plugin Manifest's `input_schema` at create time and
+             *     persisted verbatim; the kernel never interprets it. `#[serde(default)]`
+             *     hydrates pre-#891 `wave.updated` replays as `None` (same pattern as
+             *     `workflow_id`). Explicit `unknown` override — see `Card.payload` for
+             *     the rationale.
              */
             workflow_input?: Record<string, never> | null;
         };
@@ -2340,6 +2355,11 @@ export interface components {
          * @enum {string}
          */
         WaveLifecycle: "draft" | "planning" | "dispatching" | "working" | "blocked" | "reviewing" | "done" | "canceled" | "failed";
+        /**
+         * @description INV-1110-004: `plugin_scope` is create-time only and is not a field here.
+         *     PATCH `/api/waves` cannot widen or change it. Extra JSON keys are ignored
+         *     (`deny_unknown_fields` is not set).
+         */
         WavePatch: {
             /**
              * Format: int64

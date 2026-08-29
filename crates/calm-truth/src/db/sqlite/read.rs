@@ -119,7 +119,7 @@ impl RepoRead for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
         let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
         )
         .bind(cove_id)
@@ -130,7 +130,7 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
+            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
                FROM waves WHERE id = ?1"#,
         )
         .bind(id)
@@ -153,7 +153,7 @@ impl RepoRead for SqlxRepo {
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
         let mut sql = String::from(
-            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, \
+            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, \
              terminal_at, created_at, updated_at FROM waves",
         );
         let mut where_clauses: Vec<&str> = Vec::new();
@@ -303,7 +303,7 @@ impl RepoRead for SqlxRepo {
         // `json_group_array` over zero rows is an empty array.
         let row = sqlx::query_as::<_, WaveDetailRow>(
             r#"SELECT w.id, w.cove_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle,
-                      w.cwd, w.workflow_id, w.purpose, w.workflow_input, w.terminal_at,
+                      w.cwd, w.workflow_id, w.plugin_scope, w.purpose, w.workflow_input, w.terminal_at,
                       w.created_at, w.updated_at,
                       (SELECT json_group_array(json_object(
                            'id', c.id, 'wave_id', c.wave_id, 'kind', c.kind,

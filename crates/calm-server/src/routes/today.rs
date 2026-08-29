@@ -69,18 +69,18 @@ async fn today_launchpad_ensure_tx(
     cwd: &str,
 ) -> Result<EnsureTxResult> {
     let existing = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        "SELECT id,cove_id,title,sort,archived_at,pinned_at,lifecycle,cwd,workflow_id,purpose,workflow_input,terminal_at,created_at,updated_at FROM waves WHERE purpose='launchpad' LIMIT 1",
+        "SELECT id,cove_id,title,sort,archived_at,pinned_at,lifecycle,cwd,workflow_id,plugin_scope,purpose,workflow_input,terminal_at,created_at,updated_at FROM waves WHERE purpose='launchpad' LIMIT 1",
     ).fetch_optional(&mut **tx).await?.map(Wave::from);
 
     let (wave, created, adopted_legacy) = if let Some(wave) = existing {
         (wave, false, false)
     } else if let Some(mut wave) = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        "SELECT id,cove_id,title,sort,archived_at,pinned_at,lifecycle,cwd,workflow_id,purpose,workflow_input,terminal_at,created_at,updated_at FROM waves WHERE cove_id=?1 AND purpose IS NULL AND title='Today' ORDER BY created_at,id LIMIT 1",
+        "SELECT id,cove_id,title,sort,archived_at,pinned_at,lifecycle,cwd,workflow_id,plugin_scope,purpose,workflow_input,terminal_at,created_at,updated_at FROM waves WHERE cove_id=?1 AND purpose IS NULL AND title='Today' ORDER BY created_at,id LIMIT 1",
     ).bind(cove_id).fetch_optional(&mut **tx).await?.map(Wave::from) {
-        sqlx::query("UPDATE waves SET purpose='launchpad', cwd=?2, workflow_id=NULL, workflow_input=NULL, updated_at=?3 WHERE id=?1")
+        sqlx::query("UPDATE waves SET purpose='launchpad', cwd=?2, workflow_id=NULL, plugin_scope=NULL, workflow_input=NULL, updated_at=?3 WHERE id=?1")
             .bind(wave.id.as_str()).bind(cwd).bind(now_ms()).execute(&mut **tx).await?;
         wave.purpose = Some("launchpad".into()); wave.cwd = cwd.into();
-        wave.workflow_id = None; wave.workflow_input = None;
+        wave.workflow_id = None; wave.plugin_scope = None; wave.workflow_input = None;
         (wave, false, true)
     } else {
         let id = new_id(); let now = now_ms();
@@ -91,7 +91,7 @@ async fn today_launchpad_ensure_tx(
         s.write.cove_cache().insert(WaveId::from(id.clone()), cove_id.to_string().into());
         (Wave { id:id.into(), cove_id:cove_id.to_string().into(), title:"Today".into(), sort,
             archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd:cwd.into(),
-            workflow_id:None, purpose:Some("launchpad".into()), workflow_input:None,
+            workflow_id:None, plugin_scope:None, purpose:Some("launchpad".into()), workflow_input:None,
             terminal_at:None, created_at:now, updated_at:now }, true, false)
     };
 

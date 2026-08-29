@@ -166,6 +166,7 @@ async fn seed_worker_card(repo: &SqlxRepo, card_role_cache: &CardRoleCache) -> (
             sort: None,
             cwd: TEST_CWD.into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

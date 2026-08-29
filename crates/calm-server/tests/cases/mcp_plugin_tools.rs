@@ -557,6 +557,7 @@ async fn boot_fixture() -> Fixture {
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     let events = EventBus::new();
 
+    let trusted_plugin_id = configured_trusted_plugin_id();
     let cove = repo
         .cove_create(NewCove {
             name: "mcp-plugin-tools".into(),
@@ -573,12 +574,13 @@ async fn boot_fixture() -> Fixture {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
         .await
         .expect("create wave");
-    // #891 slice ④ — a second wave bound to the trusted plugin's workflow.
+    // #891 slice ④ / #1110 S4 — a second wave scoped to the trusted plugin.
     // Direct repo create (route validation is out of scope here).
     let bound_wave = repo
         .wave_create(NewWave {
@@ -588,6 +590,7 @@ async fn boot_fixture() -> Fixture {
             sort: None,
             cwd: String::new(),
             workflow_id: Some(WORKFLOW_ID.into()),
+            plugin_scope: Some(trusted_plugin_id.clone()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -602,7 +605,6 @@ async fn boot_fixture() -> Fixture {
     let (bound_raw_token, bound_thread_id) =
         mint_worker_card_with_thread(&sqlx_repo, &card_role_cache, bound_wave.id.clone()).await;
 
-    let trusted_plugin_id = configured_trusted_plugin_id();
     let trusted_exposed_name = format!("plugin.{trusted_plugin_id}_{TRUSTED_TOOL_NAME}");
     let plugin_host = boot_plugin_host(
         repo.clone(),

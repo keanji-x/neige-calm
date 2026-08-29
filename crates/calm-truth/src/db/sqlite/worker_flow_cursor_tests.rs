@@ -23,6 +23,7 @@ async fn seed_card(repo: &SqlxRepo) -> String {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },

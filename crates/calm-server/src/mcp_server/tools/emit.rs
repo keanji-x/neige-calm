@@ -737,6 +737,7 @@ mod tests {
                 sort: None,
                 cwd: repo_root.display().to_string(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })

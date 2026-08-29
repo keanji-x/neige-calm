@@ -844,6 +844,7 @@ async fn seed_terminal_row(repo: &SqlxRepo) -> Terminal {
             sort: None,
             cwd: workspace_root().display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

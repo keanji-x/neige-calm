@@ -37,6 +37,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },

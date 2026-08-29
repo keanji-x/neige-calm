@@ -518,15 +518,23 @@ cwd: string,
  */
 workflow_id: string | null, 
 /**
+ * #1110 S4 — owning plugin id copied at create from the bound workflow's
+ * Manifest. `Some(id)` limits plugin tools to that running plugin;
+ * `None` is unbound (`All`). Immutable after create (not on `WavePatch`).
+ * `#[serde(default)]` hydrates pre-S4 `wave.updated` replays as `None`.
+ */
+plugin_scope: string | null, 
+/**
  * Server-owned structural marker. Public wave creation cannot set this.
  */
 purpose: string | null, 
 /**
- * Issue #891 — input JSON for the bound workflow, validated against the
- * descriptor's `input_schema` at create time and persisted verbatim; the
- * kernel never interprets it. `#[serde(default)]` hydrates pre-#891
- * `wave.updated` replays as `None` (same pattern as `workflow_id`).
- * Explicit `unknown` override — see `Card.payload` for the rationale.
+ * Issue #891 / #1110 S2 — input JSON for the bound workflow, validated
+ * against the owning plugin Manifest's `input_schema` at create time and
+ * persisted verbatim; the kernel never interprets it. `#[serde(default)]`
+ * hydrates pre-#891 `wave.updated` replays as `None` (same pattern as
+ * `workflow_id`). Explicit `unknown` override — see `Card.payload` for
+ * the rationale.
  */
 workflow_input: unknown, 
 /**
@@ -695,15 +703,23 @@ cwd: string,
  */
 workflow_id: string | null, 
 /**
+ * #1110 S4 — owning plugin id copied at create from the bound workflow's
+ * Manifest. `Some(id)` limits plugin tools to that running plugin;
+ * `None` is unbound (`All`). Immutable after create (not on `WavePatch`).
+ * `#[serde(default)]` hydrates pre-S4 `wave.updated` replays as `None`.
+ */
+plugin_scope: string | null, 
+/**
  * Server-owned structural marker. Public wave creation cannot set this.
  */
 purpose: string | null, 
 /**
- * Issue #891 — input JSON for the bound workflow, validated against the
- * descriptor's `input_schema` at create time and persisted verbatim; the
- * kernel never interprets it. `#[serde(default)]` hydrates pre-#891
- * `wave.updated` replays as `None` (same pattern as `workflow_id`).
- * Explicit `unknown` override — see `Card.payload` for the rationale.
+ * Issue #891 / #1110 S2 — input JSON for the bound workflow, validated
+ * against the owning plugin Manifest's `input_schema` at create time and
+ * persisted verbatim; the kernel never interprets it. `#[serde(default)]`
+ * hydrates pre-#891 `wave.updated` replays as `None` (same pattern as
+ * `workflow_id`). Explicit `unknown` override — see `Card.payload` for
+ * the rationale.
  */
 workflow_input: unknown, 
 /**

@@ -51,6 +51,7 @@ async fn seed_session_with_thread(
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },

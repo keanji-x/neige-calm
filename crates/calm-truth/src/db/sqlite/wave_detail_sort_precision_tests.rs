@@ -70,6 +70,7 @@ async fn seed_wave_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<St
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             workflow_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

@@ -772,6 +772,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },

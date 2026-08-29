@@ -106,12 +106,18 @@ pub struct NewWave {
     pub cwd: String,
     #[serde(default)]
     pub workflow_id: Option<String>,
-    /// Issue #891 — JSON input for the bound workflow. Only accepted when
-    /// `workflow_id` names a running trusted workflow whose descriptor
-    /// declares an `input_schema`; the `POST /api/waves` route validates the
-    /// value against that schema before any DB write. The kernel never
-    /// interprets the blob — it is persisted verbatim and injected into the
-    /// spec harness developer instructions at thread-mint time.
+    /// #1110 S4 — copied from the owning Manifest at create. Not accepted on
+    /// `POST /api/waves` (CreateWaveRequest deny_unknown_fields); the route
+    /// stamps it from the resolved trusted plugin. `#[serde(default)]` keeps
+    /// direct repo callers additive under `deny_unknown_fields`.
+    #[serde(default)]
+    pub plugin_scope: Option<String>,
+    /// Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
+    /// accepted when `workflow_id` names a running trusted workflow whose
+    /// owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
+    /// route validates the value against that schema before any DB write. The
+    /// kernel never interprets the blob — it is persisted verbatim and injected
+    /// into the spec harness developer instructions at thread-mint time.
     /// `#[serde(default)]` keeps the field purely additive under
     /// `deny_unknown_fields`.
     #[serde(default)]
@@ -146,6 +152,9 @@ pub struct NewWave {
     pub theme: RequestTheme,
 }
 
+/// INV-1110-004: `plugin_scope` is create-time only and is not a field here.
+/// PATCH `/api/waves` cannot widen or change it. Extra JSON keys are ignored
+/// (`deny_unknown_fields` is not set).
 #[derive(Clone, Debug, Default, Deserialize, ToSchema)]
 pub struct WavePatch {
     pub title: Option<String>,

@@ -334,6 +334,7 @@ mod tests {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             workflow_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

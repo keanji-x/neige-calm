@@ -664,6 +664,7 @@ mod tests {
                 sort: None,
                 cwd: String::new(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })

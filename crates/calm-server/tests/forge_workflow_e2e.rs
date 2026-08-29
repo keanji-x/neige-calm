@@ -157,6 +157,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
     assert_eq!(body["workflow_id"], WORKFLOW_ID);
+    assert_eq!(body["plugin_scope"], PLUGIN_ID);
     assert_eq!(body["workflow_input"], bound_input);
     let wave_id = body["id"].as_str().expect("created wave id");
     let stored: Option<String> = sqlx::query_scalar("SELECT workflow_id FROM waves WHERE id = ?1")
@@ -165,6 +166,13 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         .await
         .expect("select workflow_id");
     assert_eq!(stored.as_deref(), Some(WORKFLOW_ID));
+    let stored_scope: Option<String> =
+        sqlx::query_scalar("SELECT plugin_scope FROM waves WHERE id = ?1")
+            .bind(wave_id)
+            .fetch_one(fx.repo.pool())
+            .await
+            .expect("select plugin_scope");
+    assert_eq!(stored_scope.as_deref(), Some(PLUGIN_ID));
     let detail = get_wave_detail(app.clone(), wave_id).await;
     assert_eq!(detail["wave"]["workflow_input"], bound_input);
     let stored_input: Option<String> =
@@ -1571,6 +1579,7 @@ async fn boot_fixture() -> Fixture {
             sort: None,
             cwd: wave_cwd.display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
