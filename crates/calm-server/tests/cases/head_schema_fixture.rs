@@ -13,6 +13,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0073_drop_task_origin.sql",
     "0074_one_chat_wave_per_cove.sql",
     "0075_drop_cove_folder_repo_identity.sql",
+    "0076_waves_plugin_scope.sql",
 ];
 
 #[test]

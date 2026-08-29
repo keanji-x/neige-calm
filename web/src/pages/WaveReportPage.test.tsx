@@ -1506,6 +1506,7 @@ describe('WaveReportPage', () => {
           lifecycle: 'working',
           cwd: '/repo/neige-calm',
           workflow_id: null,
+          plugin_scope: null,
           workflow_input: null,
           sort: 3,
           archived_at: null,

@@ -132,6 +132,7 @@ export const waveFsWaveSchema = z.object({
   lifecycle: waveFsWaveLifecycleSchema,
   cwd: z.string(),
   workflow_id: z.string().nullable().default(null),
+  plugin_scope: z.string().nullable().default(null),
   purpose: z.string().nullable().default(null),
   /**
    * Issue #891 — opaque bound-workflow input JSON; `z.unknown()` mirrors the
