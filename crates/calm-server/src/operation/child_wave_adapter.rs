@@ -173,12 +173,12 @@ impl ProviderAdapter for ChildWaveAdapter {
             )));
         }
 
-        let parent: Option<(String, String)> =
-            sqlx::query_as("SELECT cove_id, cwd FROM waves WHERE id=?1")
+        let parent: Option<(String, String, Option<String>)> =
+            sqlx::query_as("SELECT cove_id, cwd, plugin_scope FROM waves WHERE id=?1")
                 .bind(&payload.parent_wave_id)
                 .fetch_optional(&mut **tx)
                 .await?;
-        let (cove_id, parent_cwd) = parent.ok_or_else(|| {
+        let (cove_id, parent_cwd, parent_plugin_scope) = parent.ok_or_else(|| {
             CalmError::Conflict(format!("parent wave {} is missing", payload.parent_wave_id))
         })?;
         let seed = render_child_seed(&payload);
@@ -190,6 +190,7 @@ impl ProviderAdapter for ChildWaveAdapter {
                 sort: None,
                 cwd: parent_cwd,
                 workflow_id: None,
+                plugin_scope: parent_plugin_scope,
                 workflow_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
@@ -400,12 +401,25 @@ impl ProviderAdapter for ChildWaveAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card_role_cache::CardRoleCache;
+    use crate::db::RepoOutOfDomain;
     use crate::db::sqlite::{
         SqlxRepo, cove_create_tx, cove_delete_tx, task_claim_pending_tx, wave_update_tx,
     };
+    use crate::event::EventBus;
+    use crate::forge_trust::trusted_forge_plugin;
+    use crate::mcp_server::registry::AppContext;
+    use crate::mcp_server::tool_visibility::{WavePluginScope, plugin_scope_for_wave};
     use crate::model::{NewCove, Task, TaskKind, TaskStatus, WavePatch};
     use crate::operation::Phase;
+    use crate::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
+    use crate::state::WriteContext;
+    use crate::wave_cove_cache::WaveCoveCache;
     use crate::wave_report::tasks_rebuild_tx;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tokio::time::{Instant, sleep};
 
     fn operation(payload: Value) -> Operation {
         Operation {
@@ -452,6 +466,7 @@ mod tests {
                 sort: None,
                 cwd: "/parent-cwd".into(),
                 workflow_id: Some("must-not-inherit".into()),
+                plugin_scope: Some("must-inherit-plugin".into()),
                 workflow_input: Some(json!({"must":"not-inherit"})),
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
@@ -754,13 +769,14 @@ mod tests {
             Option<String>,
             Option<String>,
             Option<String>,
+            Option<String>,
             String,
             Option<i64>,
             Option<i64>,
             Option<i64>,
         );
         let inherited: InheritedChildFields = sqlx::query_as(
-            "SELECT cwd,workflow_id,workflow_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
+            "SELECT cwd,workflow_id,plugin_scope,workflow_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
              FROM waves WHERE id=?1",
         )
         .bind(child_id)
@@ -769,15 +785,43 @@ mod tests {
         .unwrap();
         assert_eq!(inherited.0, "/parent-cwd");
         assert_eq!(inherited.1, None, "workflow_id must not inherit");
-        assert_eq!(inherited.2, None, "workflow_input must not inherit");
-        assert_eq!(inherited.3, None, "purpose must not inherit");
         assert_eq!(
-            inherited.4, "draft",
+            inherited.2.as_deref(),
+            Some("must-inherit-plugin"),
+            "plugin_scope must inherit so Only(X) does not widen to All"
+        );
+        assert_eq!(inherited.3, None, "workflow_input must not inherit");
+        assert_eq!(inherited.4, None, "purpose must not inherit");
+        assert_eq!(
+            inherited.5, "draft",
             "child must stay Draft before bootstrap"
         );
-        assert_eq!(inherited.5, None, "archived_at must not inherit");
-        assert_eq!(inherited.6, None, "pinned_at must not inherit");
-        assert_eq!(inherited.7, None, "terminal_at must not inherit");
+        assert_eq!(inherited.6, None, "archived_at must not inherit");
+        assert_eq!(inherited.7, None, "pinned_at must not inherit");
+        assert_eq!(inherited.8, None, "terminal_at must not inherit");
+
+        // §6.2 hole: child of Only(X) must not become All. Column copy plus
+        // the gate reading plugin_scope is the composition; pin the gate.
+        let _trusted = trust_inherited_plugin();
+        let repo = Arc::new(repo);
+        let (host, _tmp) = plugin_host_with_id(repo.clone(), "must-inherit-plugin").await;
+        host.spawn("must-inherit-plugin")
+            .await
+            .expect("spawn inherited plugin");
+        wait_for_running(&host, "must-inherit-plugin").await;
+        let ctx = app_context(repo, Some(host.clone()));
+        assert_eq!(
+            plugin_scope_for_wave(&ctx, Some(child_id)).await,
+            WavePluginScope::Only("must-inherit-plugin".into()),
+        );
+        host.stop("must-inherit-plugin")
+            .await
+            .expect("stop inherited plugin");
+        assert_eq!(
+            plugin_scope_for_wave(&ctx, Some(child_id)).await,
+            WavePluginScope::None,
+            "stopped owner must fail closed, not widen to All"
+        );
     }
 
     #[tokio::test]
@@ -1269,5 +1313,149 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(before, after);
+    }
+
+    const INHERITED_PLUGIN_ID: &str = "must-inherit-plugin";
+
+    fn trust_inherited_plugin() -> InheritedTrustGuard {
+        let previous = std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS").ok();
+        let combined = match previous.as_deref() {
+            Some(configured)
+                if configured
+                    .split(',')
+                    .any(|id| id.trim() == INHERITED_PLUGIN_ID) =>
+            {
+                configured.to_string()
+            }
+            Some(configured) => format!("{configured},{INHERITED_PLUGIN_ID}"),
+            None => format!("dev.neige.git-forge,{INHERITED_PLUGIN_ID}"),
+        };
+        unsafe { std::env::set_var("NEIGE_TRUSTED_FORGE_PLUGINS", &combined) };
+        assert!(
+            trusted_forge_plugin(INHERITED_PLUGIN_ID),
+            "{INHERITED_PLUGIN_ID} must be trusted for the Only pin"
+        );
+        InheritedTrustGuard { previous }
+    }
+
+    struct InheritedTrustGuard {
+        previous: Option<String>,
+    }
+
+    impl Drop for InheritedTrustGuard {
+        fn drop(&mut self) {
+            match self.previous.as_deref() {
+                Some(previous) => unsafe {
+                    std::env::set_var("NEIGE_TRUSTED_FORGE_PLUGINS", previous)
+                },
+                None => unsafe { std::env::remove_var("NEIGE_TRUSTED_FORGE_PLUGINS") },
+            }
+        }
+    }
+
+    fn app_context(repo: Arc<SqlxRepo>, host: Option<Arc<PluginHost>>) -> Arc<AppContext> {
+        let repo_dyn: Arc<dyn crate::db::Repo> = repo;
+        let route_repo: Arc<dyn crate::db::RouteRepo> = repo_dyn;
+        let plugin_host = Arc::new(tokio::sync::OnceCell::new());
+        if let Some(host) = host {
+            assert!(
+                plugin_host.set(host).is_ok(),
+                "late-bound plugin host cell must be set once"
+            );
+        }
+        Arc::new(AppContext {
+            repo: route_repo,
+            wave_vcs: None,
+            events: EventBus::new(),
+            write: WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+            daemon_token_hash: None,
+            gate_logs_dir: std::env::temp_dir().join("neige-test-gate-logs"),
+            plugin_host,
+            operation_runtime: Arc::new(tokio::sync::OnceCell::new()),
+        })
+    }
+
+    async fn plugin_host_with_id(
+        repo: Arc<SqlxRepo>,
+        plugin_id: &str,
+    ) -> (Arc<PluginHost>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let plugins_dir = tmp.path().join("plugins");
+        let plugins_data_dir = tmp.path().join("plugins-data");
+        let install_dir = plugins_dir.join(plugin_id);
+        let bin_dir = install_dir.join("bin");
+        std::fs::create_dir_all(&bin_dir).expect("create plugin bin dir");
+        std::fs::create_dir_all(&plugins_data_dir).expect("create plugins data dir");
+        std::os::unix::fs::symlink(stub_echo_bin(), bin_dir.join("stub"))
+            .expect("symlink echo stub");
+        let manifest_json = json!({
+            "manifest_version": 1,
+            "id": plugin_id,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Child Inherit Stub",
+            "entrypoint": { "command": "bin/stub" },
+            "workflows": [],
+            "permissions": {}
+        });
+        let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
+        let registry = PluginRegistry::empty();
+        registry.insert(manifest, Some(install_dir.clone()));
+        repo.plugin_install(crate::model::NewPlugin {
+            id: plugin_id.to_string(),
+            version: "0.1.0".into(),
+            install_path: install_dir.display().to_string(),
+            manifest: manifest_json,
+            enabled: true,
+            user_config: json!({}),
+        })
+        .await
+        .expect("seed plugin row");
+        let repo_dyn: Arc<dyn crate::db::Repo> = repo;
+        let host = Arc::new(PluginHost::new_full(
+            Arc::new(registry),
+            repo_dyn,
+            plugins_dir,
+            plugins_data_dir,
+            Vec::new(),
+            EventBus::new(),
+            WriteContext::new(CardRoleCache::new(), WaveCoveCache::new()),
+        ));
+        (host, tmp)
+    }
+
+    async fn wait_for_running(host: &Arc<PluginHost>, plugin_id: &str) {
+        let start = Instant::now();
+        loop {
+            if let Some(status) = host.status(plugin_id).await
+                && matches!(status.status, PluginRuntimeStatus::Running)
+            {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "timed out waiting for plugin {plugin_id} to run"
+            );
+            sleep(Duration::from_millis(25)).await;
+        }
+    }
+
+    fn stub_echo_bin() -> PathBuf {
+        if let Some(path) = std::env::var_os("CARGO_BIN_EXE_plugin-host-stub-echo") {
+            return path.into();
+        }
+        if let Some(path) = option_env!("CARGO_BIN_EXE_plugin-host-stub-echo") {
+            return path.into();
+        }
+        let current = std::env::current_exe().expect("current test executable");
+        let deps_dir = current.parent().expect("test executable parent");
+        let debug_dir = deps_dir.parent().expect("target debug dir");
+        let candidate = debug_dir.join("plugin-host-stub-echo");
+        assert!(
+            candidate.exists(),
+            "missing plugin-host-stub-echo at {}",
+            candidate.display()
+        );
+        candidate
     }
 }

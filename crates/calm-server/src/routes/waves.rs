@@ -230,6 +230,7 @@ impl CreateWaveRequest {
                 sort: self.sort,
                 cwd: self.cwd.unwrap_or_else(default_cwd),
                 workflow_id: self.workflow_id,
+                plugin_scope: None,
                 workflow_input: self.workflow_input,
                 attach_folder: if cwd_omitted {
                     false
@@ -597,8 +598,11 @@ pub(crate) async fn create_wave(
     // workflow whose owning plugin Manifest declares an `input_schema`;
     // validated here, before any DB write, so the inner writer persists
     // the blob verbatim. Still requires `workflow_id` this slice
-    // (`plugin_scope` is S4).
+    // (S5 deletes the workflow entity).
     validate_workflow_input_binding(bound_plugin.as_ref(), p.workflow_input.as_ref())?;
+    // #1110 S4 — copy the owning plugin id into `plugin_scope` in the same
+    // insert. Unbound create leaves it None. Not a request field.
+    p.plugin_scope = bound_plugin.as_ref().map(|manifest| manifest.id.clone());
 
     // Issue #1131 — omitted / null cwd is a new branch *before* the
     // user-cove claim scan (same spirit as the system-cove exemption
@@ -907,6 +911,7 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
         sort: None,
         cwd: cwd.clone(),
         workflow_id: None,
+        plugin_scope: None,
         workflow_input: None,
         attach_folder: false,
         theme: RequestTheme::default_dark(),
@@ -2320,6 +2325,7 @@ mod tests {
                 sort: None,
                 cwd: "/tmp/fork-helper".into(),
                 workflow_id: None,
+                plugin_scope: None,
                 workflow_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),

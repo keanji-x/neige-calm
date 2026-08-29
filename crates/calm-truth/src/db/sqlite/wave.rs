@@ -57,8 +57,8 @@ pub async fn wave_create_tx(
     // whole-tree bound vacuous.
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, tree_task_budget, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)"#,
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, tree_task_budget, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, ?11, ?12)"#,
     )
     .bind(&id)
     .bind(p.cove_id.as_str())
@@ -67,6 +67,7 @@ pub async fn wave_create_tx(
     .bind(lifecycle.as_db_str())
     .bind(&p.cwd)
     .bind(p.workflow_id.as_deref())
+    .bind(p.plugin_scope.as_deref())
     .bind(purpose)
     .bind(p.workflow_input.as_ref().map(|v| v.to_string()))
     .bind(now)
@@ -89,6 +90,7 @@ pub async fn wave_create_tx(
         lifecycle,
         cwd: p.cwd,
         workflow_id: p.workflow_id,
+        plugin_scope: p.plugin_scope,
         purpose: purpose.map(str::to_owned),
         workflow_input: p.workflow_input,
         terminal_at: None,
@@ -103,7 +105,7 @@ pub async fn wave_update_tx(
     p: WavePatch,
 ) -> Result<Wave> {
     let mut w = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, purpose, workflow_input, terminal_at, created_at, updated_at
+        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
            FROM waves WHERE id = ?1"#,
     )
     .bind(id)

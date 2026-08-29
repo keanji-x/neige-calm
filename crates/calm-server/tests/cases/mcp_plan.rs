@@ -71,6 +71,7 @@ async fn boot() -> Boot {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -363,6 +364,7 @@ async fn migration_0041_new_wave_defaults_gates_on_and_budget_null() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

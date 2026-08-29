@@ -147,6 +147,7 @@ pub(crate) async fn boot() -> Boot {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -1709,6 +1710,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

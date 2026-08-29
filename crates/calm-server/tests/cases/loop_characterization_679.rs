@@ -114,6 +114,7 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -660,6 +661,7 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

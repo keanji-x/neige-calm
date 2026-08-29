@@ -226,6 +226,7 @@ async fn card_create_with_id_tx_round_trips_deletable_bit() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -538,6 +539,7 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             workflow_input: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -552,6 +554,7 @@ async fn acceptance_20_wave_delete_route_refuses_descendant_and_names_child() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             workflow_input: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

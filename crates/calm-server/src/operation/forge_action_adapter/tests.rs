@@ -686,6 +686,7 @@ async fn forge_runtime_fixture() -> ForgeRuntimeFixture {
             sort: None,
             cwd: cwd.path().display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
         })

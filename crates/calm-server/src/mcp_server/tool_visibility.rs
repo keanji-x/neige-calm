@@ -1,21 +1,21 @@
-//! #891 slice ④ — per-wave plugin tool visibility (closes #833 P2's minimal
-//! multi-workflow isolation scope).
+//! #891 slice ④ / #1110 S4 — per-wave plugin tool visibility.
 //!
-//! A wave bound to a workflow (`wave.workflow_id = Some(..)`) must only see
-//! and call the tools of the plugin that owns that workflow; kernel `calm.*`
-//! registry tools stay role-gated as before and never route through here.
-//! Unbound waves keep the historical union of all running plugins' tools —
-//! but that policy also flows through [`plugin_scope_for_wave`] so the whole
-//! visibility decision lives at a single choke point, applied on BOTH the
-//! discovery path (`tools/list`) and the dispatch path (`tools/call`).
+//! A wave with `plugin_scope = Some(plugin_id)` must only see and call that
+//! plugin's tools; kernel `calm.*` registry tools stay role-gated as before
+//! and never route through here. Unbound waves (`plugin_scope = None`) keep
+//! the historical union of all running plugins' tools — but that policy also
+//! flows through [`plugin_scope_for_wave`] so the whole visibility decision
+//! lives at a single choke point, applied on BOTH the discovery path
+//! (`tools/list`) and the dispatch path (`tools/call`).
 //!
-//! Fail-closed (design §4 + 决策记录 F7): when a wave is bound to a workflow
-//! whose owning plugin cannot be resolved from the running ∧ trusted set
-//! (plugin stopped, trust revoked, wave row unreadable), the scope is
+//! Fail-closed (design §4 + 决策记录 F7 / #1110 S4): when a wave is scoped
+//! to a plugin that is not currently running ∧ trusted (plugin stopped,
+//! trust revoked, wave row unreadable), the scope is
 //! [`WavePluginScope::None`] — zero plugin tools. This mirrors the spec
 //! harness's descriptor-unresolved degradation (vanilla prompt): the tools
-//! are withdrawn together with the workflow context rather than silently
-//! widened back to the union.
+//! are withdrawn together with the plugin context rather than silently
+//! widened back to the union. The gate reads `waves.plugin_scope` only —
+//! it does not look up `workflows[]` by `workflow_id`.
 
 use std::sync::Arc;
 
@@ -29,12 +29,11 @@ pub(crate) enum WavePluginScope {
     /// No wave context (pre-attribution discovery) or an unbound wave —
     /// union of all running plugins (historical behavior, pinned by tests).
     All,
-    /// Wave bound to a workflow — only the running trusted plugin that
-    /// declares that workflow.
+    /// Wave with `plugin_scope = Some(id)` whose plugin is running ∧ trusted.
     Only(String /* plugin_id */),
-    /// Wave bound to a workflow whose owning plugin is currently
-    /// unresolvable (stopped / untrusted / wave lookup failed) — zero
-    /// plugin tools, fail-closed.
+    /// Wave with `plugin_scope` set whose plugin is currently unresolvable
+    /// (stopped / untrusted / wave lookup failed) — zero plugin tools,
+    /// fail-closed.
     None,
 }
 
@@ -51,14 +50,15 @@ impl WavePluginScope {
 /// Single choke-point policy: resolve the plugin-tool scope for a caller.
 ///
 /// * `wave_id = None` (no wave context) → [`WavePluginScope::All`].
-/// * Wave row has `workflow_id = None` (unbound) → [`WavePluginScope::All`].
-/// * Wave bound to `workflow_id = Some(wf)` → [`WavePluginScope::Only`] of
-///   the running ∧ trusted plugin whose manifest declares `wf` (same filter
-///   as `routes::waves::resolve_trusted_workflow` and the spec harness's
-///   `bound_workflow`); [`WavePluginScope::None`] when no such plugin.
+/// * Wave row has `plugin_scope = None` (unbound) → [`WavePluginScope::All`].
+/// * Wave has `plugin_scope = Some(id)` → [`WavePluginScope::Only`] if that
+///   plugin is running ∧ trusted; [`WavePluginScope::None`] when it is not
+///   (same fail-closed as today's "bound workflow has no running owner").
 /// * Wave lookup failure / missing wave row → [`WavePluginScope::None`]:
 ///   bound-ness cannot be proven, so fail closed rather than widen to the
 ///   union.
+///
+/// Does not consult `wave.workflow_id` or `manifest.workflows[]`.
 pub(crate) async fn plugin_scope_for_wave(
     ctx: &Arc<AppContext>,
     wave_id: Option<&str>,
@@ -106,34 +106,25 @@ async fn resolve_plugin_scope_for_wave(
             return WavePluginScope::None;
         }
     };
-    let Some(workflow_id) = wave.workflow_id.as_deref() else {
+    let Some(plugin_id) = wave.plugin_scope.as_deref() else {
         // Unbound wave — historical union, but routed through this function
         // so the policy has exactly one home.
         return WavePluginScope::All;
     };
     let Some(plugin_host) = ctx.plugin_host.get().cloned() else {
-        // Bound wave but no plugin host yet (boot ordering) — there are no
+        // Scoped wave but no plugin host yet (boot ordering) — there are no
         // plugin tools to expose anyway; report the fail-closed scope.
         return WavePluginScope::None;
     };
     let running_plugin_ids = plugin_host.running_plugin_ids().await;
-    for manifest in plugin_host.registry().list() {
-        if !running_plugin_ids.contains(&manifest.id) || !trusted_forge_plugin(&manifest.id) {
-            continue;
-        }
-        if manifest
-            .workflows
-            .iter()
-            .any(|workflow| workflow.id == workflow_id)
-        {
-            return WavePluginScope::Only(manifest.id);
-        }
+    if running_plugin_ids.contains(plugin_id) && trusted_forge_plugin(plugin_id) {
+        return WavePluginScope::Only(plugin_id.to_string());
     }
     tracing::warn!(
         target: "mcp_server::tool_visibility",
         wave_id,
-        workflow_id,
-        "plugin tool scope: bound workflow has no running trusted owner; failing closed"
+        plugin_id,
+        "plugin tool scope: scoped plugin is not running and trusted; failing closed"
     );
     WavePluginScope::None
 }
@@ -174,10 +165,10 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let bound_wave = make_wave(repo.as_ref(), Some(WORKFLOW_ID)).await;
+        let bound_wave = make_wave(repo.as_ref(), Some(trusted_plugin_id.as_str())).await;
         let unbound_wave = make_wave(repo.as_ref(), None).await;
 
-        // Trusted plugin declaring the workflow, RUNNING → Only.
+        // Trusted plugin RUNNING → Only.
         let (host, _tmp) = plugin_host_with_workflow(repo.clone(), &trusted_plugin_id).await;
         host.spawn(&trusted_plugin_id)
             .await
@@ -206,6 +197,27 @@ mod tests {
             WavePluginScope::None
         );
 
+        // #1110 S4 flatten pin: workflow_id alone is not the gate even
+        // when the matching plugin is running.
+        let leftover_workflow = repo
+            .wave_create(crate::model::NewWave {
+                workflow_input: None,
+                cove_id: unbound_wave.cove_id.clone(),
+                title: "workflow-id leftover".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: Some(WORKFLOW_ID.into()),
+                plugin_scope: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            })
+            .await
+            .expect("create leftover-workflow wave");
+        assert_eq!(
+            plugin_scope_for_wave(&ctx, Some(leftover_workflow.id.as_str())).await,
+            WavePluginScope::All
+        );
+
         host.stop(&trusted_plugin_id)
             .await
             .expect("stop trusted plugin");
@@ -230,7 +242,7 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let bound_wave = make_wave(repo.as_ref(), Some(WORKFLOW_ID)).await;
+        let bound_wave = make_wave(repo.as_ref(), Some(untrusted_plugin_id.as_str())).await;
 
         let (host, _tmp) = plugin_host_with_workflow(repo.clone(), &untrusted_plugin_id).await;
         host.spawn(&untrusted_plugin_id)
@@ -256,7 +268,7 @@ mod tests {
                 .await
                 .expect("open in-memory sqlite"),
         );
-        let bound_wave = make_wave(repo.as_ref(), Some(WORKFLOW_ID)).await;
+        let bound_wave = make_wave(repo.as_ref(), Some("dev.neige.git-forge")).await;
         let unbound_wave = make_wave(repo.as_ref(), None).await;
         let ctx = app_context(repo, None);
 
@@ -315,10 +327,10 @@ mod tests {
         })
     }
 
-    async fn make_wave(repo: &SqlxRepo, workflow_id: Option<&str>) -> crate::model::Wave {
+    async fn make_wave(repo: &SqlxRepo, plugin_scope: Option<&str>) -> crate::model::Wave {
         let cove = repo
             .cove_create(NewCove {
-                name: format!("cove-{workflow_id:?}"),
+                name: format!("cove-{plugin_scope:?}"),
                 color: "#101010".into(),
                 sort: None,
             })
@@ -330,7 +342,8 @@ mod tests {
             title: "tool visibility".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: workflow_id.map(str::to_string),
+            workflow_id: None,
+            plugin_scope: plugin_scope.map(str::to_string),
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

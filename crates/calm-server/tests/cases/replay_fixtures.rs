@@ -103,6 +103,7 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -324,6 +325,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

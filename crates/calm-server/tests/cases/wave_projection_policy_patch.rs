@@ -33,6 +33,7 @@ async fn boot() -> (AppState, String, Arc<dyn Repo>) {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -161,6 +162,7 @@ const WAVE_PERSISTENT_COLUMNS: &[&str] = &[
     "automation_policy",
     "parent_wave_id",
     "tree_task_budget",
+    "plugin_scope",
 ];
 
 type PersistedWaveEvent = (
@@ -537,6 +539,7 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -680,6 +683,7 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -728,6 +732,7 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

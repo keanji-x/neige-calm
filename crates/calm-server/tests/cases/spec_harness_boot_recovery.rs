@@ -80,6 +80,7 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -186,6 +187,7 @@ async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -281,6 +283,7 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -390,6 +393,7 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -735,6 +739,7 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -834,6 +839,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -981,6 +987,7 @@ async fn boot_recovery_skips_terminal_waves() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -1067,6 +1074,7 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -1158,6 +1166,7 @@ async fn force_new_thread_recovery_after_phase2_crash() {
                 sort: None,
                 cwd: "/tmp".into(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
             })
@@ -1380,6 +1389,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

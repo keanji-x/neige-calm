@@ -145,6 +145,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                         sort: None,
                         cwd: String::new(),
                         workflow_id: None,
+                        plugin_scope: None,
                         attach_folder: false,
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },

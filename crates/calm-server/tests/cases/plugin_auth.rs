@@ -324,6 +324,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

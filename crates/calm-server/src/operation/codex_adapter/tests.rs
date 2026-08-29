@@ -43,6 +43,7 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
             sort: None,
             cwd: repo_root.path().display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },

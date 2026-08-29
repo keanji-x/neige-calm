@@ -53,6 +53,7 @@ async fn fresh_wave() -> (SqlxRepo, WaveId) {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -590,6 +591,7 @@ async fn sweep_preserves_live_objects_from_other_waves() {
             sort: None,
             cwd: "/tmp/a".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -603,6 +605,7 @@ async fn sweep_preserves_live_objects_from_other_waves() {
             sort: None,
             cwd: "/tmp/b".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

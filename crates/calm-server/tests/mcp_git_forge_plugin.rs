@@ -245,6 +245,7 @@ async fn boot_fixture() -> Fixture {
             sort: None,
             cwd: wave_cwd.display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

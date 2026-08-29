@@ -131,6 +131,7 @@ async fn boot() -> Boot {
             sort: None,
             cwd: repo_root.display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

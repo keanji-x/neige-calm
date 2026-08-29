@@ -146,6 +146,7 @@ describe('wireEventSchema', () => {
       // Pre-#891 payload: no `workflow_input` key — hydrates to the null
       // default rather than failing the parse.
       expect(parsed.data.workflow_input).toBeNull();
+      expect(parsed.data.plugin_scope).toBeNull();
     }
   });
 
@@ -163,6 +164,7 @@ describe('wireEventSchema', () => {
         lifecycle: 'dispatching',
         cwd: '/repo',
         workflow_id: 'issue-development',
+        plugin_scope: 'dev.neige.git-forge',
         workflow_input: workflowInput,
         terminal_at: null,
         created_at: 1,

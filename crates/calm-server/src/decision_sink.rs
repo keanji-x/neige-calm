@@ -676,6 +676,7 @@ mod tests {
                 sort: None,
                 cwd: repo_root.path().display().to_string(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
@@ -805,6 +806,7 @@ mod tests {
                 sort: None,
                 cwd: String::new(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })
@@ -931,6 +933,7 @@ mod tests {
                 sort: None,
                 cwd: String::new(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),
             })

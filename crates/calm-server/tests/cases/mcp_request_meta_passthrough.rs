@@ -87,6 +87,7 @@ async fn boot_with_registry_options(registry: Arc<ToolRegistry>, auth_mode: Auth
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

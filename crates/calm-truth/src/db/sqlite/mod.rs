@@ -515,6 +515,9 @@ mod session_record_activity_tests;
 mod wave_workflow_input_tests;
 
 #[cfg(test)]
+mod wave_plugin_scope_migration_tests;
+
+#[cfg(test)]
 mod pool_tx_repair_tests;
 
 // #930 — pins the upstream shared-cache deadlock semantics (unlock_notify

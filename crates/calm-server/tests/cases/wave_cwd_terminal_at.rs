@@ -829,6 +829,7 @@ async fn seed_wave(repo: &Arc<dyn Repo>, cove_id: &str) -> calm_server::model::W
         sort: None,
         cwd: String::new(),
         workflow_id: None,
+        plugin_scope: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
     })

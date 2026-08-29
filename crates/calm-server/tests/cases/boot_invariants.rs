@@ -58,6 +58,7 @@ async fn boot_assert_card_id_complete_still_runs_post_9b_iv() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

@@ -340,6 +340,7 @@ async fn plugin_callback_path_writes_plugin_actor_regardless_of_middleware() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -431,6 +432,7 @@ async fn create_card_stamps_full_scope_chain() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

@@ -119,6 +119,12 @@ export const waveSchema = z.object({
    * field existed; fresh rows serialize the field explicitly.
    */
   workflow_id: z.string().nullable().default(null),
+  /**
+   * #1110 S4 — owning plugin id copied at create. Defaulted to `null` so
+   * pre-S4 `wave.updated` replays (no key) parse; mirrors
+   * `#[serde(default)]` on `Wave.plugin_scope`.
+   */
+  plugin_scope: z.string().nullable().default(null),
   purpose: z.string().nullable().default(null),
   /**
    * Issue #891 — opaque bound-workflow input JSON (kernel validates at

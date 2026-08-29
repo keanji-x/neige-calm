@@ -203,6 +203,7 @@ async fn seed_terminal_with_scrollback(fixture: &RendererWsFixture, label: &str)
             sort: None,
             cwd: fixture._tmp.path().display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

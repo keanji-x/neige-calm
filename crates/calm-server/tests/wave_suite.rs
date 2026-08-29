@@ -3,6 +3,8 @@ mod support;
 
 #[path = "cases/http_wave_file.rs"]
 mod http_wave_file;
+#[path = "cases/plugin_scope.rs"]
+mod plugin_scope;
 #[path = "cases/rest_wave_report.rs"]
 mod rest_wave_report;
 #[path = "cases/wave_create_sync_daemon.rs"]

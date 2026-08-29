@@ -280,6 +280,7 @@ pub async fn boot_forge_e2e_fixture(
             sort: None,
             cwd: wave_cwd.display().to_string(),
             workflow_id: spec.workflow_id.clone(),
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

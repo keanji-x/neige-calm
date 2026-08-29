@@ -166,6 +166,7 @@ async fn boot() -> Boot {
             sort: None,
             cwd: "/tmp/spec-card-reset".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -235,6 +236,7 @@ async fn boot_shared() -> Boot {
             sort: None,
             cwd: "/tmp/spec-card-reset-shared".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -1796,6 +1798,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             workflow_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

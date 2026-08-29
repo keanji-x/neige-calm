@@ -122,6 +122,7 @@ async fn boot() -> Boot {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -1496,6 +1497,7 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -3454,6 +3456,7 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
                 sort: None,
                 cwd: String::new(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })
@@ -4195,6 +4198,7 @@ async fn seed_stale_context_copies(
                 sort: None,
                 cwd: String::new(),
                 workflow_id: None,
+                plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })
@@ -5521,6 +5525,7 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -5941,6 +5946,7 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -7519,6 +7525,7 @@ async fn seed_child_parent(
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             workflow_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

@@ -359,6 +359,7 @@ async fn boot_with_counted_spawn() -> Boot {
             sort: None,
             cwd: String::new(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -470,6 +471,7 @@ async fn boot_codex_with_counted_spawn() -> Boot {
             sort: None,
             cwd: "/workspace".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -601,6 +603,7 @@ async fn boot_claude_with_counted_spawn() -> Boot {
             sort: None,
             cwd: "/workspace".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

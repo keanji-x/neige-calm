@@ -57,6 +57,7 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
             sort: None,
             cwd: wave_cwd.display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },

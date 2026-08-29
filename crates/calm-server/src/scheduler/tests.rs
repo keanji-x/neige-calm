@@ -483,6 +483,7 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
         })
@@ -645,6 +646,7 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
         })

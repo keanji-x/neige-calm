@@ -41,6 +41,7 @@ async fn harness_drops_foreign_thread_notifications() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -143,6 +144,7 @@ async fn dispatcher_routes_report_edit_to_harness_runtime() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -302,6 +304,7 @@ async fn dispatcher_harness_full_queue_retries_without_advancing_cursor() {
             sort: None,
             cwd: "/tmp".into(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })

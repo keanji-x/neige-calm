@@ -5572,6 +5572,13 @@
             "type": "string",
             "description": "Issue #250 PR 2 — absolute filesystem path the spec daemon will\nspawn under. Required (no `Option`): every wave-creating path\nmust declare a cwd or the spec daemon has no defensible\nworking directory. The `POST /api/waves` route enforces\nabsolute-path shape and the cove-folder claim check; the\ninner `wave_create_tx` writes whatever the route lands here\nverbatim."
           },
+          "plugin_scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "#1110 S4 — copied from the owning Manifest at create. Not accepted on\n`POST /api/waves` (CreateWaveRequest deny_unknown_fields); the route\nstamps it from the resolved trusted plugin. `#[serde(default)]` keeps\ndirect repo callers additive under `deny_unknown_fields`."
+          },
           "sort": {
             "type": [
               "number",
@@ -5597,7 +5604,7 @@
               "object",
               "null"
             ],
-            "description": "Issue #891 — JSON input for the bound workflow. Only accepted when\n`workflow_id` names a running trusted workflow whose descriptor\ndeclares an `input_schema`; the `POST /api/waves` route validates the\nvalue against that schema before any DB write. The kernel never\ninterprets the blob — it is persisted verbatim and injected into the\nspec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
+            "description": "Issue #891 / #1110 S2 — JSON input for the bound workflow. Only\naccepted when `workflow_id` names a running trusted workflow whose\nowning plugin Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
           }
         },
         "additionalProperties": false
@@ -6472,6 +6479,13 @@
             ],
             "format": "int64"
           },
+          "plugin_scope": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "#1110 S4 — owning plugin id copied at create from the bound workflow's\nManifest. `Some(id)` limits plugin tools to that running plugin;\n`None` is unbound (`All`). Immutable after create (not on `WavePatch`).\n`#[serde(default)]` hydrates pre-S4 `wave.updated` replays as `None`."
+          },
           "purpose": {
             "type": [
               "string",
@@ -6510,7 +6524,7 @@
               "object",
               "null"
             ],
-            "description": "Issue #891 — input JSON for the bound workflow, validated against the\ndescriptor's `input_schema` at create time and persisted verbatim; the\nkernel never interprets it. `#[serde(default)]` hydrates pre-#891\n`wave.updated` replays as `None` (same pattern as `workflow_id`).\nExplicit `unknown` override — see `Card.payload` for the rationale."
+            "description": "Issue #891 / #1110 S2 — input JSON for the bound workflow, validated\nagainst the owning plugin Manifest's `input_schema` at create time and\npersisted verbatim; the kernel never interprets it. `#[serde(default)]`\nhydrates pre-#891 `wave.updated` replays as `None` (same pattern as\n`workflow_id`). Explicit `unknown` override — see `Card.payload` for\nthe rationale."
           }
         }
       },
@@ -6988,6 +7002,7 @@
       },
       "WavePatch": {
         "type": "object",
+        "description": "INV-1110-004: `plugin_scope` is create-time only and is not a field here.\nPATCH `/api/waves` cannot widen or change it. Extra JSON keys are ignored\n(`deny_unknown_fields` is not set).",
         "properties": {
           "archived_at": {
             "type": [

@@ -137,6 +137,7 @@ async fn boot(start_shared: bool) -> Boot {
             sort: None,
             cwd: repo_root.display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
@@ -637,6 +638,7 @@ async fn app_state_with_fake_worker_daemon() -> (AppState, Arc<SqlxRepo>, WaveId
             sort: None,
             cwd: repo_root.display().to_string(),
             workflow_id: None,
+            plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
         })
