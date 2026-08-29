@@ -236,15 +236,17 @@ pub struct WorkflowDescriptor {
     #[serde(default)]
     pub plan_template: Vec<PlanTaskInput>,
     /// Transitional Tier-A advisory gate guidance — NOT an executable contract.
-    /// Rendered into the Spec prompt's `## Bound Workflow Gates` section
-    /// (`operation::spec_harness_start_adapter`) and NEVER executed as a
-    /// shell command nor wired into a task's `gate_json`/execution. The Spec
-    /// authors each task block's real, re-runnable `gate` from the target
-    /// repo's toolchain via `calm.report.blocks.upsert`.
+    /// #1110 S3 stopped rendering this into the Spec prompt; the field is
+    /// still parsed so installed manifests (git-forge) keep installing until
+    /// S5 deletes it. NEVER executed as a shell command nor wired into a
+    /// task's `gate_json`/execution. The Spec authors each task block's real,
+    /// re-runnable `gate` from the target repo's toolchain via
+    /// `calm.report.blocks.upsert`.
     #[serde(default)]
     pub gates: Vec<GateInput>,
     /// Transitional Tier-A prompt text while workflow instructions move into
-    /// report templates. Keep parsing, validation, and prompt injection.
+    /// report templates. Keep parsing and validation for installed manifests.
+    /// #1110 S3 stopped injecting this into spec developer instructions.
     #[serde(default)]
     pub spec_instructions: String,
     #[serde(default)]
@@ -800,12 +802,11 @@ mod tests {
         assert_full_golden_eq("", "");
     }
 
-    fn validate_rendered_give_up_contract(rendered: &str) -> Result<(), String> {
-        crate::spec_card::validate_spec_prompt_contract(rendered)?;
-        let start = rendered
+    fn validate_give_up_contract(text: &str) -> Result<(), String> {
+        let start = text
             .find("If n == cap and the round is non-approving")
             .ok_or_else(|| "GIVE-UP protocol paragraph is missing".to_string())?;
-        let remainder = &rendered[start..];
+        let remainder = &text[start..];
         let end = remainder
             .find("\n\nRecord root_cause")
             .ok_or_else(|| "GIVE-UP protocol paragraph terminator is missing".to_string())?;
@@ -1180,13 +1181,21 @@ mod tests {
             .iter()
             .find(|workflow| workflow.id == "issue-development")
             .expect("issue-development workflow");
+        // S3 stopped injecting spec_instructions; the GIVE-UP contract still
+        // lives on the descriptor until S5/S6 move it into a template report.
+        validate_give_up_contract(instructions).unwrap_or_else(|error| panic!("{error}"));
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-give-up",
                 Some(workflow),
                 None,
             );
-        validate_rendered_give_up_contract(&rendered).unwrap_or_else(|error| panic!("{error}"));
+        crate::spec_card::validate_spec_prompt_contract(&rendered)
+            .unwrap_or_else(|error| panic!("{error}"));
+        assert!(
+            !rendered.contains("If n == cap and the round is non-approving"),
+            "S3 must not inject workflow spec_instructions into the spec prompt"
+        );
     }
 
     #[test]

@@ -476,25 +476,19 @@ async fn all_shipped_plan_template_items_round_trip_through_real_blocks_upsert_p
         .iter()
         .find(|workflow| workflow.id == "issue-development")
         .expect("issue-development workflow");
-    let rendered =
-        render_spec_developer_instructions_for_test("wave-template", Some(workflow), None);
-    let template_json = rendered
-        .split("## Bound Workflow Plan Template\n```json\n")
-        .nth(1)
-        .expect("bound plan heading")
-        .split("\n```")
-        .next()
-        .expect("bound plan JSON");
-    let items: Vec<Value> = serde_json::from_str(template_json).expect("rendered template JSON");
-    assert_eq!(items.len(), 8, "shipped workflow template size drifted");
-    let expected_payloads: Vec<Value> = workflow
+    let items: Vec<Value> = workflow
         .plan_template
         .iter()
         .map(calm_server::mcp_server::tools::plan::plan_template_task_block_payload)
         .collect();
-    assert_eq!(
-        items, expected_payloads,
-        "rendered JSON changed the payloads"
+    assert_eq!(items.len(), 8, "shipped workflow template size drifted");
+    let rendered =
+        render_spec_developer_instructions_for_test("wave-template", Some(workflow), None);
+    assert!(
+        !rendered.contains("## Bound Workflow Plan Template")
+            && !rendered.contains("## Bound Workflow Instructions")
+            && !rendered.contains("## Bound Workflow Gates"),
+        "S3 must not inject plan_template/gates/spec_instructions"
     );
 
     for payload in &items {

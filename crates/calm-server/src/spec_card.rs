@@ -86,7 +86,12 @@ writes are transactional.
 1. Run `neige state` to read the wave's current shape (lifecycle, \
    wave/card metadata; results are in `runs/*` views, not in `neige state`). \
    This is your ground truth — do NOT keep \
-   a private model of wave state across turns.
+   a private model of wave state across turns. \
+   If `report_startup_read_required` is true, first call `calm.report.read`. \
+   Treat the returned prose and `task` blocks as the authoritative pre-set \
+   plan. Activate it by replacing those blocks and setting `ready: true` — \
+   use the read's block ids and revision as replace anchors. Do not mint \
+   duplicate tasks.
 2. Decide what to do next and act:
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
@@ -220,7 +225,8 @@ section 重复的 Frankensteinian body。迁移时保留仍然有效的事实，
 
 `neige state` deliberately returns metadata only — wave row plus a cards \
 list with id/kind/role/sort/created_at/updated_at, **no card payloads, \
-no event payloads, no worker results**. To read what a worker actually \
+no event payloads, no worker results**, plus the sibling boolean \
+`report_startup_read_required`. To read what a worker actually \
 produced, use the read-only wave views from your shell via the `neige` \
 CLI, which composes with tools like `grep`, `jq`, and `head`:
 
@@ -587,6 +593,26 @@ mod tests {
             validate_spec_prompt_contract(&negated).is_err(),
             "correct tokens inside a negated paragraph must not satisfy the contract"
         );
+    }
+
+    #[test]
+    fn spec_prompt_requires_report_read_when_startup_bit_is_true() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+        let step1 = p.find("1. Run `neige state`").expect("step 1 is present");
+        let bit = p
+            .find("If `report_startup_read_required` is true, first call `calm.report.read`.")
+            .expect("conditional report-read sentence is present");
+        let step2 = p
+            .find("2. Decide what to do next and act:")
+            .expect("step 2 is present");
+        assert!(
+            step1 < bit && bit < step2,
+            "the startup-read sentence must sit after neige state and before step 2"
+        );
+        assert!(p.contains("authoritative pre-set plan"));
+        assert!(p.contains("replacing those blocks and setting `ready: true`"));
+        assert!(p.contains("block ids and revision as replace anchors"));
+        assert!(p.contains("Do not mint duplicate tasks"));
     }
 
     /// #293 cutover — the spec prompt must be push-native, not pull. It must

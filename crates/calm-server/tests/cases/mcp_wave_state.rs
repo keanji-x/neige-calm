@@ -308,6 +308,12 @@ async fn get_wave_state_returns_wave_and_cards_for_spec() {
     let worker_runtime: Option<CardRuntimeView> =
         serde_json::from_value(worker["runtime"].clone()).expect("runtime field is typed");
     assert!(worker_runtime.is_none(), "worker card has no runtime row");
+    assert_eq!(
+        out.get("report_startup_read_required")
+            .and_then(Value::as_bool),
+        Some(false),
+        "a wave with no report card is not a forked plan"
+    );
 }
 
 #[tokio::test]

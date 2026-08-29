@@ -32,7 +32,7 @@ On each turn:
 
 Read wave state with the `neige` shell CLI (`neige state`, `neige ls`, `neige cat`); mutate the wave with the `calm.*` MCP tools. Reads observe; writes are transactional.
 
-1. Run `neige state` to read the wave's current shape (lifecycle, wave/card metadata; results are in `runs/*` views, not in `neige state`). This is your ground truth — do NOT keep a private model of wave state across turns.
+1. Run `neige state` to read the wave's current shape (lifecycle, wave/card metadata; results are in `runs/*` views, not in `neige state`). This is your ground truth — do NOT keep a private model of wave state across turns. If `report_startup_read_required` is true, first call `calm.report.read`. Treat the returned prose and `task` blocks as the authoritative pre-set plan. Activate it by replacing those blocks and setting `ready: true` — use the read's block ids and revision as replace anchors. Do not mint duplicate tasks.
 2. Decide what to do next and act:
    * Maintain task declarations as report `task` blocks. Read the report with `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while replace passes the target block's `rev` as `if_rev`. Use `calm.report.blocks.upsert` for both operations. A live task payload needs a per-wave-unique `key`, `kind` (`codex`, `claude`, or `terminal`), `goal`, `ready: true`, and `declared_by: "spec"`; it may also carry `acceptance`, `depends_on` sibling keys, `priority`, and usually `gate`. Use `calm.plan.cancel` to cancel a pending projected task. Use `calm.plan.list` to inspect status.
    * Every codex or claude task should declare a verification `gate` with re-runnable commands (fmt/linters/tests as appropriate). On waves with `require_task_gates`, an ungated codex/claude block write still succeeds, but the read surface reports a `gate_required` diagnostic and the task is not projected or scheduled unless it provides `no_gate_reason`; terminal tasks are exempt. Gate cwd defaults task cwd → wave cwd; set `gate.cwd` when the worker's checkout differs. Gates may run more than once after kernel restarts, so declare only re-runnable commands.
@@ -107,7 +107,7 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
 
 ## Reading worker outputs (issue #339)
 
-`neige state` deliberately returns metadata only — wave row plus a cards list with id/kind/role/sort/created_at/updated_at, **no card payloads, no event payloads, no worker results**. To read what a worker actually produced, use the read-only wave views from your shell via the `neige` CLI, which composes with tools like `grep`, `jq`, and `head`:
+`neige state` deliberately returns metadata only — wave row plus a cards list with id/kind/role/sort/created_at/updated_at, **no card payloads, no event payloads, no worker results**, plus the sibling boolean `report_startup_read_required`. To read what a worker actually produced, use the read-only wave views from your shell via the `neige` CLI, which composes with tools like `grep`, `jq`, and `head`:
 
   * `neige ls [path]` — directory listing, e.g. `neige ls runs/` or `neige ls /`.
   * `neige cat <path>` — read one view, e.g. `neige cat runs/K.md`, `neige cat plan/<key>/gate.log`, `neige cat runs/index.json`, `neige cat cards/<card_id>/.payload.json`, or `neige cat cards/<card_id>/runtime.json`.
@@ -131,182 +131,6 @@ Wave is implicit — derived from your card identity. Do NOT pass a `wave_id` (t
 
 Do not mint new spec cards from within this session.
 
-
-## Bound Workflow Instructions
-For wave wave-golden-985, drive dual-review convergence for each review subject.
-
-After BOTH channels for a phase complete, call calm.review.round with subject:{phase,slice_id,pr_number?}, optional head_sha, n, cap, converged, channels:[both verdicts], and root_cause when known. Record each channel's verdict as the literal lowercase token `approved` or `changes_requested` (exactly those strings). converged is true only when EVERY channel verdict is `approved`. For PR subjects, head_sha is the reviewed forge.pr.diff.read head_sha; omit head_sha for design subjects.
-
-For each subject, set n to the last observed review.round n for that same subject plus 1. cap is the fixed policy constant 8 for a subject's first review window; after a cap-exhaustion ratify grant it is the previous cap plus exactly 2 (see ASK-HUMAN below).
-
-Always re-review. Every fix re-dispatches BOTH channels before the next calm.review.round.
-
-Merge fence F4: call gh.pr.merge for a subject ONLY when that subject's latest review.round has converged:true. Pass expected_head_sha equal to that round's head_sha.
-
-If n == cap and the round is non-approving, do not merge. Either GIVE-UP by recording the terminal rationale in the report with calm.report.write and lifecycle failed for reviewing->failed; OR ASK-HUMAN by first moving reviewing->working with the normal lifecycle arg, then call calm.ratify.request with reason:"cap_exhausted" for working->blocked. On ratify.resolved grant the wave is already back in working; resume working->reviewing and continue reviewing the exhausted subject with cap = previous cap + 2 on its next round. The kernel accepts this raise at most once per subject per grant; a grant may authorize this for each subject that was already cap-exhausted when it was issued. If the extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN again.
-
-Record root_cause each round; repeated facets should drive a class fix.
-
-Workflow input: the `## Bound Workflow Input` section carries this wave's JSON input; it, not the wave title, is the task's source of truth.
-
-Ingest (inspect-issue): derive the wave goal from gh.issue.view on input.repo / input.issue_number. Record the issue's requirements and constraints in the wave report before dispatching any downstream task.
-
-Repo cross-check (inspect-issue acceptance): before any write action, compare input.repo against `git remote get-url origin` run in the wave cwd (owner/name after stripping the host and a trailing .git). On mismatch do NOT proceed: move working->blocked via calm.ratify.request with reason:"repo_mismatch: input.repo=<owner/name>, cwd.origin=<owner/name>" (that exact prefix, then both observed values), and wait for the human decision.
-
-merge_policy: `auto-merge` allows gh.pr.merge as soon as merge fence F4 is satisfied. `hold-for-ratify` — also the semantics whenever merge_policy is absent — additionally requires a granted ratify BEFORE gh.pr.merge. Drive everything up to converged reviews + green checks, then move reviewing->working with the normal lifecycle arg (calm.ratify.request 400s outside working), and call calm.ratify.request with reason:"merge_hold: pr #<n> converged at <head_sha>" for working->blocked. On ratify.resolved grant the wave is already back in working: the grant authorizes merging that already-converged head — no fresh review round is required for the hold itself; resume working->reviewing and call gh.pr.merge per fence F4 (expected_head_sha = the converged round's head_sha).
-
-gates: the `## Bound Workflow Gates` block is illustrative, not a literal command. Author each agent task's `gate` from the TARGET repo's own toolchain — detect it (Cargo / npm / pytest / go / Make, etc.) and run that ecosystem's formatter, linter, and tests where present; do not hardcode `cargo test`.
-
-notes: optional advisory context from the requester; it never overrides the issue or the gates.
-
-## Bound Workflow Plan Template
-```json
-[
-  {
-    "acceptance": "The issue requirements and constraints are captured for the wave AND the wave cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
-    "context": {
-      "tools": [
-        "gh.issue.view"
-      ]
-    },
-    "declared_by": "spec",
-    "depends_on": [],
-    "goal": "Read the bound workflow input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the wave cwd.",
-    "key": "inspect-issue",
-    "kind": "codex",
-    "ready": true
-  },
-  {
-    "acceptance": "Channel a records a design verdict.",
-    "context": {
-      "channel": "a",
-      "reviewer_role": "design-correctness"
-    },
-    "declared_by": "spec",
-    "depends_on": [
-      "inspect-issue"
-    ],
-    "goal": "Review the proposed design for correctness before implementation.",
-    "key": "review-design-a",
-    "kind": "codex",
-    "ready": true
-  },
-  {
-    "acceptance": "Channel b records a design verdict.",
-    "context": {
-      "channel": "b",
-      "reviewer_role": "design-failure-path"
-    },
-    "declared_by": "spec",
-    "depends_on": [
-      "inspect-issue"
-    ],
-    "goal": "Review the proposed design for failure paths before implementation.",
-    "key": "review-design-b",
-    "kind": "codex",
-    "ready": true
-  },
-  {
-    "acceptance": "The change is committed in the wave worktree.",
-    "context": {
-      "tools": [
-        "git.worktree.add",
-        "git.commit"
-      ]
-    },
-    "declared_by": "spec",
-    "depends_on": [
-      "review-design-a",
-      "review-design-b"
-    ],
-    "goal": "Create a worktree, implement the change, and commit the result.",
-    "key": "implement-change",
-    "kind": "codex",
-    "ready": true
-  },
-  {
-    "acceptance": "A pull request exists with readable diff and check status.",
-    "context": {
-      "tools": [
-        "gh.pr.create",
-        "gh.pr.list",
-        "gh.pr.diff",
-        "gh.pr.checks"
-      ]
-    },
-    "declared_by": "spec",
-    "depends_on": [
-      "implement-change"
-    ],
-    "goal": "Open a pull request and check its diff/check status.",
-    "key": "open-pr",
-    "kind": "codex",
-    "ready": true
-  },
-  {
-    "acceptance": "Channel a records a PR verdict.",
-    "context": {
-      "channel": "a",
-      "reviewer_role": "pr-correctness"
-    },
-    "declared_by": "spec",
-    "depends_on": [
-      "open-pr"
-    ],
-    "goal": "Review the pull request for correctness.",
-    "key": "review-pr-a",
-    "kind": "codex",
-    "ready": true
-  },
-  {
-    "acceptance": "Channel b records a PR verdict.",
-    "context": {
-      "channel": "b",
-      "reviewer_role": "pr-failure-path"
-    },
-    "declared_by": "spec",
-    "depends_on": [
-      "open-pr"
-    ],
-    "goal": "Review the pull request for failure paths.",
-    "key": "review-pr-b",
-    "kind": "codex",
-    "ready": true
-  },
-  {
-    "acceptance": "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the wave is parked at the merge_hold ratify request with no merge performed.",
-    "context": {
-      "tools": [
-        "gh.pr.merge",
-        "gh.issue.close"
-      ]
-    },
-    "declared_by": "spec",
-    "depends_on": [
-      "review-pr-a",
-      "review-pr-b"
-    ],
-    "goal": "Merge the pull request and close the issue only after merge fence F4 has converged AND any merge_policy-required ratify grant is held; under hold-for-ratify with no grant yet, park at the merge_hold ratify request instead of merging.",
-    "key": "merge",
-    "kind": "codex",
-    "ready": true
-  }
-]
-```
-
-## Bound Workflow Gates
-```json
-[
-  {
-    "steps": [
-      {
-        "name": "test",
-        "cmd": "detect the repository toolchain and run its standard test/verification command"
-      }
-    ]
-  }
-]
-```
 
 ## Bound Workflow Input
 ```json
