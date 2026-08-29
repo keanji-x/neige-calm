@@ -1328,6 +1328,11 @@ export interface components {
             position?: number | null;
         };
         CreateWaveRequest: {
+            /**
+             * @description When true, upsert the kernel view/template overlay in the same create
+             *     transaction as the layout overlay and do not start the spec harness.
+             */
+            as_template?: boolean;
             attach_folder?: boolean;
             cove_id: string;
             /**

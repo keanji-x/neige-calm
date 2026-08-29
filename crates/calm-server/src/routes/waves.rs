@@ -37,7 +37,7 @@ use crate::db::sqlite::{
     overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx, project_tasks_tx,
     terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
-use crate::db::write_with_actor_events_typed;
+use crate::db::{RepoRead, write_with_actor_events_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
@@ -62,7 +62,11 @@ use crate::routes::terminal_cards::stable_payload_hash;
 use crate::session_projection_lookup::project_runtime_into_cards_payload;
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
-use crate::validation::CODEX_PAYLOAD_SCHEMA_VERSION;
+use crate::validation::{
+    CODEX_PAYLOAD_SCHEMA_VERSION, OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND,
+    OVERLAY_TEMPLATE_PLUGIN_ID, is_template_overlay, template_overlay_payload,
+    validate_overlay_payload,
+};
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::{validate_transition, wave_get_tx};
 use crate::wave_report::{
@@ -79,6 +83,7 @@ use axum::{
     routing::get,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use utoipa::{IntoParams, ToSchema};
 
 #[cfg(feature = "fixtures")]
@@ -206,13 +211,17 @@ pub struct CreateWaveRequest {
     /// the new report inside the wave-create transaction.
     #[serde(default)]
     pub fork_report_from: Option<String>,
+    /// When true, upsert the kernel view/template overlay in the same create
+    /// transaction as the layout overlay and do not start the spec harness.
+    #[serde(default)]
+    pub as_template: bool,
 }
 
 impl CreateWaveRequest {
-    /// `(body, fork_report_from, cwd_omitted)`. `cwd_omitted` is true when the
-    /// client sent no `cwd` / `null`; that is a different branch from an
-    /// explicit empty string, which still 400s.
-    fn into_parts(self) -> (NewWave, Option<String>, bool) {
+    /// `(body, fork_report_from, cwd_omitted, as_template)`. `cwd_omitted` is
+    /// true when the client sent no `cwd` / `null`; that is a different branch
+    /// from an explicit empty string, which still 400s.
+    fn into_parts(self) -> (NewWave, Option<String>, bool, bool) {
         let cwd_omitted = self.cwd.is_none();
         (
             NewWave {
@@ -231,6 +240,7 @@ impl CreateWaveRequest {
             },
             self.fork_report_from,
             cwd_omitted,
+            self.as_template,
         )
     }
 }
@@ -381,13 +391,13 @@ pub(crate) async fn list_waves_by_cove(
     Path(cove_id): Path<String>,
 ) -> Result<Json<Vec<Wave>>> {
     let mut waves = s.repo.waves_by_cove(&cove_id).await?;
-    waves.retain(user_visible_wave);
+    retain_user_visible_waves(s.repo.as_ref(), &mut waves).await?;
     Ok(Json(waves))
 }
 
-/// Public wave lists hide only the cove conversation container. Keep this at
-/// the route boundary: repository readers such as cove deletion and backlink
-/// resolution require the complete set.
+/// Public wave lists hide the cove conversation container and template waves
+/// (#1110 S1). Keep this at the route boundary: repository readers such as
+/// cove deletion and backlink resolution require the complete set.
 ///
 /// The `match` is spelled out rather than written `!= Some(COVE_CHAT_PURPOSE)`
 /// purely for readability — both forms already keep NULL-purpose waves
@@ -400,6 +410,22 @@ fn user_visible_wave(wave: &Wave) -> bool {
         None => true,
         Some(purpose) => purpose != COVE_CHAT_PURPOSE,
     }
+}
+
+async fn retain_user_visible_waves(repo: &dyn RepoRead, waves: &mut Vec<Wave>) -> Result<()> {
+    let templates = template_wave_ids(repo).await?;
+    waves.retain(|wave| user_visible_wave(wave) && !templates.contains(wave.id.as_str()));
+    Ok(())
+}
+
+async fn template_wave_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
+    Ok(repo
+        .overlays_by_kind(OVERLAY_TEMPLATE_ENTITY_KIND)
+        .await?
+        .into_iter()
+        .filter(is_template_overlay)
+        .map(|overlay| overlay.entity_id)
+        .collect())
 }
 
 /// Issue #250 PR 2 — calendar window query parameters for
@@ -468,7 +494,7 @@ pub(crate) async fn list_waves_window(
         .repo
         .waves_window(q.cove_id.as_deref(), q.since, q.until)
         .await?;
-    waves.retain(user_visible_wave);
+    retain_user_visible_waves(state.repo.as_ref(), &mut waves).await?;
     Ok(Json(waves))
 }
 
@@ -522,7 +548,7 @@ pub(crate) async fn create_wave(
     actor: Actor,
     Json(request): Json<CreateWaveRequest>,
 ) -> Result<Response> {
-    let (mut p, fork_report_from, cwd_omitted) = request.into_parts();
+    let (mut p, fork_report_from, cwd_omitted, as_template) = request.into_parts();
     // PR6 (#136) — wave create now atomically mints a `CardRole::Spec`
     // codex card alongside the wave row. Both rows commit in one tx
     // and both `Event::WaveUpdated` + `Event::CardAdded` envelopes
@@ -646,6 +672,7 @@ pub(crate) async fn create_wave(
             body_cove_id,
             normalized_cwd,
             fork_report_from,
+            as_template,
         },
     )
     .await;
@@ -766,6 +793,7 @@ struct CreateWaveOptions {
     body_cove_id: String,
     normalized_cwd: String,
     fork_report_from: Option<String>,
+    as_template: bool,
 }
 
 #[allow(deprecated)]
@@ -775,9 +803,12 @@ async fn create_wave_with_spec_harness(
     p: NewWave,
     options: CreateWaveOptions,
 ) -> Result<Response> {
+    let as_template = options.as_template;
     let (wave, _, spec_card_id, report_card_id) =
         create_wave_structure(s.clone(), actor.clone(), p, options, None).await?;
-    start_spec_harness(&s, &actor, &wave, spec_card_id, report_card_id).await?;
+    if !as_template {
+        start_spec_harness(&s, &actor, &wave, spec_card_id, report_card_id).await?;
+    }
     Ok((StatusCode::CREATED, Json(wave)).into_response())
 }
 
@@ -888,6 +919,7 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
             body_cove_id: cove_id.clone(),
             normalized_cwd: cwd,
             fork_report_from: None,
+            as_template: false,
         },
         Some(COVE_CHAT_PURPOSE),
     )
@@ -922,6 +954,7 @@ async fn create_wave_structure(
         body_cove_id,
         normalized_cwd,
         fork_report_from,
+        as_template,
     } = options;
     let spec_card_id = new_id();
     let report_card_id = new_id();
@@ -1149,6 +1182,25 @@ async fn create_wave_structure(
                     },
                 )
                 .await?;
+                let template_overlay = if as_template {
+                    let payload = template_overlay_payload();
+                    validate_overlay_payload(OVERLAY_TEMPLATE_KIND, &payload)?;
+                    Some(
+                        overlay_upsert_tx(
+                            tx,
+                            NewOverlay {
+                                plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
+                                entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
+                                entity_id: wave_id.as_str().to_string(),
+                                kind: OVERLAY_TEMPLATE_KIND.into(),
+                                payload,
+                            },
+                        )
+                        .await?,
+                    )
+                } else {
+                    None
+                };
                 let mut events = vec![
                     (
                         actor_id_for_tx.clone(),
@@ -1174,6 +1226,16 @@ async fn create_wave_structure(
                         Event::OverlaySet(layout_overlay),
                     ),
                 ];
+                if let Some(template_overlay) = template_overlay {
+                    events.push((
+                        actor_id_for_tx.clone(),
+                        EventScope::Wave {
+                            wave: wave_id.clone(),
+                            cove: cove_id.clone(),
+                        },
+                        Event::OverlaySet(template_overlay),
+                    ));
+                }
                 if let Some(projection) = fork_projection {
                     if !projection.changed_keys.is_empty() {
                         events.push((

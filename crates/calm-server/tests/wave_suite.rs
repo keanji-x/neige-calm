@@ -19,5 +19,7 @@ mod wave_fsm_golden;
 mod wave_pin;
 #[path = "cases/wave_report_fork.rs"]
 mod wave_report_fork;
+#[path = "cases/wave_template_overlay.rs"]
+mod wave_template_overlay;
 #[path = "cases/wave_vcs.rs"]
 mod wave_vcs;

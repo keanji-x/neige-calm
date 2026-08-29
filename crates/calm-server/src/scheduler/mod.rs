@@ -53,7 +53,7 @@ use crate::db::sqlite::{
     SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
     task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, task_mark_sub_wave_running_tx,
     task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
-    wave_lifecycle_and_budget_tx,
+    wave_has_template_overlay_tx, wave_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -74,6 +74,7 @@ use crate::operation::{OperationKey, OperationOutcome, OperationRuntime, Tx};
 use crate::routes::terminal_cards::stable_payload_hash;
 use crate::state::WriteContext;
 use crate::task_context::{ContextMetrics, TaskContextMonitor, context_ref};
+use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
 use crate::wave_lifecycle::auto_transition_if_current_in_tx;
 
 /// Kernel default per-wave task budget when `waves.task_budget` is NULL
@@ -1002,6 +1003,19 @@ impl Scheduler {
             );
             return Ok(());
         }
+        let is_template = self
+            .repo
+            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, wave_id.as_str())
+            .await?
+            .iter()
+            .any(is_template_overlay);
+        if is_template {
+            tracing::debug!(
+                wave_id = %wave_id,
+                "scheduler: template overlay holds dispatch; skipping ready set"
+            );
+            return Ok(());
+        }
         let budget = self.wave_budget(wave_id).await?;
         let capacity = wave_capacity(&tasks, budget);
         let ready = compute_ready(&tasks, budget);
@@ -1167,6 +1181,13 @@ impl Scheduler {
                                 .await?
                                 .ok_or_else(race_lost_err)?;
                         if !lifecycle_allows_scheduling(lifecycle) {
+                            return Err(race_lost_err());
+                        }
+                        // INV-1110-001: template overlay is the claim backstop.
+                        // Ready-set skip can race a POST /api/overlays after the
+                        // pass snapshot; refuse the flip here so no TaskDispatched
+                        // is persisted.
+                        if wave_has_template_overlay_tx(tx, wave_id.as_str()).await? {
                             return Err(race_lost_err());
                         }
                         // §5.2 claim fence: missing wave/report, a changed root, or any
