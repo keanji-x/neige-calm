@@ -32,7 +32,9 @@ import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { CardGridOverlay, WaveStage } from '../../features/wave/grid/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
-import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
+import {
+  ChatComposer, ChatFooterError, ChatFooterRemedy, ChatThread,
+} from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
@@ -83,7 +85,6 @@ type ConversationStore = Readonly<{
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
-  actionMessage: string | null;
   start: () => Conversation | null;
   send: (conversationId: string, text: string) => void;
   interrupt: () => void;
@@ -152,7 +153,6 @@ export function useConversationStore(
   const [interruptPending, setInterruptPending] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const sendingRef = useRef(false);
   const suppressRememberRef = useRef(false);
   const suppressedRememberSnapshotRef = useRef<readonly ConversationTurn[] | null>(null);
@@ -172,7 +172,6 @@ export function useConversationStore(
   useEffect(() => {
     setEchoes([]);
     setActionError(null);
-    setActionMessage(null);
     sendingRef.current = false;
     suppressRememberRef.current = false;
     suppressedRememberSnapshotRef.current = null;
@@ -254,7 +253,6 @@ export function useConversationStore(
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
-    setActionMessage(null);
     seq.current += 1;
     const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
     setEchoes((current) => [...current, echo]);
@@ -267,13 +265,24 @@ export function useConversationStore(
     });
   };
 
+  /*
+   * Stopping says so by *stopping*, not by a line of text.
+   *
+   * A successful interrupt used to set `Turn stopped` under the composer. Two
+   * things already carry that fact at the moment it becomes true: the Stop
+   * button turns back into Send, and the activity line stops advancing. A
+   * sentence saying it a third time is the kind of confirmation that reads as
+   * chrome — and unlike every other state on this surface it had no way to
+   * expire, so it sat under the box until the next send or reset. A state that
+   * only the *next* action can clear is not a status, it is a residue.
+   *
+   * Failure still speaks (`actionError`): that one is not visible anywhere else.
+   */
   const interrupt = () => {
     if (!working || stopping) return;
     setInterruptPending(true);
     setActionError(null);
-    void mutations.interrupt().then((result) => {
-      if (result.stopped) setActionMessage('Turn stopped');
-    }).catch((error: unknown) => {
+    void mutations.interrupt().catch((error: unknown) => {
       setActionError(errorMessage(error, 'Could not stop the turn.'));
     }).finally(() => setInterruptPending(false));
   };
@@ -288,7 +297,6 @@ export function useConversationStore(
     try {
       await mutations.reset();
       setEchoes([]);
-      setActionMessage(null);
       return true;
     } catch (error: unknown) {
       suppressRememberRef.current = false;
@@ -314,7 +322,6 @@ export function useConversationStore(
     loadingEarlier: history.isFetchingNextPage,
     historyError: history.error instanceof Error ? history.error.message : null,
     actionError,
-    actionMessage,
     start: () => conversation,
     send,
     interrupt,
@@ -1018,14 +1025,14 @@ function useConversationPanel(
                 this message, so by the time it answers the message is already
                 persisted and the first item fetch on the new card carries it. */}
             <ChatComposer disabled={creating} onSend={sendDraft} />
-            {draft?.error != null && <p role="alert">{draft.error}</p>}
+            {draft?.error != null && <ChatFooterError message={draft.error} />}
             {draft?.remedy === 'retry' && (
-              <button type="button" disabled={creating} onClick={retryDraft}>Try again</button>
+              <ChatFooterRemedy disabled={creating} onClick={retryDraft}>Try again</ChatFooterRemedy>
             )}
             {draft?.remedy === 'new-conversation' && (
-              <button type="button" disabled={creating} onClick={sendAsNewConversation}>
+              <ChatFooterRemedy disabled={creating} onClick={sendAsNewConversation}>
                 Send as a new conversation
-              </button>
+              </ChatFooterRemedy>
             )}
           </>
         ) : open === null ? undefined : (
@@ -1036,8 +1043,7 @@ function useConversationPanel(
               onStop={store.working || store.stopping ? store.interrupt : undefined}
               stopping={store.stopping}
             />
-            {store.actionError !== null && <p role="alert">{store.actionError}</p>}
-            {store.actionMessage !== null && <p role="status">{store.actionMessage}</p>}
+            {store.actionError !== null && <ChatFooterError message={store.actionError} />}
           </>
         )}
       >

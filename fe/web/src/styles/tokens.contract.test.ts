@@ -32,10 +32,10 @@ const POSITIONAL = [
 const CONCRETE_SURFACES = [
   '--surface-rail', '--surface-card', '--surface-chip', '--surface-chip-focus', '--surface-panel-head',
 ] as const;
-/* `--surface-said` sits here rather than with the concrete surfaces for the
-   same reason `--surface-code` does: it is an alpha tint over whatever it lands
-   on, not a rank on the elevation ladder. */
-const PROSE_SURFACES = ['--surface-terminal', '--surface-code', '--surface-said'] as const;
+/* `--surface-code` is here rather than with the concrete surfaces because it is
+   an alpha tint over whatever it lands on, not a rank on the elevation ladder.
+   `--surface-said` was one of these; the said turn now shares `--bg` (§chat). */
+const PROSE_SURFACES = ['--surface-terminal', '--surface-code'] as const;
 const OVERLAYS = [
   '--overlay-hover-faint', '--overlay-hover', '--overlay-hover-strong', '--overlay-active',
 ] as const;

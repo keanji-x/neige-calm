@@ -1,31 +1,33 @@
 @layer features {
   /*
-   * ── Side, not fill ──────────────────────────────────────────────────────
+   * ── Two voices, and only one of them is yours ────────────────────────────
    *
-   * Interface type, 13px sans, for the whole transcript. The report reads at
-   * `--text-lg` serif and this deliberately does not: the drawer's measure is
-   * fixed at 364px, while a serif at the 13px that lands in the reading band is
-   * below the size a serif holds up at on screen. A conversation is working
-   * type; a report is published type. The measured tradeoff is recorded with
-   * the reply rule below.
+   * **What comes back is set in the report's type**, and that is the decision
+   * this file was rewritten around. The same agent writes the reply and writes
+   * the report; if the drawer answers in interface sans and the document
+   * answers in serif, one agent has two voices and the reader has to learn
+   * both. So the reply takes `--font-serif` at `--text-md`, and the cost of
+   * that is stated in full on the `.reply` rule rather than glossed here.
    *
-   * Who spoke is carried by **which side of the column it is on**, and only
-   * your turn moves:
+   * **What you said stays sans**, at `--text-base`. It is not a second-class
+   * turn; it is a *different author*. Your words are the ones you typed into
+   * the box, and the box is sans (`styles/astryx-theme.css` maps Astryx's
+   * `--font-family-body` onto `--font-sans`), so the family says the plain
+   * thing it should say: this side of the transcript is you, and it is the
+   * same you that is still typing.
    *
-   *   what you said   an object flush to the inline-end edge, sans 13
-   *   what came back  flush to the inline-start edge, the full column, sans 13
+   * Who spoke is therefore carried three ways, and each was earned separately:
    *
-   * Side is the strongest signal available and the cheapest: it costs no ink,
-   * no shape, and no width. A 500-against-400 weight step at 13px was tried
-   * first and was weaker — it had to be *looked for*.
+   *   what you said   inline-end edge, filled, sans `--text-base`
+   *   what came back  inline-start edge, unfilled, serif `--text-md`
    *
-   * Your turn carries one more thing on top of side: the faintest fill in the
-   * app (`--surface-said`). An earlier round used `--surface-chip` here and it
-   * was wrong for a reason worth keeping written down — chip is the composer's
-   * recessed well, and at that weight it put a slab of grey behind every other
-   * paragraph of a 364px column. The fill that works is one you have to look
-   * for. **The reply is never filled**: it is the long thing that is actually
-   * read, and it keeps the plain column.
+   * Side came first and is still the cheapest — it costs no ink, no shape, and
+   * no width. A 500-against-400 weight step at 13px was tried before it and was
+   * weaker; it had to be *looked for*.
+   *
+   * **The reply is never filled**: it is the long thing that is actually read,
+   * and it keeps the plain column. The fill belongs to your turn alone, and
+   * `.said` below says which fill and why.
    *
    * **Both turns are at full ink**, and that is deliberate. Your line spent one
    * round at `--text-2` on the theory that you already know what you wrote —
@@ -98,13 +100,31 @@
    * happen to *stop*.
    */
   /*
-   * ── Your turn is the one object in the column ───────────────────────────
+   * ── Your turn is the same material as the box you type in ───────────────
    *
-   * The fill is `--surface-said`, the faintest tint in the app — under the code
-   * block, far under the composer well. It is not there to say "chat app"; it
-   * is there because your own words are the only thing in this column you scan
-   * *back* for, and a tint you have to look for is exactly the right cost for
-   * something you only occasionally look for.
+   * **The fill is `--bg`, the same fill the composer well takes.** What you
+   * said and what you are still writing are one substance, and that is the
+   * whole idea: the card is the agent's surface, and the two places *your*
+   * words live are cut into it. A said turn is a closed well; the composer is
+   * the open one. Nothing else in the drawer is filled, so "filled" now means
+   * exactly one thing, and it means you.
+   *
+   * It used to be `--surface-said` (a 3% ink tint) while the well was `--bg`,
+   * and the two were a third of a step apart for no reason a reader could
+   * name. Unifying had two directions and only one of them survives contact
+   * with the well: Astryx's ChatComposer draws **no border** — `--bg` is the
+   * only thing making the input findable — so lifting the well to a 3% tint on
+   * a `--surface-card` drawer erases the input affordance. Moving the bubble
+   * down to the well is therefore the only unification available, and it is
+   * also the better story. `--surface-said` was deleted from `tokens.css` with
+   * this change; it had no other user.
+   *
+   * `--bg` is heavier than the tint it replaces and lighter than
+   * `--surface-chip`, which an earlier round tried and rejected as a slab of
+   * grey behind every other paragraph. It is the page ground in both themes
+   * (light 92.2%, dark 24.5% against a 31.4% card), so "recessed" holds
+   * whichever way the theme goes, and it carries no text contrast of its own —
+   * `--text` reads on it exactly as it reads on the report's ground.
    *
    * What the fill buys back is the text alignment. Flush-right ragged-left prose
    * was the price of having no edges: without a box, a right-aligned block is
@@ -113,8 +133,8 @@
    * side. `width: fit-content` keeps a short line short — a full-width bubble
    * would put both turns on the same two verticals again.
    *
-   * `--radius-md` (12) against the composer well's `--radius-lg` (16): the well
-   * is the bigger object and stays the roundest thing in the drawer.
+   * `--radius-chat` is the drawer's concentric inner radius, which is also what
+   * the composer well takes: same material, same corner.
    */
   .said {
     inline-size: fit-content;
@@ -123,7 +143,7 @@
     margin-inline-start: auto;
     padding: var(--space-3) var(--space-5);
     border-radius: var(--radius-chat, var(--radius-md));
-    background: var(--surface-said);
+    background: var(--bg);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     font-size: var(--text-base);
@@ -133,39 +153,52 @@
   }
 
   /*
-   * The reply is the drawer's own type: sans 13, the same as your turn.
+   * ── The reply is the report's voice, in the report's family ─────────────
    *
-   * It was 15px serif for one round, and the argument for that was sound while
-   * it was the only thing holding "who" up — two turns at 13px sans differ only
-   * in which edge they touch, so the transcript read as one column of text that
-   * jumped sides for no reason, and a family change is a *voice* difference
-   * that costs the text no ink, no shape and no width.
+   * `--font-serif` and `--leading-loose` are taken straight off `.calm-prose`
+   * in base.css, which is what `features/report/document` renders authored text
+   * with. One agent, one voice: the thing that answers you in the drawer is the
+   * thing that writes the document, and for two rounds it said so in two
+   * different families.
    *
-   * The fill removed that job. Side and a bubble already say who twice; family
-   * and size would have said it a third and fourth time, which is precisely
-   * what §3 spends its budget rule preventing. So the differentiation stays at
-   * two channels and the type goes back to one.
+   * A previous round argued the other way and lost, and the argument is kept
+   * because it is the honest half of this decision: **a conversation is working
+   * type, a report is published type**, and the drawer's column is far too
+   * narrow for the report's size. That half is still true. What it got wrong
+   * was the conclusion — the narrow column is a reason to drop a *step*, not a
+   * reason to change families.
    *
-   * What this costs, stated rather than glossed: the drawer no longer shares a
-   * voice with the report, and that shared voice was a real idea — a reply and
-   * a report are the same agent talking. The trade is deliberate. **A
-   * conversation is working type; a report is published type.** Setting the
-   * drawer in the report's serif was the narrower column pretending to be the
-   * document, and the measurement said so all along: 364px cannot hold this
-   * serif at the 65–75 band (15px reached 60.1, 18px only 50.1, and the report
-   * itself gets 69.4 at 504px). Sans at 13 is not a compromised serif; it is
-   * the right family for a 364px column.
+   * **The cost, measured rather than estimated.** The column is
+   * `--panel-span` (`max(15rem, 25cqi)` of `.main`, i.e. of the window minus
+   * the 200px rail) less the drawer's two `--nc-card-inset` pads, so it is
+   * `--panel-span − 16`. Rendered in Chromium against this serif stack the
+   * average advance is 0.394em per character, which gives:
    *
-   * `--leading-base` (1.5), not the `--leading-snug` your turn uses: yours is
-   * usually one line and this is the paragraph that gets read.
+   *   window   --panel-span   column   15px serif   18px serif
+   *   1440           310        294       49.7         41.4
+   *   1512           328        312       52.8         44.0
+   *   1728           382        366       61.9         51.6
+   *   1920           430        414       70.0         58.4
+   *
+   * Only the widest window reaches the 65–75 band, and only at 15px; the
+   * report's own `--text-lg` is below the band at every width the drawer is
+   * ever opened at (the report gets 71.0 on its 504px measure). So the size
+   * stops one step short at `--text-md` and **the drawer runs short lines** —
+   * roughly 50 to 62 characters on a laptop. That is a knowingly accepted
+   * trade: same voice as the report, a measure the report would not accept.
+   *
+   * `--leading-loose` (1.65), the report's, not the `--leading-snug` your turn
+   * uses: yours is usually one line, this is the paragraph that gets read, and
+   * a short measure needs the extra leading more than a long one does.
    */
   .reply {
     min-inline-size: 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
-    font-size: var(--text-base);
+    font-family: var(--font-serif);
+    font-size: var(--text-md);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-base);
+    line-height: var(--leading-loose);
     color: var(--text);
   }
 
@@ -265,8 +298,10 @@
     text-align: center;
   }
 
-  /* One voice in the drawer: this line used to be the serif's last outpost,
-     which made the empty state the only surface here set in the report's type. */
+  /* Sans, at the interface rank — and now that the reply is serif, that is a
+     distinction rather than a leftover. Nobody has spoken yet, so there is no
+     agent voice here to carry: this is the drawer telling you what the drawer
+     is for, which is chrome, and chrome is sans. */
   .emptyLead {
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
@@ -295,6 +330,13 @@
      * which is the same rank as the card. Recess it one step to `--bg`, the
      * page/report ground, so the well is a hole in the card.
      *
+     * **This is also the transcript's `.said` fill**, and the two are meant to
+     * be read as one material — see the note on `.said`. It is load-bearing
+     * here in a way it is not there: Astryx's composer draws no border, so this
+     * fill is the only thing that makes the input findable on the card. Any
+     * future move of `.said` must leave the well where it is, or the box stops
+     * looking like a box.
+     *
      * Radius lives on the inner body (`--_chat-composer-radius`). Do not paint
      * the square root — that hides the rounding.
      */
@@ -309,6 +351,39 @@
     background: var(--surface-chip);
     color: var(--text);
     box-shadow: none;
+  }
+
+  /*
+   * ── Under the composer ──────────────────────────────────────────────────
+   *
+   * Both rules exist to give the footer's non-composer children the two things
+   * the composer already had and they did not: the card's inline inset, so they
+   * start on the column every message starts on, and a rank.
+   *
+   * The error is the caption rank — the same 11px `.activity` uses for what the
+   * agent did — in `--error-text` and nothing else. No fill, no icon, no box: a
+   * send that did not go is information about the control directly above it,
+   * and the control is right there to try again with. The activity lines
+   * already established that failure here is text-coloured rather than alarmed.
+   *
+   * The remedy is a §4.1 `tertiary`, which brings its own geometry from
+   * base.css; the wrapper only positions it. It is flush left, under its own
+   * error, at the quietest tier — Send is the control being aimed at, and a
+   * second filled button beside it would be two answers to one question.
+   */
+  .footerError {
+    padding-inline: var(--nc-card-inset, var(--space-4));
+    padding-block-end: var(--space-3);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--error-text);
+  }
+
+  .footerRemedy {
+    display: flex;
+    padding-inline: var(--nc-card-inset, var(--space-4));
+    padding-block-end: var(--nc-card-inset, var(--space-4));
   }
 
   @keyframes thread-pulse {

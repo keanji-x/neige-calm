@@ -30,7 +30,7 @@
 // The unit is the **exchange** — one thing you said and everything that came
 // back — and the layout groups by it: tight inside, loose between.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import {
   ChatComposer as AstryxChatComposer,
   ChatComposerInput,
@@ -195,6 +195,45 @@ export function ChatComposer({ onSend, onStop, stopping = false, disabled = fals
         input={<ChatComposerInput label="Message" placeholder="Say something" />}
         sendButton={<ChatSendButton isDisabled={stopping} />}
       />
+    </div>
+  );
+}
+
+/**
+ * ── The footer's own two lines ────────────────────────────────────────────
+ *
+ * Everything under the composer used to be a bare `<p>` and a bare `<button>`
+ * composed by the router: no inset, so they sat flush against the card's edge
+ * while the composer above them kept the card's `--nc-card-inset`, and no rank,
+ * so an error printed at body size in body ink. One root cause, three symptoms
+ * (the send error, the draft error, the two remedies) — so the fix is one pair
+ * of components rather than three call-site classNames.
+ *
+ * They own presentation only. When either appears, what it says, and what
+ * pressing it does are the router's, unchanged.
+ */
+
+/** Something went wrong in the footer, said at the caption rank. Errors here
+ *  are *about the box* — the message did not go, the turn did not stop — so
+ *  they belong under it, in the register the activity lines already use, and
+ *  in `--error-text` rather than a fill: this is information, not an alarm. */
+export function ChatFooterError({ message }: { message: string }) {
+  return <p role="alert" className={styles.footerError}>{message}</p>;
+}
+
+/** The way out of that error. `tertiary` is §4.1's quietest tier: the remedy
+ *  must be findable without competing with Send, which is the control anyone
+ *  looking at this footer is actually aiming for. */
+export function ChatFooterRemedy({ disabled = false, onClick, children }: {
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={styles.footerRemedy}>
+      <button type="button" data-nc-action="tertiary" disabled={disabled} onClick={onClick}>
+        {children}
+      </button>
     </div>
   );
 }
