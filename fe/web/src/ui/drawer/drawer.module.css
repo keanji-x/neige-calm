@@ -1,22 +1,40 @@
 @layer ui {
   /*
-   * §7.6, verbatim except for one thing: fixed to the main region's inline-end,
-   * `--drawer-w` wide, `--z-overlay`, `--shadow-float`.
+   * §7.6's drawer, now shaped as **a card**: absolutely positioned inside the
+   * main region, on the trailing panel's track, `--z-overlay`, `--shadow-float`.
    *
-   * **No corner radius.** §7.6 asked for `--radius-lg` on the inline-start
-   * corners, and built it looked wrong, which is the kind of thing only the
-   * built thing can tell you. A radius says "this object has an edge here" —
-   * true of a card, which sits *in* the page with page on all four sides. The
-   * drawer has no such edge: it is full-height, welded to the window's own
-   * edge, and three of its four sides are the window. Rounding the one
-   * remaining side made it read as a very tall card that had drifted off the
-   * screen. Cards are rounded because they are objects on a page; a region
-   * that reaches the window's edges is not an object, it is a region.
+   * **Four corners, because there are four sides of page.** §7.6 asked for
+   * `--radius-lg` on the inline-start corners only, and an earlier round
+   * deleted even those — correctly, for the shape it then had. That drawer was
+   * full-height and welded to the window: three of its four sides *were* the
+   * window, and a radius says "this object has an edge here", which was true of
+   * exactly one of them. Rounding one side of a region made it read as a very
+   * tall card that had drifted off screen.
    *
-   * The `--radius-lg` line here is the last of three related deletions this
-   * change makes to the drawer: the edge hairline, the container focus ring,
-   * and now the corner — every one of them a piece of chrome drawing a boundary
-   * the shadow and the surface step already draw.
+   * The premise has changed rather than the reasoning. The drawer is inset on
+   * all four sides now, so all four are page, so all four are edges, so all
+   * four are rounded — one `border-radius`, `--radius-lg`, the same value every
+   * other card in the app uses. Cards are rounded because they are objects on a
+   * page; this one now is.
+   *
+   * **The track.** It is a *large* card on the small card's rails: same inline
+   * track (`--panel-span`), same trailing page pad (`--space-10`), same top
+   * (`--header-band + --header-h + --space-8`, the offset
+   * `features/{cove,wave}/page` gives the sticky PanelCard). So the conversation
+   * opens in the column the conversation list is already in, at the line
+   * everything on the page starts at, and nothing about the page's geometry
+   * moves when it does. Growing downward past the panel card is the only thing
+   * it does differently — it holds a transcript, and it may use the height.
+   *
+   * `--header-band` / `--header-h` are published by `ui/page-header` through
+   * `:has(.header)`, which was widened from `:has(> .header)` for exactly this
+   * element; see the note there. The `0px` fallbacks keep a headerless route
+   * from invalidating the whole `inset-block` shorthand (which would fall back
+   * to `auto` and let the card size itself to its content).
+   *
+   * **It still overlays.** Absolute inside `.main`, not a column in the page
+   * grid: opening it must not reflow the report, which is principle 3 ("在持续
+   * 变化中保持安静") broken by the app's own chrome.
    *
    * `--shadow-float` is one of §6.5's four exemptions (menu / popover / dialog /
    * toast, "抽屉按弹出算"). It is the only thing in the app that overlays
@@ -30,47 +48,27 @@
    */
   .drawer {
     /*
-     * A large rounded card, not a full-height region welded to the window.
-     *
-     * The previous full-bleed edge panel read as a second sidebar: no radius,
-     * three sides on the window, a 396-wide slab of `--paper`. A card has page
-     * on all four sides, so it can take `--radius-lg` and `--surface-card`
-     * without looking like a panel that drifted off-screen.
-     *
-     * It still overlays `.main` (no reflow of the report) and still covers the
-     * trailing column, just inset so the radius is visible.
-     */
-    /*
-     * Same track as the trailing PanelCard (`--panel-span`), same page pad
-     * (`--space-10`). Wider than that covers the report; 36rem did.
-     *
      * Concentric radii: card `--radius-lg` (16), inset `--space-4` (8), so the
-     * composer well and user bubble use `--radius-chat` = 8.
+     * composer well and user bubble use `--radius-chat` = 8. `features/chat`
+     * reads both of these off this element.
      */
     --nc-card-inset: var(--space-4);
     --nc-card-radius: var(--radius-lg);
     --radius-chat: calc(var(--nc-card-radius) - var(--nc-card-inset));
-    /*
-     * Cover the trailing PanelCard exactly — original overlay box.
-     * Insetting all four sides left a sliver of that card on the start edge
-     * and below (the panel is `align-self: start` and taller than the inset
-     * overlay). Width is the panel track plus the trailing page pad; the
-     * inline-end sits on the window so nothing peeks. Radius only on the
-     * open (inline-start) side, where there is page beside it.
-     */
-    --nc-drawer-w: calc(var(--panel-span, 25cqi) + var(--space-10));
 
     position: absolute;
-    inset-block: 0;
-    inset-inline-end: 0;
+    inset-block: calc(var(--header-band, 0px) + var(--header-h, 0px) + var(--space-8)) var(--space-11);
+    inset-inline-end: var(--space-10);
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;
-    inline-size: var(--nc-drawer-w);
-    max-inline-size: 100%;
+    inline-size: var(--panel-span, 25cqi);
+    /* Both page pads, kept even when `--panel-span`'s 15rem floor is wider than
+       what is left of a narrow main region: a card may not slide under the
+       rail on the side the page cannot pad. */
+    max-inline-size: calc(100% - var(--space-10) * 2);
     overflow: hidden;
-    border-start-start-radius: var(--nc-card-radius);
-    border-end-start-radius: var(--nc-card-radius);
+    border-radius: var(--nc-card-radius);
     background: var(--surface-card);
     box-shadow: var(--shadow-float);
     animation: drawer-in var(--motion-medium) ease-out;
@@ -109,21 +107,10 @@
    * title alone, quiet, because the head's whole job is to say *which wave* and
    * then get out of the way of the conversation, which is the P0 here.
    *
-   * Inset is `--space-8` — 16, not the 12 it had. The drawer is 396 wide and its
-   * content is a column of prose; 12 is the inset a dense card row wants, and
-   * against a rounded 16px corner it read as text falling off the edge.
+   * Inline inset is `--nc-card-inset` — 8, the same one the transcript and the
+   * composer use, so the title starts on the column every message starts on.
    */
   .head {
-    /*
-     * The page header's band, re-derived rather than imported: `--header-band`
-     * is declared by `ui/page-header` on the *page's* parent through `:has`,
-     * and this drawer is fixed-positioned outside that subtree, so it cannot
-     * inherit it. 21.7 is the route title's own top-to-baseline (a 20.7px line
-     * centred in the 32px title row is 5.7, plus 16 inside it) — the same
-     * number, kept next to the same reasoning.
-     */
-    --nc-head-band: calc(var(--header-baseline) - 21.7px);
-
     display: flex;
     align-items: flex-start;
     justify-content: space-between;
@@ -133,28 +120,30 @@
     z-index: var(--z-raised);
 
     /*
-     * Two alignments, and the head owes both:
+     * The head measures itself against the card, not against the page header —
+     * and that is the change the new geometry forces.
      *
-     * **The baseline.** The top inset puts the title's baseline on
-     * `--header-baseline`, the same one the rail's wordmark and the route title
-     * sit on — three headers, one line, across a window you see all of at once.
-     * This title's top-to-baseline is 14 (a 15px line at `--leading-snug`), so
-     * the inset is 42 − 14 = 28.
+     * It used to owe two alignments to the page: the title's baseline sat on
+     * `--header-baseline` (42 − 14 of top-to-baseline = a 28px top inset) and a
+     * `min-block-size` of band + one 32px title row landed its bottom edge on
+     * the page header's, so the hairline that appears under both on scroll came
+     * out as one line. Both derivations assumed the drawer *started where the
+     * page starts* — welded to the window, top at 0, its head the third header
+     * in a row of three.
      *
-     * **The bottom edge.** Baseline alignment alone is not enough, and this is
-     * what a real window showed: the two heads *ended* 11.5px apart (53.3 on
-     * the page, 64.8 here), so the hairline that appears under both on scroll
-     * came out as two lines at two heights. `min-block-size` is the page
-     * header's own height arithmetic — band + one 32px title row — so a
-     * one-line title lands this head on exactly the page header's bottom edge.
-     * A title that wraps to its second line grows past it, which is honest:
-     * there is more in it.
+     * The card starts below the page header now. There is no shared line left
+     * to sit on: 28px of top inset would be 28px measured from an edge nothing
+     * else shares, and a minimum height derived from a header that is no longer
+     * beside it is arithmetic about a relationship that ended. So the head takes
+     * the card's own inset instead — `--space-8` block-start, which is the
+     * clearance a 16px corner radius wants before the first line of text, and
+     * `--space-2` below, where the frosted ground hands off to the transcript.
      *
-     * End inset is smaller because the trailing controls carry their own 28px
-     * hit areas: 8 + (28 − 16) / 2 lands the glyph optically on the 16 inset.
+     * End inset is smaller than a full pad because the trailing controls carry
+     * their own 28px hit areas: 8 + (28 − 16) / 2 lands the glyph optically on
+     * the 8 inset.
      */
-    min-block-size: calc(var(--nc-head-band) + var(--control-h-lg));
-    padding: calc(var(--header-baseline) - 14px) var(--nc-card-inset, var(--space-4)) var(--space-2) var(--nc-card-inset, var(--space-4));
+    padding: var(--space-8) var(--nc-card-inset, var(--space-4)) var(--space-2) var(--nc-card-inset, var(--space-4));
     background: color-mix(in oklch, var(--surface-card) 85%, transparent);
     backdrop-filter: blur(12px) saturate(1.4);
   }
@@ -164,7 +153,8 @@
    * height of their own: the negative block margins are symmetric, so a 28px
    * hit area collapses to the 19.5px line box it is centred on. Without that,
    * the buttons — not the text — decided how tall the head was, which is what
-   * put its bottom edge 11.5px below the page header's.
+   * made the head 8.5px taller for two controls that carry no content of their
+   * own.
    *
    * §4.3 requires at least `--space-6` (12px) between destructive and benign
    * actions. This 2px gap is a user-confirmed exception limited to this reset +
@@ -333,14 +323,24 @@
   }
 
   /*
-   * It slides in from the edge and back out to it — the same distance, the same
-   * duration, reversed. §7.6 asked for an instant exit, which is right for a
-   * dialog (a thing that was in the way and is now gone) and wrong for a panel
-   * welded to an edge: retracting says "still there, off-screen", vanishing
-   * says "destroyed". See the note in public.tsx.
+   * It rises 12px and fades, and leaves the same way — same distance, same
+   * duration, reversed.
+   *
+   * The 12px is kept from the edge-panel shape, and it is still the right
+   * motion for the card one, for a different reason. A panel welded to an edge
+   * animates *along* its own axis: it travels its own width, in from off-screen
+   * and back out, because "still there, pushed off-screen" is the fact it has
+   * to state. A card is not off-screen anywhere; it appears in place, and the
+   * vocabulary for appearing in place is a short lift plus opacity — the same
+   * one `ui/dialog` and the account menu use. Restoring an inline travel here
+   * would have to be a travel of the full `--panel-span`, sliding out over the
+   * page from behind the rail edge, which says the card came *from* somewhere
+   * it never was.
+   *
+   * §7.6 asked for an instant exit, which is right for a dialog (a thing that
+   * was in the way and is now gone) and wrong here: the conversation is not
+   * destroyed by closing it. See the note in public.tsx.
    */
-  /* The custom property resolves against the animating element, so both
-     keyframes travel exactly the drawer's own width. */
   @keyframes drawer-in {
     from {
       opacity: 0;
@@ -356,7 +356,7 @@
   }
 
   .drawerClosing {
-    /* `forwards`, so the panel stays off-screen for the frame between the
+    /* `forwards`, so the card stays at zero opacity for the frame between the
        animation ending and React unmounting it. */
     animation: drawer-out var(--motion-medium) ease-in forwards;
 

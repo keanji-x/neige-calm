@@ -142,11 +142,11 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
   // Focus moves in, because the drawer is what the click asked for; it is not
   // held there, because the drawer is not modal.
   //
-  // `preventScroll` is load-bearing on open. The panel is `position: absolute`
-  // inside `.main` and enters by translating in from its own width, so the
-  // first painted box is off the inline-end edge. A default `focus()` asks
-  // the browser to scroll that box into view, which pans the page toward the
-  // centre for a frame — the jump clicking a conversation card used to make.
+  // `preventScroll` is load-bearing on open. The card is `position: absolute`
+  // inside `.main` and enters translated, so the first painted box is 12px off
+  // where it lands. A default `focus()` asks the browser to scroll that box
+  // into view, which pans the page for a frame — the jump clicking a
+  // conversation card used to make.
   // Close restores without it: Today does not pin the conversation card, and
   // a keyboard user who scrolled the page behind the drawer still needs the
   // opener brought back into view.
@@ -165,26 +165,36 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
   }, [open]);
 
   /*
-   * The drawer **retracts**; it does not vanish.
+   * The drawer **leaves**; it does not vanish.
    *
    * §7.6 said enter animates and exit is instant, on the reasoning that an exit
    * transition keeps the screen busy after the decision is made. That is right
-   * for a dialog, which is a thing that was in the way and is now gone. It is
-   * wrong for a panel attached to an edge: the whole point of an edge panel is
-   * that it is *still there*, pushed off-screen, and an instant disappearance
-   * says it was destroyed. The control says the same thing — a right-facing
-   * chevron, the direction it goes.
+   * for a dialog, which is a thing that was in the way and is now gone, and it
+   * is wrong here: closing a conversation does not end it, and an instant
+   * disappearance is the vocabulary for something being destroyed. It goes out
+   * the way it came in — 12px and a fade, reversed — which is the mildest thing
+   * that still reads as "put away" rather than "gone".
    *
    * So closing holds the element mounted for one animation. Reduced motion
    * skips the phase entirely rather than waiting on an `animationend` that a
    * suppressed animation will never fire.
    */
   if (!open && !closing) return null;
+  /*
+   * `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by.
+   * The drawer is now a card on the panel's own track, so an unhidden panel
+   * shows as a sliver of card peeking out from under it; a CSS Module class
+   * cannot be named from another module's stylesheet, so the two ends of that
+   * rule meet on a data attribute instead. It stays on during the closing
+   * animation — the panel reappears when this unmounts, one frame after the
+   * card has finished going away.
+   */
   return (
     <div
       ref={panelRef}
       className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
       role="complementary"
+      data-nc-drawer=""
       data-nc-escape-layer={open ? '' : undefined}
       aria-label={frame.title}
       tabIndex={-1}

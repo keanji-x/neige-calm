@@ -148,7 +148,12 @@ export function CovePage({
             the document and not of the page around it. */}
         <div className={styles.doc}>{report}</div>
 
-        <aside className={styles.panel}>
+        {/* `data-nc-panel` is how `app/shell` hides this while the conversation
+            drawer is open: the drawer is a card on this exact track, and a
+            panel left under it shows as a sliver along its edges. A local CSS
+            Module class is not nameable from the shell's stylesheet, so the
+            marker is the seam. */}
+        <aside className={styles.panel} data-nc-panel="">
           <PanelCard>
             <PanelModule
               title="Waves"
