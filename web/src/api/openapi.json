@@ -4792,6 +4792,10 @@
           "theme"
         ],
         "properties": {
+          "as_template": {
+            "type": "boolean",
+            "description": "When true, upsert the kernel view/template overlay in the same create\ntransaction as the layout overlay and do not start the spec harness."
+          },
           "attach_folder": {
             "type": "boolean"
           },

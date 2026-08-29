@@ -355,6 +355,50 @@ async fn post_status_overlay_with_valid_payload_returns_200() {
 }
 
 #[tokio::test]
+async fn post_template_overlay_with_valid_payload_returns_200() {
+    let (state, wave_id) = boot().await;
+    let resp = post_overlay(
+        app(state),
+        json!({
+            "plugin_id": "kernel",
+            "entity_kind": "view",
+            "entity_id": wave_id,
+            "kind": "template",
+            "payload": { "schemaVersion": 1 }
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn post_template_overlay_rejects_missing_schema_version_extra_fields_and_wrong_version() {
+    let (state, wave_id) = boot().await;
+    for payload in [
+        json!({}),
+        json!({ "schemaVersion": 1, "extra": true }),
+        json!({ "schemaVersion": 99 }),
+    ] {
+        let resp = post_overlay(
+            app(state.clone()),
+            json!({
+                "plugin_id": "kernel",
+                "entity_kind": "view",
+                "entity_id": wave_id,
+                "kind": "template",
+                "payload": payload
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "payload={payload:?}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn post_overlay_routes_registered_entity_kinds_to_expected_scope() {
     let (state, wave_id) = boot().await;
     let wave = state

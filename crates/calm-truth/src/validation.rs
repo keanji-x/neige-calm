@@ -22,6 +22,7 @@
 //! | `Overlay.payload` | `"eta"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"now"`       | `{ text: String }` |
 //! | `Overlay.payload` | `"layout"`    | `{ positions: { <card_id>: { x,y,w,h: u32 }, … } }` |
+//! | `Overlay.payload` | `"template"`  | `{ schemaVersion: 1 }` (kernel view marker; #1110 S1) |
 //! | `Overlay.payload` | `"any_card_needs_input"` | `{ value: bool }` (wave-scoped — see issue #254) |
 //!
 //! Anything else (`ui://*` cards, plugin-defined overlay kinds) is accepted
@@ -96,6 +97,14 @@ pub const OVERLAY_ETA_SCHEMA_VERSION: u32 = 1;
 pub const OVERLAY_NOW_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "layout"`.
 pub const OVERLAY_LAYOUT_SCHEMA_VERSION: u32 = 1;
+/// `schemaVersion` for `Overlay.payload` when `kind == "template"` (#1110 S1).
+pub const OVERLAY_TEMPLATE_SCHEMA_VERSION: u32 = 1;
+/// Overlay `kind` for the kernel view marker that a wave is a template.
+pub const OVERLAY_TEMPLATE_KIND: &str = "template";
+/// `plugin_id` for the kernel view/template overlay.
+pub const OVERLAY_TEMPLATE_PLUGIN_ID: &str = "kernel";
+/// `entity_kind` for the kernel view/template overlay (`entity_id` = wave id).
+pub const OVERLAY_TEMPLATE_ENTITY_KIND: &str = "view";
 /// `schemaVersion` for `Overlay.payload` when `kind == "file-viewer-nav"`.
 pub const OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION: u32 = 1;
 /// `schemaVersion` for `Overlay.payload` when `kind == "any_card_needs_input"`
@@ -193,6 +202,29 @@ fn validate_layout_overlay_payload(payload: &Value) -> Result<()> {
     validate_layout_payload(payload)
 }
 
+fn validate_template_overlay_payload(payload: &Value) -> Result<()> {
+    #[derive(Deserialize)]
+    #[allow(dead_code)]
+    #[serde(deny_unknown_fields)]
+    struct TemplatePayload {
+        #[serde(rename = "schemaVersion")]
+        schema_version: u32,
+    }
+    validate_as::<TemplatePayload>("template", OVERLAY_TEMPLATE_SCHEMA_VERSION, payload)
+}
+
+/// Payload written with the kernel view/template overlay (`schemaVersion: 1`).
+pub fn template_overlay_payload() -> Value {
+    serde_json::json!({ "schemaVersion": OVERLAY_TEMPLATE_SCHEMA_VERSION })
+}
+
+/// True when `overlay` is the kernel view/template marker for a wave (#1110 S1).
+pub fn is_template_overlay(overlay: &Overlay) -> bool {
+    overlay.plugin_id == OVERLAY_TEMPLATE_PLUGIN_ID
+        && overlay.entity_kind == OVERLAY_TEMPLATE_ENTITY_KIND
+        && overlay.kind == OVERLAY_TEMPLATE_KIND
+}
+
 fn validate_file_viewer_nav_overlay_payload(payload: &Value) -> Result<()> {
     #[derive(Deserialize)]
     #[allow(dead_code)]
@@ -264,6 +296,11 @@ pub static OVERLAY_KIND_REGISTRY: OverlayKindRegistry = OverlayKindRegistry::new
         kind: "layout",
         validate: validate_layout_overlay_payload,
         max_schema_version: OVERLAY_LAYOUT_SCHEMA_VERSION,
+    },
+    OverlayKindEntry {
+        kind: "template",
+        validate: validate_template_overlay_payload,
+        max_schema_version: OVERLAY_TEMPLATE_SCHEMA_VERSION,
     },
     OverlayKindEntry {
         kind: "file-viewer-nav",
@@ -728,6 +765,7 @@ mod tests {
             ("eta", OVERLAY_ETA_SCHEMA_VERSION),
             ("now", OVERLAY_NOW_SCHEMA_VERSION),
             ("layout", OVERLAY_LAYOUT_SCHEMA_VERSION),
+            ("template", OVERLAY_TEMPLATE_SCHEMA_VERSION),
             ("file-viewer-nav", OVERLAY_FILE_VIEWER_NAV_SCHEMA_VERSION),
             (
                 "any_card_needs_input",
@@ -785,6 +823,11 @@ mod tests {
                 json!({ "positions": { "c": { "x": 10, "y": 0, "w": 4, "h": 3 } } }),
             ),
             (
+                "template",
+                json!({ "schemaVersion": 1 }),
+                json!({ "schemaVersion": 1, "extra": true }),
+            ),
+            (
                 "file-viewer-nav",
                 json!({
                     "tab": "code",
@@ -826,6 +869,7 @@ mod tests {
                 "layout",
                 json!({ "schemaVersion": 99, "positions": { "c": { "x": 0, "y": 0, "w": 1, "h": 1 } } }),
             ),
+            ("template", json!({ "schemaVersion": 99 })),
             (
                 "file-viewer-nav",
                 json!({
@@ -846,6 +890,20 @@ mod tests {
             let err = OVERLAY_KIND_REGISTRY.validate(kind, &payload).unwrap_err();
             assert!(is_bad_request(&err), "kind={kind}");
         }
+    }
+
+    #[test]
+    fn template_overlay_requires_schema_version_and_denies_unknown_fields() {
+        validate_overlay_payload("template", &json!({ "schemaVersion": 1 })).unwrap();
+        validate_overlay_payload("template", &template_overlay_payload()).unwrap();
+
+        let missing = validate_overlay_payload("template", &json!({})).unwrap_err();
+        assert!(is_bad_request(&missing));
+
+        let extra =
+            validate_overlay_payload("template", &json!({ "schemaVersion": 1, "role": "plan" }))
+                .unwrap_err();
+        assert!(is_bad_request(&extra));
     }
 
     // ---------------- Overlay: status ----------------
@@ -1524,6 +1582,10 @@ mod tests {
         assert_eq!(
             max_supported_overlay_schema_version("layout"),
             Some(OVERLAY_LAYOUT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            max_supported_overlay_schema_version("template"),
+            Some(OVERLAY_TEMPLATE_SCHEMA_VERSION)
         );
         assert_eq!(
             max_supported_overlay_schema_version("file-viewer-nav"),

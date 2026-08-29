@@ -37,6 +37,7 @@ use crate::session_projection_repo::{
 };
 use crate::shared_codex_appserver::{SharedCodexAppServer, SharedThreadStartParams, ThreadConfig};
 use crate::state::WriteContext;
+use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
 use crate::wave_cove_cache::WaveCoveCache;
 use calm_truth::decision_gate::PermissiveGate;
 
@@ -57,6 +58,14 @@ const START_PHASES: &[PhaseTag] = &[
 
 const REUSABLE_THREAD_MISSING_CARD_MCP_TOKEN_ERROR: &str =
     "no per-card MCP token row; refusing to start an unauthenticated shell";
+
+/// 4xx used by `validate` and `/spec/reset` when the wave carries the kernel
+/// view/template overlay (#1110 S1).
+pub fn template_wave_spec_harness_error(wave_id: &str) -> CalmError {
+    CalmError::BadRequest(format!(
+        "wave {wave_id} is a template (kernel view/template overlay); spec harness is not started on template waves"
+    ))
+}
 
 #[cfg(feature = "fixtures")]
 pub const FIXTURE_SOCKET_PREFIX: &str = "neige-mcp-fixture-";
@@ -354,6 +363,15 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             .wave_get(&payload.wave_id)
             .await?
             .ok_or_else(|| CalmError::NotFound(format!("wave {}", payload.wave_id)))?;
+        if self
+            .repo
+            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, payload.wave_id.as_str())
+            .await?
+            .iter()
+            .any(is_template_overlay)
+        {
+            return Err(template_wave_spec_harness_error(payload.wave_id.as_str()));
+        }
         // #1098 §5.6 — the lazy-mint branch. `validate` runs BEFORE the
         // operation row is inserted, so the usual "card must exist + its role
         // cache entry must match" assertions are not merely wrong here, they

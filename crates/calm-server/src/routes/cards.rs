@@ -23,7 +23,7 @@ use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, WaveLi
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
 use crate::operation::spec_harness_shutdown_adapter::SpecHarnessShutdownOperationPayload;
 use crate::operation::spec_harness_start_adapter::{
-    HarnessProfile, SpecHarnessStartOperationPayload,
+    HarnessProfile, SpecHarnessStartOperationPayload, template_wave_spec_harness_error,
 };
 use crate::operation::workspace_lease::release_workspace_lease_for_card_tx;
 use crate::operation::{OperationKey, OperationOutcome};
@@ -37,6 +37,7 @@ use crate::session_projection_lookup::{
 use crate::session_projection_repo::{WorkerSessionProjection, WorkerSessionState};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::validation::{OVERLAY_TEMPLATE_ENTITY_KIND, is_template_overlay};
 use crate::wave_lifecycle::apply_requested_transition_in_tx;
 
 use axum::{
@@ -1256,6 +1257,14 @@ pub(crate) async fn reset_spec_card(
                 "spec harness is disabled for cove chat wave {}",
                 wave.id
             )));
+        }
+        if s.repo
+            .overlays_for(OVERLAY_TEMPLATE_ENTITY_KIND, wave.id.as_str())
+            .await?
+            .iter()
+            .any(is_template_overlay)
+        {
+            return Err(template_wave_spec_harness_error(wave.id.as_str()));
         }
     }
     let response = reset_spec_card_shared(s, actor, card).await?;

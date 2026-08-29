@@ -46,8 +46,8 @@ use calm_server::mcp_server::tools::wave_report_blocks::{
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
-    CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, Task, TaskKind, TaskStatus,
-    WaveLifecycle, WavePatch, new_id, now_ms,
+    CardRole, NewCard, NewCove, NewOverlay, NewTerminal, NewWave, RequestTheme, Task, TaskKind,
+    TaskStatus, WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::operation::child_wave_adapter::ChildWaveAdapter;
 use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
@@ -479,10 +479,19 @@ async fn seed_task(boot: &Boot, task: Task) {
 }
 
 async fn seed_projected_task(boot: &Boot, task: Task) {
+    seed_projected_task_for(boot, boot.wave_id.as_str(), spec_identity(boot), task).await;
+}
+
+async fn seed_projected_task_for(
+    boot: &Boot,
+    wave_id: &str,
+    identity: ToolCallIdentity,
+    task: Task,
+) {
     let pool = boot.repo.sqlite_pool().unwrap();
     let report_exists: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM cards WHERE wave_id=?1 AND kind='wave-report'")
-            .bind(boot.wave_id.as_str())
+            .bind(wave_id)
             .fetch_one(&pool)
             .await
             .expect("check report fixture");
@@ -492,13 +501,13 @@ async fn seed_projected_task(boot: &Boot, task: Task) {
              VALUES(?1,?2,'wave-report',-1,?3,'reportcard',0,1,1)",
         )
         .bind(new_id())
-        .bind(boot.wave_id.as_str())
+        .bind(wave_id)
         .bind(serde_json::to_string(&WaveReportPayload::initial()).unwrap())
         .execute(&pool)
         .await
         .expect("seed report fixture");
     }
-    let report = call_tool(boot, TOOL_REPORT_READ, spec_identity(boot), json!({}))
+    let report = call_tool(boot, TOOL_REPORT_READ, identity.clone(), json!({}))
         .await
         .expect("read report before task projection");
     let mut payload = serde_json::Map::from_iter([
@@ -535,7 +544,7 @@ async fn seed_projected_task(boot: &Boot, task: Task) {
     call_tool(
         boot,
         TOOL_REPORT_BLOCKS_UPSERT,
-        spec_identity(boot),
+        identity,
         json!({
             "kind": "task",
             "payload": payload,
@@ -1463,6 +1472,136 @@ async fn draft_wave_is_not_scheduled() {
     assert_eq!(task_row(&boot, "a").await.status, TaskStatus::Pending);
     assert_eq!(operation_count(&boot, "codex-worker").await, 0);
     assert!(event_rows(&boot, "task.dispatched").await.is_empty());
+}
+
+/// INV-1110-001: a template wave with a `ready:true` task produces zero
+/// `TaskDispatched` / worker. A non-template control in the same test still
+/// dispatches, so the scheduler is not just broken.
+#[tokio::test]
+async fn inv_1110_001_template_wave_does_not_dispatch() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    seed_projected_task(
+        &boot,
+        plan_task(&boot.wave_id, "control", TaskKind::Codex, &[]),
+    )
+    .await;
+
+    let template_wave = boot
+        .repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: boot.cove_id.clone(),
+            title: "template-wave".into(),
+            sort: None,
+            cwd: String::new(),
+            workflow_id: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    boot.repo
+        .wave_update(
+            template_wave.id.as_str(),
+            WavePatch {
+                require_task_gates: Some(false),
+                lifecycle: Some(WaveLifecycle::Working),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("template wave Working + ungated");
+    boot.wave_cove_cache
+        .insert(template_wave.id.clone(), boot.cove_id.clone());
+    let template_spec = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: template_wave.id.clone(),
+            title: None,
+            kind: "spec".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .unwrap();
+    boot.card_role_cache.insert(
+        template_spec.id.clone(),
+        CardRole::Spec,
+        template_wave.id.clone(),
+    );
+    seed_runtime_session_in_pool(
+        &boot.repo.sqlite_pool().expect("sqlite pool"),
+        template_spec.id.as_str(),
+        "template-spec-session",
+        "template-spec-thread",
+    )
+    .await;
+    sqlx::query("UPDATE waves SET root_session_id = 'template-spec-session' WHERE id = ?1")
+        .bind(template_wave.id.as_str())
+        .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
+        .await
+        .expect("mark template spec session as wave root");
+    boot.repo
+        .overlay_upsert(NewOverlay {
+            plugin_id: "kernel".into(),
+            entity_kind: "view".into(),
+            entity_id: template_wave.id.to_string(),
+            kind: "template".into(),
+            payload: json!({ "schemaVersion": 1 }),
+        })
+        .await
+        .expect("template overlay");
+    let template_identity = ToolCallIdentity {
+        card_id: template_spec.id.as_str().to_string(),
+        role: CardRole::Spec,
+        provider: AgentProvider::Codex,
+        session_id: "template-spec-session".to_string(),
+        wave_id: Some(template_wave.id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
+        thread_id: "template-spec-thread".into(),
+    };
+    seed_projected_task_for(
+        &boot,
+        template_wave.id.as_str(),
+        template_identity,
+        plan_task(&template_wave.id, "template-ready", TaskKind::Codex, &[]),
+    )
+    .await;
+
+    let (_runtime, scheduler) = build_scheduler(
+        &boot,
+        vec![Arc::new(CardSpawnAdapter {
+            kind: "codex-worker",
+            card_id: boot.worker_card_id.as_str().to_string(),
+        })],
+    );
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+    scheduler.schedule_wave(template_wave.id.clone()).await;
+
+    assert_eq!(
+        task_row(&boot, "control").await.status,
+        TaskStatus::Running,
+        "non-template control must still dispatch"
+    );
+    let template_task = boot
+        .repo
+        .task_get(&format!("{}:template-ready", template_wave.id.as_str()))
+        .await
+        .expect("task_get")
+        .expect("template task row");
+    assert_eq!(
+        template_task.status,
+        TaskStatus::Pending,
+        "INV-1110-001: template ready task must stay pending"
+    );
+    let dispatched = event_rows(&boot, "task.dispatched").await;
+    assert_eq!(
+        dispatched.len(),
+        1,
+        "only the control wave may emit TaskDispatched; got {dispatched:?}"
+    );
+    assert_eq!(operation_count(&boot, "codex-worker").await, 1);
 }
 
 // ---------------------------------------------------------------------------
