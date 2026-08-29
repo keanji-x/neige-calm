@@ -28,8 +28,6 @@ use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
     CardRole, NewCard, NewCove, NewWave, TaskStatus, WaveLifecycle, WavePatch, now_ms,
 };
-use calm_server::operation::spec_harness_start_adapter::render_spec_developer_instructions_for_test;
-use calm_server::plugin_host::Manifest;
 use calm_server::plugin_host::mcp::RpcError;
 use calm_server::session_projection_repo::{
     AgentProvider, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -466,78 +464,6 @@ async fn plan_upsert_shim_returns_migration_and_writes_nothing() {
         drain_events(&mut rx).await.is_empty(),
         "spec shim broadcast an EventBus envelope"
     );
-}
-
-#[tokio::test]
-async fn all_shipped_plan_template_items_round_trip_through_real_blocks_upsert_path() {
-    let boot = boot().await;
-    let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
-        .expect("shipped git-forge manifest");
-    let workflow = manifest
-        .workflows
-        .iter()
-        .find(|workflow| workflow.id == "issue-development")
-        .expect("issue-development workflow");
-    let items: Vec<Value> = workflow
-        .plan_template
-        .iter()
-        .map(calm_server::mcp_server::tools::plan::plan_template_task_block_payload)
-        .collect();
-    assert_eq!(items.len(), 8, "shipped workflow template size drifted");
-    let rendered =
-        render_spec_developer_instructions_for_test("wave-template", Some(workflow), None);
-    assert!(
-        !rendered.contains("## Bound Workflow Plan Template")
-            && !rendered.contains("## Bound Workflow Instructions")
-            && !rendered.contains("## Bound Workflow Gates"),
-        "S3 must not inject plan_template/gates/spec_instructions"
-    );
-
-    for payload in &items {
-        let report = boot
-            .repo
-            .card_get(boot.report_card_id.as_str())
-            .await
-            .unwrap()
-            .expect("report card");
-        let report: WaveReportPayload = serde_json::from_value(report.payload).unwrap();
-        call_tool(
-            &boot,
-            TOOL_REPORT_BLOCKS_UPSERT,
-            spec_identity(&boot),
-            json!({"kind": "task", "payload": payload, "if_doc_rev": report.doc_rev}),
-        )
-        .await
-        .unwrap_or_else(|error| panic!("real upsert rejected {payload:#}: {error:?}"));
-    }
-
-    let projected = boot
-        .repo
-        .tasks_by_wave(boot.wave_id.as_str())
-        .await
-        .expect("read projected tasks");
-    assert_eq!(projected.len(), 8, "every shipped item must project");
-    for input in &workflow.plan_template {
-        let row = boot
-            .repo
-            .task_get(&format!("{}:{}", boot.wave_id, input.key))
-            .await
-            .unwrap()
-            .unwrap_or_else(|| panic!("{} did not project", input.key));
-        assert_eq!(row.goal, input.goal, "{} goal", input.key);
-        assert_eq!(
-            row.acceptance_criteria, input.acceptance_criteria,
-            "{} acceptance",
-            input.key
-        );
-        assert_eq!(
-            row.depends_on(),
-            input.depends_on,
-            "{} dependencies",
-            input.key
-        );
-        assert_eq!(row.declared_by, "spec", "{} author", input.key);
-    }
 }
 
 // ---------------------------------------------------------------------------

@@ -815,20 +815,7 @@ async fn boot_plugin_host(
             { "name": TRUSTED_TOOL_NAME, "description": "workflow-scoped tool" }
         ],
         "workflows": [
-            {
-                "id": WORKFLOW_ID,
-                "plan_template": [
-                    {
-                        "key": "inspect",
-                        "kind": "codex",
-                        "goal": "Inspect the issue.",
-                        "depends_on": []
-                    }
-                ],
-                "gates": [],
-                "spec_instructions": "Use workflow {wave_id}.",
-                "card_kinds": []
-            }
+            { "id": WORKFLOW_ID }
         ],
         "permissions": {}
     });

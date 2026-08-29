@@ -1908,15 +1908,6 @@ fn spec_push_predicate_and_observation_mapping_agree() {
             false,
         ),
         row(
-            Event::WorkflowRegistered {
-                plugin_id: "p".into(),
-                workflow_id: "wf".into(),
-            },
-            ActorId::Kernel,
-            false,
-            false,
-        ),
-        row(
             Event::CodexWorkerRequested {
                 idempotency_key: "k".into(),
                 goal: "g".into(),

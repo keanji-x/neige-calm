@@ -129,15 +129,6 @@ pub async fn assert_bound_issue_development_workflow_preconditions(fx: &Fixture)
         Some("issue-development"),
         "wave must be bound to issue-development workflow",
     );
-
-    let registered = event_payloads(&fx.repo, "workflow.registered").await;
-    assert!(
-        registered.iter().any(|payload| {
-            payload["pluginId"] == json!(PLUGIN_ID)
-                && payload["workflowId"] == json!("issue-development")
-        }),
-        "expected workflow.registered for {PLUGIN_ID}/issue-development, got {registered:?}"
-    );
 }
 
 pub async fn shutdown_spec_harness_if_registered(fx: &Fixture) {

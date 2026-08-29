@@ -17,11 +17,11 @@
 //!   see gate bodies, and the listing layer enforces that shape even
 //!   for spec callers so a future role widening can't leak them (§6.7).
 //!
-//! ## Transitional manifest validation
+//! ## Template-to-block mapping
 //!
-//! `PlanTaskInput` and `validate_new_plan_batch` remain because installed
-//! workflow manifests still parse and validate the transitional
-//! `plan_template` Tier-A field. They no longer back an MCP write path.
+//! `PlanTaskInput` / `plan_template_task_block_payload` convert old template
+//! vocabulary into report `task` blocks. They no longer parse plugin
+//! manifests (#1110 S5 dropped `plan_template` from `WorkflowDescriptor`).
 //!
 //! ## Scope construction
 //!
@@ -43,16 +43,19 @@ use crate::mcp_server::registry::{
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
 };
-use crate::model::{CardRole, Task, TaskKind, TaskStatus, Wave, now_ms};
+#[cfg(test)]
+use crate::model::TaskKind;
+use crate::model::{CardRole, Task, TaskStatus, Wave, now_ms};
 use crate::wave_lifecycle::{apply_requested_transition_in_tx, auto_promote_draft_in_tx};
-use calm_types::report_blocks::tasks::{
-    GATE_TIMEOUT_MAX_SECS, TaskDeclaration, dup_keys, find_cycle, unknown_deps,
-};
+use calm_types::report_blocks::tasks::GATE_TIMEOUT_MAX_SECS;
 pub use calm_types::report_blocks::tasks::{
     GateInput, GateStepInput, key_is_valid, validate_gate_shape,
 };
+#[cfg(test)]
+use calm_types::report_blocks::tasks::{TaskDeclaration, dup_keys, find_cycle, unknown_deps};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+#[cfg(test)]
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -130,6 +133,7 @@ pub fn plan_template_task_block_payload(input: &PlanTaskInput) -> Value {
 
 /// A transitional manifest entry after field-level validation and
 /// normalization.
+#[cfg(test)]
 #[derive(Debug, Clone)]
 struct NormalizedTask {
     key: String,
@@ -150,6 +154,7 @@ struct NormalizedTask {
 
 /// Rule 7 cwd shape: absolute, non-empty, no ASCII control characters
 /// (same check as `codex_adapter::normalize_codex_create_request`).
+#[cfg(test)]
 fn validate_abs_path(field: &str, key: &str, raw: &str) -> Result<String, String> {
     if raw.chars().any(|c| c.is_ascii_control()) {
         return Err(format!(
@@ -172,6 +177,7 @@ fn validate_abs_path(field: &str, key: &str, raw: &str) -> Result<String, String
 
 /// Field-level validation for one batch entry (rules 1 partial, 2, 7,
 /// 8). Returns the normalized form the resolver + row writer consume.
+#[cfg(test)]
 fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> {
     let key = input.key;
     if !key_is_valid(&key) {
@@ -265,24 +271,12 @@ fn normalize_task_input(input: PlanTaskInput) -> Result<NormalizedTask, String> 
     })
 }
 
-/// Validate a workflow/template batch as a fresh plan. This intentionally
-/// reuses the same normalization and dependency resolver that
-/// the retired `calm.plan.upsert` accepted, so transitional manifest
-/// plan templates retain their Tier-A validation contract.
-pub(crate) fn validate_new_plan_batch(inputs: &[PlanTaskInput]) -> Result<(), String> {
-    let batch: Vec<NormalizedTask> = inputs
-        .iter()
-        .cloned()
-        .map(normalize_task_input)
-        .collect::<Result<_, _>>()?;
-    validate_new_batch(&batch)
-}
-
 /// Rule 7 + canonicalization: validate the gate shape and render the
 /// canonical `gate_json` (a pure function of the input — `None` fields
 /// omitted, fixed key insertion order — so rule-5 byte-identical
 /// idempotency covers gates). The wire shape matches
 /// `task_verify_adapter::GateSpec`.
+#[cfg(test)]
 fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
     validate_gate_shape(key, gate)?;
     let mut obj = serde_json::Map::new();
@@ -311,6 +305,7 @@ fn normalize_gate(key: &str, gate: &GateInput) -> Result<String, String> {
 // Transitional manifest batch validation (rules 1, 3, 4)
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
 fn validate_new_batch(batch: &[NormalizedTask]) -> Result<(), String> {
     // Rule 1 (uniqueness half) — duplicate keys within the batch.
     let batch_declarations: Vec<TaskDeclaration> = batch
@@ -341,6 +336,7 @@ fn validate_new_batch(batch: &[NormalizedTask]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn declaration_from_normalized(task: &NormalizedTask) -> Result<TaskDeclaration, String> {
     let gate = task
         .gate_json

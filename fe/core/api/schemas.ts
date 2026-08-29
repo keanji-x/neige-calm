@@ -432,19 +432,6 @@ export const pluginToolRegisteredSchema = z.object({
 });
 
 /**
- * `Event::WorkflowRegistered` — boot-time announcement for one plugin
- * workflow descriptor. No frontend query consumes the workflow catalog yet;
- * the event is still part of the exhaustive wire contract.
- */
-export const workflowRegisteredSchema = z.object({
-  ev: z.literal('workflow.registered'),
-  data: z.object({
-    pluginId: z.string(),
-    workflowId: z.string(),
-  }),
-});
-
-/**
  * `Event::CodexHook` — passthrough of one codex-CLI hook firing
  * (PreToolUse / PostToolUse / Stop / ...). `kind` carries a snake-case
  * discriminator (`hook.codex.<event>`) so callers can pattern-match
@@ -969,7 +956,6 @@ export const wireEventSchema = z.discriminatedUnion('ev', [
   terminalDeletedSchema,
   pluginStateSchema,
   pluginToolRegisteredSchema,
-  workflowRegisteredSchema,
   codexHookSchema,
   claudeHookSchema,
   codexWorkerRequestedSchema,
@@ -1035,7 +1021,6 @@ export type OverlayDeletedEvent = z.infer<typeof overlayDeletedSchema>;
 export type TerminalDeletedEvent = z.infer<typeof terminalDeletedSchema>;
 export type PluginStateEvent = z.infer<typeof pluginStateSchema>;
 export type PluginToolRegisteredEvent = z.infer<typeof pluginToolRegisteredSchema>;
-export type WorkflowRegisteredEvent = z.infer<typeof workflowRegisteredSchema>;
 export type CodexHookEvent = z.infer<typeof codexHookSchema>;
 export type ClaudeHookEvent = z.infer<typeof claudeHookSchema>;
 export type CodexWorkerRequestedEvent = z.infer<typeof codexWorkerRequestedSchema>;

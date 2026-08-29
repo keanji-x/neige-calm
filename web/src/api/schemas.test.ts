@@ -494,21 +494,6 @@ describe('PR4 of #136: dispatcher + task-lifecycle variants', () => {
     expect(result.success).toBe(false);
   });
 
-  it('parses a valid workflow.registered (#760 slice 4a)', () => {
-    const parsed = wireEventSchema.parse({
-      ev: 'workflow.registered',
-      data: {
-        pluginId: 'dev.echo',
-        workflowId: 'daily-summary',
-      },
-    });
-    expect(parsed.ev).toBe('workflow.registered');
-    if (parsed.ev === 'workflow.registered') {
-      expect(parsed.data.pluginId).toBe('dev.echo');
-      expect(parsed.data.workflowId).toBe('daily-summary');
-    }
-  });
-
   it('parses a valid forge.issue.read (#760 slice 4b)', () => {
     const parsed = wireEventSchema.parse({
       ev: 'forge.issue.read',

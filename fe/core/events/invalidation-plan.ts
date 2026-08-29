@@ -172,7 +172,6 @@ function policies(): PolicyMap {
   'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'plugin.state': noop('No plugin list query exists.'),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),
-  'workflow.registered': noop('No workflow catalog query exists.'),
   'codex.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'claude.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'codex.worker_requested': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),

@@ -373,20 +373,7 @@ mod tests {
             "display_name": "Tool Visibility Stub",
             "entrypoint": { "command": "bin/stub" },
             "workflows": [
-                {
-                    "id": WORKFLOW_ID,
-                    "plan_template": [
-                        {
-                            "key": "inspect",
-                            "kind": "codex",
-                            "goal": "Inspect the issue.",
-                            "depends_on": []
-                        }
-                    ],
-                    "gates": [],
-                    "spec_instructions": "Use workflow {wave_id}.",
-                    "card_kinds": []
-                }
+                { "id": WORKFLOW_ID }
             ],
             "permissions": {}
         });

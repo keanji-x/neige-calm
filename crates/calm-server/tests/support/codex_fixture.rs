@@ -66,13 +66,6 @@ pub struct FixtureSpec {
     pub plan_source: PlanSource,
     pub issue_body: Option<FixtureIssue>,
     pub require_task_gates: bool,
-    /// #840 capstone (P1): when `Some`, every workflow gate step `cmd` in the
-    /// git-forge manifest is replaced with this command BEFORE
-    /// `Manifest::parse`, and a boot guard then asserts no registered gate cmd
-    /// contains `cargo` (the #863-B recursive-suite amplifier: gate cmds run
-    /// as `/bin/sh` wrappers inside this very `cargo test` suite). `None`
-    /// preserves the production manifest byte-identically (#835/#843 paths).
-    pub descriptor_gate_cmd: Option<String>,
     /// #840 capstone (P2): what the local bare origin is seeded with.
     pub repo_seed: RepoSeed,
 }
@@ -191,7 +184,6 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
             plan_source: PlanSource::Injected,
             issue_body: None,
             require_task_gates: true,
-            descriptor_gate_cmd: None,
             repo_seed: RepoSeed::ReadmeOnly,
         },
         codex_bin,
@@ -387,19 +379,10 @@ pub async fn boot_forge_e2e_fixture(
         plugins_data_dir,
         events.clone(),
         write.clone(),
-        spec.descriptor_gate_cmd.as_deref(),
     )
     .await;
     plugin_host.spawn(PLUGIN_ID).await.expect("spawn plugin");
     wait_for_running(&plugin_host).await;
-    emit_workflow_registered_events_for_fixture(
-        &repo_dyn,
-        &events,
-        &cache,
-        &wave_cove_cache,
-        &plugin_host,
-    )
-    .await;
 
     let plugin_host_cell = Arc::new(OnceCell::new());
     assert!(plugin_host_cell.set(plugin_host.clone()).is_ok());
@@ -1112,47 +1095,12 @@ pub async fn seed_spec_session(repo: &SqlxRepo, wave_id: &str, spec_card_id: &st
     tx.commit().await.expect("commit spec session tx");
 }
 
-pub async fn emit_workflow_registered_events_for_fixture(
-    repo: &Arc<dyn Repo>,
-    events: &EventBus,
-    card_role_cache: &CardRoleCache,
-    wave_cove_cache: &WaveCoveCache,
-    plugin_host: &Arc<PluginHost>,
-) {
-    let running_plugin_ids = plugin_host.running_plugin_ids().await;
-    for manifest in plugin_host.registry().list() {
-        let plugin_id = manifest.id.clone();
-        if !running_plugin_ids.contains(&plugin_id)
-            || !calm_server::forge_trust::trusted_forge_plugin(&plugin_id)
-        {
-            continue;
-        }
-        for workflow in manifest.workflows {
-            repo.log_pure_event(
-                ActorId::Kernel,
-                EventScope::System,
-                None,
-                events,
-                card_role_cache,
-                wave_cove_cache,
-                Event::WorkflowRegistered {
-                    plugin_id: plugin_id.clone(),
-                    workflow_id: workflow.id,
-                },
-            )
-            .await
-            .expect("log workflow.registered");
-        }
-    }
-}
-
 pub async fn boot_plugin_host(
     repo: Arc<dyn Repo>,
     plugins_dir: PathBuf,
     plugins_data_dir: PathBuf,
     events: EventBus,
     write: WriteContext,
-    descriptor_gate_cmd: Option<&str>,
 ) -> Arc<PluginHost> {
     let install_dir = plugins_dir.join(PLUGIN_ID);
     let bin_dir = install_dir.join("bin");
@@ -1161,7 +1109,7 @@ pub async fn boot_plugin_host(
     std::os::unix::fs::symlink(Path::new(FORGE_BIN), bin_dir.join("git-forge"))
         .expect("symlink git-forge plugin");
 
-    let manifest = read_manifest(descriptor_gate_cmd);
+    let manifest = read_manifest();
     let manifest_json = manifest.to_json();
     let registry = PluginRegistry::empty();
     registry.insert(manifest, Some(install_dir.clone()));
@@ -1206,73 +1154,10 @@ pub fn manifest_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/git-forge/manifest.json")
 }
 
-/// Load the git-forge manifest, optionally test-patching every workflow gate
-/// step cmd (#840 capstone P1). `None` = production manifest, byte-identical.
-/// When patched, the boot guard fails loud if ANY registered gate cmd still
-/// contains `cargo` — a bare `cargo test` dispatched from inside this `cargo
-/// test` suite is the #863-B recursive-suite amplifier.
-pub fn read_manifest(descriptor_gate_cmd: Option<&str>) -> Manifest {
+/// Load the shipped git-forge manifest (#1110 S5: `workflows[]` is id-only).
+pub fn read_manifest() -> Manifest {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
-    let raw = match descriptor_gate_cmd {
-        None => raw,
-        Some(cmd) => patch_manifest_gate_cmd(&raw, cmd),
-    };
-    let manifest = Manifest::parse(&raw).expect("git-forge manifest parses");
-    if descriptor_gate_cmd.is_some() {
-        assert_no_cargo_gate_cmds(&manifest);
-    }
-    manifest
-}
-
-/// Replace every `workflows[*].gates[*].steps[*].cmd` in the raw manifest
-/// JSON with `cmd`, leaving everything else (plan_template, spec_instructions,
-/// cap, tools) byte-identical at the JSON-value level. Panics if no gate step
-/// was found — a silently-unpatched manifest must never boot the capstone.
-pub fn patch_manifest_gate_cmd(raw: &str, cmd: &str) -> String {
-    let mut value: Value = serde_json::from_str(raw).expect("manifest is valid JSON");
-    let mut patched = 0usize;
-    let workflows = value
-        .get_mut("workflows")
-        .and_then(Value::as_array_mut)
-        .expect("manifest has a workflows array");
-    for workflow in workflows {
-        let Some(gates) = workflow.get_mut("gates").and_then(Value::as_array_mut) else {
-            continue;
-        };
-        for gate in gates {
-            let Some(steps) = gate.get_mut("steps").and_then(Value::as_array_mut) else {
-                continue;
-            };
-            for step in steps {
-                step["cmd"] = json!(cmd);
-                patched += 1;
-            }
-        }
-    }
-    assert!(
-        patched > 0,
-        "descriptor gate patch matched no gate steps; manifest shape moved?"
-    );
-    serde_json::to_string(&value).expect("patched manifest re-serializes")
-}
-
-/// #840 capstone boot guard (pin d): no registered workflow gate step may
-/// invoke cargo in the patched-descriptor fixture.
-pub fn assert_no_cargo_gate_cmds(manifest: &Manifest) {
-    for workflow in &manifest.workflows {
-        for gate in &workflow.gates {
-            for step in &gate.steps {
-                assert!(
-                    !step.cmd.contains("cargo"),
-                    "workflow {} gate step {} still invokes cargo ({}); the \
-                     capstone fixture must never register a cargo gate (#863-B)",
-                    workflow.id,
-                    step.name,
-                    step.cmd
-                );
-            }
-        }
-    }
+    Manifest::parse(&raw).expect("git-forge manifest parses")
 }
 
 pub fn path_str(path: &Path) -> &str {

@@ -955,7 +955,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -140,7 +140,7 @@\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   'workflow.registered': noop('No workflow catalog query exists.'),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -140,7 +140,7 @@\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   'codex.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"

@@ -89,7 +89,7 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `terminal.deleted`, `codex.hook`, `claude.hook`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | **no-op here** | each plans `wave-files` + `wave-report`, both stub queries |
 | `harness.item.added` / `harness.phase.changed` | invalidate harness items / spec run respectively | fe has live query consumers and no card-topic consumer |
 | `harness.transcript.cleared` / `harness.user_message.enqueued` | invalidate harness items + spec run | reset and enqueue cross the transcript/run boundary |
-| `plugin.*`, `workflow.registered`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
+| `plugin.*`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
 | unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
 
 Control frames: `replay-complete` → invalidate everything (`keys: null`) plus a
