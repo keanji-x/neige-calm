@@ -624,6 +624,7 @@ mod wave_report_edit_guard;
 mod wave_report_guard;
 pub mod wave_report_read;
 pub mod wave_vcs;
+pub(crate) mod workflow_templates;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {

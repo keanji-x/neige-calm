@@ -373,6 +373,23 @@ async fn post_template_overlay_with_valid_payload_returns_200() {
 }
 
 #[tokio::test]
+async fn post_template_overlay_with_template_key_returns_200() {
+    let (state, wave_id) = boot().await;
+    let resp = post_overlay(
+        app(state),
+        json!({
+            "plugin_id": "kernel",
+            "entity_kind": "view",
+            "entity_id": wave_id,
+            "kind": "template",
+            "payload": { "schemaVersion": 1, "template_key": "issue-development" }
+        }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn post_template_overlay_rejects_missing_schema_version_extra_fields_and_wrong_version() {
     let (state, wave_id) = boot().await;
     for payload in [

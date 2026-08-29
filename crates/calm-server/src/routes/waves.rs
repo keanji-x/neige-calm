@@ -33,11 +33,11 @@ use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
     MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx,
-    cove_folder_create_tx, cove_folders_list_all_tx, overlay_delete_by_entity_tx,
-    overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx, project_tasks_tx,
-    terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    cove_create_system_tx, cove_folder_create_tx, cove_folders_list_all_tx,
+    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
+    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
 };
-use crate::db::{RepoRead, write_with_actor_events_typed};
+use crate::db::{RepoRead, write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{EditAuthor, Event, EventScope};
 use crate::forge_trust::trusted_forge_plugin;
@@ -64,8 +64,8 @@ use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
 use crate::validation::{
     CODEX_PAYLOAD_SCHEMA_VERSION, OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND,
-    OVERLAY_TEMPLATE_PLUGIN_ID, is_template_overlay, template_overlay_payload,
-    validate_overlay_payload,
+    OVERLAY_TEMPLATE_PLUGIN_ID, is_template_overlay, template_overlay_key,
+    template_overlay_payload, template_overlay_payload_with_key, validate_overlay_payload,
 };
 use crate::wave_fs_view::{WaveFsContent, WaveFsEntry, WaveFsView};
 use crate::wave_lifecycle::{validate_transition, wave_get_tx};
@@ -75,6 +75,9 @@ use crate::wave_report::{
 };
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
+use crate::workflow_templates::{
+    WORKFLOW_TEMPLATES, is_workflow_template_key, workflow_template_report,
+};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -429,6 +432,177 @@ async fn template_wave_ids(repo: &dyn RepoRead) -> Result<HashSet<String>> {
         .collect())
 }
 
+/// Serialize first-use seeding. Production is one process per DB; concurrent
+/// matching creates in that process must not mint duplicate template_keys.
+static WORKFLOW_TEMPLATE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Lazy get-or-create of the three system-cove template waves. Called from
+/// matching `POST /api/waves`, not from `AppState::new`, so ordinary boots
+/// and tests that never bind a template key stay unchanged.
+async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
+    let _guard = WORKFLOW_TEMPLATE_SEED_LOCK.lock().await;
+    let system_cove = ensure_system_cove(s).await?;
+    for template in &WORKFLOW_TEMPLATES {
+        if let Some(wave_id) = lookup_workflow_template_wave(s, template.key).await? {
+            restamp_template_report_if_placeholder(s, &wave_id, template.key).await?;
+            continue;
+        }
+        seed_workflow_template_wave(s, &system_cove.id, template.key, template.title).await?;
+    }
+    Ok(())
+}
+
+async fn ensure_system_cove(s: &RouteState) -> Result<crate::model::Cove> {
+    if let Some(existing) = s.repo.cove_get_system().await? {
+        return Ok(existing);
+    }
+    let minted = write_with_event_typed(
+        s.repo.as_ref(),
+        ActorId::Kernel,
+        EventScope::System,
+        None,
+        &s.events,
+        &s.write,
+        move |tx| {
+            Box::pin(async move {
+                let cove = cove_create_system_tx(tx).await?;
+                Ok((cove.clone(), Event::CoveUpdated(cove)))
+            })
+        },
+    )
+    .await;
+    match minted {
+        Ok((cove, _)) => Ok(cove),
+        Err(error) => match error {
+            CalmError::Db(_) => s.repo.cove_get_system().await?.ok_or(error),
+            other => Err(other),
+        },
+    }
+}
+
+async fn lookup_workflow_template_wave(
+    s: &RouteState,
+    template_key: &str,
+) -> Result<Option<String>> {
+    let Some(system) = s.repo.cove_get_system().await? else {
+        return Ok(None);
+    };
+    let mut matches = Vec::new();
+    for overlay in s
+        .repo
+        .overlays_by_kind(OVERLAY_TEMPLATE_ENTITY_KIND)
+        .await?
+        .into_iter()
+        .filter(|overlay| template_overlay_key(overlay) == Some(template_key))
+    {
+        let Some(wave) = s.repo.wave_get(&overlay.entity_id).await? else {
+            continue;
+        };
+        if wave.cove_id == system.id {
+            matches.push(wave);
+        }
+    }
+    matches.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.as_str().cmp(right.id.as_str()))
+    });
+    Ok(matches.into_iter().next().map(|wave| wave.id.to_string()))
+}
+
+async fn seed_workflow_template_wave(
+    s: &RouteState,
+    system_cove_id: &crate::ids::CoveId,
+    template_key: &str,
+    title: &str,
+) -> Result<()> {
+    let report = workflow_template_report(template_key).ok_or_else(|| {
+        CalmError::Internal(format!(
+            "wave create: unknown workflow template `{template_key}`"
+        ))
+    })?;
+    let cwd = default_cwd();
+    let (wave, _, _, _) = create_wave_structure(
+        s.clone(),
+        Actor(Actor::DEFAULT.to_string()),
+        NewWave {
+            cove_id: system_cove_id.clone(),
+            title: title.into(),
+            sort: None,
+            cwd: cwd.clone(),
+            workflow_id: None,
+            plugin_scope: None,
+            workflow_input: None,
+            attach_folder: false,
+            theme: RequestTheme::default_dark(),
+        },
+        CreateWaveOptions {
+            folder_claim: FolderClaim::Skip,
+            body_cove_id: system_cove_id.as_str().to_string(),
+            normalized_cwd: cwd,
+            fork_report_from: None,
+            as_template: true,
+            template_key: Some(template_key.to_string()),
+        },
+        None,
+    )
+    .await?;
+    let (wave, report_card, current) =
+        resolve_report_for_wave(s.repo.as_ref(), wave.id.as_str()).await?;
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        s.repo.as_ref(),
+        &s.events,
+        &s.write,
+        ActorId::User,
+        EditAuthor::User,
+        wave,
+        report_card,
+        current,
+        report,
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn restamp_template_report_if_placeholder(
+    s: &RouteState,
+    wave_id: &str,
+    template_key: &str,
+) -> Result<()> {
+    let report = workflow_template_report(template_key).ok_or_else(|| {
+        CalmError::Internal(format!(
+            "wave create: unknown workflow template `{template_key}`"
+        ))
+    })?;
+    let (wave, report_card, current) = resolve_report_for_wave(s.repo.as_ref(), wave_id).await?;
+    if current.report_startup_read_required() {
+        return Ok(());
+    }
+    let if_doc_rev = current.doc_rev;
+    persist_report(
+        s.repo.as_ref(),
+        &s.events,
+        &s.write,
+        ActorId::User,
+        EditAuthor::User,
+        wave,
+        report_card,
+        current,
+        report,
+        if_doc_rev,
+        None,
+        None,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
 /// Issue #250 PR 2 — calendar window query parameters for
 /// `GET /api/waves`. Every field is optional so omitting all three
 /// degenerates to "every wave in the DB" (the route delegates to
@@ -549,7 +723,7 @@ pub(crate) async fn create_wave(
     actor: Actor,
     Json(request): Json<CreateWaveRequest>,
 ) -> Result<Response> {
-    let (mut p, fork_report_from, cwd_omitted, as_template) = request.into_parts();
+    let (mut p, mut fork_report_from, cwd_omitted, as_template) = request.into_parts();
     // PR6 (#136) — wave create now atomically mints a `CardRole::Spec`
     // codex card alongside the wave row. Both rows commit in one tx
     // and both `Event::WaveUpdated` + `Event::CardAdded` envelopes
@@ -587,10 +761,15 @@ pub(crate) async fn create_wave(
             if workflow_id.trim().is_empty() {
                 return Err(unknown_workflow());
             }
-            let plugin = resolve_trusted_workflow(&s, workflow_id)
-                .await
-                .ok_or_else(unknown_workflow)?;
-            Some(plugin)
+            match resolve_trusted_workflow(&s, workflow_id).await {
+                Some(plugin) => Some(plugin),
+                // #1110 S6 — seeded template keys are valid without a plugin
+                // workflow id (`small-change` / `investigation`). A trusted
+                // plugin that declares the same id (git-forge
+                // `issue-development`) still stamps `plugin_scope`.
+                None if is_workflow_template_key(workflow_id) => None,
+                None => return Err(unknown_workflow()),
+            }
         }
         None => None,
     };
@@ -603,6 +782,27 @@ pub(crate) async fn create_wave(
     // #1110 S4 — copy the owning plugin id into `plugin_scope` in the same
     // insert. Unbound create leaves it None. Not a request field.
     p.plugin_scope = bound_plugin.as_ref().map(|manifest| manifest.id.clone());
+
+    // #1110 S6 — matching `workflow_id` seeds the three template waves in
+    // the system cove (idempotent) and, when the caller omitted
+    // `fork_report_from`, forks that template's report. An explicit
+    // `fork_report_from` always wins.
+    if let Some(workflow_id) = p.workflow_id.as_deref()
+        && is_workflow_template_key(workflow_id)
+    {
+        let template_key = workflow_id.to_string();
+        ensure_workflow_templates(&s).await?;
+        if fork_report_from.is_none() {
+            let template_id = lookup_workflow_template_wave(&s, &template_key)
+                .await?
+                .ok_or_else(|| {
+                    CalmError::Internal(format!(
+                        "wave create: seeded template `{template_key}` is missing after ensure"
+                    ))
+                })?;
+            fork_report_from = Some(template_id);
+        }
+    }
 
     // Issue #1131 — omitted / null cwd is a new branch *before* the
     // user-cove claim scan (same spirit as the system-cove exemption
@@ -679,6 +879,7 @@ pub(crate) async fn create_wave(
             normalized_cwd,
             fork_report_from,
             as_template,
+            template_key: None,
         },
     )
     .await;
@@ -801,6 +1002,7 @@ struct CreateWaveOptions {
     normalized_cwd: String,
     fork_report_from: Option<String>,
     as_template: bool,
+    template_key: Option<String>,
 }
 
 #[allow(deprecated)]
@@ -928,6 +1130,7 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
             normalized_cwd: cwd,
             fork_report_from: None,
             as_template: false,
+            template_key: None,
         },
         Some(COVE_CHAT_PURPOSE),
     )
@@ -963,6 +1166,7 @@ async fn create_wave_structure(
         normalized_cwd,
         fork_report_from,
         as_template,
+        template_key,
     } = options;
     let spec_card_id = new_id();
     let report_card_id = new_id();
@@ -1191,7 +1395,10 @@ async fn create_wave_structure(
                 )
                 .await?;
                 let template_overlay = if as_template {
-                    let payload = template_overlay_payload();
+                    let payload = match template_key.as_deref() {
+                        Some(key) => template_overlay_payload_with_key(key),
+                        None => template_overlay_payload(),
+                    };
                     validate_overlay_payload(OVERLAY_TEMPLATE_KIND, &payload)?;
                     Some(
                         overlay_upsert_tx(

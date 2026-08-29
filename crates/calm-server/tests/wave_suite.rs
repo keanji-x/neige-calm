@@ -25,3 +25,5 @@ mod wave_report_fork;
 mod wave_template_overlay;
 #[path = "cases/wave_vcs.rs"]
 mod wave_vcs;
+#[path = "cases/wave_workflow_templates.rs"]
+mod wave_workflow_templates;

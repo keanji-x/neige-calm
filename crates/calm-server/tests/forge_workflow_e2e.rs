@@ -443,14 +443,14 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::BAD_REQUEST);
-    // #891 slice ② review fix — untrusted plugin hits the same trust gate.
+    // #1110 S6 — `issue-development` is also a seeded template key, so an
+    // untrusted git-forge no longer 400s the create. Plugin tools stay
+    // unbound (`plugin_scope` is null); the template report is still forked.
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(body["workflow_id"], WORKFLOW_ID);
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("must reference a registered trusted workflow"),
-        "body={body}"
+        body["plugin_scope"].is_null(),
+        "untrusted plugin must not stamp plugin_scope, body={body}"
     );
 
     fx.plugin_host
