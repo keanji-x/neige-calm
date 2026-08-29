@@ -79,6 +79,13 @@ pub struct Manifest {
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
 
+    /// Wave `workflow_input` contract (#891 / #1110 S2). One plugin, one
+    /// input shape — sibling of `exposes_tools`, not of a workflow
+    /// descriptor. Same JSON-Schema subset as `plugin_host::workflow_input`.
+    /// Absent: the plugin does not accept `workflow_input`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_schema: Option<Value>,
+
     /// Trusted forge plugins may declare durable workflow descriptors. The
     /// registry/binding layer ignores this field for untrusted plugins; the
     /// manifest parser still validates the shape so broken descriptors fail
@@ -242,11 +249,10 @@ pub struct WorkflowDescriptor {
     pub spec_instructions: String,
     #[serde(default)]
     pub card_kinds: Vec<String>,
-    /// #891 — optional JSON Schema (supported subset, see
-    /// `plugin_host::workflow_input`) declaring the shape of the
-    /// `workflow_input` a wave may carry when it binds this workflow.
-    /// Absent (`None`): the workflow does not accept `workflow_input`.
-    /// Field convention mirrors `ExposedTool::input_schema` above.
+    /// Pre-#1110 S2 location of the wave `workflow_input` contract.
+    /// `#[serde(default)]` keeps old fixtures deserializable; install
+    /// rejects a present value (`moved to the Manifest top-level
+    /// input_schema`). Create-time validation never reads this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
 }
@@ -395,6 +401,14 @@ impl Manifest {
             view.validate(i)?;
         }
 
+        // #1110 S2 — wave `workflow_input` lives on the Manifest, not a
+        // workflow descriptor. Error paths are `input_schema…` (no
+        // `workflows[i].` prefix).
+        if let Some(schema) = self.input_schema.as_ref() {
+            crate::plugin_host::workflow_input::validate_input_schema(schema)
+                .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
+        }
+
         for (i, workflow) in self.workflows.iter().enumerate() {
             workflow.validate(i)?;
         }
@@ -502,12 +516,15 @@ impl WorkflowDescriptor {
             }
         }
 
-        // #891 — `input_schema` must stay inside the supported subset so the
-        // kernel-side instance validator executes every declared constraint
-        // (fail-close at the authoring point, same spirit as plan_template).
-        if let Some(schema) = self.input_schema.as_ref() {
-            crate::plugin_host::workflow_input::validate_input_schema(schema)
-                .map_err(|e| ManifestError::invalid(path(&e.path), e.reason))?;
+        // #1110 S2 — reject rather than ignore: a leftover workflow-level
+        // schema must not silently become the source of truth (or hide
+        // that the contract moved). Path stays `workflows[i].input_schema`
+        // so the author sees which field to delete.
+        if self.input_schema.is_some() {
+            return Err(ManifestError::invalid(
+                path("input_schema"),
+                "moved to the Manifest top-level `input_schema` (sibling of `exposes_tools`)",
+            ));
         }
 
         Ok(())
@@ -1071,13 +1088,18 @@ mod tests {
         // Rust-specific `cargo test`; lock the de-hardcoding at the source.
         assert_ne!(workflow.gates[0].steps[0].cmd, "cargo test");
 
-        // #891 slice ② — the shipped descriptor's input contract. Parsing
-        // via `Manifest::parse` already ran `validate()`, so reaching here
-        // proves the schema passes the slice-① subset validator.
-        let schema = workflow
+        // #1110 S2 — the shipped plugin's input contract lives on the
+        // Manifest, not the workflow descriptor. Parsing via
+        // `Manifest::parse` already ran `validate()`, so reaching here
+        // proves the schema passes the subset validator.
+        assert!(
+            workflow.input_schema.is_none(),
+            "workflow-level input_schema moved to Manifest root"
+        );
+        let schema = m
             .input_schema
             .as_ref()
-            .expect("issue-development declares input_schema");
+            .expect("git-forge declares Manifest.input_schema");
         assert_eq!(schema["type"], "object");
         assert_eq!(
             schema["required"],
@@ -1190,10 +1212,10 @@ mod tests {
             "notes": "Full golden fixture covers every shipped workflow input field."
         });
         crate::plugin_host::workflow_input::validate_workflow_input(
-            workflow
+            manifest
                 .input_schema
                 .as_ref()
-                .expect("shipped issue-development input schema"),
+                .expect("shipped git-forge Manifest.input_schema"),
             &workflow_input,
         )
         .expect("full golden workflow_input satisfies the shipped schema");
@@ -1353,14 +1375,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn workflow_descriptor_accepts_subset_input_schema_and_defaults_to_none() {
-        // No input_schema (today's shipped manifests) → parses to None.
-        let manifest = parse_manifest_value(workflow_manifest_value()).expect("valid manifest");
-        assert!(manifest.workflows[0].input_schema.is_none());
-
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["input_schema"] = json!({
+    fn subset_input_schema() -> Value {
+        json!({
             "type": "object",
             "properties": {
                 "issue_url": { "type": "string", "description": "Canonical issue URL" },
@@ -1372,16 +1388,60 @@ mod tests {
             },
             "required": ["issue_url"],
             "additionalProperties": false
-        });
-        let manifest = parse_manifest_value(v).expect("subset input_schema accepted");
-        assert!(manifest.workflows[0].input_schema.is_some());
+        })
     }
 
-    /// #891 — the subset validator runs at manifest parse; exhaustive
-    /// keyword/coherence coverage lives in `plugin_host::workflow_input`
-    /// (this pins the `workflows[i].input_schema…` field-path wiring).
     #[test]
-    fn workflow_descriptor_rejects_out_of_subset_input_schema() {
+    fn manifest_accepts_subset_input_schema_and_defaults_to_none() {
+        let manifest = parse_manifest_value(workflow_manifest_value()).expect("valid manifest");
+        assert!(manifest.input_schema.is_none());
+        assert!(manifest.workflows[0].input_schema.is_none());
+
+        let mut v = workflow_manifest_value();
+        v["input_schema"] = subset_input_schema();
+        let manifest = parse_manifest_value(v).expect("subset input_schema accepted");
+        assert!(manifest.input_schema.is_some());
+        assert!(manifest.workflows[0].input_schema.is_none());
+    }
+
+    /// #1110 S2 — leftover workflow-level `input_schema` is rejected at
+    /// parse/install so it cannot silently become the source of truth.
+    #[test]
+    fn workflow_level_input_schema_is_rejected_as_moved() {
+        let mut v = workflow_manifest_value();
+        v["workflows"][0]["input_schema"] = subset_input_schema();
+        let err = parse_manifest_value(v).expect_err("workflow-level input_schema");
+        assert!(
+            matches!(
+                &err,
+                ManifestError::Invalid { field, reason }
+                    if field == "workflows[0].input_schema"
+                        && reason.contains("moved to the Manifest top-level")
+            ),
+            "got {err:?}"
+        );
+
+        // Even a valid Manifest-level schema does not excuse a leftover
+        // workflow-level copy.
+        let mut v = workflow_manifest_value();
+        v["input_schema"] = subset_input_schema();
+        v["workflows"][0]["input_schema"] = subset_input_schema();
+        let err = parse_manifest_value(v).expect_err("duplicate locations");
+        assert!(
+            matches!(
+                &err,
+                ManifestError::Invalid { field, .. } if field == "workflows[0].input_schema"
+            ),
+            "got {err:?}"
+        );
+    }
+
+    /// #891 / #1110 S2 — the subset validator runs at manifest parse;
+    /// exhaustive keyword/coherence coverage lives in
+    /// `plugin_host::workflow_input` (this pins the top-level
+    /// `input_schema…` field-path wiring).
+    #[test]
+    fn manifest_rejects_out_of_subset_input_schema() {
         let cases: [(&str, Value, &str); 5] = [
             (
                 "hostile $ref keyword",
@@ -1390,7 +1450,7 @@ mod tests {
                     "$ref": "#/defs/x",
                     "additionalProperties": false
                 }),
-                "workflows[0].input_schema.$ref",
+                "input_schema.$ref",
             ),
             (
                 "hostile property keyword (pattern)",
@@ -1399,12 +1459,12 @@ mod tests {
                     "properties": { "u": { "type": "string", "pattern": ".*" } },
                     "additionalProperties": false
                 }),
-                "workflows[0].input_schema.properties.u.pattern",
+                "input_schema.properties.u.pattern",
             ),
             (
                 "missing additionalProperties: false",
                 json!({ "type": "object", "properties": {} }),
-                "workflows[0].input_schema.additionalProperties",
+                "input_schema.additionalProperties",
             ),
             (
                 "required key not declared",
@@ -1414,7 +1474,7 @@ mod tests {
                     "required": ["ghost"],
                     "additionalProperties": false
                 }),
-                "workflows[0].input_schema.required[0]",
+                "input_schema.required[0]",
             ),
             (
                 "enum riding a non-string type",
@@ -1423,12 +1483,12 @@ mod tests {
                     "properties": { "n": { "type": "integer", "enum": [1] } },
                     "additionalProperties": false
                 }),
-                "workflows[0].input_schema.properties.n.enum",
+                "input_schema.properties.n.enum",
             ),
         ];
         for (label, schema, expected_field) in cases {
             let mut v = workflow_manifest_value();
-            v["workflows"][0]["input_schema"] = schema;
+            v["input_schema"] = schema;
             let err = parse_manifest_value(v).expect_err(label);
             assert!(
                 matches!(&err, ManifestError::Invalid { field, .. } if field == expected_field),

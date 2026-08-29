@@ -131,9 +131,10 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
 
     let app = wave_router_for_fixture(&fx);
 
-    // #891 slice ② — the shipped manifest now declares an input_schema with
-    // required fields, so the happy-path bind must carry a conforming
-    // `workflow_input` (F8: issue_number is integer-encoded).
+    // #891 / #1110 S2 — the shipped plugin Manifest declares an
+    // `input_schema` with required fields, so the happy-path bind must
+    // carry a conforming `workflow_input` (F8: issue_number is
+    // integer-encoded).
     let bound_input = json!({
         "issue_url": "https://github.com/o/r/issues/888",
         "repo": "o/r",
@@ -298,23 +299,52 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         "schema-violation 400 must not create a wave row"
     );
 
-    // #891 — F2 fail-closed still holds for schema-less descriptors: mutate
-    // the fixture manifest to DROP the shipped input_schema (inverting the
-    // slice-① mutation trick) and re-insert it into the running registry.
+    // INV-1110-003 — extra key against additionalProperties:false is still 400.
+    let extra_dir = short_tempdir("wf-input-extra").expect("extra-key input cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "bound with extra input key",
+            "cwd": extra_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "workflow_input": {
+                "issue_url": "https://github.com/o/r/issues/888",
+                "repo": "o/r",
+                "issue_number": 888,
+                "ghost": true
+            },
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("workflow_input.ghost"),
+        "body={body}"
+    );
+    assert_eq!(
+        wave_count_by_title(&fx.repo, "bound with extra input key").await,
+        0,
+        "extra-key 400 must not create a wave row"
+    );
+
+    // #891 / #1110 S2 — F2 fail-closed still holds for schema-less plugins:
+    // mutate the fixture Manifest to DROP the shipped input_schema and
+    // re-insert it into the running registry.
     let mut schemaless = read_manifest();
-    schemaless
-        .workflows
-        .iter_mut()
-        .find(|workflow| workflow.id == WORKFLOW_ID)
-        .expect("issue-development descriptor")
-        .input_schema = None;
+    schemaless.input_schema = None;
     schemaless
         .validate()
         .expect("schema-less mutation stays a valid manifest");
     // `install_path = None` keeps the registry's existing on-disk path.
     fx.plugin_host.registry().insert(schemaless, None);
 
-    // Bound + input against a schema-less descriptor → 400 fail-closed.
+    // Bound + input against a schema-less plugin → 400 fail-closed.
     let no_schema_dir = short_tempdir("wf-input-noschema").expect("no-schema input cwd");
     let (status, body) = post_wave(
         app.clone(),
@@ -330,13 +360,9 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("does not declare"),
-        "body={body}"
-    );
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(error.contains("does not declare"), "body={body}");
+    assert!(error.contains("plugin"), "body={body}");
     // #891 slice ② r2 — schema-less fail-closed 400 likewise leaves no
     // wave row behind.
     assert_eq!(
@@ -345,7 +371,58 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         "schema-less-input 400 must not create a wave row"
     );
 
+    // Leftover workflow-level schema is not consulted (no silent fallback).
+    let mut leftover = read_manifest();
+    leftover.input_schema = None;
+    leftover
+        .workflows
+        .iter_mut()
+        .find(|workflow| workflow.id == WORKFLOW_ID)
+        .expect("issue-development descriptor")
+        .input_schema = Some(json!({
+        "type": "object",
+        "properties": { "issue_url": { "type": "string" } },
+        "required": ["issue_url"],
+        "additionalProperties": false
+    }));
+    fx.plugin_host.registry().insert(leftover, None);
+    let leftover_dir = short_tempdir("wf-input-leftover").expect("leftover schema cwd");
+    let (status, body) = post_wave(
+        app.clone(),
+        json!({
+            "cove_id": fx.cove_id,
+            "title": "input against leftover workflow schema",
+            "cwd": leftover_dir.path().display().to_string(),
+            "attach_folder": true,
+            "workflow_id": WORKFLOW_ID,
+            "workflow_input": { "issue_url": "https://github.com/o/r/issues/1" },
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]},
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not declare an input_schema"),
+        "body={body}"
+    );
+    assert_eq!(
+        wave_count_by_title(&fx.repo, "input against leftover workflow schema").await,
+        0,
+        "leftover-schema 400 must not create a wave row"
+    );
+
     // Schema-less bound create without input stays valid (design §1.4 row 4).
+    fx.plugin_host.registry().insert(
+        {
+            let mut schemaless = read_manifest();
+            schemaless.input_schema = None;
+            schemaless
+        },
+        None,
+    );
     let no_input_dir = short_tempdir("wf-noschema-ok").expect("schema-less bind cwd");
     let (status, body) = post_wave(
         app.clone(),

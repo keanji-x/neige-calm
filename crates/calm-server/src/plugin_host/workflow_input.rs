@@ -1,6 +1,6 @@
-//! Issue #891 — hand-rolled JSON-Schema **subset** for `WorkflowDescriptor.
-//! input_schema` and the matching instance validator for `NewWave.
-//! workflow_input`.
+//! Issue #891 / #1110 S2 — hand-rolled JSON-Schema **subset** for
+//! `Manifest.input_schema` and the matching instance validator for
+//! `NewWave.workflow_input`.
 //!
 //! Deliberately not the `jsonschema` crate (twice-recorded decision:
 //! `manifest.rs` module doc + `calm-server/Cargo.toml` dependency notes): the
@@ -37,9 +37,8 @@ const ROOT_KEYWORDS: [&str; 5] = [
 const PROPERTY_KEYWORDS: [&str; 4] = ["type", "enum", "default", "description"];
 const PROPERTY_TYPES: [&str; 4] = ["string", "integer", "number", "boolean"];
 
-/// A schema-subset violation: `path` is relative to the `input_schema` value
-/// (e.g. `input_schema.properties.merge_policy.enum`) so the manifest layer
-/// can prefix it with `workflows[i].`.
+/// A schema-subset violation: `path` is rooted at the Manifest field
+/// (e.g. `input_schema.properties.merge_policy.enum`).
 #[derive(Debug)]
 pub struct SchemaError {
     pub path: String,

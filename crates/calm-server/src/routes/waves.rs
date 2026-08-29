@@ -52,7 +52,7 @@ use crate::operation::workspace_lease::{
     wave_has_active_forge_action,
 };
 use crate::operation::{OperationKey, OperationOutcome};
-use crate::plugin_host::manifest::WorkflowDescriptor;
+use crate::plugin_host::manifest::Manifest;
 use crate::plugin_host::workflow_input::validate_workflow_input;
 use crate::report_backlinks;
 use crate::routes::cards::interrupt_shared_card_active_turn;
@@ -574,7 +574,7 @@ pub(crate) async fn create_wave(
     //    omitted-cwd default → absolute-path shape → normalize →
     //    existing-claim resolution → optional folder attach. All
     //    branches that surface a 4xx short-circuit before any DB write.
-    let workflow_descriptor = match p.workflow_id.as_deref() {
+    let bound_plugin = match p.workflow_id.as_deref() {
         Some(workflow_id) => {
             let unknown_workflow = || {
                 CalmError::BadRequest(format!(
@@ -586,17 +586,19 @@ pub(crate) async fn create_wave(
             if workflow_id.trim().is_empty() {
                 return Err(unknown_workflow());
             }
-            let descriptor = resolve_trusted_workflow(&s, workflow_id)
+            let plugin = resolve_trusted_workflow(&s, workflow_id)
                 .await
                 .ok_or_else(unknown_workflow)?;
-            Some(descriptor)
+            Some(plugin)
         }
         None => None,
     };
-    // #891 — `workflow_input` is only accepted against a bound descriptor
-    // that declares an `input_schema`; validated here, before any DB write,
-    // so the inner writer persists the blob verbatim.
-    validate_workflow_input_binding(workflow_descriptor.as_ref(), p.workflow_input.as_ref())?;
+    // #891 / #1110 S2 — `workflow_input` is only accepted against a bound
+    // workflow whose owning plugin Manifest declares an `input_schema`;
+    // validated here, before any DB write, so the inner writer persists
+    // the blob verbatim. Still requires `workflow_id` this slice
+    // (`plugin_scope` is S4).
+    validate_workflow_input_binding(bound_plugin.as_ref(), p.workflow_input.as_ref())?;
 
     // Issue #1131 — omitted / null cwd is a new branch *before* the
     // user-cove claim scan (same spirit as the system-cove exemption
@@ -685,33 +687,34 @@ pub(crate) async fn create_wave(
     }
 }
 
-/// Resolve `workflow_id` to its descriptor iff a running **trusted** plugin
-/// registers it — same filter as `bound_workflow_descriptor` on the spec
-/// harness side. `None` covers unknown, stopped, and untrusted workflows
-/// alike (the route deliberately does not distinguish them in the 400).
-async fn resolve_trusted_workflow(s: &RouteState, workflow_id: &str) -> Option<WorkflowDescriptor> {
+/// Resolve `workflow_id` to the owning plugin Manifest iff a running
+/// **trusted** plugin registers it — same filter as
+/// `bound_workflow_descriptor` on the spec harness side. `None` covers
+/// unknown, stopped, and untrusted workflows alike (the route
+/// deliberately does not distinguish them in the 400).
+async fn resolve_trusted_workflow(s: &RouteState, workflow_id: &str) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
-    s.plugin
-        .registry()
-        .list()
-        .into_iter()
-        .filter(|manifest| {
-            running_plugin_ids.contains(&manifest.id) && trusted_forge_plugin(&manifest.id)
-        })
-        .flat_map(|manifest| manifest.workflows)
-        .find(|workflow| workflow.id == workflow_id)
+    s.plugin.registry().list().into_iter().find(|manifest| {
+        running_plugin_ids.contains(&manifest.id)
+            && trusted_forge_plugin(&manifest.id)
+            && manifest
+                .workflows
+                .iter()
+                .any(|workflow| workflow.id == workflow_id)
+    })
 }
 
-/// #891 — create-time `workflow_input` validation matrix (design §1.4).
-/// Fail-closed: input is only accepted when the bound descriptor declares an
-/// `input_schema`, and a schema with required fields makes input mandatory.
-/// The kernel never applies schema `default`s — the value persists exactly
-/// as the caller sent it.
+/// #891 / #1110 S2 — create-time `workflow_input` validation matrix.
+/// Fail-closed: input is only accepted when the bound plugin Manifest
+/// declares an `input_schema`, and a schema with required fields makes
+/// input mandatory. The kernel never applies schema `default`s — the
+/// value persists exactly as the caller sent it. Workflow-level
+/// `input_schema` is never consulted.
 fn validate_workflow_input_binding(
-    descriptor: Option<&WorkflowDescriptor>,
+    plugin: Option<&Manifest>,
     input: Option<&serde_json::Value>,
 ) -> Result<()> {
-    let Some(descriptor) = descriptor else {
+    let Some(plugin) = plugin else {
         if input.is_some() {
             return Err(CalmError::BadRequest(
                 "wave create: `workflow_input` requires `workflow_id`".into(),
@@ -719,11 +722,11 @@ fn validate_workflow_input_binding(
         }
         return Ok(());
     };
-    let workflow_id = &descriptor.id;
-    match (descriptor.input_schema.as_ref(), input) {
+    let plugin_id = &plugin.id;
+    match (plugin.input_schema.as_ref(), input) {
         (None, None) => Ok(()),
         (None, Some(_)) => Err(CalmError::BadRequest(format!(
-            "wave create: workflow `{workflow_id}` does not declare an input_schema; \
+            "wave create: plugin `{plugin_id}` does not declare an input_schema; \
              `workflow_input` is not accepted"
         ))),
         (Some(schema), None) => {
@@ -736,7 +739,7 @@ fn validate_workflow_input_binding(
                 Ok(())
             } else {
                 Err(CalmError::BadRequest(format!(
-                    "wave create: workflow `{workflow_id}` requires `workflow_input` \
+                    "wave create: plugin `{plugin_id}` requires `workflow_input` \
                      (required: {required:?})"
                 )))
             }
@@ -2427,24 +2430,30 @@ mod tests {
         assert!(positions.contains_key("report-1"));
     }
 
-    /// #891 — the create-time `workflow_input` validation matrix (design
-    /// §1.4). Schema-conformance details are pinned in
-    /// `plugin_host::workflow_input`; this covers the binding combinations.
+    /// #891 / #1110 S2 — the create-time `workflow_input` validation
+    /// matrix. Schema-conformance details are pinned in
+    /// `plugin_host::workflow_input`; this covers the binding combinations
+    /// against the owning plugin Manifest.
     mod workflow_input_binding {
         use super::super::validate_workflow_input_binding;
         use crate::error::CalmError;
-        use crate::plugin_host::manifest::WorkflowDescriptor;
+        use crate::plugin_host::manifest::Manifest;
         use serde_json::{Value, json};
 
-        fn descriptor(input_schema: Option<Value>) -> WorkflowDescriptor {
-            WorkflowDescriptor {
-                id: "issue-development".into(),
-                plan_template: vec![],
-                gates: vec![],
-                spec_instructions: String::new(),
-                card_kinds: vec![],
-                input_schema,
+        fn plugin(input_schema: Option<Value>) -> Manifest {
+            let mut v = json!({
+                "manifest_version": 1,
+                "id": "dev.neige.git-forge",
+                "version": "1.0.0",
+                "min_kernel_version": "0.0.1",
+                "display_name": "Git Forge",
+                "entrypoint": { "command": "bin/x" },
+                "workflows": [{ "id": "issue-development" }]
+            });
+            if let Some(schema) = input_schema {
+                v["input_schema"] = schema;
             }
+            Manifest::parse(&v.to_string()).expect("test plugin manifest")
         }
 
         fn schema(required: Value) -> Value {
@@ -2462,12 +2471,8 @@ mod tests {
             })
         }
 
-        fn expect_bad_request(
-            descriptor: Option<&WorkflowDescriptor>,
-            input: Option<&Value>,
-            needle: &str,
-        ) {
-            match validate_workflow_input_binding(descriptor, input) {
+        fn expect_bad_request(plugin: Option<&Manifest>, input: Option<&Value>, needle: &str) {
+            match validate_workflow_input_binding(plugin, input) {
                 Err(CalmError::BadRequest(message)) => {
                     assert!(message.contains(needle), "message `{message}` ∌ `{needle}`");
                 }
@@ -2486,45 +2491,69 @@ mod tests {
         }
 
         #[test]
-        fn input_against_schema_less_descriptor_is_rejected_fail_closed() {
-            let d = descriptor(None);
-            expect_bad_request(Some(&d), Some(&json!({ "x": 1 })), "does not declare");
+        fn input_against_schema_less_plugin_is_rejected_fail_closed() {
+            let p = plugin(None);
+            expect_bad_request(Some(&p), Some(&json!({ "x": 1 })), "does not declare");
+            expect_bad_request(Some(&p), Some(&json!({ "x": 1 })), "plugin");
         }
 
         #[test]
         fn schema_less_binding_without_input_stays_valid() {
-            // Today's git-forge binding (no input_schema yet) — slice ① must
-            // not change its behavior.
-            let d = descriptor(None);
-            validate_workflow_input_binding(Some(&d), None).expect("bound create unchanged");
+            let p = plugin(None);
+            validate_workflow_input_binding(Some(&p), None).expect("bound create unchanged");
         }
 
         #[test]
         fn missing_input_with_required_schema_is_rejected() {
-            let d = descriptor(Some(schema(json!(["issue_url"]))));
-            expect_bad_request(Some(&d), None, "requires `workflow_input`");
-            expect_bad_request(Some(&d), None, "issue_url");
+            let p = plugin(Some(schema(json!(["issue_url"]))));
+            expect_bad_request(Some(&p), None, "requires `workflow_input`");
+            expect_bad_request(Some(&p), None, "issue_url");
         }
 
         #[test]
         fn missing_input_with_no_required_fields_is_ok() {
-            let d = descriptor(Some(schema(json!([]))));
-            validate_workflow_input_binding(Some(&d), None).expect("optional input omitted");
+            let p = plugin(Some(schema(json!([]))));
+            validate_workflow_input_binding(Some(&p), None).expect("optional input omitted");
         }
 
         #[test]
-        fn input_is_validated_against_the_schema() {
-            let d = descriptor(Some(schema(json!(["issue_url"]))));
+        fn input_is_validated_against_the_plugin_schema() {
+            let p = plugin(Some(schema(json!(["issue_url"]))));
             validate_workflow_input_binding(
-                Some(&d),
+                Some(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "auto-merge" })),
             )
             .expect("conforming input accepted");
-            // Failure names the offending field.
+            // INV-1110-003 — missing required / extra key / enum still 400.
             expect_bad_request(
-                Some(&d),
+                Some(&p),
+                Some(&json!({ "merge_policy": "auto-merge" })),
+                "workflow_input.issue_url",
+            );
+            expect_bad_request(
+                Some(&p),
+                Some(&json!({ "issue_url": "u", "ghost": true })),
+                "workflow_input.ghost",
+            );
+            expect_bad_request(
+                Some(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "yolo" })),
                 "workflow_input.merge_policy",
+            );
+        }
+
+        #[test]
+        fn workflow_only_input_schema_is_not_consulted() {
+            // Registry mutation that plants a leftover descriptor schema
+            // without a Manifest-level schema must not silently accept
+            // input. Install rejects this shape; this pins the create
+            // path independently.
+            let mut p = plugin(None);
+            p.workflows[0].input_schema = Some(schema(json!(["issue_url"])));
+            expect_bad_request(
+                Some(&p),
+                Some(&json!({ "issue_url": "u" })),
+                "does not declare an input_schema",
             );
         }
     }
