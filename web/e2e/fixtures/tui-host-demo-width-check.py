@@ -83,8 +83,15 @@ COPIED_FOOTER_MIN_COLS = len(READY_MARKER) + 2 + len(COPIED_MARKER)
 REPAINT_START = b"\x1b[H\x1b[2J"
 DEFAULT_MODES = ("20", "60", "100", "resize:100:60")
 ROWS = 24
-READ_SECONDS = 4.0
-QUIET_SECONDS = 0.75
+# Upper bound on how long ONE wait may take, not how long a healthy run takes:
+# `read_until` returns the moment the expected frame lands (measured ~0.25s for the
+# SIGWINCH repaint on an idle box), so this budget is only ever spent by a run that
+# is actually broken. Sized for a loaded 2-core CI runner rather than for this box.
+READ_SECONDS = 6.0
+# The fixture's own SIGALRM deadline. It must outlast the worst case of a mode
+# (`resize:` waits twice), or a timeout would look like "the fixture stopped
+# painting" when really the harness outlived it.
+FIXTURE_SECONDS = "30"
 
 
 def spawn_at(cols: int, rows: int) -> tuple[int, int]:
@@ -100,7 +107,7 @@ def spawn_at(cols: int, rows: int) -> tuple[int, int]:
     if pid == 0:  # child
         try:
             fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
-            env = dict(os.environ, TUI_HOST_DEMO_SECONDS="10")
+            env = dict(os.environ, TUI_HOST_DEMO_SECONDS=FIXTURE_SECONDS)
             os.execvpe("python3", ["python3", FIXTURE], env)
         except BaseException:  # pragma: no cover - child can only bail out
             os._exit(127)
@@ -112,23 +119,27 @@ def set_winsize(master: int, cols: int, rows: int) -> None:
     fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
 
 
-def drain(master: int, out: bytearray) -> bytearray:
-    """Append pty output to `out` until it goes quiet (or the read budget ends).
+def read_until(master: int, out: bytearray, satisfied) -> bytearray:
+    """Append pty output to `out` until `satisfied(bytes(out))`, or the budget ends.
 
-    Reading to QUIESCENCE rather than stopping at the first marker byte is what
-    makes "the last repaint" meaningful: the fixture writes each frame with one
-    `write_all()`, so once no byte has arrived for QUIET_SECONDS the trailing
-    frame in the buffer is a complete one.
+    Waiting on the CONDITION, not on a quiet window. A quiescence-based wait has to
+    guess how long a repaint takes: the fixture only repaints on the select-loop
+    iteration AFTER the SIGWINCH handler sets its flag, so the post-resize frame lands
+    one `select(..., 0.25)` timeout later — measured 0.2498-0.2502s across five runs.
+    Any fixed quiet window is therefore a race against runner load, and losing it
+    would print "it is missing the SIGWINCH repaint" about a runner that was merely
+    slow. This whole check exists to kill a flake; it must not add one.
+
+    The condition is the FULL success predicate (`failures_at` returning nothing), so
+    a half-written frame is not accepted either: `clip()` pads the footer to exactly
+    `cols`, so a torn frame simply does not satisfy it and we keep reading. When the
+    budget does run out, the caller judges the buffer and reports what was actually
+    missing.
     """
-    start = time.monotonic()
-    seen_any = len(out) > 0
-    last = start
-    while True:
-        now = time.monotonic()
-        if now - start > READ_SECONDS:
-            break
-        if seen_any and now - last > QUIET_SECONDS:
-            break
+    deadline = time.monotonic() + READ_SECONDS
+    if satisfied(bytes(out)):
+        return out
+    while time.monotonic() < deadline:
         if not select.select([master], [], [], 0.05)[0]:
             continue
         try:
@@ -138,8 +149,8 @@ def drain(master: int, out: bytearray) -> bytearray:
         if not chunk:
             break
         out.extend(chunk)
-        seen_any = True
-        last = time.monotonic()
+        if satisfied(bytes(out)):
+            break
     return out
 
 
@@ -225,14 +236,20 @@ def failures_at(painted: bytes, cols: int, rows: int, label: str) -> list[str]:
     return reasons
 
 
+def painted_ok(cols: int, rows: int, label: str):
+    """The success predicate, reused as both the wait condition and the verdict."""
+    return lambda painted: not failures_at(painted, cols, rows, label)
+
+
 def check_width(cols: int) -> list[str]:
     """Fixed width, set before exec. No SIGWINCH is involved by construction."""
+    label = f"{cols} cols"
     pid, master = spawn_at(cols, ROWS)
     try:
-        painted = drain(master, bytearray())
+        painted = read_until(master, bytearray(), painted_ok(cols, ROWS, label))
     finally:
         reap(pid, master)
-    return failures_at(bytes(painted), cols, ROWS, f"{cols} cols")
+    return failures_at(bytes(painted), cols, ROWS, label)
 
 
 def check_resize(start_cols: int, end_cols: int) -> list[str]:
@@ -244,15 +261,18 @@ def check_resize(start_cols: int, end_cols: int) -> list[str]:
     start with) is the only one until input arrives.
     """
     label = f"resize {start_cols}->{end_cols} cols"
+    before_label = f"{label} (before resize)"
     pid, master = spawn_at(start_cols, ROWS)
     try:
-        painted = drain(master, bytearray())
-        initial = failures_at(bytes(painted), start_cols, ROWS, f"{label} (before resize)")
+        painted = read_until(master, bytearray(), painted_ok(start_cols, ROWS, before_label))
+        initial = failures_at(bytes(painted), start_cols, ROWS, before_label)
         if initial:
             return initial
         before = len(painted)
         set_winsize(master, end_cols, ROWS)
-        drain(master, painted)
+        # The narrowed frame — NOT quiescence — is the thing worth waiting for, and it is
+        # also what distinguishes "no SIGWINCH repaint" from "the repaint is still in flight".
+        read_until(master, painted, painted_ok(end_cols, ROWS, label))
         if len(painted) == before:
             return [f"{label}: the fixture emitted NOTHING after the parent resized the pty, so it "
                     f"is still painted at {start_cols} columns. It is missing the SIGWINCH repaint "

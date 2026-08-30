@@ -25,6 +25,12 @@ const harness = path.resolve(
 );
 
 test('tui-host-demo paints its markers whole at narrow, wide, and resized widths', () => {
+  // A healthy run is ~1s: the harness waits for the expected frame and returns the
+  // moment it lands. Only a BROKEN run spends its per-wait budget (READ_SECONDS,
+  // twice for `resize:`), and that path is exactly the one whose precise diagnosis
+  // we want to read — Playwright's 30s default would cut it off mid-way and report
+  // a timeout instead of "the READY marker was truncated to ...".
+  test.setTimeout(120_000);
   // 20 = the floor `size()` clamps to, where a 19-char marker at column 1 only
   // just fits. 60 = the width CI actually rendered and where the marker used to
   // lose its tail. 100 = a comfortable width, green before and after the fix, so
