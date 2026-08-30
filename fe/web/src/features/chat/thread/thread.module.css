@@ -351,6 +351,26 @@
     anchor-name: --nc-composer-menu;
   }
 
+  /*
+   * Send's fill, keyed on an English string — stated plainly because it cannot
+   * be avoided from out here.
+   *
+   * `aria-label='Send'` is Astryx's own hardcoded `label` on `ChatSendButton`;
+   * the component exposes no class, no data attribute and no theme hook for its
+   * button, so there is nothing else in the tree to select. Localise Astryx, or
+   * let it reword the button, and this rule stops matching and Send goes back
+   * to Astryx's primary fill — with nothing broken, nothing logged, and the
+   * button still sending.
+   *
+   * Made non-silent rather than merely admitted: `thread.browser.test.tsx`
+   * ("fills Send with the chip surface") compares the computed background
+   * against a probe carrying `--surface-chip`, and goes red on a relabelled
+   * button. Mutation-checked by renaming the label in this selector.
+   *
+   * The five `:not(#\#)` are a specificity ladder, not a match: `#\#` is an id
+   * that cannot exist. They are what lets this out-rank Astryx's compiled
+   * StyleX without `!important`.
+   */
   .composer :is(button[aria-label='Send']):not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
     background: var(--surface-chip);
     color: var(--text);
@@ -448,6 +468,25 @@
    * the popover's subtree. Nothing is minted and no rule reaches into Astryx's
    * markup: the surface is drawn by Astryx's stylesheet, from our values.
    *
+   * **This is the most silent thing in this file, and an earlier revision of
+   * this note had the risk backwards** — it filed these two lines under "cheap"
+   * beside the `!important`s below. They are not cheap. `--color-background-
+   * popover` and `--shadow-low` are Astryx's *internal* names, borrowed with no
+   * contract; rename either upstream and this block keeps parsing, keeps
+   * applying, and stops doing anything. The menu then falls back to whatever
+   * `.composer` left in scope — the well's own recessed `--bg`, flat — which is
+   * exactly the reading the design rejected, arriving with no error, no visual
+   * breakage on open, and no test that reads the DOM noticing.
+   *
+   * So it is no longer silent: `thread.browser.test.tsx` ("paints the menu on
+   * --paper with the float shadow") measures the *computed* fill and shadow of
+   * the painted surface against a probe carrying `--paper` / `--shadow-float`.
+   * Both halves are load-bearing and both were checked by mutation — renaming
+   * either line alone turns that test red. (The colour line is not made
+   * redundant by `astryx-theme.css`'s global `--color-background-popover`:
+   * `.composer` overrides it to `--bg` for this whole subtree, so this is what
+   * puts it back.)
+   *
    * ── 2. Width and alignment: three `!important`s, and why ────────────────
    *
    * The ask is that the menu be **the width of the well and flush with it**.
@@ -481,9 +520,16 @@
    * dead and the menu would return to the caret, visibly wrong on first open,
    * not silently; (b) a second `[popover]`-based listbox appearing inside the
    * composer, which would then also be well-width — there is one trigger and
-   * adding another is already the moment to revisit this file. Neither is
-   * silent. This is deliberately *less* pressure than the Send-button rule
-   * above, which has to out-specify a real Astryx selector.
+   * adding another is already the moment to revisit this file.
+   *
+   * **(c) is the one the earlier revision of this note missed:** Astryx
+   * portalling the layer to `document.body`. `useLayer` renders in place today,
+   * but a portal is the ordinary next step for a popover, and it would take out
+   * `.composer [popover]` entirely — *both* selectors, so the positioning and
+   * the colour above fail together, while the menu still opens near the caret
+   * and still works. That is silent in a way (a) is not. It is covered by the
+   * same browser test: the width claim is measured against `.composer`'s box,
+   * so a portalled menu cannot satisfy it.
    *
    * ── 3. The row: ours outright ───────────────────────────────────────────
    *

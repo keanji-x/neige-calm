@@ -827,15 +827,35 @@ describe('cove conversations', () => {
       return { field, ...harness };
     }
 
-    /* The panel column really is hidden while the drawer is up, which is the
-       whole premise. If this ever stops being true the command stops being the
-       only door and its justification has to be rewritten, so it is asserted
-       here rather than assumed in prose. */
-    it('is the only new-conversation door once the drawer covers the panel column', async () => {
+    /*
+     * Half the premise, and it is the half jsdom can hold.
+     *
+     * The command exists because the `+` is unreachable while a drawer is up,
+     * and *that* is a CSS fact —
+     * `.main:has([data-nc-drawer]) [data-nc-panel] { visibility: hidden }`.
+     * jsdom loads no CSS, so it cannot be asserted here: an earlier version of
+     * this test claimed it with `plus.closest('[data-nc-panel]')`, a DOM
+     * ancestor relation that stays true with that rule deleted from the
+     * stylesheet outright — measured, the whole file stayed green.
+     *
+     * So what is checked here is the part that *is* structural and does hold
+     * the premise up on its own terms: the drawer is up, and the only `+` in
+     * the document is the one on the column the rule targets — there is no
+     * second, unhidden door. The visibility half is pinned where it can fail,
+     * in `ui/drawer/public.browser.test.tsx` ("hides the panel column, `+` and
+     * all, for as long as a drawer is up"), which presses the `+`'s focus into
+     * a real engine. Neither half is worth much alone; the pair is the claim.
+     */
+    it('leaves exactly one new-conversation door, and it is on the hidden column', async () => {
       await openRowWithMenu();
       expect(document.querySelector('[data-nc-drawer]')).not.toBeNull();
-      const plus = screen.getByRole('button', { name: 'New conversation' });
-      expect(plus.closest('[data-nc-panel]')).not.toBeNull();
+      const plus = screen.getAllByRole('button', { name: 'New conversation' });
+      expect(plus).toHaveLength(1);
+      expect(plus[0].closest('[data-nc-panel]')).not.toBeNull();
+      /* And the `+` is *inside* the region the hiding rule scopes to, which is
+         the other end of the selector: a `+` that moved out of `.main` would
+         keep its `[data-nc-panel]` ancestor and stop being hidden. */
+      expect(plus[0].closest('[data-nc-panel]')?.closest('main')).not.toBeNull();
     });
 
     it('opens one command on / and describes what it does', async () => {

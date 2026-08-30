@@ -140,39 +140,83 @@ describe('spec conversation regressions', () => {
    * over a zero-turn conversation, and it had to arrive with the first turn.
    * The control is gone (#1139), so none of the three has a subject.
    *
-   * What replaces them is one assertion with more force than any of them had,
-   * and it is stated as a universal rather than by name: **the drawer offers no
-   * destructive control at all**. Naming `Reset conversation` would pass the
-   * day someone reintroduces the same action under another label, which is
-   * exactly the regression worth fencing; `[data-nc-action='destructive']` is
-   * the single vocabulary every red control in this app is drawn from
-   * (base.css §4.3), so sweeping for it catches the class and not the string.
+   * What replaces them is a **set equality over every control the drawer
+   * offers**, and the reason it is stated that way is worth recording, because
+   * the obvious replacement does not work.
+   *
+   * The obvious one was `querySelectorAll('[data-nc-action="destructive"]')`,
+   * on the reasoning that it catches the class of control rather than one
+   * label. It catches nothing: the removed reset was a `DrawerAction`, which
+   * renders `data-nc-role="icon"` plus a CSS-module `actionDanger` class and
+   * has **never** carried `data-nc-action="destructive"`. That sweep was green
+   * on `origin/main` with the reset button on screen — zero coverage of the
+   * exact shape it claimed to fence, and the `/reset/i` query it disparaged in
+   * prose was the only line in the test doing any work.
+   *
+   * So the fence is: these two buttons, and nothing else. It is red if the old
+   * control comes back verbatim, red if it comes back under a new label or a
+   * new glyph, red if it comes back with no `data-nc-action` at all — and red
+   * for any *other* unannounced control that grows in here, which is more than
+   * was asked for and is the right amount. Adding a control to this drawer is a
+   * decision that should have to be written down; this is where it gets
+   * written.
+   *
+   * The name used is the accessible name, because that is what a reader
+   * actually meets. The two legitimate members are the close chevron and the
+   * composer's Send.
    *
    * It is run over the *non-empty* drawer on purpose. The removed control was
    * conditional on there being a transcript, so an empty drawer is precisely
-   * the state that never had one — proving nothing. The close must still be
-   * there, which is what keeps this from passing on a drawer that failed to
-   * render.
+   * the state that never had one — proving nothing.
    */
-  it('offers no destructive control anywhere in an open conversation', async () => {
+  it('offers exactly the close and Send, and no other control at all', async () => {
     setupWithTurns();
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
-    expect(drawer.querySelectorAll('[data-nc-action="destructive"]')).toHaveLength(0);
-    expect(within(drawer).getByRole('button', { name: 'Close conversation' })).toBeTruthy();
+    const names = within(drawer)
+      .getAllByRole('button', { hidden: true })
+      .map((button) => button.getAttribute('aria-label') ?? button.textContent);
+    expect([...names].sort()).toEqual(['Close conversation', 'Send']);
     expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
   });
 
-  /* And the browser never calls the endpoint, on any route, however the drawer
-     is driven. The server still serves `POST /spec/reset`; this pins that the
-     front end has no path to it — a UI-only removal that left a live caller
-     behind would be invisible to the sweep above. */
-  it('never posts to the spec reset endpoint', async () => {
+  /*
+   * And the browser never calls the endpoint. The server still serves
+   * `POST /spec/reset`; this pins that the front end has no path to it — a
+   * UI-only removal that left a live caller wired to some other control would
+   * be invisible to the set-equality above, which only reads the tree.
+   *
+   * This version **presses things**. The one it replaces opened the drawer,
+   * clicked the wordmark, and asserted no reset POST — so the only caller it
+   * could ever have caught was one that fired on mount by itself. Every control
+   * the drawer offers is now pressed, the composer sends a message, and Escape
+   * closes it, and none of that reaches the endpoint.
+   */
+  it('never posts to the spec reset endpoint, however the drawer is driven', async () => {
     const { requests } = setupWithTurns();
     await openConversationWithTurns();
+    const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
+
+    const field = within(drawer).getByRole('textbox', { name: 'Message' });
+    await typeInto(field, 'a message');
+    await sendWithEnter(field);
+
+    /* Every button in the drawer, in tree order, ending on the close — reversed
+       so the close is pressed last and the rest are pressed while the drawer is
+       still up. */
+    const controls = within(drawer)
+      .getAllByRole('button', { hidden: true })
+      .filter((button) => button.getAttribute('aria-label') !== 'Close conversation');
+    for (const control of controls) fireEvent.click(control);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
+
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
     await screen.findByRole('button', { name: /Conversation Spec chat, on Test wave/ });
     expect(requests.filter((request) => request.path.endsWith('/spec/reset'))).toHaveLength(0);
+    /* And the pressing above actually did something, so an inert sweep cannot
+       pass this by touching nothing. */
+    expect(requests.filter((request) => request.path.endsWith('/spec/input'))).toHaveLength(1);
   });
 
   /*

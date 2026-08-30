@@ -210,8 +210,21 @@ describe('ChatComposer', () => {
     render(<ChatComposer onSend={onSend} />);
     await userEvent.type(messageField(), 'one{Shift>}{Enter}{/Shift}two');
     expect(onSend).not.toHaveBeenCalled();
-    expect(fieldText(messageField()).replace(/\n/g, '\n')).toContain('one');
-    expect(fieldText(messageField())).toMatch(/one\s*two|one\ntwo/);
+    /*
+     * The exact string, because everything looser passed on a Shift+Enter that
+     * inserted *nothing*: `.replace(/\n/g, '\n')` is the identity function,
+     * `toContain('one')` is true of any field that took the letters, and the
+     * `\s*` in `/one\s*two/` matches the empty string — so `"onetwo"`, the
+     * precise failure this test names, satisfied all three.
+     *
+     * The break is normalised first: a contenteditable may serialise one line
+     * break as `\n`, as `\r\n`, or (with a trailing `<br>` filler) with a
+     * second `\n` after it, and none of those differences are this test's
+     * subject. What is its subject — that there is exactly one break, with
+     * `one` before it and `two` after it — survives the normalisation.
+     */
+    const written = fieldText(messageField()).replace(/\r\n/g, '\n').replace(/\n+$/, '');
+    expect(written).toBe('one\ntwo');
   });
 
   /*
@@ -258,9 +271,59 @@ describe('ChatComposer', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('keeps Send in the tree when the field is empty', () => {
+  /*
+   * ── §5.1, restored with the constraint it was supposed to carry ──────────
+   *
+   * What stood here was `expect(getByRole('button', { name: 'Send' }))
+   * .toBeTruthy()` — a tautology, since `getByRole` throws when it finds
+   * nothing, so the assertion could not fail on any tree the line above it
+   * survived. It replaced §5.1's `marks Send unusable without taking it out of
+   * the focus order`, and it kept none of that test's force: it passed
+   * unchanged against the bug it was standing in for, a Send that reported
+   * `{ disabled: false, ariaDisabled: null }` over an empty field and did
+   * nothing when pressed.
+   *
+   * Two claims, split apart because they fail for different reasons.
+   */
+  it('marks Send unavailable over an empty field instead of looking pressable', async () => {
+    const onSend = vi.fn();
+    render(<ChatComposer onSend={onSend} />);
+    const send = screen.getByRole('button', { name: 'Send' });
+    /* Either vocabulary is honest; *neither* is the bug. Astryx picks native
+       `disabled` here because `ChatSendButton` takes no tooltip — see the
+       `sendButton` note in `public.tsx` for why that is the available choice
+       and what it costs. */
+    expect(send.hasAttribute('disabled') || send.getAttribute('aria-disabled') === 'true').toBe(true);
+    await userEvent.click(send);
+    expect(onSend).not.toHaveBeenCalled();
+
+    /* And it comes back the moment there is something to send, so "unavailable"
+       is a state and not a permanent condition. */
+    await userEvent.type(messageField(), 'Ship it');
+    const live = screen.getByRole('button', { name: 'Send' });
+    expect(live.hasAttribute('disabled')).toBe(false);
+    expect(live.getAttribute('aria-disabled')).not.toBe('true');
+  });
+
+  /*
+   * The other half of §5.1, and the reason a natively disabled Send is
+   * survivable here: sending from the button empties the draft, which makes the
+   * button that was just clicked unavailable *under the user's own focus*. A
+   * natively disabled element cannot hold focus, so without somewhere to put it
+   * the document hands it to `<body>` and the next Tab restarts from the top.
+   */
+  it('leaves focus in the field, never on <body>, when Send goes away under it', async () => {
     render(<ChatComposer onSend={vi.fn()} />);
-    expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy();
+    const field = messageField();
+    await userEvent.type(field, 'Ship it');
+    const send = screen.getByRole('button', { name: 'Send' });
+    send.focus();
+    expect(document.activeElement).toBe(send);
+
+    await userEvent.click(send);
+
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(messageField());
   });
 
   it('turns Send into Stop while a turn is running', async () => {
