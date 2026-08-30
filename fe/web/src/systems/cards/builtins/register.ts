@@ -12,6 +12,7 @@
 // to this same map; nobody writes a second registration sequence.
 
 import type { CardEntry, CardRegistry, RegisteredCard } from '../registry.js';
+import { CLAUDE_CARD_ENTRY } from './claude.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
 import { TERMINAL_CARD_ENTRY } from './terminal.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
@@ -171,6 +172,7 @@ export function registerAvailableBuiltinCards(registry: CardRegistry): void {
   const registrars: BuiltinRegistrarMap = {
     terminal: BuiltinRegistrar.of(TERMINAL_CARD_ENTRY),
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
+    claude: BuiltinRegistrar.of(CLAUDE_CARD_ENTRY),
     'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
   };
   for (const type of BUILTIN_CARD_ORDER) {

@@ -49,6 +49,7 @@ import { WaveCard } from './shared/components/WaveCard';
 import { UnknownCard } from './cards/UnknownCard';
 import { getEntry } from './cards/registry';
 import { useCardVisibilityFocus } from './cards/useCardVisibilityFocus';
+import { useRevealCard } from './cards/useRevealCard';
 import { dlog } from './util/debug';
 import { useUpdateCardMutation } from './api/queries';
 import type { WaveCardSlot } from './types';
@@ -92,14 +93,23 @@ export function WaveList({
   waveId,
   cards,
   onRemoveCard,
+  revealCardId,
 }: {
   waveId: string;
   cards: WaveCardSlot[];
   onRemoveCard: (idx: number) => void;
+  /**
+   * Card to bring into view — the target of a report task block's "Open worker
+   * output" link. List renders the same `data-card-id` tiles the grid does, so
+   * a link followed from list reveals in place instead of dragging the user
+   * into a view they did not choose.
+   */
+  revealCardId?: string;
 }) {
   dlog('WaveList', 'render', { waveId, cardsCount: cards.length });
   const scrollRootRef = useRef<HTMLDivElement | null>(null);
   useCardVisibilityFocus(scrollRootRef);
+  useRevealCard(scrollRootRef, revealCardId);
 
   const updateCard = useUpdateCardMutation();
 

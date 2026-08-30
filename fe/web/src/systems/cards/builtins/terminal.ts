@@ -16,7 +16,11 @@ export type TerminalCard = Readonly<{
   terminalId: string | null;
 }>;
 
-function terminalIdFromPayload(payload: unknown): string | null {
+/**
+ * Shared with `claude.ts`: both kinds get `terminal_id` projected into the
+ * payload by the same kernel read path, so both must read it the same way.
+ */
+export function terminalIdFromPayload(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;
   const value = (payload as { terminal_id?: unknown }).terminal_id;
   return typeof value === 'string' && value !== '' ? value : null;

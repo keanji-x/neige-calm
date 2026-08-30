@@ -480,3 +480,150 @@ describe('WaveGrid — overlay-backed layout', () => {
   });
 
 });
+
+describe('WaveGrid — revealCardId', () => {
+  it('scrolls the named card into view and flashes it', async () => {
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const { container } = render(
+        <Wrapper client={makeClient()}>
+          <WaveGrid
+            waveId="w1"
+            cards={[card('card-a'), card('card-b')]}
+            onRemoveCard={() => {}}
+            revealCardId="card-b"
+          />
+        </Wrapper>,
+      );
+
+      const target = container.querySelector('[data-card-id="card-b"]')!;
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      await waitFor(() =>
+        expect(target.hasAttribute('data-nc-reveal')).toBe(true),
+      );
+      // The other card is untouched — a reveal must not light up the grid.
+      const other = container.querySelector('[data-card-id="card-a"]')!;
+      expect(other.hasAttribute('data-nc-reveal')).toBe(false);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('reveals once and stays put when unrelated cards come and go', async () => {
+    // The latch is load-bearing. Keying the effect on the card list read as
+    // "retry until the tile exists" but meant "re-fire on every card-list
+    // change" — and the hash outlives the click, so any later card added
+    // anywhere in the wave yanked the viewport back to the linked card.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const client = makeClient();
+      const { rerender } = render(
+        <Wrapper client={client}>
+          <WaveGrid waveId="w1" cards={[card('card-a')]} onRemoveCard={() => {}} revealCardId="card-a" />
+        </Wrapper>,
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      rerender(
+        <Wrapper client={client}>
+          <WaveGrid
+            waveId="w1"
+            cards={[card('card-a'), card('card-b')]}
+            onRemoveCard={() => {}}
+            revealCardId="card-a"
+          />
+        </Wrapper>,
+      );
+      await waitFor(() =>
+        expect(document.querySelector('[data-card-id="card-b"]')).not.toBeNull(),
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('retries across renders until the tile exists', async () => {
+    // The other half of the same mechanism: the grid is lazy and its cards
+    // arrive from a query, so the id is routinely seen before the tile is.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const client = makeClient();
+      const { rerender } = render(
+        <Wrapper client={client}>
+          <WaveGrid waveId="w1" cards={[]} onRemoveCard={() => {}} revealCardId="card-late" />
+        </Wrapper>,
+      );
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      rerender(
+        <Wrapper client={client}>
+          <WaveGrid waveId="w1" cards={[card('card-late')]} onRemoveCard={() => {}} revealCardId="card-late" />
+        </Wrapper>,
+      );
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('marks the reveal with an attribute react-grid-layout cannot clobber', async () => {
+    // Regression: the flash was first written as a class. RGL computes the grid
+    // item's className itself and rewrites it on re-render, so the class was
+    // wiped moments after being set — live the card never flashed, while this
+    // suite stayed green because the RGL stub here does not manage className.
+    // React leaves a `data-*` attribute it was never handed as a prop alone.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn();
+
+    try {
+      const { container } = render(
+        <Wrapper client={makeClient()}>
+          <WaveGrid waveId="w1" cards={[card('card-a')]} onRemoveCard={() => {}} revealCardId="card-a" />
+        </Wrapper>,
+      );
+      const target = container.querySelector('[data-card-id="card-a"]')!;
+      expect(target.hasAttribute('data-nc-reveal')).toBe(true);
+      // Nothing may depend on a class name RGL owns.
+      expect(target.className).not.toContain('wave-card--highlight');
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('does nothing without a revealCardId', async () => {
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      render(
+        <Wrapper client={makeClient()}>
+          <WaveGrid
+            waveId="w1"
+            cards={[card('card-a')]}
+            onRemoveCard={() => {}}
+          />
+        </Wrapper>,
+      );
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});

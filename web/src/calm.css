@@ -3753,6 +3753,26 @@ button.report-rail-head:hover {
   flex-direction: column;
 }
 
+/* Arriving from a report task block's "Open worker output" link. Same accent
+   flash as `.report-block--highlight`, drawn as a ring so it reads on a card
+   whose body is an opaque terminal.
+
+   Keyed on an attribute, not a class: react-grid-layout owns the grid item's
+   className and rewrites it on re-render, so a class set from `useRevealCard`
+   did not survive. The list rows are the same reveal, one selector over. */
+.wave-card[data-nc-reveal],
+.wave-list-item[data-nc-reveal] {
+  animation: wave-card-highlight 1.8s ease-out;
+}
+@keyframes wave-card-highlight {
+  from {
+    box-shadow: 0 0 0 var(--space-2) var(--accent-soft);
+  }
+  to {
+    box-shadow: 0 0 0 var(--space-2) transparent;
+  }
+}
+
 /* Inside a grid cell, cards drop their stacked-layout margin and stretch
    to fill the wrapper. The wrapper owns the gap (RGL `margin` prop). */
 .wave-card > .term {

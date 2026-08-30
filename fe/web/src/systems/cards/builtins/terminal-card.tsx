@@ -8,9 +8,15 @@ import { TerminalSurface } from '../../terminal/surface.tsx';
 import type { CardHostCapabilities } from '../contracts.ts';
 import { CardHead } from '../ui/card-head.tsx';
 
-export function TerminalCardView({ card, host }: {
+export function TerminalCardView({ card, host, fallbackTitle = 'terminal' }: {
   card: { readonly id: string; readonly title: string | null; readonly terminalId: string | null };
   host: CardHostCapabilities;
+  /**
+   * Head label when the kernel row carries no title. Claude worker cards share
+   * this renderer (they are a PTY too) and must not announce themselves as
+   * "terminal"; `LetterAvatar` also colours the avatar off this string.
+   */
+  fallbackTitle?: string;
 }) {
   const [visible, setVisible] = useState(() => host.lifecycle.getSnapshot().visible);
   useEffect(() => host.lifecycle.subscribe(() => {
@@ -25,7 +31,7 @@ export function TerminalCardView({ card, host }: {
     >
       <CardHead
         className="card-drag-handle"
-        title={card.title || 'terminal'}
+        title={card.title || fallbackTitle}
         status={live ? <span className="live-dot" role="img" aria-label="status Working" /> : undefined}
       />
       <div className="term-body">
@@ -35,7 +41,7 @@ export function TerminalCardView({ card, host }: {
               <TerminalSurface card={card} visible={visible} />
             </Suspense>
           )
-          : <div className="term-line">Starting terminal…</div>}
+          : <div className="term-line">Starting {fallbackTitle}…</div>}
       </div>
     </div>
   );

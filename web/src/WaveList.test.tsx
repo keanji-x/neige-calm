@@ -744,3 +744,53 @@ describe('WaveList — remove via Delete', () => {
     expect(onRemoveCard).toHaveBeenCalledWith(0);
   });
 });
+
+describe('WaveList — revealCardId', () => {
+  it('scrolls the named card into view without leaving the list', async () => {
+    // List renders the same `data-card-id` tiles the grid does, so a report
+    // task block's "Open worker output" link reveals in place. Switching the
+    // user to grid here would override a view they explicitly chose.
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      render(
+        <Wrapper client={makeClient()}>
+          <WaveList
+            waveId="w1"
+            cards={[slot('a', 10), slot('b', 20)]}
+            onRemoveCard={() => {}}
+            revealCardId="b"
+          />
+        </Wrapper>,
+      );
+
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      const target = document.querySelector('[data-card-id="b"]');
+      expect(target?.hasAttribute('data-nc-reveal')).toBe(true);
+      expect(
+        document.querySelector('[data-card-id="a"]')?.hasAttribute('data-nc-reveal'),
+      ).toBe(false);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('does nothing without a revealCardId', () => {
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      render(
+        <Wrapper client={makeClient()}>
+          <WaveList waveId="w1" cards={[slot('a', 10)]} onRemoveCard={() => {}} />
+        </Wrapper>,
+      );
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});

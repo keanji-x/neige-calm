@@ -21,6 +21,7 @@ import type { WaveCardSlot } from './types';
 import { useOverlayState } from './hooks/useOverlayState';
 import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
 import { useCardVisibilityFocus } from './cards/useCardVisibilityFocus';
+import { useRevealCard } from './cards/useRevealCard';
 
 const COLS = 12;
 const ROW_HEIGHT = 40;
@@ -121,6 +122,7 @@ export function WaveGrid({
   waveId,
   cards,
   onRemoveCard,
+  revealCardId,
 }: {
   waveId: string;
   /**
@@ -132,6 +134,13 @@ export function WaveGrid({
    */
   cards: WaveCardSlot[];
   onRemoveCard: (idx: number) => void;
+  /**
+   * Card the caller wants brought into view — today the target of a report
+   * task block's "Open worker output" link. The scroll lives here rather than
+   * in `pages/Wave.tsx` because this subtree is lazy-loaded: when the page
+   * picks the grid, no `data-card-id` node exists yet for the page to find.
+   */
+  revealCardId?: string;
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
   const scrollRootRef = useRef<HTMLDivElement | null>(null);
@@ -143,6 +152,7 @@ export function WaveGrid({
     [containerRef],
   );
   useCardVisibilityFocus(scrollRootRef);
+  useRevealCard(scrollRootRef, revealCardId);
   dlog('WaveGrid', 'render', { waveId, width, mounted, cardsCount: cards.length });
 
   // Scope E: layout now lives in an Overlay row. The hook handles
@@ -175,6 +185,7 @@ export function WaveGrid({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [waveId, cardKeys, storedPositions],
   );
+
   // Render-time diagnostic — confirm the layout reference is stable across
   // re-renders that aren't card-driven.
   dlog('WaveGrid', 'render-detail', {
