@@ -768,9 +768,9 @@ describe('WaveList — revealCardId', () => {
 
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
       const target = document.querySelector('[data-card-id="b"]');
-      expect(target?.classList.contains('wave-card--highlight')).toBe(true);
+      expect(target?.hasAttribute('data-nc-reveal')).toBe(true);
       expect(
-        document.querySelector('[data-card-id="a"]')?.classList.contains('wave-card--highlight'),
+        document.querySelector('[data-card-id="a"]')?.hasAttribute('data-nc-reveal'),
       ).toBe(false);
     } finally {
       Element.prototype.scrollIntoView = original;

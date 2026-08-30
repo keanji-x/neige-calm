@@ -466,7 +466,7 @@
     原生语义
   why: >
     #891 slice ③：不得以自定义 aria 替代原生 select 语义；非 Chromium 引擎必须无回归
-  source: web/src/calm.css:4191-4321
+  source: web/src/calm.css:4196-4326
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: false
@@ -485,7 +485,7 @@
     隐藏该子树有剥掉 Chrome 播报的「已选值」的风险。宁可多出一个 inert 节点，也要保证
     值能被播报。`<select>` 拥有焦点与语义（base-select），trigger 永不成为 tab stop
     且拒绝程序化聚焦（real-chromium probe 已验证）
-  source: web/src/calm.css:4200-4265
+  source: web/src/calm.css:4205-4270
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true
@@ -520,7 +520,7 @@
     drawer 内的选中态必须只用勾（`option::checkmark`，`--accent` 色）表示，不得用选中填充色
   why: >
     §2.2：hover 填充是瞬态的，再加一个持久填充会与 hover 视觉混淆
-  source: web/src/calm.css:4298-4320
+  source: web/src/calm.css:4303-4325
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true

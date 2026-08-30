@@ -18,8 +18,18 @@
 
 import { useEffect, useRef, type RefObject } from 'react';
 
-/** Class that drives the arrival flash. Defined in `calm.css` beside `.wave-card`. */
-const HIGHLIGHT_CLASS = 'wave-card--highlight';
+/**
+ * Attribute that drives the arrival flash. Defined in `calm.css` beside
+ * `.wave-card`.
+ *
+ * An attribute rather than a class, because `react-grid-layout` computes the
+ * grid item's `className` itself (`react-grid-item wave-card react-draggable
+ * …`) and rewrites it on every re-render — an imperatively added class was
+ * silently wiped moments after being set, which jsdom could not show because
+ * the RGL stub there does not manage className. React never removes a `data-*`
+ * attribute it was not given as a prop, so this survives.
+ */
+const REVEAL_ATTR = 'data-nc-reveal';
 
 export function useRevealCard(
   rootRef: RefObject<HTMLElement | null>,
@@ -47,17 +57,17 @@ export function useRevealCard(
     if (!target) return;
     revealedRef.current = revealCardId;
     target.scrollIntoView({ block: 'nearest' });
-    // Restart the animation rather than relying on the class being absent:
-    // `revealedRef` is cleared and re-set across navigations, so the class can
-    // still be on the node from a previous visit.
+    // Restart the animation rather than relying on the attribute being absent:
+    // `revealedRef` is cleared and re-set across navigations, so it can still
+    // be on the node from a previous visit.
     //
     // Synchronous reflow, not `requestAnimationFrame`. This effect runs on
     // every render by design, so a deferred add would be cancelled by the very
     // next render's cleanup before the frame ever arrived — the flash simply
     // never appeared. Reading `offsetWidth` between remove and add is the
     // standard restart idiom and needs no cleanup at all.
-    target.classList.remove(HIGHLIGHT_CLASS);
+    target.removeAttribute(REVEAL_ATTR);
     void (target as HTMLElement).offsetWidth;
-    target.classList.add(HIGHLIGHT_CLASS);
+    target.setAttribute(REVEAL_ATTR, '');
   });
 }

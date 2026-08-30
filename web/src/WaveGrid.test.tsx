@@ -503,11 +503,11 @@ describe('WaveGrid — revealCardId', () => {
       const target = container.querySelector('[data-card-id="card-b"]')!;
       expect(scrollIntoView).toHaveBeenCalledTimes(1);
       await waitFor(() =>
-        expect(target.classList.contains('wave-card--highlight')).toBe(true),
+        expect(target.hasAttribute('data-nc-reveal')).toBe(true),
       );
       // The other card is untouched — a reveal must not light up the grid.
       const other = container.querySelector('[data-card-id="card-a"]')!;
-      expect(other.classList.contains('wave-card--highlight')).toBe(false);
+      expect(other.hasAttribute('data-nc-reveal')).toBe(false);
     } finally {
       Element.prototype.scrollIntoView = original;
     }
@@ -574,6 +574,31 @@ describe('WaveGrid — revealCardId', () => {
         </Wrapper>,
       );
       await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('marks the reveal with an attribute react-grid-layout cannot clobber', async () => {
+    // Regression: the flash was first written as a class. RGL computes the grid
+    // item's className itself and rewrites it on re-render, so the class was
+    // wiped moments after being set — live the card never flashed, while this
+    // suite stayed green because the RGL stub here does not manage className.
+    // React leaves a `data-*` attribute it was never handed as a prop alone.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = vi.fn();
+
+    try {
+      const { container } = render(
+        <Wrapper client={makeClient()}>
+          <WaveGrid waveId="w1" cards={[card('card-a')]} onRemoveCard={() => {}} revealCardId="card-a" />
+        </Wrapper>,
+      );
+      const target = container.querySelector('[data-card-id="card-a"]')!;
+      expect(target.hasAttribute('data-nc-reveal')).toBe(true);
+      // Nothing may depend on a class name RGL owns.
+      expect(target.className).not.toContain('wave-card--highlight');
     } finally {
       Element.prototype.scrollIntoView = original;
     }
