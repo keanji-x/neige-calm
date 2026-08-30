@@ -2730,7 +2730,7 @@
     源码注释(#145):"After the WaveLifecycle unification (drop WaveStatus) this is the sole status-pill on
     the wave header — the legacy secondary status pill, plus the card-aggregate FSM dot/verb, used to
     re-derive the same signal and have been folded back into the lifecycle."
-  source: web/src/pages/Wave.tsx:244,369-380
+  source: web/src/pages/Wave.tsx:245,398-409
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: true

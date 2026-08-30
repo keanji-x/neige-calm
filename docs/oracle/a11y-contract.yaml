@@ -364,7 +364,7 @@
     Grid(`WaveGrid`)、List(`WaveList`)
   why: >
     Slice 9 的 Path C 决议：不给 grid 加键盘故事，而是另起一个 list 组件
-  source: web/src/pages/Wave.tsx:252-273,404-433
+  source: web/src/pages/Wave.tsx:253-274,433-463
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -414,7 +414,7 @@
   why: >
     §2.2 + §3.4 + §9 明示 "by design"：Slice 9 走 Path C，把键盘能力放进独立的 list 视图，
     而不是给 RGL 补键盘。新写代码的人只会看到「grid 没实现键盘」而误以为是缺陷
-  source: web/src/WaveGrid.tsx:239-254; web/src/WaveList.tsx:1-7
+  source: web/src/WaveGrid.tsx:271-286; web/src/WaveList.tsx:1-7
   authoritative_test: NONE
   owner_slice: features/wave/grid
   intentional_omission: true
@@ -485,7 +485,7 @@
     隐藏该子树有剥掉 Chrome 播报的「已选值」的风险。宁可多出一个 inert 节点，也要保证
     值能被播报。`<select>` 拥有焦点与语义（base-select），trigger 永不成为 tab stop
     且拒绝程序化聚焦（real-chromium probe 已验证）
-  source: web/src/calm.css:4185-4250
+  source: web/src/calm.css:4200-4265
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true

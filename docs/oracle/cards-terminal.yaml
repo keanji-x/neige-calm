@@ -2471,7 +2471,7 @@
   why: >
     data-wheel-card 是滚轮路由定位活动卡壳的选择器，data-card-id 是可见性/焦点
     观测与 entry 级 wheelTarget 解析的键
-  source: web/src/WaveGrid.tsx:279-285
+  source: web/src/WaveGrid.tsx:311-317
   authoritative_test: web/src/WaveGrid.test.tsx:356
   owner_slice: features/wave/grid
   intentional_omission: false
