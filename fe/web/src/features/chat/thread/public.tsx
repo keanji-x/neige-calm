@@ -184,8 +184,13 @@ function ActivityLine({ activity, live }: {
  */
 export const NEW_CONVERSATION_COMMAND = Object.freeze({
   id: 'new-conversation',
-  /* The same words as `PanelAction label="New conversation"`. One action, one
-     name: a reader who has seen the `+`'s tooltip must recognise this line. */
+  /*
+   * The same words as `PanelAction label="New conversation"` — but this string
+   * is now what Astryx *filters* on, not what the row shows (the row is
+   * `renderItem`'s two columns below). Keeping the `+`'s wording here is what
+   * makes the command reachable by the name the reader has already seen on the
+   * `+`'s tooltip: `/conversation` finds it just as `/new` does.
+   */
   label: 'New conversation',
 });
 
@@ -224,9 +229,28 @@ export function ChatComposer({
     searchSource: createStaticSource([NEW_CONVERSATION_COMMAND]),
     menuLabel: 'Commands',
     emptySearchResultsText: 'No command by that name',
-    renderItem: (item) => (
+    /*
+     * One row, two columns: what you type on the left, what it does on the
+     * right. `item.label` is deliberately *not* rendered — see the token below.
+     */
+    renderItem: () => (
       <span className={styles.commandItem}>
-        <span>{item.label}</span>
+        {/*
+          * **The slash is part of the name.** `/new` and not `new`: the reader
+          * has one character in the field already, and the row that echoes it
+          * back is the row that tells them the rest of what to type. Screenshot
+          * comparison (`r7-label-slash` / `r7-label-plain`) made the same case
+          * visually — bare `new` reads as a noun in a list, `/new` reads as a
+          * thing you press. It is also what every menu of this shape does
+          * (codex, Claude Code, Slack, Discord), and a menu that spells its own
+          * commands differently from the tool next to it is a menu the reader
+          * has to learn twice.
+          *
+          * The `/` is written out rather than derived from `character` above:
+          * one command, one literal, and a `${character}new` template would be
+          * a registry's ceremony on a set of one.
+          */}
+        <span className={styles.commandName}>/new</span>
         <span className={styles.commandHint}>Opens a fresh thread; this one stays in the list.</span>
       </span>
     ),

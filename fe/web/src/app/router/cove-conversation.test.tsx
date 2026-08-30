@@ -814,7 +814,11 @@ describe('cove conversations', () => {
       expect(menu).not.toBeNull();
       const options = within(menu!).getAllByRole('option');
       expect(options).toHaveLength(1);
-      expect(options[0].textContent).toContain('New conversation');
+      /* The row shows the *token*, not the item's label: `/new` on the left is
+         the rest of what the reader has started typing. The label stays behind
+         it as the string Astryx filters on — which is why the next test still
+         types the command out in full. */
+      expect(options[0].textContent).toContain('/new');
       expect(options[0].textContent).toContain('Opens a fresh thread; this one stays in the list.');
     });
 

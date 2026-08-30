@@ -345,6 +345,10 @@
     --color-background-surface: var(--bg);
     --radius-chat: var(--nc-card-radius, var(--radius-lg));
     --_chat-composer-radius: var(--radius-chat);
+
+    /* Published for the `/` menu, which is anchored to this box rather than to
+       the caret Astryx would otherwise use — see the command menu block. */
+    anchor-name: --nc-composer-menu;
   }
 
   .composer :is(button[aria-label='Send']):not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
@@ -425,34 +429,119 @@
   }
 
   /*
-   * ── The `/` command menu's one item ───────────────────────────────────────
+   * ── The `/` command menu ─────────────────────────────────────────────────
    *
-   * The popover itself, its placement, its keyboard model and its `role=
-   * listbox` semantics are Astryx's (`useTriggerMenu`), and it is styled from
-   * Astryx's own tokens — which `styles/astryx-theme.css` already maps onto
-   * ours, so the surface reads as part of this app without anything being
-   * minted here. What Astryx has no opinion about is the *inside* of an item,
-   * because it renders a bare label by default and we render two lines.
+   * The popover, its keyboard model and its `role="listbox"` semantics are
+   * Astryx's (`useTriggerMenu`). Three things about it are ours, and they are
+   * three different kinds of override — kept in that order below, because the
+   * cost rises with each one.
    *
-   * **Two lines, and the second one is a caption.** A command is a verb with
-   * consequences; a bare `New conversation` in a menu that pops out of a text
-   * field does not say whether the words already typed go with it. So the item
-   * is a name at body rank and one sentence at `--text-xs` — the same caption
-   * tier `.activity` and `.footerError` use, which is the rank this app spends
-   * on "what just happened" everywhere else.
+   * ── 1. Surface: two variables, no selectors ─────────────────────────────
    *
-   * The row is a column rather than the default flex row, and `min-inline-size:
-   * 0` is what lets the hint ellipsise instead of forcing the popover wider
-   * than the 364px drawer it sits over.
+   * `.composer` above recesses the *well* by pointing Astryx's
+   * `--color-background-popover` at `--bg`. That variable inherits, and the
+   * trigger menu is a DOM descendant of `.composer`, so the menu was being
+   * painted the same recessed grey as the hole it grows out of — a menu with
+   * no elevation at all. tokens.css §elevation puts a menu at **+2 floating:
+   * `--paper` plus `--shadow-float`**, which is what the drawer and the dialog
+   * already take, so the fix is to say that in Astryx's own variable names on
+   * the popover's subtree. Nothing is minted and no rule reaches into Astryx's
+   * markup: the surface is drawn by Astryx's stylesheet, from our values.
+   *
+   * ── 2. Width and alignment: three `!important`s, and why ────────────────
+   *
+   * The ask is that the menu be **the width of the well and flush with it**.
+   * Astryx offers no way to say that. `ChatComposerTrigger` has no width,
+   * anchor or placement field (`character` / `searchSource` / `renderItem` /
+   * `onSelect` / three strings), and `useTriggerMenu` hard-codes the rest: it
+   * appends its own zero-size anchor span at the **caret rect**, calls
+   * `popover.render(..., {placement: 'above', alignment: 'start'})`, and
+   * `useLayer` writes `position-anchor` / `position-area` /
+   * `position-try-fallbacks` as **inline styles**. Inline styles are why this
+   * block carries `!important` on exactly those three properties and on
+   * nothing else — no specificity trick can reach an inline declaration, and
+   * layering cannot either. (Everything else here wins on layers alone:
+   * Astryx's compiled StyleX lands in `@layer astryx`, `features` is later.)
+   *
+   * What the override does is redirect the anchor from the caret to
+   * `.composer`, which publishes an `anchor-name` for exactly this, and then
+   * place the edges by hand. `position-area: none` is what makes those insets
+   * mean what they say; `position-try-fallbacks: none` stops the flip that
+   * would otherwise fire the moment a menu as wide as the well meets a
+   * viewport edge — the menu is one row tall and sits above a well that is
+   * itself inset from the drawer's bottom, so there is nothing to flip from.
+   *
+   * **Fragility, honestly.** The two selectors below name no Astryx class and
+   * no Astryx DOM shape: `[popover]` is the platform attribute `useLayer` sets
+   * on the layer element, `[role='listbox']` is the ARIA contract
+   * `useTriggerMenu` publishes and the router's Escape handler already reads.
+   * Both are semantics Astryx would have to *break its own accessibility* to
+   * change. What would break this is narrower and nameable: (a) Astryx moving
+   * from CSS anchor positioning to JS coordinates — the `!important`s would go
+   * dead and the menu would return to the caret, visibly wrong on first open,
+   * not silently; (b) a second `[popover]`-based listbox appearing inside the
+   * composer, which would then also be well-width — there is one trigger and
+   * adding another is already the moment to revisit this file. Neither is
+   * silent. This is deliberately *less* pressure than the Send-button rule
+   * above, which has to out-specify a real Astryx selector.
+   *
+   * ── 3. The row: ours outright ───────────────────────────────────────────
+   *
+   * Astryx renders a bare label and calls `renderItem` for anything else, so
+   * the inside of a row is not an override at all.
+   *
+   * **One line, two columns.** It was a stacked title and caption, which spent
+   * two lines and 60px of popover on a menu of one command and still read as a
+   * heading with a subtitle rather than as a command with a description. Now
+   * the command is on the left at body rank and what it does is on the right
+   * at `--text-xs` / `--text-3` — the caption tier `.activity` and
+   * `.footerError` already use for "what happened", which is the same register
+   * as "what this would do".
+   *
+   * **The description is the part that gives way.** `flex: none` on the name
+   * and `min-inline-size: 0` plus an ellipsis on the description is what keeps
+   * a long sentence from ever pushing `/new` out of the row: the reader must
+   * always be able to see what to type, and may lose the tail of why.
    */
+  .composer [popover] {
+    --color-background-popover: var(--paper);
+    --shadow-low: var(--shadow-float);
+  }
+
+  .composer [popover]:has([role='listbox']) {
+    position-anchor: --nc-composer-menu !important;
+    position-area: none !important;
+    position-try-fallbacks: none !important;
+    inset-block-start: auto;
+    /* The UA stylesheet gives `[popover]` `width: fit-content`, which would
+       out-rank the end inset (an over-constrained box drops it) and leave the
+       menu content-width again. `auto` is what hands both edges to the insets. */
+    inline-size: auto;
+    /* `.composer`'s box is the well plus the card inset it is padded with, so
+       both edges come back in by that same inset to land on the well. */
+    inset-inline-start: calc(anchor(left) + var(--nc-card-inset, var(--space-4)));
+    inset-inline-end: calc(anchor(right) + var(--nc-card-inset, var(--space-4)));
+    inset-block-end: anchor(top);
+  }
+
   .commandItem {
     display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
+    flex: 1;
+    gap: var(--space-4);
+    align-items: baseline;
+    justify-content: space-between;
     min-inline-size: 0;
   }
 
+  .commandName {
+    flex: none;
+    font-size: var(--text-base);
+    line-height: var(--leading-snug);
+    color: var(--text);
+  }
+
   .commandHint {
+    min-inline-size: 0;
     overflow: hidden;
     font-size: var(--text-xs);
     line-height: var(--leading-snug);
