@@ -27,8 +27,30 @@
     /* Leftover in the document track, not (1180 − 280) / 2. 100cqi is `.main`. */
     --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--document-measure)) / 2));
 
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    /*
+     * A **flex column, not a two-row grid**, and the difference is the whole
+     * reason the panel card stays put.
+     *
+     * It was `grid-template-rows: auto minmax(0, 1fr)`. A `1fr` row in a grid
+     * whose own height is definite gets exactly the leftover and never one
+     * pixel more: the row's box stayed one viewport tall while the report grew
+     * to three, and the document simply overflowed it. Nothing looked wrong,
+     * because overflow paints — but `.panel` is `position: sticky`, and sticky
+     * may only move inside *its containing block*. That block was `.content`,
+     * inside the 1fr row, so the card had ~700px of travel in a 3200px scroll
+     * and then slid off the top like ordinary content. Measured on a real wave:
+     * at scrollTop 400 the card was still at y=68, at 900 it was at −280, and
+     * by 2000 it was 1380px above the window.
+     *
+     * `flex: 1 0 auto` on the row below says both halves of what was wanted and
+     * a grid track cannot: *fill* the leftover when the document is short (the
+     * reason the `1fr` was there — an empty document centres in the space it
+     * owns), and *grow past it* when the document is long, which is what gives
+     * sticky its travel. `max-content` on the track would buy the second and
+     * lose the first.
+     */
+    display: flex;
+    flex-direction: column;
     gap: var(--space-8);
     /* Same as Today: fill `.main` so the panel sits on the trailing page pad
        (24px), not 24px plus leftover from a 1180px page cap. */
@@ -79,12 +101,24 @@
     background: var(--overlay-hover);
   }
 
+  /* The header keeps its own height. Without this it is an ordinary flex item
+     (`flex: 0 1 auto`), and once the row below grows past the page the free
+     space goes negative and the *header* is what gives way. */
+  .page > :first-child {
+    flex: none;
+  }
+
   .workspace {
     position: relative;
     display: grid;
     grid-template-rows: minmax(0, 1fr);
     min-block-size: 0;
     min-inline-size: 0;
+
+    /* Fill the leftover, then grow past it — see the note on `.page`. This is
+       the element whose box `.panel`'s sticky travel is measured against, two
+       nestings down: `.workspace` → `.content` → the card. */
+    flex: 1 0 auto;
   }
 
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry

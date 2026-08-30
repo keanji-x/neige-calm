@@ -59,6 +59,59 @@ describe('ReportTaskBlock', () => {
     expect(fields()).toEqual(['Declared by', 'Spec agent', 'Withdrawn by', 'You']);
   });
 
+  /*
+   * ── The fold ─────────────────────────────────────────────────────────────
+   *
+   * Three separate claims, because they can break independently: that the block
+   * *is* a `<details>` (so the platform gives us Enter, Space, find-in-page and
+   * print-expanded for free), that the head is its `<summary>` (so what stays
+   * when folded is which task and whether it is ready — not a bare word `Task`
+   * with no key beside it), and that it starts open (a report may not hide what
+   * it chose to state from a reader who did not ask).
+   *
+   * The head's own contents are asserted here rather than left to the test
+   * above: moving a field out of `<summary>` is exactly the regression that
+   * would leave a folded task unidentifiable, and it is invisible to any test
+   * that only asks whether the text is *somewhere* in the document.
+   */
+  it('folds: the head is the summary, the detail is the body, and it opens open', () => {
+    const { container } = render(<ReportTaskBlock payload={{
+      key: 'ingest-resolver', kind: 'codex', declared_by: 'spec', ready: true,
+      goal: 'Route the ingest call sites through the resolver.',
+      acceptance: 'No direct call sites left.',
+    }} />);
+
+    const details = container.querySelector('details');
+    expect(details).not.toBeNull();
+    expect(details!.open).toBe(true);
+
+    const summary = details!.querySelector('summary')!;
+    /* Folded, this row is the whole block, so it has to carry the identity. */
+    expect(summary.textContent).toContain('Task');
+    expect(summary.textContent).toContain('ingest-resolver');
+    expect(summary.textContent).toContain('codex');
+    expect(summary.textContent).toContain('Ready');
+    /* And the detail is *outside* it, or nothing is folded away. */
+    expect(summary.textContent).not.toContain('Route the ingest call sites');
+    expect(summary.querySelector('dl')).toBeNull();
+    expect(details!.querySelector('dl')).not.toBeNull();
+  });
+
+  /* A withdrawn task folds too. It is the smaller of the two shapes and the one
+     a reader is least likely to want open, so shipping the fold on only the live
+     branch would be the wrong half. */
+  it('folds a withdrawn task as well, on the same summary', () => {
+    const { container } = render(<ReportTaskBlock payload={{
+      key: 'walk-fallback', declared_by: 'spec', tombstoned_by: 'user',
+      tombstone: { reason: 'A fallback that never runs is one nobody notices has broken.' },
+    }} />);
+    const summary = container.querySelector('details > summary');
+    expect(summary).not.toBeNull();
+    expect(summary!.textContent).toContain('walk-fallback');
+    expect(summary!.textContent).toContain('Withdrawn');
+    expect(summary!.textContent).not.toContain('A fallback that never runs');
+  });
+
   // A live task may carry an explicit `tombstone: null`, so the tombstone key is
   // not the discriminant — the attribution is.
   it('reads a task carrying an explicit null tombstone as live', () => {
