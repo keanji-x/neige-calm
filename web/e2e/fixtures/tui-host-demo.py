@@ -30,6 +30,7 @@ import termios
 COPY_MARKER = "neige-osc52-ok"
 READY_MARKER = "TUI_HOST_DEMO_READY"
 STOP = False
+RESIZED = False
 CONVERSATION = [f"conversation line {i}" for i in range(40)]
 CONTENT = [f"content block {i}" for i in range(40)]
 
@@ -68,6 +69,16 @@ def make_raw(attrs: list) -> list:
 def on_stop(_signum, _frame) -> None:
     global STOP
     STOP = True
+
+
+def on_winch(_signum, _frame) -> None:
+    """Flag ONLY — the repaint happens in run()'s select loop.
+
+    Drawing from inside the handler would interleave with an in-flight
+    write_all() and tear the escape sequences mid-stream.
+    """
+    global RESIZED
+    RESIZED = True
 
 
 def write_all(fd: int, data: bytes) -> None:
@@ -134,9 +145,15 @@ class Demo:
             chunks.append(f"\x1b[{i + 2};1H".encode() + line.encode("ascii", "replace"))
         status = clip(f" {self.last}", cols)
         chunks.append(f"\x1b[{rows - 1};1H".encode() + status.encode("ascii", "replace"))
-        footer = " y=copy  wheel=pane under cursor  q=quit  " + READY_MARKER
+        # Markers FIRST, hints last: draw() clips the footer to the terminal
+        # width and size() floors cols at 20, so a 19-char marker starting at
+        # column 1 survives every width the host can hand us. With the marker at
+        # the tail a 60-column card chopped it to TUI_HOST_DEMO_READ and the
+        # e2e poll timed out (#1152). The hints are cosmetic and may clip.
+        footer = READY_MARKER
         if self.copied:
             footer += "  COPIED=" + COPY_MARKER
+        footer += "  y=copy  wheel=pane under cursor  q=quit"
         chunks.append(f"\x1b[{rows};1H".encode() + clip(footer, cols).encode("ascii", "replace"))
         write_all(self.fd, b"".join(chunks))
 
@@ -192,7 +209,14 @@ def run(fd: int) -> None:
     demo.draw()
     demo.copy()
     pending = bytearray()
+    global RESIZED
     while not STOP:
+        if RESIZED:
+            # The host resizes the pty after attach; without this the very first
+            # paint (at whatever width we happened to start with) would be the
+            # only one until input arrives.
+            RESIZED = False
+            demo.draw()
         if not select.select([fd], [], [], 0.25)[0]:
             continue
         chunk = os.read(fd, 4096)
@@ -221,6 +245,7 @@ def run(fd: int) -> None:
 def main() -> int:
     for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM):
         signal.signal(sig, on_stop)
+    signal.signal(signal.SIGWINCH, on_winch)
     signal.alarm(int(os.environ.get("TUI_HOST_DEMO_SECONDS", "120")))
     try:
         fd = os.open("/dev/tty", os.O_RDWR)
