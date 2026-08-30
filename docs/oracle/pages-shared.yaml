@@ -2605,7 +2605,7 @@
     未过滤数组的下标。
   why: >
     过滤后的下标与内核数组下标不同,直接透传会删错卡。
-  source: web/src/pages/Wave.tsx:247-251,462-482
+  source: web/src/pages/Wave.tsx:247-251,479-499
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false
@@ -2623,7 +2623,7 @@
   why: >
     三条测试逐一锁定("keeps AddPanel visible in report mode" / "shows the report toggle and AddPanel even
     for worker-only waves" / "renders the report empty state when explicit report mode has no report card")。
-  source: web/src/pages/Wave.tsx:331-485
+  source: web/src/pages/Wave.tsx:348-502
   authoritative_test: web/src/pages/Wave.test.tsx:555,577,606
   owner_slice: features/wave/page
   intentional_omission: false
@@ -2641,7 +2641,7 @@
   why: >
     源码注释:"Reset both error channels on every new attempt so a stale error from a previous failed add
     doesn't linger past the next click." 测试 "shows a codex create 500 inline and keeps the modal open"。
-  source: web/src/pages/Wave.tsx:151-194,428-435,509-513,523-527
+  source: web/src/pages/Wave.tsx:151-194,445-452,526-530,540-544
   authoritative_test: web/src/pages/Wave.test.tsx:390
   owner_slice: features/wave/page
   intentional_omission: false
@@ -2659,7 +2659,7 @@
   why: >
     源码注释:"skip the SchemaForm wrapper entirely and let the user pick a directory = create.
     Today only codex hits this path."
-  source: web/src/pages/Wave.tsx:486-516
+  source: web/src/pages/Wave.tsx:503-533
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: true
@@ -2695,7 +2695,7 @@
   why: >
     与 CovePage 的 EditableTitle 同一套 #56 followup 可访问名拆分("parity with CovePage's heading");
     "drops the keyboard affordance entirely when onRenameWave is absent" 锁定无回调时不加任何 role/tabIndex。
-  source: web/src/pages/Wave.tsx:196-243,361-414
+  source: web/src/pages/Wave.tsx:196-243,378-431
   authoritative_test: web/src/pages/Wave.test.tsx:214,253,272,299,319,350
   owner_slice: features/wave/page
   intentional_omission: false
@@ -2712,7 +2712,7 @@
   why: >
     源码注释:"WaveGrid pulls in react-grid-layout (~50 KB minified) … an empty wave (no cards yet) doesn't
     pay the grid cost at all on first paint. The flash on first navigation is intentional."
-  source: web/src/pages/Wave.tsx:28-42,455-461
+  source: web/src/pages/Wave.tsx:28-42,472-478
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: true
@@ -2730,7 +2730,7 @@
     源码注释(#145):"After the WaveLifecycle unification (drop WaveStatus) this is the sole status-pill on
     the wave header — the legacy secondary status pill, plus the card-aggregate FSM dot/verb, used to
     re-derive the same signal and have been folded back into the lifecycle."
-  source: web/src/pages/Wave.tsx:245,416-427
+  source: web/src/pages/Wave.tsx:245,433-444
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: true
@@ -4642,7 +4642,7 @@
   why: >
     Wave.tsx 注释自称 "Same accessible-name split as CovePage's EditableTitle (#56 followup)" —— 两处刻意
     对齐;但 #288 的 re-entry 竞态只在 Cove 版被修过。**新架构合并时必须把抑制器带进统一实现,而不是删掉。**
-  source: web/src/pages/Cove.tsx:213-417 + web/src/pages/Wave.tsx:196-243,361-414
+  source: web/src/pages/Cove.tsx:213-417 + web/src/pages/Wave.tsx:196-243,378-431
   authoritative_test: web/src/pages/Cove.test.tsx:138 + web/src/pages/Wave.test.tsx:350
   owner_slice: ui/editable-title
   intentional_omission: false
@@ -4700,7 +4700,7 @@
   why: >
     注释声称是给 wave-report 卡读 lifecycle 用的(#229 PR B),但报告已改由 WaveReportPage 直接拿 wave prop
     渲染,消费方消失了。保留 provider 会让新架构误以为存在隐式依赖。
-  source: web/src/shared/components/WaveContext.ts:1-36 + web/src/pages/Wave.tsx:336,540
+  source: web/src/shared/components/WaveContext.ts:1-36 + web/src/pages/Wave.tsx:353,557
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false

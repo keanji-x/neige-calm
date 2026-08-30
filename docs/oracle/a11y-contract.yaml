@@ -364,7 +364,7 @@
     Grid(`WaveGrid`)、List(`WaveList`)
   why: >
     Slice 9 的 Path C 决议：不给 grid 加键盘故事，而是另起一个 list 组件
-  source: web/src/pages/Wave.tsx:253-274,451-482
+  source: web/src/pages/Wave.tsx:253-274,468-499
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:699
   owner_slice: features/wave/page
   intentional_omission: false
@@ -1038,7 +1038,7 @@
     §3.1 记录的确切序列。这是「WavePage 的 Tab 顺序应该是什么」的唯一记录处，
     无 lint 无单测。卡片内部的 stop 依 kind 而定（xterm 激活后抢焦点，plugin iframe
     自管内部序列）
-  source: web/src/pages/Wave.tsx:342-482
+  source: web/src/pages/Wave.tsx:359-499
   authoritative_test: NONE
   owner_slice: features/wave/page
   intentional_omission: false

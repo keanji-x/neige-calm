@@ -321,10 +321,27 @@ export function WavePage({
     ? 'grid'
     : persistedViewMode;
 
+  // A changed anchor is a new arrival, so it re-arms. Without this, going
+  // `#card-a` → anywhere else → `#card-a` again would find `card-a` still
+  // marked consumed and silently do nothing — the very symptom this page is
+  // being fixed for, one navigation further along.
+  const lastRevealRef = useRef(revealCardId);
+  if (lastRevealRef.current !== revealCardId) {
+    lastRevealRef.current = revealCardId;
+    if (revealConsumed !== undefined) setRevealConsumed(undefined);
+  }
+
   // Any explicit view choice consumes the hash: the user has now said what they
   // want to look at, and a stale anchor must not keep overriding them.
+  //
+  // It also *drops* the anchor from the URL, which is what makes a second click
+  // on the same link work. Consumption alone cannot: clicking a `<Link>` whose
+  // hash already matches the location is not a navigation, so nothing would
+  // change and the reveal would never re-arm. `onGo` re-navigates to this same
+  // wave without a hash, so the next click is a real change again.
   const chooseViewMode = (mode: ViewMode) => {
     setRevealConsumed(revealCardId);
+    if (revealCardId !== undefined) onGo({ name: 'wave', id: wave.id });
     setViewMode(mode);
   };
 

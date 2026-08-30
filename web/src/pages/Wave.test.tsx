@@ -27,7 +27,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { WavePage } from './Wave';
-import type { Cove, Wave, WaveCardSlot } from '../types';
+import type { Cove, Route, Wave, WaveCardSlot } from '../types';
 import * as api from '../api/calm';
 import { DARK_THEME_RGB } from '../api/themeRgb';
 import type { WaveReportCardData } from '../cards/builtins/wave-report';
@@ -801,14 +801,14 @@ describe('WavePage worker-card hash', () => {
     } as WaveCardSlot;
   }
 
-  function renderWave(overlay?: KernelOverlay) {
+  function renderWave(overlay?: KernelOverlay, onGo: (r: Route) => void = () => {}) {
     vi.mocked(api.listOverlays).mockResolvedValue(overlay ? [overlay] : []);
     return render(
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
           cove={makeCove()}
-          onGo={() => {}}
+          onGo={onGo}
           onAddCard={() => {}}
           onRemoveCard={() => {}}
           onRenameWave={() => {}}
@@ -864,6 +864,69 @@ describe('WavePage worker-card hash', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(button).toHaveAccessibleName('Report view — switch to grid view');
     expect(screen.getByText('Report body')).toBeInTheDocument();
+  });
+
+  it('drops the anchor when the user picks a view, so the same link works twice', async () => {
+    // Consumption alone is not enough: clicking a <Link> whose hash already
+    // matches the location is not a navigation, so a second click on the same
+    // "Open worker output" would change nothing and the reveal would never
+    // re-arm — the same silent no-op this page is being fixed for.
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockImplementation(async (body) => echoOverlay(body));
+    const onGo = vi.fn();
+    window.location.hash = '#card_w1';
+
+    renderWave(undefined, onGo);
+
+    const button = await screen.findByRole('button', {
+      name: /^Grid view — switch to list view$/i,
+    });
+    await user.click(button);
+
+    expect(onGo).toHaveBeenCalledWith({ name: 'wave', id: 'w1' });
+  });
+
+  it('re-arms when the anchor changes and comes back', async () => {
+    // `#card_w1` → elsewhere → `#card_w1` again. Latching consumption on the
+    // card id alone left it marked consumed forever.
+    vi.mocked(api.upsertOverlay).mockImplementation(async (body) => echoOverlay(body));
+    const user = userEvent.setup();
+    window.location.hash = '#card_w1';
+
+    const { rerender } = renderWave();
+    const button = await screen.findByRole('button', {
+      name: /^Grid view — switch to list view$/i,
+    });
+    await user.click(button);
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('List view — switch to report view'),
+    );
+
+    // Back to report, then away from the anchor and onto it again.
+    await user.click(button);
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Report view — switch to grid view'),
+    );
+    const tree = (
+      <WavePage
+        wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
+        cove={makeCove()}
+        onGo={() => {}}
+        onAddCard={() => {}}
+        onRemoveCard={() => {}}
+        onRenameWave={() => {}}
+      />
+    );
+    window.location.hash = '#b_1f3a';
+    rerender(withClient(tree));
+    expect(screen.queryByTestId('wave-grid-stub')).not.toBeInTheDocument();
+
+    window.location.hash = '#card_w1';
+    rerender(withClient(tree));
+    expect(await screen.findByTestId('wave-grid-stub')).toHaveAttribute(
+      'data-reveal-card-id',
+      'card_w1',
+    );
   });
 
   it('reveals in place instead of leaving list, which the user chose', async () => {
