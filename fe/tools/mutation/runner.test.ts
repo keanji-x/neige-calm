@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
   evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, failureDetailMessageChars,
+  failureDetailMessagesPerTest, failureDetailOmittedIdLimit, failureDetailTestIdChars,
   failureDetailTestLimit, judgeMutation,
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
   parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
@@ -475,16 +476,60 @@ describe('over-red failure detail evidence', () => {
       `${'x'.repeat(failureDetailMessageChars)}\n[truncated: kept ${failureDetailMessageChars} of ${long.length} characters]`,
     );
   });
-  // The point of the cap is that a 50x-bigger input does not produce a 50x-bigger log line: the
-  // payload stays at the cap and only the (short) notice varies.
-  it('bounds the emitted size no matter how huge the original message was', () => {
+  // A per-MESSAGE bound bounds nothing on its own: parseVitestReport accumulates messages across
+  // colliding fullNames, so N x the char cap is unbounded in N. Measured before the per-test cap
+  // existed: one test id with 200 messages of 5000 chars emitted 409,274 bytes with `note: null`.
+  // So assert the bound that actually holds — on the WHOLE emitted block, not one message.
+  it('bounds the whole emitted block no matter how many huge messages one test collected', () => {
     const huge = 'x'.repeat(failureDetailMessageChars * 50);
-    const [only] = unexpectedFailureDetails(['big'], [], { big: [huge] }).tests;
-    expect(only.messages[0].length).toBeLessThan(failureDetailMessageChars + 100);
+    const details = unexpectedFailureDetails(['big'], [], { big: Array.from({ length: 200 }, () => huge) });
+    const emitted = JSON.stringify(details);
+    expect(emitted.length)
+      .toBeLessThan((failureDetailMessageChars + 200) * failureDetailMessagesPerTest + 500);
+    // And it is FLAT in the message count: 6 vs 200 differ only by the digits in the notice.
+    const fewer = JSON.stringify(unexpectedFailureDetails(['big'], [], { big: Array.from({ length: 6 }, () => huge) }));
+    expect(emitted.length - fewer.length).toBeLessThan(10);
   });
-  it('leaves a message one character under the cap untouched', () => {
-    const short = 'x'.repeat(failureDetailMessageChars);
-    expect(unexpectedFailureDetails(['fits'], [], { fits: [short] }).tests[0].messages).toEqual([short]);
+  it('announces the dropped messages inline and in the note', () => {
+    const details = unexpectedFailureDetails(['big'], [], { big: Array.from({ length: 200 }, (_v, i) => `boom ${i}`) });
+    expect(details.tests[0].messages).toEqual([
+      ...Array.from({ length: failureDetailMessagesPerTest }, (_v, i) => `boom ${i}`),
+      `[capped: kept ${failureDetailMessagesPerTest} of 200 failure messages for this test]`,
+    ]);
+    expect(details.note)
+      .toBe(`capped the failure messages of 1 of 1 reported test(s) at ${failureDetailMessagesPerTest} each`);
+  });
+  it('leaves a message exactly at the cap untouched', () => {
+    const exact = 'x'.repeat(failureDetailMessageChars);
+    expect(unexpectedFailureDetails(['fits'], [], { fits: [exact] }).tests[0].messages).toEqual([exact]);
+  });
+  it('truncates at the very first character over the cap', () => {
+    const over = 'x'.repeat(failureDetailMessageChars + 1);
+    expect(unexpectedFailureDetails(['edge'], [], { edge: [over] }).tests[0].messages[0]).toBe(
+      `${'x'.repeat(failureDetailMessageChars)}\n[truncated: kept ${failureDetailMessageChars} of ${over.length} characters]`,
+    );
+  });
+  // omitted_test_ids is the OVERFLOW list, so it grows exactly when the block is already at its
+  // worst; and a vitest fullName is an unbounded concatenation of describe titles.
+  it('caps the omitted id list itself and announces that second cap too', () => {
+    const ids = Array.from({ length: failureDetailTestLimit + failureDetailOmittedIdLimit + 40 },
+      (_v, index) => `t${String(index).padStart(4, '0')}`);
+    const details = unexpectedFailureDetails(ids, [], {});
+    const omittedCount = ids.length - failureDetailTestLimit;
+    expect(details.omitted_test_ids).toHaveLength(failureDetailOmittedIdLimit);
+    expect(details.omitted_test_ids)
+      .toEqual(ids.slice(failureDetailTestLimit, failureDetailTestLimit + failureDetailOmittedIdLimit));
+    expect(details.note).toBe(
+      `capped at ${failureDetailTestLimit} of ${ids.length} unexpected-red tests; ${omittedCount} omitted (ids in omitted_test_ids). `
+      + `omitted_test_ids itself capped at ${failureDetailOmittedIdLimit} of ${omittedCount} ids`,
+    );
+  });
+  it('bounds an unbounded test name in both the reported and the omitted list', () => {
+    const long = 'n'.repeat(failureDetailTestIdChars + 11);
+    const capped = `${'n'.repeat(failureDetailTestIdChars)}[truncated: kept ${failureDetailTestIdChars} of ${long.length} characters]`;
+    expect(unexpectedFailureDetails([long], [], { [long]: ['boom'] }).tests[0].test_id).toBe(capped);
+    const ids = [...Array.from({ length: failureDetailTestLimit }, (_v, index) => `a${index}`), long];
+    expect(unexpectedFailureDetails(ids, [], {}).omitted_test_ids).toEqual([capped]);
   });
   it('caps the test count, lists the omitted ids, and notes the cap', () => {
     const ids = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];

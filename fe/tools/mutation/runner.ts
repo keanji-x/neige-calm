@@ -138,16 +138,59 @@ export function parseFailedTestIds(json: string): string[] {
 /**
  * Caps for the `failure_details` block run.mjs writes into the mutation report. That report is
  * echoed to the CI log AND uploaded as an artifact, so an unbounded dump of every red test's stack
- * is a real cost. Both caps are announced in the emitted value rather than applied silently: a
+ * is a real cost. EVERY cap is announced in the emitted value rather than applied silently: a
  * quietly truncated error reads as the whole error, which is exactly the misdiagnosis this
  * evidence exists to prevent (#1152).
+ *
+ * Five independent axes can each blow the block up on their own, so each gets its own bound:
+ *
+ *  - `MessageChars` — one stack/diff can be megabytes on a deep-equality assertion.
+ *  - `TestLimit` — a mutation that reds the whole suite has hundreds of unexpected ids.
+ *  - `MessagesPerTest` — `parseVitestReport` deliberately ACCUMULATES messages across colliding
+ *    `fullName`s (see VitestReportSummary), and a single test may also emit many on its own. Without
+ *    this cap the per-message char bound bounds nothing: N messages x the char cap is unbounded in N.
+ *    Measured before this cap existed: one test with 200 messages emitted 409 KB with `note: null`.
+ *  - `OmittedIdLimit` / `TestIdChars` — `omitted_test_ids` is the OVERFLOW list, so it grows exactly
+ *    when the block is already at its worst, and a vitest `fullName` is an unbounded concatenation
+ *    of describe titles.
  */
 export const failureDetailMessageChars = 2000;
 export const failureDetailTestLimit = 5;
+export const failureDetailMessagesPerTest = 3;
+export const failureDetailOmittedIdLimit = 50;
+export const failureDetailTestIdChars = 200;
 
+export interface FailureDetailLimits {
+  tests: number;
+  messageChars: number;
+  messagesPerTest: number;
+  omittedIds: number;
+  testIdChars: number;
+}
+
+export const failureDetailLimits: Readonly<FailureDetailLimits> = Object.freeze({
+  tests: failureDetailTestLimit,
+  messageChars: failureDetailMessageChars,
+  messagesPerTest: failureDetailMessagesPerTest,
+  omittedIds: failureDetailOmittedIdLimit,
+  testIdChars: failureDetailTestIdChars,
+});
+
+/**
+ * Known and accepted: the cut is in UTF-16 units, so a message of astral characters is up to 4x
+ * this many UTF-8 bytes and an odd cut leaves a lone surrogate. `JSON.stringify` escapes that to
+ * `\udXXX` and it round-trips, so this is a size-honesty limit, not a correctness one — and vitest
+ * failure messages are assertion text and stack frames, which are ASCII in practice.
+ */
 export function truncateFailureMessage(message: string, limit: number = failureDetailMessageChars): string {
   if (message.length <= limit) return message;
   return `${message.slice(0, limit)}\n[truncated: kept ${limit} of ${message.length} characters]`;
+}
+
+/** Same announce-the-cut discipline as truncateFailureMessage, on one line because an id is one line. */
+export function truncateTestId(testId: string, limit: number = failureDetailTestIdChars): string {
+  if (testId.length <= limit) return testId;
+  return `${testId.slice(0, limit)}[truncated: kept ${limit} of ${testId.length} characters]`;
 }
 
 export interface FailureDetails {
@@ -160,30 +203,53 @@ export interface FailureDetails {
  * Failure messages for the tests that went red WITHOUT being declared in `expected_red` — the
  * over-red set. Expected reds are the mutation working as designed; their messages are noise that
  * would bury the one unexplained failure. Ids are sorted so the block is stable across runs.
+ *
+ * The emitted block is bounded on every axis: at most `tests` entries, each with at most
+ * `messagesPerTest` messages of at most `messageChars` characters, plus at most `omittedIds` ids of
+ * at most `testIdChars` characters. Every cut that actually fired says so — inline for the message
+ * list, in `note` for the rest.
  */
 export function unexpectedFailureDetails(
   failedTestIds: readonly string[],
   expectedRed: readonly string[],
   failureMessagesByTestId: Readonly<Record<string, string[]>>,
-  limits: { tests: number; messageChars: number } = { tests: failureDetailTestLimit, messageChars: failureDetailMessageChars },
+  limits: Partial<FailureDetailLimits> = {},
 ): FailureDetails {
+  const bounds: FailureDetailLimits = { ...failureDetailLimits, ...limits };
   const expected = new Set(expectedRed);
   const unexpected = [...new Set(failedTestIds)].filter((testId) => !expected.has(testId)).sort();
-  const kept = unexpected.slice(0, Math.max(0, limits.tests));
+  const kept = unexpected.slice(0, Math.max(0, bounds.tests));
   const omitted = unexpected.slice(kept.length);
+  let testsWithCappedMessages = 0;
   const tests = kept.map((testId) => {
     const messages = failureMessagesByTestId[testId] ?? [];
-    return {
-      test_id: testId,
-      messages: messages.length === 0
-        ? ['[no failureMessages for this test in the vitest JSON report]']
-        : messages.map((message) => truncateFailureMessage(message, limits.messageChars)),
-    };
+    if (messages.length === 0) {
+      return { test_id: truncateTestId(testId, bounds.testIdChars), messages: ['[no failureMessages for this test in the vitest JSON report]'] };
+    }
+    const keptMessages = messages.slice(0, Math.max(0, bounds.messagesPerTest));
+    const rendered = keptMessages.map((message) => truncateFailureMessage(message, bounds.messageChars));
+    if (keptMessages.length < messages.length) {
+      testsWithCappedMessages += 1;
+      rendered.push(`[capped: kept ${keptMessages.length} of ${messages.length} failure messages for this test]`);
+    }
+    return { test_id: truncateTestId(testId, bounds.testIdChars), messages: rendered };
   });
-  const note = omitted.length === 0
-    ? null
-    : `capped at ${kept.length} of ${unexpected.length} unexpected-red tests; ${omitted.length} omitted (ids in omitted_test_ids)`;
-  return { tests, omitted_test_ids: omitted, note };
+  const keptOmittedIds = omitted.slice(0, Math.max(0, bounds.omittedIds));
+  const clauses: string[] = [];
+  if (omitted.length > 0) {
+    clauses.push(`capped at ${kept.length} of ${unexpected.length} unexpected-red tests; ${omitted.length} omitted (ids in omitted_test_ids)`);
+  }
+  if (keptOmittedIds.length < omitted.length) {
+    clauses.push(`omitted_test_ids itself capped at ${keptOmittedIds.length} of ${omitted.length} ids`);
+  }
+  if (testsWithCappedMessages > 0) {
+    clauses.push(`capped the failure messages of ${testsWithCappedMessages} of ${kept.length} reported test(s) at ${Math.max(0, bounds.messagesPerTest)} each`);
+  }
+  return {
+    tests,
+    omitted_test_ids: keptOmittedIds.map((testId) => truncateTestId(testId, bounds.testIdChars)),
+    note: clauses.length === 0 ? null : clauses.join('. '),
+  };
 }
 
 /**
