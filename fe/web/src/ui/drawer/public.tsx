@@ -16,35 +16,50 @@ import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
 /**
- * Ask `element` to take focus, and report whether it actually did.
+ * Ask `element` to take focus, and report whether the focus landed somewhere a
+ * reader can actually be.
  *
- * This used to be `canTakeFocus`, a *prediction*: connected, not `disabled`,
- * not under `aria-hidden`, and computed `visibility`/`display` both permissive.
- * Every clause of that was measured against Chromium and two of them were
- * backwards. `display` does not inherit, so reading it off the element says
- * nothing about a `display: none` **ancestor** — the exact case the docstring
- * claimed to cover — and `content-visibility: hidden` is invisible to it for
- * the same reason; both returned "yes, focusable" for an element `focus()`
- * cannot reach. In the other direction `aria-hidden` does not stop `focus()`
- * at all, so that clause vetoed targets that would have worked.
+ * **Two different questions, answered two different ways, and the split is the
+ * point.**
  *
- * Predicting focusability from CSS means re-deriving the engine's own
- * focusability rules by hand, and a wrong prediction here is not inert: the
- * caller uses it to decide whether to *wait*, so a false "yes" spends the one
- * armed restore on a `focus()` that silently no-ops and drops the opener.
+ * *Can the engine put focus here?* is decided by **calling `focus()` and
+ * reading `document.activeElement` back**. This used to be `canTakeFocus`, a
+ * prediction from computed CSS — connected, not `disabled`, `visibility` and
+ * `display` both permissive — and two of its clauses were backwards against
+ * Chromium. `display` does not inherit, so reading it off the element says
+ * nothing about a `display: none` **ancestor**, the exact case the docstring
+ * claimed to cover; `content-visibility: hidden` is invisible to it for the
+ * same reason. Both answered "yes, focusable" for an element `focus()` cannot
+ * reach, and a false yes is not inert here — the caller uses it to decide
+ * whether to *wait*, so it spends the one armed restore on a silent no-op and
+ * drops the opener. Predicting focusability from CSS is re-deriving the
+ * engine's rules by hand; the outcome cannot disagree with the engine, so the
+ * outcome is what is read. A `focus()` that does not take moves focus nowhere,
+ * so asking speculatively costs nothing.
  *
- * So there is no prediction. `focus()` is called and `document.activeElement`
- * is read back, which is the outcome itself and cannot disagree with the
- * engine. A `focus()` that does not take is a no-op — it does not move focus
- * anywhere else — so calling it speculatively costs nothing and leaves the
- * caller free to try again on the next render.
+ * *Should focus be here even though the engine allows it?* cannot be answered
+ * that way, because `focus()` **succeeds** into an `aria-hidden` or `inert`
+ * subtree — `aria-hidden` is an accessibility-tree statement with no effect on
+ * focusability at all, and `inert`'s own removal is not observable through
+ * `activeElement` on every path. A landing there reads back as a triumph while
+ * the target does not exist in the tree a screen reader is walking: the reader
+ * is told nothing, and the caller cancels the fallback that would have put them
+ * somewhere real. So these two are checked **by attribute, before the ask** —
+ * the old predicate had this clause and it was right; what was wrong with it
+ * was the CSS half, which is gone.
+ *
+ * `closest()` and not a computed read, because both attributes inherit down the
+ * subtree by definition rather than by cascade, and that is precisely what
+ * `closest()` walks.
  *
  * jsdom implements `focus()` for real on genuinely focusable elements (and
  * computes no CSS, so nothing there is ever hidden); the CSS-driven failures
- * this exists for are therefore only observable in
- * `app/shell/drawer-seam.browser.test.tsx`, where the stylesheets are real.
+ * the `focus()` half exists for are therefore only observable in
+ * `app/shell/drawer-seam.browser.test.tsx`, where the stylesheets are real. The
+ * attribute half is engine-independent and is pinned at the unit tier.
  */
 function focusTook(element: HTMLElement): boolean {
+  if (element.closest('[aria-hidden="true"], [inert]') !== null) return false;
   element.focus();
   return document.activeElement === element;
 }

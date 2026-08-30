@@ -60,11 +60,30 @@ afterEach(() => { document.body.replaceChildren(); });
 
 /**
  * The cascade order the document actually ended up with, read off the first
- * `@layer` rule in sheet order — which is the rule that *fixes* the order,
- * because registration is first-come and later mentions cannot reorder.
- * Duplicated verbatim in `features/chat/thread/thread.browser.test.tsx` rather
- * than shared: it is a probe of a file's own import order, so a copy that
- * travels with the file is the point.
+ * top-level `@layer` rule in sheet order — which is the rule that *fixes* the
+ * order, because registration is first-come and later mentions cannot reorder.
+ * Duplicated verbatim in
+ * `features/chat/thread/thread.browser.test.tsx` rather than shared: it is a
+ * probe of a file's own import order, so a copy that travels with the file is
+ * the point.
+ *
+ * **What it does not see, stated so nobody reads it as stronger than it is.**
+ * It stops at the first top-level statement or block it finds and looks no
+ * further, so three registrations are invisible to it: `@import ... layer(x)`
+ * (a `CSSImportRule` carrying a `layerName`, not a layer rule), a layer opened
+ * inside `@media`/`@supports`, and a stylesheet that registers layers *before*
+ * the first sheet carrying a top-level `@layer`. Any of those could have fixed
+ * a wrong order earlier than the statement this returns, and the probe would
+ * report the statement and pass.
+ *
+ * That is a false-green in one direction only — it never reports a wrong order
+ * for a right page — and the shape it exists to catch is the one that has
+ * actually shipped twice: a CSS Module's own `@layer ui`/`@layer features`
+ * block registering first because the component was imported before
+ * `entry.css`. Those are plain top-level blocks in the sheets this file loads,
+ * so the probe sees them. Hardening it into a full recursive walk would be
+ * pinning cases this app's build does not produce; if `@import layer()` or a
+ * conditional layer ever enters `styles/`, this needs to grow with it.
  */
 function registeredLayerOrder(): readonly string[] {
   for (const sheet of [...document.styleSheets]) {
@@ -202,42 +221,99 @@ describe('the drawer against a real rendering engine', () => {
   });
 
   /*
-   * The same fallback, reached through the hiding mechanism the old guard got
-   * **backwards** — and the only test that ever exercised the post-hoc check at
-   * all. (Deleting that check left the whole browser suite green; this is the
-   * gap that closed.)
+   * ── The `display` half of the old predicate, isolated so it can be wrong ──
    *
    * `display` does not inherit. A button inside a `display: none` subtree still
    * computes `display: inline-block` on itself, so the predicate that read
    * `style.display !== 'none'` off the element answered "focusable" for an
-   * element `focus()` cannot reach — the exact case its own docstring named.
-   * A false yes here is not inert: it made the restore stop waiting, spend its
-   * one armed attempt on a silent no-op, and hand the document to `<body>`.
-   * `content-visibility: hidden` fooled it the same way for the same reason.
+   * element `focus()` cannot reach — the exact case its own docstring named. A
+   * false yes is not inert: it makes the restore stop waiting, spend its one
+   * armed attempt on a silent no-op, and hand the document to the fallback (or,
+   * where there is no fallback, to `<body>`).
    *
-   * Today `shell.module.css` hides the column with `visibility`, which the old
-   * predicate happened to get right — so this pins the guard rather than the
-   * stylesheet, and stays honest if that rule is ever rewritten.
+   * **The obvious way to write this test is worthless, and it was written that
+   * way.** The previous version put `display: none` on the *panel column* and
+   * asserted the terminal focus. Neither half survived measurement:
+   *
+   *   - The column is already `visibility: hidden` while a drawer is up
+   *     (`shell.module.css`, off `[data-nc-drawer]`), and the old predicate got
+   *     `visibility` **right**. So it returned false there for the right reason
+   *     and the `display` clause never ran. The scenario named `display` and
+   *     exercised `visibility`.
+   *   - Even with that fixed, both implementations end on the page title: the
+   *     old one because it gave up immediately, the new one because it waited
+   *     and the opener was still hidden when the wait ended. Same terminal
+   *     focus, so a test that reads only the terminal focus discriminates
+   *     nothing. Reverting `ui/drawer/public.tsx` wholesale to `canTakeFocus`
+   *     plus the post-hoc check left the browser suite fully green with that
+   *     test among them. Measured, not assumed.
+   *
+   * So this one hides the opener with `display` **and nothing else** — its own
+   * host outside the panel column, so no `visibility` rule reaches it — and
+   * hides it *conditionally on the drawer being up*, which is the shape of the
+   * real seam. That makes the two implementations end in different places:
+   *
+   *   old  → predicate says "focusable", no wait, `focus()` no-ops, fallback
+   *          fires while the drawer is still retracting → the page title.
+   *   new  → `focusTook` reports the truth, the restore stays armed through
+   *          `closing`, the host is visible again the moment the drawer leaves
+   *          → the opener, which is where the reader came from.
+   *
+   * Both the intermediate state and the terminal one are read, because each
+   * catches a different way of getting this wrong.
    */
-  it('lands on the page title, not <body>, when the opener is inside a display:none subtree', async () => {
+  it('waits out the retraction for an opener only `display` was hiding, and lands on it', async () => {
     await page.viewport(1400, 900);
     render(<Page />);
-    opener().focus();
+    const main = document.querySelector('main')!;
+
+    /* A host of its own, outside `[data-nc-panel]`, so the column's
+       `visibility` rule cannot reach it and `display` is the only thing in
+       play. Hidden by a rule keyed on the drawer's own marker rather than by an
+       inline style, so it un-hides in the same commit the drawer unmounts in —
+       which is the commit the restore wakes up in. */
+    const host = main.appendChild(document.createElement('div'));
+    host.dataset.testid = 'host';
+    const hiddenOpener = host.appendChild(document.createElement('button'));
+    hiddenOpener.textContent = 'Opener on a display-hidden host';
+    const sheet = document.head.appendChild(document.createElement('style'));
+    sheet.textContent = 'main:has([data-nc-drawer]) [data-testid="host"] { display: none }';
+
+    hiddenOpener.focus();
     await click(opener());
     const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
 
-    const column = opener().closest<HTMLElement>('[data-nc-panel]')!;
-    column.style.display = 'none';
     /* The trap, stated as a measurement: the opener's *own* computed display is
-       untouched by its ancestor's, and it is still connected. */
-    expect(getComputedStyle(opener()).display).not.toBe('none');
-    expect(opener().isConnected).toBe(true);
+       untouched by its ancestor's, its `visibility` is untouched by anything,
+       and it is still connected — so every clause of the old predicate says
+       "focusable" about an element `focus()` cannot reach. */
+    const hiddenStyle = getComputedStyle(hiddenOpener);
+    expect(getComputedStyle(host).display).toBe('none');
+    expect(hiddenStyle.display).not.toBe('none');
+    expect(hiddenStyle.visibility).toBe('visible');
+    expect(hiddenOpener.isConnected).toBe(true);
+    hiddenOpener.focus();
+    expect(document.activeElement).not.toBe(hiddenOpener);
 
     await click(drawer.querySelector<HTMLElement>('button[aria-label="Close conversation"]')!);
+
+    /* Mid-retraction. The premise first — with no live `closing` frame there is
+       no intermediate state and the next line would pass vacuously. */
+    expect(document.querySelector('[data-nc-drawer]')).not.toBeNull();
+    const pageTitle = document.querySelector('[data-nc-page-title]');
+    expect(document.activeElement).not.toBe(pageTitle);
+
     await untilGone();
 
+    /* And the wait paid for itself: the host is back, so the reader lands on
+       the control they left from rather than on the consolation prize. */
+    expect(getComputedStyle(host).display).not.toBe('none');
     expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
+    expect(document.activeElement).not.toBe(pageTitle);
+    expect(document.activeElement).toBe(hiddenOpener);
+
+    sheet.remove();
+    host.remove();
   });
 
   /*

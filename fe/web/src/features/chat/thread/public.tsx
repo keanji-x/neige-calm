@@ -220,15 +220,24 @@ export function ChatComposer({
    * `{ disabled: false, ariaDisabled: null }`, and pressing it called nothing.
    * That is precisely the shape the note below this call rejects — a control
    * that says it can be pressed and then does nothing — bought for no change in
-   * behaviour, because the rule it was reaching for is already enforced one
-   * layer up, at the top of the router's `interrupt()`:
-   * `if (!working || stopping) return;`. A second press is a no-op there, where
-   * the state that decides it actually lives.
+   * behaviour: the rule it was reaching for is already stated one layer up, at
+   * the top of the router's `interrupt()`: `if (!working || stopping) return;`.
+   * Removing the prop moved nothing; it deleted a duplicate.
    *
-   * Making the button genuinely unavailable instead is not on offer from out
-   * here: `ChatSendButton` accepts neither `isDisabled` nor the `tooltip`
-   * Astryx requires before it will render `aria-disabled` — see the `sendButton`
-   * note below.
+   * **The dead-button shape is not fixed by that, and this note must not be
+   * read as claiming it is.** During `stopping` the router's guard returns
+   * immediately, so Stop still says it can be pressed and still does nothing —
+   * the identical shape, one call frame further in. What the removal bought is
+   * that the fact now lives in the one place that knows it, not that the reader
+   * stopped seeing a live-looking control.
+   *
+   * It stays broken because the fix is not on offer from out here:
+   * `ChatSendButton` accepts neither `isDisabled` nor the `tooltip` Astryx
+   * requires before it will render `aria-disabled` (see the `sendButton` note
+   * below), and `useChatComposerContext` is not exported, so a hand-rolled
+   * substitute cannot read the composer's own state either. **Known gap, owned
+   * by the vendor's API surface** — recorded here so the next reader measures
+   * Astryx again rather than re-deriving a workaround that cancels itself.
    */
   onStop?: () => void;
   /** Start a new conversation — the *same* callback the module head's `+`
@@ -253,6 +262,10 @@ export function ChatComposer({
   const rootRef = useRef<HTMLDivElement>(null);
   const [sendCount, setSendCount] = useState(0);
   const wantsFieldFocus = useRef(false);
+  /** The element this component last put focus on — the perch or the field.
+   *  `null` while no restore is in flight, and the whole of how the effect
+   *  below tells "focus is still where we left it" from "the reader moved it". */
+  const parkedFocus = useRef<Element | null>(null);
 
   /*
    * ── Put the caret back after a send, and keep trying until it lands ───────
@@ -263,9 +276,12 @@ export function ChatComposer({
    * Sending from the button is the one path that puts focus there first.
    *
    * **Why this is an effect and not a line at the end of `onSubmit`.** It was
-   * that line, and on the app's own wiring it did nothing. The router passes
-   * `disabled={store.sending}` at both call sites and `send()` opens with a
-   * synchronous `setSending(true)`, so the real order inside one click is:
+   * that line, and on the app's own wiring it did nothing. Both router call
+   * sites pass a `disabled` that goes true inside the very click that sends —
+   * `disabled={store.sending}` on the conversation path, `disabled={creating}`
+   * on the draft path (`app/router/public.tsx`), two different flags with the
+   * same timing — and the send handler behind each sets it synchronously, so
+   * the real order inside one click is:
    * `onSend` queues the flag → the old code put focus in the field → React
    * flushes → `isDisabled` is true → Astryx turns the field into
    * `contenteditable="false"` → **Chromium hands the focus it just received to
@@ -286,9 +302,19 @@ export function ChatComposer({
    * where it belongs. `sendCount` is in the deps because a composer with no
    * `disabled` (the draft path) sees no flag change to rerun on.
    *
-   * If the reader has moved focus somewhere else entirely in the meantime, the
-   * request is dropped: yanking focus back into a box they have left is worse
-   * than not restoring it.
+   * **Giving up is decided by identity, not by containment.** The test used to
+   * be "focus has left `.composer` entirely", and it let two real cases through.
+   * A send shows Stop *inside* the composer, so a reader who tabs to Stop and
+   * waits is still "inside" — and when `disabled` cleared the caret was yanked
+   * off the control they had deliberately aimed at. And `<body>` was read as
+   * "nobody moved", which is also what the document reports after a click on any
+   * non-focusable part of the page. So the effect now remembers the element it
+   * parked on and continues only while focus is *exactly* there: anything else,
+   * inside the composer or out, is the reader having spent their own intent, and
+   * `<body>` after a successful park is a click somewhere blank rather than the
+   * disabling-control drop this exists for. That drop only happens in the same
+   * commit as the send, before anything has been parked, which is precisely why
+   * the check is skipped on the first run (`parkedFocus` still `null`).
    *
    * The field is found by query rather than by ref because it is Astryx's
    * element, handed to `ChatComposer` as an `input` slot; there is no ref for
@@ -300,18 +326,21 @@ export function ChatComposer({
     if (!wantsFieldFocus.current) return;
     const root = rootRef.current;
     if (root === null) return;
-    const active = document.activeElement;
-    if (active !== null && active !== document.body && !root.contains(active)) {
+    const parked = parkedFocus.current;
+    if (parked !== null && document.activeElement !== parked) {
       wantsFieldFocus.current = false;
+      parkedFocus.current = null;
       return;
     }
     const messageField = root.querySelector<HTMLElement>('[contenteditable="true"], textarea');
     messageField?.focus();
     if (messageField !== null && document.activeElement === messageField) {
       wantsFieldFocus.current = false;
+      parkedFocus.current = null;
       return;
     }
     if (!root.contains(document.activeElement)) root.focus({ preventScroll: true });
+    parkedFocus.current = document.activeElement;
   }, [sendCount, disabled]);
 
   const triggers = useMemo<ChatComposerTrigger[]>(() => [{
@@ -415,6 +444,30 @@ export function ChatComposer({
          effect above parks on for the length of a send, so that the focus taken
          off a disabling Send has somewhere to be that is not `<body>`. */
       tabIndex={-1}
+      /*
+       * **Named, because focus stops here and a screen reader announces what it
+       * stops on.** Measured before this went in: `role: null, aria-label: null`
+       * — for the whole length of a request the reader was parked on an
+       * anonymous `div` whose only readable text was the field's placeholder,
+       * which is worse than the `<body>` this perch replaced in one respect
+       * (`<body>` at least announces the document).
+       *
+       * `group` rather than `form` or `region`: it is a set of related controls
+       * with no landmark claim to make, and a landmark inside a drawer that is
+       * already `complementary` would add a second thing to the reader's
+       * landmark list for no navigational gain.
+       *
+       * The name builds on the field's own `label="Message"` rather than
+       * repeating it. Repeating it was the first attempt and it is wrong twice
+       * over: two elements one nesting apart answering to the same accessible
+       * name is ambiguous to a reader navigating by name, and it is ambiguous to
+       * every `getByLabelText('Message')` in `public.test.tsx`, which stopped
+       * resolving. `Message composer` names the box for what it is — the field
+       * plus the controls around it — and keeps the word the reader is already
+       * oriented by.
+       */
+      role="group"
+      aria-label="Message composer"
       onKeyDownCapture={(event) => {
         /* Astryx ChatComposerInput submits on Enter without an IME guard.
            Enter while composing accepts the candidate, it must not send. */
@@ -442,6 +495,9 @@ export function ChatComposer({
              here: `onSend` may have already queued the `disabled` that takes
              the field away, and this handler runs before React flushes it. */
           wantsFieldFocus.current = true;
+          /* A fresh request, so the effect's first run must not compare against
+             a perch left over from an earlier one — see the effect's note. */
+          parkedFocus.current = null;
           setSendCount((count) => count + 1);
         }}
         input={(
@@ -500,7 +556,10 @@ export function ChatComposer({
          *
          * So the focus is *moved deliberately*, back into the field, before
          * that can happen — which is where a person who just sent a message
-         * wants it regardless. See `returnFocusToField`. That leaves "Send is
+         * wants it regardless — by the standing request in the focus effect at
+         * the top of this component, which was a `returnFocusToField` helper
+         * called from `onSubmit` until that was measured doing nothing (the
+         * effect's own note has the measurement). That leaves "Send is
          * not tabbable while the field is empty", which is the standard
          * behaviour of a disabled control and costs a keyboard user nothing:
          * there is nothing to send, and the field they would have to visit to

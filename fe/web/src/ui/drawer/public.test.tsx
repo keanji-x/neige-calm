@@ -181,6 +181,66 @@ describe('Drawer', () => {
     pageTitle.remove();
   });
 
+  /*
+   * The half of `focusTook` that `focus()` cannot answer.
+   *
+   * `focus()` lands in an `aria-hidden` subtree and reports success, so reading
+   * the outcome back says "restored" about a target that does not exist in the
+   * tree a screen reader walks: the reader is put somewhere they are told
+   * nothing about, and the page-title fallback that would have given them a
+   * real place is cancelled. Engine-independent — jsdom's `focus()` succeeds
+   * into `aria-hidden` exactly as Chromium's does, which is the whole problem —
+   * so it is pinned here rather than in the browser tier.
+   *
+   * Reduced motion, so there is no retraction to sit through. The wait is a
+   * *different* mechanism with its own coverage (`app/shell/…`), and it would
+   * otherwise stand between this assertion and the fallback it is about: a
+   * connected target that merely refuses focus is given the length of the
+   * animation first. Under `reduce` the component skips the phase entirely,
+   * which leaves exactly one thing deciding where focus goes.
+   */
+  function withReducedMotion(run: () => void) {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    try { run(); } finally { vi.unstubAllGlobals(); }
+  }
+
+  /** An opener buried under `attribute`, plus a page title to fall back to. */
+  function hiddenOpenerPage(attribute: string, value: string) {
+    const shroud = document.body.appendChild(document.createElement('div'));
+    shroud.setAttribute(attribute, value);
+    const opener = shroud.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+    return { shroud, opener, pageTitle };
+  }
+
+  it('does not count a landing inside an aria-hidden subtree as a restore', () => {
+    withReducedMotion(() => {
+      const { shroud, opener, pageTitle } = hiddenOpenerPage('aria-hidden', 'true');
+      /* The trap: the ask itself succeeds, so an outcome-only test would have
+         called this a restore and stopped. */
+      expect(document.activeElement).toBe(opener);
+      const view = open();
+      view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+      expect(document.activeElement).not.toBe(opener);
+      expect(document.activeElement).toBe(pageTitle);
+      shroud.remove(); pageTitle.remove();
+    });
+  });
+
+  /* `inert` for the same reason, through the same door. */
+  it('does not count a landing inside an inert subtree as a restore', () => {
+    withReducedMotion(() => {
+      const { shroud, opener, pageTitle } = hiddenOpenerPage('inert', '');
+      const view = open();
+      view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+      expect(document.activeElement).not.toBe(opener);
+      expect(document.activeElement).toBe(pageTitle);
+      shroud.remove(); pageTitle.remove();
+    });
+  });
+
   it('prefers a surviving opener over the page-title fallback', () => {
     const opener = document.body.appendChild(document.createElement('button'));
     const pageTitle = document.body.appendChild(document.createElement('h1'));

@@ -352,6 +352,36 @@
   }
 
   /*
+   * ── The perch does not wear the focus ring ────────────────────────────────
+   *
+   * `.composer` carries `tabIndex={-1}` so a send has somewhere to park focus
+   * that is not `<body>` (the note on the element says why). `base.css` then
+   * paints *every* `:focus-visible` with `outline: 2px solid var(--accent)`,
+   * and Chromium grants `:focus-visible` to a **programmatic** `focus()` when
+   * the last interaction was a key press — which is exactly the Enter-to-send
+   * path, i.e. the main way anyone sends anything. Measured on that path:
+   * `focusVisible: true`, `outline: "oklch(0.45 0.1 267) solid 2px"`, drawn
+   * around the composer's whole box — the well *plus* the card inset, so the
+   * full width of the card's bottom edge — and held for the entire request.
+   * Sending with the mouse produced no ring, so the app's loudest visual event
+   * fired only for keyboard users, on their normal path.
+   *
+   * A focus ring is a promise that keyboard input goes here. This box takes no
+   * input; it is a waiting room the reader never asked to enter and cannot Tab
+   * to. So the ring is removed rather than restyled — there is no smaller
+   * version of it that would be honest.
+   *
+   * This removes nothing a keyboard user relies on: `tabindex="-1"` keeps the
+   * box out of the tab ring entirely, and the one element inside it that *does*
+   * take input, Astryx's field, keeps its own ring untouched. Pinned in
+   * `thread.browser.test.tsx` ("draws no focus ring on the perch"), which reads
+   * the computed `outline` after a real Enter — delete this rule and it is red.
+   */
+  .composer:focus-visible {
+    outline: none;
+  }
+
+  /*
    * Send's fill, keyed on an English string — stated plainly because it cannot
    * be avoided from out here.
    *
