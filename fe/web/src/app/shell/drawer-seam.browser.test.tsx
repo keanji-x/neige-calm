@@ -146,7 +146,11 @@ function describeFocus(element: Element | null): string {
  */
 async function untilFocused(target: () => Element | null, expected: string) {
   for (let i = 0; i < 200; i += 1) {
-    if (document.activeElement === target()) return;
+    // `!== null` first: if the element the assertion names is not in the DOM, `target()` is null,
+    // and `activeElement === null` (a detached / not-yet-rendered document) would make the whole
+    // wait vacuously true. Same hole the `expect(activeElement).toBe(querySelector(...))` form had.
+    const element = target();
+    if (element !== null && document.activeElement === element) return;
     await new Promise((resolve) => { requestAnimationFrame(() => { resolve(null); }); });
   }
   throw new Error(
