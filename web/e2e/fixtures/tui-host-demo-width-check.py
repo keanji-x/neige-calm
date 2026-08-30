@@ -38,8 +38,12 @@ green even if a later repaint lost the marker:
      assertion in line to flake. It is checked twice, at its two real
      thresholds: anywhere in the grid from 22 columns (what the spec polls; the
      status row carries it), and in the FOOTER row from 42 columns (the row this
-     fix rearranged). Below those it legitimately cannot fit and is NOT asserted
-     — notably not at 20 columns.
+     fix rearranged). Below those the WHOLE marker legitimately cannot fit, so
+     what is asserted there is the clipped `" COPIED=..."` prefix the status row
+     does paint (at 20 columns that row renders `" COPIED=neige-osc52-"`). That
+     is not cosmetic: `read_until` stops at the FIRST frame satisfying the
+     predicate, so a predicate the startup frame already meets would quietly turn
+     "judge the LAST repaint" into "judge the first frame". At 20 columns it did.
   3. The child actually OBSERVED the width we set. `clip()` pads to width, so
      the footer row is exactly `cols` characters. Without this a silently
      no-op'd `TIOCSWINSZ` degrades to `pty.fork()`'s default `(0,0,0,0)`,
@@ -78,6 +82,15 @@ COPIED_MARKER = b"COPIED=neige-osc52-ok"
 #   footer row  `READY + "  " + COPIED + hints`, clipped    -> 19 + 2 + 21 columns
 COPIED_STATUS_MIN_COLS = 1 + len(COPIED_MARKER)
 COPIED_FOOTER_MIN_COLS = len(READY_MARKER) + 2 + len(COPIED_MARKER)
+# Below COPIED_STATUS_MIN_COLS the status row still paints the marker's leading slice,
+# because `draw()` writes `clip(" COPIED=neige-osc52-ok", cols)` and `clip()` truncates
+# rather than skips. Asserting that slice is what keeps the success predicate
+# UNSATISFIABLE BY THE STARTUP FRAME at every width, which is the whole reason
+# `read_until` (which stops at the FIRST satisfying frame) can still be said to judge
+# the last repaint. Without it, at 20 columns — where COPIED fits nowhere in full and is
+# therefore not asserted — the startup `draw()` frame alone satisfied the predicate, and
+# a later frame that dropped the READY marker went GREEN. Reproduced, not theoretical.
+COPIED_STATUS_TEXT = b" " + COPIED_MARKER
 # Every `draw()` opens with cursor-home + erase-display, which makes this the
 # exact frame boundary. The bytes after the LAST one are the final painted state.
 REPAINT_START = b"\x1b[H\x1b[2J"
@@ -214,10 +227,21 @@ def failures_at(painted: bytes, cols: int, rows: int, label: str) -> list[str]:
     if READY_MARKER not in repaint:
         reasons.append(f"{label}: {truncation_reason(repaint)}. painted tail: {tail(repaint)}")
     # What `tui-host-demo.spec.ts:143` polls for: the marker ANYWHERE in the grid dump.
-    if cols >= COPIED_STATUS_MIN_COLS and COPIED_MARKER not in repaint:
-        reasons.append(f"{label}: {COPIED_MARKER.decode()} is missing from the whole final repaint "
-                       f"even though {cols} >= {COPIED_STATUS_MIN_COLS} columns fit it in the status "
-                       f"row. tui-host-demo.spec.ts polls for it. painted tail: {tail(repaint)}")
+    if cols >= COPIED_STATUS_MIN_COLS:
+        if COPIED_MARKER not in repaint:
+            reasons.append(f"{label}: {COPIED_MARKER.decode()} is missing from the whole final repaint "
+                           f"even though {cols} >= {COPIED_STATUS_MIN_COLS} columns fit it in the status "
+                           f"row. tui-host-demo.spec.ts polls for it. painted tail: {tail(repaint)}")
+    else:
+        # Narrower than the marker: assert the slice that DOES fit, so the frame under
+        # judgement is still provably a post-`copy()` one (the startup frame's status row
+        # reads " waiting for wheel"). See COPIED_STATUS_TEXT.
+        clipped = COPIED_STATUS_TEXT[:cols]
+        if clipped not in repaint:
+            reasons.append(f"{label}: the final repaint does not carry {clipped.decode()!r}, the part of "
+                           f"{COPIED_STATUS_TEXT.decode()!r} that still fits in the {cols}-column status "
+                           f"row. Either copy() never repainted, or the last frame lost it. "
+                           f"painted tail: {tail(repaint)}")
     footer = footer_row(repaint, rows)
     if footer is None:
         reasons.append(f"{label}: could not find the footer row in the final repaint, so the width "
