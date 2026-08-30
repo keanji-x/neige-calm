@@ -282,6 +282,53 @@ export function boundedTestIdList(
 }
 
 /**
+ * `test-infrastructure-failed` is the ONE code whose `test_ids` field does not hold test ids.
+ * `judgeMutation` puts `result.test_infrastructure_errors` there, i.e. diagnostic strings —
+ * `global-unhandled-error`, a failing test FILE's name, or `report-parse-failed: <the JSON parse
+ * error>` from run.mjs. Running those through `boundedTestIdList` cut them at 200 characters (an
+ * id budget, far too small for a parse error) and labelled the cut `kept N of M test ids`, which is
+ * simply false — on the exact diagnostic this evidence exists to preserve.
+ *
+ * So they get their own budget, spent across the WHOLE list rather than per entry: the list is one
+ * `global-*` marker plus one entry per broken test file, so the interesting case is "one long
+ * message", not "many long messages". A real `report-parse-failed` is a couple of hundred
+ * characters and therefore survives byte-for-byte, which is the point; the budget only exists so
+ * this axis cannot be the one that blows the record up, and it announces itself honestly when it
+ * bites.
+ */
+export const infrastructureDiagnosticChars = 8000;
+
+export function boundedInfrastructureDiagnostics(
+  diagnostics: readonly string[],
+  budget: number = infrastructureDiagnosticChars,
+): string[] {
+  const kept: string[] = [];
+  let spent = 0;
+  let reached = 0;
+  for (const diagnostic of diagnostics) {
+    const room = Math.max(0, budget) - spent;
+    if (diagnostic.length <= room) {
+      kept.push(diagnostic);
+      spent += diagnostic.length;
+      reached += 1;
+      continue;
+    }
+    // A single diagnostic bigger than the whole budget still gets its head emitted, announced with
+    // a CHARACTER count — the honest unit for a message — instead of an id count.
+    if (room > 0) {
+      kept.push(`${diagnostic.slice(0, room)}\n[truncated: kept ${room} of ${diagnostic.length} characters]`);
+      reached += 1;
+    }
+    break;
+  }
+  if (reached < diagnostics.length) {
+    kept.push(`[capped: kept ${reached} of ${diagnostics.length} infrastructure diagnostics; `
+      + `the ${Math.max(0, budget)}-character budget ran out]`);
+  }
+  return kept;
+}
+
+/**
  * `ok` and the error CODES are untouched: they are what `verdictExitCode` / `mutationRunExitCode`
  * judge on, so capping can never change whether a run passes — only how much of the evidence prints.
  */
@@ -292,7 +339,12 @@ export function boundedVerdict(
 ): MutationVerdict {
   return {
     ok: verdict.ok,
-    errors: verdict.errors.map(({ code, test_ids }) => ({ code, test_ids: boundedTestIdList(test_ids, limit, idChars) })),
+    errors: verdict.errors.map(({ code, test_ids }) => ({
+      code,
+      test_ids: code === 'test-infrastructure-failed'
+        ? boundedInfrastructureDiagnostics(test_ids)
+        : boundedTestIdList(test_ids, limit, idChars),
+    })),
   };
 }
 

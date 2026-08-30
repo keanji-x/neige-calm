@@ -602,16 +602,34 @@ describe('every id list in a report record is bounded', () => {
   // worst-case record assembled exactly the way run.mjs:141 assembles the real one.
   //
   // Where the number comes from: the worst case built below measures 111,574 bytes today
-  // (failure_details ~45 KB + verdict ~32 KB + expected_red ~21 KB + actual_red ~12 KB). 131_072
-  // (128 KiB) leaves ~17% for the wording of the truncation notices to drift — they move the total
-  // by tens of bytes, not kilobytes — while still going red if any single cap is doubled or removed.
-  // Verified by mutation: `failureDetailMessageChars` 2000 -> 4000 reds it, and so does dropping the
-  // `actual_red` cap.
+  // (failure_details ~45 KB + verdict ~32 KB + expected_red ~21 KB + actual_red ~12 KB). The budget
+  // has to sit under the CHEAPEST single doubling, or that axis is unguarded. Measured, one at a
+  // time, against this exact record:
+  //
+  //   baseline                                111,574
+  //   failureDetailOmittedIdLimit  50 -> 100  124,025   <- the cheapest doubling
+  //   failureDetailOmittedIdLimit  50 -> 150  136,475
+  //   failureDetailMessageChars  2000 -> 4000 141,574
+  //   failureDetailMessagesPerTest    3 -> 6  142,444
+  //   failureDetailTestLimit          5 -> 10 144,337
+  //   reportTestIdLimit            50 -> 100  149,227
+  //   failureDetailTestIdChars    200 -> 400  178,805
+  //
+  // 118_000 is therefore the budget: every doubling above reds it. The earlier 131_072 did NOT —
+  // `failureDetailOmittedIdLimit` could be doubled with this test still green, so the comment that
+  // claimed "red if any single cap is doubled" was over-claiming on that axis. The price of the
+  // tighter number is honest and stated here: ~6.4 KB of headroom (5.8%) for the wording of the
+  // truncation notices, which move the total by tens of bytes, not kilobytes. A change that needs
+  // more than that is a change to how much this record emits, and should re-measure the table.
   //
   // `expected_red` is the one axis NOT capped: it is manifest data, authored by hand and gated by
   // validateManifest (today at most 13 ids of at most 124 characters, ~1.7 KB). The worst case below
   // still feeds it 26 ids of 800 characters, an order of magnitude over the real manifest, so the
   // bound holds even if that axis grows a lot.
+  //
+  // `infrastructureDiagnosticChars` is invisible to THIS record on purpose: judgeMutation suppresses
+  // over-red / under-red once `test-infrastructure-failed` is present, so the two record shapes are
+  // mutually exclusive. That axis gets its own budgeted worst case in the next test.
   it('keeps a worst-case report record under a hard-coded byte budget', () => {
     const reds = Array.from({ length: 2000 }, (_v, index) => longId('red', index));
     const failed = [...reds, ...reds.slice(0, 500)];
@@ -633,7 +651,59 @@ describe('every id list in a report record is bounded', () => {
       verdict: boundedVerdict(verdict),
       failure_details: unexpectedFailureDetails(failed, declared, failureMessages),
     };
-    expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(131_072);
+    expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(118_000);
+  });
+
+  // `test-infrastructure-failed` is the one code whose `test_ids` are NOT test ids — judgeMutation
+  // puts `test_infrastructure_errors` there. Two things have to hold at once, and they pull against
+  // each other, so both are pinned.
+  it('leaves an infrastructure diagnostic uncapped and unmangled', () => {
+    // The real shape from run.mjs:118. It is one message, not a list of ids: capping it at
+    // `failureDetailTestIdChars` (200) and labelling the cut "kept N of M test ids" destroyed the
+    // exact evidence this record exists to carry.
+    const parseError = `report-parse-failed: Unexpected token '<', "${'x'.repeat(400)}"... is not valid JSON`;
+    expect(parseError.length).toBeGreaterThan(failureDetailTestIdChars);
+    const verdict = judgeMutation(baseEntry, { ...baseResult, test_infrastructure_errors: [
+      'global-unhandled-error', 'src/app/shell/drawer-seam.browser.test.tsx', parseError] });
+    const bounded = boundedVerdict(verdict);
+    const infrastructure = bounded.errors.find(({ code }) => code === 'test-infrastructure-failed')!;
+    expect(infrastructure.test_ids).toEqual([
+      'global-unhandled-error', 'src/app/shell/drawer-seam.browser.test.tsx', parseError]);
+    // Not just "the prefix is there": nothing was appended either, so no `[capped: ...]` /
+    // `[truncated: ...]` notice claims a cut that did not happen.
+    expect(infrastructure.test_ids.join('')).not.toContain('test ids');
+    expect(infrastructure.test_ids.join('')).not.toContain('truncated');
+  });
+
+  it('keeps an infrastructure-shaped record under its own hard-coded byte budget', () => {
+    // The other shape run.mjs can emit: no over-red / under-red (judgeMutation suppresses them), but
+    // one diagnostic per broken test FILE plus a parse error that could itself be huge.
+    const diagnostics = ['global-unhandled-error', 'global-reporter-error',
+      ...Array.from({ length: 400 }, (_v, index) =>
+        `src/app/some/deeply/nested/module-${String(index).padStart(4, '0')}/feature.browser.test.ts`),
+      `report-parse-failed: ${'p'.repeat(50_000)}`];
+    const reds = Array.from({ length: 2000 }, (_v, index) => longId('red', index));
+    const failed = [...reds, ...reds.slice(0, 500)];
+    const expectedRed = Array.from({ length: 13 }, (_v, index) => longId('exp', index));
+    const declared = [...expectedRed, ...expectedRed];
+    const huge = 'm'.repeat(failureDetailMessageChars * 10);
+    const failureMessages = Object.fromEntries(reds.slice(0, 60)
+      .map((id) => [id, Array.from({ length: 200 }, () => huge)]));
+    const verdict = judgeMutation({ ...baseEntry, expected_red: declared }, {
+      ...baseResult, failed_test_ids: failed, test_infrastructure_errors: diagnostics });
+    expect(verdict.errors.map(({ code }) => code))
+      .toEqual(['duplicate-expected-red', 'duplicate-actual-red', 'test-infrastructure-failed']);
+    const record = {
+      mutation_id: baseEntry.mutation_id,
+      expected_red: declared,
+      actual_red: boundedTestIdList(failed),
+      verdict: boundedVerdict(verdict),
+      failure_details: unexpectedFailureDetails(failed, declared, failureMessages),
+    };
+    // Measured 105,502 today; doubling `infrastructureDiagnosticChars` 8000 -> 16000 takes it to
+    // 115,309 and doubling `failureDetailOmittedIdLimit` to 117,953, so 110_000 is the budget that
+    // keeps BOTH red. Same ~4% wording headroom caveat as the test above.
+    expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(110_000);
   });
 });
 
