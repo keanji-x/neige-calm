@@ -3,11 +3,11 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
-  boundedTestIdList, boundedVerdict,
+  boundedInfrastructureDiagnostics, boundedTestIdList, boundedVerdict,
   byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
   evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, failureDetailMessageChars,
   failureDetailMessagesPerTest, failureDetailOmittedIdLimit, failureDetailTestIdChars,
-  failureDetailTestLimit, judgeMutation,
+  failureDetailTestLimit, infrastructureDiagnosticBytes, judgeMutation,
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
   parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, reportTestIdLimit,
   selectedEntries, shardEntries,
@@ -627,7 +627,7 @@ describe('every id list in a report record is bounded', () => {
   // still feeds it 26 ids of 800 characters, an order of magnitude over the real manifest, so the
   // bound holds even if that axis grows a lot.
   //
-  // `infrastructureDiagnosticChars` is invisible to THIS record on purpose: judgeMutation suppresses
+  // `infrastructureDiagnosticBytes` is invisible to THIS record on purpose: judgeMutation suppresses
   // over-red / under-red once `test-infrastructure-failed` is present, so the two record shapes are
   // mutually exclusive. That axis gets its own budgeted worst case in the next test.
   it('keeps a worst-case report record under a hard-coded byte budget', () => {
@@ -675,13 +675,62 @@ describe('every id list in a report record is bounded', () => {
     expect(infrastructure.test_ids.join('')).not.toContain('truncated');
   });
 
-  it('keeps an infrastructure-shaped record under its own hard-coded byte budget', () => {
-    // The other shape run.mjs can emit: no over-red / under-red (judgeMutation suppresses them), but
-    // one diagnostic per broken test FILE plus a parse error that could itself be huge.
-    const diagnostics = ['global-unhandled-error', 'global-reporter-error',
+  // Both notices `boundedInfrastructureDiagnostics` can emit are pinned here, for the reason
+  // `boundedTestIdList` pins its own: deleting BOTH notice branches left the whole suite green while
+  // 272 of 403 diagnostics vanished silently, which is precisely what the contract above forbids.
+  it('announces a truncated diagnostic in characters, and keeps the head that survived', () => {
+    const huge = `report-parse-failed: ${'p'.repeat(infrastructureDiagnosticBytes * 3)}`;
+    const bounded = boundedInfrastructureDiagnostics([huge]);
+    expect(bounded).toHaveLength(1);
+    const [only] = bounded;
+    const announcement = /\n\[truncated: kept (\d+) of (\d+) characters\]$/.exec(only);
+    expect(announcement, only.slice(0, 120)).not.toBeNull();
+    const [notice, keptChars, totalChars] = announcement!;
+    expect(Number(totalChars)).toBe(huge.length);
+    // The number in the notice is the number of characters actually emitted — not a round constant
+    // that happens to look plausible — and what precedes it is that exact prefix, byte for byte.
+    expect(only).toBe(`${huge.slice(0, Number(keptChars))}${notice}`);
+    expect(Number(keptChars)).toBeGreaterThan('report-parse-failed: '.length);
+    expect(Number(keptChars)).toBeLessThan(huge.length);
+    // ...and the announced entry itself is what the budget was spent on, quotes and escapes included.
+    expect(Buffer.byteLength(JSON.stringify(only))).toBeLessThanOrEqual(infrastructureDiagnosticBytes);
+  });
+
+  it('announces how many diagnostics the byte budget dropped', () => {
+    // The many-SHORT-entries worst case. Charging only `diagnostic.length` made the quotes, the
+    // comma and six spaces of indentation free, so all 900 of these were admitted on an 8000-char
+    // budget while costing ~18 KB on the wire.
+    const diagnostics = Array.from({ length: 900 }, (_v, index) => `${index}.test.ts`);
+    const bounded = boundedInfrastructureDiagnostics(diagnostics);
+    const keptCount = bounded.length - 1;
+    expect(keptCount).toBeLessThan(diagnostics.length);
+    expect(bounded.slice(0, keptCount)).toEqual(diagnostics.slice(0, keptCount));
+    expect(bounded.at(-1)).toBe(`[capped: kept ${keptCount} of ${diagnostics.length} infrastructure `
+      + `diagnostics; the ${infrastructureDiagnosticBytes}-byte budget ran out]`);
+  });
+
+  // An empty diagnostic used to cost nothing, so the contract admitted an unbounded list of them.
+  // judgeMutation dedupes, so production never had more than one — charging the per-element JSON
+  // overhead closes it anyway, and closes it by the same rule as everything else.
+  it('charges an empty diagnostic the per-element cost instead of nothing', () => {
+    const bounded = boundedInfrastructureDiagnostics(Array.from({ length: 5000 }, () => ''));
+    expect(bounded.length - 1).toBeLessThanOrEqual(infrastructureDiagnosticBytes / 10);
+    expect(bounded.at(-1)).toContain('infrastructure diagnostics');
+  });
+
+  // Two diagnostic fixtures, one budget: ONE long parse error (what actually happens) and many short
+  // legitimate filenames (what the char-only accounting let through). The second is the fixture that
+  // was missing — the first one's 400 entries of ~80 chars exhaust the budget after ~100 of them, so
+  // the per-element structural cost never mattered to it.
+  it.each<[string, string[]]>([
+    ['one huge parse error', ['global-unhandled-error', 'global-reporter-error',
       ...Array.from({ length: 400 }, (_v, index) =>
         `src/app/some/deeply/nested/module-${String(index).padStart(4, '0')}/feature.browser.test.ts`),
-      `report-parse-failed: ${'p'.repeat(50_000)}`];
+      `report-parse-failed: ${'p'.repeat(50_000)}`]],
+    ['800 short filenames', Array.from({ length: 800 }, (_v, index) => `${index}.test.ts`)],
+  ])('keeps an infrastructure-shaped record (%s) under its own hard-coded byte budget', (_label, diagnostics) => {
+    // The other shape run.mjs can emit: no over-red / under-red (judgeMutation suppresses them), but
+    // one diagnostic per broken test FILE plus a parse error that could itself be huge.
     const reds = Array.from({ length: 2000 }, (_v, index) => longId('red', index));
     const failed = [...reds, ...reds.slice(0, 500)];
     const expectedRed = Array.from({ length: 13 }, (_v, index) => longId('exp', index));
@@ -700,9 +749,22 @@ describe('every id list in a report record is bounded', () => {
       verdict: boundedVerdict(verdict),
       failure_details: unexpectedFailureDetails(failed, declared, failureMessages),
     };
-    // Measured 105,502 today; doubling `infrastructureDiagnosticChars` 8000 -> 16000 takes it to
-    // 115,309 and doubling `failureDetailOmittedIdLimit` to 117,953, so 110_000 is the budget that
-    // keeps BOTH red. Same ~4% wording headroom caveat as the test above.
+    // Same discipline as the test above, re-measured over BOTH fixtures (parse-error / filenames):
+    //
+    //   baseline                                 104,055 / 105,164
+    //   infrastructureDiagnosticBytes 8k -> 16k  112,492 / 114,690   <- the cheapest doubling
+    //   failureDetailOmittedIdLimit    50 -> 100 116,506 / 117,615
+    //   failureDetailMessageChars    2000 -> 4000 134,055 / 135,164
+    //   failureDetailMessagesPerTest      3 -> 6  134,925 / 136,034
+    //   failureDetailTestLimit            5 -> 10 136,818 / 137,927
+    //   reportTestIdLimit              50 -> 100 129,057 / 130,166
+    //   failureDetailTestIdChars      200 -> 400 158,623 / 159,732
+    //
+    // 110_000 sits above the worse baseline (105,164) and below the cheaper of the two cheapest
+    // doublings (112,492), so every axis reds it on both fixtures. Same ~4% wording headroom caveat
+    // as the test above. Mutation-verified: revert `boundedInfrastructureDiagnostics` to charging
+    // `diagnostic.length` and the filenames fixture measures 113,939 — OVER this budget — because
+    // all 800 entries are admitted for 8000 raw characters while costing ~18 KB on the wire.
     expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(110_000);
   });
 });

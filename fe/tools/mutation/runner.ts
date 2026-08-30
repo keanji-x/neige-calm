@@ -295,35 +295,81 @@ export function boundedTestIdList(
  * characters and therefore survives byte-for-byte, which is the point; the budget only exists so
  * this axis cannot be the one that blows the record up, and it announces itself honestly when it
  * bites.
+ *
+ * The budget is spent in BYTES OF EMITTED JSON, not in raw characters. Charging `diagnostic.length`
+ * was not a bound at all: each diagnostic is its own element of a pretty-printed array, so quotes,
+ * the comma, six spaces of indentation and every escape expansion were free. ~800 legitimate short
+ * filenames cost only ~8000 raw characters but 12,851 bytes on the wire, and a diagnostic made of
+ * control characters expands up to 6x under `JSON.stringify`. Charging the encoded size plus the
+ * fixed per-element overhead closes all three at once, and it also gives an EMPTY diagnostic a
+ * non-zero price (10 bytes), so a list of empty strings is bounded too rather than free forever.
  */
-export const infrastructureDiagnosticChars = 8000;
+export const infrastructureDiagnosticBytes = 8000;
+
+/**
+ * `verdict.errors[].test_ids[i]` sits six levels deep in `JSON.stringify(record, null, 2)`: six
+ * spaces of indentation, then the quoted string, then a comma and a newline. `JSON.stringify` of the
+ * string itself covers the quotes and the escaping, so this is everything else.
+ */
+const diagnosticEntryOverhead = 8;
+
+const diagnosticEntryBytes = (diagnostic: string): number =>
+  Buffer.byteLength(JSON.stringify(diagnostic)) + diagnosticEntryOverhead;
+
+/**
+ * The longest head of `diagnostic` whose announced-and-encoded entry still fits in `room` bytes, or
+ * `null` when not even the announcement fits. The cost is monotone in the kept character count (a
+ * longer head never encodes smaller, and the count in the notice only gains digits), so a binary
+ * search finds the exact boundary instead of guessing at the escape expansion.
+ */
+function truncatedDiagnosticWithinBudget(diagnostic: string, room: number): string | null {
+  const render = (chars: number): string =>
+    `${diagnostic.slice(0, chars)}\n[truncated: kept ${chars} of ${diagnostic.length} characters]`;
+  let low = 0;
+  let high = diagnostic.length;
+  let best = -1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (diagnosticEntryBytes(render(middle)) <= room) {
+      best = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best < 0 ? null : render(best);
+}
 
 export function boundedInfrastructureDiagnostics(
   diagnostics: readonly string[],
-  budget: number = infrastructureDiagnosticChars,
+  budget: number = infrastructureDiagnosticBytes,
 ): string[] {
   const kept: string[] = [];
   let spent = 0;
   let reached = 0;
   for (const diagnostic of diagnostics) {
     const room = Math.max(0, budget) - spent;
-    if (diagnostic.length <= room) {
+    const cost = diagnosticEntryBytes(diagnostic);
+    if (cost <= room) {
       kept.push(diagnostic);
-      spent += diagnostic.length;
+      spent += cost;
       reached += 1;
       continue;
     }
     // A single diagnostic bigger than the whole budget still gets its head emitted, announced with
     // a CHARACTER count — the honest unit for a message — instead of an id count.
-    if (room > 0) {
-      kept.push(`${diagnostic.slice(0, room)}\n[truncated: kept ${room} of ${diagnostic.length} characters]`);
+    const head = truncatedDiagnosticWithinBudget(diagnostic, room);
+    if (head !== null) {
+      kept.push(head);
       reached += 1;
     }
     break;
   }
   if (reached < diagnostics.length) {
+    // Deliberately unbudgeted, exactly like `boundedTestIdList`'s trailing element: announcing the
+    // cut is worth its ~80 constant bytes, and a cut that hides itself is the bug this file forbids.
     kept.push(`[capped: kept ${reached} of ${diagnostics.length} infrastructure diagnostics; `
-      + `the ${Math.max(0, budget)}-character budget ran out]`);
+      + `the ${Math.max(0, budget)}-byte budget ran out]`);
   }
   return kept;
 }
@@ -331,6 +377,12 @@ export function boundedInfrastructureDiagnostics(
 /**
  * `ok` and the error CODES are untouched: they are what `verdictExitCode` / `mutationRunExitCode`
  * judge on, so capping can never change whether a run passes — only how much of the evidence prints.
+ *
+ * `limit` and `idChars` are DELIBERATELY not forwarded to the `test-infrastructure-failed` branch.
+ * They are an id-count and an id-length in a list that holds no ids, which is the exact category
+ * error this split was made to end; that branch is budgeted in bytes by
+ * `infrastructureDiagnosticBytes` instead. The two parameters exist only so tests can shrink the id
+ * caps, and no caller passes them in production, so there is nothing to thread through.
  */
 export function boundedVerdict(
   verdict: MutationVerdict,
