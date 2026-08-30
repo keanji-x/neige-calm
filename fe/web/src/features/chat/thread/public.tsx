@@ -39,6 +39,7 @@ import {
 } from '@astryxdesign/core/Chat';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 
+import { Icon } from '../../../ui/icon/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 
 import {
@@ -236,6 +237,19 @@ export function ChatComposer({
     renderItem: () => (
       <span className={styles.commandItem}>
         {/*
+          * **The glyph is the `+`'s glyph, and that is the whole point.** The
+          * module head's `<PanelAction label="New conversation">` is not a
+          * similar action, it is *this* action — the same `onNewConversation`
+          * runs from both. Drawing the same `plus` here is the cheapest way to
+          * say so to a reader who has already pressed the `+` and is now
+          * looking at a door they have not seen before. A second glyph invented
+          * for the menu would be asserting the opposite.
+          *
+          * No label on it: `Icon` is `aria-hidden` by construction, the row's
+          * accessible name comes from the item's `label`, and the words next to
+          * it already say what it does. An `aria-label` here would make the
+          * screen reader read the action twice.
+          *
           * **The slash is part of the name.** `/new` and not `new`: the reader
           * has one character in the field already, and the row that echoes it
           * back is the row that tells them the rest of what to type. Screenshot
@@ -249,9 +263,36 @@ export function ChatComposer({
           * The `/` is written out rather than derived from `character` above:
           * one command, one literal, and a `${character}new` template would be
           * a registry's ceremony on a set of one.
+          *
+          * Glyph and literal are siblings in the row rather than nested in a
+          * box of their own — they read as one thing because they share the
+          * name's colour and sit tight against each other, which is cheaper
+          * than a wrapper and avoids a real layout trap (both recorded in the
+          * stylesheet).
           */}
+        <Icon name="plus" size="sm" />
         <span className={styles.commandName}>/new</span>
-        <span className={styles.commandHint}>Opens a fresh thread; this one stays in the list.</span>
+        {/*
+          * **The description carries only the half that is not already said.**
+          * It was `Opens a fresh thread; this one stays in the list.` — but a
+          * `+` and the word `new` now spell "opens a fresh thread" twice over
+          * before the sentence starts, and the type scale (tokens.css §type)
+          * says of `--text-xs`, the rank this sits at: *never a sentence*. What
+          * is left is the thing the reader actually risks being wrong about,
+          * because it is the thing a "new" button in a list of threads could
+          * plausibly do either way: the thread they are reading survives.
+          *
+          * Screenshot comparison of three (`r8-hint-a` / `-b` / `-c`):
+          *   a  This one stays in the list   ← this one
+          *   b  Keeps this one in the list   — reads as a promise the *command*
+          *      makes, so the eye goes back to `/new` to find the subject; and
+          *      "keeps" invites "keeps it where?" that "stays" does not.
+          *   c  This one stays               — half the width and none of the
+          *      answer: stays *where* is exactly the question being asked.
+          * No full stop: it is a phrase, not a sentence, and the row has no
+          * second one for it to be separated from.
+          */}
+        <span className={styles.commandHint}>This one stays in the list</span>
       </span>
     ),
     /*

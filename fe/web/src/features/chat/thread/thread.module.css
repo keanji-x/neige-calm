@@ -496,7 +496,15 @@
    * the command is on the left at body rank and what it does is on the right
    * at `--text-xs` / `--text-3` — the caption tier `.activity` and
    * `.footerError` already use for "what happened", which is the same register
-   * as "what this would do".
+   * as "what this would do". `--text-xs` is the *bottom* of the scale (11px,
+   * tokens.css §type), so "make the description smaller" has no next step
+   * left in the type ranks; what was actually too long was the sentence, and
+   * that is what changed.
+   *
+   * **The row leads with the module head's own `+`**, at `--glyph-sm` (14px)
+   * against the 13px name. Which colour it takes, how it is aligned and why it
+   * is a sibling rather than a child of the name are all at `.commandItem svg`
+   * below, where the measurements that decided them are.
    *
    * **The description is the part that gives way.** `flex: none` on the name
    * and `min-inline-size: 0` plus an ellipsis on the description is what keeps
@@ -527,10 +535,39 @@
   .commandItem {
     display: flex;
     flex: 1;
-    gap: var(--space-4);
+    /* The floor between glyph and name. The description does not use it — it
+       is pushed to the far edge by its own auto margin below, which is what
+       lets the first two sit tight together as one thing. */
+    gap: var(--space-2);
     align-items: baseline;
-    justify-content: space-between;
     min-inline-size: 0;
+  }
+
+  /*
+   * The glyph is a flex sibling of the name, not nested inside it, and both
+   * halves of that were forced by measurement.
+   *
+   * *Not nested*, because a wrapper has to be either a flex box or an inline
+   * run and both fail: as a flex box its baseline is taken from its first item
+   * — synthesised from an SVG's bottom margin edge — which threw the whole
+   * column 2.5px off the description's baseline; as an inline run Chromium
+   * sizes the flex item from a max-content width that omits the CSS-sized
+   * replaced box entirely (measured 27.5px for a 45.5px line), so the glyph
+   * wrapped to a line of its own.
+   *
+   * *Baseline-exempt*, because it has no baseline to align on: `align-self`
+   * centres the 14px box on the row instead, which is where a glyph beside a
+   * word belongs. And it takes `--text`, the name's colour, not `--text-3`,
+   * the description's: the row has exactly two ranks — the thing you invoke
+   * and what it does — and the glyph is the first, restating `/new` rather
+   * than commenting on it. (The module head's own `+` is `--text-3`, but that
+   * one is idle chrome in a header; this one is inside the row about to be
+   * pressed.)
+   */
+  .commandItem svg {
+    flex: none;
+    align-self: center;
+    color: var(--text);
   }
 
   .commandName {
@@ -541,6 +578,10 @@
   }
 
   .commandHint {
+    /* Not `justify-content: space-between` on the row: with three children
+       that would space the glyph away from the name too. The description
+       claims the free space itself and the command stays one unit. */
+    margin-inline-start: auto;
     min-inline-size: 0;
     overflow: hidden;
     font-size: var(--text-xs);

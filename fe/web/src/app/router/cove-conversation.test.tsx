@@ -819,7 +819,11 @@ describe('cove conversations', () => {
          it as the string Astryx filters on — which is why the next test still
          types the command out in full. */
       expect(options[0].textContent).toContain('/new');
-      expect(options[0].textContent).toContain('Opens a fresh thread; this one stays in the list.');
+      /* The description no longer restates "opens a new thread" — the `+`
+         glyph and the word `new` already say that twice. What it must keep
+         saying is the half a reader cannot guess and would be hurt by getting
+         wrong: the thread they are looking at survives. */
+      expect(options[0].textContent).toContain('This one stays in the list');
     });
 
     /* Filtering is Astryx's, on the item label — `/new` has to keep matching
