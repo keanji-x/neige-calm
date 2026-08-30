@@ -110,6 +110,29 @@ describe('the reference heading, as the engine lays it out', () => {
   });
 
   /*
+   * **The intermediate gutter**, which is the regime a constant gap got wrong.
+   *
+   * The pull is clamped to the gutter, so at 28px it survives at 28 while the
+   * trailing gap, written as a fixed `--space-10 − --space-7`, stayed 24 — and
+   * the word landed 10px right of every section title. Alignment is the thing
+   * this rule exists for, so it is the last thing allowed to go: it has to hold
+   * at every gutter wide enough for the glyph and its row gap, not only at a
+   * full one.
+   */
+  it('keeps the word aligned at a gutter too narrow for the full pull', async () => {
+    await browserPage.viewport(1200, 800);
+    render(<Page gutter="28px" />);
+
+    const reference = document.querySelector('[data-nc-report-reference]')!;
+    const sectionHead = [...document.querySelectorAll('[data-nc-report] h2')]
+      .find((head) => !reference.contains(head))!;
+    const word = reference.querySelector('h2 > span:nth-child(2)')!;
+
+    expect(Math.round(word.getBoundingClientRect().left))
+      .toBe(Math.round(sectionHead.getBoundingClientRect().left));
+  });
+
+  /*
    * The chevron is *outside* the measure, in the margin the section numbers
    * hang in — which is the whole reason the word above can start on the text
    * edge. Both halves are asserted: a box with real pixels, and a position

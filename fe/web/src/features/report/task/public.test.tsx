@@ -15,7 +15,7 @@ describe('ReportTaskBlock', () => {
   // Every other kind announces itself by its shape; a task is structured text,
   // and without the word it reads as prose that has gone strange.
   it('says that it is a task, and names it', () => {
-    render(<ReportTaskBlock payload={{
+    render(<ReportTaskBlock blockId="b-1" payload={{
       key: 'ingest-resolver', kind: 'codex', declared_by: 'spec', ready: false,
       goal: 'Route the ingest call sites through the resolver.',
     }} />);
@@ -26,7 +26,7 @@ describe('ReportTaskBlock', () => {
   });
 
   it('puts the facts about the task in one label column', () => {
-    render(<ReportTaskBlock payload={{
+    render(<ReportTaskBlock blockId="b-1" payload={{
       key: 't', kind: 'codex', declared_by: 'spec', ready: true, goal: 'Ship it.',
       acceptance: 'No direct call sites left.',
       gate: { steps: [{ name: 'fmt', cmd: 'cargo fmt --check' }] },
@@ -41,7 +41,7 @@ describe('ReportTaskBlock', () => {
   // §8.3 — the report is an account of what happened, not the console you drive
   // it from. The legacy card had Release / Delete / Restore; this has none.
   it('offers no controls: a report does not write back', () => {
-    const { container } = render(<ReportTaskBlock payload={{
+    const { container } = render(<ReportTaskBlock blockId="b-1" payload={{
       key: 't', kind: 'codex', declared_by: 'user', ready: true, goal: 'g',
     }} />);
     expect(container.querySelectorAll('button, input, [role="button"]').length).toBe(0);
@@ -50,7 +50,7 @@ describe('ReportTaskBlock', () => {
   // Other reports may cite the block id of a task that has since been
   // withdrawn. Dropping the row would make the document lie about its own past.
   it('keeps a withdrawn task, with both attributions', () => {
-    render(<ReportTaskBlock payload={{
+    render(<ReportTaskBlock blockId="b-1" payload={{
       key: 'walk-fallback', declared_by: 'spec', tombstoned_by: 'user',
       tombstone: { reason: 'A fallback that never runs is one nobody notices has broken.' },
     }} />);
@@ -80,7 +80,7 @@ describe('ReportTaskBlock', () => {
    * that only asks whether the text is *somewhere* in the document.
    */
   it('folds: the head is the summary, the detail is the body, and it opens closed', () => {
-    const { container } = render(<ReportTaskBlock payload={{
+    const { container } = render(<ReportTaskBlock blockId="b-1" payload={{
       key: 'ingest-resolver', kind: 'codex', declared_by: 'spec', ready: true,
       goal: 'Route the ingest call sites through the resolver.',
       acceptance: 'No direct call sites left.',
@@ -106,7 +106,7 @@ describe('ReportTaskBlock', () => {
      a reader is least likely to want open, so shipping the fold on only the live
      branch would be the wrong half. */
   it('folds a withdrawn task as well, on the same summary', () => {
-    const { container } = render(<ReportTaskBlock payload={{
+    const { container } = render(<ReportTaskBlock blockId="b-1" payload={{
       key: 'walk-fallback', declared_by: 'spec', tombstoned_by: 'user',
       tombstone: { reason: 'A fallback that never runs is one nobody notices has broken.' },
     }} />);
@@ -117,10 +117,21 @@ describe('ReportTaskBlock', () => {
     expect(summary!.textContent).not.toContain('A fallback that never runs');
   });
 
+  /* `key` is `z.string()` on the wire, so an empty one is legal. The block id
+     stands in — the same fallback `deriveReportTasks` applies for the panel,
+     because otherwise the panel names this row `b-1` and the block it points at
+     names it nothing. */
+  it('falls back to the block id when the task declared an empty key', () => {
+    render(<ReportTaskBlock blockId="b_bf88" payload={{
+      key: '', kind: 'codex', declared_by: 'spec', ready: true, goal: 'g',
+    }} />);
+    expect(screen.getByText('b_bf88')).toBeTruthy();
+  });
+
   // A live task may carry an explicit `tombstone: null`, so the tombstone key is
   // not the discriminant — the attribution is.
   it('reads a task carrying an explicit null tombstone as live', () => {
-    render(<ReportTaskBlock payload={{
+    render(<ReportTaskBlock blockId="b-1" payload={{
       key: 'live', kind: 'terminal', declared_by: 'spec', ready: true, goal: 'g', tombstone: null,
     }} />);
     expect(screen.queryByText('Withdrawn')).toBeNull();

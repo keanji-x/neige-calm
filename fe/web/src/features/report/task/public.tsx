@@ -77,7 +77,19 @@ function isWithdrawn(payload: TaskBlockPayload): payload is WithdrawnTask {
   return 'tombstoned_by' in payload;
 }
 
-export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
+/*
+ * `blockId` is the name of last resort. `key` is `z.string()` on the wire and
+ * the kernel does not require it to be non-empty, so an empty one leaves this
+ * row reading `Task` and nothing else — and the panel's TASKS inventory, which
+ * applies the same fallback, would then send a reader looking for `b_bf88` to a
+ * row that does not say `b_bf88` anywhere. One block, two names, is the defect
+ * this whole change has now produced twice; the fallback belongs wherever the
+ * name is printed.
+ */
+export function ReportTaskBlock({ payload, blockId }: {
+  payload: TaskBlockPayload;
+  blockId: string;
+}) {
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
     return (
@@ -85,7 +97,7 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
         <summary className={styles.head}>
           <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
           <span className={styles.kindLabel}>Task</span>
-          <span className={styles.key}>{payload.key}</span>
+          <span className={styles.key}>{payload.key === '' ? blockId : payload.key}</span>
           <span className={styles.spacer} />
           <span className={styles.withdrawn}>Withdrawn</span>
         </summary>
@@ -118,7 +130,7 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
             gone strange. In sentence case: the uppercase version of this label
             was the chrome vocabulary leaking into the document. */}
         <span className={styles.kindLabel}>Task</span>
-        <span className={styles.key}>{live.key}</span>
+        <span className={styles.key}>{live.key === '' ? blockId : live.key}</span>
         <span className={styles.spacer} />
         <span className={styles.kind}>
           {live.kind}{live.spawn === 'sub-wave' ? ' · sub-wave' : ''}

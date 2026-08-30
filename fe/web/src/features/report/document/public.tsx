@@ -275,7 +275,7 @@ function BlockBody({ block }: { block: ReportBlock }): ReactNode {
   switch (block.kind) {
     case 'table': return <ReportTableBlock payload={block.payload} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
-    case 'task': return <ReportTaskBlock payload={block.payload} />;
+    case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;
     case 'unsupported':
       return (

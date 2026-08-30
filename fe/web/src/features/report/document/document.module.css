@@ -206,11 +206,25 @@
      * then tops the row's gap up to that same `--space-10` so the word still
      * lands on the section-title column.
      */
-    margin-inline-start: calc(-1 * min(
-      var(--glyph-sm) + var(--space-10),
-      var(--document-start, 0px)
-    ));
-    margin-inline-end: calc(var(--space-10) - var(--space-7));
+    /*
+     * **The trailing margin is derived from the same clamped value, not written
+     * as a constant.** It was `--space-10 − --space-7`, a fixed 10, which is
+     * right only while the pull is unclamped: at a gutter of 28 the pull clamps
+     * to 28 while the gap stayed 24, and the word — the thing this rule exists
+     * to align — sat 10px right of every section title. So the gap is whatever
+     * the surviving pull leaves over, `max()`-floored at zero for gutters too
+     * small to hold even the glyph.
+     *
+     * It degrades in the right order: at a full gutter the word aligns *and*
+     * the chevron is on the number column; from 38 down to 28 the word still
+     * aligns and the chevron walks inward; below that the chevron sits before
+     * the word and alignment is what gives way — the correct thing to lose,
+     * since the chevron is the only remaining sign that the heading opens.
+     */
+    --_pull: min(var(--glyph-sm) + var(--space-10), var(--document-start, 0px));
+
+    margin-inline-start: calc(-1 * var(--_pull));
+    margin-inline-end: max(0px, calc(var(--_pull) - var(--glyph-sm) - var(--space-7)));
     color: var(--text-3);
     transition: rotate var(--motion-snappy) ease-out;
   }
