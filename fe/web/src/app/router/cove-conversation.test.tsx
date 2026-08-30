@@ -814,16 +814,23 @@ describe('cove conversations', () => {
       expect(menu).not.toBeNull();
       const options = within(menu!).getAllByRole('option');
       expect(options).toHaveLength(1);
-      /* The row shows the *token*, not the item's label: `/new` on the left is
-         the rest of what the reader has started typing. The label stays behind
-         it as the string Astryx filters on — which is why the next test still
-         types the command out in full. */
-      expect(options[0].textContent).toContain('/new');
-      /* The description no longer restates "opens a new thread" — the `+`
-         glyph and the word `new` already say that twice. What it must keep
-         saying is the half a reader cannot guess and would be hurt by getting
-         wrong: the thread they are looking at survives. */
-      expect(options[0].textContent).toContain('This one stays in the list');
+      /* The left column is `new` — the rest of what the reader has started
+         typing, without the `/` that is already in the field and already on
+         screen. Asserted as an exact match on the whole visible row rather
+         than `toContain`, because `toContain('new')` would also pass on
+         `/new`, on `New conversation`, and on anything else with those three
+         letters in it — the point of this line is that the row prints the
+         command *and nothing more*, so it has to be able to fail on a stray
+         character. The item's `label` is a different string and is what Astryx
+         filters on, which is why the next test still types `/new` in full and
+         still finds the command.
+
+         The description half of the same string carries what the name cannot:
+         "opens a new thread" is already said twice by the `+` and by the word
+         `new`, so what is left — and what an exact match now pins — is the
+         half a reader cannot guess and would be hurt by getting wrong, that
+         the thread they are looking at survives. */
+      expect(options[0].textContent).toBe('newThis one stays in the list');
     });
 
     /* Filtering is Astryx's, on the item label — `/new` has to keep matching

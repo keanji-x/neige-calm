@@ -187,10 +187,14 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
   id: 'new-conversation',
   /*
    * The same words as `PanelAction label="New conversation"` — but this string
-   * is now what Astryx *filters* on, not what the row shows (the row is
-   * `renderItem`'s two columns below). Keeping the `+`'s wording here is what
-   * makes the command reachable by the name the reader has already seen on the
-   * `+`'s tooltip: `/conversation` finds it just as `/new` does.
+   * is now what Astryx *filters* on, not what the row shows: the row is
+   * `renderItem`'s glyph, name and description below, and none of the three is
+   * derived from this. That separation is what lets the row print `new` while
+   * the reader types `/new`, and it is one-directional — `renderItem` reads
+   * nothing from the item, so no rewording of the row can reach the matcher.
+   * Keeping the `+`'s wording here is what makes the command reachable by the
+   * name the reader has already seen on the `+`'s tooltip: `/conversation`
+   * finds it just as `/new` does.
    */
   label: 'New conversation',
 });
@@ -250,19 +254,27 @@ export function ChatComposer({
           * it already say what it does. An `aria-label` here would make the
           * screen reader read the action twice.
           *
-          * **The slash is part of the name.** `/new` and not `new`: the reader
-          * has one character in the field already, and the row that echoes it
-          * back is the row that tells them the rest of what to type. Screenshot
-          * comparison (`r7-label-slash` / `r7-label-plain`) made the same case
-          * visually — bare `new` reads as a noun in a list, `/new` reads as a
-          * thing you press. It is also what every menu of this shape does
-          * (codex, Claude Code, Slack, Discord), and a menu that spells its own
-          * commands differently from the tool next to it is a menu the reader
-          * has to learn twice.
+          * **The name is `new`, without the slash the reader already has.**
+          * This row is only on screen because a `/` is sitting in the field two
+          * inches below it — printing a second one restates the character that
+          * *caused* the menu. And the row now carries two independent signals
+          * that this is a command you press: the `+` on the left, which is the
+          * module head's own button, and the description on the right in the
+          * caption rank. A slash would be a third, spending width on the one
+          * thing about this row that was never in doubt. What is left, `new`,
+          * is the part the reader does not have and has to type.
           *
-          * The `/` is written out rather than derived from `character` above:
-          * one command, one literal, and a `${character}new` template would be
-          * a registry's ceremony on a set of one.
+          * That is a reversal of the previous round, which printed `/new`
+          * because the token is what you type and because every menu of this
+          * shape (codex, Claude Code, Slack) prints the slash. Recorded plainly
+          * so nobody re-derives it: that argument assumed a row with no glyph,
+          * where the slash was the *only* thing marking the label as a command
+          * rather than a noun. The `+` took that job, and the argument went
+          * with it.
+          *
+          * **The slash's disappearance from the row is display-only.** What
+          * Astryx matches against is `NEW_CONVERSATION_COMMAND.label`, and
+          * `renderItem` never touches it — see the token above.
           *
           * Glyph and literal are siblings in the row rather than nested in a
           * box of their own — they read as one thing because they share the
@@ -271,7 +283,7 @@ export function ChatComposer({
           * stylesheet).
           */}
         <Icon name="plus" size="sm" />
-        <span className={styles.commandName}>/new</span>
+        <span className={styles.commandName}>new</span>
         {/*
           * **The description carries only the half that is not already said.**
           * It was `Opens a fresh thread; this one stays in the list.` — but a
@@ -285,7 +297,7 @@ export function ChatComposer({
           * Screenshot comparison of three (`r8-hint-a` / `-b` / `-c`):
           *   a  This one stays in the list   ← this one
           *   b  Keeps this one in the list   — reads as a promise the *command*
-          *      makes, so the eye goes back to `/new` to find the subject; and
+          *      makes, so the eye goes back to the name to find the subject; and
           *      "keeps" invites "keeps it where?" that "stays" does not.
           *   c  This one stays               — half the width and none of the
           *      answer: stays *where* is exactly the question being asked.

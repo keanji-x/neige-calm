@@ -508,7 +508,7 @@
    *
    * **The description is the part that gives way.** `flex: none` on the name
    * and `min-inline-size: 0` plus an ellipsis on the description is what keeps
-   * a long sentence from ever pushing `/new` out of the row: the reader must
+   * a long sentence from ever pushing `+ new` out of the row: the reader must
    * always be able to see what to type, and may lose the tail of why.
    */
   .composer [popover] {
@@ -559,7 +559,7 @@
    * centres the 14px box on the row instead, which is where a glyph beside a
    * word belongs. And it takes `--text`, the name's colour, not `--text-3`,
    * the description's: the row has exactly two ranks — the thing you invoke
-   * and what it does — and the glyph is the first, restating `/new` rather
+   * and what it does — and the glyph is the first, restating the name rather
    * than commenting on it. (The module head's own `+` is `--text-3`, but that
    * one is idle chrome in a header; this one is inside the row about to be
    * pressed.)
