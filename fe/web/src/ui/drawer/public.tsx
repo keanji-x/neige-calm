@@ -15,6 +15,30 @@ import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
+/**
+ * Can `element` actually take focus right now?
+ *
+ * `document.contains` was the whole of the old test, and containment is not
+ * focusability: a connected element that is `visibility: hidden`, inside a
+ * `display: none` subtree, `disabled`, or `aria-hidden` swallows `focus()`
+ * without an error and without moving `document.activeElement`.
+ *
+ * This is deliberately a *visibility* question and not a full tabbability one.
+ * The target is whatever had focus when the drawer opened, so it was focusable
+ * then by construction; what can have changed since is whether it is still on
+ * screen. jsdom computes no CSS, so under jsdom every branch here reads
+ * "visible" — which is why the regression this guards is pinned in
+ * `drawer.browser.test.tsx`, where styles are real.
+ */
+function canTakeFocus(element: HTMLElement): boolean {
+  if (!element.isConnected) return false;
+  if (element.hasAttribute('disabled')) return false;
+  if (element.closest('[aria-hidden="true"], [inert]') !== null) return false;
+  const style = globalThis.getComputedStyle?.(element);
+  if (style === undefined) return true;
+  return style.visibility === 'visible' && style.display !== 'none';
+}
+
 export function Drawer({ open, title, onClose, children, footer }: {
   open: boolean;
   /**
@@ -88,6 +112,18 @@ export function Drawer({ open, title, onClose, children, footer }: {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
+      /*
+       * Escape during IME composition is the *IME's* Escape — it dismisses the
+       * candidate list, and the browser delivers it here anyway. Closing on it
+       * unmounts the composer and takes the draft with it, which for a bilingual
+       * reader is a lost message every time a candidate is waved off.
+       *
+       * `isComposing` is the modern signal and `keyCode === 229` is the one
+       * older IME paths set instead; the app's key router already fences on
+       * both, and the drawer has to hold the same fence or the router's is
+       * decorative on the one layer that unmounts state.
+       */
+      if (event.isComposing || event.keyCode === 229) return;
       const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
       if (layers.item(layers.length - 1) === panelRef.current) onClose();
     };
@@ -112,13 +148,46 @@ export function Drawer({ open, title, onClose, children, footer }: {
       panelRef.current?.focus({ preventScroll: true });
       return;
     }
+    /*
+     * Restoring waits for `closing` to clear, and that ordering is the fix, not
+     * a nicety.
+     *
+     * `app/shell` hides the whole panel column off this drawer's own marker —
+     * `.main:has([data-nc-drawer]) [data-nc-panel] { visibility: hidden }` — and
+     * the marker stays on for the exit animation. The opener is almost always a
+     * row *in that column*, so restoring while `closing` is true aims `focus()`
+     * at a `visibility: hidden` element: the call is silently a no-op, the
+     * document keeps focus on `<body>`, and the next Tab restarts from the top
+     * of the page. Waiting one animation means the drawer is out of the DOM,
+     * the `:has()` no longer matches, and the opener is a real target again.
+     */
     if (!shouldRestoreFocus.current) return;
-    shouldRestoreFocus.current = false;
     const target = previouslyFocusedRef.current;
+    /*
+     * While `closing` is true the marker is still on and so is the hiding rule,
+     * so a target that is unfocusable *right now* may simply be waiting for the
+     * animation to end. Leave `shouldRestoreFocus` armed and let the rerun this
+     * effect gets when `closing` clears do the work — falling through to the
+     * page title here would throw the opener away for a state that lasts 200ms.
+     * An opener that has left the DOM is a different answer and not a slow one,
+     * so `isConnected` keeps it on the fallback path with no wait.
+     */
+    if (closing && target !== null && target.isConnected && !canTakeFocus(target)) return;
+    shouldRestoreFocus.current = false;
     const fallback = document.querySelector<HTMLElement>('[data-nc-page-title]');
-    const destination = target && document.contains(target) ? target : fallback;
-    if (destination && document.contains(destination)) destination.focus();
-  }, [open]);
+    const destination = target && canTakeFocus(target) ? target : fallback;
+    if (!destination || !document.contains(destination)) return;
+    destination.focus();
+    /*
+     * And it is *checked*, because containment and computed style are both
+     * predictions and `document.activeElement` is the outcome. Anything that
+     * makes a target unfocusable for a reason not enumerated below ends here
+     * on the page title rather than on `<body>`.
+     */
+    if (document.activeElement !== destination && fallback && document.contains(fallback)) {
+      fallback.focus();
+    }
+  }, [open, closing]);
 
   /*
    * The drawer **leaves**; it does not vanish.

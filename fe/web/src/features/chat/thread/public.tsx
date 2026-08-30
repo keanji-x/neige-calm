@@ -229,6 +229,25 @@ export function ChatComposer({
   const newConversationRef = useRef(onNewConversation);
   newConversationRef.current = onNewConversation;
 
+  const rootRef = useRef<HTMLDivElement>(null);
+  /*
+   * Put the caret back in the message field after a send.
+   *
+   * Load-bearing, not a nicety — see the `sendButton` note below: Send is a
+   * natively disabled control the moment the draft empties, and a natively
+   * disabled control that currently holds focus hands that focus to `<body>`.
+   * Sending from the button is the one path that puts focus there first.
+   *
+   * The field is found by query rather than by ref because it is Astryx's
+   * element, handed to `ChatComposer` as an `input` slot; there is no ref for
+   * it to give us.
+   */
+  const returnFocusToField = () => {
+    rootRef.current
+      ?.querySelector<HTMLElement>('[contenteditable="true"], textarea')
+      ?.focus();
+  };
+
   const triggers = useMemo<ChatComposerTrigger[]>(() => [{
     character: '/',
     searchSource: createStaticSource([NEW_CONVERSATION_COMMAND]),
@@ -323,6 +342,7 @@ export function ChatComposer({
 
   return (
     <div
+      ref={rootRef}
       className={styles.composer}
       data-nc-composer=""
       onKeyDownCapture={(event) => {
@@ -340,12 +360,17 @@ export function ChatComposer({
         placeholder="Say something"
         isDisabled={disabled}
         isStopShown={stopShown}
-        onStop={onStop}
+        /* A stop already asked for cannot be asked for again: `onStop` is
+           withheld once `stopping` is true, so Stop stops responding rather
+           than queueing a second interrupt. This is where the dead
+           `isDisabled={stopping}` was trying to say that. */
+        onStop={stopping === true ? undefined : onStop}
         onSubmit={(value) => {
           const text = value.trim();
           if (text === '' || disabled || stopShown) return;
           onSend(text);
           setDraft('');
+          returnFocusToField();
         }}
         input={(
           <ChatComposerInput
@@ -357,7 +382,55 @@ export function ChatComposer({
             {...(onNewConversation === undefined ? {} : { triggers })}
           />
         )}
-        sendButton={<ChatSendButton isDisabled={stopping} />}
+        /*
+         * ── Send's availability, and why it is Astryx's and not ours ────────
+         *
+         * This used to be `<ChatSendButton isDisabled={stopping} />`, and both
+         * halves of that were wrong.
+         *
+         * The override *replaced* `ChatSendButton`'s own default,
+         * `isDisabled = !(context?.canSend ?? false)`. With `canSend` out of the
+         * picture, Send on an empty composer measured `{ label: 'Send',
+         * disabled: false, ariaDisabled: null }` — a control that says it can be
+         * pressed and then does nothing, which is the one thing a button may
+         * never do.
+         *
+         * And the value it substituted was dead anyway: the router only passes
+         * `stopping` on the paths where it also passes `onStop`, so `stopShown`
+         * is true whenever `stopping` could be, and `ChatSendButton` computes
+         * `isDisabled={!isStopShown && isDisabled}` — identically `false`. The
+         * prop expressed an intention ("a stop already asked for cannot be
+         * asked for again") that the component's own arithmetic cancelled. That
+         * intention now lives where it can take effect, on `onStop` itself.
+         *
+         * ── The trade this makes, stated plainly ────────────────────────────
+         *
+         * Astryx renders `aria-disabled` **only** when a `tooltip` is set
+         * (`Button/Button.tsx`: `useAriaDisabled = tooltip != null &&
+         * buttonDisabled`); otherwise it is a native `disabled`.
+         * `ChatSendButton` accepts no `tooltip` and forwards no rest props, so
+         * from out here the choice is native `disabled` or nothing — and
+         * `useChatComposerContext` is not exported, so a hand-rolled send button
+         * could not read `canSend` either without reimplementing the composer's
+         * state.
+         *
+         * Native `disabled` is announced ("Send, button, unavailable") but it
+         * leaves the tab order, and a control that vanishes from under a
+         * keyboard user's focus drops that focus on `<body>` — which is exactly
+         * what §5.1's deleted test existed to prevent. That failure has one
+         * trigger here and it is `submit`: focus is on Send, the click sends,
+         * the draft empties, `canSend` goes false, and the button focus is
+         * sitting on goes away.
+         *
+         * So the focus is *moved deliberately*, back into the field, before
+         * that can happen — which is where a person who just sent a message
+         * wants it regardless. See `returnFocusToField`. That leaves "Send is
+         * not tabbable while the field is empty", which is the standard
+         * behaviour of a disabled control and costs a keyboard user nothing:
+         * there is nothing to send, and the field they would have to visit to
+         * change that is the previous stop in the same tab ring.
+         */
+        sendButton={<ChatSendButton />}
       />
     </div>
   );
