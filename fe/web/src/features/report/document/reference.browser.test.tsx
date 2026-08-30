@@ -133,5 +133,25 @@ describe('the reference heading, as the engine lays it out', () => {
 
     /* Clear of the text column, with the gutter between them. */
     expect(box.right).toBeLessThan(word.left);
+
+    /*
+     * **And on the section numbers' own column**, which is the claim the
+     * stylesheet makes and nothing checked. `.h1::before` hangs at
+     * `inset-inline-end: calc(100% + --space-10)` — its trailing edge one
+     * `--space-10` before the measure — so the chevron's trailing edge has to
+     * land there too, or the margin holds two things ten pixels apart while the
+     * comment says "one column". Measured against a probe carrying the token
+     * rather than the number, so changing `--space-10` moves both.
+     */
+    const probe = document.createElement('div');
+    probe.style.inlineSize = 'var(--space-10)';
+    document.body.append(probe);
+    const gutterGap = probe.getBoundingClientRect().width;
+    probe.remove();
+
+    const sectionHead = [...document.querySelectorAll('[data-nc-report] h2')]
+      .find((head) => !reference.contains(head))!;
+    const numberColumnRight = sectionHead.getBoundingClientRect().left - gutterGap;
+    expect(Math.round(box.right)).toBe(Math.round(numberColumnRight));
   });
 });

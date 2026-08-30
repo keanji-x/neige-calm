@@ -60,8 +60,11 @@ describe('WavePage header', () => {
 });
 
 describe('WavePage task inventory', () => {
-  const task = (key: string, state: 'ready' | 'not-ready' | 'withdrawn', blockId = `b-${key}`) =>
-    ({ blockId, key, state } as const);
+  const task = (
+    key: string,
+    state: 'ready' | 'not-ready' | 'withdrawn' | 'unreadable',
+    blockId = `b-${key}`,
+  ) => ({ blockId, key, state } as const);
 
   /* FOLDER used to hold this slot and was removed, not moved: `cove/new-wave`
      omits `cwd` from the create POST, so the kernel persists `$HOME` and every
@@ -88,6 +91,21 @@ describe('WavePage task inventory', () => {
     expect(screen.getByRole('button', { name: /beta.*Not ready/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /gone.*Withdrawn/ })).toBeTruthy();
     expect(screen.queryByText('Ready')).toBeNull();
+  });
+
+  /*
+   * The fourth state, which the review found had no test at all: a task whose
+   * payload this build cannot parse. `deriveReportTasks` names it by its block
+   * id — the one literal still true about it — and the row says so rather than
+   * pretending it is merely not ready. Deleting that branch left every other
+   * case green.
+   */
+  it('names an unreadable task by its block id and says so', () => {
+    renderPage({ tasks: [task('b_bf88', 'unreadable', 'b_bf88')] });
+    const row = screen.getByRole('button', { name: /b_bf88.*Unreadable/ });
+    expect(row).toBeTruthy();
+    /* Not the word used for a task the agent simply has not finished. */
+    expect(screen.queryByText('Not ready')).toBeNull();
   });
 
   /* The row is a pointer to the block, not a copy of it — it hands back the

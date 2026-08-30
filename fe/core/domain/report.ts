@@ -424,7 +424,16 @@ export function deriveReportTasks(blocks: readonly ReportBlock[] | null): Report
     const state: ReportTaskState = 'tombstoned_by' in payload
       ? 'withdrawn'
       : payload.ready ? 'ready' : 'not-ready';
-    rows.push({ blockId: block.id, key: payload.key, state });
+    /*
+     * A row always has a name. `key` is `z.string()` — the kernel does not
+     * require it to be non-empty — and an empty one reaches the panel as a
+     * button with no text and therefore no accessible name: unreadable to a
+     * screen reader, invisible to a pointer, and a `getByRole('button')` that
+     * matches nothing. The same fallback the unreadable branch uses applies,
+     * for the same reason: the block id is the literal other reports cite this
+     * block by, which is the one name it always has.
+     */
+    rows.push({ blockId: block.id, key: payload.key === '' ? block.id : payload.key, state });
   }
   return rows;
 }

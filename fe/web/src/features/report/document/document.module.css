@@ -197,10 +197,20 @@
     align-self: center;
     inline-size: var(--glyph-sm);
     block-size: var(--glyph-sm);
+    /*
+     * `--space-10`, not the row's own `--space-7` gap, and the two numbers do
+     * different jobs. The *pull* is the marker's box plus the distance that
+     * puts its trailing edge on `.h1::before`'s — which hangs at
+     * `calc(100% + --space-10)` — so the chevron and the section numbers form
+     * one column rather than two things 10px apart. The `margin-inline-end`
+     * then tops the row's gap up to that same `--space-10` so the word still
+     * lands on the section-title column.
+     */
     margin-inline-start: calc(-1 * min(
-      var(--glyph-sm) + var(--space-7),
+      var(--glyph-sm) + var(--space-10),
       var(--document-start, 0px)
     ));
+    margin-inline-end: calc(var(--space-10) - var(--space-7));
     color: var(--text-3);
     transition: rotate var(--motion-snappy) ease-out;
   }
@@ -250,8 +260,14 @@
   }
 
   /* The rhythm `.block` gives its children, given to the appendix's entries:
-     one scale in the document, not a second one inside a fold. */
-  .referenceHead + .referenceItem,
+     one scale in the document, not a second one inside a fold.
+
+     `.referenceSummary`, not `.referenceHead`: the heading lives *inside* the
+     summary (that is what `<summary>`'s content model requires), so it is not a
+     sibling of the first entry and the adjacent selector never matched — the
+     first entry silently sat at the head's own `margin-block-end` while every
+     entry after it got `--space-8`. */
+  .referenceSummary + .referenceItem,
   .referenceItem + .referenceItem {
     margin-block-start: var(--space-8);
   }

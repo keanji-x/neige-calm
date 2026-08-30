@@ -200,6 +200,15 @@ describe('deriveReportTasks', () => {
       .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'unreadable' }]);
   });
 
+  /* `key` is `z.string()` on the wire, so an empty one is legal and reaches the
+     panel as a button with no text — no accessible name, nothing to click, and
+     invisible to `getByRole`. The block id stands in, exactly as it does for an
+     unreadable task. */
+  it('falls back to the block id when the task declared an empty key', () => {
+    expect(tasksOf([task('b-1', live('', true))]))
+      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'ready' }]);
+  });
+
   /* And only a block that declared itself a task: an `unsupported` block of
      some other kind is a figure this build cannot draw, which belongs in the
      argument, not in the panel's list of work. */
