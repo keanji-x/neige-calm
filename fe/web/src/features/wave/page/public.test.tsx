@@ -59,6 +59,65 @@ describe('WavePage header', () => {
   });
 });
 
+describe('WavePage task inventory', () => {
+  const task = (
+    key: string,
+    state: 'ready' | 'not-ready' | 'withdrawn' | 'unreadable',
+    blockId = `b-${key}`,
+  ) => ({ blockId, key, state } as const);
+
+  /* FOLDER used to hold this slot and was removed, not moved: `cove/new-wave`
+     omits `cwd` from the create POST, so the kernel persists `$HOME` and every
+     wave this front-end makes reported the same constant. The assertion is on
+     the *label* rather than on the path, because the defect it guards against
+     is the module coming back, not any particular path being shown. */
+  it('has no Folder module: nobody chooses a wave cwd any more', () => {
+    renderPage({ tasks: [] });
+    expect(screen.queryByText('Folder')).toBeNull();
+    expect(screen.getByText('Tasks')).toBeTruthy();
+  });
+
+  it('says no tasks are declared yet when the report has none', () => {
+    renderPage({ tasks: [] });
+    expect(screen.getByText('No tasks declared yet.')).toBeTruthy();
+  });
+
+  /* `Ready` is the ordinary case and prints nothing: a column in which every
+     row carries a word is a column nobody reads. What the row must carry is the
+     two states a reader would otherwise have to open the document to find. */
+  it('names only the states that are not the ordinary one', () => {
+    renderPage({ tasks: [task('alpha', 'ready'), task('beta', 'not-ready'), task('gone', 'withdrawn')] });
+    expect(screen.getByRole('button', { name: 'alpha' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /beta.*Not ready/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /gone.*Withdrawn/ })).toBeTruthy();
+    expect(screen.queryByText('Ready')).toBeNull();
+  });
+
+  /*
+   * The fourth state, which the review found had no test at all: a task whose
+   * payload this build cannot parse. `deriveReportTasks` names it by its block
+   * id — the one literal still true about it — and the row says so rather than
+   * pretending it is merely not ready. Deleting that branch left every other
+   * case green.
+   */
+  it('names an unreadable task by its block id and says so', () => {
+    renderPage({ tasks: [task('b_bf88', 'unreadable', 'b_bf88')] });
+    const row = screen.getByRole('button', { name: /b_bf88.*Unreadable/ });
+    expect(row).toBeTruthy();
+    /* Not the word used for a task the agent simply has not finished. */
+    expect(screen.queryByText('Not ready')).toBeNull();
+  });
+
+  /* The row is a pointer to the block, not a copy of it — it hands back the
+     *block* id, which is what the reveal path takes, and not the task key. */
+  it('opens a task by its block id, not by its key', async () => {
+    const onOpenTask = vi.fn();
+    renderPage({ tasks: [task('alpha', 'ready', 'b-17')], onOpenTask });
+    await userEvent.click(screen.getByRole('button', { name: 'alpha' }));
+    expect(onOpenTask).toHaveBeenCalledWith('b-17');
+  });
+});
+
 describe('WavePage card inventory', () => {
   // §5.3 caps an empty state at one short sentence, so the old
   // "This wave has no cards yet" became "No cards yet." The assertion is on the
@@ -91,6 +150,7 @@ describe('WavePage card inventory', () => {
     const { container } = render(<WavePage
       wave={wave()}
       cards={[card({ id: 'k1', kind: 'notes', title: null })]}
+      tasks={[]}
       onRenameWave={vi.fn()}
       onDeleteWave={vi.fn()}
     />);

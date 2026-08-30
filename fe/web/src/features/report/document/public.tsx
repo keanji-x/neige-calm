@@ -30,8 +30,10 @@ import {
   type SafeBlock, type SafeInline,
 } from '../../../../../core/markdown/public.ts';
 import {
-  parseReportLink, type ReportBlock, type ReportLinkTarget, type WaveReport,
+  isTaskBlock, parseReportLink,
+  type ReportBlock, type ReportLinkTarget, type WaveReport,
 } from '../../../../../core/domain/report.ts';
+import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
 import { ReportAppBlock } from '../app/public.tsx';
 import { ReportCandlesBlock } from '../candles/public.tsx';
@@ -92,15 +94,147 @@ export function ReportDocument({
             </div>
           </div>
         )
-        : report.blocks.map((block) => (
-          <BlockSlot
-            key={block.id}
-            block={block}
-            backlinks={backlinkCounts?.get(block.id) ?? 0}
-            onOpenLink={onOpenLink}
-          />
-        ))}
+        : (() => {
+          /*
+           * ── The document, then the reference section ──────────────────────
+           *
+           * The report is meant to be a deliverable, and it was not reading as
+           * one. Measured on a real wave: 8141 characters of body, 11 blocks —
+           * four prose and seven `task`. The prose a reader is meant to take
+           * away was about 700 characters; the rest was worker prompts,
+           * acceptance criteria and gate shell commands, set inline at content
+           * weight, between the paragraphs that were the actual conclusions.
+           *
+           * Those are not the report's argument, they are the machinery that
+           * produced it. So they come out of the flow and go to the end, inside
+           * one collapsed section. The reading column is then what the wave
+           * *concluded*; the appendix is how it got there, one line each, for
+           * the reader who wants to check.
+           *
+           * **`processBlocks` is a predicate, not a list of tasks.** The
+           * section is named `Reference` rather than `Tasks` because the split
+           * it draws is "argument / machinery", and everything procedural the
+           * report grows later belongs on the same side of it. Adding a kind
+           * here is the whole change.
+           */
+          const documentBlocks = report.blocks.filter((block) => !isProcessBlock(block));
+          const processBlocks = report.blocks.filter(isProcessBlock);
+          return (
+            <>
+              {documentBlocks.map((block) => (
+                <BlockSlot
+                  key={block.id}
+                  block={block}
+                  backlinks={backlinkCounts?.get(block.id) ?? 0}
+                  onOpenLink={onOpenLink}
+                />
+              ))}
+              {/* §6.1 — a section with zero rows is not rendered. A report that
+                  declared no tasks has no machinery to account for, and a
+                  permanent empty appendix would make that look like a gap. */}
+              {processBlocks.length > 0 && (
+                <ReportReference blocks={processBlocks} backlinkCounts={backlinkCounts} />
+              )}
+            </>
+          );
+        })()}
     </article>
+  );
+}
+
+/**
+ * Blocks that record how the work was driven rather than what it concluded.
+ * Today that is `task`; the predicate exists so the next one is a one-line
+ * change rather than a second mechanism.
+ *
+ * **The predicate is `core/domain`'s**, not a copy. Three projections ask
+ * "is this a task" — the outline, the panel's inventory and this section — and
+ * a local copy here is exactly how they came to disagree about a block whose
+ * payload failed to parse. See `isTaskBlock` for the case and the cost.
+ */
+function isProcessBlock(block: ReportBlock): boolean {
+  return isTaskBlock(block);
+}
+
+/**
+ * The appendix, closed.
+ *
+ * **Closed by default, and the earlier argument against that does not carry
+ * over.** When each task was its own fold in the middle of the prose, opening
+ * closed would have been the app deciding, for a reader who never asked, that
+ * part of the document's own argument was not worth showing. This is the
+ * opposite shape: one labelled section, at the end, holding only the things
+ * that are *not* the argument. Nothing the report concluded is behind it.
+ *
+ * One fold, not N. Eight collapsed task rows scattered through the prose still
+ * cost eight interruptions and eight decisions; this costs one, and the reader
+ * who never opens it reads a clean document.
+ *
+ * The rows inside keep their block ids, which is what makes this safe: a
+ * `neige://wave/x#b_task` link from another report, and the panel's task
+ * inventory, both still land — `revealReportAnchor` opens every `<details>` it
+ * lands inside before it measures where to scroll, so arriving here unfolds
+ * the section and the row together.
+ */
+function ReportReference({ blocks, backlinkCounts }: {
+  blocks: readonly ReportBlock[];
+  backlinkCounts?: ReadonlyMap<string, number>;
+}) {
+  return (
+    <div className={styles.row}>
+      <details className={styles.reference} data-nc-report-reference="">
+        <summary className={styles.referenceSummary}>
+          {/*
+            * A real heading, and `<h2>` because that is what the report's own
+            * numbered sections are (`document`'s `.h1` class is worn by an
+            * `<h2>` element) — so this lands at the same level in the heading
+            * outline a screen-reader user navigates by, which is what it is.
+            *
+            * The heading wraps *everything* in the summary rather than sitting
+            * beside the chevron and the count. `<summary>`'s content model is
+            * phrasing content **or one heading element**; a heading with two
+            * spans for company would be neither.
+            */}
+          <h2 className={styles.referenceHead}>
+            <span className={styles.referenceMarker}><Icon name="chevron-right" size="sm" /></span>
+            <span className={styles.referenceTitle}>Reference</span>
+            {/* The count is the reason to open it, and the only thing the closed
+                row can say about what is inside. Tabular figures so a document
+                with two of these does not jitter. */}
+            <span className={styles.referenceCount}>
+              {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
+            </span>
+          </h2>
+        </summary>
+        {/*
+          * Not `BlockSlot`, and that is a layout fact rather than a preference.
+          * A slot is `display: contents` over the *article's* three-column grid
+          * — leading gutter, measure, sidenote gutter — and this `<details>` is
+          * not that grid, so a slot nested here would drop its `grid-column: 2`
+          * and the backlink marker would have no gutter to sit in. The entries
+          * therefore carry the two things a slot exists for, directly: the block
+          * id (which is the anchor every deep link and the TASKS panel address)
+          * and the backlink count, which moves inline because there is no
+          * trailing gutter inside an appendix.
+          */}
+        {blocks.map((block) => {
+          const backlinks = backlinkCounts?.get(block.id) ?? 0;
+          return (
+            <div key={block.id} className={styles.referenceItem} id={block.id}>
+              <BlockBody block={block} />
+              {backlinks > 0 && (
+                <span
+                  className={styles.referenceSidenote}
+                  title={`${backlinks} report${backlinks === 1 ? '' : 's'} cite this block`}
+                >
+                  ◂ {backlinks}
+                </span>
+              )}
+            </div>
+          );
+        })}
+      </details>
+    </div>
   );
 }
 
@@ -141,7 +275,7 @@ function BlockBody({ block }: { block: ReportBlock }): ReactNode {
   switch (block.kind) {
     case 'table': return <ReportTableBlock payload={block.payload} />;
     case 'chart.candles': return <ReportCandlesBlock payload={block.payload} />;
-    case 'task': return <ReportTaskBlock payload={block.payload} />;
+    case 'task': return <ReportTaskBlock payload={block.payload} blockId={block.id} />;
     case 'app': return <ReportAppBlock payload={block.payload} />;
     case 'unsupported':
       return (

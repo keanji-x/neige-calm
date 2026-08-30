@@ -126,6 +126,174 @@ describe('ReportDocument', () => {
     expect(container.querySelector('pre')?.textContent).toContain('too deep');
   });
 
+  /*
+   * ── The reference appendix ───────────────────────────────────────────────
+   *
+   * The report is meant to be a deliverable and was not reading as one:
+   * measured on a real wave, 8141 characters of body across 11 blocks, of which
+   * the prose a reader takes away was ~700 and seven `task` blocks — worker
+   * prompts, acceptance criteria, gate shell commands — were the rest, set
+   * between the paragraphs that were the actual conclusions.
+   *
+   * So process blocks leave the flow and go to one collapsed section at the
+   * end. Each claim below is a separate way that can break.
+   */
+  describe('the reference appendix', () => {
+    function task(id: string, key: string): ReportBlock {
+      return {
+        id,
+        kind: 'task',
+        payload: { key, kind: 'codex', declared_by: 'spec', ready: true, goal: `goal for ${key}` },
+      };
+    }
+
+    /* The whole point: the reading column is the argument, and the machinery is
+       not in it. Asserted by *position* — the task must not be among the
+       article's own block rows — because "is on the page somewhere" is exactly
+       what stayed true while the defect existed. */
+    it('lifts task blocks out of the document flow, and only those', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(
+          prose('b-1', '# Conclusion'),
+          task('b-2', 'alpha'),
+          { id: 'b-3', kind: 'table', payload: { caption: 'Comparables', columns: [{ key: 'k', label: 'K' }], rows: [{ k: 'v' }] } },
+        )}
+        empty={EMPTY}
+      />);
+      const reference = container.querySelector('[data-nc-report-reference]')!;
+      expect(reference).toBeTruthy();
+      expect(reference.contains(container.querySelector('#b-2'))).toBe(true);
+
+      /*
+       * The prose stays, and **so does the table** — the second half is the one
+       * that was missing and it was caught by mutation, not by review: a
+       * predicate of `kind !== 'prose'` swept every figure into the appendix and
+       * this file was still green, because every case here paired prose with a
+       * task and nothing asked where a table went.
+       *
+       * A table or a chart is *evidence*: the report cites it to make its point,
+       * and a conclusion whose numbers are folded into an appendix is a
+       * conclusion you have to take on trust. The split this section draws is
+       * "argument / machinery", not "prose / everything else".
+       */
+      expect(reference.contains(container.querySelector('#b-1'))).toBe(false);
+      expect(reference.contains(container.querySelector('#b-3'))).toBe(false);
+    });
+
+    /*
+     * **At the end**, which is the claim the containment assertions above do not
+     * make: a filter that put the appendix first would satisfy every one of
+     * them and still leave the reader scrolling past the machinery to reach the
+     * conclusions.
+     */
+    it('comes after the document, not before it', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b-1', '# Conclusion'), task('b-2', 'alpha'), prose('b-3', '# Next'))}
+        empty={EMPTY}
+      />);
+      const article = container.querySelector('[data-nc-report]')!;
+      const reference = container.querySelector('[data-nc-report-reference]')!;
+      const referenceRow = reference.closest('div')!;
+      const rows = [...article.children];
+      expect(rows.indexOf(referenceRow)).toBe(rows.length - 1);
+      /* And after *both* prose blocks, not merely last among some subset. */
+      expect(referenceRow.compareDocumentPosition(container.querySelector('#b-3')!))
+        .toBe(Node.DOCUMENT_POSITION_PRECEDING);
+    });
+
+    /* A task block whose payload this build cannot parse degrades to
+       `unsupported` — and it is still machinery. Keying the split on
+       `kind === 'task'` alone left exactly those in the reading column, printing
+       `unsupported block kind task` between two paragraphs of conclusions. */
+    it('lifts a task whose payload did not parse, which degrades to unsupported', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b-1', '# Conclusion'), { id: 'b-2', kind: 'unsupported', declaredKind: 'task' })}
+        empty={EMPTY}
+      />);
+      const reference = container.querySelector('[data-nc-report-reference]')!;
+      expect(reference).not.toBeNull();
+      expect(reference.contains(container.querySelector('#b-2'))).toBe(true);
+    });
+
+    /* But not every unsupported block: one that declared some other kind is a
+       figure this build cannot draw, which is a hole in the argument and has to
+       stay where the argument is. */
+    it('leaves an unsupported block of some other kind in the flow', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b-1', '# Conclusion'), { id: 'b-2', kind: 'unsupported', declaredKind: 'chart.sankey' })}
+        empty={EMPTY}
+      />);
+      expect(container.querySelector('[data-nc-report-reference]')).toBeNull();
+      expect(container.querySelector('#b-2')).toBeTruthy();
+    });
+
+    /* Closed, so the reader who never opens it reads a clean document. One fold
+       for the whole appendix, not one per task. */
+    it('starts closed, and is one fold for all of them', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(task('b-1', 'alpha'), task('b-2', 'beta'))}
+        empty={EMPTY}
+      />);
+      const reference = container.querySelector<HTMLDetailsElement>('[data-nc-report-reference]')!;
+      expect(reference.open).toBe(false);
+      expect(reference.querySelectorAll('[id]').length).toBe(2);
+    });
+
+    /*
+     * A heading, not a styled row: `Reference` sits at the same level in the
+     * heading outline as the report's own numbered sections, so a reader
+     * navigating by heading finds the appendix where they would look for a
+     * section. `<h2>` is what those sections are too (`document`'s `.h1` class
+     * is worn by an `<h2>`), and `<summary>`'s content model takes phrasing
+     * content *or one heading element* — which is why the heading wraps the
+     * chevron and the count rather than sitting beside them.
+     */
+    it('is a heading at the same level as the report\'s own sections', () => {
+      const { container } = render(<ReportDocument report={blocked(task('b-1', 'alpha'))} empty={EMPTY} />);
+      const summary = container.querySelector('[data-nc-report-reference] > summary')!;
+      const heading = summary.querySelector('h2');
+      expect(heading).not.toBeNull();
+      expect(heading!.textContent).toContain('Reference');
+      /* One heading element, and everything in the summary is inside it. */
+      expect(summary.children.length).toBe(1);
+      expect(summary.firstElementChild).toBe(heading);
+    });
+
+    /* The count is the only thing a closed section can say about what is behind
+       it, so it is the only reason to open it. */
+    it('says how many are behind it, and counts one in the singular', () => {
+      const { container } = render(<ReportDocument report={blocked(task('b-1', 'alpha'))} empty={EMPTY} />);
+      expect(container.querySelector('[data-nc-report-reference] summary')?.textContent)
+        .toContain('1 task');
+      cleanup();
+      const two = render(<ReportDocument
+        report={blocked(task('b-1', 'alpha'), task('b-2', 'beta'))}
+        empty={EMPTY}
+      />);
+      expect(two.container.querySelector('[data-nc-report-reference] summary')?.textContent)
+        .toContain('2 tasks');
+    });
+
+    /* §6.1 — a section with zero rows is not rendered. A wave that declared no
+       tasks has no machinery to account for, and a permanent empty appendix
+       would make the ordinary case look like a gap. */
+    it('is absent, not empty, when the report declares no tasks', () => {
+      const { container } = render(
+        <ReportDocument report={blocked(prose('b-1', '# Conclusion'))} empty={EMPTY} />,
+      );
+      expect(container.querySelector('[data-nc-report-reference]')).toBeNull();
+    });
+
+    /* The id is what makes the move safe: a `neige://wave/x#b-2` link from
+       another report, and the panel's TASKS inventory, both address the block,
+       and `revealReportAnchor` unfolds the section on the way in. Lose the id
+       and both land nowhere, silently. */
+    it('keeps each block id, so a citation still has something to land on', () => {
+      const { container } = render(<ReportDocument report={blocked(task('b-2', 'alpha'))} empty={EMPTY} />);
+      expect(container.querySelector('#b-2')).toBeTruthy();
+    });
+  });
+
   describe('typed blocks', () => {
     it('gives each block its id, so a citation has something to land on', () => {
       const { container } = render(<ReportDocument report={blocked(

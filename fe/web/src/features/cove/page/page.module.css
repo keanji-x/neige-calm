@@ -4,9 +4,17 @@
    * on all four routes: 24 inline, 20 block-start, 28 block-end. The extra 8 at
    * the bottom keeps the last row off the edge when the page is scrolled home.
    */
+  /*
+   * A flex column, not a two-row grid, for exactly the reason recorded at
+   * length on the wave page's `.page`: a `1fr` row never exceeds the leftover,
+   * so `.content`'s box stayed one viewport tall while the report grew past it,
+   * and `.panel` — which may only travel inside that box — slid off the top
+   * after roughly one screen instead of staying. `flex: 1 0 auto` below is the
+   * one declaration that both fills a short page and grows a long one.
+   */
   .page {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    display: flex;
+    flex-direction: column;
     gap: var(--space-8);
     max-inline-size: none;
     inline-size: 100%;
@@ -91,12 +99,26 @@
    * empty document could not centre itself in the space it owns. The panel
    * pins to the top instead of stretching with it.
    */
-  .content {
+  /* The header keeps its own height: as an ordinary flex item it would be the
+     thing that gives way once the row below grows past the page. */
+  /* Positional, because `ui/page-header` renders its own element and this file
+     cannot name it — which makes it (0,1,1), higher than a bare `.content`. The
+     row below is therefore written as `.page > .content` (0,2,0) rather than
+     left to win on source order. See the same note on the wave page. */
+  .page > :first-child {
+    flex: none;
+  }
+
+  .page > .content {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
     grid-template-rows: minmax(0, 1fr);
     gap: var(--space-10);
     min-block-size: 0;
+
+    /* Fill the leftover, then grow past it — see the note on `.page`. This is
+       the box `.panel`'s sticky travel is measured against. */
+    flex: 1 0 auto;
   }
 
   /* Centred, not start-aligned. The prose is 616 in an 828 column, and hanging

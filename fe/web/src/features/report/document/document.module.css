@@ -84,6 +84,223 @@
   }
 
   /*
+   * ── The reference appendix ───────────────────────────────────────────────
+   *
+   * One collapsed section at the end of the document holding the blocks that
+   * record *how* the work was driven rather than what it concluded. It sits in
+   * the measure column like every other block, because it is part of the
+   * document — it is just not part of the argument.
+   *
+   * `list-style: none` plus the WebKit pseudo removes the platform triangle
+   * (the head is a flex row besides, which suppresses it anyway); the chevron
+   * beside the title is the app's own, rotated by the same rule as the rail's.
+   */
+  .reference {
+    grid-column: 2;
+  }
+
+  /*
+   * ── The head is a heading ────────────────────────────────────────────────
+   *
+   * It was a small sans row, and the chevron sat where the *prose* starts — so
+   * the word `Reference` began one glyph further in than every section title
+   * above it, and the document had two left edges. A section is a section: this
+   * one takes `.h1`'s treatment, and its word lands on the same column as
+   * `概要` and every other heading in the report.
+   *
+   * **The chevron takes the number's slot in the margin**, by the same
+   * absolute-against-the-measure trick `.h1::before` uses, which is what frees
+   * the text edge. That placement is also the only thing distinguishing this
+   * heading from a numbered one, and it says the right thing: the margin slot
+   * carries `01` for a section of the argument and a disclosure triangle for
+   * the appendix. No counter here — `Reference` is not section five, and
+   * incrementing for it would renumber the report every time a task appears.
+   *
+   * Serif and `--text-xl` like `.h1`, not the sans caption it was: the earlier
+   * note argued sans said "this row is the reader's control, not something the
+   * document wrote", but the control is the fold, and a document that sets one
+   * of its own section heads in a different family to say so has spent a
+   * typeface on a distinction the chevron already draws.
+   */
+  .referenceSummary {
+    list-style: none;
+    cursor: pointer;
+  }
+
+  .referenceSummary::-webkit-details-marker {
+    display: none;
+  }
+
+  .referenceHead {
+    position: relative;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-7);
+    margin-block-start: calc(var(--space-12) + var(--space-6));
+    margin-block-end: var(--space-6);
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  /* The same hairline `.h1` runs to the end of its line. It comes after the
+     count so the row reads `Reference  8 tasks ———`, which keeps the number
+     beside the thing it counts rather than stranded at the far margin. */
+  .referenceHead::after {
+    content: "";
+    flex: 1;
+    align-self: center;
+    block-size: 1px;
+    background: var(--hairline);
+  }
+
+  /*
+   * Where `01` would be. `inset-inline-end: calc(100% + --space-10)` is
+   * `.h1::before`'s own placement, so the chevron and the section numbers form
+   * one column down the margin rather than two things near each other.
+   *
+   * `align-self: center` on a baseline row: a glyph has no baseline to sit on
+   * — the same exemption the composer's command row gives its `+`.
+   */
+  /*
+   * In the flow, pulled into the margin — **not absolutely positioned**, and
+   * that is what keeps it on screen.
+   *
+   * It was `position: absolute` with `inset-inline-end: calc(100% + --space-10)`,
+   * copying `.h1::before`'s placement of the section number. Measured: below
+   * about 1100px `--document-start` clamps to `0px` (it is a `max(0px, …)` of
+   * the leftover), so the marker sat *outside* `.main` — which is
+   * `overflow: clip` — and was gone. At 900px its left edge was 30 against a
+   * main region starting at 44: the whole glyph, clipped. The section numbers
+   * do the same thing and it costs them nothing, because a number is
+   * decoration; this one is the only thing saying the heading opens.
+   *
+   * So it stays a flex item and takes a *negative start margin* instead. At
+   * full width the margin is exactly its own box plus the row's gap, which
+   * pulls it into the gutter and leaves the word starting where it would have
+   * started with no marker at all — the section-title column, which is the
+   * whole point. `min()` clamps that pull to the gutter that actually exists,
+   * so as the window narrows the marker walks back inside the measure rather
+   * than off the edge; at zero gutter it simply sits before the word, and the
+   * heading loses its alignment with section titles that are no longer aligned
+   * to anything either.
+   *
+   * No media query and no breakpoint literal: the one number this reads is the
+   * gutter's own width, which is the thing that actually varies.
+   */
+  .referenceMarker {
+    flex: none;
+    display: flex;
+    align-self: center;
+    inline-size: var(--glyph-sm);
+    block-size: var(--glyph-sm);
+    /*
+     * `--space-10`, not the row's own `--space-7` gap, and the two numbers do
+     * different jobs. The *pull* is the marker's box plus the distance that
+     * puts its trailing edge on `.h1::before`'s — which hangs at
+     * `calc(100% + --space-10)` — so the chevron and the section numbers form
+     * one column rather than two things 10px apart. The `margin-inline-end`
+     * then tops the row's gap up to that same `--space-10` so the word still
+     * lands on the section-title column.
+     */
+    /*
+     * **The trailing margin is derived from the same clamped value, not written
+     * as a constant.** It was `--space-10 − --space-7`, a fixed 10, which is
+     * right only while the pull is unclamped: at a gutter of 28 the pull clamps
+     * to 28 while the gap stayed 24, and the word — the thing this rule exists
+     * to align — sat 10px right of every section title. So the gap is whatever
+     * the surviving pull leaves over, `max()`-floored at zero for gutters too
+     * small to hold even the glyph.
+     *
+     * It degrades in the right order: at a full gutter the word aligns *and*
+     * the chevron is on the number column; from 38 down to 28 the word still
+     * aligns and the chevron walks inward; below that the chevron sits before
+     * the word and alignment is what gives way — the correct thing to lose,
+     * since the chevron is the only remaining sign that the heading opens.
+     */
+    --_pull: min(var(--glyph-sm) + var(--space-10), var(--document-start, 0px));
+
+    margin-inline-start: calc(-1 * var(--_pull));
+    margin-inline-end: max(0px, calc(var(--_pull) - var(--glyph-sm) - var(--space-7)));
+    color: var(--text-3);
+    transition: rotate var(--motion-snappy) ease-out;
+  }
+
+  .reference[open] .referenceMarker {
+    rotate: 90deg;
+  }
+
+  .doc:has(nav ol:hover) .referenceMarker,
+  .doc:has(nav ol:focus-within) .referenceMarker {
+    opacity: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .referenceMarker {
+      transition: none;
+    }
+  }
+
+  /* The heading's own type comes from `.referenceHead`; this only has to stop
+     `base.css`'s `.calm-prose h2` recipe — serif at `--text-md`, semibold —
+     from re-sizing the word inside it. */
+  .referenceTitle {
+    min-inline-size: 0;
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
+
+  /* The count is the only thing a closed section can say about what is behind
+     it, and therefore the reason to open it. It drops to the caption rank so
+     the heading stays one word — a heading that is half number reads as a
+     label. Tabular figures so two of these do not sit on different edges. */
+  .referenceCount {
+    flex: none;
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    letter-spacing: normal;
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .referenceItem {
+    min-inline-size: 0;
+  }
+
+  /* The rhythm `.block` gives its children, given to the appendix's entries:
+     one scale in the document, not a second one inside a fold.
+
+     `.referenceSummary`, not `.referenceHead`: the heading lives *inside* the
+     summary (that is what `<summary>`'s content model requires), so it is not a
+     sibling of the first entry and the adjacent selector never matched — the
+     first entry silently sat at the head's own `margin-block-end` while every
+     entry after it got `--space-8`. */
+  .referenceSummary + .referenceItem,
+  .referenceItem + .referenceItem {
+    margin-block-start: var(--space-8);
+  }
+
+  /* Inline rather than in the trailing gutter: an appendix entry is not in the
+     article's three-column grid, so there is no gutter to hang it in. Same
+     rank and same glyph as `.sidenote`, so the marker still reads as the same
+     thing it is elsewhere in the document. */
+  .referenceSidenote {
+    display: inline-block;
+    margin-block-start: var(--space-2);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+
+  /*
    * The backlink marker (§8.3), in the trailing gutter, aligned to the first
    * line of the block it belongs to. Inside the prose it would interrupt a
    * sentence to say something the reader did not ask about; out here,
