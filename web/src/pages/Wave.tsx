@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
 } from 'react';
+import { useRouterState } from '@tanstack/react-router';
 import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
@@ -22,7 +23,7 @@ import { useOverlayState } from '../hooks/useOverlayState';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 import { excludeReportCards } from '../cards/excludeReportCards';
-import { WaveReportPage } from './WaveReportPage';
+import { decodeHash, WaveReportPage } from './WaveReportPage';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
 // heaviest single dependency on this page. Loading it lazily keeps the
@@ -281,6 +282,34 @@ export function WavePage({
     if (viewMode === 'report') setViewMode('grid');
   };
 
+  // A report task block's "Open worker output" links to
+  // `/wave/$waveId#<workerCardId>` (`pages/report-blocks/task.tsx`). The hash
+  // alone used to change nothing: report mode hands every hash to
+  // `revealReportBlock`, which only resolves report *block* ids, so a worker
+  // card id matched nothing and the click was silently inert.
+  //
+  // The card lives in the grid, so that is where the link has to land. Only a
+  // hash naming a worker card of THIS wave switches modes — a report block
+  // anchor must keep working exactly as before, which is why this reads the
+  // card list instead of pattern-matching the id shape.
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const revealCardId = useMemo(() => {
+    const id = decodeHash(hash);
+    if (!id) return undefined;
+    return workerCards.some(
+      (slot) => slot.kind === 'card' && slot.card?.id === id,
+    )
+      ? id
+      : undefined;
+  }, [hash, workerCards]);
+
+  useEffect(() => {
+    if (revealCardId !== undefined && viewMode === 'report') setViewMode('grid');
+    // `setViewMode` is a stable-enough closure over the overlay setter; adding
+    // it would re-run this on every render. `viewMode` is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [revealCardId, viewMode]);
+
   return (
     // Issue #229 PR B — wrap with WaveContext so the WaveReport card
     // (rendered deep inside WaveGrid/WaveList) can read the wave's
@@ -425,6 +454,7 @@ export function WavePage({
               <WaveGrid
                 waveId={wave.id}
                 cards={workerCards}
+                revealCardId={revealCardId}
                 onRemoveCard={(filteredIdx) => {
                   const original = workerCardSlots[filteredIdx]?.originalIndex;
                   if (original !== undefined) onRemoveCard(wave.id, original);

@@ -15,7 +15,7 @@
 // re-test that here (slice 1 already locks it in via the production code
 // path that hasn't changed shape).
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   render,
   screen,
@@ -780,5 +780,101 @@ describe('WavePage report view mode', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('boom');
     expect(api.upsertOverlay).not.toHaveBeenCalled();
     expect(screen.getByText('Report body')).toBeInTheDocument();
+  });
+});
+
+describe('WavePage worker-card hash', () => {
+  function makeWorkerSlot(id: string): WaveCardSlot {
+    return {
+      kind: 'card',
+      card: { type: 'terminal', id, terminalId: `t_${id}` },
+      sort: 1,
+    } as WaveCardSlot;
+  }
+
+  afterEach(() => {
+    window.location.hash = '';
+  });
+
+  it('switches a report view to grid when the hash names a worker card', async () => {
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay).mockImplementation(async (body) =>
+      echoOverlay(body),
+    );
+    window.location.hash = '#card_w1';
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    await waitFor(() =>
+      expect(api.upsertOverlay).toHaveBeenCalledWith({
+        plugin_id: 'kernel',
+        entity_kind: 'view',
+        entity_id: 'w1',
+        kind: 'view-mode',
+        payload: { schemaVersion: 1, mode: 'grid' },
+      }),
+    );
+    expect(await screen.findByTestId('wave-grid-stub')).toBeInTheDocument();
+  });
+
+  it('leaves a report block anchor in report view', async () => {
+    vi.mocked(api.upsertOverlay).mockClear();
+    // `b_1f3a` is a report block id, not a card id: the report view owns it
+    // and must keep it. Switching to grid here would break every in-document
+    // report link.
+    window.location.hash = '#b_1f3a';
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    expect(
+      getViewModeButton(/^Report view — switch to grid view$/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId('wave-grid-stub')).not.toBeInTheDocument();
+    expect(api.upsertOverlay).not.toHaveBeenCalled();
+  });
+
+  it('ignores a hash naming a card that is not in this wave', async () => {
+    vi.mocked(api.upsertOverlay).mockClear();
+    window.location.hash = '#card_elsewhere';
+
+    render(
+      withClient(
+        <WavePage
+          wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
+          cove={makeCove()}
+          onGo={() => {}}
+          onAddCard={() => {}}
+          onRemoveCard={() => {}}
+          onRenameWave={() => {}}
+        />,
+      ),
+    );
+
+    expect(
+      getViewModeButton(/^Report view — switch to grid view$/i),
+    ).toBeInTheDocument();
+    expect(api.upsertOverlay).not.toHaveBeenCalled();
   });
 });

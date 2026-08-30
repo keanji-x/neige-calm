@@ -480,3 +480,59 @@ describe('WaveGrid — overlay-backed layout', () => {
   });
 
 });
+
+describe('WaveGrid — revealCardId', () => {
+  it('scrolls the named card into view and flashes it', async () => {
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const { container } = render(
+        <Wrapper client={makeClient()}>
+          <WaveGrid
+            waveId="w1"
+            cards={[card('card-a'), card('card-b')]}
+            onRemoveCard={() => {}}
+            revealCardId="card-b"
+          />
+        </Wrapper>,
+      );
+
+      const target = container.querySelector('[data-card-id="card-b"]')!;
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+      await waitFor(() =>
+        expect(target.classList.contains('wave-card--highlight')).toBe(true),
+      );
+      // The other card is untouched — a reveal must not light up the grid.
+      const other = container.querySelector('[data-card-id="card-a"]')!;
+      expect(other.classList.contains('wave-card--highlight')).toBe(false);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('does nothing without a revealCardId', async () => {
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      render(
+        <Wrapper client={makeClient()}>
+          <WaveGrid
+            waveId="w1"
+            cards={[card('card-a')]}
+            onRemoveCard={() => {}}
+          />
+        </Wrapper>,
+      );
+
+      expect(scrollIntoView).not.toHaveBeenCalled();
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});
