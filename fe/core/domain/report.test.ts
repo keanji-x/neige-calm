@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardWire } from './wave.js';
 import {
-  backlinkCountsByBlock, deriveReportOutline, groupBacklinks, parseReportLink,
+  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, groupBacklinks, parseReportLink,
   readWaveReport, WAVE_REPORT_CARD_KIND, type WaveBacklink,
 } from './report.js';
 
@@ -142,6 +142,85 @@ describe('readWaveReport', () => {
   });
 });
 
+describe('deriveReportTasks', () => {
+  function tasksOf(blocks: unknown[]) {
+    return deriveReportTasks(readWaveReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null);
+  }
+
+  function task(id: string, payload: Record<string, unknown>) {
+    return { id, kind: 'task', rev: 1, payload };
+  }
+
+  const live = (key: string, ready: boolean) =>
+    ({ key, kind: 'codex', declared_by: 'spec', ready, goal: 'g' });
+
+  it('lists every task in document order and nothing else', () => {
+    expect(tasksOf([
+      prose('b-1', '# One\n'),
+      task('b-2', live('alpha', true)),
+      { id: 'b-3', kind: 'table', rev: 1, payload: { caption: 'c', columns: [], rows: [] } },
+      task('b-4', live('beta', false)),
+    ])).toEqual([
+      { blockId: 'b-2', key: 'alpha', state: 'ready' },
+      { blockId: 'b-4', key: 'beta', state: 'not-ready' },
+    ]);
+  });
+
+  /* Same discriminant as the block renderer, and the same trap: a *live* task
+     may carry an explicit `tombstone: null`, so the presence of that key proves
+     nothing. Reading it as withdrawn would strike through a task that is
+     running. */
+  it('reads a task carrying an explicit null tombstone as live, not withdrawn', () => {
+    expect(tasksOf([task('b-1', { ...live('alpha', true), tombstone: null })]))
+      .toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready' }]);
+  });
+
+  /* Kept for the same reason the block keeps it: the task existed, other
+     reports may cite its block id, and a panel that dropped it would disagree
+     with the document it is derived from. */
+  it('keeps a withdrawn task', () => {
+    expect(tasksOf([task('b-1', {
+      key: 'gone', declared_by: 'spec', tombstoned_by: 'user', tombstone: { reason: 'r' },
+    })])).toEqual([{ blockId: 'b-1', key: 'gone', state: 'withdrawn' }]);
+  });
+
+  /*
+   * **A task whose payload does not parse still gets a row**, and this reversed
+   * once. The first cut dropped it, on the reasoning that `unsupported` has no
+   * key and no state so a row would name a task the document does not draw.
+   * Both review channels found the same hole in that: the document *does* draw
+   * it — `features/report/document` lifts it into the `Reference` appendix —
+   * and the outline is allowed to skip tasks precisely *because* the panel
+   * lists them. Dropped here, that one block was in no index at all, reachable
+   * only by scrolling. Its id stands in for the key: not a substitute, but the
+   * literal other reports cite it by, which is the one thing still true.
+   */
+  it('keeps a task block whose payload does not parse, named by its id', () => {
+    expect(tasksOf([task('b-1', { key: 'broken' })]))
+      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'unreadable' }]);
+  });
+
+  /* `key` is `z.string()` on the wire, so an empty one is legal and reaches the
+     panel as a button with no text — no accessible name, nothing to click, and
+     invisible to `getByRole`. The block id stands in, exactly as it does for an
+     unreadable task. */
+  it('falls back to the block id when the task declared an empty key', () => {
+    expect(tasksOf([task('b-1', live('', true))]))
+      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'ready' }]);
+  });
+
+  /* And only a block that declared itself a task: an `unsupported` block of
+     some other kind is a figure this build cannot draw, which belongs in the
+     argument, not in the panel's list of work. */
+  it('does not claim an unsupported block that declared some other kind', () => {
+    expect(tasksOf([{ id: 'b-1', kind: 'chart.sankey', rev: 1, payload: {} }])).toEqual([]);
+  });
+
+  it('has no rows for a report with no blocks', () => {
+    expect(deriveReportTasks(null)).toEqual([]);
+  });
+});
+
 describe('deriveReportOutline', () => {
   it('numbers sections continuously across prose blocks, never restarting per block', () => {
     const outline = deriveReportOutline(readWaveReport([card({
@@ -169,6 +248,45 @@ describe('deriveReportOutline', () => {
     })])?.blocks ?? null);
     expect(outline).toHaveLength(1);
     expect(outline[0]?.children).toEqual([{ blockId: 'b-2', label: '600519' }]);
+  });
+
+  /* Tasks are no longer drawn in the flow — `features/report/document` lifts
+     them into the collapsed `Reference` appendix — so hanging them under the
+     section they used to follow would point the outline at a place they are not.
+     On a real wave that was eight rows of machinery in a map of the argument.
+
+     The assertion pairs a task with a *kept* non-prose block, because "the
+     outline is empty" would also pass a rule that dropped everything. */
+  it('leaves task blocks out: they are not in the document flow any more', () => {
+    const outline = deriveReportOutline(readWaveReport([card({
+      payload: {
+        body: 'x',
+        blocks: [
+          prose('b-1', '# Valuation\n'),
+          { id: 'b-2', kind: 'task', rev: 1, payload: { key: 'alpha', kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' } },
+          { id: 'b-3', kind: 'table', rev: 1, payload: { caption: 'Comparables', columns: [{ key: 'k', label: 'K' }], rows: [] } },
+        ],
+      },
+    })])?.blocks ?? null);
+    expect(outline).toHaveLength(1);
+    expect(outline[0]?.children).toEqual([{ blockId: 'b-3', label: 'Comparables' }]);
+  });
+
+  /* Including one whose payload did not parse. Keying the skip on
+     `kind === 'task'` alone listed exactly those — an outline row labelled
+     `task`, pointing at a block the document had moved into the appendix. */
+  it('leaves out a task whose payload did not parse, which degrades to unsupported', () => {
+    const outline = deriveReportOutline(readWaveReport([card({
+      payload: {
+        body: 'x',
+        blocks: [
+          prose('b-1', '# Valuation\n'),
+          { id: 'b-2', kind: 'task', rev: 1, payload: { key: 'broken' } },
+        ],
+      },
+    })])?.blocks ?? null);
+    expect(outline).toHaveLength(1);
+    expect(outline[0]?.children).toEqual([]);
   });
 
   it('promotes a leading non-prose block to an unnumbered top-level item', () => {

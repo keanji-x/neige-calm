@@ -315,6 +315,20 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
       }
       continue;
     }
+    /*
+     * `task` blocks are not in the flow any more.
+     *
+     * `features/report/document` lifts every one of them out of the document
+     * and into the collapsed `Reference` appendix at the end, so hanging them
+     * under the prose section they used to follow would point the outline at a
+     * place they are no longer drawn — and on a real wave that was eight rows
+     * of machinery in a map of eight rows of argument.
+     *
+     * They stay reachable, by the two routes that are actually about tasks: the
+     * panel's TASKS inventory, and any `neige://` link that cites one. Both go
+     * through `revealReportAnchor`, which unfolds the appendix on the way.
+     */
+    if (isTaskBlock(block)) continue;
     const child: ReportOutlineChild = { blockId: block.id, label: blockLabel(block) };
     if (lastNumbered === null) {
       outline.push({ blockId: block.id, label: child.label, number: null, children: [] });
@@ -323,6 +337,105 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
     lastNumbered.children.push(child);
   }
   return outline;
+}
+
+/* ── Tasks, as an inventory ─────────────────────────────────────────────
+
+   A wave's tasks are report blocks (#229), which is the right place to *store*
+   them and the wrong place to read them as a list: they sit wherever in the
+   prose the agent happened to declare them, each one carrying the worker prompt
+   and the gate commands that were written for a machine. Measured on a real
+   wave: 8141 characters of report body, of which the prose a reader is meant to
+   take away was ~700 and seven task blocks were the rest.
+
+   So the panel gets the inventory and the document keeps the declarations. This
+   derives the first from the second — no new endpoint, no second source of
+   truth, and nothing that can disagree with what the document says.
+
+   **What it cannot say, stated plainly: whether a task has run.** A block is a
+   *declaration* — `ready` means the agent has finished writing it, not that the
+   kernel has scheduled it, and there is no field here for pending / running /
+   done / failed. The kernel does project that (`task_projection`), and
+   `calm.plan.list` exposes it to MCP, but no HTTP route does. A status column
+   is therefore a backend slice and not a display change; until it exists this
+   list answers "what work has been declared", which is a different and smaller
+   question than "how is it going". */
+
+/**
+ * A `task` block, **including one this build could not read**.
+ *
+ * A task payload that fails its schema degrades to `{ kind: 'unsupported',
+ * declaredKind: 'task' }`, and failing to read it does not change what it is.
+ * Three projections ask this question — the outline (which skips tasks), the
+ * panel's inventory, and the document's `Reference` appendix — and the first
+ * round of this change answered it three different ways: the appendix lifted an
+ * unreadable task out of the flow while the outline still listed it and the
+ * panel did not, so the one block nobody could read was also the one block
+ * whose three views disagreed. Worse, the reason the outline is allowed to skip
+ * tasks at all is that the panel still lists them; for this block that
+ * justification was false.
+ *
+ * One predicate, three readers.
+ */
+export function isTaskBlock(block: ReportBlock): boolean {
+  return block.kind === 'task'
+    || (block.kind === 'unsupported' && block.declaredKind === 'task');
+}
+
+/** `unreadable` is a task whose payload this build cannot parse — see
+ *  `isTaskBlock`. It has no key and no readiness, only an id. */
+export type ReportTaskState = 'ready' | 'not-ready' | 'withdrawn' | 'unreadable';
+
+export type ReportTaskRow = Readonly<{
+  /** The block to reveal in the document — the detail lives there, not here. */
+  blockId: string;
+  key: string;
+  state: ReportTaskState;
+}>;
+
+/**
+ * Every `task` block, in document order, as one row each.
+ *
+ * Withdrawn tasks are kept, for the same reason the block itself keeps them:
+ * the task existed, other reports may cite its block id, and a list that
+ * silently dropped it would disagree with the document it is derived from.
+ */
+export function deriveReportTasks(blocks: readonly ReportBlock[] | null): ReportTaskRow[] {
+  if (blocks === null) return [];
+  const rows: ReportTaskRow[] = [];
+  for (const block of blocks) {
+    if (!isTaskBlock(block)) continue;
+    /*
+     * An unreadable task still gets a row, and its id stands in for the name.
+     * Omitting it would leave one block that the outline skips (because tasks
+     * live in the panel) and the panel does not list (because it has no key) —
+     * reachable only by scrolling. The id is not a substitute for the key, but
+     * it *is* the literal other reports cite this block by, which is the one
+     * thing still true about it.
+     */
+    if (block.kind !== 'task') {
+      rows.push({ blockId: block.id, key: block.id, state: 'unreadable' });
+      continue;
+    }
+    const payload = block.payload;
+    /* `tombstoned_by` is the discriminant, not `tombstone`: a live task may
+       carry an explicit `tombstone: null`, so the key's presence proves
+       nothing. Same test as `features/report/task`. */
+    const state: ReportTaskState = 'tombstoned_by' in payload
+      ? 'withdrawn'
+      : payload.ready ? 'ready' : 'not-ready';
+    /*
+     * A row always has a name. `key` is `z.string()` — the kernel does not
+     * require it to be non-empty — and an empty one reaches the panel as a
+     * button with no text and therefore no accessible name: unreadable to a
+     * screen reader, invisible to a pointer, and a `getByRole('button')` that
+     * matches nothing. The same fallback the unreadable branch uses applies,
+     * for the same reason: the block id is the literal other reports cite this
+     * block by, which is the one name it always has.
+     */
+    rows.push({ blockId: block.id, key: payload.key === '' ? block.id : payload.key, state });
+  }
+  return rows;
 }
 
 /* ── Backlinks ──────────────────────────────────────────────────────────

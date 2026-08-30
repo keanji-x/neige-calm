@@ -30,6 +30,9 @@ export function renderPage(overrides: Partial<WavePageProps> = {}): RenderResult
   const props: WavePageProps = {
     wave: wave(),
     cards: [],
+    /* A wave with no report has no tasks, which is the honest default — the
+       TASKS cases below pass their own. */
+    tasks: [],
     onRenameWave: vi.fn(),
     onDeleteWave: vi.fn(),
     ...overrides,

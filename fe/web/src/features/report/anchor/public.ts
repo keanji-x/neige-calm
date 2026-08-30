@@ -29,6 +29,48 @@ export function revealReportAnchor(anchorId: string, root: Document = document):
   const element = root.getElementById(anchorId);
   if (element === null) return;
 
+  /*
+   * Unfold whatever the target is inside of, before measuring where it is.
+   *
+   * A `task` block is a `<details>` (see `features/report/task`), so from the
+   * moment it could be folded, every arrival path could land on a row with the
+   * answer hidden under it — the outline, a `neige://` link from another
+   * report, a backlink, and the panel's task inventory, all four. Scrolling to
+   * a closed disclosure and flashing it is a worse failure than not moving:
+   * the reader is told "it is here" and shown a title.
+   *
+   * Both directions are needed and they are different cases. The *ancestor*
+   * walk is for an anchor nested inside a fold; `element` itself is the block
+   * wrapper (`document/public.tsx` puts the id on the `div` around the block),
+   * so the `<details>` is a descendant, not a parent. Neither one alone covers
+   * the other.
+   *
+   * Opening is deliberate and one-way — this never re-folds anything. Arriving
+   * is a request to read; leaving is not a request to put it back, and a block
+   * that snapped shut when the reader scrolled past would be the app taking
+   * back something it was asked for.
+   */
+  /*
+   * Scoped to a report, and that is a guard rather than a tidy-up. The anchor
+   * id comes from the route hash, so it is reader-supplied: `#root` resolves to
+   * the application's own root element, and an unscoped descendant walk would
+   * then open every `<details>` on the page — every task, in every report on
+   * screen — because somebody pasted a URL with the wrong fragment. Unfolding
+   * is a thing this function does *to a report block*, so it only does it when
+   * it landed on one.
+   */
+  const inReport = element.closest('[data-nc-report]') !== null;
+  if (inReport) {
+    for (const details of element.querySelectorAll('details')) details.open = true;
+  }
+  for (
+    let ancestor = inReport ? element.closest('details') : null;
+    ancestor !== null;
+    ancestor = ancestor.parentElement?.closest('details') ?? null
+  ) {
+    ancestor.open = true;
+  }
+
   element.scrollIntoView({ block: 'start', behavior: 'auto' });
   // Re-arming needs the attribute to actually leave the DOM between two
   // arrivals at the same anchor, or the transition has nothing to run from.

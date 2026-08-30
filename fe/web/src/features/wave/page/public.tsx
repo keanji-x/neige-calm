@@ -16,6 +16,7 @@
 
 import type { ReactNode } from 'react';
 
+import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { waveDisplayTitle, type CardWire, type Wave, type WaveLifecycle } from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
@@ -30,6 +31,12 @@ import styles from './page.module.css';
 export type WavePageProps = Readonly<{
   wave: Wave;
   cards: readonly CardWire[];
+  /**
+   * The wave's declared tasks, derived by `app/router` from the report's own
+   * `task` blocks (`core/domain/report`'s `deriveReportTasks`) — not a second
+   * source of truth, and deliberately statusless: see the note there.
+   */
+  tasks: readonly ReportTaskRow[];
   /** The panel card's second module, composed by `app/router` (features/chat). */
   /** The report document, composed by `app/router` (features/report). */
   report?: ReactNode;
@@ -41,6 +48,9 @@ export type WavePageProps = Readonly<{
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
   onOpenCard?: (cardId: string) => void;
+  /** Reveal a task's block in the document — the same landing the outline, a
+   *  `neige://` link and a backlink all use. */
+  onOpenTask?: (blockId: string) => void;
   /**
    * The card grid, composed by `app/router`. Positioned over the document
    * column so the page title stays the only title bar — a second overlay
@@ -61,8 +71,8 @@ function headerLifecycle(lifecycle: WaveLifecycle): WaveLifecycle | null {
 }
 
 export function WavePage({
-  wave, cards, report, backlinks, conversationList, conversationAction,
-  cardsAction, onOpenCard, board, onCloseBoard, onRenameWave, onDeleteWave,
+  wave, cards, tasks, report, backlinks, conversationList, conversationAction,
+  cardsAction, onOpenCard, onOpenTask, board, onCloseBoard, onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteWave(signal));
   const boardOpen = onCloseBoard !== undefined;
@@ -209,22 +219,72 @@ export function WavePage({
                 )}
             </PanelModule>
             {/*
-              The wave's folder. It has been homeless since the page header lost
-              its identity row: you choose it once at creation and then the app
-              never showed it again. It is one line, in mono because the font is
-              what says "literal" (§2.2), and it sits with CARDS because "what
-              this wave is made of" and "where it works" are the same question.
-
-              It is *not* a file browser. §8.3's FILES module was cut: a tree
-              plus a viewer makes the document slot mean two different things,
-              and a file has no block id, so every link, anchor and backlink in
-              the app stops working the moment you open one. Evidence a report
-              wants you to see belongs in the report, as a block.
+              ── FOLDER became TASKS ─────────────────────────────────────────
+              *
+              * FOLDER said "you choose it once at creation and the app never
+              * showed it again". That stopped being true in the other
+              * direction: **nobody chooses it any more.** `cove/new-wave` omits
+              * `cwd` and `attach_folder` from the create POST, so the kernel
+              * takes the #1131 branch — persist `default_cwd()` (`$HOME`) and
+              * skip the `cove_folders` claim entirely. Every wave this
+              * front-end creates therefore reports the same `$HOME`, and a
+              * module whose value is a constant the reader neither picked nor
+              * can change is a row that costs a module and answers nothing.
+              *
+              * `cwd` itself is not dead and is not removed — workers and gates
+              * run there, and the task blocks below carry it. What is removed
+              * is showing it as though it were a decision.
+              *
+              * What takes the slot is the thing that *is* a fact about this
+              * wave and had nowhere to be read: its tasks. They are report
+              * blocks (#229), scattered through the prose at the point the
+              * agent declared them, each carrying a worker prompt and gate
+              * commands. As an inventory they belong in the panel; as
+              * declarations they belong in the document. A row here is a
+              * pointer to the block, not a copy of it — clicking reveals the
+              * block, which is the same landing every outline row, `neige://`
+              * link and backlink already uses.
+              *
+              * Still not a file browser, and §8.3's reasoning for cutting FILES
+              * is untouched: evidence a report wants you to see belongs in the
+              * report, as a block.
             */}
-            <PanelModule title="Folder">
-              {wave.cwd === ''
-                ? <PanelEmpty>No folder.</PanelEmpty>
-                : <p className={styles.cwd} title={wave.cwd}>{wave.cwd}</p>}
+            <PanelModule title="Tasks">
+              {tasks.length === 0
+                ? <PanelEmpty>No tasks declared yet.</PanelEmpty>
+                : (
+                  <ul className={styles.tasks} data-nc-task-inventory="">
+                    {tasks.map((task) => (
+                      <li key={task.blockId}>
+                        <button
+                          type="button"
+                          className={styles.taskRow}
+                          onClick={() => onOpenTask?.(task.blockId)}
+                        >
+                          {/* Mono: the key is the literal other reports and the
+                              kernel address this task by (§2.2). */}
+                          <span className={styles.taskKey}>{task.key}</span>
+                          {/* Only `ready` is silent. A task the agent has not
+                              finished declaring, one it withdrew, and one whose
+                              payload this build cannot parse are all things the
+                              reader would otherwise have to open the document to
+                              discover; a task that is ready is the ordinary case
+                              and gets no word for it. `Unreadable` rows carry
+                              their block id in the name column — see
+                              `deriveReportTasks` for why they are listed at
+                              all. */}
+                          {task.state !== 'ready' && (
+                            <span className={task.state === 'withdrawn' ? styles.taskWithdrawn : styles.taskNotReady}>
+                              {task.state === 'withdrawn' ? 'Withdrawn'
+                                : task.state === 'unreadable' ? 'Unreadable'
+                                  : 'Not ready'}
+                            </span>
+                          )}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
             </PanelModule>
             {/*
               `REFERENCED BY` is absent, not empty, when nothing cites this wave

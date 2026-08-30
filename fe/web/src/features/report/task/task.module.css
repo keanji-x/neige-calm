@@ -23,11 +23,59 @@
     color: var(--text-2);
   }
 
+  /*
+   * The summary row, which is also the whole control.
+   *
+   * `list-style: none` plus the WebKit pseudo is the two-line incantation that
+   * removes the platform triangle. Both are needed and neither is redundant:
+   * Chromium honours `list-style` on `<summary>` only from 119, and
+   * `::-webkit-details-marker` is what older WebKit reads — and the row is
+   * `display: flex` besides, which suppresses the marker anyway. Belt and
+   * braces on a thing that would otherwise ship a stray triangle beside our
+   * own chevron on exactly one engine.
+   *
+   * `cursor: pointer` because it is one, and the row keeps the app's focus
+   * ring: `<summary>` is focusable by construction, so a keyboard reader tabs
+   * through the tasks in a report and the ring is how they know where they are.
+   */
   .head {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     gap: var(--space-4);
+    list-style: none;
+    cursor: pointer;
+  }
+
+  .head::-webkit-details-marker {
+    display: none;
+  }
+
+  /*
+   * `align-self: center`, not the row's baseline: a glyph has no baseline to
+   * sit on — the same exemption `features/chat/thread`'s command row gives its
+   * `+`, and for the same reason.
+   *
+   * `flex: none` so a wrapping head never squeezes it. The rotation is the
+   * rail's (`app/shell`'s `.chevronOpen`), which is what makes a fold in a
+   * document read as the same gesture as a fold in the tree.
+   */
+  .marker {
+    display: flex;
+    flex: none;
+    align-self: center;
+    color: var(--text-3);
+    transition: rotate var(--motion-snappy) ease-out;
+  }
+
+  .task[open] > .head .marker {
+    rotate: 90deg;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .marker {
+      transition: none;
+    }
   }
 
   .spacer {
