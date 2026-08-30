@@ -425,46 +425,40 @@
   }
 
   /*
-   * ── Reset, the transcript's last line ─────────────────────────────────────
+   * ── The `/` command menu's one item ───────────────────────────────────────
    *
-   * The *why here* is in `ChatResetAction`'s note in public.tsx, including what
-   * it costs (it scrolls away with the content). This is only how it is drawn.
+   * The popover itself, its placement, its keyboard model and its `role=
+   * listbox` semantics are Astryx's (`useTriggerMenu`), and it is styled from
+   * Astryx's own tokens — which `styles/astryx-theme.css` already maps onto
+   * ours, so the surface reads as part of this app without anything being
+   * minted here. What Astryx has no opinion about is the *inside* of an item,
+   * because it renders a bare label by default and we render two lines.
    *
-   * **Rank.** `--text-xs` / `--leading-snug`, the same caption tier `.activity`
-   * uses. That is deliberate and it is the point of moving it out of the
-   * corner: the rarest control on the surface must be legible when looked for
-   * and quiet when not (§3, emphasis is a budget). Body rank here would make
-   * the last thing under every reply the loudest sentence in the drawer.
+   * **Two lines, and the second one is a caption.** A command is a verb with
+   * consequences; a bare `New conversation` in a menu that pops out of a text
+   * field does not say whether the words already typed go with it. So the item
+   * is a name at body rank and one sentence at `--text-xs` — the same caption
+   * tier `.activity` and `.footerError` use, which is the rank this app spends
+   * on "what just happened" everywhere else.
    *
-   * **Colour and tier.** `[data-nc-action='destructive']` from base.css does
-   * all of it — `--error-text` at rest, `--error-soft` plus `--error-border` on
-   * hover and focus. Nothing red is minted in this file; overriding the tier's
-   * colour is exactly the drift §9's single-vocabulary gate exists to catch.
-   * What is overridden is only what the tier has no opinion about at this size:
-   * the type rank, and the inline padding.
-   *
-   * **Edge.** `align-self: start` keeps it the width of its own words instead
-   * of a full-column bar (a bar is a *primary* shape, and this is the opposite
-   * of one). The tier's 12px inline padding is cut to 6, and pulled back out by
-   * the same 6 with a negative inline-start margin, so the *label* starts on
-   * the transcript's left edge — the same edge the replies and the activity
-   * lines keep — while the hover fill still has air on both sides of the text.
-   * The 28px `--control-h` box the tier gives it stays: it is §5's (2.5.8) hit
-   * target and the reason the whole line is not just tinted text.
-   *
-   * **Distance.** `.bodyInner`'s 8px gap is the gap *between turns*, so on its
-   * own it would file this line as one more turn. `--space-6` on top of it
-   * takes the separation to 20px — larger than anything inside the transcript,
-   * smaller than the exchange break — which reads as "after the conversation"
-   * rather than "in it".
+   * The row is a column rather than the default flex row, and `min-inline-size:
+   * 0` is what lets the hint ellipsise instead of forcing the popover wider
+   * than the 364px drawer it sits over.
    */
-  .resetAction {
-    align-self: start;
-    margin-block-start: var(--space-6);
-    margin-inline-start: calc(var(--space-3) * -1);
-    padding-inline: var(--space-3);
+  .commandItem {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-inline-size: 0;
+  }
+
+  .commandHint {
+    overflow: hidden;
     font-size: var(--text-xs);
     line-height: var(--leading-snug);
+    color: var(--text-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   @keyframes thread-pulse {

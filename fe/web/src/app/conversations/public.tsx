@@ -14,7 +14,10 @@ export type ConversationRegistry = Readonly<{
   conversations: readonly Conversation[];
   turnsOf: (conversationId: string) => readonly TranscriptEntry[];
   remember: (conversation: Conversation, turns: readonly TranscriptEntry[]) => void;
-  forget: (conversationId: string) => void;
+  /* There is no `forget`. The only caller it ever had was the conversation
+     reset, which is gone from the product (#1139) — a registry entry now
+     leaves exactly one way, by the tab ending. Re-adding a removal door needs
+     a caller that has a reason to slam it, not a symmetry argument. */
   requestedOpenId: string | null;
   requestOpen: (conversationId: string) => void;
   clearOpenRequest: () => void;
@@ -43,21 +46,15 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
       ? current
       : { ...current, [conversation.id]: { conversation, turns } });
   }, []);
-  const forget = useCallback((conversationId: string) => {
-    setEntries((current) => {
-      if (!(conversationId in current)) return current;
-      return Object.fromEntries(Object.entries(current).filter(([id]) => id !== conversationId));
-    });
-  }, []);
   const requestOpen = useCallback((conversationId: string) => setRequestedOpenId(conversationId), []);
   const clearOpenRequest = useCallback(() => setRequestedOpenId(null), []);
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
   const turnsOf = useCallback((conversationId: string) => entries[conversationId]?.turns ?? [], [entries]);
   const value = useMemo<ConversationRegistry>(
     () => ({
-      conversations, turnsOf, remember, forget, requestedOpenId, requestOpen, clearOpenRequest,
+      conversations, turnsOf, remember, requestedOpenId, requestOpen, clearOpenRequest,
     }),
-    [clearOpenRequest, conversations, forget, remember, requestOpen, requestedOpenId, turnsOf],
+    [clearOpenRequest, conversations, remember, requestOpen, requestedOpenId, turnsOf],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;
 }

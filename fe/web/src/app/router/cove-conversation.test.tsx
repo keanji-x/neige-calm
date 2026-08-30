@@ -12,7 +12,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -116,11 +116,56 @@ async function openDraft() {
   await screen.findByRole('complementary', { name: 'New conversation' });
 }
 
+/*
+ * `combobox`, not `textbox`. The composer on a cove route carries the `/`
+ * command menu, and `useTriggerMenu` only emits the combobox role — and the
+ * `aria-expanded` / `aria-haspopup` that go with it — when a trigger is
+ * actually configured. A wave route's composer has no command to offer and so
+ * stays a plain `textbox`; that difference is the accessibility tree telling
+ * the truth about which field can pop a menu, and this lookup follows it.
+ */
+function messageField(): HTMLElement {
+  return screen.getByRole('combobox', { name: 'Message' });
+}
+
 function write(text: string) {
-  const field = screen.getByRole('textbox', { name: 'Message' });
+  const field = messageField();
   fireEvent.change(field, { target: { value: text } });
   fireEvent.submit(field.closest('form')!);
 }
+
+/*
+ * Type into the composer's contentEditable the way a browser does.
+ *
+ * `fireEvent.change` cannot drive this field — it is a `contenteditable` div,
+ * not an `<input>`, so there is no value setter to poke — and the `/` trigger
+ * is not driven by the text anyway: `useTriggerMenu` reads the *caret*
+ * (`window.getSelection()`), walks backwards from it looking for a trigger
+ * character, and does that work on the `input` event. So the caret has to be
+ * real. This writes the text, collapses a range at its end inside the editable's
+ * own text node, and then fires `input` — which is exactly the sequence the
+ * hook is written against, and why a test that only set `textContent` would
+ * silently never open the menu.
+ */
+async function typeInto(field: HTMLElement, text: string) {
+  field.textContent = text;
+  const range = document.createRange();
+  range.setStart(field.firstChild!, text.length);
+  range.collapse(true);
+  const selection = window.getSelection()!;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  /* `await act`, not a bare `fireEvent`: even a *synchronous* SearchSource is
+     consumed through `Promise.resolve(...).then(...)` inside `useTriggerMenu`,
+     so the items land one microtask after the input event and the menu paints
+     `Searching…` until then. */
+  await act(async () => {
+    fireEvent.input(field);
+    await Promise.resolve();
+  });
+}
+
+const commandMenu = () => screen.queryByRole('listbox', { name: 'Commands' });
 
 beforeEach(() => {
   window.history.pushState({}, '', `${APP_BASEPATH}/cove/c1`);
@@ -729,5 +774,164 @@ describe('cove conversations', () => {
     write(text);
     await waitFor(() => expect(posts(requests)).toHaveLength(1));
     expect(posts(requests)[0]?.body).toEqual({ text });
+  });
+
+  /*
+   * ── `/` in the composer ────────────────────────────────────────────────
+   *
+   * One command, and it is the `+`'s action reached from the one place the `+`
+   * cannot be reached from. `app/shell/shell.module.css` hides the whole panel
+   * column while a drawer is open — `.main:has([data-nc-drawer]) [data-nc-panel]
+   * { visibility: hidden }` — so a reader inside a conversation has no `+`.
+   * That is the gap `/new` fills, and it is why these tests all start from an
+   * *open row* rather than from the list.
+   */
+  describe('the / command menu', () => {
+    async function openRowWithMenu(reply?: Reply) {
+      const harness = setup(async (request) => await reply?.(request)
+        ?? (request.path === CONVERSATIONS ? ok([row()]) : undefined));
+      fireEvent.click(await screen.findByRole('button', { name: /Conversation Chat/ }));
+      await screen.findByRole('complementary', { name: 'Chat' });
+      const field = messageField();
+      await typeInto(field, '/');
+      return { field, ...harness };
+    }
+
+    /* The panel column really is hidden while the drawer is up, which is the
+       whole premise. If this ever stops being true the command stops being the
+       only door and its justification has to be rewritten, so it is asserted
+       here rather than assumed in prose. */
+    it('is the only new-conversation door once the drawer covers the panel column', async () => {
+      await openRowWithMenu();
+      expect(document.querySelector('[data-nc-drawer]')).not.toBeNull();
+      const plus = screen.getByRole('button', { name: 'New conversation' });
+      expect(plus.closest('[data-nc-panel]')).not.toBeNull();
+    });
+
+    it('opens one command on / and describes what it does', async () => {
+      await openRowWithMenu();
+      const menu = commandMenu();
+      expect(menu).not.toBeNull();
+      const options = within(menu!).getAllByRole('option');
+      expect(options).toHaveLength(1);
+      expect(options[0].textContent).toContain('New conversation');
+      expect(options[0].textContent).toContain('Opens a fresh thread; this one stays in the list.');
+    });
+
+    /* Filtering is Astryx's, on the item label — `/new` has to keep matching
+       `New conversation` or the command becomes unreachable by the name the
+       user actually types. */
+    it('still matches the command once /new is typed in full', async () => {
+      const { field } = await openRowWithMenu();
+      await typeInto(field, '/new');
+      expect(within(commandMenu()!).getAllByRole('option')).toHaveLength(1);
+    });
+
+    /*
+     * Enter runs it, and the two things that must NOT happen are asserted
+     * beside the one that must: the `/new` text is a command, so it may never
+     * be delivered as a message, and the field it was typed into must be empty
+     * afterwards rather than holding a command the reader has already spent.
+     */
+    it('runs the command on Enter, sends no message, and clears the field', async () => {
+      const { field } = await openRowWithMenu();
+      await typeInto(field, '/new');
+      fireEvent.keyDown(field, { key: 'Enter' });
+      await screen.findByRole('complementary', { name: 'New conversation' });
+      expect(field.textContent).toBe('');
+      expect(commandMenu()).toBeNull();
+    });
+
+    /* Same path as the `+`, so the same thing arrives at the transport: a
+       draft mints nothing until a message is sent. */
+    it('mints no conversation by itself — the drawer opens on an unsent draft', async () => {
+      const { field } = await openRowWithMenu();
+      await typeInto(field, '/new');
+      fireEvent.keyDown(field, { key: 'Enter' });
+      await screen.findByText('Nothing said yet. What you write starts the conversation.');
+    });
+
+    /* Arrow keys are consumed by the menu rather than reaching the composer's
+       own message-history recall, and they land back on the single item. */
+    it('keeps the one item highlighted through ArrowDown and ArrowUp', async () => {
+      const { field } = await openRowWithMenu();
+      const optionId = within(commandMenu()!).getByRole('option').id;
+      expect(field.getAttribute('aria-activedescendant')).toBe(optionId);
+      fireEvent.keyDown(field, { key: 'ArrowDown' });
+      expect(field.getAttribute('aria-activedescendant')).toBe(optionId);
+      fireEvent.keyDown(field, { key: 'ArrowUp' });
+      expect(field.getAttribute('aria-activedescendant')).toBe(optionId);
+      fireEvent.keyDown(field, { key: 'Enter' });
+      expect(commandMenu()).toBeNull();
+    });
+
+    /*
+     * ── Escape belongs to the menu first ─────────────────────────────────
+     *
+     * The drawer closes on Escape (`ui/drawer`'s document listener, which
+     * checks the topmost `[data-nc-escape-layer]`), and the router has a second
+     * document listener in the *capture* phase that interrupts a running turn.
+     * A menu that opened inside all of that must still be the thing one Escape
+     * closes, or `/` becomes a key you cannot back out of without losing the
+     * conversation you were reading.
+     *
+     * Two mechanisms make that hold, and both are load-bearing: Astryx
+     * `preventDefault()`s the Escape it consumes and `ui/drawer` skips any
+     * `defaultPrevented` Escape; and the router's capture listener bails on an
+     * expanded combobox before it can `stopImmediatePropagation`.
+     */
+    it('closes the menu on Escape and leaves the drawer open', async () => {
+      const { field } = await openRowWithMenu();
+      expect(commandMenu()).not.toBeNull();
+      fireEvent.keyDown(field, { key: 'Escape' });
+      expect(commandMenu()).toBeNull();
+      /* Still *open*, not merely still mounted: `ui/drawer` keeps the element
+         around for one retract animation, so the element being present proves
+         nothing on its own. `data-nc-escape-layer` is written only while
+         `open` is true, which is the fact under test. */
+      expect(document.querySelector('[data-nc-drawer][data-nc-escape-layer]')).not.toBeNull();
+      expect(screen.getByRole('complementary', { name: 'Chat' })).toBeTruthy();
+    });
+
+    /*
+     * The *other* Escape listener, and the one that actually contends.
+     *
+     * While a turn is running the router installs a `document` keydown handler
+     * in the **capture** phase to interrupt it — capture, so it fires before
+     * React has reached the composer at all, and `stopImmediatePropagation`, so
+     * whatever it takes nothing else sees. That handler is the only thing that
+     * can steal Escape from an open menu, and the only thing stopping it is its
+     * expanded-combobox bail. Without a running turn this whole path is dead
+     * code, which is why this test — and not the one above — is what pins it.
+     */
+    it('does not interrupt a running turn with the Escape that closes the menu', async () => {
+      const { field, requests } = await openRowWithMenu((request) => request.path.endsWith('/spec/run')
+        ? ok({ card_id: 'chat-1', runtime_id: 'r', phase: 'turn_running' })
+        : undefined);
+      await screen.findByRole('button', { name: 'Stop' });
+      fireEvent.keyDown(field, { key: 'Escape' });
+      expect(commandMenu()).toBeNull();
+      expect(requests.filter((request) => request.path.endsWith('/spec/interrupt'))).toHaveLength(0);
+      expect(document.querySelector('[data-nc-drawer][data-nc-escape-layer]')).not.toBeNull();
+      /* And the next Escape, with the menu gone, does interrupt — otherwise
+         this test would also pass on a build that broke the interrupt. */
+      fireEvent.keyDown(field, { key: 'Escape' });
+      await waitFor(() => expect(
+        requests.filter((request) => request.path.endsWith('/spec/interrupt')),
+      ).toHaveLength(1));
+    });
+
+    /* And the *second* Escape then does what Escape does when no menu is up.
+       This is the half that proves the first test is not passing because the
+       drawer stopped listening altogether. */
+    it('lets the next Escape close the drawer once the menu is gone', async () => {
+      const { field } = await openRowWithMenu();
+      fireEvent.keyDown(field, { key: 'Escape' });
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      /* Same marker, read the other way. The retracting drawer stays in the
+         DOM under jsdom (there is no `animationend` to end the phase), so
+         "closed" is the escape layer going away, not the element. */
+      await waitFor(() => expect(document.querySelector('[data-nc-drawer][data-nc-escape-layer]')).toBeNull());
+    });
   });
 });

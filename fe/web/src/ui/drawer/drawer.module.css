@@ -138,11 +138,12 @@
   /*
    * ── The floating corner control ───────────────────────────────────────────
    *
-   * **There is one of them.** The corner used to hold a pair — the reset and
-   * the close, 2px apart in a `.controls` flex group — and the reset is gone
-   * from here: it is a line of text at the end of the transcript now (see
-   * `ChatResetAction` in `features/chat/thread`). What went with it is the
-   * whole §4.3 gap exception that used to be argued in this note: it was
+   * **There is one of them, and there is now nothing else it could be.** The
+   * corner used to hold a pair — the reset and the close, 2px apart in a
+   * `.controls` flex group. The reset first became a line of text at the end
+   * of the transcript, and is now gone from the product entirely (#1139), so
+   * the close is the only control this card floats. What went with the pair is
+   * the whole §4.3 gap exception that used to be argued in this note: it was
    * measured on ink widths of a ✕ and an ↺ inside a head band that no longer
    * exists, for a pair that no longer exists. A rule about the distance
    * between two controls has nothing to say about one, so it is deleted rather

@@ -163,11 +163,10 @@ export function Drawer({ open, title, onClose, children, footer }: {
         * note in the stylesheet assumes.
         *
         * It used to sit in a `.controls` flex group beside the reset. The reset
-        * left the corner (it is a line at the end of the transcript now — see
-        * `ChatResetAction`), so the group had one member, and a wrapper whose
-        * only job was to space two things is not kept for one. The floating
-        * geometry moved onto `.close` itself; nothing about where the chevron
-        * lands changed.
+        * left the corner, and has since left the product altogether (#1139),
+        * so the group had one member, and a wrapper whose only job was to
+        * space two things is not kept for one. The floating geometry moved
+        * onto `.close` itself; nothing about where the chevron lands changed.
         */}
       <button
         type="button"

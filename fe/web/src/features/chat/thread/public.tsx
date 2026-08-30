@@ -30,12 +30,14 @@
 // The unit is the **exchange** — one thing you said and everything that came
 // back — and the layout groups by it: tight inside, loose between.
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import {
   ChatComposer as AstryxChatComposer,
   ChatComposerInput,
   ChatSendButton,
+  type ChatComposerTrigger,
 } from '@astryxdesign/core/Chat';
+import { createStaticSource } from '@astryxdesign/core/Typeahead';
 
 import { useState } from '../../../ui/state/public.ts';
 
@@ -153,18 +155,94 @@ function ActivityLine({ activity, live }: {
 }
 
 /**
+ * ── `/` in the composer ───────────────────────────────────────────────────
+ *
+ * **Why there is a slash command at all, when the same action has a `+`.**
+ * `<PanelAction label="New conversation">` lives in the CONVERSATIONS module
+ * head, on the panel column — and `app/shell/shell.module.css` hides that whole
+ * column while a drawer is open (`.main:has([data-nc-drawer]) [data-nc-panel]
+ * { visibility: hidden }`). So the reader who is *inside* a conversation, which
+ * is precisely the reader who has just decided this thread is finished, cannot
+ * reach the `+` without first closing what they are reading. `/new` in the
+ * composer is the only new-conversation door that exists in that state. It is
+ * not a duplicate of the `+`; it is the same door cut through the wall the
+ * drawer puts up.
+ *
+ * **One command, and no registry behind it.** There is no command table, no
+ * discovery mechanism and no second entry — those are the shape you build when
+ * the set is open, and this set is closed at one. Adding a second command is
+ * the moment to reconsider, not now.
+ *
+ * **It runs the `+`'s own callback**, passed in as `onNewConversation`, rather
+ * than a copy of what the `+` does. Two entry points that reimplement one
+ * action drift, and the router's `start()` already carries every rule about
+ * where a new conversation may attach and what a held draft does to it.
+ *
+ * **Availability tracks the `+` exactly**: the router passes the callback only
+ * where the `+` is offered *and does something*, so `undefined` here means no
+ * trigger is configured at all and the field stays a plain `textbox`.
+ */
+export const NEW_CONVERSATION_COMMAND = Object.freeze({
+  id: 'new-conversation',
+  /* The same words as `PanelAction label="New conversation"`. One action, one
+     name: a reader who has seen the `+`'s tooltip must recognise this line. */
+  label: 'New conversation',
+});
+
+/**
  * The composer is Astryx's ChatComposer: rounded well, auto-grow, send/stop
  * geometry, Enter-to-send with IME guard. We own the value and the send
  * callback so the kernel path stays a string.
  */
-export function ChatComposer({ onSend, onStop, stopping = false, disabled = false }: {
+export function ChatComposer({
+  onSend, onStop, onNewConversation, stopping = false, disabled = false,
+}: {
   onSend: (text: string) => void;
   onStop?: () => void;
+  /** Start a new conversation — the *same* callback the module head's `+`
+   *  fires. Absent where the `+` is absent, and its absence is what keeps the
+   *  `/` menu from existing at all. */
+  onNewConversation?: () => void;
   stopping?: boolean;
   disabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
   const stopShown = onStop != null;
+
+  /*
+   * The callback is read through a ref so `triggers` can be a stable array.
+   * `useTriggerMenu` holds the *object identity* of the active trigger in
+   * state and compares it on every input event (`state.activeTrigger !==
+   * trigger`); a fresh array each render would re-open and re-search the menu
+   * on every keystroke.
+   */
+  const newConversationRef = useRef(onNewConversation);
+  newConversationRef.current = onNewConversation;
+
+  const triggers = useMemo<ChatComposerTrigger[]>(() => [{
+    character: '/',
+    searchSource: createStaticSource([NEW_CONVERSATION_COMMAND]),
+    menuLabel: 'Commands',
+    emptySearchResultsText: 'No command by that name',
+    renderItem: (item) => (
+      <span className={styles.commandItem}>
+        <span>{item.label}</span>
+        <span className={styles.commandHint}>Opens a fresh thread; this one stays in the list.</span>
+      </span>
+    ),
+    /*
+     * A command is *run*, not inserted. `onSelect` returning `''` is how this
+     * API says "put nothing in the field": Astryx has already deleted the
+     * typed `/new` before calling us, so the empty string leaves the composer
+     * clear and the text never reaches `onSubmit`. The action itself is the
+     * side effect here — there is no other hook on this path that fires once
+     * per selection.
+     */
+    onSelect: () => {
+      newConversationRef.current?.();
+      return '';
+    },
+  }], []);
 
   return (
     <div
@@ -192,7 +270,16 @@ export function ChatComposer({ onSend, onStop, stopping = false, disabled = fals
           onSend(text);
           setDraft('');
         }}
-        input={<ChatComposerInput label="Message" placeholder="Say something" />}
+        input={(
+          <ChatComposerInput
+            label="Message"
+            placeholder="Say something"
+            /* No triggers where there is no command to offer: without them the
+               field keeps `role="textbox"` rather than becoming an
+               `aria-expanded="false"` combobox that can never expand. */
+            {...(onNewConversation === undefined ? {} : { triggers })}
+          />
+        )}
         sendButton={<ChatSendButton isDisabled={stopping} />}
       />
     </div>
@@ -242,57 +329,6 @@ export function ChatFooterRemedy({ disabled = false, onClick, children }: {
   return (
     <button type="button" data-nc-action="tertiary" disabled={disabled} onClick={onClick}>
       {children}
-    </button>
-  );
-}
-
-/**
- * ── Reset, at the end of the transcript ───────────────────────────────────
- *
- * **Where it is.** The last line of the drawer's body, after `<ChatThread>`,
- * in the scrolling content — not in the card's corner, where it used to be a
- * red 28px glyph 2px from the close.
- *
- * The corner was the wrong place for it twice over. It put the only
- * destructive control on the surface at the top of a panel whose top is what
- * you look at first, and it painted `--error-text` above a *blank*
- * conversation, so the loudest thing on a fresh drawer was a warning about
- * something that had not happened yet. The end of the transcript is where the
- * thought "this thread is done" actually occurs: you have just read the last
- * reply, and the reset is one line under it. The transcript follows the newest
- * turn on its own (see the scroll effect above), so the end of it is where the
- * reader already is.
- *
- * **The price, stated plainly: it scrolls away.** It is content, so scrolling
- * back through history puts it off screen — unlike the close, which floats and
- * is always there. That is the intended shape, not a defect, and it is
- * affordable for three reasons that hold together: it is done at most once per
- * thread, it is never urgent (nothing is waiting on a reset), and the way back
- * to it is the same gesture the reader was already making — scroll to the
- * bottom, which is also where the composer they are aiming for lives. The
- * `ConfirmDialog` behind it is unchanged, so even a mis-click at the end of a
- * long scroll costs one Escape.
- *
- * **What it looks like.** Words, not a glyph: `Reset conversation`, the whole
- * of what the icon's `aria-label` used to carry, now readable by everyone
- * rather than only by a screen reader. `data-nc-action="destructive"` is
- * §4.3's tier — `--error-text` at rest, red before the pointer arrives — and
- * it is the shared vocabulary from base.css rather than a colour minted here.
- * The stylesheet drops it to the caption rank the activity lines use; the
- * reason is there.
- *
- * It is only rendered when there is a transcript to throw away; the router
- * owns that condition, and says why.
- */
-export function ChatResetAction({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      data-nc-action="destructive"
-      className={styles.resetAction}
-      onClick={onClick}
-    >
-      Reset conversation
     </button>
   );
 }

@@ -7,7 +7,7 @@ import { Icon, type IconName } from './public.tsx';
 afterEach(cleanup);
 
 const names: readonly IconName[] = [
-  'chevron-left', 'chevron-right', 'arrow-left', 'arrow-up', 'plus', 'close', 'reset',
+  'chevron-left', 'chevron-right', 'arrow-left', 'arrow-up', 'plus', 'close',
 ];
 
 describe('Icon', () => {
@@ -18,14 +18,13 @@ describe('Icon', () => {
     expect(svg?.getAttribute('stroke-width')).toBe('1.5');
   });
 
-  it('centres the reset line work at y=8 after correcting its source paths', () => {
-    // Solving the arc parameters gives centre (7.982, 8.003); the combined
-    // bbox centres at x=7.991, y=8.003. The old paths centred at y=8.383, so
-    // this source correction moves the line work up by 0.38px.
-    const { container } = render(<Icon name="reset" />);
-    expect([...container.querySelectorAll('path')].map((path) => path.getAttribute('d')))
-      .toEqual(['M3 3.12v3.25h3.25', 'M3.35 6.12a5 5 0 1 1 .15 4.1']);
-  });
+  /* The reset arc used to be pinned here, path data and all, because its
+     source geometry had been corrected to centre the line work at y=8. That
+     glyph is gone with the control it drew (#1139) and nothing else in the set
+     had a hand-corrected arc, so the assertion has no subject left. What
+     survives it is the two `it.each(names)` cases below and above: they run
+     over whatever the set actually contains, so they cover the next icon
+     without being edited. */
 
   it('uses distinct CSS classes for the default md and sm sizes', () => {
     const { container } = render(<><Icon name="plus" /><Icon name="plus" size="sm" /></>);
