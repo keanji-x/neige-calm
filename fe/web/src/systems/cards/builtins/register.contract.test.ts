@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardEntry, KernelCardInput } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
+import { CLAUDE_CARD_ENTRY } from './claude.js';
 import { partitionWaveCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
@@ -16,7 +17,7 @@ declare module '../registry.js' {
   }
 }
 
-const LANDED = ['terminal', 'spec', 'wave-report'] as const;
+const LANDED = ['terminal', 'spec', 'claude', 'wave-report'] as const;
 
 describe('builtin card composition contract', () => {
   it('[INV-CARD-225] pins the eight-item order tuple', () => {
@@ -30,7 +31,7 @@ describe('builtin card composition contract', () => {
     expect(new Set(BUILTIN_CARD_ORDER).size).toBe(8);
   });
 
-  it('registers only the entries that exist, with no placeholders for the five that do not', () => {
+  it('registers only the entries that exist, with no placeholders for the four that do not', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     expect(registry.entries().map((entry) => entry.type)).toEqual([...LANDED]);
@@ -42,6 +43,7 @@ describe('builtin card composition contract', () => {
     }
     expect(registry.get('terminal')).toBe(TERMINAL_CARD_ENTRY);
     expect(registry.get('spec')).toBe(SPEC_CARD_ENTRY);
+    expect(registry.get('claude')).toBe(CLAUDE_CARD_ENTRY);
     expect(registry.get('wave-report')).toBe(WAVE_REPORT_CARD_ENTRY);
   });
 
@@ -52,9 +54,9 @@ describe('builtin card composition contract', () => {
     const tupleIndexes = registered.map((type) => BUILTIN_CARD_ORDER.indexOf(type as never));
     expect(tupleIndexes).not.toContain(-1);
     expect([...tupleIndexes]).toEqual([...tupleIndexes].sort((left, right) => left - right));
-    // spec (index 2) and wave-report (index 4) are separated by `claude`, which
-    // is skipped: the relative order must survive the hole.
-    expect(tupleIndexes).toEqual([0, 2, 4]);
+    // terminal (index 0) and spec (index 2) are separated by `codex`, which is
+    // skipped: the relative order must survive the hole.
+    expect(tupleIndexes).toEqual([0, 2, 3, 4]);
   });
 
   it('[INV-CARD-180] leaves the shared codex kind to a codex adapter first, then falls back to spec', () => {
@@ -189,6 +191,7 @@ describe('builtin card composition contract', () => {
     const PROBE_BY_TYPE: Readonly<Record<(typeof LANDED)[number], KernelCardInput>> = Object.freeze({
       terminal: { id: 'probe-term', kind: 'terminal', payload: { terminal_id: 't1' } },
       spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
+      claude: { id: 'probe-claude', kind: 'claude', payload: { terminal_id: 't2' } },
       'wave-report': { id: 'probe-report', kind: 'wave-report', payload: null },
     });
 
