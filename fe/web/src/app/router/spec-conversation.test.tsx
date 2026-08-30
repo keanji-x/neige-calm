@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
@@ -102,6 +102,36 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
 });
+
+/*
+ * Drive the composer the way a person does.
+ *
+ * `fireEvent.change` cannot: Astryx's `ChatComposerInput` is a
+ * `contenteditable` div with no value setter, so `change` throws — and there is
+ * no `<form>` to submit either, because `ChatComposer` is a div that sends on a
+ * bare `Enter` keydown. So the text is written into the editable and an `input`
+ * event fires (which is what feeds the field's React state), and Enter sends.
+ */
+async function typeInto(field: HTMLElement, text: string) {
+  field.textContent = text;
+  const range = document.createRange();
+  range.setStart(field.firstChild!, text.length);
+  range.collapse(true);
+  const selection = window.getSelection()!;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  await act(async () => {
+    fireEvent.input(field);
+    await Promise.resolve();
+  });
+}
+
+async function sendWithEnter(field: HTMLElement) {
+  await act(async () => {
+    fireEvent.keyDown(field, { key: 'Enter' });
+    await Promise.resolve();
+  });
+}
 
 describe('spec conversation regressions', () => {
   /*
@@ -305,8 +335,8 @@ describe('spec conversation regressions', () => {
     await openConversation();
     expect(screen.getByText('Thought')).toBeTruthy();
     const field = screen.getByRole('textbox', { name: 'Message' });
-    fireEvent.change(field, { target: { value: 'next message' } });
-    fireEvent.submit(field.closest('form')!);
+    await typeInto(field, 'next message');
+    await sendWithEnter(field);
     expect(await screen.findByText('next message')).toBeTruthy();
     expect(screen.queryByText('Thought')).toBeNull();
   });
@@ -327,9 +357,9 @@ describe('spec conversation regressions', () => {
     const { requests } = setup((request) => request.path.endsWith('/spec/input') ? pending : undefined);
     await openConversation();
     const field = screen.getByRole('textbox', { name: 'Message' });
-    fireEvent.change(field, { target: { value: 'hello' } });
-    fireEvent.submit(field.closest('form')!);
-    fireEvent.submit(field.closest('form')!);
+    await typeInto(field, 'hello');
+    await sendWithEnter(field);
+    await sendWithEnter(field);
     expect(requests.filter((request) => request.path.endsWith('/spec/input'))).toHaveLength(1);
     reject(new Error('send exploded'));
     expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
@@ -341,8 +371,8 @@ describe('spec conversation regressions', () => {
     const beforeHistory = requests.filter((request) => request.path.includes('/harness/items')).length;
     const beforeRun = requests.filter((request) => request.path.endsWith('/spec/run')).length;
     const field = screen.getByRole('textbox', { name: 'Message' });
-    fireEvent.change(field, { target: { value: 'hello' } });
-    fireEvent.submit(field.closest('form')!);
+    await typeInto(field, 'hello');
+    await sendWithEnter(field);
     await waitFor(() => {
       expect(requests.filter((request) => request.path.includes('/harness/items'))).toHaveLength(beforeHistory + 1);
       expect(requests.filter((request) => request.path.endsWith('/spec/run'))).toHaveLength(beforeRun + 1);

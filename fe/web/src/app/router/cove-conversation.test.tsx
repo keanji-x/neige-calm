@@ -128,10 +128,34 @@ function messageField(): HTMLElement {
   return screen.getByRole('combobox', { name: 'Message' });
 }
 
-function write(text: string) {
+/*
+ * Put `text` in the composer and send it.
+ *
+ * This goes through `typeInto` rather than `fireEvent.change`: the composer is
+ * Astryx's `contenteditable` div, which has no value setter, so `change` throws
+ * outright — and even if it did not, the field's React state is fed by `input`,
+ * so a send driven any other way would post an empty draft and quietly prove
+ * nothing about the idempotency guards below.
+ */
+async function write(text: string) {
   const field = messageField();
-  fireEvent.change(field, { target: { value: text } });
-  fireEvent.submit(field.closest('form')!);
+  await typeInto(field, text);
+  await sendWithEnter(field);
+}
+
+/*
+ * Send the draft the way the only affordance for it works.
+ *
+ * There is no `<form>`: `ChatComposer` is a div, and `ChatComposerInput`
+ * submits on a bare `Enter` keydown (`Enter` with `shiftKey` inserts a break).
+ * So `fireEvent.submit` has nothing to fire at, and Enter is not a stand-in for
+ * the real path — it *is* the real path.
+ */
+async function sendWithEnter(field: HTMLElement) {
+  await act(async () => {
+    fireEvent.keyDown(field, { key: 'Enter' });
+    await Promise.resolve();
+  });
 }
 
 /*
@@ -223,7 +247,7 @@ describe('cove conversations', () => {
     const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? created(row({ id: 'chat-new' })) : undefined);
     await openDraft();
-    write('first words');
+    await write('first words');
     await waitFor(() => expect(posts(requests)).toHaveLength(1));
     const [post] = posts(requests);
     expect(post?.body).toEqual({ text: 'first words' });
@@ -241,7 +265,7 @@ describe('cove conversations', () => {
       return created(rows[0]);
     });
     await openDraft();
-    write('first words');
+    await write('first words');
     await screen.findByRole('complementary', { name: 'Chat' });
     expect(requests.filter((request) => request.path.endsWith('/spec/input'))).toHaveLength(0);
   });
@@ -259,7 +283,7 @@ describe('cove conversations', () => {
       return attempts === 1 ? failure(500, 'internal', 'boom') : created(row({ id: 'chat-new' }));
     });
     await openDraft();
-    write('same words');
+    await write('same words');
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
     await waitFor(() => expect(posts(requests)).toHaveLength(2));
     const keys = keysOf(requests);
@@ -283,7 +307,7 @@ describe('cove conversations', () => {
       return attempts === 1 ? failure(500, 'internal', 'boom') : created(row({ id: 'chat-new' }));
     });
     await openDraft();
-    write('words that failed');
+    await write('words that failed');
     await screen.findByRole('button', { name: 'Try again' });
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
@@ -316,10 +340,10 @@ describe('cove conversations', () => {
       return failure(500, 'internal', 'boom');
     });
     await openDraft();
-    write('first words');
+    await write('first words');
     await waitFor(() => expect(posts(requests)).toHaveLength(1));
     await screen.findByRole('button', { name: 'Try again' });
-    write('edited words');
+    await write('edited words');
     /* The count is asserted first and inside the wait: minting a second key is
        a second POST, and that is the failure — the sentence below is only how
        the reader is told about it. */
@@ -337,7 +361,7 @@ describe('cove conversations', () => {
     setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? failure(503, 'codex_app_server', 'Agent service is not running') : undefined);
     await openDraft();
-    write('words worth keeping');
+    await write('words worth keeping');
     expect((await screen.findByRole('alert')).textContent).toContain('Agent service is not running');
     expect(screen.getByText('words worth keeping')).toBeTruthy();
   });
@@ -351,7 +375,7 @@ describe('cove conversations', () => {
       return failure(500, 'internal', 'the send failed after the card was made');
     });
     await openDraft();
-    write('landed anyway');
+    await write('landed anyway');
     await screen.findByRole('complementary', { name: 'Chat' });
     expect(screen.queryByRole('complementary', { name: 'New conversation' })).toBeNull();
   });
@@ -368,7 +392,7 @@ describe('cove conversations', () => {
       return failure(409, 'conflict', 'card already exists');
     });
     await openDraft();
-    write('again');
+    await write('again');
     await screen.findByRole('complementary', { name: 'Already here' });
   });
 
@@ -377,9 +401,15 @@ describe('cove conversations', () => {
     const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? failure(409, 'conflict', sentence) : undefined);
     await openDraft();
-    write('blocked words');
-    expect((await screen.findByRole('alert')).textContent).toBe(sentence);
-    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+    await write('blocked words');
+    /* `getByText` with a string is an *exact* match on one element, which is
+       what "verbatim" means here. It is scoped inside the alert rather than
+       compared against the alert's whole `textContent`, because the strip now
+       carries the remedy button in the same region — the sentence still has to
+       arrive unedited, but it is no longer the only thing in there. */
+    const alert = await screen.findByRole('alert');
+    expect(within(alert).getByText(sentence)).toBeTruthy();
+    expect(within(alert).getByRole('button', { name: 'Try again' })).toBeTruthy();
     expect(keysOf(requests)).toHaveLength(1);
   });
 
@@ -387,7 +417,7 @@ describe('cove conversations', () => {
     const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? failure(409, 'idempotency_key_exhausted', 'this key is used up') : undefined);
     await openDraft();
-    write('worn out');
+    await write('worn out');
     expect((await screen.findByRole('alert')).textContent).toContain('this key is used up');
     await waitFor(() => expect(posts(requests)).toHaveLength(1));
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
@@ -406,7 +436,7 @@ describe('cove conversations', () => {
         : created(row({ id: 'chat-new' }));
     });
     await openDraft();
-    write('different words');
+    await write('different words');
     await screen.findByRole('alert');
     fireEvent.click(screen.getByRole('button', { name: 'Send as a new conversation' }));
     await waitFor(() => expect(posts(requests)).toHaveLength(2));
@@ -418,7 +448,7 @@ describe('cove conversations', () => {
     setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? failure(404, 'not_found', 'cove not found') : undefined);
     await openDraft();
-    write('nowhere to put this');
+    await write('nowhere to put this');
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/`));
   });
 
@@ -483,7 +513,7 @@ describe('cove conversations', () => {
         : undefined;
     });
     await openDraft();
-    write('words for the first cove');
+    await write('words for the first cove');
     await screen.findByRole('button', { name: 'Try again' });
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
 
@@ -494,7 +524,7 @@ describe('cove conversations', () => {
     // A blank draft, not the other cove's business.
     expect(screen.queryByText('words for the first cove')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
-    write('words for the second cove');
+    await write('words for the second cove');
     /* Both coves' POSTs, since the whole question is which cove was posted to —
        `posts` only sees cove 1's path and would have counted the wrong one. */
     const everyCreate = () => requests
@@ -521,13 +551,13 @@ describe('cove conversations', () => {
     const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? failure(409, 'idempotency_key_exhausted', 'this key is used up') : undefined);
     await openDraft();
-    write('worn out');
+    await write('worn out');
     await screen.findByRole('button', { name: 'Try again' });
     await waitFor(() => expect(posts(requests)).toHaveLength(1));
     const afterFirstPost = requests.length;
 
     // Edited words, deliberately: this is the press that used to be misread.
-    write('worn out, rewritten');
+    await write('worn out, rewritten');
     await waitFor(() => expect(posts(requests)).toHaveLength(2));
     const between = requests.slice(afterFirstPost, requests.indexOf(posts(requests)[1]));
     expect(between.filter((request) => request.method === 'GET' && request.path === CONVERSATIONS))
@@ -556,7 +586,7 @@ describe('cove conversations', () => {
       return failure(500, 'internal', 'boom');
     });
     await openDraft();
-    write('words that are mine');
+    await write('words that are mine');
     await screen.findByRole('button', { name: 'Try again' });
     expect(screen.queryByRole('complementary', { name: 'Not yours' })).toBeNull();
     await screen.findByRole('complementary', { name: 'New conversation' });
@@ -581,7 +611,7 @@ describe('cove conversations', () => {
       return failure(503, 'codex_app_server', 'Agent service is not running');
     });
     await openDraft();
-    write('the words that made a card');
+    await write('the words that made a card');
     await screen.findByRole('complementary', { name: 'Minted, then the agent stalled' });
   });
 
@@ -628,7 +658,7 @@ describe('cove conversations', () => {
         return created(rows[0]);
       });
       await openDraft();
-      write('first words with no randomUUID');
+      await write('first words with no randomUUID');
       await waitFor(() => expect(posts(requests)).toHaveLength(1));
       expect(posts(requests)[0]?.headers?.['Idempotency-Key'])
         .toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
@@ -644,7 +674,7 @@ describe('cove conversations', () => {
       const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
         ? failure(409, 'idempotency_key_exhausted', 'this key is used up') : undefined);
       await openDraft();
-      write('worn out');
+      await write('worn out');
       await screen.findByRole('button', { name: 'Try again' });
       fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
       await waitFor(() => expect(posts(requests)).toHaveLength(2));
@@ -671,7 +701,7 @@ describe('cove conversations', () => {
       const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
         ? failure(409, 'idempotency_key_exhausted', 'this key is used up') : undefined);
       await openDraft();
-      write('worn out again');
+      await write('worn out again');
       for (let attempt = 2; attempt <= 5; attempt += 1) {
         fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
         await waitFor(() => expect(posts(requests)).toHaveLength(attempt));
@@ -707,7 +737,7 @@ describe('cove conversations', () => {
       .filter((request) => request.method === 'POST' && request.path.endsWith('/conversations'));
 
     await openDraft();
-    write('words for the first cove');
+    await write('words for the first cove');
     await waitFor(() => expect(everyCreate()).toHaveLength(1));
     const firstKey = everyCreate()[0]?.headers?.['Idempotency-Key'] ?? '';
 
@@ -738,7 +768,7 @@ describe('cove conversations', () => {
 
     /* And it is a working draft, not a husk: it sends, and it sends to cove 2
        under its own key. */
-    write('words for the second cove');
+    await write('words for the second cove');
     await waitFor(() => expect(everyCreate()).toHaveLength(2));
     const second = everyCreate()[1];
     expect(second?.path).toBe('/api/coves/c2/conversations');
@@ -771,7 +801,7 @@ describe('cove conversations', () => {
     const { requests } = setup((request) => request.method === 'POST' && request.path === CONVERSATIONS
       ? created(row({ id: 'chat-new' })) : undefined);
     await openDraft();
-    write(text);
+    await write(text);
     await waitFor(() => expect(posts(requests)).toHaveLength(1));
     expect(posts(requests)[0]?.body).toEqual({ text });
   });
