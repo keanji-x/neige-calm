@@ -265,13 +265,19 @@ export function WavePage({
                               kernel address this task by (§2.2). */}
                           <span className={styles.taskKey}>{task.key}</span>
                           {/* Only `ready` is silent. A task the agent has not
-                              finished declaring, and one it withdrew, are both
-                              things the reader would otherwise have to open the
-                              document to discover; a task that is ready is the
-                              ordinary case and gets no word for it. */}
+                              finished declaring, one it withdrew, and one whose
+                              payload this build cannot parse are all things the
+                              reader would otherwise have to open the document to
+                              discover; a task that is ready is the ordinary case
+                              and gets no word for it. `Unreadable` rows carry
+                              their block id in the name column — see
+                              `deriveReportTasks` for why they are listed at
+                              all. */}
                           {task.state !== 'ready' && (
                             <span className={task.state === 'withdrawn' ? styles.taskWithdrawn : styles.taskNotReady}>
-                              {task.state === 'withdrawn' ? 'Withdrawn' : 'Not ready'}
+                              {task.state === 'withdrawn' ? 'Withdrawn'
+                                : task.state === 'unreadable' ? 'Unreadable'
+                                  : 'Not ready'}
                             </span>
                           )}
                         </button>

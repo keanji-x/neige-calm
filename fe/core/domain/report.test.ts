@@ -184,11 +184,27 @@ describe('deriveReportTasks', () => {
     })])).toEqual([{ blockId: 'b-1', key: 'gone', state: 'withdrawn' }]);
   });
 
-  /* A block whose payload this build cannot read degrades to `unsupported`,
-     which has no key and no state — inventing a row for it would put a task in
-     the panel that the document does not draw. */
-  it('drops a task block whose payload does not parse', () => {
-    expect(tasksOf([task('b-1', { key: 'broken' })])).toEqual([]);
+  /*
+   * **A task whose payload does not parse still gets a row**, and this reversed
+   * once. The first cut dropped it, on the reasoning that `unsupported` has no
+   * key and no state so a row would name a task the document does not draw.
+   * Both review channels found the same hole in that: the document *does* draw
+   * it — `features/report/document` lifts it into the `Reference` appendix —
+   * and the outline is allowed to skip tasks precisely *because* the panel
+   * lists them. Dropped here, that one block was in no index at all, reachable
+   * only by scrolling. Its id stands in for the key: not a substitute, but the
+   * literal other reports cite it by, which is the one thing still true.
+   */
+  it('keeps a task block whose payload does not parse, named by its id', () => {
+    expect(tasksOf([task('b-1', { key: 'broken' })]))
+      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'unreadable' }]);
+  });
+
+  /* And only a block that declared itself a task: an `unsupported` block of
+     some other kind is a figure this build cannot draw, which belongs in the
+     argument, not in the panel's list of work. */
+  it('does not claim an unsupported block that declared some other kind', () => {
+    expect(tasksOf([{ id: 'b-1', kind: 'chart.sankey', rev: 1, payload: {} }])).toEqual([]);
   });
 
   it('has no rows for a report with no blocks', () => {
@@ -245,6 +261,23 @@ describe('deriveReportOutline', () => {
     })])?.blocks ?? null);
     expect(outline).toHaveLength(1);
     expect(outline[0]?.children).toEqual([{ blockId: 'b-3', label: 'Comparables' }]);
+  });
+
+  /* Including one whose payload did not parse. Keying the skip on
+     `kind === 'task'` alone listed exactly those — an outline row labelled
+     `task`, pointing at a block the document had moved into the appendix. */
+  it('leaves out a task whose payload did not parse, which degrades to unsupported', () => {
+    const outline = deriveReportOutline(readWaveReport([card({
+      payload: {
+        body: 'x',
+        blocks: [
+          prose('b-1', '# Valuation\n'),
+          { id: 'b-2', kind: 'task', rev: 1, payload: { key: 'broken' } },
+        ],
+      },
+    })])?.blocks ?? null);
+    expect(outline).toHaveLength(1);
+    expect(outline[0]?.children).toEqual([]);
   });
 
   it('promotes a leading non-prose block to an unnumbered top-level item', () => {

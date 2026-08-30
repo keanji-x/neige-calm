@@ -5,7 +5,9 @@
  * containing block is `.workspace`, so `.workspace`'s height *is* the board's
  * height. That coupling is invisible from either file: the grid says `inset: 0`
  * and the page says how tall `.workspace` is, and nothing in between says they
- * are the same number.
+ * are the same number. Both ends are therefore imported here — the grid's class
+ * and the page's — because a fixture that restated either one would be
+ * measuring itself.
  *
  * It was broken by the sticky fix in this same change. `.workspace` used to be
  * a `minmax(0, 1fr)` row — exactly one viewport — and became `flex: 1 0 auto`
@@ -26,6 +28,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import '../../../styles/entry.css';
 
+import grid from '../grid/grid.module.css';
 import pageHeader from '../../../ui/page-header/page-header.module.css';
 import styles from './page.module.css';
 
@@ -49,13 +52,17 @@ function Page({ documentHeight, boardOpen }: { documentHeight: number; boardOpen
               <div style={{ blockSize: 200 }}>Cards</div>
             </aside>
           </div>
-          {/* `features/wave/grid`'s overlay, at its own geometry rather than
-              imported: this file is about the *containing block* it is given,
-              and hard-coding `inset: 0` here is what makes the claim legible. */}
-          <div
-            data-testid="board"
-            style={{ position: 'absolute', inset: 0, display: boardOpen ? 'block' : 'none' }}
-          />
+          {/*
+            * `features/wave/grid`'s **own class**, not a hand-written
+            * `inset: 0`. The claim under test is a product of two files — the
+            * grid's positioning and this page's `.workspace` height — and a
+            * fixture that restates one of them measures itself: change the grid
+            * to `position: fixed`, or out of `absolute` altogether, and a
+            * replica would stay green while the real overlay broke. That is
+            * fail-open in exactly the direction of the defect this file exists
+            * for, which is why it is imported.
+            */}
+          <div data-testid="board" className={boardOpen ? grid.open : grid.closed} />
         </div>
       </section>
     </div>

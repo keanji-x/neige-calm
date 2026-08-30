@@ -155,12 +155,19 @@ describe('the panel card, against a scrolling report', () => {
   });
 
   /*
-   * The other half, and the reason the fix is `flex: 1 0 auto` rather than a
-   * `max-content` track: a short document must still *fill* the page. The
-   * original `1fr` was there for that — an empty document has to be able to
-   * centre itself in the space it owns rather than ending where the panel card
-   * ends — and a fix that bought the scroll travel by giving that up would have
-   * traded one visible defect for another.
+   * The other half: a short document must still *fill* the page. The original
+   * `1fr` was there for that — an empty document has to be able to centre
+   * itself in the space it owns rather than ending where the panel card ends —
+   * and a fix that bought the scroll travel by giving that up would have traded
+   * one visible defect for another.
+   *
+   * (An earlier revision of this note said the fix was `flex: 1 0 auto` on
+   * `.workspace` "rather than a `max-content` track". That was true for one
+   * commit and is now the opposite of the CSS: `flex: 1 0 auto` there made the
+   * card board as tall as the report, so the height moved onto the row as
+   * `minmax(max-content, 1fr)` and the box kept `flex: 1 1 auto`. Recorded
+   * rather than deleted because the next person to read it would otherwise
+   * change it back.)
    */
   it('still fills the page when the document is shorter than the window', async () => {
     await browserPage.viewport(1200, 600);

@@ -40,12 +40,14 @@ const prose = (id: string, markdown: string): ReportBlock => ({ id, kind: 'prose
 
 /** The page publishes the two customs the document's grid is built from; without
  *  them the measure column falls back and the columns under test do not exist. */
-function Page() {
+function Page({ gutter = '160px' }: { gutter?: string }) {
   return (
     <div
+      data-testid="frame"
       style={{
         inlineSize: 1200,
-        ['--document-start' as string]: '160px',
+        overflow: 'clip',
+        ['--document-start' as string]: gutter,
         ['--document-measure' as string]: '600px',
       }}
     >
@@ -78,6 +80,33 @@ describe('the reference heading, as the engine lays it out', () => {
     for (const head of sectionHeads) {
       expect(Math.round(head.getBoundingClientRect().left)).toBe(wordLeft);
     }
+  });
+
+  /*
+   * **And it survives the gutter collapsing**, which is the case that broke it.
+   *
+   * `--document-start` is a `max(0px, …)` of whatever is left over, so below
+   * about 1100px it is `0px`. With the marker absolutely positioned one gutter
+   * to the left of the measure, that put it outside `.main` — which is
+   * `overflow: clip` — and the heading lost the only thing saying it opens.
+   * Measured at 900px before the fix: marker left edge 30, main region starting
+   * at 44.
+   *
+   * The frame here is `overflow: clip` for the same reason `.main` is, so a
+   * marker that walks off the edge is genuinely gone rather than merely
+   * negative.
+   */
+  it('stays inside the page when the gutter collapses to nothing', async () => {
+    await browserPage.viewport(1200, 800);
+    render(<Page gutter="0px" />);
+
+    const frame = document.querySelector('[data-testid="frame"]')!.getBoundingClientRect();
+    const marker = document
+      .querySelector('[data-nc-report-reference] h2 > span:first-child')!
+      .getBoundingClientRect();
+
+    expect(marker.width).toBeGreaterThanOrEqual(8);
+    expect(marker.left).toBeGreaterThanOrEqual(frame.left);
   });
 
   /*

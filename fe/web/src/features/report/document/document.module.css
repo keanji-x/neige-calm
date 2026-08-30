@@ -165,32 +165,42 @@
    * `align-self: center` on a baseline row: a glyph has no baseline to sit on
    * — the same exemption the composer's command row gives its `+`.
    */
+  /*
+   * In the flow, pulled into the margin — **not absolutely positioned**, and
+   * that is what keeps it on screen.
+   *
+   * It was `position: absolute` with `inset-inline-end: calc(100% + --space-10)`,
+   * copying `.h1::before`'s placement of the section number. Measured: below
+   * about 1100px `--document-start` clamps to `0px` (it is a `max(0px, …)` of
+   * the leftover), so the marker sat *outside* `.main` — which is
+   * `overflow: clip` — and was gone. At 900px its left edge was 30 against a
+   * main region starting at 44: the whole glyph, clipped. The section numbers
+   * do the same thing and it costs them nothing, because a number is
+   * decoration; this one is the only thing saying the heading opens.
+   *
+   * So it stays a flex item and takes a *negative start margin* instead. At
+   * full width the margin is exactly its own box plus the row's gap, which
+   * pulls it into the gutter and leaves the word starting where it would have
+   * started with no marker at all — the section-title column, which is the
+   * whole point. `min()` clamps that pull to the gutter that actually exists,
+   * so as the window narrows the marker walks back inside the measure rather
+   * than off the edge; at zero gutter it simply sits before the word, and the
+   * heading loses its alignment with section titles that are no longer aligned
+   * to anything either.
+   *
+   * No media query and no breakpoint literal: the one number this reads is the
+   * gutter's own width, which is the thing that actually varies.
+   */
   .referenceMarker {
-    position: absolute;
-    inset-inline-end: calc(100% + var(--space-10));
-
-    /*
-     * **An explicit box, and not `display: flex`.** Measured at 0×14 before
-     * this: an absolutely positioned box with only an inline-*end* inset has
-     * its right edge outside its containing block, so the available width for
-     * shrink-to-fit is negative and clamps to zero — and a flex container at
-     * zero width shrinks its item to match. The glyph was in the DOM, the right
-     * colour, `opacity: 1`, and nought pixels wide. `.h1::before` gets away
-     * with the same placement because it is text, which does not shrink below
-     * its own min-content.
-     *
-     * Sizing the span itself takes shrink-to-fit out of it entirely; `--glyph-sm`
-     * is the size `Icon size="sm"` gives the svg, so the two agree by
-     * construction rather than by coincidence.
-     */
+    flex: none;
+    display: flex;
+    align-self: center;
     inline-size: var(--glyph-sm);
     block-size: var(--glyph-sm);
-
-    /* Centred on the heading's line rather than sitting on its baseline: a
-       glyph has no baseline to sit on. `translate` and `rotate` are separate
-       properties, so the open-state rotation composes with this. */
-    inset-block-start: 50%;
-    translate: 0 -50%;
+    margin-inline-start: calc(-1 * min(
+      var(--glyph-sm) + var(--space-7),
+      var(--document-start, 0px)
+    ));
     color: var(--text-3);
     transition: rotate var(--motion-snappy) ease-out;
   }
@@ -199,9 +209,6 @@
     rotate: 90deg;
   }
 
-  /* While the outline is up it takes the margin, exactly as the section numbers
-     do — two transparent things in one gutter is text on text. Same selector
-     shape as `.h1::before`'s, keyed on the list rather than the whole rail. */
   .doc:has(nav ol:hover) .referenceMarker,
   .doc:has(nav ol:focus-within) .referenceMarker {
     opacity: 0;

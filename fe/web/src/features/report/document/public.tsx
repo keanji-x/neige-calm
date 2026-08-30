@@ -30,7 +30,8 @@ import {
   type SafeBlock, type SafeInline,
 } from '../../../../../core/markdown/public.ts';
 import {
-  parseReportLink, type ReportBlock, type ReportLinkTarget, type WaveReport,
+  isTaskBlock, parseReportLink,
+  type ReportBlock, type ReportLinkTarget, type WaveReport,
 } from '../../../../../core/domain/report.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { revealReportAnchor } from '../anchor/public.ts';
@@ -146,17 +147,13 @@ export function ReportDocument({
  * Today that is `task`; the predicate exists so the next one is a one-line
  * change rather than a second mechanism.
  *
- * **`unsupported` counts when it declared itself a task.** A task block whose
- * payload this build cannot parse degrades to `{ kind: 'unsupported',
- * declaredKind: 'task' }` (see `core/domain/report`), and keying only on
- * `kind === 'task'` left exactly those in the reading column — a line saying
- * `unsupported block kind task` sitting between two paragraphs of conclusions,
- * which is the thing this whole section exists to get out of there. What the
- * block *is* did not change because we failed to read it.
+ * **The predicate is `core/domain`'s**, not a copy. Three projections ask
+ * "is this a task" — the outline, the panel's inventory and this section — and
+ * a local copy here is exactly how they came to disagree about a block whose
+ * payload failed to parse. See `isTaskBlock` for the case and the cost.
  */
 function isProcessBlock(block: ReportBlock): boolean {
-  return block.kind === 'task'
-    || (block.kind === 'unsupported' && block.declaredKind === 'task');
+  return isTaskBlock(block);
 }
 
 /**

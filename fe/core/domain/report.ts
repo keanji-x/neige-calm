@@ -328,7 +328,7 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
      * panel's TASKS inventory, and any `neige://` link that cites one. Both go
      * through `revealReportAnchor`, which unfolds the appendix on the way.
      */
-    if (block.kind === 'task') continue;
+    if (isTaskBlock(block)) continue;
     const child: ReportOutlineChild = { blockId: block.id, label: blockLabel(block) };
     if (lastNumbered === null) {
       outline.push({ blockId: block.id, label: child.label, number: null, children: [] });
@@ -361,7 +361,30 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
    list answers "what work has been declared", which is a different and smaller
    question than "how is it going". */
 
-export type ReportTaskState = 'ready' | 'not-ready' | 'withdrawn';
+/**
+ * A `task` block, **including one this build could not read**.
+ *
+ * A task payload that fails its schema degrades to `{ kind: 'unsupported',
+ * declaredKind: 'task' }`, and failing to read it does not change what it is.
+ * Three projections ask this question — the outline (which skips tasks), the
+ * panel's inventory, and the document's `Reference` appendix — and the first
+ * round of this change answered it three different ways: the appendix lifted an
+ * unreadable task out of the flow while the outline still listed it and the
+ * panel did not, so the one block nobody could read was also the one block
+ * whose three views disagreed. Worse, the reason the outline is allowed to skip
+ * tasks at all is that the panel still lists them; for this block that
+ * justification was false.
+ *
+ * One predicate, three readers.
+ */
+export function isTaskBlock(block: ReportBlock): boolean {
+  return block.kind === 'task'
+    || (block.kind === 'unsupported' && block.declaredKind === 'task');
+}
+
+/** `unreadable` is a task whose payload this build cannot parse — see
+ *  `isTaskBlock`. It has no key and no readiness, only an id. */
+export type ReportTaskState = 'ready' | 'not-ready' | 'withdrawn' | 'unreadable';
 
 export type ReportTaskRow = Readonly<{
   /** The block to reveal in the document — the detail lives there, not here. */
@@ -381,7 +404,19 @@ export function deriveReportTasks(blocks: readonly ReportBlock[] | null): Report
   if (blocks === null) return [];
   const rows: ReportTaskRow[] = [];
   for (const block of blocks) {
-    if (block.kind !== 'task') continue;
+    if (!isTaskBlock(block)) continue;
+    /*
+     * An unreadable task still gets a row, and its id stands in for the name.
+     * Omitting it would leave one block that the outline skips (because tasks
+     * live in the panel) and the panel does not list (because it has no key) —
+     * reachable only by scrolling. The id is not a substitute for the key, but
+     * it *is* the literal other reports cite this block by, which is the one
+     * thing still true about it.
+     */
+    if (block.kind !== 'task') {
+      rows.push({ blockId: block.id, key: block.id, state: 'unreadable' });
+      continue;
+    }
     const payload = block.payload;
     /* `tombstoned_by` is the discriminant, not `tombstone`: a live task may
        carry an explicit `tombstone: null`, so the key's presence proves
