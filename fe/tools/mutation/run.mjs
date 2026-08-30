@@ -9,7 +9,8 @@ import { architecturePlugin } from '../architecture/plugin.mjs';
 const mutationRunner = await import('./runner.ts');
 const {
   byteSequencesEqual, gitApplyDirectory, judgeMutation, manifestRelativePath, mutationRunExitCode, oracleIdsFromDocuments,
-  parseShard, parseVitestReport, selectedEntries, shardEntries, shardPlan, trackedFixtureSetMatches, validateManifest,
+  parseShard, parseVitestReport, selectedEntries, shardEntries, shardPlan, trackedFixtureSetMatches,
+  unexpectedFailureDetails, validateManifest,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
@@ -95,6 +96,8 @@ try {
     let failed = [];
     /** @type {string[]} */
     let infrastructureErrors = [];
+    /** @type {Record<string, string[]>} */
+    let failureMessages = {};
     let reverse = null;
     let restoreError = null;
     try {
@@ -109,7 +112,8 @@ try {
     if (restoreError) throw new Error(`${entry.mutation_id}: byte restoration failed`, { cause: restoreError });
     if ((test.status === 0 || test.status === 1)) {
       try {
-        ({ failedTestIds: failed, infrastructureErrors } = parseVitestReport(readFileSync(jsonPath, 'utf8')));
+        ({ failedTestIds: failed, infrastructureErrors, failureMessagesByTestId: failureMessages }
+          = parseVitestReport(readFileSync(jsonPath, 'utf8')));
       } catch (error) {
         infrastructureErrors = [`report-parse-failed: ${error instanceof Error ? error.message : String(error)}`];
       }
@@ -124,7 +128,11 @@ try {
       test_run_exit_code: test.status,
       test_infrastructure_errors: infrastructureErrors,
     });
-    report.push({ mutation_id: entry.mutation_id, expected_red: entry.expected_red, actual_red: failed, verdict });
+    // Names alone made an `over-red` verdict undiagnosable: you could not tell a timeout from an
+    // unstable assertion from cross-test pollution without re-running CI and guessing (#1152).
+    // Only the UNEXPECTED reds get details — the expected ones are the mutation working as designed.
+    report.push({ mutation_id: entry.mutation_id, expected_red: entry.expected_red, actual_red: failed, verdict,
+      failure_details: unexpectedFailureDetails(failed, entry.expected_red, failureMessages) });
   }
 } finally {
   rmSync(temporary, { recursive: true, force: true });

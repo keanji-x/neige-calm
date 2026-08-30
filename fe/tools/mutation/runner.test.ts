@@ -4,10 +4,11 @@ import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
   byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
-  evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, judgeMutation,
+  evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, failureDetailMessageChars,
+  failureDetailTestLimit, judgeMutation,
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
   parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
-  shardPlan, trackedFixtureSetMatches, validateManifest,
+  shardPlan, trackedFixtureSetMatches, unexpectedFailureDetails, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
 
@@ -423,7 +424,79 @@ describe('report infrastructure classification', () => {
     const messageOnly = { name: 'hook.test.ts', status: 'passed', message: 'hook failed',
       assertionResults: [{ status: 'passed', fullName: 'a' }] };
     expect(parseVitestReport(JSON.stringify({ testResults: [statusOnly, messageOnly] })))
-      .toEqual({ failedTestIds: [], infrastructureErrors: ['hook.test.ts', 'status.test.ts'] });
+      .toEqual({ failedTestIds: [], infrastructureErrors: ['hook.test.ts', 'status.test.ts'], failureMessagesByTestId: {} });
+  });
+});
+
+describe('over-red failure detail evidence', () => {
+  const reportOf = (assertionResults: unknown[]): string => JSON.stringify({
+    testResults: [{ name: 'flake.test.ts', status: 'failed', message: '', assertionResults }],
+  });
+  const failing = (fullName: string, failureMessages: unknown) => ({ status: 'failed', fullName, failureMessages });
+
+  it('keeps failureMessages from the authentic vitest reporter sample alongside the ids', () => {
+    const sample = readFileSync(resolve(fixtureRoot, 'vitest-report.json'), 'utf8');
+    expect(parseVitestReport(sample).failureMessagesByTestId).toEqual({
+      'source remains guarded': [
+        "AssertionError: expected 'export const guarded = false;' to contain 'export const guarded = true;'",
+      ],
+    });
+  });
+  it('collects nothing for passing tests and tolerates a missing failureMessages array', () => {
+    const parsed = parseVitestReport(reportOf([
+      { status: 'passed', fullName: 'green', failureMessages: ['ignored'] },
+      { status: 'failed', fullName: 'bare' },
+    ]));
+    expect(parsed.failedTestIds).toEqual(['bare']);
+    expect(parsed.failureMessagesByTestId).toEqual({ bare: [] });
+  });
+  // judgeMutation has a `duplicate-actual-red` code precisely because fullName is not unique across
+  // files: overwriting would throw away the only copy of one of the two errors.
+  it('accumulates messages for colliding test ids instead of overwriting', () => {
+    expect(parseVitestReport(reportOf([failing('same', ['first']), failing('same', ['second'])])).failureMessagesByTestId)
+      .toEqual({ same: ['first', 'second'] });
+  });
+
+  const messages = { expected: ['expected boom'], surprise: ['surprise boom'], other: ['other boom'] };
+  it('reports only the unexpected reds, sorted, and never the expected ones', () => {
+    expect(unexpectedFailureDetails(['surprise', 'expected', 'other'], ['expected'], messages)).toEqual({
+      tests: [{ test_id: 'other', messages: ['other boom'] }, { test_id: 'surprise', messages: ['surprise boom'] }],
+      omitted_test_ids: [], note: null,
+    });
+  });
+  it('says so in the value when a test has no messages in the report', () => {
+    expect(unexpectedFailureDetails(['ghost'], [], {}).tests)
+      .toEqual([{ test_id: 'ghost', messages: ['[no failureMessages for this test in the vitest JSON report]'] }]);
+  });
+  it('truncates a long message and announces how much it kept', () => {
+    const long = 'x'.repeat(failureDetailMessageChars + 37);
+    const [only] = unexpectedFailureDetails(['big'], [], { big: [long] }).tests;
+    expect(only.messages[0]).toBe(
+      `${'x'.repeat(failureDetailMessageChars)}\n[truncated: kept ${failureDetailMessageChars} of ${long.length} characters]`,
+    );
+  });
+  // The point of the cap is that a 50x-bigger input does not produce a 50x-bigger log line: the
+  // payload stays at the cap and only the (short) notice varies.
+  it('bounds the emitted size no matter how huge the original message was', () => {
+    const huge = 'x'.repeat(failureDetailMessageChars * 50);
+    const [only] = unexpectedFailureDetails(['big'], [], { big: [huge] }).tests;
+    expect(only.messages[0].length).toBeLessThan(failureDetailMessageChars + 100);
+  });
+  it('leaves a message one character under the cap untouched', () => {
+    const short = 'x'.repeat(failureDetailMessageChars);
+    expect(unexpectedFailureDetails(['fits'], [], { fits: [short] }).tests[0].messages).toEqual([short]);
+  });
+  it('caps the test count, lists the omitted ids, and notes the cap', () => {
+    const ids = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
+    const details = unexpectedFailureDetails(ids, [], Object.fromEntries(ids.map((id) => [id, [`${id} boom`]])));
+    expect(details.tests.map(({ test_id }) => test_id)).toEqual(ids.slice(0, failureDetailTestLimit));
+    expect(details.omitted_test_ids).toEqual(ids.slice(failureDetailTestLimit));
+    expect(details.note).toBe(`capped at ${failureDetailTestLimit} of ${ids.length} unexpected-red tests; `
+      + `${ids.length - failureDetailTestLimit} omitted (ids in omitted_test_ids)`);
+  });
+  it('emits an empty block when every red was expected', () => {
+    expect(unexpectedFailureDetails(['expected'], ['expected'], messages))
+      .toEqual({ tests: [], omitted_test_ids: [], note: null });
   });
 });
 

@@ -82,12 +82,25 @@ export function parsePatchTarget(patch: string): string {
   return oldHeader;
 }
 
-export function parseVitestReport(json: string): { failedTestIds: string[]; infrastructureErrors: string[] } {
+export interface VitestReportSummary {
+  failedTestIds: string[];
+  infrastructureErrors: string[];
+  /**
+   * `assertionResults[].failureMessages` keyed by the same `fullName` used as the test id.
+   * Ids are not guaranteed unique across files (judgeMutation has a `duplicate-actual-red` code for
+   * exactly that), so colliding ids accumulate rather than overwrite — dropping one would hide the
+   * only copy of an error we went to the trouble of collecting.
+   */
+  failureMessagesByTestId: Record<string, string[]>;
+}
+
+export function parseVitestReport(json: string): VitestReportSummary {
   const report: unknown = JSON.parse(json);
   if (typeof report !== 'object' || report === null || !Array.isArray((report as { testResults?: unknown }).testResults)) {
     throw new Error('vitest JSON report has no testResults array');
   }
   const infrastructureErrors: string[] = [];
+  const failureMessagesByTestId: Record<string, string[]> = {};
   const reportFields = report as { unhandledErrors?: unknown; error?: unknown };
   if (Array.isArray(reportFields.unhandledErrors) && reportFields.unhandledErrors.length > 0) infrastructureErrors.push('global-unhandled-error');
   if (reportFields.error !== undefined && reportFields.error !== null) infrastructureErrors.push('global-reporter-error');
@@ -98,9 +111,14 @@ export function parseVitestReport(json: string): { failedTestIds: string[]; infr
     const typedFile = file as { assertionResults: unknown[]; status?: unknown; message?: unknown; name?: unknown };
     const failed = typedFile.assertionResults.flatMap((test) => {
       if (typeof test !== 'object' || test === null) throw new Error('vitest JSON assertion is not an object');
-      const { status, fullName } = test as { status?: unknown; fullName?: unknown };
+      const { status, fullName, failureMessages } = test as { status?: unknown; fullName?: unknown; failureMessages?: unknown };
       if (typeof status !== 'string' || typeof fullName !== 'string') throw new Error('vitest JSON assertion lacks status/fullName');
-      return status === 'failed' ? [fullName] : [];
+      if (status !== 'failed') return [];
+      const messages = Array.isArray(failureMessages)
+        ? failureMessages.map((message) => (typeof message === 'string' ? message : JSON.stringify(message) ?? String(message)))
+        : [];
+      (failureMessagesByTestId[fullName] ??= []).push(...messages);
+      return [fullName];
     });
     if (typedFile.status === 'failed' && failed.length === 0) {
       infrastructureErrors.push(typeof typedFile.name === 'string' ? typedFile.name : `testResults[${index}]`);
@@ -110,11 +128,62 @@ export function parseVitestReport(json: string): { failedTestIds: string[]; infr
     }
     return failed;
   }).sort();
-  return { failedTestIds, infrastructureErrors: [...new Set(infrastructureErrors)].sort() };
+  return { failedTestIds, infrastructureErrors: [...new Set(infrastructureErrors)].sort(), failureMessagesByTestId };
 }
 
 export function parseFailedTestIds(json: string): string[] {
   return parseVitestReport(json).failedTestIds;
+}
+
+/**
+ * Caps for the `failure_details` block run.mjs writes into the mutation report. That report is
+ * echoed to the CI log AND uploaded as an artifact, so an unbounded dump of every red test's stack
+ * is a real cost. Both caps are announced in the emitted value rather than applied silently: a
+ * quietly truncated error reads as the whole error, which is exactly the misdiagnosis this
+ * evidence exists to prevent (#1152).
+ */
+export const failureDetailMessageChars = 2000;
+export const failureDetailTestLimit = 5;
+
+export function truncateFailureMessage(message: string, limit: number = failureDetailMessageChars): string {
+  if (message.length <= limit) return message;
+  return `${message.slice(0, limit)}\n[truncated: kept ${limit} of ${message.length} characters]`;
+}
+
+export interface FailureDetails {
+  tests: Array<{ test_id: string; messages: string[] }>;
+  omitted_test_ids: string[];
+  note: string | null;
+}
+
+/**
+ * Failure messages for the tests that went red WITHOUT being declared in `expected_red` — the
+ * over-red set. Expected reds are the mutation working as designed; their messages are noise that
+ * would bury the one unexplained failure. Ids are sorted so the block is stable across runs.
+ */
+export function unexpectedFailureDetails(
+  failedTestIds: readonly string[],
+  expectedRed: readonly string[],
+  failureMessagesByTestId: Readonly<Record<string, string[]>>,
+  limits: { tests: number; messageChars: number } = { tests: failureDetailTestLimit, messageChars: failureDetailMessageChars },
+): FailureDetails {
+  const expected = new Set(expectedRed);
+  const unexpected = [...new Set(failedTestIds)].filter((testId) => !expected.has(testId)).sort();
+  const kept = unexpected.slice(0, Math.max(0, limits.tests));
+  const omitted = unexpected.slice(kept.length);
+  const tests = kept.map((testId) => {
+    const messages = failureMessagesByTestId[testId] ?? [];
+    return {
+      test_id: testId,
+      messages: messages.length === 0
+        ? ['[no failureMessages for this test in the vitest JSON report]']
+        : messages.map((message) => truncateFailureMessage(message, limits.messageChars)),
+    };
+  });
+  const note = omitted.length === 0
+    ? null
+    : `capped at ${kept.length} of ${unexpected.length} unexpected-red tests; ${omitted.length} omitted (ids in omitted_test_ids)`;
+  return { tests, omitted_test_ids: omitted, note };
 }
 
 /**
