@@ -192,6 +192,26 @@ describe('ReportDocument', () => {
       expect(reference.querySelectorAll('[id]').length).toBe(2);
     });
 
+    /*
+     * A heading, not a styled row: `Reference` sits at the same level in the
+     * heading outline as the report's own numbered sections, so a reader
+     * navigating by heading finds the appendix where they would look for a
+     * section. `<h2>` is what those sections are too (`document`'s `.h1` class
+     * is worn by an `<h2>`), and `<summary>`'s content model takes phrasing
+     * content *or one heading element* — which is why the heading wraps the
+     * chevron and the count rather than sitting beside them.
+     */
+    it('is a heading at the same level as the report\'s own sections', () => {
+      const { container } = render(<ReportDocument report={blocked(task('b-1', 'alpha'))} empty={EMPTY} />);
+      const summary = container.querySelector('[data-nc-report-reference] > summary')!;
+      const heading = summary.querySelector('h2');
+      expect(heading).not.toBeNull();
+      expect(heading!.textContent).toContain('Reference');
+      /* One heading element, and everything in the summary is inside it. */
+      expect(summary.children.length).toBe(1);
+      expect(summary.firstElementChild).toBe(heading);
+    });
+
     /* The count is the only thing a closed section can say about what is behind
        it, so it is the only reason to open it. */
     it('says how many are behind it, and counts one in the singular', () => {

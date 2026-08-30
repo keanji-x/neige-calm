@@ -175,15 +175,28 @@ function ReportReference({ blocks, backlinkCounts }: {
   return (
     <div className={styles.row}>
       <details className={styles.reference} data-nc-report-reference="">
-        <summary className={styles.referenceHead}>
-          <span className={styles.referenceMarker}><Icon name="chevron-right" size="sm" /></span>
-          <span className={styles.referenceTitle}>Reference</span>
-          {/* The count is the reason to open it, and the only thing the closed
-              row can say about what is inside. Tabular figures so a document
-              with two of these does not jitter. */}
-          <span className={styles.referenceCount}>
-            {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
-          </span>
+        <summary className={styles.referenceSummary}>
+          {/*
+            * A real heading, and `<h2>` because that is what the report's own
+            * numbered sections are (`document`'s `.h1` class is worn by an
+            * `<h2>` element) — so this lands at the same level in the heading
+            * outline a screen-reader user navigates by, which is what it is.
+            *
+            * The heading wraps *everything* in the summary rather than sitting
+            * beside the chevron and the count. `<summary>`'s content model is
+            * phrasing content **or one heading element**; a heading with two
+            * spans for company would be neither.
+            */}
+          <h2 className={styles.referenceHead}>
+            <span className={styles.referenceMarker}><Icon name="chevron-right" size="sm" /></span>
+            <span className={styles.referenceTitle}>Reference</span>
+            {/* The count is the reason to open it, and the only thing the closed
+                row can say about what is inside. Tabular figures so a document
+                with two of these does not jitter. */}
+            <span className={styles.referenceCount}>
+              {blocks.length} {blocks.length === 1 ? 'task' : 'tasks'}
+            </span>
+          </h2>
         </summary>
         {/*
           * Not `BlockSlot`, and that is a layout fact rather than a preference.

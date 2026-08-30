@@ -99,54 +99,141 @@
     grid-column: 2;
   }
 
-  .referenceHead {
-    display: flex;
-    align-items: center;
-    gap: var(--space-4);
-    min-block-size: var(--row-h-sm);
+  /*
+   * ── The head is a heading ────────────────────────────────────────────────
+   *
+   * It was a small sans row, and the chevron sat where the *prose* starts — so
+   * the word `Reference` began one glyph further in than every section title
+   * above it, and the document had two left edges. A section is a section: this
+   * one takes `.h1`'s treatment, and its word lands on the same column as
+   * `概要` and every other heading in the report.
+   *
+   * **The chevron takes the number's slot in the margin**, by the same
+   * absolute-against-the-measure trick `.h1::before` uses, which is what frees
+   * the text edge. That placement is also the only thing distinguishing this
+   * heading from a numbered one, and it says the right thing: the margin slot
+   * carries `01` for a section of the argument and a disclosure triangle for
+   * the appendix. No counter here — `Reference` is not section five, and
+   * incrementing for it would renumber the report every time a task appears.
+   *
+   * Serif and `--text-xl` like `.h1`, not the sans caption it was: the earlier
+   * note argued sans said "this row is the reader's control, not something the
+   * document wrote", but the control is the fold, and a document that sets one
+   * of its own section heads in a different family to say so has spent a
+   * typeface on a distinction the chevron already draws.
+   */
+  .referenceSummary {
     list-style: none;
     cursor: pointer;
   }
 
-  .referenceHead::-webkit-details-marker {
+  .referenceSummary::-webkit-details-marker {
     display: none;
   }
 
-  .referenceMarker {
+  .referenceHead {
+    position: relative;
     display: flex;
-    flex: none;
+    align-items: baseline;
+    gap: var(--space-7);
+    margin-block-start: calc(var(--space-12) + var(--space-6));
+    margin-block-end: var(--space-6);
+    font-family: var(--font-serif);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-snug);
+    letter-spacing: var(--tracking-tight);
+    color: var(--text);
+  }
+
+  /* The same hairline `.h1` runs to the end of its line. It comes after the
+     count so the row reads `Reference  8 tasks ———`, which keeps the number
+     beside the thing it counts rather than stranded at the far margin. */
+  .referenceHead::after {
+    content: "";
+    flex: 1;
+    align-self: center;
+    block-size: 1px;
+    background: var(--hairline);
+  }
+
+  /*
+   * Where `01` would be. `inset-inline-end: calc(100% + --space-10)` is
+   * `.h1::before`'s own placement, so the chevron and the section numbers form
+   * one column down the margin rather than two things near each other.
+   *
+   * `align-self: center` on a baseline row: a glyph has no baseline to sit on
+   * — the same exemption the composer's command row gives its `+`.
+   */
+  .referenceMarker {
+    position: absolute;
+    inset-inline-end: calc(100% + var(--space-10));
+
+    /*
+     * **An explicit box, and not `display: flex`.** Measured at 0×14 before
+     * this: an absolutely positioned box with only an inline-*end* inset has
+     * its right edge outside its containing block, so the available width for
+     * shrink-to-fit is negative and clamps to zero — and a flex container at
+     * zero width shrinks its item to match. The glyph was in the DOM, the right
+     * colour, `opacity: 1`, and nought pixels wide. `.h1::before` gets away
+     * with the same placement because it is text, which does not shrink below
+     * its own min-content.
+     *
+     * Sizing the span itself takes shrink-to-fit out of it entirely; `--glyph-sm`
+     * is the size `Icon size="sm"` gives the svg, so the two agree by
+     * construction rather than by coincidence.
+     */
+    inline-size: var(--glyph-sm);
+    block-size: var(--glyph-sm);
+
+    /* Centred on the heading's line rather than sitting on its baseline: a
+       glyph has no baseline to sit on. `translate` and `rotate` are separate
+       properties, so the open-state rotation composes with this. */
+    inset-block-start: 50%;
+    translate: 0 -50%;
     color: var(--text-3);
     transition: rotate var(--motion-snappy) ease-out;
   }
 
-  .reference[open] > .referenceHead .referenceMarker {
+  .reference[open] .referenceMarker {
     rotate: 90deg;
   }
 
-  /*
-   * Sans, not the document's serif, and at the caption rank.
-   *
-   * Every other heading in this column is the *agent's* — an H1 it wrote, set
-   * in the document's own voice. This one is the app's, and a serif heading
-   * here would be the chrome claiming to be part of the report. Sans plus
-   * `--text-3` says "this row is the reader's control, not a section the
-   * document wrote".
-   */
-  .referenceTitle {
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-    font-weight: var(--weight-medium);
-    line-height: var(--leading-none);
-    color: var(--text-2);
+  /* While the outline is up it takes the margin, exactly as the section numbers
+     do — two transparent things in one gutter is text on text. Same selector
+     shape as `.h1::before`'s, keyed on the list rather than the whole rail. */
+  .doc:has(nav ol:hover) .referenceMarker,
+  .doc:has(nav ol:focus-within) .referenceMarker {
+    opacity: 0;
   }
 
-  /* The count is the only thing a closed section can say about what is inside,
-     and therefore the reason to open it. Tabular figures so two of these on one
-     page do not sit on different edges. */
+  @media (prefers-reduced-motion: reduce) {
+    .referenceMarker {
+      transition: none;
+    }
+  }
+
+  /* The heading's own type comes from `.referenceHead`; this only has to stop
+     `base.css`'s `.calm-prose h2` recipe — serif at `--text-md`, semibold —
+     from re-sizing the word inside it. */
+  .referenceTitle {
+    min-inline-size: 0;
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+  }
+
+  /* The count is the only thing a closed section can say about what is behind
+     it, and therefore the reason to open it. It drops to the caption rank so
+     the heading stays one word — a heading that is half number reads as a
+     label. Tabular figures so two of these do not sit on different edges. */
   .referenceCount {
+    flex: none;
     font-family: var(--font-sans);
     font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
     line-height: var(--leading-none);
+    letter-spacing: normal;
     color: var(--text-3);
     font-variant-numeric: tabular-nums;
   }
