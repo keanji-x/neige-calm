@@ -200,41 +200,49 @@ export function ChatComposer({ onSend, onStop, stopping = false, disabled = fals
 }
 
 /**
- * ── The footer's own two lines ────────────────────────────────────────────
+ * ── The footer's error strip ──────────────────────────────────────────────
  *
- * Everything under the composer used to be a bare `<p>` and a bare `<button>`
+ * Everything around the composer used to be a bare `<p>` and a bare `<button>`
  * composed by the router: no inset, so they sat flush against the card's edge
- * while the composer above them kept the card's `--nc-card-inset`, and no rank,
- * so an error printed at body size in body ink. One root cause, three symptoms
- * (the send error, the draft error, the two remedies) — so the fix is one pair
- * of components rather than three call-site classNames.
+ * while the composer kept the card's `--nc-card-inset`, and no rank, so an
+ * error printed at body size in body ink. One root cause, three symptoms (the
+ * send error, the draft error, the two remedies) — so the fix is components
+ * rather than call-site classNames.
  *
- * They own presentation only. When either appears, what it says, and what
- * pressing it does are the router's, unchanged.
+ * They own presentation only. *When* any of them appears, what it says, and
+ * what pressing it does stay the router's, unchanged — which is why the strip
+ * is a container the router fills rather than a component that decides for
+ * itself: a remedy can be offered with no error beside it (an unconfirmed send
+ * whose landing came back `absent`), and that case must still render.
  */
 
-/** Something went wrong in the footer, said at the caption rank. Errors here
- *  are *about the box* — the message did not go, the turn did not stop — so
- *  they belong under it, in the register the activity lines already use, and
- *  in `--error-text` rather than a fill: this is information, not an alarm. */
-export function ChatFooterError({ message }: { message: string }) {
-  return <p role="alert" className={styles.footerError}>{message}</p>;
+/** The strip itself: an `alert` region welded to the top edge of the composer
+ *  well. It is rendered above `<ChatComposer>`, not below it — the geometry
+ *  ("upper corners rounded, lower square") only reads as *attached* from that
+ *  side, and the stylesheet says why that attachment is the point. */
+export function ChatFooterNotice({ children }: { children: ReactNode }) {
+  return <div role="alert" className={styles.footerNotice}>{children}</div>;
 }
 
-/** The way out of that error. `tertiary` is §4.1's quietest tier: the remedy
- *  must be findable without competing with Send, which is the control anyone
- *  looking at this footer is actually aiming for. */
+/** What went wrong, at the caption rank the activity lines already use for a
+ *  failed action. It carries no colour of its own beyond `--error-text`; the
+ *  strip around it carries the fill. */
+export function ChatFooterError({ message }: { message: string }) {
+  return <span className={styles.footerError}>{message}</span>;
+}
+
+/** The way out of that error, inline in the strip. `tertiary` is §4.1's
+ *  quietest tier: the remedy must be findable without competing with Send,
+ *  which is the control anyone looking at this footer is actually aiming for. */
 export function ChatFooterRemedy({ disabled = false, onClick, children }: {
   disabled?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
-    <div className={styles.footerRemedy}>
-      <button type="button" data-nc-action="tertiary" disabled={disabled} onClick={onClick}>
-        {children}
-      </button>
-    </div>
+    <button type="button" data-nc-action="tertiary" disabled={disabled} onClick={onClick}>
+      {children}
+    </button>
   );
 }
 

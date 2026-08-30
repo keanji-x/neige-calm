@@ -53,17 +53,36 @@ describe('Drawer', () => {
     const { rerender } = open({ title: 'Why the resolver drops a hop', children: <p>the transcript</p> });
     rerender(<Drawer open={false} title="" onClose={vi.fn()}>{null}</Drawer>);
     expect(screen.getByText('the transcript')).toBeTruthy();
-    expect(screen.getByRole('heading').textContent).toBe('Why the resolver drops a hop');
+    /*
+     * The title is no longer painted — the head band is gone — so the last
+     * frame's title is held on the container's accessible name instead of in a
+     * heading. The assertion still binds the same bug it was written for: a
+     * drawer that re-read its props on the way out would be named by the empty
+     * string this rerender passes, and `getByRole('complementary', { name })`
+     * only matches the *retained* name. It is in fact stronger now, because
+     * the name is what a screen reader announces rather than decoration.
+     */
+    expect(screen.getByRole('complementary', { name: 'Why the resolver drops a hop' })).toBeTruthy();
+    expect(screen.queryByRole('heading')).toBeNull();
   });
 
-  /* The close control dismisses a card, not a sliding edge panel. */
-  it('closes with a dismissal, not a direction', () => {
+  /*
+   * The close **collapses**, it does not destroy.
+   *
+   * This is the shape assertion, and it is here because the page header's
+   * delete-wave control is 58px above this one in the same column at the same
+   * 28px size: measured at 1512×950, delete centres on y 36.3 and this centres
+   * on y 94.0. An X on both would be one glyph meaning "put away" and "destroy"
+   * a pointer-flick apart. So the close is the rail's collapse chevron, and the
+   * X path is what must never come back.
+   */
+  it('closes with a collapse, not the delete X', () => {
     const onClose = vi.fn();
     open({ onClose });
     const close = screen.getByRole('button', { name: 'Close conversation' });
-    const glyph = close.querySelector('svg');
-    expect(glyph).toBeTruthy();
-    expect(glyph?.querySelector('path')?.getAttribute('d')).toBe('M4 4l8 8');
+    const paths = [...close.querySelectorAll('path')].map((path) => path.getAttribute('d'));
+    expect(paths).toEqual(['M6 3.5 10.5 8 6 12.5']);
+    expect(paths).not.toContain('M4 4l8 8');
     expect(close.textContent).not.toContain('›');
     close.click();
     expect(onClose).toHaveBeenCalled();
@@ -74,8 +93,13 @@ describe('Drawer', () => {
     const bodyInner = screen.getByText('the transcript').parentElement;
     const scroll = bodyInner?.parentElement;
     const drawer = screen.getByRole('complementary');
-    expect(scroll?.firstElementChild).toBe(screen.getByRole('heading').parentElement);
+    /* The scroller holds the transcript and nothing else now: the controls
+       float over it as a sibling, so the body is its only child. */
+    expect(scroll?.firstElementChild).toBe(bodyInner);
+    expect(scroll?.childElementCount).toBe(1);
     expect(scroll?.parentElement).toBe(drawer);
+    expect(screen.getByRole('button', { name: 'Close conversation' }).closest('[data-nc-drawer-scroll]'))
+      .toBeNull();
     expect(scroll?.hasAttribute('data-nc-drawer-scroll')).toBe(true);
     expect(screen.getByLabelText('composer').parentElement).toBe(drawer);
   });

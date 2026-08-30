@@ -16,13 +16,13 @@ import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
 /**
- * A control in the drawer's head, beside the close.
+ * A control in the drawer's floating corner group, beside the close.
  *
  * It is a companion component rather than a free `ReactNode` for the reason
- * `PanelAction` is one: the geometry belongs to the head — a 28px hit area
- * carried on the title's first line — and a caller composing its own button
- * would have to restate it, which is the drift the role/tier split exists to
- * prevent (§4.1).
+ * `PanelAction` is one: the geometry belongs to the group — a 28px hit area
+ * that must match the close's to the pixel — and a caller composing its own
+ * button would have to restate it, which is the drift the role/tier split
+ * exists to prevent (§4.1).
  *
  * `danger` is §4.3's tier and it is red **at rest**: a warning that appears
  * only under the pointer is missing at the moment of the decision, and missing
@@ -52,14 +52,14 @@ export function DrawerAction({ label, onClick, danger = false, children }: {
 export function Drawer({ open, title, onClose, children, footer, headAction }: {
   open: boolean;
   /**
-   * The whole head — one grey line on the close button's row.
+   * The drawer's **accessible name**, and nothing that is painted.
    *
-   * It briefly carried a "CONVERSATION" eyebrow above this, on the theory that
-   * a title says what the surface is *about* and leaves what it *is* to be
-   * inferred. In a drawer that only ever opens from a conversation control,
-   * with a transcript and a message box under it, nothing was left to infer:
-   * the word was a caption on an unambiguous thing, and it cost the head a
-   * whole line and a second type rank to say it.
+   * It used to be printed as an `<h2>` in a head band. The band is gone (see
+   * the `.controls` note in the stylesheet), so this string now reaches the
+   * reader only through `aria-label` on the container — which is where the
+   * whole of its remaining value was anyway: a sighted reader clicked a named
+   * conversation row to get here, a screen-reader user did not necessarily
+   * land here from that row and still needs the region named.
    */
   title: string;
   onClose: () => void;
@@ -72,8 +72,9 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
    */
   footer?: ReactNode;
   /**
-   * One control beside the close, for something that belongs to the surface
-   * rather than to what is in it — today, the conversation's reset.
+   * One control beside the close in the floating corner group, for something
+   * that belongs to the surface rather than to what is in it — today, the
+   * conversation's reset.
    *
    * It is a head slot and not a footer button because the footer is where you
    * *work*: a destructive action standing next to the message box is one
@@ -200,23 +201,29 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
     >
+      {/*
+        * The controls float over the card's top-inline-end corner; they are
+        * **before** the scroller in the DOM so the first Tab out of the
+        * container still lands on the reset and then on Close, which is the
+        * order the `.drawer:focus-visible` note in the stylesheet assumes.
+        */}
+      <div className={styles.controls}>
+        {frame.headAction}
+        <button
+          type="button"
+          data-nc-role="icon"
+          className={styles.close}
+          aria-label="Close conversation"
+          title="Close"
+          onClick={onClose}
+        >
+          {/* A right chevron, not an X — see the `.controls` note in the
+              stylesheet for why the shape may not be shared with the page
+              header's delete. */}
+          <Icon name="chevron-right" />
+        </button>
+      </div>
       <div className={styles.scroll} data-nc-drawer-scroll="">
-        <div className={styles.head}>
-          <h2 className={styles.title}>{frame.title}</h2>
-          <div className={styles.headActions}>
-            {frame.headAction}
-            <button
-              type="button"
-              data-nc-role="icon"
-              className={styles.close}
-              aria-label="Close conversation"
-              title="Close"
-              onClick={onClose}
-            >
-              <Icon name="close" />
-            </button>
-          </div>
-        </div>
         <div className={styles.bodyInner}>
           {frame.children}
         </div>

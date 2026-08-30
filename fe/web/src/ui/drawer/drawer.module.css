@@ -96,154 +96,82 @@
   }
 
   /*
-   * ── The head ──────────────────────────────────────────────────────────────
+   * ── The floating corner controls ──────────────────────────────────────────
    *
-   * One line: the title, grey, on the close button's row. Nothing else.
+   * **There is no head band.** The band is deleted, and with it the 21.7px
+   * `--nc-head-band` derivation and the "the card now owes the page two
+   * alignments" argument that used to live here: both were reasoning about a
+   * title line, and the title line is gone. Nothing was salvaged, because
+   * nothing survived the premise.
    *
-   * It has now been three shapes. A 13px line pinned to a 32px bar with a rule
-   * under it — a browser toolbar. Then a "CONVERSATION" eyebrow above a
-   * full-ink title — the page-header vocabulary, which gave the head a second
-   * line and a second rank to caption a surface that needs no caption. Now the
-   * title alone, quiet, because the head's whole job is to say *which wave* and
-   * then get out of the way of the conversation, which is the P0 here.
+   * **Why the band was not worth its 40px.** It carried exactly one string —
+   * the card's *kind* ("Spec"), not the conversation's name. You arrive here
+   * by clicking the row that says "Spec"; the band restated, one click later
+   * and 40px down, the thing you had just pressed. That is zero information
+   * for the tallest fixed cost on an 854px card. The name that string still
+   * had to carry is an *accessibility* obligation, not a painting one, and it
+   * is discharged by `aria-label` on `.drawer` (see the `title` prop in
+   * public.tsx). Losing the band also loses the frosted sticky ground under
+   * it, whose entire premise was "content scrolls beneath a head" — no head,
+   * no ground, so the `backdrop-filter` and its two fallbacks went with it.
    *
-   * Inline inset is `--nc-card-inset` — 8, the same one the transcript and the
-   * composer use, so the title starts on the column every message starts on.
-   */
-  .head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-4);
-    position: sticky;
-    inset-block-start: 0;
-    z-index: var(--z-raised);
-
-    /*
-     * The head measures itself against the card, not against the page header —
-     * and that is the change the new geometry forces.
-     *
-     * It used to owe two alignments to the page: the title's baseline sat on
-     * `--header-baseline` (42 − 14 of top-to-baseline = a 28px top inset) and a
-     * `min-block-size` of band + one 32px title row landed its bottom edge on
-     * the page header's, so the hairline that appears under both on scroll came
-     * out as one line. Both derivations assumed the drawer *started where the
-     * page starts* — welded to the window, top at 0, its head the third header
-     * in a row of three.
-     *
-     * The card starts below the page header now. There is no shared line left
-     * to sit on: 28px of top inset would be 28px measured from an edge nothing
-     * else shares, and a minimum height derived from a header that is no longer
-     * beside it is arithmetic about a relationship that ended. So the head takes
-     * the card's own inset instead — `--space-8` block-start, which is the
-     * clearance a 16px corner radius wants before the first line of text, and
-     * `--space-2` below, where the frosted ground hands off to the transcript.
-     *
-     * End inset is smaller than a full pad because the trailing controls carry
-     * their own 28px hit areas: 8 + (28 − 16) / 2 lands the glyph optically on
-     * the 8 inset.
-     */
-    padding: var(--space-8) var(--nc-card-inset, var(--space-4)) var(--space-2) var(--nc-card-inset, var(--space-4));
-    background: color-mix(in oklch, var(--surface-card) 85%, transparent);
-    backdrop-filter: blur(12px) saturate(1.4);
-  }
-
-  /*
-   * The trailing controls sit on the title's **first line** and contribute no
-   * height of their own: the negative block margins are symmetric, so a 28px
-   * hit area collapses to the 19.5px line box it is centred on. Without that,
-   * the buttons — not the text — decided how tall the head was, which is what
-   * made the head 8.5px taller for two controls that carry no content of their
-   * own.
+   * **Why the close is a chevron and may never be an X.** Measured at
+   * 1512×950 with the drawer open: the page header's *delete wave* button sits
+   * at y 22.3–50.3 (centre 36.3, right edge 1488); this close sat at
+   * y 80.0–108.0 (centre 94.0, right edge 1465). Same column to within 23px,
+   * 57.7px apart, identical 28px box, identical X glyph — and the top one
+   * destroys a wave while the bottom one puts a conversation away. Two
+   * controls that look the same, one pointer-flick apart, with opposite
+   * consequences, is a mis-click waiting to be reported as data loss. So the
+   * shape carries the difference: `chevron-right` is this app's "collapse it
+   * away" word, the same one the rail's collapse uses, and it is the honest
+   * verb — closing a conversation does not end it. X stays reserved for
+   * destruction. (The note on `.action` below has claimed the close was a
+   * chevron since the card landed; until now the code rendered an X. The
+   * comment was right and the code was wrong.)
+   *
+   * Floating moves the close *closer* to the delete — measured after this
+   * change it lands at y 76.3, right edge 1480, so 54.0px below and 8px inside
+   * a control it now shares a column with almost exactly. That is fine, and it
+   * is why the glyph had to change first: proximity is what the drawer's
+   * geometry wants (the corner is where a dismiss lives), so the shape, not the
+   * distance, has to be what tells them apart. Anything added to this group
+   * later inherits that obligation.
+   *
+   * **They float; they do not occupy a row.** Absolute against the card and
+   * above the scroller at `--z-raised`, so the transcript starts at the top of
+   * the card and a long one scrolls under them. `--nc-card-inset` from both
+   * edges puts them on the same 8px column the transcript and the composer
+   * start on.
    *
    * §4.3 requires at least `--space-6` (12px) between destructive and benign
    * actions. This 2px gap is a user-confirmed exception limited to this reset +
-   * close pair. Measured ink widths are 8.48px and 3.82px, leaving 9.76px and
-   * 12.10px respectively on their facing sides inside the 28px boxes. The boxes
-   * therefore supply 21.86px of whitespace before any gap: zero gap would only
-   * reduce the visual separation from 29.86px to 21.86px. `--space-1` (2px) is
-   * §2.3's tightest inline tier and leaves about 23.9px of visual whitespace.
-   * The reset is *before* the close rather than after it: §4.3 wants the danger
-   * last in its group, but the corner of a panel is where a pointer goes to
-   * dismiss things, and a destructive control under a dismiss reflex is a
-   * worse failure than an ordering one.
+   * close pair, and the boxes do the work the gap would: measured ink widths
+   * are 8.48px and 3.82px, leaving 9.76px and 12.10px respectively on their
+   * facing sides inside the 28px hit areas, so 21.86px of whitespace exists
+   * before any gap at all. `--space-1` is §2.3's tightest inline tier and
+   * takes it to about 23.9px. The reset is *before* the close rather than
+   * after it: §4.3 wants the danger last in its group, but the corner of a
+   * panel is where a pointer goes to dismiss things, and a destructive control
+   * under a dismiss reflex is a worse failure than an ordering one.
    */
-  .headActions {
+  .controls {
+    position: absolute;
+    z-index: var(--z-raised);
+    inset-block-start: var(--nc-card-inset, var(--space-4));
+    inset-inline-end: var(--nc-card-inset, var(--space-4));
     display: flex;
     align-items: center;
     gap: var(--space-1);
-    flex: none;
-    margin-block: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
-  }
-
-  @supports not (backdrop-filter: blur(2px)) {
-    .head {
-      background: var(--surface-card);
-    }
-  }
-
-  @media (prefers-reduced-transparency: reduce) {
-    .head {
-      background: var(--surface-card);
-      backdrop-filter: none;
-    }
   }
 
   /*
-   * Two lines, then clamp — not one line with an ellipsis. A wave title is a
-   * sentence ("Reference resolver: this round of fixes"), and at 396px an
-   * ellipsis eats the half of it that says which round.
+   * A corner control: the same 28px square the close is, because two controls
+   * in one group that differ in size read as two ranks, and these are one.
    *
-   * `--text-2` and medium, not full ink and semibold. §3.3's rule is that a
-   * surface has one P0 and this is not it: the drawer's P0 is the conversation.
-   * The head is a caption saying which wave you are talking about — you read it
-   * once on open and never again, and at 15px full-ink semibold it was the
-   * darkest thing on screen, out-shouting every reply under it.
-   *
-   * On opaque `--paper`, `--text` measured 18.1:1 and `--text-3` 7.8:1 in
-   * light / 6.5:1 in dark. The frosted ground also admits 15% of whatever has
-   * scrolled behind it. On real transcript content, with blur spreading the
-   * ink and no large solid dark blocks, 20-position browser audits measured
-   * minima of 7.18 light / 5.74 dark: AAA in light and AA in dark. The
-   * analytical worst case, with a large solid full-ink block sliding behind
-   * the head, is about 5.6 light / 4.2 dark. Light still clears AA, but dark is
-   * below AA's 4.5 threshold. The guarantee here is therefore AA/AAA for the
-   * measured real-content shape; a dark-theme full-ink block is a known
-   * analytical boundary. `saturate(1.4)` is not included in that model.
-   *
-   * This remains a manual browser audit: `tools/styles/check-contrast.mjs`
-   * hard-codes token pairs with one underlay per pair, so it cannot express a
-   * translucent layer composited over arbitrary scrolling content.
-   *
-   * `--text-3` is where this stops, and the next rank is why. The ladder is
-   * 18.1 → 10.0 → 7.8 → **2.3**: `--text-4` is the *decorative* rank, and a
-   * 15px heading set in it fails AA outright. The separation this title needed
-   * from the transcript was found on the other side instead — a message is
-   * content and now sits on the content rank, so the gap is 7.8 against 18.1
-   * rather than 7.8 against 10.0. Weight carries the rest: `--weight-normal`,
-   * because a caption has no reason to be bolder than what it captions.
-   */
-  .title {
-    display: -webkit-box;
-    min-inline-size: 0;
-    overflow: hidden;
-    font-size: var(--text-md);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    letter-spacing: var(--tracking-tight);
-    color: var(--text-3);
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-
-  /*
-   * A head control: the same 28px square the close is, because two controls on
-   * one row that differ in size read as two ranks, and these are one.
-   *
-   * Both controls use 16px stroked SVGs so their optical weight stays stable
-   * instead of depending on a font's arrow metrics. The close keeps the same
-   * right-facing chevron shape as the rail collapse. The rail collapse and
-   * cove chevron use the same shared `<Icon>` line-work system.
+   * Both use 16px stroked SVGs from the shared `<Icon>` line-work, so their
+   * optical weight stays stable instead of depending on a font's arrow
+   * metrics — the same system the rail collapse and the cove chevron draw from.
    */
   .action {
     display: grid;
@@ -280,8 +208,8 @@
     color: var(--error-text);
   }
 
-  /* The hit area keeps its full 28px; `.headActions` is what places it on the
-     title's first line (§5, 2.5.8). */
+  /* The full 28px hit area (§5, 2.5.8); `.controls` is what floats it into the
+     card's corner. */
   .close {
     display: grid;
     place-items: center;
@@ -300,26 +228,45 @@
     color: var(--text);
   }
 
-  /* The head and transcript share the scrolling region so the sticky frosted
-     surface can separate them without adding a line. */
+  /* The transcript now has the scrolling region to itself: the controls float
+     above it (`.controls`) rather than riding inside it. */
   .scroll {
     flex: 1;
     min-block-size: 0;
     overflow: auto;
     padding: 0;
     /* Reserve a classic scrollbar lane so becoming scrollable does not shift
-       the entire column. This does not affect overlay scrollbars: they may
-       paint over the sticky frosted head, an accepted tradeoff of putting the
-       head inside the scroller so content can pass beneath it. Moving the head
-       outside is the structural fix, but would remove that frosted premise. */
+       the entire column. Overlay scrollbars paint in the same corner the
+       controls float in; at 28px boxes inset 8px from the edge there is no
+       collision, and a classic scrollbar gets its own lane. */
     scrollbar-gutter: stable;
   }
 
+  /*
+   * **The first line clears the floating controls; it does not run under
+   * them.** The controls occupy the top `--nc-card-inset + --control-h` = 36px
+   * of the card, and a reply is a full-width paragraph, so with the old 8px top
+   * pad its first line ran straight through both glyphs *at rest* — not only
+   * while scrolling, which would be fine. Built and looked at both ways: the
+   * overlap version is unreadable on the one frame you most need to read (a
+   * fresh conversation's first answer), and the clearance costs nothing when
+   * the transcript is short, which is exactly when it is applied.
+   *
+   * So the top pad is the control row's own height. That still nets ~27px back
+   * against the head band it replaces (which spent 32 + a 19.5px line + 4
+   * before `.bodyInner`'s own 8), and it buys back something the band could not
+   * give: once the transcript is long enough to scroll, content *does* pass
+   * under the glyphs, because they no longer sit on an opaque strip of their
+   * own.
+   */
   .bodyInner {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    padding: var(--space-4) var(--nc-card-inset, var(--space-4)) var(--space-6);
+    padding:
+      calc(var(--nc-card-inset, var(--space-4)) + var(--control-h))
+      var(--nc-card-inset, var(--space-4))
+      var(--space-6);
   }
 
   /*

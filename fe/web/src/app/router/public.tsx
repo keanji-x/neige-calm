@@ -33,7 +33,7 @@ import { WavePage } from '../../features/wave/page/public.tsx';
 import { CardGridOverlay, WaveStage } from '../../features/wave/grid/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import {
-  ChatComposer, ChatFooterError, ChatFooterRemedy, ChatThread,
+  ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
 } from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
@@ -1024,26 +1024,35 @@ function useConversationPanel(
             {/* No optimistic echo: the POST starts the thread *and* delivers
                 this message, so by the time it answers the message is already
                 persisted and the first item fetch on the new card carries it. */}
+            {/* The strip is welded to the well's top edge, so it renders
+                *before* the composer. Each child keeps the condition it had:
+                a remedy can be offered with no error beside it. */}
+            {draft != null && (draft.error != null || draft.remedy !== null) && (
+              <ChatFooterNotice>
+                {draft.error != null && <ChatFooterError message={draft.error} />}
+                {draft.remedy === 'retry' && (
+                  <ChatFooterRemedy disabled={creating} onClick={retryDraft}>Try again</ChatFooterRemedy>
+                )}
+                {draft.remedy === 'new-conversation' && (
+                  <ChatFooterRemedy disabled={creating} onClick={sendAsNewConversation}>
+                    Send as a new conversation
+                  </ChatFooterRemedy>
+                )}
+              </ChatFooterNotice>
+            )}
             <ChatComposer disabled={creating} onSend={sendDraft} />
-            {draft?.error != null && <ChatFooterError message={draft.error} />}
-            {draft?.remedy === 'retry' && (
-              <ChatFooterRemedy disabled={creating} onClick={retryDraft}>Try again</ChatFooterRemedy>
-            )}
-            {draft?.remedy === 'new-conversation' && (
-              <ChatFooterRemedy disabled={creating} onClick={sendAsNewConversation}>
-                Send as a new conversation
-              </ChatFooterRemedy>
-            )}
           </>
         ) : open === null ? undefined : (
           <>
+            {store.actionError !== null && (
+              <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
+            )}
             <ChatComposer
               disabled={store.sending}
               onSend={(text) => store.send(open.id, text)}
               onStop={store.working || store.stopping ? store.interrupt : undefined}
               stopping={store.stopping}
             />
-            {store.actionError !== null && <ChatFooterError message={store.actionError} />}
           </>
         )}
       >
