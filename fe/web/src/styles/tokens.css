@@ -14,10 +14,19 @@
      * it sits from the ground, and the *direction of every rank is the same in
      * both themes*: recessed is darker than the ground, raised is lighter.
      *
-     *   -1  recessed   rail, chip          behind the page
+     *   -2  recessed   rail                the chrome floor
+     *   -1  control     chip               a control fill, on any surface
      *    0  ground     --bg
      *   +1  raised     card, terminal      an object on the page
      *   +2  floating   paper               menus, dialogs, drawer
+     *
+     * **`--surface-chip` is not the rail.** It used to be the same pixel in
+     * both themes, and `shell.module.css`'s `.avatar` draws a chip *inside* the
+     * rail with no border — so that control was invisible, in both themes, from
+     * two tokens agreeing. A chip is not an elevation rank at all: it is a
+     * control fill that has to read on every surface it can land on, which is
+     * the ground, a card, and the rail. It therefore sits between the rail and
+     * the ground rather than on top of either.
      *
      * **+2 spends no lightness.** `--paper` equals `--surface-card`, and what
      * separates it is `--shadow-float` — which §6.5 already grants to exactly
@@ -27,23 +36,56 @@
      * from the text standing on it, and the top rank was the one making
      * `--text-3` fail AA.
      *
-     * **One step is a constant contrast RATIO of 1.25, not a constant L
-     * difference.** That distinction is the whole rule. sRGB luminance is
-     * violently non-linear, so the same delta-L buys wildly different edges at
-     * different points on the scale: at a flat 3.0 L, dark's own three steps
-     * measured 1.036 / 1.051 / 1.067 — the rail, the largest region on screen,
-     * got the weakest edge of the three. Solving for the ratio instead gives
-     * the same ladder in both themes, in the only unit that describes what an
-     * eye actually sees. The shipped 1.25 step measures 1.251 rail → ground
-     * and 1.261 ground → paper in light, then 1.252 for both steps in dark.
+     * **The ladder is spaced in delta-L, asserted against a WCAG floor — not
+     * in contrast ratio.** The two rungs below the ground (rail → chip →
+     * ground) are ~3.5 L in *both* themes; that is the step this file is built
+     * on. The `+1` ground → card rung is the one exception: 3.4 in light but
+     * 6.9 in dark, because the dark ground had already been lifted off the rail
+     * wall to 24.5% while the card stayed at the shipped 31.4%, and this pass
+     * moved neither value. So the *unit* is constant, not every rung. This
+     * reverses the previous rule, and the reason is that the previous rule used
+     * the wrong metric at one end of the scale.
      *
-     * `tools/styles/check-contrast.mjs` is intentionally only a point check for
-     * explicitly listed semantic fill recipes. It does not infer inherited
-     * foregrounds or ancestor backgrounds from CSS.
+     * WCAG 2.x contrast carries a +0.05 flare term. Near black that term
+     * dominates the numerator and the denominator alike, so a *ratio* buys
+     * enormously more lightness there than it does near white. Measured on
+     * what shipped: the same 1.25 ratio bought 7.1 L in light (85.1 → 92.2)
+     * and 12.5 L in dark (12 → 24.5). The dark rail — the largest single
+     * region on screen — therefore sat perceptually **twice** as far from the
+     * ground as the light rail did, from a rule whose entire purpose was to
+     * make the two themes match. The old note's own counter-example is right
+     * about the failure and wrong about which direction it points: a flat
+     * delta-L does give uneven *ratios*, but ratios are not what the eye
+     * integrates. OKLCH L is perceptually uniform by construction; that is the
+     * reason this file is written in oklch at all.
+     *
+     * So the ladder is spaced in L, and WCAG is kept where it belongs — as a
+     * floor that foregrounds must clear, not as the spacing unit. The shipped
+     * rungs measure 3.5 / 3.5 / 3.4 L in light and 3.5 / 3.5 / 6.9 in dark.
+     * Light is the tight one: its whole ladder lives in the 10.4 L between the
+     * rail at 89.0 and its anchor at 99.4, which is the price of a bright
+     * ground (see the paper note below).
+     *
+     * The 3.0 L figure in fe-design.md §6.5 — below which a boundary needs a
+     * hairline as well as a surface change — is the reason the rungs are ~3.5
+     * and not smaller. **Light's 3.4 card rung is the thinnest in the system**,
+     * and nothing softens it: `panel-card` deliberately draws no outline, so
+     * that boundary rests on the surface step alone with no second channel to
+     * fall back on. (The +2 rank is the exception — it spends no lightness at
+     * all and is carried entirely by `--shadow-float`.)
+     *
+     * **Which gate checks what.** `tools/styles/check-contrast.mjs` is a point
+     * check over eight explicitly listed semantic fill recipes; it parses CSS
+     * text and cannot infer inherited foregrounds or ancestor backgrounds. The
+     * AA floor across the whole surface x foreground matrix, the 3.0 L rungs,
+     * and the ground/card chroma bound are checked in a real browser by
+     * `contrast-matrix.browser.test.ts`, which reads back painted pixels and so
+     * also sees gamut mapping. Neither replaces the other.
      *
      * Each theme is anchored at its outer end and walked inward — light from
-     * `--paper` at the 99.9 ceiling, dark from `--surface-rail` at 12 — because
-     * that is the end with no room to give.
+     * `--paper` at 99.4, dark from `--surface-rail` at 17.5 — because that is
+     * the end with no room to give. Light's anchor is 99.4 and not the 99.9
+     * ceiling for the gamut reason set out below.
      *
      * What this replaced was not a looser version of the same thing — it had no
      * direction at all. `--surface-card` sat 3.8 L *below* the ground in light
@@ -55,20 +97,112 @@
      * had been pushed down instead.
      *
      * Dark had the mirror image of that bug and it survived the first fix: the
-     * recessed rank had almost no room below the ground. At the shipped 24.5%
-     * ground, both dark steps can hold the same 1.25 ratio. Both themes now
-     * hold four ranks because both grounds were moved off their wall.
+     * recessed rank had almost no room below the ground, so the ground was
+     * moved off its wall to 24.5%. That move was right and stands; what was
+     * wrong was spending the resulting room by *ratio*, which pushed the rail
+     * all the way down to 12% (rgb 4,6,8 — effectively black beside a mid-grey
+     * page). Spending it by L puts the rail at 17.5% and leaves the ground and
+     * card exactly where they were.
      *
      * Elevation is absolute; **state is relative** — see `--accent-soft`.
+     *
+     * ── The two themes do not share a hue ─────────────────────────────────
+     *
+     * The ladder is shared; the colour is not. Light is paper and dark is
+     * night, and those are not the same material seen under two lamps.
+     *
+     *   light   surfaces hue ~90 at 0.004–0.005; ink hue ~248 at 0.004–0.005
+     *   dark    surfaces hue ~250 at 0.013–0.016; ink hue ~258 at 0.003
+     *
+     * **Chroma is the axis that matters, not hue.** At 0.003 no hue is
+     * visible at all: swinging `--bg` from 240 to 85 moves it by 3/0/-4 out
+     * of 255. That is why the old file read as cool despite nobody choosing a
+     * cool colour — a grey is the only thing that can show a cast, and the
+     * ladder had made the ground a grey.
+     *
+     * ── Light: the ground's chroma is what licenses a near-white card ─────
+     *
+     * Measured across eight established light palettes, the chroma gap
+     * between the page ground and the surface raised off it is **never more
+     * than 0.005**:
+     *
+     *   Tailwind stone 0.000 · Solarized 0.000 · Rose Pine 0.001 ·
+     *   Gruvbox 0.001 · Nord 0.003 · Catppuccin 0.003 · GitHub 0.003 ·
+     *   Astryx 0.005
+     *
+     * An earlier pass here ran **0.022** — four times the loosest of them —
+     * by putting a strongly tinted ground (Solarized's, 96.5/0.022) under a
+     * pure white card. It read as jarring, and the number says why: not the
+     * white, the cliff. That combination appears in none of the eight,
+     * because the field splits in two and it belongs to neither:
+     *
+     *   white-card    low-chroma ground (0.001–0.011), near-white card
+     *                 Astryx #F1F4F7→#FFFFFF, GitHub #f6f8fa→#ffffff, Tailwind
+     *   tinted-paper  high-chroma ground (0.011–0.055), card at the SAME
+     *                 chroma and never white
+     *                 Solarized #fdf6e3→#eee8d5, Gruvbox, Rose Pine
+     *
+     * This file is the first family — which is also the family its own
+     * vendored component library belongs to, so the app and the Astryx
+     * components embedded in it are made of the same material.
+     *
+     * `--paper` and `--surface-card` therefore sit at 99.4 and not at the
+     * 99.9 ceiling. Both numbers are the sRGB gamut boundary, quoted with two
+     * different quantifiers — say which one you mean, because the earlier
+     * version of this file quoted both as if they were one fact:
+     *
+     *   at the surface hue (90)   99.9 admits 0.0013 · 99.4 admits 0.0076
+     *   at the worst hue (~268)   99.9 admits 0.0005 · 99.4 admits 0.0028
+     *
+     * So 99.9 can only ever be pure white — the shipped 0.004 does not fit
+     * there at any hue — while 99.4 carries it with room to spare and keeps
+     * the card in the ground's hue family. That ceiling was never a design
+     * choice; it was a gamut limit being mistaken for one.
+     *
+     * The ground is **bright (96.0) as well as low-chroma**, and both halves
+     * matter: an earlier pass at 92.2/0.005 read *brown* on the identical
+     * hue, because the same warmth on a dimmer field is mud. Bright and
+     * barely-there is the target — a neutral you cannot name.
+     *
+     * **The ink runs faintly cool over it.** Warm paper plus warm ink is a
+     * sepia photograph; warm paper plus cool ink is a printed page (Solarized
+     * makes this move hard — its body text is H=222). What is *not* taken
+     * from Solarized is its contrast: base00 on base3 measures 4.13:1, base0
+     * 2.93:1, base1 2.48:1 — that palette predates and disregards the AA
+     * floor this file is gated on.
+     *
+     * Dark **rises toward black**: 0.016 at the rail down to 0.003 at
+     * `--text`. Night is blue in its depths and colourless in its lights, and
+     * the inverse — flat chroma all the way up, which is what shipped — tints
+     * the *type* blue, which is the single most reliable way to make a dark
+     * theme look cheap. For calibration, GitHub's dark canvas measures
+     * L=17.6 C=0.014 H=258 and Linear's H=246; the rail here is 17.5 / 0.016
+     * / 248, so this sits inside the band those were picked from.
+     *
+     * Hue 250 and not 258, because `--accent` is 267 and a neutral 9 degrees
+     * away from the accent makes the accent read as "the background, but
+     * brighter" instead of as a separate colour event. 250 leaves 17 degrees.
+     * The cove ring's claim on 245 does **not** bind here — that rule exists
+     * because the accent and a cove dot sit at comparable L and chroma and
+     * could be confused; a near-black ground at C=0.015 cannot be mistaken
+     * for an `oklch(70% 0.1 245)` identity dot.
+     *
+     * **`--paper` and `--surface-card` are not white.** They were, at 99.9 —
+     * a value that admits no chroma at all (see the gamut numbers above), so
+     * the 0.002/0.003 authored there were outside sRGB and every browser
+     * clipped them to pure white regardless of what this file said. That is
+     * the pass this one reverses: the card is a sheet laid on paper, and a
+     * sheet is made of the same stuff as the page under it. 99.4/0.004 keeps
+     * the card in the ground's hue family and is what ships.
      */
-    --bg: oklch(92.2% 0.003 240);
-    --paper: oklch(99.9% 0.002 240);
-    --hairline: oklch(80% 0.005 240);
-    --hairline-strong: oklch(72% 0.006 240);
-    --text: oklch(20% 0.008 250);
-    --text-2: oklch(38% 0.01 250);
-    --text-3: oklch(44% 0.01 250);
-    --text-4: oklch(74% 0.008 250);
+    --bg: oklch(96% 0.005 90);
+    --paper: oklch(99.4% 0.004 90);
+    --hairline: oklch(84% 0.006 87);
+    --hairline-strong: oklch(74% 0.006 86);
+    --text: oklch(22% 0.004 250);
+    --text-2: oklch(40% 0.005 248);
+    --text-3: oklch(46% 0.005 245);
+    --text-4: oklch(76% 0.006 86);
 
     /*
      * Hue 267, not 245. 245 is the default SaaS blue, and it was also exactly
@@ -93,38 +227,23 @@
     --warn: oklch(49% 0.14 30);
     --warn-soft: oklch(52% 0.14 30 / 0.12);
 
-    --surface-rail: oklch(85.1% 0.004 240);
-    --surface-card: oklch(99.9% 0.003 240);
-    --surface-chip: oklch(85.1% 0.005 240);
+    --surface-rail: oklch(89% 0.005 88);
+    --surface-card: oklch(99.4% 0.004 90);
+    --surface-chip: oklch(92.5% 0.005 89);
 
     /* The fill behind your own words in the conversation drawer used to be its
        own token here (`--surface-said`, a 3% ink tint). It is now `--bg` — the
        same fill the composer well takes, because what you said and what you are
        still typing are one material; see `features/chat/thread`. */
 
-    /*
-     * A well that has taken focus, one step further from the page.
-     *
-     * This cannot be an overlay, and that is the point of it existing. The
-     * `--overlay-*` tokens are defined relative to **ink** — black in light,
-     * white in dark — so "darken by 4%" flips direction with the theme. A
-     * recessed well needs the opposite: further from the page ground, which is
-     * darker in both. Measured on the real pixels with the old overlay in
-     * place, focus moved the well's contrast against the page in the right
-     * direction in light but the wrong direction in dark, from one declaration.
-     *
-     * Elevation is absolute, so this is absolute. Measured well against page,
-     * blur → focus is 1.577 → 1.864 in light and 1.567 → 1.620 in dark.
-     *
-     * The dark value is honest rather than effective. Dark's well already sits
-     * at luminance 0.0017 — the floor — so the dark change buys very little
-     * and you cannot see it. There is no room left in that direction and the
-     * other direction is wrong. In dark, the send arrow appearing is the
-     * whole signal, which is what it was designed to be.
-     */
-    --surface-chip-focus: oklch(80% 0.005 240);
-    --surface-panel-head: oklch(99.9% 0.003 240);
-    --surface-terminal: oklch(99.9% 0.003 240);
+    /* `--surface-chip-focus` and `--surface-panel-head` used to live here. Both
+       had zero consumers — `panel-card.module.css` carries a comment saying it
+       deliberately does not tint its head, and nothing ever read the focused
+       well. The chip-focus block also documented itself as non-functional
+       ("the dark value is honest rather than effective … you cannot see it"),
+       which is a token describing its own absence. A surface with no reader is
+       not a spare; it is the next arbitrary pick waiting to happen. */
+    --surface-terminal: oklch(99.4% 0.004 90);
     --surface-code: oklch(0% 0 0 / 0.04);
     --overlay-hover-faint: oklch(0% 0 0 / 0.025);
     --overlay-hover: oklch(0% 0 0 / 0.04);
@@ -277,7 +396,11 @@
 
     --success: oklch(54% 0.14 145);
     --error: oklch(51% 0.14 25);
-    --overlay-scrim: rgba(20, 30, 55, 0.32);
+    /* Warm-brown, not navy. The old rgba(20,30,55) measured C=0.050 / H=266 —
+       ten times the chroma of any surface token in this file, and the single
+       largest cool cast in the light theme. Kept as rgba() deliberately; see
+       the contract test. */
+    --overlay-scrim: rgba(28, 29, 33, 0.32);
     --error-text: oklch(42% 0.17 25);
     --warn-border: oklch(85% 0.05 30);
 
@@ -337,7 +460,9 @@
 
     /* Text-carrying semantic colours: --warn/--error/--success are fills, never type. */
     --warn-text: oklch(42% 0.16 30);
-    --success-text: oklch(42% 0.14 145);
+    /* Chroma 0.132, not 0.14: 0.14 at this L and hue is outside sRGB. Same
+       reasoning as dark `--accent`; the rendered pixel does not move. */
+    --success-text: oklch(42% 0.132 145);
     --error-soft: oklch(52% 0.15 25 / 0.12);
     --error-border: oklch(85% 0.05 25);
     --text-on-accent: var(--bg);
@@ -363,30 +488,48 @@
   }
 
   [data-theme="dark"] {
-    /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which
-       is *not* a fixed L step, and is the whole reason this block's numbers are
-       not light's mirrored. See the note on `:root`. */
-    --bg: oklch(24.5% 0.008 245);
-    --paper: oklch(31.4% 0.01 245);
-    --hairline: oklch(42% 0.01 245);
-    --hairline-strong: oklch(50% 0.012 245);
-    --text: oklch(96% 0.005 245);
-    --text-2: oklch(84% 0.012 245);
-    --text-3: oklch(78% 0.012 245);
-    --text-4: oklch(50% 0.012 245);
-    --accent: oklch(80% 0.11 267);
+    /* Same ladder, same directions, spaced in delta-L rather than in contrast
+       ratio. The unit is constant, not every rung: rail → chip → ground is the
+       ~3.5 L step both themes share, and the `+1` ground → card rung is the
+       exception at 6.9 here against light's 3.4 — the dark ground was already
+       lifted to 24.5% while the card stayed at the shipped 31.4%, and this pass
+       moved neither. See the note on `:root` for both. */
+    --bg: oklch(24.5% 0.015 250);
+    --paper: oklch(31.4% 0.013 251);
+    --hairline: oklch(42% 0.01 253);
+    --hairline-strong: oklch(50% 0.008 254);
+
+    /* 90, not 96. 96% on this ground measures 14.4:1 and *blooms* — the glyph
+       edges throw light into the surrounding dark and the text reads soft.
+       WCAG 2.x cannot see halation; it scores the 96% version higher, which is
+       precisely why chasing that number in dark produces harsh interfaces.
+       APCA does model it. 90% still measures 12.1:1 against the ground. This
+       is the only place in the file where a WCAG number is deliberately left
+       on the table. */
+    --text: oklch(90% 0.003 258);
+    --text-2: oklch(84% 0.004 257);
+    --text-3: oklch(78% 0.005 256);
+
+    /* 46, not 50: at 50 this was byte-identical to `--hairline-strong`, so a
+       disabled label and a control border were the same colour. */
+    --text-4: oklch(46% 0.009 253);
+
+    /* Chroma 0.10, not 0.11: 0.11 at this L and hue is outside sRGB, and
+       out-of-gamut oklch is mapped differently by different browsers — the
+       hazard fe-design.md §10-7 warns about. Every browser was already
+       clipping it to this value; now they agree on purpose. Hue 267 is
+       unchanged and still the point farthest from the cove ring. */
+    --accent: oklch(80% 0.10 267);
     --accent-soft: oklch(74% 0.11 267 / 0.18);
     --warn: oklch(74% 0.15 30);
     --warn-soft: oklch(72% 0.15 30 / 0.18);
-    --surface-rail: oklch(12% 0.008 245);
-    --surface-card: oklch(31.4% 0.009 245);
-    --surface-chip: oklch(12% 0.008 245);
+    --surface-rail: oklch(17.5% 0.016 248);
+    --surface-card: oklch(31.4% 0.013 251);
+    --surface-chip: oklch(21% 0.016 249);
 
     /* See the light block: the direction is the same (further from the page),
        the room is not. This is the floor. */
-    --surface-chip-focus: oklch(5% 0.008 245);
-    --surface-panel-head: oklch(31.4% 0.009 245);
-    --surface-terminal: oklch(31.4% 0.009 245);
+    --surface-terminal: oklch(31.4% 0.013 251);
     --surface-code: oklch(100% 0 0 / 0.06);
     --overlay-hover-faint: oklch(100% 0 0 / 0.035);
     --overlay-hover: oklch(100% 0 0 / 0.05);
