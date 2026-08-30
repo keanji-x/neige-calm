@@ -325,6 +325,61 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
   return outline;
 }
 
+/* ── Tasks, as an inventory ─────────────────────────────────────────────
+
+   A wave's tasks are report blocks (#229), which is the right place to *store*
+   them and the wrong place to read them as a list: they sit wherever in the
+   prose the agent happened to declare them, each one carrying the worker prompt
+   and the gate commands that were written for a machine. Measured on a real
+   wave: 8141 characters of report body, of which the prose a reader is meant to
+   take away was ~700 and seven task blocks were the rest.
+
+   So the panel gets the inventory and the document keeps the declarations. This
+   derives the first from the second — no new endpoint, no second source of
+   truth, and nothing that can disagree with what the document says.
+
+   **What it cannot say, stated plainly: whether a task has run.** A block is a
+   *declaration* — `ready` means the agent has finished writing it, not that the
+   kernel has scheduled it, and there is no field here for pending / running /
+   done / failed. The kernel does project that (`task_projection`), and
+   `calm.plan.list` exposes it to MCP, but no HTTP route does. A status column
+   is therefore a backend slice and not a display change; until it exists this
+   list answers "what work has been declared", which is a different and smaller
+   question than "how is it going". */
+
+export type ReportTaskState = 'ready' | 'not-ready' | 'withdrawn';
+
+export type ReportTaskRow = Readonly<{
+  /** The block to reveal in the document — the detail lives there, not here. */
+  blockId: string;
+  key: string;
+  state: ReportTaskState;
+}>;
+
+/**
+ * Every `task` block, in document order, as one row each.
+ *
+ * Withdrawn tasks are kept, for the same reason the block itself keeps them:
+ * the task existed, other reports may cite its block id, and a list that
+ * silently dropped it would disagree with the document it is derived from.
+ */
+export function deriveReportTasks(blocks: readonly ReportBlock[] | null): ReportTaskRow[] {
+  if (blocks === null) return [];
+  const rows: ReportTaskRow[] = [];
+  for (const block of blocks) {
+    if (block.kind !== 'task') continue;
+    const payload = block.payload;
+    /* `tombstoned_by` is the discriminant, not `tombstone`: a live task may
+       carry an explicit `tombstone: null`, so the key's presence proves
+       nothing. Same test as `features/report/task`. */
+    const state: ReportTaskState = 'tombstoned_by' in payload
+      ? 'withdrawn'
+      : payload.ready ? 'ready' : 'not-ready';
+    rows.push({ blockId: block.id, key: payload.key, state });
+  }
+  return rows;
+}
+
 /* ── Backlinks ──────────────────────────────────────────────────────────
    Who cites this wave. The kernel resolves `neige://wave/<id>#<block>` links
    found in other waves' reports and hands back a bounded page. */

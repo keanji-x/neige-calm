@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardWire } from './wave.js';
 import {
-  backlinkCountsByBlock, deriveReportOutline, groupBacklinks, parseReportLink,
+  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, groupBacklinks, parseReportLink,
   readWaveReport, WAVE_REPORT_CARD_KIND, type WaveBacklink,
 } from './report.js';
 
@@ -139,6 +139,60 @@ describe('readWaveReport', () => {
       payload: { body: 'x', blocks: [{ id: 'b-1', kind: 'app', rev: 1, payload: { src } }] },
     })]);
     expect(report?.blocks?.[0]?.kind).toBe('unsupported');
+  });
+});
+
+describe('deriveReportTasks', () => {
+  function tasksOf(blocks: unknown[]) {
+    return deriveReportTasks(readWaveReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null);
+  }
+
+  function task(id: string, payload: Record<string, unknown>) {
+    return { id, kind: 'task', rev: 1, payload };
+  }
+
+  const live = (key: string, ready: boolean) =>
+    ({ key, kind: 'codex', declared_by: 'spec', ready, goal: 'g' });
+
+  it('lists every task in document order and nothing else', () => {
+    expect(tasksOf([
+      prose('b-1', '# One\n'),
+      task('b-2', live('alpha', true)),
+      { id: 'b-3', kind: 'table', rev: 1, payload: { caption: 'c', columns: [], rows: [] } },
+      task('b-4', live('beta', false)),
+    ])).toEqual([
+      { blockId: 'b-2', key: 'alpha', state: 'ready' },
+      { blockId: 'b-4', key: 'beta', state: 'not-ready' },
+    ]);
+  });
+
+  /* Same discriminant as the block renderer, and the same trap: a *live* task
+     may carry an explicit `tombstone: null`, so the presence of that key proves
+     nothing. Reading it as withdrawn would strike through a task that is
+     running. */
+  it('reads a task carrying an explicit null tombstone as live, not withdrawn', () => {
+    expect(tasksOf([task('b-1', { ...live('alpha', true), tombstone: null })]))
+      .toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready' }]);
+  });
+
+  /* Kept for the same reason the block keeps it: the task existed, other
+     reports may cite its block id, and a panel that dropped it would disagree
+     with the document it is derived from. */
+  it('keeps a withdrawn task', () => {
+    expect(tasksOf([task('b-1', {
+      key: 'gone', declared_by: 'spec', tombstoned_by: 'user', tombstone: { reason: 'r' },
+    })])).toEqual([{ blockId: 'b-1', key: 'gone', state: 'withdrawn' }]);
+  });
+
+  /* A block whose payload this build cannot read degrades to `unsupported`,
+     which has no key and no state — inventing a row for it would put a task in
+     the panel that the document does not draw. */
+  it('drops a task block whose payload does not parse', () => {
+    expect(tasksOf([task('b-1', { key: 'broken' })])).toEqual([]);
+  });
+
+  it('has no rows for a report with no blocks', () => {
+    expect(deriveReportTasks(null)).toEqual([]);
   });
 });
 
