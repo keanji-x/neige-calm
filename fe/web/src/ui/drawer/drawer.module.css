@@ -17,20 +17,58 @@
    * other card in the app uses. Cards are rounded because they are objects on a
    * page; this one now is.
    *
-   * **The track.** It is a *large* card on the small card's rails: same inline
-   * track (`--panel-span`), same trailing page pad (`--space-10`), same top
-   * (`--header-band + --header-h + --space-8`, the offset
-   * `features/{cove,wave}/page` gives the sticky PanelCard). So the conversation
-   * opens in the column the conversation list is already in, at the line
-   * everything on the page starts at, and nothing about the page's geometry
-   * moves when it does. Growing downward past the panel card is the only thing
-   * it does differently — it holds a transcript, and it may use the height.
+   * **The track, and why it stops being a track vertically.** Horizontally the
+   * card is still on the panel's rails: same inline track (`--panel-span`),
+   * same trailing page pad (`--space-10`). Vertically it is not, any more.
    *
-   * `--header-band` / `--header-h` are published by `ui/page-header` through
-   * `:has(.header)`, which was widened from `:has(> .header)` for exactly this
-   * element; see the note there. The `0px` fallbacks keep a headerless route
-   * from invalidating the whole `inset-block` shorthand (which would fall back
-   * to `auto` and let the card size itself to its content).
+   * It used to start at `--header-band + --header-h + --space-8` — the offset
+   * `features/{cove,wave}/page` gives the sticky PanelCard — so that the two
+   * cards began on one line. Measured at 1512×950 that put the top edge at
+   * **y 68.3** while the bottom sat 28 off the window: 68 above, 28 below, for
+   * an object whose whole job is to be read. The alignment was real and the
+   * cost was 40px of nothing at the top of the only surface in the window you
+   * are actually operating.
+   *
+   * **So the card covers the page header instead of queuing under it.** While a
+   * conversation is open it is the foreground: the page underneath — its title,
+   * its report, its panel — is the thing being talked *about*, and a header is
+   * part of that page, not part of the chrome that outranks it. `--z-overlay`
+   * over the header's `--z-sticky` was already true; what changes here is that
+   * the geometry now says so too.
+   *
+   * **The price, stated plainly.** Whatever the page header puts in this
+   * column is unreachable while the card is open — on the wave route that is
+   * *delete wave*, and on any route the trailing end of the title row. You
+   * close the conversation first (`›`, or Escape), then you rename or delete.
+   * (The title itself and its rename control sit at `--document-start`, far
+   * inside the card's inline edge, so those stay reachable; do not read this
+   * paragraph as "the whole header is gone".) That is a real cost on a real
+   * control, accepted knowingly: acting on the wave mid-conversation is rare,
+   * and the alternative was paying 40px of dead space on every conversation for
+   * it. It settles one thing for free — the earlier round measured the page's
+   * destructive ✕ and this card's close landing in the same column 8px apart,
+   * and a control that is covered cannot be mis-clicked.
+   *
+   * **The pair, 20 / 28, and why the top is not free to be prettier.** The
+   * header's topmost ink starts at `--header-band` — measured 20.3px from the
+   * window on every route, since the band is a constant and only the rows below
+   * it vary. A top inset larger than that leaves a live sliver of whatever is
+   * in this column *above* the card: at 24 the delete-wave button was still
+   * hit-testable across y 22.3–24.0, a 1.7px strip of a destructive control
+   * with its own glyph hidden underneath the card. An invisible strip that
+   * deletes a wave is worse than any spacing it buys. So the top is bounded by
+   * the band, and `--space-9` (20) is the largest tier under it.
+   *
+   * Compared in the same frame: 16/28 clears the band by more but reads
+   * top-heavy — the card visibly hangs off the window's top edge. 28/28 is
+   * metrically symmetric and leaves the sliver. 20/28 clears the band, and the
+   * 8px surplus at the bottom is the direction optical balance wants anyway (a
+   * shape centred by measurement sits low). The bottom stays 28 because it is
+   * `.page`'s own `padding-block-end`; the top has no such partner, only the
+   * band.
+   *
+   * Nothing here reads `--header-band` / `--header-h` any more, which is why
+   * `ui/page-header`'s publisher went back to the child combinator.
    *
    * **It still overlays.** Absolute inside `.main`, not a column in the page
    * grid: opening it must not reflow the report, which is principle 3 ("在持续
@@ -57,7 +95,9 @@
     --radius-chat: calc(var(--nc-card-radius) - var(--nc-card-inset));
 
     position: absolute;
-    inset-block: calc(var(--header-band, 0px) + var(--header-h, 0px) + var(--space-8)) var(--space-11);
+    /* 20 top / 28 bottom. The 20 is bounded by the header band (20.3px of ink
+       clearance), not chosen freely — see the note above. */
+    inset-block: var(--space-9) var(--space-11);
     inset-inline-end: var(--space-10);
     z-index: var(--z-overlay);
     display: flex;

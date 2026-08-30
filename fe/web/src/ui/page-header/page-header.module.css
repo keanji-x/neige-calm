@@ -13,38 +13,32 @@
    * stick underneath the header and therefore has to know how tall it is; and a
    * sibling cannot read a custom property set on a sibling.
    *
-   * `:has(.header)` names the ancestors without any of them having to name
-   * itself, so the four page modules stay ignorant of this and the row
-   * arithmetic stays in one place. The value then inherits to everything in the
-   * page, the header included.
+   * `:has(> .header)` names the page without it having to name itself, so the
+   * four page modules stay ignorant of this and the row arithmetic stays in one
+   * place. The value then inherits to everything in the page, the header
+   * included.
    *
-   * **Descendant, not child.** It was `:has(> .header)` — the page and nothing
-   * else. The conversation drawer is a sibling of the page, absolutely
-   * positioned against `.main`, and it has to start on the same line the panel
-   * card starts on, which is `--header-band + --header-h`. A child combinator
-   * puts that number one level too deep for it to inherit. Relaxing to the
-   * descendant form publishes the same value on `.stage`, `.main` and `.shell`
-   * as well, so anything positioned against the main region can read the height
-   * of the header it sits under.
-   *
-   * Two things make the wider match harmless. The value is identical on every
-   * ancestor — one header per route, one arithmetic — so inheritance cannot
-   * pick up a different number depending on where you read it. And the relative
-   * order of these three rules is unchanged: `:has()` takes the specificity of
-   * its most specific argument, so this rule is (0,1,0) and the two
-   * `data-nc-header-rows` rules below are (0,2,0), exactly as before.
+   * **Child, not descendant.** This was briefly relaxed to `:has(.header)` so
+   * that `.stage` / `.main` / `.shell` published the number too, for the sake of
+   * the conversation drawer — a sibling of the page, positioned against `.main`,
+   * which then started on the panel card's line. The drawer now covers the
+   * header rather than starting below it and reads neither variable, and every
+   * remaining consumer (the sticky panel in `features/{cove,wave}/page`, the
+   * report outline's sticky list) is *inside* the page, where the child form
+   * already reaches. A publisher with no reader outside the page should not
+   * publish outside the page.
    */
-  :where(*):has(.header) {
+  :where(*):has(> .header) {
     /* The band above the title — see `.header`'s own note. */
     --header-band: calc(var(--header-baseline) - 21.7px);
     --header-h: var(--control-h-lg);
   }
 
-  :where(*):has(.header[data-nc-header-rows='2']) {
+  :where(*):has(> .header[data-nc-header-rows='2']) {
     --header-h: calc(var(--control-h-lg) + var(--row-h-sm) + var(--space-3));
   }
 
-  :where(*):has(.header[data-nc-header-rows='3']) {
+  :where(*):has(> .header[data-nc-header-rows='3']) {
     --header-h: calc(var(--control-h-lg) + var(--row-h-sm) * 2 + var(--space-3) * 2);
   }
 
