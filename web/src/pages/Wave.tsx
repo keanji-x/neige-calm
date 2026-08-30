@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
 } from 'react';
+import { useRouterState } from '@tanstack/react-router';
 import { useState } from '../shared/state';
 import { Icon } from '../Icon';
 import { AddPanel, type AddPanelKind } from '../shared/components/AddPanel';
@@ -22,7 +23,7 @@ import { useOverlayState } from '../hooks/useOverlayState';
 import { waveDisplayTitle } from '../shared/waveTitle';
 import { OVERLAY_VIEW_MODE_SCHEMA_VERSION } from '../cards/builtins/schemaVersions';
 import { excludeReportCards } from '../cards/excludeReportCards';
-import { WaveReportPage } from './WaveReportPage';
+import { decodeHash, WaveReportPage } from './WaveReportPage';
 
 // WaveGrid pulls in `react-grid-layout` (~50 KB minified) and is the
 // heaviest single dependency on this page. Loading it lazily keeps the
@@ -263,7 +264,7 @@ export function WavePage({
   // default is safe. Adding a worker card auto-switches to grid (see
   // `goGridAfterAdd`) so the new card is visible immediately.
   // The header cycle button only changes this persisted overlay value.
-  const viewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'report';
+  const persistedViewMode: ViewMode = isViewMode(overlayMode) ? overlayMode : 'report';
 
   const setViewMode = (mode: ViewMode) => {
     setViewModeOverlay({
@@ -279,6 +280,69 @@ export function WavePage({
   // current header / modal, switching modes would hide it.
   const goGridAfterAdd = () => {
     if (viewMode === 'report') setViewMode('grid');
+  };
+
+  // A report task block's "Open worker output" links to
+  // `/wave/$waveId#<workerCardId>` (`pages/report-blocks/task.tsx`). The hash
+  // alone used to change nothing: report mode hands every hash to
+  // `revealReportBlock`, which only resolves report *block* ids, so a worker
+  // card id matched nothing and the click was silently inert.
+  //
+  // Only a hash naming a worker card of THIS wave counts. The predicate reads
+  // the card list rather than matching the id shape, so a report block anchor
+  // (`b_xxxx`) can never satisfy it and in-document links keep working.
+  const hash = useRouterState({ select: (state) => state.location.hash });
+  const revealCardId = useMemo(() => {
+    const id = decodeHash(hash);
+    if (!id) return undefined;
+    return workerCards.some(
+      (slot) => slot.kind === 'card' && slot.card?.id === id,
+    )
+      ? id
+      : undefined;
+  }, [hash, workerCards]);
+
+  // Arriving on a card is a *navigation*, not a new preference, so it derives
+  // the rendered mode instead of writing the overlay.
+  //
+  // Writing it was the bug: an effect that flipped `report → grid` whenever the
+  // hash named a card re-fired every time the mode changed back, and the hash
+  // outlives the click. Cycling round to report wrote `report`, the effect
+  // wrote `grid` on top, and the report view became unreachable for the rest of
+  // the visit — two persisted round-trips per attempt. Deriving cannot loop:
+  // there is nothing to write back.
+  //
+  // Only `report` is overridden. List shows the same `data-card-id` tiles the
+  // grid does and reveals in place, so a list user is never dragged out of the
+  // view they chose.
+  const [revealConsumed, setRevealConsumed] = useState<string | undefined>(undefined);
+  const pendingReveal = revealCardId !== undefined && revealCardId !== revealConsumed;
+  const viewMode: ViewMode = pendingReveal && persistedViewMode === 'report'
+    ? 'grid'
+    : persistedViewMode;
+
+  // A changed anchor is a new arrival, so it re-arms. Without this, going
+  // `#card-a` → anywhere else → `#card-a` again would find `card-a` still
+  // marked consumed and silently do nothing — the very symptom this page is
+  // being fixed for, one navigation further along.
+  const lastRevealRef = useRef(revealCardId);
+  if (lastRevealRef.current !== revealCardId) {
+    lastRevealRef.current = revealCardId;
+    if (revealConsumed !== undefined) setRevealConsumed(undefined);
+  }
+
+  // Any explicit view choice consumes the hash: the user has now said what they
+  // want to look at, and a stale anchor must not keep overriding them.
+  //
+  // It also *drops* the anchor from the URL, which is what makes a second click
+  // on the same link work. Consumption alone cannot: clicking a `<Link>` whose
+  // hash already matches the location is not a navigation, so nothing would
+  // change and the reveal would never re-arm. `onGo` re-navigates to this same
+  // wave without a hash, so the next click is a real change again.
+  const chooseViewMode = (mode: ViewMode) => {
+    setRevealConsumed(revealCardId);
+    if (revealCardId !== undefined) onGo({ name: 'wave', id: wave.id });
+    setViewMode(mode);
   };
 
   return (
@@ -300,7 +364,7 @@ export function WavePage({
           >
             <Icon n="back" s={14} sw={1.7} />
           </button>
-          <ViewModeCycleButton value={viewMode} onChange={setViewMode} />
+          <ViewModeCycleButton value={viewMode} onChange={chooseViewMode} />
           <span className="wave-crumb">
           <span className="wave-cove-dot" style={{ background: cove.color }} />
           <button
@@ -416,6 +480,7 @@ export function WavePage({
               <WaveList
                 waveId={wave.id}
                 cards={workerCards}
+                revealCardId={revealCardId}
                 onRemoveCard={(filteredIdx) => {
                   const original = workerCardSlots[filteredIdx]?.originalIndex;
                   if (original !== undefined) onRemoveCard(wave.id, original);
@@ -425,6 +490,7 @@ export function WavePage({
               <WaveGrid
                 waveId={wave.id}
                 cards={workerCards}
+                revealCardId={revealCardId}
                 onRemoveCard={(filteredIdx) => {
                   const original = workerCardSlots[filteredIdx]?.originalIndex;
                   if (original !== undefined) onRemoveCard(wave.id, original);

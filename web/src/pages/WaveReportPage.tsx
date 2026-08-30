@@ -45,7 +45,7 @@ import { useSpecCurrentRun } from './useSpecCurrentRun';
 import { ChevronIcon } from '../shared/components/ChevronIcon';
 import { deriveOutline, type ReportOutlineItem } from './report-outline';
 
-function decodeHash(value: string): string {
+export function decodeHash(value: string): string {
   try {
     return decodeURIComponent(value);
   } catch {
