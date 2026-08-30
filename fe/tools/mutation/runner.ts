@@ -253,6 +253,50 @@ export function unexpectedFailureDetails(
 }
 
 /**
+ * `failure_details` is NOT the only place a report record re-emits test ids, so capping it alone
+ * left the record as a whole unbounded — the exact goal the caps exist for (#1152):
+ *
+ *  - `actual_red` (run.mjs) is the raw `failedTestIds` list at full `fullName` length. A mutation
+ *    that reds the whole suite emits every one of them, and run.mjs both writes that JSON to the
+ *    artifact AND `console.log`s it into the CI log. At ~1000 reds x ~300-char names it is ~300 KB,
+ *    an order of magnitude more than the `failure_details` block.
+ *  - `verdict.errors[].test_ids` (judgeMutation) carries the `over-red` / `under-red` /
+ *    `duplicate-*` / `test-infrastructure-failed` sets, i.e. the same ids a second time.
+ *
+ * Nothing parses these lists: CI only uploads `mutation-report-<shard>.json` as an artifact and
+ * gates on job results (`.github/workflows/ci.yml` fe-mutation), and `mutationRunExitCode` reads
+ * only `verdict.ok`. They are read by humans, so the same rule as everywhere else applies: the cut
+ * is announced INSIDE the emitted list, because a silently truncated red set reads as the whole
+ * red set and misdiagnoses the run.
+ */
+export const reportTestIdLimit = 50;
+
+export function boundedTestIdList(
+  testIds: readonly string[],
+  limit: number = reportTestIdLimit,
+  idChars: number = failureDetailTestIdChars,
+): string[] {
+  const kept = testIds.slice(0, Math.max(0, limit)).map((testId) => truncateTestId(testId, idChars));
+  if (kept.length === testIds.length) return kept;
+  return [...kept, `[capped: kept ${kept.length} of ${testIds.length} test ids]`];
+}
+
+/**
+ * `ok` and the error CODES are untouched: they are what `verdictExitCode` / `mutationRunExitCode`
+ * judge on, so capping can never change whether a run passes — only how much of the evidence prints.
+ */
+export function boundedVerdict(
+  verdict: MutationVerdict,
+  limit: number = reportTestIdLimit,
+  idChars: number = failureDetailTestIdChars,
+): MutationVerdict {
+  return {
+    ok: verdict.ok,
+    errors: verdict.errors.map(({ code, test_ids }) => ({ code, test_ids: boundedTestIdList(test_ids, limit, idChars) })),
+  };
+}
+
+/**
  * `mutation_id` is interpolated straight into temp *filenames* by run.mjs
  * (`resolve(temporary, `${mutation_id}.diff`)`), so it is a path component, not free text.
  * A lowercase dash-slug has no `.`, no `/` and no `\`, which makes `../escaped` (writes outside the

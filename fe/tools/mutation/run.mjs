@@ -8,9 +8,9 @@ import { architecturePlugin } from '../architecture/plugin.mjs';
 // @ts-ignore Node 22+ strips erasable TypeScript syntax; the build intentionally does not emit tools.
 const mutationRunner = await import('./runner.ts');
 const {
-  byteSequencesEqual, gitApplyDirectory, judgeMutation, manifestRelativePath, mutationRunExitCode, oracleIdsFromDocuments,
-  parseShard, parseVitestReport, selectedEntries, shardEntries, shardPlan, trackedFixtureSetMatches,
-  unexpectedFailureDetails, validateManifest,
+  boundedTestIdList, boundedVerdict, byteSequencesEqual, gitApplyDirectory, judgeMutation, manifestRelativePath,
+  mutationRunExitCode, oracleIdsFromDocuments, parseShard, parseVitestReport, selectedEntries, shardEntries, shardPlan,
+  trackedFixtureSetMatches, unexpectedFailureDetails, validateManifest,
 } = mutationRunner;
 
 const feRoot = resolve(import.meta.dirname, '../..');
@@ -131,7 +131,12 @@ try {
     // Names alone made an `over-red` verdict undiagnosable: you could not tell a timeout from an
     // unstable assertion from cross-test pollution without re-running CI and guessing (#1152).
     // Only the UNEXPECTED reds get details — the expected ones are the mutation working as designed.
-    report.push({ mutation_id: entry.mutation_id, expected_red: entry.expected_red, actual_red: failed, verdict,
+    // EVERY id list in the record is bounded, not just failure_details: `actual_red` and
+    // `verdict.errors[].test_ids` re-emit the same ids and dominate the size when a mutation reds the
+    // whole suite. `boundedVerdict` touches neither `ok` nor the codes, so the exit code below is
+    // computed on exactly the same verdict as before.
+    report.push({ mutation_id: entry.mutation_id, expected_red: entry.expected_red,
+      actual_red: boundedTestIdList(failed), verdict: boundedVerdict(verdict),
       failure_details: unexpectedFailureDetails(failed, entry.expected_red, failureMessages) });
   }
 } finally {

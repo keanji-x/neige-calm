@@ -3,12 +3,14 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
+  boundedTestIdList, boundedVerdict,
   byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
   evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, failureDetailMessageChars,
   failureDetailMessagesPerTest, failureDetailOmittedIdLimit, failureDetailTestIdChars,
   failureDetailTestLimit, judgeMutation,
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
-  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
+  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, reportTestIdLimit,
+  selectedEntries, shardEntries,
   shardPlan, trackedFixtureSetMatches, unexpectedFailureDetails, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
@@ -542,6 +544,96 @@ describe('over-red failure detail evidence', () => {
   it('emits an empty block when every red was expected', () => {
     expect(unexpectedFailureDetails(['expected'], ['expected'], messages))
       .toEqual({ tests: [], omitted_test_ids: [], note: null });
+  });
+});
+
+// Capping `failure_details` alone did not bound the REPORT: run.mjs re-emits the same ids in
+// `actual_red` and in `verdict.errors[].test_ids`, both uncapped, and both an order of magnitude
+// bigger than the block that was capped when a mutation reds the whole suite (#1152).
+describe('every id list in a report record is bounded', () => {
+  const longId = (prefix: string, index: number): string =>
+    `${prefix}${String(index).padStart(6, '0')}${'z'.repeat(failureDetailTestIdChars * 4)}`;
+  const baseResult: MutationRunResult = {
+    failed_test_ids: [], apply_check_exit_code: 0, apply_exit_code: 0, reverse_exit_code: 0,
+    target_changed_after_apply: true, target_restored_after_revert: true,
+    test_run_exit_code: 1, test_infrastructure_errors: [],
+  };
+
+  it('caps actual_red and announces the drop inside the emitted list', () => {
+    const ids = Array.from({ length: reportTestIdLimit + 17 }, (_v, index) => `t${String(index).padStart(4, '0')}`);
+    expect(boundedTestIdList(ids)).toEqual([
+      ...ids.slice(0, reportTestIdLimit),
+      `[capped: kept ${reportTestIdLimit} of ${ids.length} test ids]`,
+    ]);
+    // No notice at all when nothing was dropped — a notice on a complete list would be a lie.
+    expect(boundedTestIdList(ids.slice(0, reportTestIdLimit))).toEqual(ids.slice(0, reportTestIdLimit));
+  });
+
+  it('truncates each surviving id, because a vitest fullName is itself unbounded', () => {
+    const long = longId('red', 0);
+    expect(boundedTestIdList([long])).toEqual([
+      `${long.slice(0, failureDetailTestIdChars)}[truncated: kept ${failureDetailTestIdChars} of ${long.length} characters]`,
+    ]);
+  });
+
+  // Through judgeMutation, not a hand-built verdict: the over-red / under-red / duplicate-* lists
+  // are produced there, and capping must not disturb what the exit code is computed from.
+  it('caps the verdict error id lists while leaving ok and the codes untouched', () => {
+    const reds = Array.from({ length: reportTestIdLimit + 200 }, (_v, index) => `red${index}`);
+    const verdict = judgeMutation({ ...baseEntry, expected_red: ['gone', 'gone'] }, {
+      ...baseResult, failed_test_ids: [...reds, ...reds], test_run_exit_code: 1,
+    });
+    const bounded = boundedVerdict(verdict);
+    expect(bounded.ok).toBe(verdict.ok);
+    expect(bounded.errors.map(({ code }) => code)).toEqual(verdict.errors.map(({ code }) => code));
+    expect(mutationRunExitCode([bounded])).toBe(mutationRunExitCode([verdict]));
+    for (const { code, test_ids } of bounded.errors) {
+      expect(test_ids.length, code).toBeLessThanOrEqual(reportTestIdLimit + 1);
+      const original = verdict.errors.find((error) => error.code === code)!.test_ids;
+      if (original.length > reportTestIdLimit) {
+        expect(test_ids.at(-1)).toBe(`[capped: kept ${reportTestIdLimit} of ${original.length} test ids]`);
+      }
+    }
+  });
+
+  // The bound that actually matters, and the one every OTHER size assertion in this file misses:
+  // each of those is written in terms of the constant it guards, so `failureDetailMessageChars` and
+  // friends could all be raised to 10^6 with the suite green. This one is a HARD-CODED number over a
+  // worst-case record assembled exactly the way run.mjs:141 assembles the real one.
+  //
+  // Where the number comes from: the worst case built below measures 111,574 bytes today
+  // (failure_details ~45 KB + verdict ~32 KB + expected_red ~21 KB + actual_red ~12 KB). 131_072
+  // (128 KiB) leaves ~17% for the wording of the truncation notices to drift — they move the total
+  // by tens of bytes, not kilobytes — while still going red if any single cap is doubled or removed.
+  // Verified by mutation: `failureDetailMessageChars` 2000 -> 4000 reds it, and so does dropping the
+  // `actual_red` cap.
+  //
+  // `expected_red` is the one axis NOT capped: it is manifest data, authored by hand and gated by
+  // validateManifest (today at most 13 ids of at most 124 characters, ~1.7 KB). The worst case below
+  // still feeds it 26 ids of 800 characters, an order of magnitude over the real manifest, so the
+  // bound holds even if that axis grows a lot.
+  it('keeps a worst-case report record under a hard-coded byte budget', () => {
+    const reds = Array.from({ length: 2000 }, (_v, index) => longId('red', index));
+    const failed = [...reds, ...reds.slice(0, 500)];
+    const expectedRed = Array.from({ length: 13 }, (_v, index) => longId('exp', index));
+    const declared = [...expectedRed, ...expectedRed];
+    const huge = 'm'.repeat(failureDetailMessageChars * 10);
+    const failureMessages = Object.fromEntries(reds.slice(0, 60)
+      .map((id) => [id, Array.from({ length: 200 }, () => huge)]));
+    const verdict = judgeMutation({ ...baseEntry, expected_red: declared }, {
+      ...baseResult, failed_test_ids: failed, test_run_exit_code: 1,
+    });
+    // Every error code that carries a non-empty id list is present, so nothing is under-counted.
+    expect(verdict.errors.map(({ code }) => code))
+      .toEqual(['duplicate-expected-red', 'duplicate-actual-red', 'under-red', 'over-red']);
+    const record = {
+      mutation_id: baseEntry.mutation_id,
+      expected_red: declared,
+      actual_red: boundedTestIdList(failed),
+      verdict: boundedVerdict(verdict),
+      failure_details: unexpectedFailureDetails(failed, declared, failureMessages),
+    };
+    expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(131_072);
   });
 });
 
