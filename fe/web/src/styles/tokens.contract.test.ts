@@ -8,17 +8,31 @@ import { describe, expect, it } from 'vitest';
 
 import { MONO_STACK } from './font-stack.js';
 
-const css = readFileSync(new URL('./tokens.css', import.meta.url), 'utf8');
+/*
+ * Comments are stripped before any block is located or any declaration is read.
+ * `contrast-matrix.browser.test.ts` already did this, and the two files have to
+ * agree on what counts as a declaration or one reddens on something the other
+ * cannot see: without it, a commented-out `--surface-ghost` line fails the
+ * inventory contract below though nothing is declared.
+ */
+const css = readFileSync(new URL('./tokens.css', import.meta.url), 'utf8').replace(
+  /\/\*[\s\S]*?\*\//g,
+  '',
+);
 const rootSource = css.match(/:root\s*\{(?<body>[\s\S]*?)\}/)?.groups?.body ?? '';
 const darkSource =
   css.match(/\[data-theme=["']dark["']\]\s*\{(?<body>[\s\S]*?)\}/)?.groups?.body ?? '';
 
+/* The name class is not `[a-z0-9-]`: custom property names are case-sensitive
+   idents, so `--surfaceGhost` and `--surface_ghost` are legal and a token
+   declared under either spelling used to be invisible to the set equality this
+   file exists to enforce. Values are trimmed, so the comparisons built on this
+   map are equality after whitespace normalization, not byte equality. */
 function declarations(source: string): ReadonlyMap<string, string> {
   return new Map(
-    [...source.matchAll(/(?<name>--[a-z0-9-]+)\s*:\s*(?<value>[^;]+);/g)].map((match) => [
-      match.groups?.name ?? '',
-      match.groups?.value.trim() ?? '',
-    ]),
+    [...source.matchAll(/(?<name>--[A-Za-z0-9_\u00A0-\uFFFF-]+)\s*:\s*(?<value>[^;]+);/g)].map(
+      (match) => [match.groups?.name ?? '', match.groups?.value.trim() ?? ''],
+    ),
   );
 }
 
@@ -30,7 +44,7 @@ const POSITIONAL = [
   '--text-4', '--accent', '--accent-soft', '--warn', '--warn-soft',
 ] as const;
 const CONCRETE_SURFACES = [
-  '--surface-rail', '--surface-card', '--surface-chip', '--surface-chip-focus', '--surface-panel-head',
+  '--surface-rail', '--surface-card', '--surface-chip',
 ] as const;
 /* `--surface-code` is here rather than with the concrete surfaces because it is
    an alpha tint over whatever it lands on, not a rank on the elevation ladder.
@@ -128,6 +142,31 @@ describe('styles/tokens themed color contracts', () => {
       expect(dark.get(name)).toMatch(/^oklch\([^)]*\)$/);
     });
   });
+
+  /*
+   * "+2 spends no lightness" is, in this file, a claim about *source text*:
+   * `--paper` and `--surface-terminal` are the same declared value as
+   * `--surface-card` in both themes. Same *value*, not the same bytes —
+   * `declarations()` trims, so this is equality after whitespace
+   * normalization; two literals differing only in spacing pass, two differing
+   * in a digit do not, which is the drift this is here to catch.
+   * `contrast-matrix.browser.test.ts` asserts the three paint one pixel;
+   * this asserts the source says so, so they cannot drift into three separately
+   * rounded oklch literals that merely happen to land on the same colour today.
+   * Nothing else here could see it: the inventory contract asks whether a token
+   * exists and what shape its value has, never what its value *is*.
+   */
+  it.each(['--paper', '--surface-terminal'] as const)(
+    '%s declares the same value as --surface-card in both themes (whitespace-normalized)',
+    (name) => {
+      const card = [root.get('--surface-card'), dark.get('--surface-card')];
+      expect(card).toEqual([
+        expect.stringMatching(/^oklch\(/),
+        expect.stringMatching(/^oklch\(/),
+      ]);
+      expect([root.get(name), dark.get(name)]).toEqual(card);
+    },
+  );
 
   it.each(MISC)('%s has light/dark parity', (name) => {
     expect(root.has(name)).toBe(true);

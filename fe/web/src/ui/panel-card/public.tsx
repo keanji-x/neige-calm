@@ -5,14 +5,17 @@
 // route's own (Today's calendar, a cove's wave list, a wave's cards) and the
 // conversation list, which is the same on all three.
 //
-// This overrides §6.5's "面板列里的面板不画自己的边框". That rule was written
-// for a panel column holding one thing, where the 24px gutter already said
-// where the panel began and a border would have said it twice. It now holds two
-// modules of different function, and the gutter cannot say they are one object
-// — only the container can. §6.5's own decision ladder allows exactly this:
-// step ③ (different function → change surface) plus step ② (a hairline), and
-// the two are permitted *together* here because `--surface-card` and `--bg` sit
-// 2.8 L apart, inside the ladder's own "< 3.0 L" exemption.
+// §6.5 says a panel-column panel draws no border of its own. That rule was
+// written for a panel column holding one thing, where the 24px gutter already
+// said where the panel began. It now holds two modules of different function,
+// and the gutter cannot say they are one object — only the container can. So
+// the container is drawn, and it is drawn with step ③ of §6.5's decision ladder
+// alone (different function → change surface): `--surface-card` sits 3.4 L from
+// `--bg` in light and 6.9 in dark, both above the 3.0 L line at which a surface
+// step stands as a boundary by itself. Above that line the ladder *forbids*
+// spending a hairline on the same boundary, so the card has no outline — see
+// `panel-card.module.css`. The hairlines inside it separate module from module,
+// which is a different boundary (step ②).
 //
 // Still no shadow: §6.5 reserves that for menus, popovers, dialogs and toasts.
 // The card sits in the page, it does not float above it.
@@ -26,7 +29,9 @@ export function PanelCard({ children }: { children: ReactNode }) {
 }
 
 /**
- * One module: a `--control-h-lg` head on `--surface-panel-head` with an
+ * One module: a `--control-h-lg` head — untinted, on the card's own surface;
+ * the label tier is what marks it as a head, and `--surface-panel-head` has
+ * been deleted from `tokens.css` (see `panel-card.module.css`) — with an
  * optional trailing control, then a body. Modules are separated by a hairline
  * — they are siblings inside one object, which is the boundary ladder's step ②
  * and the reason they do not each get their own card (§6.5 forbids nesting a

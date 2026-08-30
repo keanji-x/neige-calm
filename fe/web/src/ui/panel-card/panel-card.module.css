@@ -1,8 +1,9 @@
 @layer ui {
   /*
-   * One card per page. Hairline + `--surface-card` + `--radius-md`, and nothing
-   * else — see the note in public.tsx for why a panel-column card may carry a
-   * border at all, and §6.5 for why it may not carry a shadow.
+   * One card per page. `--surface-card` + `--radius-md`, and nothing else —
+   * see the note in public.tsx for why a panel-column card may draw a container
+   * at all, the note below for why that container is a surface step and not an
+   * outline, and §6.5 for why it may not carry a shadow.
    *
    * `overflow: hidden` so the first module's head and the last module's body
    * are clipped by the radius instead of squaring off its corners; without it
@@ -14,8 +15,12 @@
     min-inline-size: 0;
 
     /* Colour and radius, no outline. Same reasoning as the rail: one boundary,
-       one channel. `--surface-card` sits 3.8 L from the ground, which is over
-       §6.5's 3.0 threshold for a surface step to stand alone. */
+       one channel. `--surface-card` sits 3.4 L from the ground in light and 6.9
+       in dark, both over §6.5's 3.0 threshold for a surface step to stand
+       alone. Light's 3.4 is the thinnest rung in the system — compress that
+       ladder any further and this rule stops holding and the card needs a
+       hairline; the ladder assertion in contrast-matrix.browser.test.ts fails
+       first. (The 3.8 this comment used to quote matched no shipped pair.) */
     border-radius: var(--radius-md);
     background: var(--surface-card);
     overflow: hidden;
@@ -33,11 +38,13 @@
   }
 
   /*
-   * No `--surface-panel-head` tint. §6.5 gives a panel head its own surface,
-   * and that worked while the card had an outline: the head was lighter than
-   * the card and the outline still said where the card began. With the outline
+   * No panel-head tint. §6.5 used to give a panel head its own surface, and
+   * that worked while the card had an outline: the head was lighter than the
+   * card and the outline still said where the card began. With the outline
    * gone the head — at 98, against a 98.8 page — dissolved the card's top edge,
-   * and the card read as two loose grey blocks instead of one object.
+   * and the card read as two loose grey blocks instead of one object. This
+   * file was the token's only mention, and it was a mention saying not to use
+   * it, so `--surface-panel-head` has been deleted from `tokens.css`.
    *
    * One surface for the whole card, then. The label tier (uppercase plus
    * tracking) already marks a head as a head, and a hairline already separates

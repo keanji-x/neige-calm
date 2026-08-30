@@ -1003,16 +1003,42 @@
       "oracle:E2E-CAP-AXE-005"
     ],
     "target": "web/src/styles/tokens.css",
-    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex ed677a86..eaa357f4 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -62,7 +62,7 @@\n      *\n      * Elevation is absolute; **state is relative** — see `--accent-soft`.\n      */\n-    --bg: oklch(92.2% 0.003 240);\n+    --bg: oklch(24.5% 0.008 245);\n     --paper: oklch(99.9% 0.002 240);\n     --hairline: oklch(80% 0.005 240);\n     --hairline-strong: oklch(72% 0.006 240);\n@@ -371,7 +371,7 @@\n     /* Same ladder, same directions, one step = a contrast ratio of 1.25 — which\n        is *not* a fixed L step, and is the whole reason this block's numbers are\n        not light's mirrored. See the note on `:root`. */\n-    --bg: oklch(24.5% 0.008 245);\n+    --bg: oklch(92.2% 0.003 240);\n     --paper: oklch(31.4% 0.01 245);\n     --hairline: oklch(42% 0.01 245);\n     --hairline-strong: oklch(50% 0.012 245);\n",
+    "patch": "diff --git a/web/src/styles/tokens.css b/web/src/styles/tokens.css\nindex 50426622..749202ec 100644\n--- a/web/src/styles/tokens.css\n+++ b/web/src/styles/tokens.css\n@@ -195,7 +195,7 @@\n      * sheet is made of the same stuff as the page under it. 99.4/0.004 keeps\n      * the card in the ground's hue family and is what ships.\n      */\n-    --bg: oklch(96% 0.005 90);\n+    --bg: oklch(24.5% 0.015 250);\n     --paper: oklch(99.4% 0.004 90);\n     --hairline: oklch(84% 0.006 87);\n     --hairline-strong: oklch(74% 0.006 86);\n@@ -494,7 +494,7 @@\n        exception at 6.9 here against light's 3.4 — the dark ground was already\n        lifted to 24.5% while the card stayed at the shipped 31.4%, and this pass\n        moved neither. See the note on `:root` for both. */\n-    --bg: oklch(24.5% 0.015 250);\n+    --bg: oklch(96% 0.005 90);\n     --paper: oklch(31.4% 0.013 251);\n     --hairline: oklch(42% 0.01 253);\n     --hairline-strong: oklch(50% 0.008 254);\n",
     "expected_red": [
       "real theme tokens E2E-CAP-AXE-005 keeps the dark page ground darker than the light page ground",
-      "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers"
+      "browser theme contracts E2E-CAP-AXE-005 a direct structured dataset write repaints token consumers",
+      "dark theme contrast matrix --accent on --bg clears the non-text floor",
+      "dark theme contrast matrix --bg → --surface-card is at least 3.0 L apart",
+      "dark theme contrast matrix --error on --bg clears the non-text floor",
+      "dark theme contrast matrix --error-text on --bg clears the AA body floor",
+      "dark theme contrast matrix --success on --bg clears the non-text floor",
+      "dark theme contrast matrix --success-text on --bg clears the AA body floor",
+      "dark theme contrast matrix --text on --bg clears the AA body floor",
+      "dark theme contrast matrix --text-2 on --bg clears the AA body floor",
+      "dark theme contrast matrix --text-3 on --bg clears the AA body floor",
+      "dark theme contrast matrix --warn on --bg clears the non-text floor",
+      "dark theme contrast matrix --warn-text on --bg clears the AA body floor",
+      "dark theme contrast matrix ground and card stay in one hue family (|ΔC| ≤ 0.005)",
+      "dark theme contrast matrix the ladder runs the same direction in both themes",
+      "light theme contrast matrix --accent on --bg clears the non-text floor",
+      "light theme contrast matrix --error on --bg clears the non-text floor",
+      "light theme contrast matrix --error-text on --bg clears the AA body floor",
+      "light theme contrast matrix --success-text on --bg clears the AA body floor",
+      "light theme contrast matrix --surface-chip → --bg is at least 3.0 L apart",
+      "light theme contrast matrix --text on --bg clears the AA body floor",
+      "light theme contrast matrix --text-2 on --bg clears the AA body floor",
+      "light theme contrast matrix --text-3 on --bg clears the AA body floor",
+      "light theme contrast matrix --warn on --bg clears the non-text floor",
+      "light theme contrast matrix --warn-text on --bg clears the AA body floor",
+      "light theme contrast matrix ground and card stay in one hue family (|ΔC| ≤ 0.005)",
+      "light theme contrast matrix the ladder runs the same direction in both themes"
     ],
     "selection_paths": [
       "tools/styles/styles.test.ts",
-      "web/src/app/theme/theme.browser.test.tsx"
+      "web/src/app/theme/theme.browser.test.tsx",
+      "web/src/styles/contrast-matrix.browser.test.ts"
     ],
-    "why_more_than_one": "Only the browser token-consumer contract should turn red; any additional failure would mean the background direction leaked into an unrelated contract."
+    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 25 that follow are the matrix noticing the same edit from inside each theme; anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
   },
   {
     "mutation_id": "events-harness-item-plan-becomes-empty",

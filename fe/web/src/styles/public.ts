@@ -4,8 +4,8 @@ export type PositionalColorToken =
   | '--accent' | '--accent-soft' | '--warn' | '--warn-soft';
 
 export type SurfaceToken =
-  | '--surface-rail' | '--surface-card' | '--surface-chip' | '--surface-chip-focus'
-  | '--surface-panel-head' | '--surface-terminal' | '--surface-code';
+  | '--surface-rail' | '--surface-card' | '--surface-chip'
+  | '--surface-terminal' | '--surface-code';
 
 export type OverlayToken =
   | '--overlay-hover-faint' | '--overlay-hover' | '--overlay-hover-strong' | '--overlay-active';
