@@ -41,7 +41,7 @@ export function TerminalCardView({ card, host, fallbackTitle = 'terminal' }: {
               <TerminalSurface card={card} visible={visible} />
             </Suspense>
           )
-          : <div className="term-line">Starting terminal…</div>}
+          : <div className="term-line">Starting {fallbackTitle}…</div>}
       </div>
     </div>
   );

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardEntry, KernelCardInput } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
-import { CLAUDE_CARD_ENTRY } from './claude.js';
+import { CLAUDE_CARD_ENTRY } from './claude.ts';
 import { partitionWaveCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';

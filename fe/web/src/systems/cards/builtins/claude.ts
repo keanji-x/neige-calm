@@ -15,7 +15,7 @@
 
 import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
 import { TerminalCardView } from './terminal-card.tsx';
-import { terminalIdFromPayload } from './terminal.js';
+import { terminalIdFromPayload } from './terminal.ts';
 
 declare module '../registry.js' {
   interface CardDataMap {
@@ -31,10 +31,10 @@ export type ClaudeCard = Readonly<{
 }>;
 
 /**
- * Lowercase on purpose. `LetterAvatar` keys its `card-head-icon--claude`
- * semantic colour off the head title lowercased, and the terminal card's own
- * fallback is likewise lowercase `'terminal'` — so this is the existing
- * convention, not a stray style choice.
+ * Lowercase to match the terminal card's own `'terminal'` fallback — head
+ * labels for a kernel-minted card with no title are lowercase here.
+ * `LetterAvatar` lowercases the title itself before picking
+ * `card-head-icon--claude`, so the casing does not affect the avatar colour.
  */
 const CLAUDE_FALLBACK_TITLE = 'claude';
 
