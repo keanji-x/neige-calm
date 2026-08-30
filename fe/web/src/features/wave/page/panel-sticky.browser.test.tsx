@@ -87,6 +87,11 @@ describe('the panel card, against a scrolling report', () => {
 
     for (const scrollTop of [200, 600, 1200, 2400, range]) {
       scroller().scrollTop = scrollTop;
+      /* The scroll really happened. Without this the case is green on a page
+         that cannot scroll at all — take `overflow: auto` off `.page` and every
+         assignment below is a no-op, every rect is unchanged, and "the panel
+         held its place" is true for the wrong reason. */
+      expect(scroller().scrollTop, 'the page did not scroll').toBe(scrollTop);
       /* Sticky is resolved during layout, so reading a rect is enough — there is
          no scroll event to wait for. */
       expect(
@@ -94,6 +99,59 @@ describe('the panel card, against a scrolling report', () => {
         `panel drifted at scrollTop ${scrollTop} (was ${resting} at rest)`,
       ).toBe(resting);
     }
+  });
+
+  /*
+   * The eight-row cap, which had no layout assertion at all — `max-block-size`
+   * and `overflow-y` are exactly the pair jsdom stores and never applies, so
+   * every unit test of a long list was green with the rule and green without.
+   *
+   * A wave with thirty cards pushed TASKS and CONVERSATIONS below the fold; the
+   * panel's whole point is that its modules are readable at once. The number is
+   * `features/chat/list`'s, which had the treatment already.
+   */
+  it('caps a long list at eight rows and scrolls it, rather than growing', async () => {
+    await browserPage.viewport(1200, 900);
+    render(
+      <div style={{ blockSize: 900, display: 'flex', flexDirection: 'column' }}>
+        <section className={styles.page}>
+          <div className={pageHeader.header}>Wave</div>
+          <div className={styles.workspace}>
+            <div className={styles.content}>
+              <div className={styles.doc} />
+              <aside className={styles.panel} data-nc-panel="">
+                <ul className={styles.cards} data-testid="cards">
+                  {Array.from({ length: 30 }, (_, index) => (
+                    <li key={index}>
+                      <button type="button" className={styles.cardRow}>card {index}</button>
+                    </li>
+                  ))}
+                </ul>
+              </aside>
+            </div>
+          </div>
+        </section>
+      </div>,
+    );
+
+    const list = document.querySelector<HTMLElement>('[data-testid="cards"]')!;
+    /* The premise: there really is more content than the cap, so a list that
+       ignored the cap would be visibly taller. */
+    expect(list.scrollHeight).toBeGreaterThan(list.clientHeight * 2);
+
+    /* Eight `--row-h-sm` rows plus seven `--space-1` gaps. Read off the tokens
+       rather than hard-coded, so a change to either is a change to the cap and
+       not a broken test. */
+    const probe = document.createElement('div');
+    probe.style.blockSize = 'calc(var(--row-h-sm) * 8 + var(--space-1) * 7)';
+    document.body.append(probe);
+    expect(Math.round(list.getBoundingClientRect().height))
+      .toBe(Math.round(probe.getBoundingClientRect().height));
+    probe.remove();
+
+    /* And it is the list that scrolls, not the panel it sits in. */
+    list.scrollTop = 200;
+    expect(list.scrollTop).toBe(200);
   });
 
   /*

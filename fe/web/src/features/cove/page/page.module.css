@@ -101,11 +101,15 @@
    */
   /* The header keeps its own height: as an ordinary flex item it would be the
      thing that gives way once the row below grows past the page. */
+  /* Positional, because `ui/page-header` renders its own element and this file
+     cannot name it — which makes it (0,1,1), higher than a bare `.content`. The
+     row below is therefore written as `.page > .content` (0,2,0) rather than
+     left to win on source order. See the same note on the wave page. */
   .page > :first-child {
     flex: none;
   }
 
-  .content {
+  .page > .content {
     display: grid;
     grid-template-columns: minmax(0, 1fr) var(--panel-span, 25%);
     grid-template-rows: minmax(0, 1fr);

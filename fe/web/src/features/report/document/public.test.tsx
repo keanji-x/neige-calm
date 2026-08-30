@@ -180,6 +180,53 @@ describe('ReportDocument', () => {
       expect(reference.contains(container.querySelector('#b-3'))).toBe(false);
     });
 
+    /*
+     * **At the end**, which is the claim the containment assertions above do not
+     * make: a filter that put the appendix first would satisfy every one of
+     * them and still leave the reader scrolling past the machinery to reach the
+     * conclusions.
+     */
+    it('comes after the document, not before it', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b-1', '# Conclusion'), task('b-2', 'alpha'), prose('b-3', '# Next'))}
+        empty={EMPTY}
+      />);
+      const article = container.querySelector('[data-nc-report]')!;
+      const reference = container.querySelector('[data-nc-report-reference]')!;
+      const referenceRow = reference.closest('div')!;
+      const rows = [...article.children];
+      expect(rows.indexOf(referenceRow)).toBe(rows.length - 1);
+      /* And after *both* prose blocks, not merely last among some subset. */
+      expect(referenceRow.compareDocumentPosition(container.querySelector('#b-3')!))
+        .toBe(Node.DOCUMENT_POSITION_PRECEDING);
+    });
+
+    /* A task block whose payload this build cannot parse degrades to
+       `unsupported` — and it is still machinery. Keying the split on
+       `kind === 'task'` alone left exactly those in the reading column, printing
+       `unsupported block kind task` between two paragraphs of conclusions. */
+    it('lifts a task whose payload did not parse, which degrades to unsupported', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b-1', '# Conclusion'), { id: 'b-2', kind: 'unsupported', declaredKind: 'task' })}
+        empty={EMPTY}
+      />);
+      const reference = container.querySelector('[data-nc-report-reference]')!;
+      expect(reference).not.toBeNull();
+      expect(reference.contains(container.querySelector('#b-2'))).toBe(true);
+    });
+
+    /* But not every unsupported block: one that declared some other kind is a
+       figure this build cannot draw, which is a hole in the argument and has to
+       stay where the argument is. */
+    it('leaves an unsupported block of some other kind in the flow', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b-1', '# Conclusion'), { id: 'b-2', kind: 'unsupported', declaredKind: 'chart.sankey' })}
+        empty={EMPTY}
+      />);
+      expect(container.querySelector('[data-nc-report-reference]')).toBeNull();
+      expect(container.querySelector('#b-2')).toBeTruthy();
+    });
+
     /* Closed, so the reader who never opens it reads a clean document. One fold
        for the whole appendix, not one per task. */
     it('starts closed, and is one fold for all of them', () => {

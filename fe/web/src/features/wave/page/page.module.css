@@ -42,12 +42,13 @@
      * at scrollTop 400 the card was still at y=68, at 900 it was at −280, and
      * by 2000 it was 1380px above the window.
      *
-     * `flex: 1 0 auto` on the row below says both halves of what was wanted and
-     * a grid track cannot: *fill* the leftover when the document is short (the
-     * reason the `1fr` was there — an empty document centres in the space it
-     * owns), and *grow past it* when the document is long, which is what gives
-     * sticky its travel. `max-content` on the track would buy the second and
-     * lose the first.
+     * A flex column is what lets the two halves be said separately, and they
+     * had to be: *fill* the leftover when the document is short (the reason the
+     * `1fr` was there — an empty document centres in the space it owns) and
+     * *grow past it* when the document is long, which is what gives sticky its
+     * travel. The first cut said both on `.workspace` with `flex: 1 0 auto` and
+     * broke the card board, whose containing block that box is; see the note
+     * there for where the two now live.
      */
     display: flex;
     flex-direction: column;
@@ -101,24 +102,54 @@
     background: var(--overlay-hover);
   }
 
-  /* The header keeps its own height. Without this it is an ordinary flex item
-     (`flex: 0 1 auto`), and once the row below grows past the page the free
-     space goes negative and the *header* is what gives way. */
+  /*
+   * The header keeps its own height. Without this it is an ordinary flex item
+   * (`flex: 0 1 auto`), and once the row below grows past the page the free
+   * space goes negative and the *header* is what gives way.
+   *
+   * Positional, because `ui/page-header` renders its own element and this file
+   * cannot name it. That makes it (0,1,1) — higher than a bare `.workspace` —
+   * so the row below is written as `.page > .workspace` (0,2,0) rather than
+   * left to win on order: insert anything into `.page` ahead of the header and
+   * this rule would otherwise land on the workspace and silently undo the
+   * sticky fix.
+   */
   .page > :first-child {
     flex: none;
   }
 
-  .workspace {
+  /*
+   * **This box stays one viewport. Its row does not.**
+   *
+   * `.workspace` is `position: relative` and the card board
+   * (`features/wave/grid`) is `position: absolute; inset: 0` inside it, so this
+   * element's height *is* the board's height. The first cut of the sticky fix
+   * gave it `flex: 1 0 auto` — content-sized, never shrinking — and on a 4000px
+   * report the board became a 4000px overlay inside a `.page` that
+   * `.pageBoard` gives `overflow: hidden`: the top screenful visible and the
+   * rest unreachable. Not only a layout bug — `BoardHost` measures its
+   * container to choose terminal rows and resizes the PTY to match, so the
+   * number reaches a real process.
+   *
+   * The travel `.panel` needs was never this box's to give. Sticky moves inside
+   * *its own* containing block, which is `.content` one level down, and
+   * `.content` may overflow this box freely: nothing here clips, so its
+   * overflow still reaches `.page`'s scrollport and the page still scrolls the
+   * full document.
+   *
+   * So the two are separated: `flex: 1 1 auto` keeps the box itself at the
+   * viewport (it grows into the leftover on a short page and shrinks back on a
+   * long one), and `minmax(max-content, 1fr)` on the row is what actually
+   * carries the document's height — at least its content, and the leftover when
+   * there is less content than that.
+   */
+  .page > .workspace {
     position: relative;
     display: grid;
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: minmax(max-content, 1fr);
     min-block-size: 0;
     min-inline-size: 0;
-
-    /* Fill the leftover, then grow past it — see the note on `.page`. This is
-       the element whose box `.panel`'s sticky travel is measured against, two
-       nestings down: `.workspace` → `.content` → the card. */
-    flex: 1 0 auto;
+    flex: 1 1 auto;
   }
 
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry

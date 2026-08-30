@@ -50,9 +50,21 @@ export function revealReportAnchor(anchorId: string, root: Document = document):
    * that snapped shut when the reader scrolled past would be the app taking
    * back something it was asked for.
    */
-  for (const details of element.querySelectorAll('details')) details.open = true;
+  /*
+   * Scoped to a report, and that is a guard rather than a tidy-up. The anchor
+   * id comes from the route hash, so it is reader-supplied: `#root` resolves to
+   * the application's own root element, and an unscoped descendant walk would
+   * then open every `<details>` on the page — every task, in every report on
+   * screen — because somebody pasted a URL with the wrong fragment. Unfolding
+   * is a thing this function does *to a report block*, so it only does it when
+   * it landed on one.
+   */
+  const inReport = element.closest('[data-nc-report]') !== null;
+  if (inReport) {
+    for (const details of element.querySelectorAll('details')) details.open = true;
+  }
   for (
-    let ancestor = element.closest('details');
+    let ancestor = inReport ? element.closest('details') : null;
     ancestor !== null;
     ancestor = ancestor.parentElement?.closest('details') ?? null
   ) {

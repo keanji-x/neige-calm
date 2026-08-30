@@ -141,11 +141,22 @@ export function ReportDocument({
   );
 }
 
-/** Blocks that record how the work was driven rather than what it concluded.
- *  Today that is `task`; the predicate exists so the next one is a one-line
- *  change rather than a second mechanism. */
+/**
+ * Blocks that record how the work was driven rather than what it concluded.
+ * Today that is `task`; the predicate exists so the next one is a one-line
+ * change rather than a second mechanism.
+ *
+ * **`unsupported` counts when it declared itself a task.** A task block whose
+ * payload this build cannot parse degrades to `{ kind: 'unsupported',
+ * declaredKind: 'task' }` (see `core/domain/report`), and keying only on
+ * `kind === 'task'` left exactly those in the reading column — a line saying
+ * `unsupported block kind task` sitting between two paragraphs of conclusions,
+ * which is the thing this whole section exists to get out of there. What the
+ * block *is* did not change because we failed to read it.
+ */
 function isProcessBlock(block: ReportBlock): boolean {
-  return block.kind === 'task';
+  return block.kind === 'task'
+    || (block.kind === 'unsupported' && block.declaredKind === 'task');
 }
 
 /**
