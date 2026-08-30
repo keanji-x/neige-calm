@@ -513,6 +513,72 @@ describe('WaveGrid — revealCardId', () => {
     }
   });
 
+  it('reveals once and stays put when unrelated cards come and go', async () => {
+    // The latch is load-bearing. Keying the effect on the card list read as
+    // "retry until the tile exists" but meant "re-fire on every card-list
+    // change" — and the hash outlives the click, so any later card added
+    // anywhere in the wave yanked the viewport back to the linked card.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const client = makeClient();
+      const { rerender } = render(
+        <Wrapper client={client}>
+          <WaveGrid waveId="w1" cards={[card('card-a')]} onRemoveCard={() => {}} revealCardId="card-a" />
+        </Wrapper>,
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      rerender(
+        <Wrapper client={client}>
+          <WaveGrid
+            waveId="w1"
+            cards={[card('card-a'), card('card-b')]}
+            onRemoveCard={() => {}}
+            revealCardId="card-a"
+          />
+        </Wrapper>,
+      );
+      await waitFor(() =>
+        expect(document.querySelector('[data-card-id="card-b"]')).not.toBeNull(),
+      );
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
+  it('retries across renders until the tile exists', async () => {
+    // The other half of the same mechanism: the grid is lazy and its cards
+    // arrive from a query, so the id is routinely seen before the tile is.
+    (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const scrollIntoView = vi.fn();
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrollIntoView;
+
+    try {
+      const client = makeClient();
+      const { rerender } = render(
+        <Wrapper client={client}>
+          <WaveGrid waveId="w1" cards={[]} onRemoveCard={() => {}} revealCardId="card-late" />
+        </Wrapper>,
+      );
+      expect(scrollIntoView).not.toHaveBeenCalled();
+
+      rerender(
+        <Wrapper client={client}>
+          <WaveGrid waveId="w1" cards={[card('card-late')]} onRemoveCard={() => {}} revealCardId="card-late" />
+        </Wrapper>,
+      );
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+
   it('does nothing without a revealCardId', async () => {
     (api.listOverlays as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     const scrollIntoView = vi.fn();

@@ -21,6 +21,7 @@ import type { WaveCardSlot } from './types';
 import { useOverlayState } from './hooks/useOverlayState';
 import { OVERLAY_LAYOUT_SCHEMA_VERSION } from './cards/builtins/schemaVersions';
 import { useCardVisibilityFocus } from './cards/useCardVisibilityFocus';
+import { useRevealCard } from './cards/useRevealCard';
 
 const COLS = 12;
 const ROW_HEIGHT = 40;
@@ -136,9 +137,8 @@ export function WaveGrid({
   /**
    * Card the caller wants brought into view — today the target of a report
    * task block's "Open worker output" link. The scroll lives here rather than
-   * in `pages/Wave.tsx` because the grid is lazy-loaded: when the page flips
-   * the view mode, this subtree has not mounted yet and no `data-card-id`
-   * node exists to scroll to.
+   * in `pages/Wave.tsx` because this subtree is lazy-loaded: when the page
+   * picks the grid, no `data-card-id` node exists yet for the page to find.
    */
   revealCardId?: string;
 }) {
@@ -152,8 +152,8 @@ export function WaveGrid({
     [containerRef],
   );
   useCardVisibilityFocus(scrollRootRef);
+  useRevealCard(scrollRootRef, revealCardId);
   dlog('WaveGrid', 'render', { waveId, width, mounted, cardsCount: cards.length });
-
 
   // Scope E: layout now lives in an Overlay row. The hook handles
   // optimistic update + rollback + WS replay across reloads; what we get
@@ -186,27 +186,6 @@ export function WaveGrid({
     [waveId, cardKeys, storedPositions],
   );
 
-  // Bring `revealCardId` into view once its tile exists. Mirrors
-  // `revealReportBlock` in `pages/WaveReportPage.tsx`: scroll, then restart the
-  // highlight animation by removing the class before re-adding it on the next
-  // frame, so landing on the same card twice still flashes.
-  //
-  // `cardKeys` is a dependency because the grid mounts before its cards arrive
-  // on a cold navigation; without it the first pass would find no node and
-  // give up silently.
-  useEffect(() => {
-    if (revealCardId === undefined) return;
-    const target = scrollRootRef.current?.querySelector(
-      `[data-card-id="${CSS.escape(revealCardId)}"]`,
-    );
-    if (!target) return;
-    target.scrollIntoView({ block: 'nearest' });
-    target.classList.remove('wave-card--highlight');
-    const frame = requestAnimationFrame(() =>
-      target.classList.add('wave-card--highlight'),
-    );
-    return () => cancelAnimationFrame(frame);
-  }, [revealCardId, cardKeys]);
   // Render-time diagnostic — confirm the layout reference is stable across
   // re-renders that aren't card-driven.
   dlog('WaveGrid', 'render-detail', {

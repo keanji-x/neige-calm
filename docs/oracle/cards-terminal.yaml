@@ -2349,7 +2349,7 @@
   why: >
     PR #12 / issue #13 —— 镜像会与 RGL 内部的 minW/minH 归一化形成反馈回路，
     在紧渲染循环里每秒数百次地在两份布局快照之间来回跳
-  source: web/src/WaveGrid.tsx:160-177
+  source: web/src/WaveGrid.tsx:170-187
   authoritative_test: NONE
   owner_slice: features/wave/grid
   intentional_omission: true
@@ -2366,7 +2366,7 @@
     storedPositions），卡片不变时交给 RGL 的必须是同一个引用
   why: >
     引用变化会触发 RGL 重新归一化，等价于上一条的回路
-  source: web/src/WaveGrid.tsx:169-177
+  source: web/src/WaveGrid.tsx:179-187
   authoritative_test: NONE
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2384,7 +2384,7 @@
   why: >
     RGL 在拖拽的每个 pointermove 都触发 onLayoutChange，一帧一次 POST 才合理；
     rAF 把节奏绑在浏览器绘制循环上，无需人调延迟常数
-  source: web/src/WaveGrid.tsx:185-224
+  source: web/src/WaveGrid.tsx:196-235
   authoritative_test: web/src/WaveGrid.test.tsx:431
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2400,7 +2400,7 @@
     卸载时必须 cancelAnimationFrame 掉挂起的 rAF
   why: >
     拖到一半导航走人时，latch 的布局相对用户意图已经过期
-  source: web/src/WaveGrid.tsx:226-237
+  source: web/src/WaveGrid.tsx:237-248
   authoritative_test: NONE
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2417,7 +2417,7 @@
     payload 形状为 { schemaVersion, positions: {key: {x,y,w,h}} }
   why: >
     Tier A 持久化契约；缺字段被读侧当作 v1，但新写入必须显式打戳
-  source: web/src/WaveGrid.tsx:48-55,217-220
+  source: web/src/WaveGrid.tsx:49-56,228-231
   authoritative_test: web/src/WaveGrid.test.tsx:431
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2435,7 +2435,7 @@
   why: >
     键跨重排稳定，RGL keys 与持久化布局才不漂移；grid/list 共享同一键形状，
     切换视图时卡片不会卸载重挂（xterm 会话保活、codex 钩子继续落在同一实例）
-  source: web/src/WaveGrid.tsx:28-35 web/src/WaveList.tsx:56-63
+  source: web/src/WaveGrid.tsx:29-36 web/src/WaveList.tsx:57-64
   authoritative_test: NONE
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2453,7 +2453,7 @@
   why: >
     issue #229 PR A —— 事件日志回放与旧 KernelCard 线格不带该字段；kernel 默认
     与 OpenAPI 输出都偏向 true
-  source: web/src/WaveGrid.tsx:262-278
+  source: web/src/WaveGrid.tsx:273-289
   authoritative_test: web/src/WaveGrid.test.tsx:330
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2471,7 +2471,7 @@
   why: >
     data-wheel-card 是滚轮路由定位活动卡壳的选择器，data-card-id 是可见性/焦点
     观测与 entry 级 wheelTarget 解析的键
-  source: web/src/WaveGrid.tsx:311-317
+  source: web/src/WaveGrid.tsx:290-296
   authoritative_test: web/src/WaveGrid.test.tsx:356
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2488,7 +2488,7 @@
     必须原样复用；nextY 只由计划保留的 stored 条目决定
   why: >
     新卡片不能盖在已有卡片上，也不能把用户排好的布局推乱
-  source: web/src/WaveGrid.tsx:57-110
+  source: web/src/WaveGrid.tsx:58-111
   authoritative_test: web/src/WaveGrid.test.tsx:235
   owner_slice: features/wave/grid
   intentional_omission: false
@@ -2511,7 +2511,7 @@
     并发会让两个 onMutate 的缓存快照互相竞争，第二个乐观写覆盖第一个，
     UI 短暂出现两张卡 sort 相同。测试显式钉死：第一次 mutation 未 resolve 时
     只能看到 1 次调用
-  source: web/src/WaveList.tsx:161-185
+  source: web/src/WaveList.tsx:171-195
   authoritative_test: web/src/WaveList.test.tsx:491
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2527,7 +2527,7 @@
     swap 必须由 swapInFlight ref 串行化：上一次换序未结束时新的换序请求直接丢弃
   why: >
     慢 ack 下用户连按 Alt+Down 会让 activeIndex 漂移，第二次换序作用在陈旧卡片上
-  source: web/src/WaveList.tsx:128-152,183-185
+  source: web/src/WaveList.tsx:138-162,193-195
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2543,7 +2543,7 @@
     两张卡都必须有 kernel id 且 sort 都非 null 才允许换序；否则静默 no-op
   why: >
     乐观新增（服务端未 ack）的卡片没有 id；router 虽总能填 sort，仍需防御读时缺失
-  source: web/src/WaveList.tsx:81-89,136-148
+  source: web/src/WaveList.tsx:82-90,146-158
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2560,7 +2560,7 @@
     靠 refetch 按 kernel 顺序收敛
   why: >
     与既有的重命名 / 拖拽错误路径保持同一模式；再按一次 Alt+ArrowUp 即可恢复
-  source: web/src/WaveList.tsx:168-185
+  source: web/src/WaveList.tsx:178-195
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: true
@@ -2578,7 +2578,7 @@
   why: >
     Slice 9 —— RGL 没有键盘故事；列表视图是键盘规范路径。Tab 进入列表只在活动项
     停一次，再按 Tab 就离开
-  source: web/src/WaveList.tsx:113-126,232-248
+  source: web/src/WaveList.tsx:123-136,242-258
   authoritative_test: web/src/WaveList.test.tsx:233,399,424
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2596,7 +2596,7 @@
   why: >
     非 Alt 的方向键归 hook；Alt 组合归列表。顺序反了 hook 会把 Alt+Arrow 当普通
     方向键消费掉
-  source: web/src/WaveList.tsx:200-231
+  source: web/src/WaveList.tsx:210-241
   authoritative_test: web/src/WaveList.test.tsx:446
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2614,7 +2614,7 @@
     这些事件
   why: >
     否则在卡头 Reload 按钮上按 Enter 会被行 handler 吞掉，按钮永远激活不了
-  source: web/src/WaveList.tsx:205-231 web/src/cards/CardHead.tsx:198,220
+  source: web/src/WaveList.tsx:215-241 web/src/cards/CardHead.tsx:198,220
   authoritative_test: web/src/WaveList.test.tsx:323
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2631,7 +2631,7 @@
     等价，且必须 stopPropagation
   why: >
     与 grid 视图的 × 行为对齐 —— grid 不确认，list 也不确认
-  source: web/src/WaveList.tsx:218-225,249-260
+  source: web/src/WaveList.tsx:228-235,259-270
   authoritative_test: web/src/WaveList.test.tsx:598,616
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2650,7 +2650,7 @@
   why: >
     读屏与 Playwright getByRole('listitem', {name}) 都依赖它；快捷键字符串是
     Slice 9 契约的一部分
-  source: web/src/WaveList.tsx:65-79,240-243
+  source: web/src/WaveList.tsx:66-80,250-253
   authoritative_test: web/src/WaveList.test.tsx:250,273
   owner_slice: features/wave/list
   intentional_omission: false
@@ -2667,7 +2667,7 @@
     WaveList 自己不得排序也不得持有位置状态
   why: >
     kernel 是排序的唯一真相源；本地再排会与 WS card.updated 回放竞争
-  source: web/src/WaveList.tsx:105-111
+  source: web/src/WaveList.tsx:115-121
   authoritative_test: web/src/WaveList.test.tsx:209
   owner_slice: features/wave/list
   intentional_omission: false

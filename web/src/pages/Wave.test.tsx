@@ -48,15 +48,24 @@ vi.mock('@tanstack/react-router', async (importOriginal) => {
 // WaveGrid is lazy-loaded via React.lazy + an internal dynamic import.
 // For these tests we never actually render any cards, but the Suspense
 // fallback still needs to resolve. Stub the module to a trivial component.
+// The stubs echo `revealCardId` into the DOM. A prop-less stub made the
+// page→view wiring invisible: deleting `revealCardId={revealCardId}` from
+// `Wave.tsx` left every test in this file and in `WaveGrid.test.tsx` green,
+// because one only proved the mode switched and the other only proved an
+// isolated component can reveal.
 vi.mock('../WaveGrid', () => ({
-  WaveGrid: () => <div data-testid="wave-grid-stub" />,
+  WaveGrid: ({ revealCardId }: { revealCardId?: string }) => (
+    <div data-testid="wave-grid-stub" data-reveal-card-id={revealCardId ?? ''} />
+  ),
 }));
 
 // WaveList (Slice 9) is lazy-loaded via React.lazy and only used when the
 // per-wave view-mode overlay says `list`. Most tests never enter list, so
 // we stub for completeness only.
 vi.mock('../WaveList', () => ({
-  WaveList: () => <div data-testid="wave-list-stub" />,
+  WaveList: ({ revealCardId }: { revealCardId?: string }) => (
+    <div data-testid="wave-list-stub" data-reveal-card-id={revealCardId ?? ''} />
+  ),
 }));
 
 // AddPanel pulls in the full card registry and a heavy menu DOM tree. The
@@ -792,18 +801,9 @@ describe('WavePage worker-card hash', () => {
     } as WaveCardSlot;
   }
 
-  afterEach(() => {
-    window.location.hash = '';
-  });
-
-  it('switches a report view to grid when the hash names a worker card', async () => {
-    vi.mocked(api.upsertOverlay).mockClear();
-    vi.mocked(api.upsertOverlay).mockImplementation(async (body) =>
-      echoOverlay(body),
-    );
-    window.location.hash = '#card_w1';
-
-    render(
+  function renderWave(overlay?: KernelOverlay) {
+    vi.mocked(api.listOverlays).mockResolvedValue(overlay ? [overlay] : []);
+    return render(
       withClient(
         <WavePage
           wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
@@ -815,17 +815,67 @@ describe('WavePage worker-card hash', () => {
         />,
       ),
     );
+  }
 
+  afterEach(() => {
+    window.location.hash = '';
+    vi.mocked(api.listOverlays).mockResolvedValue([]);
+  });
+
+  it('renders the grid, and hands it the card, when the hash names a worker card', async () => {
+    vi.mocked(api.upsertOverlay).mockClear();
+    window.location.hash = '#card_w1';
+
+    renderWave();
+
+    const grid = await screen.findByTestId('wave-grid-stub');
+    // The card id must reach the view: switching modes alone would still leave
+    // the user hunting for the card among all the others.
+    expect(grid).toHaveAttribute('data-reveal-card-id', 'card_w1');
+    // Arrival is a navigation, not a preference — nothing is persisted.
+    expect(api.upsertOverlay).not.toHaveBeenCalled();
+  });
+
+  it('lets the user cycle back to report afterwards', async () => {
+    // The regression that made the report view unreachable: an effect wrote
+    // `grid` back every time the mode returned to `report`, because the hash
+    // outlives the click.
+    const user = userEvent.setup();
+    vi.mocked(api.upsertOverlay).mockClear();
+    vi.mocked(api.upsertOverlay).mockImplementation(async (body) => echoOverlay(body));
+    window.location.hash = '#card_w1';
+
+    renderWave();
+
+    const button = await screen.findByRole('button', {
+      name: /^Grid view — switch to list view$/i,
+    });
+    await user.click(button);
     await waitFor(() =>
-      expect(api.upsertOverlay).toHaveBeenCalledWith({
-        plugin_id: 'kernel',
-        entity_kind: 'view',
-        entity_id: 'w1',
-        kind: 'view-mode',
-        payload: { schemaVersion: 1, mode: 'grid' },
-      }),
+      expect(button).toHaveAccessibleName('List view — switch to report view'),
     );
-    expect(await screen.findByTestId('wave-grid-stub')).toBeInTheDocument();
+    await user.click(button);
+    await waitFor(() =>
+      expect(button).toHaveAccessibleName('Report view — switch to grid view'),
+    );
+
+    // It must still be report a moment later: the old effect flipped it back
+    // asynchronously, one overlay round-trip after the click.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(button).toHaveAccessibleName('Report view — switch to grid view');
+    expect(screen.getByText('Report body')).toBeInTheDocument();
+  });
+
+  it('reveals in place instead of leaving list, which the user chose', async () => {
+    vi.mocked(api.upsertOverlay).mockClear();
+    window.location.hash = '#card_w1';
+
+    renderWave(makeViewModeOverlay('list'));
+
+    const list = await screen.findByTestId('wave-list-stub');
+    expect(list).toHaveAttribute('data-reveal-card-id', 'card_w1');
+    expect(screen.queryByTestId('wave-grid-stub')).not.toBeInTheDocument();
+    expect(api.upsertOverlay).not.toHaveBeenCalled();
   });
 
   it('leaves a report block anchor in report view', async () => {
@@ -835,18 +885,7 @@ describe('WavePage worker-card hash', () => {
     // report link.
     window.location.hash = '#b_1f3a';
 
-    render(
-      withClient(
-        <WavePage
-          wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
-          cove={makeCove()}
-          onGo={() => {}}
-          onAddCard={() => {}}
-          onRemoveCard={() => {}}
-          onRenameWave={() => {}}
-        />,
-      ),
-    );
+    renderWave();
 
     expect(
       getViewModeButton(/^Report view — switch to grid view$/i),
@@ -859,22 +898,12 @@ describe('WavePage worker-card hash', () => {
     vi.mocked(api.upsertOverlay).mockClear();
     window.location.hash = '#card_elsewhere';
 
-    render(
-      withClient(
-        <WavePage
-          wave={makeWave({ cards: [makeReportSlot(), makeWorkerSlot('card_w1')] })}
-          cove={makeCove()}
-          onGo={() => {}}
-          onAddCard={() => {}}
-          onRemoveCard={() => {}}
-          onRenameWave={() => {}}
-        />,
-      ),
-    );
+    renderWave();
 
     expect(
       getViewModeButton(/^Report view — switch to grid view$/i),
     ).toBeInTheDocument();
+    expect(screen.queryByTestId('wave-grid-stub')).not.toBeInTheDocument();
     expect(api.upsertOverlay).not.toHaveBeenCalled();
   });
 });
