@@ -258,18 +258,30 @@ describe('ChatComposer', () => {
     expect(onSend).toHaveBeenCalledWith('Ship it');
   });
 
-  it.each([['blank', ''], ['only whitespace', '   ']])('does not send %s', async (_label, text) => {
-    const onSend = vi.fn();
-    render(<ChatComposer onSend={onSend} />);
-    if (text !== '') await userEvent.type(messageField(), text);
-    const send = screen.getByRole('button', { name: 'Send' });
-    if (send.hasAttribute('disabled') || send.getAttribute('aria-disabled') === 'true') {
+  /*
+   * The unavailability is the assertion, not a precondition for one.
+   *
+   * This stood as a `does not send %s` with an early return: "if Send is
+   * unavailable, expect `onSend` not called and stop". Once `canSend` was
+   * restored *both* rows took that branch, so neither ever pressed anything and
+   * the body was `expect(a fresh mock).not.toHaveBeenCalled()` — true of any
+   * implementation, including one that sends whitespace happily the moment the
+   * button is enabled again. What the composer actually promises is that a
+   * draft with no words in it leaves Send unavailable, so that is what is read.
+   */
+  it.each([['blank', ''], ['only whitespace', '   ']])(
+    'marks Send unavailable on a %s draft and sends nothing when it is pressed',
+    async (_label, text) => {
+      const onSend = vi.fn();
+      render(<ChatComposer onSend={onSend} />);
+      if (text !== '') await userEvent.type(messageField(), text);
+      const send = screen.getByRole('button', { name: 'Send' });
+      expect(send.hasAttribute('disabled') || send.getAttribute('aria-disabled') === 'true')
+        .toBe(true);
+      await userEvent.click(send);
       expect(onSend).not.toHaveBeenCalled();
-      return;
-    }
-    await userEvent.click(send);
-    expect(onSend).not.toHaveBeenCalled();
-  });
+    },
+  );
 
   /*
    * ── §5.1, restored with the constraint it was supposed to carry ──────────
@@ -311,6 +323,14 @@ describe('ChatComposer', () => {
    * button that was just clicked unavailable *under the user's own focus*. A
    * natively disabled element cannot hold focus, so without somewhere to put it
    * the document hands it to `<body>` and the next Tab restarts from the top.
+   *
+   * **What this tier can and cannot say.** It renders a composer with no
+   * `disabled` prop, and the app never builds one: both router call sites pass
+   * `disabled={store.sending}`, and `send()` flips that flag synchronously, so
+   * in production the field is `contenteditable="false"` by the time the restore
+   * runs. jsdom would not notice either — it does not drop focus off a
+   * `contenteditable` going false. So this pins the plain case only; the case
+   * the app actually runs is in `thread.browser.test.tsx`.
    */
   it('leaves focus in the field, never on <body>, when Send goes away under it', async () => {
     render(<ChatComposer onSend={vi.fn()} />);
@@ -333,5 +353,30 @@ describe('ChatComposer', () => {
     expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
     await userEvent.click(stop);
     expect(onStop).toHaveBeenCalledOnce();
+  });
+
+  /*
+   * A second press reaches the callback, and that is the honest arrangement.
+   *
+   * The composer briefly withheld `onStop` after the first press, to say "a stop
+   * already asked for cannot be asked for again". Astryx's Stop is enabled
+   * whenever it is shown (`isDisabled={!isStopShown && isDisabled}`), so
+   * withholding the callback changed nothing about how the button looks or
+   * announces itself — it only emptied its `onClick`, which is the "looks
+   * pressable, does nothing" shape the file's own note forbids. The refusal
+   * belongs where the state that decides it lives, at the top of the router's
+   * `interrupt()`; here Stop stays a button that reports what it did.
+   */
+  it('keeps Stop live and lets a second press through to the caller', async () => {
+    const onStop = vi.fn();
+    render(<ChatComposer onSend={vi.fn()} onStop={onStop} />);
+    const stop = screen.getByRole('button', { name: 'Stop' });
+    await userEvent.click(stop);
+    /* Still shown, still pressable — nothing about the first press changed it. */
+    expect(screen.getByRole('button', { name: 'Stop' })).toBe(stop);
+    expect(stop.hasAttribute('disabled')).toBe(false);
+    expect(stop.getAttribute('aria-disabled')).not.toBe('true');
+    await userEvent.click(stop);
+    expect(onStop).toHaveBeenCalledTimes(2);
   });
 });

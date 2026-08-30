@@ -1022,8 +1022,11 @@ function useConversationPanel(
             <ChatComposer
               disabled={store.sending}
               onSend={(text) => store.send(open.id, text)}
+              /* `stopping` keeps Stop *shown* while the interrupt is in flight;
+                 it is not passed down as a prop of its own, because the composer
+                 cannot make Astryx's Stop unavailable and `interrupt()` above
+                 already refuses a second one. */
               onStop={store.working || store.stopping ? store.interrupt : undefined}
-              stopping={store.stopping}
               onNewConversation={startAnother}
             />
           </>

@@ -32,13 +32,55 @@ import { act, render } from '@testing-library/react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+/*
+ * The whole cascade, and **before anything that declares a layer of its own**.
+ *
+ * This file used to import `tokens.css` and `base.css` piecemeal, *after* the
+ * drawer component (whose `drawer.module.css` opens `@layer ui`), and never
+ * imported `entry.css` at all — so the one statement that fixes the order,
+ * `@layer reset, vendor, tokens, base, astryx, ui, features, overrides;`, was
+ * not in the document. Layer registration is first-come, so the order the page
+ * ended up with was the order the imports happened to arrive in, and it was
+ * inverted where it mattered: measured, a `base` declaration beat a `ui` one,
+ * which is the opposite of production. Nothing here failed on it, which is
+ * exactly the problem — every geometry number below was being read off a page
+ * that does not exist, and the day one of them starts depending on the layer
+ * order it will fail for a reason nobody can find.
+ *
+ * `shell.module.css` stays as a value import because the test needs its class
+ * names, and it comes after this line for the same reason everything else does.
+ */
+import '../../styles/entry.css';
+
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import shell from './shell.module.css';
-import '../../styles/tokens.css';
-import '../../styles/base.css';
 
 afterEach(() => { document.body.replaceChildren(); });
+
+/**
+ * The cascade order the document actually ended up with, read off the first
+ * `@layer` rule in sheet order — which is the rule that *fixes* the order,
+ * because registration is first-come and later mentions cannot reorder.
+ * Duplicated verbatim in `features/chat/thread/thread.browser.test.tsx` rather
+ * than shared: it is a probe of a file's own import order, so a copy that
+ * travels with the file is the point.
+ */
+function registeredLayerOrder(): readonly string[] {
+  for (const sheet of [...document.styleSheets]) {
+    let rules: CSSRuleList;
+    try { rules = sheet.cssRules; } catch { continue; }
+    for (const rule of [...rules]) {
+      if (rule instanceof CSSLayerStatementRule) return [...rule.nameList];
+      if (rule instanceof CSSLayerBlockRule) return [rule.name];
+    }
+  }
+  return [];
+}
+
+const PRODUCTION_LAYER_ORDER = [
+  'reset', 'vendor', 'tokens', 'base', 'astryx', 'ui', 'features', 'overrides',
+];
 
 /** Wait until the drawer has finished leaving and unmounted. The exit is one
  *  `--motion-medium` animation; polling the DOM is the honest end condition
@@ -90,6 +132,12 @@ const opener = () => document.querySelector<HTMLElement>('[data-testid="opener"]
 const plus = () => document.querySelector<HTMLElement>('[data-testid="plus"]')!;
 
 describe('the drawer against a real rendering engine', () => {
+  /* The premise every claim below rests on: this file is looking at the page
+     production builds, not at a private cascade of its own. */
+  it('registers the cascade in the production order', () => {
+    expect(registeredLayerOrder()).toEqual(PRODUCTION_LAYER_ORDER);
+  });
+
   /*
    * The premise `/new` is built on, asserted rather than assumed in prose.
    *
@@ -150,6 +198,45 @@ describe('the drawer against a real rendering engine', () => {
     await click(drawer.querySelector<HTMLElement>('button[aria-label="Close conversation"]')!);
     await untilGone();
 
+    expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
+  });
+
+  /*
+   * The same fallback, reached through the hiding mechanism the old guard got
+   * **backwards** — and the only test that ever exercised the post-hoc check at
+   * all. (Deleting that check left the whole browser suite green; this is the
+   * gap that closed.)
+   *
+   * `display` does not inherit. A button inside a `display: none` subtree still
+   * computes `display: inline-block` on itself, so the predicate that read
+   * `style.display !== 'none'` off the element answered "focusable" for an
+   * element `focus()` cannot reach — the exact case its own docstring named.
+   * A false yes here is not inert: it made the restore stop waiting, spend its
+   * one armed attempt on a silent no-op, and hand the document to `<body>`.
+   * `content-visibility: hidden` fooled it the same way for the same reason.
+   *
+   * Today `shell.module.css` hides the column with `visibility`, which the old
+   * predicate happened to get right — so this pins the guard rather than the
+   * stylesheet, and stays honest if that rule is ever rewritten.
+   */
+  it('lands on the page title, not <body>, when the opener is inside a display:none subtree', async () => {
+    await page.viewport(1400, 900);
+    render(<Page />);
+    opener().focus();
+    await click(opener());
+    const drawer = document.querySelector<HTMLElement>('[data-nc-drawer]')!;
+
+    const column = opener().closest<HTMLElement>('[data-nc-panel]')!;
+    column.style.display = 'none';
+    /* The trap, stated as a measurement: the opener's *own* computed display is
+       untouched by its ancestor's, and it is still connected. */
+    expect(getComputedStyle(opener()).display).not.toBe('none');
+    expect(opener().isConnected).toBe(true);
+
+    await click(drawer.querySelector<HTMLElement>('button[aria-label="Close conversation"]')!);
+    await untilGone();
+
+    expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
   });
 

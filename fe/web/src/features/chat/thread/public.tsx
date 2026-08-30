@@ -205,15 +205,36 @@ export const NEW_CONVERSATION_COMMAND = Object.freeze({
  * callback so the kernel path stays a string.
  */
 export function ChatComposer({
-  onSend, onStop, onNewConversation, stopping = false, disabled = false,
+  onSend, onStop, onNewConversation, disabled = false,
 }: {
   onSend: (text: string) => void;
+  /**
+   * Interrupt the turn in flight. Its presence is what turns Send into Stop.
+   *
+   * There is deliberately **no `stopping` prop** guarding it. One stood here —
+   * `onStop={stopping === true ? undefined : onStop}` — meaning "a stop already
+   * asked for cannot be asked for again", and it did not mean that: Astryx's
+   * `ChatSendButton` computes `isDisabled={!isStopShown && isDisabled}`, so
+   * with Stop shown the button is unconditionally enabled, and withholding the
+   * callback only emptied its `onClick`. Measured with `stopping` true:
+   * `{ disabled: false, ariaDisabled: null }`, and pressing it called nothing.
+   * That is precisely the shape the note below this call rejects — a control
+   * that says it can be pressed and then does nothing — bought for no change in
+   * behaviour, because the rule it was reaching for is already enforced one
+   * layer up, at the top of the router's `interrupt()`:
+   * `if (!working || stopping) return;`. A second press is a no-op there, where
+   * the state that decides it actually lives.
+   *
+   * Making the button genuinely unavailable instead is not on offer from out
+   * here: `ChatSendButton` accepts neither `isDisabled` nor the `tooltip`
+   * Astryx requires before it will render `aria-disabled` — see the `sendButton`
+   * note below.
+   */
   onStop?: () => void;
   /** Start a new conversation — the *same* callback the module head's `+`
    *  fires. Absent where the `+` is absent, and its absence is what keeps the
    *  `/` menu from existing at all. */
   onNewConversation?: () => void;
-  stopping?: boolean;
   disabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
@@ -230,23 +251,68 @@ export function ChatComposer({
   newConversationRef.current = onNewConversation;
 
   const rootRef = useRef<HTMLDivElement>(null);
+  const [sendCount, setSendCount] = useState(0);
+  const wantsFieldFocus = useRef(false);
+
   /*
-   * Put the caret back in the message field after a send.
+   * ── Put the caret back after a send, and keep trying until it lands ───────
    *
    * Load-bearing, not a nicety — see the `sendButton` note below: Send is a
    * natively disabled control the moment the draft empties, and a natively
    * disabled control that currently holds focus hands that focus to `<body>`.
    * Sending from the button is the one path that puts focus there first.
    *
+   * **Why this is an effect and not a line at the end of `onSubmit`.** It was
+   * that line, and on the app's own wiring it did nothing. The router passes
+   * `disabled={store.sending}` at both call sites and `send()` opens with a
+   * synchronous `setSending(true)`, so the real order inside one click is:
+   * `onSend` queues the flag → the old code put focus in the field → React
+   * flushes → `isDisabled` is true → Astryx turns the field into
+   * `contenteditable="false"` → **Chromium hands the focus it just received to
+   * `<body>`**. Measured: with no `disabled` prop the field keeps focus, with
+   * `disabled` flipping true on send `document.activeElement` is `BODY`. The
+   * failure this code exists to prevent survived the code intact, and the unit
+   * test could not see it — it rendered a composer with no `disabled` at all,
+   * which is a configuration the app never builds, and jsdom does not drop
+   * focus off a `contenteditable` going false anyway. The binding assertion is
+   * in `thread.browser.test.tsx`, against a wrapper wired the way the router
+   * wires it.
+   *
+   * So the restore runs *after* the commit that carries `disabled`, and it is a
+   * standing request rather than one attempt: while the field refuses focus,
+   * focus is parked on the composer's own box — which is stable, is where the
+   * reader is looking, and is never `<body>` — and `wantsFieldFocus` stays
+   * armed so the rerun this effect gets when `disabled` clears lands the caret
+   * where it belongs. `sendCount` is in the deps because a composer with no
+   * `disabled` (the draft path) sees no flag change to rerun on.
+   *
+   * If the reader has moved focus somewhere else entirely in the meantime, the
+   * request is dropped: yanking focus back into a box they have left is worse
+   * than not restoring it.
+   *
    * The field is found by query rather than by ref because it is Astryx's
    * element, handed to `ChatComposer` as an `input` slot; there is no ref for
-   * it to give us.
+   * it to give us — and the `[contenteditable="true"]` selector is exactly why
+   * this works: while disabled, the attribute reads `false` and there is
+   * nothing to match, which is the same fact the browser is acting on.
    */
-  const returnFocusToField = () => {
-    rootRef.current
-      ?.querySelector<HTMLElement>('[contenteditable="true"], textarea')
-      ?.focus();
-  };
+  useEffect(() => {
+    if (!wantsFieldFocus.current) return;
+    const root = rootRef.current;
+    if (root === null) return;
+    const active = document.activeElement;
+    if (active !== null && active !== document.body && !root.contains(active)) {
+      wantsFieldFocus.current = false;
+      return;
+    }
+    const messageField = root.querySelector<HTMLElement>('[contenteditable="true"], textarea');
+    messageField?.focus();
+    if (messageField !== null && document.activeElement === messageField) {
+      wantsFieldFocus.current = false;
+      return;
+    }
+    if (!root.contains(document.activeElement)) root.focus({ preventScroll: true });
+  }, [sendCount, disabled]);
 
   const triggers = useMemo<ChatComposerTrigger[]>(() => [{
     character: '/',
@@ -345,6 +411,10 @@ export function ChatComposer({
       ref={rootRef}
       className={styles.composer}
       data-nc-composer=""
+      /* Programmatic focus only, never a tab stop: this is the perch the send
+         effect above parks on for the length of a send, so that the focus taken
+         off a disabling Send has somewhere to be that is not `<body>`. */
+      tabIndex={-1}
       onKeyDownCapture={(event) => {
         /* Astryx ChatComposerInput submits on Enter without an IME guard.
            Enter while composing accepts the candidate, it must not send. */
@@ -360,17 +430,19 @@ export function ChatComposer({
         placeholder="Say something"
         isDisabled={disabled}
         isStopShown={stopShown}
-        /* A stop already asked for cannot be asked for again: `onStop` is
-           withheld once `stopping` is true, so Stop stops responding rather
-           than queueing a second interrupt. This is where the dead
-           `isDisabled={stopping}` was trying to say that. */
-        onStop={stopping === true ? undefined : onStop}
+        /* Handed over whole — the "one interrupt at a time" rule is the
+           router's, at the top of `interrupt()`. See the `onStop` prop note. */
+        onStop={onStop}
         onSubmit={(value) => {
           const text = value.trim();
           if (text === '' || disabled || stopShown) return;
           onSend(text);
           setDraft('');
-          returnFocusToField();
+          /* The caret goes back to the field from the effect above, not from
+             here: `onSend` may have already queued the `disabled` that takes
+             the field away, and this handler runs before React flushes it. */
+          wantsFieldFocus.current = true;
+          setSendCount((count) => count + 1);
         }}
         input={(
           <ChatComposerInput
@@ -395,13 +467,17 @@ export function ChatComposer({
          * pressed and then does nothing, which is the one thing a button may
          * never do.
          *
-         * And the value it substituted was dead anyway: the router only passes
+         * And the value it substituted was dead anyway: the router only passed
          * `stopping` on the paths where it also passes `onStop`, so `stopShown`
          * is true whenever `stopping` could be, and `ChatSendButton` computes
          * `isDisabled={!isStopShown && isDisabled}` — identically `false`. The
          * prop expressed an intention ("a stop already asked for cannot be
-         * asked for again") that the component's own arithmetic cancelled. That
-         * intention now lives where it can take effect, on `onStop` itself.
+         * asked for again") that the component's own arithmetic cancelled. A
+         * later round tried to rescue that intention by withholding `onStop`
+         * instead, which cancelled just as completely and left a live-looking
+         * Stop with an empty `onClick`; the prop is gone, and the rule it wanted
+         * lives at the top of the router's `interrupt()`. See the `onStop` prop
+         * note above for the measurements.
          *
          * ── The trade this makes, stated plainly ────────────────────────────
          *
