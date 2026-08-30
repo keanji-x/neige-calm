@@ -66,15 +66,20 @@ describe('ReportTaskBlock', () => {
    * *is* a `<details>` (so the platform gives us Enter, Space, find-in-page and
    * print-expanded for free), that the head is its `<summary>` (so what stays
    * when folded is which task and whether it is ready — not a bare word `Task`
-   * with no key beside it), and that it starts open (a report may not hide what
-   * it chose to state from a reader who did not ask).
+   * with no key beside it), and that it starts **closed**.
+   *
+   * The default reversed once, and the reason is recorded in `public.tsx`:
+   * these blocks no longer sit in the prose, they sit inside the document's one
+   * collapsed `Reference` appendix. Left open, opening that appendix would dump
+   * every worker prompt and gate command the change exists to get out of the
+   * reading column. The row is the reference; the block is what it points at.
    *
    * The head's own contents are asserted here rather than left to the test
    * above: moving a field out of `<summary>` is exactly the regression that
    * would leave a folded task unidentifiable, and it is invisible to any test
    * that only asks whether the text is *somewhere* in the document.
    */
-  it('folds: the head is the summary, the detail is the body, and it opens open', () => {
+  it('folds: the head is the summary, the detail is the body, and it opens closed', () => {
     const { container } = render(<ReportTaskBlock payload={{
       key: 'ingest-resolver', kind: 'codex', declared_by: 'spec', ready: true,
       goal: 'Route the ingest call sites through the resolver.',
@@ -83,7 +88,7 @@ describe('ReportTaskBlock', () => {
 
     const details = container.querySelector('details');
     expect(details).not.toBeNull();
-    expect(details!.open).toBe(true);
+    expect(details!.open).toBe(false);
 
     const summary = details!.querySelector('summary')!;
     /* Folded, this row is the whole block, so it has to carry the identity. */

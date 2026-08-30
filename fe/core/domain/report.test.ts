@@ -225,6 +225,28 @@ describe('deriveReportOutline', () => {
     expect(outline[0]?.children).toEqual([{ blockId: 'b-2', label: '600519' }]);
   });
 
+  /* Tasks are no longer drawn in the flow — `features/report/document` lifts
+     them into the collapsed `Reference` appendix — so hanging them under the
+     section they used to follow would point the outline at a place they are not.
+     On a real wave that was eight rows of machinery in a map of the argument.
+
+     The assertion pairs a task with a *kept* non-prose block, because "the
+     outline is empty" would also pass a rule that dropped everything. */
+  it('leaves task blocks out: they are not in the document flow any more', () => {
+    const outline = deriveReportOutline(readWaveReport([card({
+      payload: {
+        body: 'x',
+        blocks: [
+          prose('b-1', '# Valuation\n'),
+          { id: 'b-2', kind: 'task', rev: 1, payload: { key: 'alpha', kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' } },
+          { id: 'b-3', kind: 'table', rev: 1, payload: { caption: 'Comparables', columns: [{ key: 'k', label: 'K' }], rows: [] } },
+        ],
+      },
+    })])?.blocks ?? null);
+    expect(outline).toHaveLength(1);
+    expect(outline[0]?.children).toEqual([{ blockId: 'b-3', label: 'Comparables' }]);
+  });
+
   it('promotes a leading non-prose block to an unnumbered top-level item', () => {
     const outline = deriveReportOutline(readWaveReport([card({
       payload: {

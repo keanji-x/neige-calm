@@ -84,6 +84,99 @@
   }
 
   /*
+   * ── The reference appendix ───────────────────────────────────────────────
+   *
+   * One collapsed section at the end of the document holding the blocks that
+   * record *how* the work was driven rather than what it concluded. It sits in
+   * the measure column like every other block, because it is part of the
+   * document — it is just not part of the argument.
+   *
+   * `list-style: none` plus the WebKit pseudo removes the platform triangle
+   * (the head is a flex row besides, which suppresses it anyway); the chevron
+   * beside the title is the app's own, rotated by the same rule as the rail's.
+   */
+  .reference {
+    grid-column: 2;
+  }
+
+  .referenceHead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-block-size: var(--row-h-sm);
+    list-style: none;
+    cursor: pointer;
+  }
+
+  .referenceHead::-webkit-details-marker {
+    display: none;
+  }
+
+  .referenceMarker {
+    display: flex;
+    flex: none;
+    color: var(--text-3);
+    transition: rotate var(--motion-snappy) ease-out;
+  }
+
+  .reference[open] > .referenceHead .referenceMarker {
+    rotate: 90deg;
+  }
+
+  /*
+   * Sans, not the document's serif, and at the caption rank.
+   *
+   * Every other heading in this column is the *agent's* — an H1 it wrote, set
+   * in the document's own voice. This one is the app's, and a serif heading
+   * here would be the chrome claiming to be part of the report. Sans plus
+   * `--text-3` says "this row is the reader's control, not a section the
+   * document wrote".
+   */
+  .referenceTitle {
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+  }
+
+  /* The count is the only thing a closed section can say about what is inside,
+     and therefore the reason to open it. Tabular figures so two of these on one
+     page do not sit on different edges. */
+  .referenceCount {
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .referenceItem {
+    min-inline-size: 0;
+  }
+
+  /* The rhythm `.block` gives its children, given to the appendix's entries:
+     one scale in the document, not a second one inside a fold. */
+  .referenceHead + .referenceItem,
+  .referenceItem + .referenceItem {
+    margin-block-start: var(--space-8);
+  }
+
+  /* Inline rather than in the trailing gutter: an appendix entry is not in the
+     article's three-column grid, so there is no gutter to hang it in. Same
+     rank and same glyph as `.sidenote`, so the marker still reads as the same
+     thing it is elsewhere in the document. */
+  .referenceSidenote {
+    display: inline-block;
+    margin-block-start: var(--space-2);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    white-space: nowrap;
+  }
+
+  /*
    * The backlink marker (§8.3), in the trailing gutter, aligned to the first
    * line of the block it belongs to. Inside the prose it would interrupt a
    * sentence to say something the reader did not ask about; out here,

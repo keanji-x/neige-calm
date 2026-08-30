@@ -45,13 +45,24 @@ import styles from './task.module.css';
  * those is a thing a hand-rolled version has to remember and this one cannot
  * forget.
  *
- * **Open by default**, and that is the conservative half of this change: a
- * report is an account, and defaulting to folded would hide content the
- * document chose to state from a reader who never asked for it. The fold is an
- * affordance for the reader who wants it, not an editorial decision about what
- * the report says. State is per-block and lives in the DOM — nothing is
- * persisted, so a reload is a fresh read of the document rather than a replay
- * of how somebody last folded it.
+ * **Closed by default — and this reversed once, deliberately.** The first
+ * round of this shipped `open`, on the argument that a report is an account and
+ * that defaulting to folded would hide, from a reader who never asked, content
+ * the document chose to state. That argument was right for the shape it was
+ * written against: each task was a fold sitting *in the middle of the prose*,
+ * so a closed one was a hole in the document's own argument.
+ *
+ * The shape changed. `features/report/document` now lifts every task out of the
+ * flow into one collapsed `Reference` section at the end, so what a closed row
+ * hides is no longer part of the argument — it is the machinery behind it, and
+ * the reader who opened the appendix asked for a list, not for eight worker
+ * prompts. Left open, opening `Reference` would have dumped the ~7400
+ * characters this whole change exists to get out of the reading column.
+ *
+ * So the row is the one-line reference and the block is what it points at.
+ * State is per-block and lives in the DOM — nothing is persisted, so a reload
+ * is a fresh read of the document rather than a replay of how somebody last
+ * folded it.
  */
 
 const DECLARED_BY: Readonly<Record<'spec' | 'user', string>> =
@@ -70,7 +81,7 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
     return (
-      <details className={styles.task} data-nc-task-state="withdrawn" open>
+      <details className={styles.task} data-nc-task-state="withdrawn">
         <summary className={styles.head}>
           <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
           <span className={styles.kindLabel}>Task</span>
@@ -93,7 +104,7 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
 
   const live: LiveTask = payload;
   return (
-    <details className={styles.task} data-nc-task-state={live.ready ? 'ready' : 'not-ready'} open>
+    <details className={styles.task} data-nc-task-state={live.ready ? 'ready' : 'not-ready'}>
       <summary className={styles.head}>
         {/* The disclosure's own glyph. `<summary>` draws a marker only while it
             is `display: list-item`, and this row is a flex box, so the platform

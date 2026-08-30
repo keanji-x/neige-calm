@@ -315,6 +315,20 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
       }
       continue;
     }
+    /*
+     * `task` blocks are not in the flow any more.
+     *
+     * `features/report/document` lifts every one of them out of the document
+     * and into the collapsed `Reference` appendix at the end, so hanging them
+     * under the prose section they used to follow would point the outline at a
+     * place they are no longer drawn — and on a real wave that was eight rows
+     * of machinery in a map of eight rows of argument.
+     *
+     * They stay reachable, by the two routes that are actually about tasks: the
+     * panel's TASKS inventory, and any `neige://` link that cites one. Both go
+     * through `revealReportAnchor`, which unfolds the appendix on the way.
+     */
+    if (block.kind === 'task') continue;
     const child: ReportOutlineChild = { blockId: block.id, label: blockLabel(block) };
     if (lastNumbered === null) {
       outline.push({ blockId: block.id, label: child.label, number: null, children: [] });
