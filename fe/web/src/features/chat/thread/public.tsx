@@ -246,6 +246,57 @@ export function ChatFooterRemedy({ disabled = false, onClick, children }: {
   );
 }
 
+/**
+ * ── Reset, at the end of the transcript ───────────────────────────────────
+ *
+ * **Where it is.** The last line of the drawer's body, after `<ChatThread>`,
+ * in the scrolling content — not in the card's corner, where it used to be a
+ * red 28px glyph 2px from the close.
+ *
+ * The corner was the wrong place for it twice over. It put the only
+ * destructive control on the surface at the top of a panel whose top is what
+ * you look at first, and it painted `--error-text` above a *blank*
+ * conversation, so the loudest thing on a fresh drawer was a warning about
+ * something that had not happened yet. The end of the transcript is where the
+ * thought "this thread is done" actually occurs: you have just read the last
+ * reply, and the reset is one line under it. The transcript follows the newest
+ * turn on its own (see the scroll effect above), so the end of it is where the
+ * reader already is.
+ *
+ * **The price, stated plainly: it scrolls away.** It is content, so scrolling
+ * back through history puts it off screen — unlike the close, which floats and
+ * is always there. That is the intended shape, not a defect, and it is
+ * affordable for three reasons that hold together: it is done at most once per
+ * thread, it is never urgent (nothing is waiting on a reset), and the way back
+ * to it is the same gesture the reader was already making — scroll to the
+ * bottom, which is also where the composer they are aiming for lives. The
+ * `ConfirmDialog` behind it is unchanged, so even a mis-click at the end of a
+ * long scroll costs one Escape.
+ *
+ * **What it looks like.** Words, not a glyph: `Reset conversation`, the whole
+ * of what the icon's `aria-label` used to carry, now readable by everyone
+ * rather than only by a screen reader. `data-nc-action="destructive"` is
+ * §4.3's tier — `--error-text` at rest, red before the pointer arrives — and
+ * it is the shared vocabulary from base.css rather than a colour minted here.
+ * The stylesheet drops it to the caption rank the activity lines use; the
+ * reason is there.
+ *
+ * It is only rendered when there is a transcript to throw away; the router
+ * owns that condition, and says why.
+ */
+export function ChatResetAction({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      data-nc-action="destructive"
+      className={styles.resetAction}
+      onClick={onClick}
+    >
+      Reset conversation
+    </button>
+  );
+}
+
 /** A wall clock, not a relative time: the separator exists to say *when*, and
  *  "3h" is only useful when you already know when now is. */
 function clockTime(atMs: number): string {

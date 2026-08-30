@@ -33,7 +33,7 @@ import { WavePage } from '../../features/wave/page/public.tsx';
 import { CardGridOverlay, WaveStage } from '../../features/wave/grid/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import {
-  ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
+  ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatResetAction, ChatThread,
 } from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
@@ -52,7 +52,7 @@ import {
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
-import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
+import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
@@ -1001,24 +1001,6 @@ function useConversationPanel(
            would rename the drawer on every keystroke. */
         title={open !== null ? conversationName(open) : draftOpen ? 'New conversation' : ''}
         onClose={closeDrawer}
-        /*
-         * Reset lives in the head, not under the composer.
-         *
-         * It is the *rarest* control on the surface and the only destructive
-         * one — it throws the transcript away and starts a new codex thread —
-         * and it was sitting beside the message box at the same weight as
-         * `Stop`, which you press casually. `destructive` is §4.3's tier:
-         * `--error-text` at rest, transparent fill, red before the pointer
-         * arrives rather than after. The confirm dialog it opens is unchanged.
-         *
-         * It is not offered when there is nothing to reset.
-         */
-        headAction={open === null ? undefined : (
-          /* DrawerAction owns the box; the shared icon owns glyph geometry. */
-          <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
-            <Icon name="reset" />
-          </DrawerAction>
-        )}
         footer={draftOpen ? (
           <>
             {/* No optimistic echo: the POST starts the thread *and* delivers
@@ -1079,6 +1061,33 @@ function useConversationPanel(
               turns={store.turnsOf(open.id)}
               pending={store.pending.has(open.id)}
             />
+            {/*
+              * Reset is offered when there is a transcript to throw away, and
+              * that is the whole condition.
+              *
+              * It used to be `open !== null`, which was the right *intent* —
+              * the `undefined` branch was already saying "nothing to reset,
+              * do not offer it" — reading the wrong fact. `open !== null`
+              * only means an existing conversation row is open, and a row
+              * exists from the moment the card does, before anyone has said
+              * anything. So a conversation with zero turns got a red control
+              * over an empty drawer: a warning about undoing something that
+              * had not happened, and the loudest ink on the surface at the one
+              * moment there is nothing on it.
+              *
+              * The array read here is the *same* one `<ChatThread>` above is
+              * rendering, which is what keeps this from flickering. History
+              * arrives as one commit: while the first page is in flight the
+              * transcript is empty and neither the turns nor this line is
+              * painted, and they appear together. It never goes the other way
+              * — react-query holds the previous pages across a refetch, so an
+              * open conversation's transcript does not blink through empty —
+              * with one intended exception: a successful reset empties it, and
+              * the line correctly leaves with the turns it was going to
+              * discard.
+              */}
+            {store.turnsOf(open.id).length > 0
+              && <ChatResetAction onClick={() => setConfirmingReset(true)} />}
           </>
         )}
       </Drawer>

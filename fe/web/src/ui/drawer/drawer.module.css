@@ -136,7 +136,18 @@
   }
 
   /*
-   * ── The floating corner controls ──────────────────────────────────────────
+   * ── The floating corner control ───────────────────────────────────────────
+   *
+   * **There is one of them.** The corner used to hold a pair — the reset and
+   * the close, 2px apart in a `.controls` flex group — and the reset is gone
+   * from here: it is a line of text at the end of the transcript now (see
+   * `ChatResetAction` in `features/chat/thread`). What went with it is the
+   * whole §4.3 gap exception that used to be argued in this note: it was
+   * measured on ink widths of a ✕ and an ↺ inside a head band that no longer
+   * exists, for a pair that no longer exists. A rule about the distance
+   * between two controls has nothing to say about one, so it is deleted rather
+   * than restated. Anything that ever joins the close here re-opens §4.3's
+   * `--space-6` question from scratch, at today's glyphs.
    *
    * **There is no head band.** The band is deleted, and with it the 21.7px
    * `--nc-head-band` derivation and the "the card now owes the page two
@@ -178,79 +189,21 @@
    * distance, has to be what tells them apart. Anything added to this group
    * later inherits that obligation.
    *
-   * **They float; they do not occupy a row.** Absolute against the card and
+   * **It floats; it does not occupy a row.** Absolute against the card and
    * above the scroller at `--z-raised`, so the transcript starts at the top of
-   * the card and a long one scrolls under them. `--nc-card-inset` from both
-   * edges puts them on the same 8px column the transcript and the composer
-   * start on.
+   * the card and a long one scrolls under it. `--nc-card-inset` from both
+   * edges puts it on the same 8px column the transcript and the composer start
+   * on. The 16px stroked SVG comes from the shared `<Icon>` line-work, so its
+   * optical weight stays stable instead of depending on a font's arrow metrics
+   * — the same system the rail collapse and the cove chevron draw from.
    *
-   * §4.3 requires at least `--space-6` (12px) between destructive and benign
-   * actions. This 2px gap is a user-confirmed exception limited to this reset +
-   * close pair, and the boxes do the work the gap would: measured ink widths
-   * are 8.48px and 3.82px, leaving 9.76px and 12.10px respectively on their
-   * facing sides inside the 28px hit areas, so 21.86px of whitespace exists
-   * before any gap at all. `--space-1` is §2.3's tightest inline tier and
-   * takes it to about 23.9px. The reset is *before* the close rather than
-   * after it: §4.3 wants the danger last in its group, but the corner of a
-   * panel is where a pointer goes to dismiss things, and a destructive control
-   * under a dismiss reflex is a worse failure than an ordering one.
+   * The full 28px hit area is §5 (2.5.8).
    */
-  .controls {
+  .close {
     position: absolute;
     z-index: var(--z-raised);
     inset-block-start: var(--nc-card-inset, var(--space-4));
     inset-inline-end: var(--nc-card-inset, var(--space-4));
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-  }
-
-  /*
-   * A corner control: the same 28px square the close is, because two controls
-   * in one group that differ in size read as two ranks, and these are one.
-   *
-   * Both use 16px stroked SVGs from the shared `<Icon>` line-work, so their
-   * optical weight stays stable instead of depending on a font's arrow
-   * metrics — the same system the rail collapse and the cove chevron draw from.
-   */
-  .action {
-    display: grid;
-    place-items: center;
-    flex: none;
-    inline-size: var(--control-h);
-    block-size: var(--control-h);
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    line-height: var(--leading-none);
-    color: var(--text-3);
-    cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out,
-      color var(--motion-quick) ease-out,
-      border-color var(--motion-quick) ease-out;
-  }
-
-  .action:hover,
-  .action:focus-visible {
-    background: var(--overlay-hover-strong);
-    color: var(--text);
-  }
-
-  /* §4.3's destructive recipe, in an icon's geometry: red at rest, transparent
-     fill; hover adds the soft fill and the border it implies. */
-  .actionDanger {
-    color: var(--error-text);
-  }
-
-  .actionDanger:hover,
-  .actionDanger:focus-visible {
-    border-color: var(--error-border);
-    background: var(--error-soft);
-    color: var(--error-text);
-  }
-
-  /* The full 28px hit area (§5, 2.5.8); `.controls` is what floats it into the
-     card's corner. */
-  .close {
     display: grid;
     place-items: center;
     flex: none;
@@ -268,8 +221,8 @@
     color: var(--text);
   }
 
-  /* The transcript now has the scrolling region to itself: the controls float
-     above it (`.controls`) rather than riding inside it. */
+  /* The transcript now has the scrolling region to itself: the close floats
+     above it (`.close`) rather than riding inside it. */
   .scroll {
     flex: 1;
     min-block-size: 0;
@@ -277,26 +230,26 @@
     padding: 0;
     /* Reserve a classic scrollbar lane so becoming scrollable does not shift
        the entire column. Overlay scrollbars paint in the same corner the
-       controls float in; at 28px boxes inset 8px from the edge there is no
+       close floats in; at a 28px box inset 8px from the edge there is no
        collision, and a classic scrollbar gets its own lane. */
     scrollbar-gutter: stable;
   }
 
   /*
-   * **The first line clears the floating controls; it does not run under
-   * them.** The controls occupy the top `--nc-card-inset + --control-h` = 36px
-   * of the card, and a reply is a full-width paragraph, so with the old 8px top
-   * pad its first line ran straight through both glyphs *at rest* — not only
-   * while scrolling, which would be fine. Built and looked at both ways: the
+   * **The first line clears the floating close; it does not run under it.**
+   * The close occupies the top `--nc-card-inset + --control-h` = 36px of the
+   * card, and a reply is a full-width paragraph, so with the old 8px top pad
+   * its first line ran straight through the glyph *at rest* — not only while
+   * scrolling, which would be fine. Built and looked at both ways: the
    * overlap version is unreadable on the one frame you most need to read (a
    * fresh conversation's first answer), and the clearance costs nothing when
    * the transcript is short, which is exactly when it is applied.
    *
-   * So the top pad is the control row's own height. That still nets ~27px back
+   * So the top pad is the control's own height. That still nets ~27px back
    * against the head band it replaces (which spent 32 + a 19.5px line + 4
    * before `.bodyInner`'s own 8), and it buys back something the band could not
    * give: once the transcript is long enough to scroll, content *does* pass
-   * under the glyphs, because they no longer sit on an opaque strip of their
+   * under the glyph, because it no longer sits on an opaque strip of its
    * own.
    */
   .bodyInner {

@@ -9,47 +9,13 @@
 // trap would mean you cannot click the next wave without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
-import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
-/**
- * A control in the drawer's floating corner group, beside the close.
- *
- * It is a companion component rather than a free `ReactNode` for the reason
- * `PanelAction` is one: the geometry belongs to the group — a 28px hit area
- * that must match the close's to the pixel — and a caller composing its own
- * button would have to restate it, which is the drift the role/tier split
- * exists to prevent (§4.1).
- *
- * `danger` is §4.3's tier and it is red **at rest**: a warning that appears
- * only under the pointer is missing at the moment of the decision, and missing
- * from the keyboard path entirely. Icon-only, so the label is the whole of what
- * a screen reader gets — it must name the object, not just the verb.
- */
-export function DrawerAction({ label, onClick, danger = false, children }: {
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-  children: ReactElement;
-}) {
-  return (
-    <button
-      type="button"
-      data-nc-role="icon"
-      className={`${styles.action} ${danger ? styles.actionDanger : ''}`}
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-}
-
-export function Drawer({ open, title, onClose, children, footer, headAction }: {
+export function Drawer({ open, title, onClose, children, footer }: {
   open: boolean;
   /**
    * The drawer's **accessible name**, and nothing that is painted.
@@ -71,17 +37,6 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
    * the bottom of a long transcript is a message box you cannot reach.
    */
   footer?: ReactNode;
-  /**
-   * One control beside the close in the floating corner group, for something
-   * that belongs to the surface rather than to what is in it — today, the
-   * conversation's reset.
-   *
-   * It is a head slot and not a footer button because the footer is where you
-   * *work*: a destructive action standing next to the message box is one
-   * mis-click away from the most routine thing on the surface, and it inherits
-   * the visual weight of a control you press every turn.
-   */
-  headAction?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [closing, setClosing] = useState(false);
@@ -99,11 +54,11 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
    * snapshot of the last frame that had content, and it must never cause a
    * render of its own.
    */
-  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode; headAction?: ReactNode }>(
-    { title, children, footer, headAction },
+  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode }>(
+    { title, children, footer },
   );
-  if (open) lastFrame.current = { title, children, footer, headAction };
-  const frame = open ? { title, children, footer, headAction } : lastFrame.current;
+  if (open) lastFrame.current = { title, children, footer };
+  const frame = open ? { title, children, footer } : lastFrame.current;
 
   /*
    * The retraction starts **during render**, not in an effect, and that is the
@@ -202,27 +157,31 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
       onAnimationEnd={() => { if (closing) setClosing(false); }}
     >
       {/*
-        * The controls float over the card's top-inline-end corner; they are
+        * The close floats over the card's top-inline-end corner, and it is
         * **before** the scroller in the DOM so the first Tab out of the
-        * container still lands on the reset and then on Close, which is the
-        * order the `.drawer:focus-visible` note in the stylesheet assumes.
+        * container lands on it, which is the order the `.drawer:focus-visible`
+        * note in the stylesheet assumes.
+        *
+        * It used to sit in a `.controls` flex group beside the reset. The reset
+        * left the corner (it is a line at the end of the transcript now — see
+        * `ChatResetAction`), so the group had one member, and a wrapper whose
+        * only job was to space two things is not kept for one. The floating
+        * geometry moved onto `.close` itself; nothing about where the chevron
+        * lands changed.
         */}
-      <div className={styles.controls}>
-        {frame.headAction}
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={styles.close}
-          aria-label="Close conversation"
-          title="Close"
-          onClick={onClose}
-        >
-          {/* A right chevron, not an X — see the `.controls` note in the
-              stylesheet for why the shape may not be shared with the page
-              header's delete. */}
-          <Icon name="chevron-right" />
-        </button>
-      </div>
+      <button
+        type="button"
+        data-nc-role="icon"
+        className={styles.close}
+        aria-label="Close conversation"
+        title="Close"
+        onClick={onClose}
+      >
+        {/* A right chevron, not an X — see the `.close` note in the stylesheet
+            for why the shape may not be shared with the page header's
+            delete. */}
+        <Icon name="chevron-right" />
+      </button>
       <div className={styles.scroll} data-nc-drawer-scroll="">
         <div className={styles.bodyInner}>
           {frame.children}

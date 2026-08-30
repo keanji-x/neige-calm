@@ -76,6 +76,23 @@ async function openConversation() {
   await screen.findByRole('complementary', { name: 'Spec chat' });
 }
 
+/*
+ * Reset is offered only when there is a transcript to throw away, so a test
+ * about reset has to open a conversation that has one. The default `setup`
+ * serves an empty harness — which is now a *meaningful* state (no reset), and
+ * has its own test — so anything reaching for the control opens through these
+ * two instead.
+ */
+function setupWithTurns(reply?: Reply) {
+  return setup(async (request) => await reply?.(request)
+    ?? (request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined));
+}
+
+async function openConversationWithTurns() {
+  await openConversation();
+  await screen.findByRole('button', { name: 'Reset conversation' });
+}
+
 beforeEach(() => {
   window.history.pushState({}, '', `${APP_BASEPATH}/wave/w1`);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
@@ -88,16 +105,59 @@ afterEach(() => {
 });
 
 describe('spec conversation regressions', () => {
-  it('renders reset as an explicit SVG glyph', async () => {
+  /*
+   * This replaces "renders reset as an explicit SVG glyph", which pinned the
+   * two `<path>`s of the corner icon. Reset is words at the end of the
+   * transcript now, so the glyph assertion has no subject — but the bug it was
+   * written for does: reset must never be drawn with a font character (`↺`),
+   * whose weight and metrics come from whatever font resolves. The assertion
+   * that carries that forward is the *label*: the control says what it does in
+   * text, so a font glyph cannot be what a reader is asked to read. The tier
+   * is pinned with it, because `destructive` is the whole of what makes it red
+   * and it is the one thing a careless restyle would drop.
+   */
+  it('offers reset as a labelled destructive action at the end of the transcript', async () => {
+    setupWithTurns();
+    await openConversationWithTurns();
+    const reset = screen.getByRole('button', { name: 'Reset conversation' });
+    expect(reset.textContent).toBe('Reset conversation');
+    expect(reset.getAttribute('data-nc-action')).toBe('destructive');
+    expect(reset.querySelector('svg')).toBeNull();
+    /* In the scrolling body, after the thread — not floating in the card's
+       corner beside the close. */
+    expect(reset.closest('[data-nc-drawer-scroll]')).not.toBeNull();
+    const thread = screen.getByText('reply 0').closest('[data-nc-thread]');
+    expect(thread).not.toBeNull();
+    expect(thread!.compareDocumentPosition(reset) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+  });
+
+  /*
+   * The gate this locks is the one `open !== null` used to miss: a card exists
+   * before anyone has spoken, so "a conversation is open" is not "there is
+   * something to reset". A zero-turn drawer must carry the close and nothing
+   * else destructive.
+   */
+  it('does not offer reset on a conversation with no turns', async () => {
     setup();
     await openConversation();
-    const reset = screen.getByRole('button', { name: 'Reset conversation' });
-    const glyph = reset.querySelector('svg');
-    expect(glyph).toBeTruthy();
-    expect(glyph?.querySelectorAll('path')).toHaveLength(2);
-    expect(glyph?.querySelectorAll('path')[1]?.getAttribute('d'))
-      .toBe('M3.35 6.12a5 5 0 1 1 .15 4.1');
-    expect(reset.textContent).not.toContain('↺');
+    expect(screen.queryByRole('button', { name: 'Reset conversation' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Close conversation' })).toBeTruthy();
+  });
+
+  /* And it arrives with the first turn, rather than needing the drawer
+     reopened: the condition is read off the same array the thread renders. */
+  it('offers reset once the transcript is no longer empty', async () => {
+    let rows = 0;
+    const { client } = setup((request) => request.path.includes('/harness/items')
+      ? ok(harnessRows(rows)) : undefined);
+    await openConversation();
+    expect(screen.queryByRole('button', { name: 'Reset conversation' })).toBeNull();
+    rows = 1;
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: queryKeys.harnessItems(CARD.id) });
+    });
+    await screen.findByRole('button', { name: 'Reset conversation' });
   });
 
   it('keeps a wave route conversation list scoped after visiting another wave', async () => {
@@ -322,8 +382,11 @@ describe('spec conversation regressions', () => {
   it('surfaces reset failures and prevents duplicate confirmation while reset is pending', async () => {
     let reject!: (reason: Error) => void;
     const pending = new Promise<ApiTransportResponse>((_resolve, rejectPromise) => { reject = rejectPromise; });
-    const { requests } = setup((request) => request.path.endsWith('/spec/reset') ? pending : undefined);
-    await openConversation();
+    /* `setupWithTurns`, not `setup`: the control under test is only offered
+       when there is a transcript to discard. Nothing else about the assertion
+       changes — one POST for two clicks, and the failure surfaced. */
+    const { requests } = setupWithTurns((request) => request.path.endsWith('/spec/reset') ? pending : undefined);
+    await openConversationWithTurns();
     fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
     const dialog = await screen.findByRole('dialog', { name: 'Reset conversation?' });
     const confirm = within(dialog).getByRole('button', { name: 'Reset conversation' });
@@ -373,8 +436,10 @@ describe('spec conversation regressions', () => {
   });
 
   it('cancels reset on Escape without also closing the drawer', async () => {
-    setup();
-    await openConversation();
+    /* Same substitution and same reason as the pending-reset test above: the
+       dialog can only be reached from a conversation that has turns. */
+    setupWithTurns();
+    await openConversationWithTurns();
     fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
     const dialog = await screen.findByRole('dialog', { name: 'Reset conversation?' });
     fireEvent.keyDown(dialog, { key: 'Escape' });
