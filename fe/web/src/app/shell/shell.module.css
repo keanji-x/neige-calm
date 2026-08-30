@@ -68,6 +68,38 @@
     flex-direction: column;
   }
 
+  /*
+   * While the conversation card is open, the panel card it covers is not drawn.
+   *
+   * The two now share a track — same `--panel-span` column, same top offset —
+   * and the drawer is the larger of the two, so the panel is entirely behind
+   * it. "Entirely" is not quite free, though: the panel is `align-self: start`
+   * and its own height is its content's, so it can end below the drawer's
+   * bottom edge, and its rounded corners are inside the drawer's, so a
+   * hairline-wide arc of the wrong card shows at each one. A stack of two cards
+   * offset by two pixels is not a design, it is a rendering artefact, and the
+   * only card that is being read is the one on top.
+   *
+   * `visibility`, not `display`: the panel keeps its box, so the document
+   * column beside it keeps its width and nothing in the report reflows when the
+   * conversation opens or closes — the same promise the drawer's `position:
+   * absolute` makes. It also drops out of the accessibility tree, which is
+   * right; it is not reachable while a card covers it either.
+   *
+   * The selector crosses two CSS Modules, so neither end can be a local class:
+   * `ui/drawer` stamps `data-nc-drawer` on its root, and every route that has a
+   * trailing column stamps `data-nc-panel` on its `<aside>`. `.main` scopes it
+   * so this is a statement about one main region, not about the document.
+   *
+   * The marker is on all three of them — Today, cove, wave — and the set is
+   * exactly the set of routes that render `chat.drawer`, which is the invariant
+   * to re-check when a fourth route grows a panel column. Settings has neither
+   * and needs neither.
+   */
+  .main:has([data-nc-drawer]) [data-nc-panel] {
+    visibility: hidden;
+  }
+
   .rail {
     display: flex;
     flex-direction: column;

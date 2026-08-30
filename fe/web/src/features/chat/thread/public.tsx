@@ -30,10 +30,17 @@
 // The unit is the **exchange** — one thing you said and everything that came
 // back — and the layout groups by it: tight inside, loose between.
 
-import { useEffect, useRef, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
+import {
+  ChatComposer as AstryxChatComposer,
+  ChatComposerInput,
+  ChatSendButton,
+  type ChatComposerTrigger,
+} from '@astryxdesign/core/Chat';
+import { createStaticSource } from '@astryxdesign/core/Typeahead';
 
-import { useState } from '../../../ui/state/public.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
+import { useState } from '../../../ui/state/public.ts';
 
 import {
   isLiveConversation, opensAfterGap, opensExchange,
@@ -103,9 +110,6 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
               data-nc-turn={turn.author}
             >
               {turn.text}
-              {/* The one live mark, and it is the same 6px accent dot that means
-                  "running" on a wave row. One vocabulary for "something is
-                  happening", not a second one for chat. */}
               {live && last && turn.author === 'agent' && (
                 <span className={styles.live} aria-label="Working" />
               )}
@@ -152,90 +156,465 @@ function ActivityLine({ activity, live }: {
 }
 
 /**
- * The composer.
+ * ── `/` in the composer ───────────────────────────────────────────────────
  *
- * Enter sends and Shift+Enter breaks the line, which is the convention every
- * agent surface uses; the button exists anyway because a keyboard convention is
- * not an affordance, and it is the one primary action this surface has (§4.1 —
- * at most one per surface).
+ * **Why there is a slash command at all, when the same action has a `+`.**
+ * `<PanelAction label="New conversation">` lives in the CONVERSATIONS module
+ * head, on the panel column — and `app/shell/shell.module.css` hides that whole
+ * column while a drawer is open (`.main:has([data-nc-drawer]) [data-nc-panel]
+ * { visibility: hidden }`). So the reader who is *inside* a conversation, which
+ * is precisely the reader who has just decided this thread is finished, cannot
+ * reach the `+` without first closing what they are reading. `/new` in the
+ * composer is the only new-conversation door that exists in that state. It is
+ * not a duplicate of the `+`; it is the same door cut through the wall the
+ * drawer puts up.
  *
- * The field grows with what you type, to a ceiling. A fixed three-row box is
- * wrong in both directions: it wastes two rows of a 396px drawer for the
- * one-line instruction that is the common case, and it still needs a scrollbar
- * for the long one.
+ * **One command, and no registry behind it.** There is no command table, no
+ * discovery mechanism and no second entry — those are the shape you build when
+ * the set is open, and this set is closed at one. Adding a second command is
+ * the moment to reconsider, not now.
+ *
+ * **It runs the `+`'s own callback**, passed in as `onNewConversation`, rather
+ * than a copy of what the `+` does. Two entry points that reimplement one
+ * action drift, and the router's `start()` already carries every rule about
+ * where a new conversation may attach and what a held draft does to it.
+ *
+ * **Availability tracks the `+` exactly**: the router passes the callback only
+ * where the `+` is offered *and does something*, so `undefined` here means no
+ * trigger is configured at all and the field stays a plain `textbox`.
  */
-export function ChatComposer({ onSend, disabled = false }: {
+export const NEW_CONVERSATION_COMMAND = Object.freeze({
+  id: 'new-conversation',
+  /*
+   * The same words as `PanelAction label="New conversation"` — but this string
+   * is now what Astryx *filters* on, not what the row shows: the row is
+   * `renderItem`'s glyph, name and description below, and none of the three is
+   * derived from this. That separation is what lets the row print `new` while
+   * the reader types `/new`, and it is one-directional — `renderItem` reads
+   * nothing from the item, so no rewording of the row can reach the matcher.
+   * Keeping the `+`'s wording here is what makes the command reachable by the
+   * name the reader has already seen on the `+`'s tooltip: `/conversation`
+   * finds it just as `/new` does.
+   */
+  label: 'New conversation',
+});
+
+/**
+ * The composer is Astryx's ChatComposer: rounded well, auto-grow, send/stop
+ * geometry, Enter-to-send with IME guard. We own the value and the send
+ * callback so the kernel path stays a string.
+ */
+export function ChatComposer({
+  onSend, onStop, onNewConversation, disabled = false,
+}: {
   onSend: (text: string) => void;
+  /**
+   * Interrupt the turn in flight. Its presence is what turns Send into Stop.
+   *
+   * There is deliberately **no `stopping` prop** guarding it. One stood here —
+   * `onStop={stopping === true ? undefined : onStop}` — meaning "a stop already
+   * asked for cannot be asked for again", and it did not mean that: Astryx's
+   * `ChatSendButton` computes `isDisabled={!isStopShown && isDisabled}`, so
+   * with Stop shown the button is unconditionally enabled, and withholding the
+   * callback only emptied its `onClick`. Measured with `stopping` true:
+   * `{ disabled: false, ariaDisabled: null }`, and pressing it called nothing.
+   * That is precisely the shape the note below this call rejects — a control
+   * that says it can be pressed and then does nothing — bought for no change in
+   * behaviour: the rule it was reaching for is already stated one layer up, at
+   * the top of the router's `interrupt()`: `if (!working || stopping) return;`.
+   * Removing the prop moved nothing; it deleted a duplicate.
+   *
+   * **The dead-button shape is not fixed by that, and this note must not be
+   * read as claiming it is.** During `stopping` the router's guard returns
+   * immediately, so Stop still says it can be pressed and still does nothing —
+   * the identical shape, one call frame further in. What the removal bought is
+   * that the fact now lives in the one place that knows it, not that the reader
+   * stopped seeing a live-looking control.
+   *
+   * It stays broken because the fix is not on offer from out here:
+   * `ChatSendButton` accepts neither `isDisabled` nor the `tooltip` Astryx
+   * requires before it will render `aria-disabled` (see the `sendButton` note
+   * below), and `useChatComposerContext` is not exported, so a hand-rolled
+   * substitute cannot read the composer's own state either. **Known gap, owned
+   * by the vendor's API surface** — recorded here so the next reader measures
+   * Astryx again rather than re-deriving a workaround that cancels itself.
+   */
+  onStop?: () => void;
+  /** Start a new conversation — the *same* callback the module head's `+`
+   *  fires. Absent where the `+` is absent, and its absence is what keeps the
+   *  `/` menu from existing at all. */
+  onNewConversation?: () => void;
   disabled?: boolean;
 }) {
   const [draft, setDraft] = useState('');
-  const fieldRef = useRef<HTMLTextAreaElement | null>(null);
-  const ready = draft.trim() !== '' && !disabled;
+  const stopShown = onStop != null;
 
-  const send = () => {
-    if (!ready) return;
-    onSend(draft.trim());
-    setDraft('');
-    // Focus stays in the field: sending one message is almost never the end of
-    // what you came to say.
-    fieldRef.current?.focus();
-  };
+  /*
+   * The callback is read through a ref so `triggers` can be a stable array.
+   * `useTriggerMenu` holds the *object identity* of the active trigger in
+   * state and compares it on every input event (`state.activeTrigger !==
+   * trigger`); a fresh array each render would re-open and re-search the menu
+   * on every keystroke.
+   */
+  const newConversationRef = useRef(onNewConversation);
+  newConversationRef.current = onNewConversation;
 
-  const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== 'Enter' || event.shiftKey) return;
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [sendCount, setSendCount] = useState(0);
+  const wantsFieldFocus = useRef(false);
+  /** The element this component last put focus on — the perch or the field.
+   *  `null` while no restore is in flight, and the whole of how the effect
+   *  below tells "focus is still where we left it" from "the reader moved it". */
+  const parkedFocus = useRef<Element | null>(null);
+
+  /*
+   * ── Put the caret back after a send, and keep trying until it lands ───────
+   *
+   * Load-bearing, not a nicety — see the `sendButton` note below: Send is a
+   * natively disabled control the moment the draft empties, and a natively
+   * disabled control that currently holds focus hands that focus to `<body>`.
+   * Sending from the button is the one path that puts focus there first.
+   *
+   * **Why this is an effect and not a line at the end of `onSubmit`.** It was
+   * that line, and on the app's own wiring it did nothing. Both router call
+   * sites pass a `disabled` that goes true inside the very click that sends —
+   * `disabled={store.sending}` on the conversation path, `disabled={creating}`
+   * on the draft path (`app/router/public.tsx`), two different flags with the
+   * same timing — and the send handler behind each sets it synchronously, so
+   * the real order inside one click is:
+   * `onSend` queues the flag → the old code put focus in the field → React
+   * flushes → `isDisabled` is true → Astryx turns the field into
+   * `contenteditable="false"` → **Chromium hands the focus it just received to
+   * `<body>`**. Measured: with no `disabled` prop the field keeps focus, with
+   * `disabled` flipping true on send `document.activeElement` is `BODY`. The
+   * failure this code exists to prevent survived the code intact, and the unit
+   * test could not see it — it rendered a composer with no `disabled` at all,
+   * which is a configuration the app never builds, and jsdom does not drop
+   * focus off a `contenteditable` going false anyway. The binding assertion is
+   * in `thread.browser.test.tsx`, against a wrapper wired the way the router
+   * wires it.
+   *
+   * So the restore runs *after* the commit that carries `disabled`, and it is a
+   * standing request rather than one attempt: while the field refuses focus,
+   * focus is parked on the composer's own box — which is stable, is where the
+   * reader is looking, and is never `<body>` — and `wantsFieldFocus` stays
+   * armed so the rerun this effect gets when `disabled` clears lands the caret
+   * where it belongs. `sendCount` is in the deps because a composer with no
+   * `disabled` (the draft path) sees no flag change to rerun on.
+   *
+   * **Giving up is decided by identity, not by containment.** The test used to
+   * be "focus has left `.composer` entirely", and it let two real cases through.
+   * A send shows Stop *inside* the composer, so a reader who tabs to Stop and
+   * waits is still "inside" — and when `disabled` cleared the caret was yanked
+   * off the control they had deliberately aimed at. And `<body>` was read as
+   * "nobody moved", which is also what the document reports after a click on any
+   * non-focusable part of the page. So the effect now remembers the element it
+   * parked on and continues only while focus is *exactly* there: anything else,
+   * inside the composer or out, is the reader having spent their own intent, and
+   * `<body>` after a successful park is a click somewhere blank rather than the
+   * disabling-control drop this exists for. That drop only happens in the same
+   * commit as the send, before anything has been parked, which is precisely why
+   * the check is skipped on the first run (`parkedFocus` still `null`).
+   *
+   * The field is found by query rather than by ref because it is Astryx's
+   * element, handed to `ChatComposer` as an `input` slot; there is no ref for
+   * it to give us — and the `[contenteditable="true"]` selector is exactly why
+   * this works: while disabled, the attribute reads `false` and there is
+   * nothing to match, which is the same fact the browser is acting on.
+   */
+  useEffect(() => {
+    if (!wantsFieldFocus.current) return;
+    const root = rootRef.current;
+    if (root === null) return;
+    const parked = parkedFocus.current;
+    if (parked !== null && document.activeElement !== parked) {
+      wantsFieldFocus.current = false;
+      parkedFocus.current = null;
+      return;
+    }
+    const messageField = root.querySelector<HTMLElement>('[contenteditable="true"], textarea');
+    messageField?.focus();
+    if (messageField !== null && document.activeElement === messageField) {
+      wantsFieldFocus.current = false;
+      parkedFocus.current = null;
+      return;
+    }
+    if (!root.contains(document.activeElement)) root.focus({ preventScroll: true });
+    parkedFocus.current = document.activeElement;
+  }, [sendCount, disabled]);
+
+  const triggers = useMemo<ChatComposerTrigger[]>(() => [{
+    character: '/',
+    searchSource: createStaticSource([NEW_CONVERSATION_COMMAND]),
+    menuLabel: 'Commands',
+    emptySearchResultsText: 'No command by that name',
     /*
-     * Enter belongs to the IME while it is composing.
-     *
-     * Typing Chinese, Japanese or Korean, Enter is how you accept the candidate
-     * the input method is offering — it is not how you send. Without this
-     * guard, typing `ceshi` and pressing Enter to pick 测试 sends the literal
-     * pinyin, and then the composition commits into the field that was just
-     * cleared, so the box refills the instant after it "sent". That is the
-     * "sending doesn't clear the box" report, and it is only reachable through
-     * an IME: reproduced with `Input.imeSetComposition`, which sent `ceshi` as
-     * a turn.
-     *
-     * `isComposing` lives on the native event; React's synthetic keyboard event
-     * does not surface it.
+     * One row, two columns: what you type on the left, what it does on the
+     * right. `item.label` is deliberately *not* rendered — see the token below.
      */
-    if (event.nativeEvent.isComposing) return;
-    event.preventDefault();
-    send();
-  };
+    renderItem: () => (
+      <span className={styles.commandItem}>
+        {/*
+          * **The glyph is the `+`'s glyph, and that is the whole point.** The
+          * module head's `<PanelAction label="New conversation">` is not a
+          * similar action, it is *this* action — the same `onNewConversation`
+          * runs from both. Drawing the same `plus` here is the cheapest way to
+          * say so to a reader who has already pressed the `+` and is now
+          * looking at a door they have not seen before. A second glyph invented
+          * for the menu would be asserting the opposite.
+          *
+          * No label on it: `Icon` is `aria-hidden` by construction, the row's
+          * accessible name comes from the item's `label`, and the words next to
+          * it already say what it does. An `aria-label` here would make the
+          * screen reader read the action twice.
+          *
+          * **The name is `new`, without the slash the reader already has.**
+          * This row is only on screen because a `/` is sitting in the field two
+          * inches below it — printing a second one restates the character that
+          * *caused* the menu. And the row now carries two independent signals
+          * that this is a command you press: the `+` on the left, which is the
+          * module head's own button, and the description on the right in the
+          * caption rank. A slash would be a third, spending width on the one
+          * thing about this row that was never in doubt. What is left, `new`,
+          * is the part the reader does not have and has to type.
+          *
+          * That is a reversal of the previous round, which printed `/new`
+          * because the token is what you type and because every menu of this
+          * shape (codex, Claude Code, Slack) prints the slash. Recorded plainly
+          * so nobody re-derives it: that argument assumed a row with no glyph,
+          * where the slash was the *only* thing marking the label as a command
+          * rather than a noun. The `+` took that job, and the argument went
+          * with it.
+          *
+          * **The slash's disappearance from the row is display-only.** What
+          * Astryx matches against is `NEW_CONVERSATION_COMMAND.label`, and
+          * `renderItem` never touches it — see the token above.
+          *
+          * Glyph and literal are siblings in the row rather than nested in a
+          * box of their own — they read as one thing because they share the
+          * name's colour and sit tight against each other, which is cheaper
+          * than a wrapper and avoids a real layout trap (both recorded in the
+          * stylesheet).
+          */}
+        <Icon name="plus" size="sm" />
+        <span className={styles.commandName}>new</span>
+        {/*
+          * **The description carries only the half that is not already said.**
+          * It was `Opens a fresh thread; this one stays in the list.` — but a
+          * `+` and the word `new` now spell "opens a fresh thread" twice over
+          * before the sentence starts, and the type scale (tokens.css §type)
+          * says of `--text-xs`, the rank this sits at: *never a sentence*. What
+          * is left is the thing the reader actually risks being wrong about,
+          * because it is the thing a "new" button in a list of threads could
+          * plausibly do either way: the thread they are reading survives.
+          *
+          * Screenshot comparison of three (`r8-hint-a` / `-b` / `-c`):
+          *   a  This one stays in the list   ← this one
+          *   b  Keeps this one in the list   — reads as a promise the *command*
+          *      makes, so the eye goes back to the name to find the subject; and
+          *      "keeps" invites "keeps it where?" that "stays" does not.
+          *   c  This one stays               — half the width and none of the
+          *      answer: stays *where* is exactly the question being asked.
+          * No full stop: it is a phrase, not a sentence, and the row has no
+          * second one for it to be separated from.
+          */}
+        <span className={styles.commandHint}>This one stays in the list</span>
+      </span>
+    ),
+    /*
+     * A command is *run*, not inserted. `onSelect` returning `''` is how this
+     * API says "put nothing in the field": Astryx has already deleted the
+     * typed `/new` before calling us, so the empty string leaves the composer
+     * clear and the text never reaches `onSubmit`. The action itself is the
+     * side effect here — there is no other hook on this path that fires once
+     * per selection.
+     */
+    onSelect: () => {
+      newConversationRef.current?.();
+      return '';
+    },
+  }], []);
 
   return (
-    <form
+    <div
+      ref={rootRef}
       className={styles.composer}
       data-nc-composer=""
-      onSubmit={(event: FormEvent) => { event.preventDefault(); send(); }}
+      /* Programmatic focus only, never a tab stop: this is the perch the send
+         effect above parks on for the length of a send, so that the focus taken
+         off a disabling Send has somewhere to be that is not `<body>`. */
+      tabIndex={-1}
+      /*
+       * **Named, because focus stops here and a screen reader announces what it
+       * stops on.** Measured before this went in: `role: null, aria-label: null`
+       * — for the whole length of a request the reader was parked on an
+       * anonymous `div` whose only readable text was the field's placeholder,
+       * which is worse than the `<body>` this perch replaced in one respect
+       * (`<body>` at least announces the document).
+       *
+       * `group` rather than `form` or `region`: it is a set of related controls
+       * with no landmark claim to make, and a landmark inside a drawer that is
+       * already `complementary` would add a second thing to the reader's
+       * landmark list for no navigational gain.
+       *
+       * The name builds on the field's own `label="Message"` rather than
+       * repeating it. Repeating it was the first attempt and it is wrong twice
+       * over: two elements one nesting apart answering to the same accessible
+       * name is ambiguous to a reader navigating by name, and it is ambiguous to
+       * every `getByLabelText('Message')` in `public.test.tsx`, which stopped
+       * resolving. `Message composer` names the box for what it is — the field
+       * plus the controls around it — and keeps the word the reader is already
+       * oriented by.
+       */
+      role="group"
+      aria-label="Message composer"
+      onKeyDownCapture={(event) => {
+        /* Astryx ChatComposerInput submits on Enter without an IME guard.
+           Enter while composing accepts the candidate, it must not send. */
+        if (event.key === 'Enter' && !event.shiftKey && event.nativeEvent.isComposing) {
+          event.stopPropagation();
+        }
+      }}
     >
-      <textarea
-        ref={fieldRef}
-        className={styles.field}
+      <AstryxChatComposer
+        density="compact"
         value={draft}
-        rows={1}
-        aria-label="Message"
+        onChange={setDraft}
         placeholder="Say something"
-        disabled={disabled}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={onKeyDown}
+        isDisabled={disabled}
+        isStopShown={stopShown}
+        /* Handed over whole — the "one interrupt at a time" rule is the
+           router's, at the top of `interrupt()`. See the `onStop` prop note. */
+        onStop={onStop}
+        onSubmit={(value) => {
+          const text = value.trim();
+          if (text === '' || disabled || stopShown) return;
+          onSend(text);
+          setDraft('');
+          /* The caret goes back to the field from the effect above, not from
+             here: `onSend` may have already queued the `disabled` that takes
+             the field away, and this handler runs before React flushes it. */
+          wantsFieldFocus.current = true;
+          /* A fresh request, so the effect's first run must not compare against
+             a perch left over from an earlier one — see the effect's note. */
+          parkedFocus.current = null;
+          setSendCount((count) => count + 1);
+        }}
+        input={(
+          <ChatComposerInput
+            label="Message"
+            placeholder="Say something"
+            /* No triggers where there is no command to offer: without them the
+               field keeps `role="textbox"` rather than becoming an
+               `aria-expanded="false"` combobox that can never expand. */
+            {...(onNewConversation === undefined ? {} : { triggers })}
+          />
+        )}
+        /*
+         * ── Send's availability, and why it is Astryx's and not ours ────────
+         *
+         * This used to be `<ChatSendButton isDisabled={stopping} />`, and both
+         * halves of that were wrong.
+         *
+         * The override *replaced* `ChatSendButton`'s own default,
+         * `isDisabled = !(context?.canSend ?? false)`. With `canSend` out of the
+         * picture, Send on an empty composer measured `{ label: 'Send',
+         * disabled: false, ariaDisabled: null }` — a control that says it can be
+         * pressed and then does nothing, which is the one thing a button may
+         * never do.
+         *
+         * And the value it substituted was dead anyway: the router only passed
+         * `stopping` on the paths where it also passes `onStop`, so `stopShown`
+         * is true whenever `stopping` could be, and `ChatSendButton` computes
+         * `isDisabled={!isStopShown && isDisabled}` — identically `false`. The
+         * prop expressed an intention ("a stop already asked for cannot be
+         * asked for again") that the component's own arithmetic cancelled. A
+         * later round tried to rescue that intention by withholding `onStop`
+         * instead, which cancelled just as completely and left a live-looking
+         * Stop with an empty `onClick`; the prop is gone, and the rule it wanted
+         * lives at the top of the router's `interrupt()`. See the `onStop` prop
+         * note above for the measurements.
+         *
+         * ── The trade this makes, stated plainly ────────────────────────────
+         *
+         * Astryx renders `aria-disabled` **only** when a `tooltip` is set
+         * (`Button/Button.tsx`: `useAriaDisabled = tooltip != null &&
+         * buttonDisabled`); otherwise it is a native `disabled`.
+         * `ChatSendButton` accepts no `tooltip` and forwards no rest props, so
+         * from out here the choice is native `disabled` or nothing — and
+         * `useChatComposerContext` is not exported, so a hand-rolled send button
+         * could not read `canSend` either without reimplementing the composer's
+         * state.
+         *
+         * Native `disabled` is announced ("Send, button, unavailable") but it
+         * leaves the tab order, and a control that vanishes from under a
+         * keyboard user's focus drops that focus on `<body>` — which is exactly
+         * what §5.1's deleted test existed to prevent. That failure has one
+         * trigger here and it is `submit`: focus is on Send, the click sends,
+         * the draft empties, `canSend` goes false, and the button focus is
+         * sitting on goes away.
+         *
+         * So the focus is *moved deliberately*, back into the field, before
+         * that can happen — which is where a person who just sent a message
+         * wants it regardless — by the standing request in the focus effect at
+         * the top of this component, which was a `returnFocusToField` helper
+         * called from `onSubmit` until that was measured doing nothing (the
+         * effect's own note has the measurement). That leaves "Send is
+         * not tabbable while the field is empty", which is the standard
+         * behaviour of a disabled control and costs a keyboard user nothing:
+         * there is nothing to send, and the field they would have to visit to
+         * change that is the previous stop in the same tab ring.
+         */
+        sendButton={<ChatSendButton />}
       />
-      {/*
-        `aria-disabled`, not `disabled` — §5.1. A truly disabled button drops
-        focus the moment it becomes unusable, which here is the moment you send:
-        focus would land on `<body>` mid-conversation.
-      */}
-      <button
-        type="submit"
-        data-nc-role="icon"
-        aria-label="Send"
-        title="Send"
-        aria-disabled={ready ? undefined : 'true'}
-        className={styles.send}
-      >
-        <Icon name="arrow-up" />
-      </button>
-    </form>
+    </div>
+  );
+}
+
+/**
+ * ── The footer's error strip ──────────────────────────────────────────────
+ *
+ * Everything around the composer used to be a bare `<p>` and a bare `<button>`
+ * composed by the router: no inset, so they sat flush against the card's edge
+ * while the composer kept the card's `--nc-card-inset`, and no rank, so an
+ * error printed at body size in body ink. One root cause, three symptoms (the
+ * send error, the draft error, the two remedies) — so the fix is components
+ * rather than call-site classNames.
+ *
+ * They own presentation only. *When* any of them appears, what it says, and
+ * what pressing it does stay the router's, unchanged — which is why the strip
+ * is a container the router fills rather than a component that decides for
+ * itself: a remedy can be offered with no error beside it (an unconfirmed send
+ * whose landing came back `absent`), and that case must still render.
+ */
+
+/** The strip itself: an `alert` region welded to the top edge of the composer
+ *  well. It is rendered above `<ChatComposer>`, not below it — the geometry
+ *  ("upper corners rounded, lower square") only reads as *attached* from that
+ *  side, and the stylesheet says why that attachment is the point. */
+export function ChatFooterNotice({ children }: { children: ReactNode }) {
+  return <div role="alert" className={styles.footerNotice}>{children}</div>;
+}
+
+/** What went wrong, at the caption rank the activity lines already use for a
+ *  failed action. It carries no colour of its own beyond `--error-text`; the
+ *  strip around it carries the fill. */
+export function ChatFooterError({ message }: { message: string }) {
+  return <span className={styles.footerError}>{message}</span>;
+}
+
+/** The way out of that error, inline in the strip. `tertiary` is §4.1's
+ *  quietest tier: the remedy must be findable without competing with Send,
+ *  which is the control anyone looking at this footer is actually aiming for. */
+export function ChatFooterRemedy({ disabled = false, onClick, children }: {
+  disabled?: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <button type="button" data-nc-action="tertiary" disabled={disabled} onClick={onClick}>
+      {children}
+    </button>
   );
 }
 

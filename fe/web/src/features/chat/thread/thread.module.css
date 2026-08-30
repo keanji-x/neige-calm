@@ -1,31 +1,33 @@
 @layer features {
   /*
-   * ── Side, not fill ──────────────────────────────────────────────────────
+   * ── Two voices, and only one of them is yours ────────────────────────────
    *
-   * Interface type, 13px sans, for the whole transcript. The report reads at
-   * `--text-lg` serif and this deliberately does not: the drawer's measure is
-   * fixed at 364px, while a serif at the 13px that lands in the reading band is
-   * below the size a serif holds up at on screen. A conversation is working
-   * type; a report is published type. The measured tradeoff is recorded with
-   * the reply rule below.
+   * **What comes back is set in the report's type**, and that is the decision
+   * this file was rewritten around. The same agent writes the reply and writes
+   * the report; if the drawer answers in interface sans and the document
+   * answers in serif, one agent has two voices and the reader has to learn
+   * both. So the reply takes `--font-serif` at `--text-md`, and the cost of
+   * that is stated in full on the `.reply` rule rather than glossed here.
    *
-   * Who spoke is carried by **which side of the column it is on**, and only
-   * your turn moves:
+   * **What you said stays sans**, at `--text-base`. It is not a second-class
+   * turn; it is a *different author*. Your words are the ones you typed into
+   * the box, and the box is sans (`styles/astryx-theme.css` maps Astryx's
+   * `--font-family-body` onto `--font-sans`), so the family says the plain
+   * thing it should say: this side of the transcript is you, and it is the
+   * same you that is still typing.
    *
-   *   what you said   an object flush to the inline-end edge, sans 13
-   *   what came back  flush to the inline-start edge, the full column, sans 13
+   * Who spoke is therefore carried three ways, and each was earned separately:
    *
-   * Side is the strongest signal available and the cheapest: it costs no ink,
-   * no shape, and no width. A 500-against-400 weight step at 13px was tried
-   * first and was weaker — it had to be *looked for*.
+   *   what you said   inline-end edge, filled, sans `--text-base`
+   *   what came back  inline-start edge, unfilled, serif `--text-md`
    *
-   * Your turn carries one more thing on top of side: the faintest fill in the
-   * app (`--surface-said`). An earlier round used `--surface-chip` here and it
-   * was wrong for a reason worth keeping written down — chip is the composer's
-   * recessed well, and at that weight it put a slab of grey behind every other
-   * paragraph of a 364px column. The fill that works is one you have to look
-   * for. **The reply is never filled**: it is the long thing that is actually
-   * read, and it keeps the plain column.
+   * Side came first and is still the cheapest — it costs no ink, no shape, and
+   * no width. A 500-against-400 weight step at 13px was tried before it and was
+   * weaker; it had to be *looked for*.
+   *
+   * **The reply is never filled**: it is the long thing that is actually read,
+   * and it keeps the plain column. The fill belongs to your turn alone, and
+   * `.said` below says which fill and why.
    *
    * **Both turns are at full ink**, and that is deliberate. Your line spent one
    * round at `--text-2` on the theory that you already know what you wrote —
@@ -98,13 +100,31 @@
    * happen to *stop*.
    */
   /*
-   * ── Your turn is the one object in the column ───────────────────────────
+   * ── Your turn is the same material as the box you type in ───────────────
    *
-   * The fill is `--surface-said`, the faintest tint in the app — under the code
-   * block, far under the composer well. It is not there to say "chat app"; it
-   * is there because your own words are the only thing in this column you scan
-   * *back* for, and a tint you have to look for is exactly the right cost for
-   * something you only occasionally look for.
+   * **The fill is `--bg`, the same fill the composer well takes.** What you
+   * said and what you are still writing are one substance, and that is the
+   * whole idea: the card is the agent's surface, and the two places *your*
+   * words live are cut into it. A said turn is a closed well; the composer is
+   * the open one. Nothing else in the drawer is filled, so "filled" now means
+   * exactly one thing, and it means you.
+   *
+   * It used to be `--surface-said` (a 3% ink tint) while the well was `--bg`,
+   * and the two were a third of a step apart for no reason a reader could
+   * name. Unifying had two directions and only one of them survives contact
+   * with the well: Astryx's ChatComposer draws **no border** — `--bg` is the
+   * only thing making the input findable — so lifting the well to a 3% tint on
+   * a `--surface-card` drawer erases the input affordance. Moving the bubble
+   * down to the well is therefore the only unification available, and it is
+   * also the better story. `--surface-said` was deleted from `tokens.css` with
+   * this change; it had no other user.
+   *
+   * `--bg` is heavier than the tint it replaces and lighter than
+   * `--surface-chip`, which an earlier round tried and rejected as a slab of
+   * grey behind every other paragraph. It is the page ground in both themes
+   * (light 92.2%, dark 24.5% against a 31.4% card), so "recessed" holds
+   * whichever way the theme goes, and it carries no text contrast of its own —
+   * `--text` reads on it exactly as it reads on the report's ground.
    *
    * What the fill buys back is the text alignment. Flush-right ragged-left prose
    * was the price of having no edges: without a box, a right-aligned block is
@@ -113,8 +133,8 @@
    * side. `width: fit-content` keeps a short line short — a full-width bubble
    * would put both turns on the same two verticals again.
    *
-   * `--radius-md` (12) against the composer well's `--radius-lg` (16): the well
-   * is the bigger object and stays the roundest thing in the drawer.
+   * `--radius-chat` is the drawer's concentric inner radius, which is also what
+   * the composer well takes: same material, same corner.
    */
   .said {
     inline-size: fit-content;
@@ -122,8 +142,8 @@
     min-inline-size: 0;
     margin-inline-start: auto;
     padding: var(--space-3) var(--space-5);
-    border-radius: var(--radius-md);
-    background: var(--surface-said);
+    border-radius: var(--radius-chat, var(--radius-md));
+    background: var(--bg);
     overflow-wrap: anywhere;
     white-space: pre-wrap;
     font-size: var(--text-base);
@@ -133,39 +153,52 @@
   }
 
   /*
-   * The reply is the drawer's own type: sans 13, the same as your turn.
+   * ── The reply is the report's voice, in the report's family ─────────────
    *
-   * It was 15px serif for one round, and the argument for that was sound while
-   * it was the only thing holding "who" up — two turns at 13px sans differ only
-   * in which edge they touch, so the transcript read as one column of text that
-   * jumped sides for no reason, and a family change is a *voice* difference
-   * that costs the text no ink, no shape and no width.
+   * `--font-serif` and `--leading-loose` are taken straight off `.calm-prose`
+   * in base.css, which is what `features/report/document` renders authored text
+   * with. One agent, one voice: the thing that answers you in the drawer is the
+   * thing that writes the document, and for two rounds it said so in two
+   * different families.
    *
-   * The fill removed that job. Side and a bubble already say who twice; family
-   * and size would have said it a third and fourth time, which is precisely
-   * what §3 spends its budget rule preventing. So the differentiation stays at
-   * two channels and the type goes back to one.
+   * A previous round argued the other way and lost, and the argument is kept
+   * because it is the honest half of this decision: **a conversation is working
+   * type, a report is published type**, and the drawer's column is far too
+   * narrow for the report's size. That half is still true. What it got wrong
+   * was the conclusion — the narrow column is a reason to drop a *step*, not a
+   * reason to change families.
    *
-   * What this costs, stated rather than glossed: the drawer no longer shares a
-   * voice with the report, and that shared voice was a real idea — a reply and
-   * a report are the same agent talking. The trade is deliberate. **A
-   * conversation is working type; a report is published type.** Setting the
-   * drawer in the report's serif was the narrower column pretending to be the
-   * document, and the measurement said so all along: 364px cannot hold this
-   * serif at the 65–75 band (15px reached 60.1, 18px only 50.1, and the report
-   * itself gets 69.4 at 504px). Sans at 13 is not a compromised serif; it is
-   * the right family for a 364px column.
+   * **The cost, measured rather than estimated.** The column is
+   * `--panel-span` (`max(15rem, 25cqi)` of `.main`, i.e. of the window minus
+   * the 200px rail) less the drawer's two `--nc-card-inset` pads, so it is
+   * `--panel-span − 16`. Rendered in Chromium against this serif stack the
+   * average advance is 0.394em per character, which gives:
    *
-   * `--leading-base` (1.5), not the `--leading-snug` your turn uses: yours is
-   * usually one line and this is the paragraph that gets read.
+   *   window   --panel-span   column   15px serif   18px serif
+   *   1440           310        294       49.7         41.4
+   *   1512           328        312       52.8         44.0
+   *   1728           382        366       61.9         51.6
+   *   1920           430        414       70.0         58.4
+   *
+   * Only the widest window reaches the 65–75 band, and only at 15px; the
+   * report's own `--text-lg` is below the band at every width the drawer is
+   * ever opened at (the report gets 71.0 on its 504px measure). So the size
+   * stops one step short at `--text-md` and **the drawer runs short lines** —
+   * roughly 50 to 62 characters on a laptop. That is a knowingly accepted
+   * trade: same voice as the report, a measure the report would not accept.
+   *
+   * `--leading-loose` (1.65), the report's, not the `--leading-snug` your turn
+   * uses: yours is usually one line, this is the paragraph that gets read, and
+   * a short measure needs the extra leading more than a long one does.
    */
   .reply {
     min-inline-size: 0;
     overflow-wrap: anywhere;
     white-space: pre-wrap;
-    font-size: var(--text-base);
+    font-family: var(--font-serif);
+    font-size: var(--text-md);
     font-weight: var(--weight-normal);
-    line-height: var(--leading-base);
+    line-height: var(--leading-loose);
     color: var(--text);
   }
 
@@ -211,6 +244,7 @@
     align-items: baseline;
     gap: var(--space-2);
     min-inline-size: 0;
+    padding-inline: 0;
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
@@ -264,8 +298,10 @@
     text-align: center;
   }
 
-  /* One voice in the drawer: this line used to be the serif's last outpost,
-     which made the empty state the only surface here set in the report's type. */
+  /* Sans, at the interface rank — and now that the reply is serif, that is a
+     distinction rather than a leftover. Nobody has spoken yet, so there is no
+     agent voice here to carry: this is the drawer telling you what the drawer
+     is for, which is chrome, and chrome is sans. */
   .emptyLead {
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
@@ -281,176 +317,354 @@
   }
 
   /*
-   * ── The composer is an object, not a bar ────────────────────────────────
-   *
-   * It was a full-bleed `--surface-chip` rectangle with square corners welded
-   * across the bottom of the drawer, so it read as a status bar you could not
-   * touch rather than a field you type in — and on focus it drew a 2px accent
-   * rectangle around the whole 396px width to say a caret had landed in it.
-   *
-   * Now it is a rounded well that floats clear of the drawer's edges, which is
-   * the shape every agent composer settled on:
-   *
-   *   gutter        `--space-8` (16) on both sides and the bottom
-   *   box edge      that 16 is the drawer body's own inset, so the well's *box*
-   *                 sits on the same vertical as the transcript — the well is
-   *                 an object in the column, not a bar under it
-   *   corner        `--radius-lg` (16), 40% of the well's own height
-   *
-   * The concentric rule (`inner = outer − gap`) has nothing to say here: the
-   * drawer has no corner radius at all, being a region welded to the window's
-   * edge rather than an object on a page. The well is the object, and it is
-   * rounded for the reason objects are.
-   *
-   * The fill is the recessed rank: the ladder says −1 is "behind the page", the
-   * drawer's own surface is `--paper`, and a well cut into it reads as somewhere
-   * you put things. That is elevation doing the job a `border-block-start`
-   * would otherwise do, which is this system's rule.
+   * Composer chrome is Astryx ChatComposer. This wrapper only insets it so
+   * the library well sits on the same column as the transcript.
    */
   .composer {
-    display: flex;
-    align-items: flex-end;
-    gap: var(--space-3);
     flex: none;
-    margin: 0 var(--space-8) var(--space-8);
-    padding: var(--space-3) var(--space-3) var(--space-3) var(--space-6);
-    border-radius: var(--radius-lg);
-    background: var(--surface-chip);
+    padding: 0 var(--nc-card-inset, var(--space-4)) var(--nc-card-inset, var(--space-4));
+    /* Astryx ChatSendButton is primary/blue; send is a routine control here. */
+    --color-accent: var(--text-3);
+    /*
+     * Astryx paints the well with `--color-background-popover` (= `--paper`),
+     * which is the same rank as the card. Recess it one step to `--bg`, the
+     * page/report ground, so the well is a hole in the card.
+     *
+     * **This is also the transcript's `.said` fill**, and the two are meant to
+     * be read as one material — see the note on `.said`. It is load-bearing
+     * here in a way it is not there: Astryx's composer draws no border, so this
+     * fill is the only thing that makes the input findable on the card. Any
+     * future move of `.said` must leave the well where it is, or the box stops
+     * looking like a box.
+     *
+     * Radius lives on the inner body (`--_chat-composer-radius`). Do not paint
+     * the square root — that hides the rounding.
+     */
+    --color-background-popover: var(--bg);
+    --color-background-muted: var(--bg);
+    --color-background-surface: var(--bg);
+    --radius-chat: var(--nc-card-radius, var(--radius-lg));
+    --_chat-composer-radius: var(--radius-chat);
+
+    /* Published for the `/` menu, which is anchored to this box rather than to
+       the caret Astryx would otherwise use — see the command menu block. */
+    anchor-name: --nc-composer-menu;
   }
 
   /*
-   * Field-shaped, not input-shaped: no underline, no box. base.css gives every
-   * text field a bottom rule, which is right for a form with three fields in a
-   * row and wrong for the single field that fills a well — there is nothing for
-   * it to be distinguished *from*.
+   * ── The perch does not wear the focus ring ────────────────────────────────
    *
-   * `field-sizing: content` grows it with what you type; browsers without it
-   * keep the one-row `rows={1}` box and scroll, which is the honest fallback.
+   * `.composer` carries `tabIndex={-1}` so a send has somewhere to park focus
+   * that is not `<body>` (the note on the element says why). `base.css` then
+   * paints *every* `:focus-visible` with `outline: 2px solid var(--accent)`,
+   * and Chromium grants `:focus-visible` to a **programmatic** `focus()` when
+   * the last interaction was a key press — which is exactly the Enter-to-send
+   * path, i.e. the main way anyone sends anything. Measured on that path:
+   * `focusVisible: true`, `outline: "oklch(0.45 0.1 267) solid 2px"`, drawn
+   * around the composer's whole box — the well *plus* the card inset, so the
+   * full width of the card's bottom edge — and held for the entire request.
+   * Sending with the mouse produced no ring, so the app's loudest visual event
+   * fired only for keyboard users, on their normal path.
+   *
+   * A focus ring is a promise that keyboard input goes here. This box takes no
+   * input; it is a waiting room the reader never asked to enter and cannot Tab
+   * to. So the ring is removed rather than restyled — there is no smaller
+   * version of it that would be honest.
+   *
+   * This removes nothing a keyboard user relies on: `tabindex="-1"` keeps the
+   * box out of the tab ring entirely, and the one element inside it that *does*
+   * take input, Astryx's field, keeps its own ring untouched. Pinned in
+   * `thread.browser.test.tsx` ("draws no focus ring on the perch"), which reads
+   * the computed `outline` after a real Enter — delete this rule and it is red.
    */
-  .field {
-    field-sizing: content;
-    flex: 1;
+  .composer:focus-visible {
+    outline: none;
+  }
+
+  /*
+   * Send's fill, keyed on an English string — stated plainly because it cannot
+   * be avoided from out here.
+   *
+   * `aria-label='Send'` is Astryx's own hardcoded `label` on `ChatSendButton`;
+   * the component exposes no class, no data attribute and no theme hook for its
+   * button, so there is nothing else in the tree to select. Localise Astryx, or
+   * let it reword the button, and this rule stops matching and Send goes back
+   * to Astryx's primary fill — with nothing broken, nothing logged, and the
+   * button still sending.
+   *
+   * Made non-silent rather than merely admitted: `thread.browser.test.tsx`
+   * ("fills Send with the chip surface") compares the computed background
+   * against a probe carrying `--surface-chip`, and goes red on a relabelled
+   * button. Mutation-checked by renaming the label in this selector.
+   *
+   * The five `:not(#\#)` are a specificity ladder, not a match: `#\#` is an id
+   * that cannot exist. They are what lets this out-rank Astryx's compiled
+   * StyleX without `!important`.
+   */
+  .composer :is(button[aria-label='Send']):not(#\#):not(#\#):not(#\#):not(#\#):not(#\#) {
+    background: var(--surface-chip);
+    color: var(--text);
+    box-shadow: none;
+  }
+
+  /*
+   * ── The strip that grows out of the well ────────────────────────────────
+   *
+   * A failed send is **about the box**, so it is attached to the box. The last
+   * round put it *under* the composer as two bare caption lines — a sentence
+   * and, below it, a button, both floating in the card's bottom inset with
+   * nothing tying them to the control they describe. Read at 1512×950 it was a
+   * footnote about something above it, and the remedy read as page furniture
+   * rather than as the way out of the error one line up.
+   *
+   * So it is one strip, welded to the well's top edge: same inline track
+   * (`--nc-card-inset`, the column the transcript and the well already start
+   * on), rounded on top and **square on the bottom**, sitting flush against the
+   * well with no gap. The square bottom is the whole trick — a fully rounded
+   * pill would be a separate object resting near the composer; two square
+   * corners make it one object *with* the composer, the way a label is part of
+   * the field it sits on. Nothing else in the drawer is shaped this way, so the
+   * shape means exactly one thing.
+   *
+   * The fill is `--error-soft` and the ink `--error-text`, the pair
+   * `tools/styles/check-contrast.mjs` already measures; no new colour was
+   * minted for this. It is a soft fill and not the solid `--error`, because a
+   * message that did not send is a condition to fix, not an alarm — the
+   * activity lines established the same register for a failed shell run.
+   *
+   * The remedy sits **in the strip, on the same row** rather than on a line of
+   * its own: the error and its way out are one statement, and at
+   * `--text-xs` the sentence rarely fills the 312px column anyway. `wrap` is
+   * there for the long one ("Send as a new conversation") and lets it drop to a
+   * second row without leaving the strip. It stays a §4.1 `tertiary` — Send is
+   * the control anyone looking here is aiming at, and a second filled button
+   * inside a red strip would be two answers to one question.
+   */
+  .footerNotice {
+    display: flex;
+    flex: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+    margin-inline: var(--nc-card-inset, var(--space-4));
+    /*
+     * Two numbers, both measured on a build rather than reasoned about.
+     *
+     * The top radius is the **well's** radius, not the drawer's inner
+     * `--radius-chat`: at 8 against the well's 16 the two shoulders were
+     * visibly different widths, which is the first thing that gives away "two
+     * objects" when the whole point is one.
+     *
+     * The bottom overlaps the well by exactly that radius and the well, later
+     * in the DOM, paints over it. Butted flush instead, the well's own rounded
+     * top corners cut two white notches of card out of the strip's flat bottom
+     * edge — small, and enough to read as a red box resting *near* a rounded
+     * one. Running the fill behind those corners closes them.
+     */
+    padding: var(--space-3) var(--space-5) calc(var(--space-3) + var(--nc-card-radius, var(--radius-lg)));
+    margin-block-end: calc(var(--nc-card-radius, var(--radius-lg)) * -1);
+    border-radius: var(--nc-card-radius, var(--radius-lg)) var(--nc-card-radius, var(--radius-lg)) 0 0;
+    background: var(--error-soft);
+  }
+
+  /* The caption rank — the same 11px `.activity` uses for what the agent did.
+     It is the smaller half of the strip; the button carries its own geometry
+     from base.css. */
+  .footerError {
     min-inline-size: 0;
-    min-block-size: var(--control-h);
-    max-block-size: calc(var(--control-h) * 5);
-    padding-block: var(--space-2);
-    padding-inline: var(--space-0);
-    border: none;
-    resize: none;
-    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--error-text);
+  }
+
+  /*
+   * ── The `/` command menu ─────────────────────────────────────────────────
+   *
+   * The popover, its keyboard model and its `role="listbox"` semantics are
+   * Astryx's (`useTriggerMenu`). Three things about it are ours, and they are
+   * three different kinds of override — kept in that order below, because the
+   * cost rises with each one.
+   *
+   * ── 1. Surface: two variables, no selectors ─────────────────────────────
+   *
+   * `.composer` above recesses the *well* by pointing Astryx's
+   * `--color-background-popover` at `--bg`. That variable inherits, and the
+   * trigger menu is a DOM descendant of `.composer`, so the menu was being
+   * painted the same recessed grey as the hole it grows out of — a menu with
+   * no elevation at all. tokens.css §elevation puts a menu at **+2 floating:
+   * `--paper` plus `--shadow-float`**, which is what the drawer and the dialog
+   * already take, so the fix is to say that in Astryx's own variable names on
+   * the popover's subtree. Nothing is minted and no rule reaches into Astryx's
+   * markup: the surface is drawn by Astryx's stylesheet, from our values.
+   *
+   * **This is the most silent thing in this file, and an earlier revision of
+   * this note had the risk backwards** — it filed these two lines under "cheap"
+   * beside the `!important`s below. They are not cheap. `--color-background-
+   * popover` and `--shadow-low` are Astryx's *internal* names, borrowed with no
+   * contract; rename either upstream and this block keeps parsing, keeps
+   * applying, and stops doing anything. The menu then falls back to whatever
+   * `.composer` left in scope — the well's own recessed `--bg`, flat — which is
+   * exactly the reading the design rejected, arriving with no error, no visual
+   * breakage on open, and no test that reads the DOM noticing.
+   *
+   * So it is no longer silent: `thread.browser.test.tsx` ("paints the menu on
+   * --paper with the float shadow") measures the *computed* fill and shadow of
+   * the painted surface against a probe carrying `--paper` / `--shadow-float`.
+   * Both halves are load-bearing and both were checked by mutation — renaming
+   * either line alone turns that test red. (The colour line is not made
+   * redundant by `astryx-theme.css`'s global `--color-background-popover`:
+   * `.composer` overrides it to `--bg` for this whole subtree, so this is what
+   * puts it back.)
+   *
+   * ── 2. Width and alignment: three `!important`s, and why ────────────────
+   *
+   * The ask is that the menu be **the width of the well and flush with it**.
+   * Astryx offers no way to say that. `ChatComposerTrigger` has no width,
+   * anchor or placement field (`character` / `searchSource` / `renderItem` /
+   * `onSelect` / three strings), and `useTriggerMenu` hard-codes the rest: it
+   * appends its own zero-size anchor span at the **caret rect**, calls
+   * `popover.render(..., {placement: 'above', alignment: 'start'})`, and
+   * `useLayer` writes `position-anchor` / `position-area` /
+   * `position-try-fallbacks` as **inline styles**. Inline styles are why this
+   * block carries `!important` on exactly those three properties and on
+   * nothing else — no specificity trick can reach an inline declaration, and
+   * layering cannot either. (Everything else here wins on layers alone:
+   * Astryx's compiled StyleX lands in `@layer astryx`, `features` is later.)
+   *
+   * What the override does is redirect the anchor from the caret to
+   * `.composer`, which publishes an `anchor-name` for exactly this, and then
+   * place the edges by hand. `position-area: none` is what makes those insets
+   * mean what they say; `position-try-fallbacks: none` stops the flip that
+   * would otherwise fire the moment a menu as wide as the well meets a
+   * viewport edge — the menu is one row tall and sits above a well that is
+   * itself inset from the drawer's bottom, so there is nothing to flip from.
+   *
+   * **Fragility, honestly.** The two selectors below name no Astryx class and
+   * no Astryx DOM shape: `[popover]` is the platform attribute `useLayer` sets
+   * on the layer element, `[role='listbox']` is the ARIA contract
+   * `useTriggerMenu` publishes and the router's Escape handler already reads.
+   * Both are semantics Astryx would have to *break its own accessibility* to
+   * change. What would break this is narrower and nameable: (a) Astryx moving
+   * from CSS anchor positioning to JS coordinates — the `!important`s would go
+   * dead and the menu would return to the caret, visibly wrong on first open,
+   * not silently; (b) a second `[popover]`-based listbox appearing inside the
+   * composer, which would then also be well-width — there is one trigger and
+   * adding another is already the moment to revisit this file.
+   *
+   * **(c) is the one the earlier revision of this note missed:** Astryx
+   * portalling the layer to `document.body`. `useLayer` renders in place today,
+   * but a portal is the ordinary next step for a popover, and it would take out
+   * `.composer [popover]` entirely — *both* selectors, so the positioning and
+   * the colour above fail together, while the menu still opens near the caret
+   * and still works. That is silent in a way (a) is not. It is covered by the
+   * same browser test: the width claim is measured against `.composer`'s box,
+   * so a portalled menu cannot satisfy it.
+   *
+   * ── 3. The row: ours outright ───────────────────────────────────────────
+   *
+   * Astryx renders a bare label and calls `renderItem` for anything else, so
+   * the inside of a row is not an override at all.
+   *
+   * **One line, two columns.** It was a stacked title and caption, which spent
+   * two lines and 60px of popover on a menu of one command and still read as a
+   * heading with a subtitle rather than as a command with a description. Now
+   * the command is on the left at body rank and what it does is on the right
+   * at `--text-xs` / `--text-3` — the caption tier `.activity` and
+   * `.footerError` already use for "what happened", which is the same register
+   * as "what this would do". `--text-xs` is the *bottom* of the scale (11px,
+   * tokens.css §type), so "make the description smaller" has no next step
+   * left in the type ranks; what was actually too long was the sentence, and
+   * that is what changed.
+   *
+   * **The row leads with the module head's own `+`**, at `--glyph-sm` (14px)
+   * against the 13px name. Which colour it takes, how it is aligned and why it
+   * is a sibling rather than a child of the name are all at `.commandItem svg`
+   * below, where the measurements that decided them are.
+   *
+   * **The description is the part that gives way.** `flex: none` on the name
+   * and `min-inline-size: 0` plus an ellipsis on the description is what keeps
+   * a long sentence from ever pushing `+ new` out of the row: the reader must
+   * always be able to see what to type, and may lose the tail of why.
+   */
+  .composer [popover] {
+    --color-background-popover: var(--paper);
+    --shadow-low: var(--shadow-float);
+  }
+
+  .composer [popover]:has([role='listbox']) {
+    position-anchor: --nc-composer-menu !important;
+    position-area: none !important;
+    position-try-fallbacks: none !important;
+    inset-block-start: auto;
+    /* The UA stylesheet gives `[popover]` `width: fit-content`, which would
+       out-rank the end inset (an over-constrained box drops it) and leave the
+       menu content-width again. `auto` is what hands both edges to the insets. */
+    inline-size: auto;
+    /* `.composer`'s box is the well plus the card inset it is padded with, so
+       both edges come back in by that same inset to land on the well. */
+    inset-inline-start: calc(anchor(left) + var(--nc-card-inset, var(--space-4)));
+    inset-inline-end: calc(anchor(right) + var(--nc-card-inset, var(--space-4)));
+    inset-block-end: anchor(top);
+  }
+
+  .commandItem {
+    display: flex;
+    flex: 1;
+    /* The floor between glyph and name. The description does not use it — it
+       is pushed to the far edge by its own auto margin below, which is what
+       lets the first two sit tight together as one thing. */
+    gap: var(--space-2);
+    align-items: baseline;
+    min-inline-size: 0;
+  }
+
+  /*
+   * The glyph is a flex sibling of the name, not nested inside it, and both
+   * halves of that were forced by measurement.
+   *
+   * *Not nested*, because a wrapper has to be either a flex box or an inline
+   * run and both fail: as a flex box its baseline is taken from its first item
+   * — synthesised from an SVG's bottom margin edge — which threw the whole
+   * column 2.5px off the description's baseline; as an inline run Chromium
+   * sizes the flex item from a max-content width that omits the CSS-sized
+   * replaced box entirely (measured 27.5px for a 45.5px line), so the glyph
+   * wrapped to a line of its own.
+   *
+   * *Baseline-exempt*, because it has no baseline to align on: `align-self`
+   * centres the 14px box on the row instead, which is where a glyph beside a
+   * word belongs. And it takes `--text`, the name's colour, not `--text-3`,
+   * the description's: the row has exactly two ranks — the thing you invoke
+   * and what it does — and the glyph is the first, restating the name rather
+   * than commenting on it. (The module head's own `+` is `--text-3`, but that
+   * one is idle chrome in a header; this one is inside the row about to be
+   * pressed.)
+   */
+  .commandItem svg {
+    flex: none;
+    align-self: center;
+    color: var(--text);
+  }
+
+  .commandName {
+    flex: none;
     font-size: var(--text-base);
     line-height: var(--leading-snug);
     color: var(--text);
   }
 
-  /*
-   * ── Focus is shown by the arrow, not by a ring ──────────────────────────
-   *
-   * A 2px accent outline around a 364px well is a lot of blue to say that a
-   * caret landed somewhere. It also stated the loudest thing on the surface,
-   * every time you clicked into the box — which is the opposite of what a quiet
-   * app should do with the most ordinary action it has.
-   *
-   * So the ring is gone and the send arrow carries it instead: **no focus, no
-   * arrow.** The well deepens one step at the same moment, so the state is
-   * carried by colour rather than by a line, which is this system's rule
-   * everywhere else.
-   *
-   * `--surface-chip-focus`, not an overlay: an overlay is defined against ink
-   * and therefore flips direction with the theme, which had focus *lowering*
-   * the well's contrast against the page in dark. See the token's own note,
-   * including why the dark half of it is honest rather than effective.
-   *
-   * There is one deliberate exception to "no focus, no arrow": a well holding
-   * an unsent draft keeps its arrow even when focus has gone. Hiding it there
-   * would leave text you can see and no visible way to send it.
-   */
-  .field:focus-visible {
-    outline: none;
-
-    /* base.css draws a focused field's rule as an inset shadow; without a ring
-       around the well, that shadow would be the only chrome left and would read
-       as an underline under a box that has no other lines. */
-    box-shadow: none;
-  }
-
-  .composer:focus-within {
-    background: var(--surface-chip-focus);
-  }
-
-  .field::placeholder {
-    color: var(--text-4);
-  }
-
-  /*
-   * A round send, `data-nc-role="icon"` — a component geometry, not a bent
-   * `[data-nc-action]`. §4.1's four tiers are one fixed geometry on purpose and
-   * base.css says in as many words that a per-module copy is the drift its gate
-   * exists to catch; the old `.send` was already overriding that geometry's
-   * height and padding. A role carries its own §6 entry instead, which is the
-   * sanctioned way to be a different shape.
-   *
-   * It is still the surface's one primary action and still says "Send" — to a
-   * screen reader through `aria-label`, and to a pointer through the accent
-   * fill, which nothing else in the drawer wears.
-   */
-  /*
-   * ── The send is an arrow, and the arrow is the state ────────────────────
-   *
-   * It was an accent-filled circle, which made the surface's most routine
-   * control its loudest object — a solid blue disc sitting in the corner of a
-   * grey well whether or not there was anything to send. Now it is a glyph on
-   * no ground at all, and its **ink** is the entire state machine:
-   *
-   *   absent      nothing typed and focus elsewhere — there is nothing to do
-   *   `--text-4`  the well is live but empty; the arrow is there, greyed
-   *   `--text`    there is something to send: full ink, maximum against the
-   *               well in both themes (near-black on light, near-white on dark)
-   *
-   * `data-nc-role="icon"`, not `[data-nc-action]`: §4.1's four tiers are one
-   * fixed geometry and base.css says a per-module copy of it is the drift its
-   * gate exists to catch. A role carries its own §6 entry, which is how a
-   * control gets to be a different shape.
-   *
-   * It keeps the full 28px hit area (§5, 2.5.8) and its place in the focus
-   * order at every state — `aria-disabled`, never `disabled`, for the reason
-   * given at the markup.
-   */
-  .send {
-    display: grid;
-    place-items: center;
-    flex: none;
-    inline-size: var(--control-h);
-    block-size: var(--control-h);
-    border-radius: var(--radius-pill);
-    background: none;
-    line-height: var(--leading-none);
-    color: var(--text);
-    cursor: pointer;
-    transition: color var(--motion-quick) ease-out,
-      opacity var(--motion-quick) ease-out;
-  }
-
-  .send[aria-disabled='true'] {
-    color: var(--text-4);
-    cursor: default;
-  }
-
-  /*
-   * Hidden, not removed: `opacity` keeps it in the layout, in the focus order
-   * and in the accessibility tree, so tabbing into the composer still reaches
-   * Send — and the moment focus lands anywhere inside, `:focus-within` is true
-   * and the arrow is already visible.
-   */
-  .composer:not(:focus-within) .send[aria-disabled='true'] {
-    opacity: 0;
-  }
-
-  /* Keyboard focus still needs to be visible on the control itself; the arrow's
-     appearance says the *well* is live, not which control is focused. */
-  .send:focus-visible {
-    outline: 2px solid var(--accent);
-    outline-offset: -2px;
+  .commandHint {
+    /* Not `justify-content: space-between` on the row: with three children
+       that would space the glyph away from the name too. The description
+       claims the free space itself and the command stays one unit. */
+    margin-inline-start: auto;
+    min-inline-size: 0;
+    overflow: hidden;
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   @keyframes thread-pulse {

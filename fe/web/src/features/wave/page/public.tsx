@@ -181,7 +181,9 @@ export function WavePage({
           same object; it left the page header, where it was the largest fixed
           cost the page paid for its least-read fact.
         */}
-        <aside className={styles.panel}>
+        {/* `data-nc-panel` is how `app/shell` hides this while the conversation
+            drawer is open — see the same marker on the cove page. */}
+        <aside className={styles.panel} data-nc-panel="">
           <PanelCard>
             <PanelModule title="Cards" action={cardsAction}>
               {cards.length === 0

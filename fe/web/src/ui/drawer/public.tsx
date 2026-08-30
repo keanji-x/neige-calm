@@ -9,57 +9,72 @@
 // trap would mean you cannot click the next wave without closing it first.
 // Escape closes it, which is the one thing a non-modal overlay still owes you.
 
-import { useEffect, useRef, type ReactElement, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
 /**
- * A control in the drawer's head, beside the close.
+ * Ask `element` to take focus, and report whether the focus landed somewhere a
+ * reader can actually be.
  *
- * It is a companion component rather than a free `ReactNode` for the reason
- * `PanelAction` is one: the geometry belongs to the head — a 28px hit area
- * carried on the title's first line — and a caller composing its own button
- * would have to restate it, which is the drift the role/tier split exists to
- * prevent (§4.1).
+ * **Two different questions, answered two different ways, and the split is the
+ * point.**
  *
- * `danger` is §4.3's tier and it is red **at rest**: a warning that appears
- * only under the pointer is missing at the moment of the decision, and missing
- * from the keyboard path entirely. Icon-only, so the label is the whole of what
- * a screen reader gets — it must name the object, not just the verb.
+ * *Can the engine put focus here?* is decided by **calling `focus()` and
+ * reading `document.activeElement` back**. This used to be `canTakeFocus`, a
+ * prediction from computed CSS — connected, not `disabled`, `visibility` and
+ * `display` both permissive — and two of its clauses were backwards against
+ * Chromium. `display` does not inherit, so reading it off the element says
+ * nothing about a `display: none` **ancestor**, the exact case the docstring
+ * claimed to cover; `content-visibility: hidden` is invisible to it for the
+ * same reason. Both answered "yes, focusable" for an element `focus()` cannot
+ * reach, and a false yes is not inert here — the caller uses it to decide
+ * whether to *wait*, so it spends the one armed restore on a silent no-op and
+ * drops the opener. Predicting focusability from CSS is re-deriving the
+ * engine's rules by hand; the outcome cannot disagree with the engine, so the
+ * outcome is what is read. A `focus()` that does not take moves focus nowhere,
+ * so asking speculatively costs nothing.
+ *
+ * *Should focus be here even though the engine allows it?* cannot be answered
+ * that way, because `focus()` **succeeds** into an `aria-hidden` or `inert`
+ * subtree — `aria-hidden` is an accessibility-tree statement with no effect on
+ * focusability at all, and `inert`'s own removal is not observable through
+ * `activeElement` on every path. A landing there reads back as a triumph while
+ * the target does not exist in the tree a screen reader is walking: the reader
+ * is told nothing, and the caller cancels the fallback that would have put them
+ * somewhere real. So these two are checked **by attribute, before the ask** —
+ * the old predicate had this clause and it was right; what was wrong with it
+ * was the CSS half, which is gone.
+ *
+ * `closest()` and not a computed read, because both attributes inherit down the
+ * subtree by definition rather than by cascade, and that is precisely what
+ * `closest()` walks.
+ *
+ * jsdom implements `focus()` for real on genuinely focusable elements (and
+ * computes no CSS, so nothing there is ever hidden); the CSS-driven failures
+ * the `focus()` half exists for are therefore only observable in
+ * `app/shell/drawer-seam.browser.test.tsx`, where the stylesheets are real. The
+ * attribute half is engine-independent and is pinned at the unit tier.
  */
-export function DrawerAction({ label, onClick, danger = false, children }: {
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-  children: ReactElement;
-}) {
-  return (
-    <button
-      type="button"
-      data-nc-role="icon"
-      className={`${styles.action} ${danger ? styles.actionDanger : ''}`}
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
+function focusTook(element: HTMLElement): boolean {
+  if (element.closest('[aria-hidden="true"], [inert]') !== null) return false;
+  element.focus();
+  return document.activeElement === element;
 }
 
-export function Drawer({ open, title, onClose, children, footer, headAction }: {
+export function Drawer({ open, title, onClose, children, footer }: {
   open: boolean;
   /**
-   * The whole head — one grey line on the close button's row.
+   * The drawer's **accessible name**, and nothing that is painted.
    *
-   * It briefly carried a "CONVERSATION" eyebrow above this, on the theory that
-   * a title says what the surface is *about* and leaves what it *is* to be
-   * inferred. In a drawer that only ever opens from a conversation control,
-   * with a transcript and a message box under it, nothing was left to infer:
-   * the word was a caption on an unambiguous thing, and it cost the head a
-   * whole line and a second type rank to say it.
+   * It used to be printed as an `<h2>` in a head band. The band is gone (see
+   * the `.controls` note in the stylesheet), so this string now reaches the
+   * reader only through `aria-label` on the container — which is where the
+   * whole of its remaining value was anyway: a sighted reader clicked a named
+   * conversation row to get here, a screen-reader user did not necessarily
+   * land here from that row and still needs the region named.
    */
   title: string;
   onClose: () => void;
@@ -71,16 +86,6 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
    * the bottom of a long transcript is a message box you cannot reach.
    */
   footer?: ReactNode;
-  /**
-   * One control beside the close, for something that belongs to the surface
-   * rather than to what is in it — today, the conversation's reset.
-   *
-   * It is a head slot and not a footer button because the footer is where you
-   * *work*: a destructive action standing next to the message box is one
-   * mis-click away from the most routine thing on the surface, and it inherits
-   * the visual weight of a control you press every turn.
-   */
-  headAction?: ReactNode;
 }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [closing, setClosing] = useState(false);
@@ -98,11 +103,11 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
    * snapshot of the last frame that had content, and it must never cause a
    * render of its own.
    */
-  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode; headAction?: ReactNode }>(
-    { title, children, footer, headAction },
+  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode }>(
+    { title, children, footer },
   );
-  if (open) lastFrame.current = { title, children, footer, headAction };
-  const frame = open ? { title, children, footer, headAction } : lastFrame.current;
+  if (open) lastFrame.current = { title, children, footer };
+  const frame = open ? { title, children, footer } : lastFrame.current;
 
   /*
    * The retraction starts **during render**, not in an effect, and that is the
@@ -132,6 +137,30 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
     if (!open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
+      /*
+       * Escape during IME composition is the *IME's* Escape — it dismisses the
+       * candidate list, and the browser delivers it here anyway. Closing on it
+       * unmounts the composer and takes the draft with it, which for a bilingual
+       * reader is a lost message every time a candidate is waved off.
+       *
+       * **`isComposing` is the whole of the working fence.** `keyCode === 229`
+       * is kept only so this reads identically to the router's copy of the same
+       * guard (`app/router/public.tsx`), and a reader should not believe it
+       * catches anything here: the `event.key !== 'Escape'` line above runs
+       * first, and every engine path that still reports `keyCode === 229`
+       * reports `key` as `'Process'` or `'Unidentified'`, so it has already
+       * returned. Verified by mutation — deleting the `keyCode` clause leaves
+       * browser 26/26 and web-dom 750/750 green, so nothing anywhere is
+       * standing on it.
+       *
+       * **Known gap, not solved here:** the test bed is Chromium only. WebKit
+       * has historically dispatched `compositionend` *before* the Escape that
+       * dismissed the candidate list, which would deliver that Escape with
+       * `isComposing === false` and close the drawer under a Safari reader
+       * mid-composition. Unverified on current WebKit; recorded so the next
+       * person measures it rather than assuming this fence is complete.
+       */
+      if (event.isComposing || event.keyCode === 229) return;
       const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
       if (layers.item(layers.length - 1) === panelRef.current) onClose();
     };
@@ -142,11 +171,11 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
   // Focus moves in, because the drawer is what the click asked for; it is not
   // held there, because the drawer is not modal.
   //
-  // `preventScroll` is load-bearing on open. The panel is `position: absolute`
-  // inside `.main` and enters by translating in from its own width, so the
-  // first painted box is off the inline-end edge. A default `focus()` asks
-  // the browser to scroll that box into view, which pans the page toward the
-  // centre for a frame — the jump clicking a conversation card used to make.
+  // `preventScroll` is load-bearing on open. The card is `position: absolute`
+  // inside `.main` and enters translated, so the first painted box is 12px off
+  // where it lands. A default `focus()` asks the browser to scroll that box
+  // into view, which pans the page for a frame — the jump clicking a
+  // conversation card used to make.
   // Close restores without it: Today does not pin the conversation card, and
   // a keyboard user who scrolled the page behind the drawer still needs the
   // opener brought back into view.
@@ -156,57 +185,112 @@ export function Drawer({ open, title, onClose, children, footer, headAction }: {
       panelRef.current?.focus({ preventScroll: true });
       return;
     }
+    /*
+     * Restoring waits for `closing` to clear, and that ordering is the fix, not
+     * a nicety.
+     *
+     * `app/shell` hides the whole panel column off this drawer's own marker —
+     * `.main:has([data-nc-drawer]) [data-nc-panel] { visibility: hidden }` — and
+     * the marker stays on for the exit animation. The opener is almost always a
+     * row *in that column*, so restoring while `closing` is true aims `focus()`
+     * at a `visibility: hidden` element: the call is silently a no-op, the
+     * document keeps focus on `<body>`, and the next Tab restarts from the top
+     * of the page. Waiting one animation means the drawer is out of the DOM,
+     * the `:has()` no longer matches, and the opener is a real target again.
+     */
     if (!shouldRestoreFocus.current) return;
-    shouldRestoreFocus.current = false;
     const target = previouslyFocusedRef.current;
+    /*
+     * The opener gets the first ask, and the ask *is* the test — see
+     * `focusTook`. `document.body` is excluded by hand because it answers
+     * `focus()` by keeping focus exactly where the failure mode puts it, so a
+     * drawer opened from nothing in particular would "succeed" onto `<body>`,
+     * which is the one outcome this whole effect exists to prevent.
+     */
+    const openerTook = target !== null && target.isConnected
+      && target !== document.body && focusTook(target);
+    if (openerTook) {
+      shouldRestoreFocus.current = false;
+      return;
+    }
+    /*
+     * While `closing` is true the marker is still on and so is the hiding rule
+     * (`app/shell` hides the panel column off `[data-nc-drawer]`), so an opener
+     * that just refused focus may simply be waiting for the animation to end.
+     * Leave `shouldRestoreFocus` armed and let the rerun this effect gets when
+     * `closing` clears do the work — falling through to the page title here
+     * would throw the opener away for a state that lasts 200ms. An opener that
+     * has left the DOM is a different answer and not a slow one, so
+     * `isConnected` keeps it on the fallback path with no wait.
+     */
+    if (closing && target !== null && target.isConnected) return;
+    shouldRestoreFocus.current = false;
     const fallback = document.querySelector<HTMLElement>('[data-nc-page-title]');
-    const destination = target && document.contains(target) ? target : fallback;
-    if (destination && document.contains(destination)) destination.focus();
-  }, [open]);
+    if (fallback !== null && document.contains(fallback)) fallback.focus();
+  }, [open, closing]);
 
   /*
-   * The drawer **retracts**; it does not vanish.
+   * The drawer **leaves**; it does not vanish.
    *
    * §7.6 said enter animates and exit is instant, on the reasoning that an exit
    * transition keeps the screen busy after the decision is made. That is right
-   * for a dialog, which is a thing that was in the way and is now gone. It is
-   * wrong for a panel attached to an edge: the whole point of an edge panel is
-   * that it is *still there*, pushed off-screen, and an instant disappearance
-   * says it was destroyed. The control says the same thing — a right-facing
-   * chevron, the direction it goes.
+   * for a dialog, which is a thing that was in the way and is now gone, and it
+   * is wrong here: closing a conversation does not end it, and an instant
+   * disappearance is the vocabulary for something being destroyed. It goes out
+   * the way it came in — 12px and a fade, reversed — which is the mildest thing
+   * that still reads as "put away" rather than "gone".
    *
    * So closing holds the element mounted for one animation. Reduced motion
    * skips the phase entirely rather than waiting on an `animationend` that a
    * suppressed animation will never fire.
    */
   if (!open && !closing) return null;
+  /*
+   * `data-nc-drawer` is the marker `app/shell` hides the trailing PanelCard by.
+   * The drawer is now a card on the panel's own track, so an unhidden panel
+   * shows as a sliver of card peeking out from under it; a CSS Module class
+   * cannot be named from another module's stylesheet, so the two ends of that
+   * rule meet on a data attribute instead. It stays on during the closing
+   * animation — the panel reappears when this unmounts, one frame after the
+   * card has finished going away.
+   */
   return (
     <div
       ref={panelRef}
       className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
       role="complementary"
+      data-nc-drawer=""
       data-nc-escape-layer={open ? '' : undefined}
       aria-label={frame.title}
       tabIndex={-1}
       onAnimationEnd={() => { if (closing) setClosing(false); }}
     >
+      {/*
+        * The close floats over the card's top-inline-end corner, and it is
+        * **before** the scroller in the DOM so the first Tab out of the
+        * container lands on it, which is the order the `.drawer:focus-visible`
+        * note in the stylesheet assumes.
+        *
+        * It used to sit in a `.controls` flex group beside the reset. The reset
+        * left the corner, and has since left the product altogether (#1139),
+        * so the group had one member, and a wrapper whose only job was to
+        * space two things is not kept for one. The floating geometry moved
+        * onto `.close` itself; nothing about where the chevron lands changed.
+        */}
+      <button
+        type="button"
+        data-nc-role="icon"
+        className={styles.close}
+        aria-label="Close conversation"
+        title="Close"
+        onClick={onClose}
+      >
+        {/* A right chevron, not an X — see the `.close` note in the stylesheet
+            for why the shape may not be shared with the page header's
+            delete. */}
+        <Icon name="chevron-right" />
+      </button>
       <div className={styles.scroll} data-nc-drawer-scroll="">
-        <div className={styles.head}>
-          <h2 className={styles.title}>{frame.title}</h2>
-          <div className={styles.headActions}>
-            {frame.headAction}
-            <button
-              type="button"
-              data-nc-role="icon"
-              className={styles.close}
-              aria-label="Close conversation"
-              title="Close"
-              onClick={onClose}
-            >
-              <Icon name="chevron-right" />
-            </button>
-          </div>
-        </div>
         <div className={styles.bodyInner}>
           {frame.children}
         </div>

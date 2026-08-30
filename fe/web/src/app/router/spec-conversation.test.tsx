@@ -58,7 +58,6 @@ function setup(reply?: Reply) {
       if (request.path.endsWith('/spec/run')) return ok({ card_id: CARD.id, runtime_id: 'runtime', phase: 'idle' });
       if (request.path.endsWith('/spec/input')) return ok({ card_id: CARD.id, runtime_id: 'runtime' });
       if (request.path.endsWith('/spec/interrupt')) return ok({ card_id: CARD.id, runtime_id: 'runtime', stopped: true });
-      if (request.path.endsWith('/spec/reset')) return ok({ card_id: CARD.id, terminal_id: 'terminal', new_thread_id: 'thread-2' });
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },
@@ -76,6 +75,23 @@ async function openConversation() {
   await screen.findByRole('complementary', { name: 'Spec chat' });
 }
 
+/*
+ * A conversation that actually has a transcript. It used to exist because the
+ * reset control was only offered when there was something to throw away; reset
+ * is gone (#1139) and this survives because "the drawer over a non-empty
+ * transcript" is still the state the destructive-control sweep below has to be
+ * run against — an empty drawer proves nothing about what a full one offers.
+ */
+function setupWithTurns(reply?: Reply) {
+  return setup(async (request) => await reply?.(request)
+    ?? (request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined));
+}
+
+async function openConversationWithTurns() {
+  await openConversation();
+  await screen.findByText('reply 0');
+}
+
 beforeEach(() => {
   window.history.pushState({}, '', `${APP_BASEPATH}/wave/w1`);
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => { callback(0); return 1; });
@@ -87,17 +103,138 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/*
+ * Drive the composer the way a person does.
+ *
+ * `fireEvent.change` cannot: Astryx's `ChatComposerInput` is a
+ * `contenteditable` div with no value setter, so `change` throws — and there is
+ * no `<form>` to submit either, because `ChatComposer` is a div that sends on a
+ * bare `Enter` keydown. So the text is written into the editable and an `input`
+ * event fires (which is what feeds the field's React state), and Enter sends.
+ */
+async function typeInto(field: HTMLElement, text: string) {
+  field.textContent = text;
+  const range = document.createRange();
+  range.setStart(field.firstChild!, text.length);
+  range.collapse(true);
+  const selection = window.getSelection()!;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  await act(async () => {
+    fireEvent.input(field);
+    await Promise.resolve();
+  });
+}
+
+async function sendWithEnter(field: HTMLElement) {
+  await act(async () => {
+    fireEvent.keyDown(field, { key: 'Enter' });
+    await Promise.resolve();
+  });
+}
+
 describe('spec conversation regressions', () => {
-  it('renders reset as an explicit SVG glyph', async () => {
-    setup();
-    await openConversation();
-    const reset = screen.getByRole('button', { name: 'Reset conversation' });
-    const glyph = reset.querySelector('svg');
-    expect(glyph).toBeTruthy();
-    expect(glyph?.querySelectorAll('path')).toHaveLength(2);
-    expect(glyph?.querySelectorAll('path')[1]?.getAttribute('d'))
-      .toBe('M3.35 6.12a5 5 0 1 1 .15 4.1');
-    expect(reset.textContent).not.toContain('↺');
+  /*
+   * Three tests used to stand here, all of them about *when* the reset control
+   * appeared: it had to be labelled rather than a glyph, it had to be absent
+   * over a zero-turn conversation, and it had to arrive with the first turn.
+   * The control is gone (#1139), so none of the three has a subject.
+   *
+   * What replaces them is a **set equality over every control the drawer
+   * offers**, and the reason it is stated that way is worth recording, because
+   * the obvious replacement does not work.
+   *
+   * The obvious one was `querySelectorAll('[data-nc-action="destructive"]')`,
+   * on the reasoning that it catches the class of control rather than one
+   * label. It catches nothing: the removed reset was a `DrawerAction`, which
+   * renders `data-nc-role="icon"` plus a CSS-module `actionDanger` class and
+   * has **never** carried `data-nc-action="destructive"`. That sweep was green
+   * on `origin/main` with the reset button on screen — zero coverage of the
+   * exact shape it claimed to fence, and the `/reset/i` query it disparaged in
+   * prose was the only line in the test doing any work.
+   *
+   * So the fence is: these two buttons, and nothing else. It is red if the old
+   * control comes back verbatim, red if it comes back under a new label or a
+   * new glyph, red if it comes back with no `data-nc-action` at all — and red
+   * for any *other* unannounced control that grows in here, which is more than
+   * was asked for and is the right amount. Adding a control to this drawer is a
+   * decision that should have to be written down; this is where it gets
+   * written.
+   *
+   * The name used is the accessible name, because that is what a reader
+   * actually meets. The two legitimate members are the close chevron and the
+   * composer's Send.
+   *
+   * It is run over the *non-empty* drawer on purpose. The removed control was
+   * conditional on there being a transcript, so an empty drawer is precisely
+   * the state that never had one — proving nothing.
+   */
+  it('offers exactly the close and Send, and no other control at all', async () => {
+    setupWithTurns();
+    await openConversationWithTurns();
+    const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
+    const names = within(drawer)
+      .getAllByRole('button', { hidden: true })
+      .map((button) => button.getAttribute('aria-label') ?? button.textContent);
+    expect([...names].sort()).toEqual(['Close conversation', 'Send']);
+    expect(screen.queryByRole('button', { name: /reset/i })).toBeNull();
+  });
+
+  /*
+   * And the browser never calls the endpoint. The server still serves
+   * `POST /spec/reset`; this pins that the front end has no path to it — a
+   * UI-only removal that left a live caller wired to some other control would
+   * be invisible to the set-equality above, which only reads the tree.
+   *
+   * This version **presses things**. The one it replaces opened the drawer,
+   * clicked the wordmark, and asserted no reset POST — so the only caller it
+   * could ever have caught was one that fired on mount by itself. Every control
+   * the drawer offers is now pressed, the composer sends a message, and Escape
+   * closes it, and none of that reaches the endpoint.
+   */
+  it('never posts to the spec reset endpoint, however the drawer is driven', async () => {
+    const { requests } = setupWithTurns();
+    await openConversationWithTurns();
+    const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
+
+    const field = within(drawer).getByRole('textbox', { name: 'Message' });
+    await typeInto(field, 'a message');
+    await sendWithEnter(field);
+
+    /* Every button in the drawer, in tree order, ending on the close — reversed
+       so the close is pressed last and the rest are pressed while the drawer is
+       still up. */
+    const controls = within(drawer)
+      .getAllByRole('button', { hidden: true })
+      .filter((button) => button.getAttribute('aria-label') !== 'Close conversation');
+    for (const control of controls) fireEvent.click(control);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Close conversation' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
+    await screen.findByRole('button', { name: /Conversation Spec chat, on Test wave/ });
+    expect(requests.filter((request) => request.path.endsWith('/spec/reset'))).toHaveLength(0);
+    /* And the pressing above actually did something, so an inert sweep cannot
+       pass this by touching nothing. */
+    expect(requests.filter((request) => request.path.endsWith('/spec/input'))).toHaveLength(1);
+  });
+
+  /*
+   * The wave route gets the `+` and deliberately does *not* get `/new` — see
+   * `startAnother` in the router: this route has exactly one spec card, so
+   * `start()` here reopens the row already open rather than creating anything,
+   * and a command named `New conversation` that does nothing is worse than no
+   * command. The observable consequence is in the accessibility tree, which is
+   * the honest place to assert it: with no trigger configured the field stays
+   * a plain `textbox` instead of becoming a combobox that can never expand.
+   */
+  it('leaves the wave composer a plain textbox, with no / command menu', async () => {
+    setupWithTurns();
+    await openConversationWithTurns();
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    expect(field.getAttribute('role')).toBe('textbox');
+    expect(field.hasAttribute('aria-haspopup')).toBe(false);
+    expect(screen.queryByRole('combobox', { name: 'Message' })).toBeNull();
   });
 
   it('keeps a wave route conversation list scoped after visiting another wave', async () => {
@@ -147,56 +284,23 @@ describe('spec conversation regressions', () => {
     await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 0 turns' });
   });
 
-  it('does not retain the pre-reset turn count on Today', async () => {
-    setup((request) => {
-      if (request.path.endsWith('/spec/reset')) {
-        return ok({ card_id: CARD.id, terminal_id: 'terminal', new_thread_id: 'thread-2' });
-      }
-      // Model an invalidation race returning the pre-reset snapshot once more.
-      if (request.path.includes('/harness/items')) return ok(harnessRows(3));
-      return undefined;
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
-      .getByRole('button', { name: 'Reset conversation' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reset conversation?' })).toBeNull());
-    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    await screen.findByText('No conversations yet.');
-    expect(screen.queryByRole('button', { name: /Conversation Spec chat, on Test wave, 3 turns/ })).toBeNull();
-  });
-
-  it('remembers the first non-empty server snapshot after reset without waiting for an empty one', async () => {
-    let resetStarted = false;
-    setup((request) => {
-      if (request.path.endsWith('/spec/reset')) {
-        resetStarted = true;
-        return ok({ card_id: CARD.id, terminal_id: 'terminal', new_thread_id: 'thread-2' });
-      }
-      if (request.path.includes('/harness/items')) {
-        return ok(resetStarted
-          ? harnessRows(2).map((row) => ({ ...row, id: row.id + 10, created_at_ms: row.created_at_ms + 10 }))
-          : harnessRows(3));
-      }
-      return undefined;
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
-      .getByRole('button', { name: 'Reset conversation' }));
-    await screen.findByRole('button', { name: 'Conversation Spec chat, 2 turns' });
-    fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 2 turns' });
-  });
-
-  it('remembers a card again after reset suppression crosses a card switch', async () => {
+  /*
+   * Three "after reset …" registry tests stood here. All three drove the same
+   * machinery — `suppressRememberRef` / `suppressedRememberSnapshotRef` in
+   * `useConversationStore`, which existed *only* to stop a stale pre-reset
+   * snapshot being written back into the session registry while the
+   * invalidation raced. Reset was that mechanism's one and only writer, so the
+   * fields are deleted with it and there is nothing left to suppress.
+   *
+   * What was worth keeping from them is the part that is not about reset: the
+   * registry must still track a card through a card switch and still carry the
+   * conversation to Today. That is what the test below now does, driven by the
+   * card list changing under the route rather than by a reset.
+   */
+  it('remembers a card again after the open card is swapped and swapped back', async () => {
     const { client, router } = setup((request) => request.path.includes('/harness/items')
       ? ok(harnessRows(3)) : undefined);
     fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
-      .getByRole('button', { name: 'Reset conversation' }));
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reset conversation?' })).toBeNull());
 
     client.setQueryData(queryKeys.harnessItems(CARD_SAME_WAVE.id), {
       pages: [harnessRows(3)], pageParams: [0],
@@ -275,8 +379,8 @@ describe('spec conversation regressions', () => {
     await openConversation();
     expect(screen.getByText('Thought')).toBeTruthy();
     const field = screen.getByRole('textbox', { name: 'Message' });
-    fireEvent.change(field, { target: { value: 'next message' } });
-    fireEvent.submit(field.closest('form')!);
+    await typeInto(field, 'next message');
+    await sendWithEnter(field);
     expect(await screen.findByText('next message')).toBeTruthy();
     expect(screen.queryByText('Thought')).toBeNull();
   });
@@ -297,9 +401,9 @@ describe('spec conversation regressions', () => {
     const { requests } = setup((request) => request.path.endsWith('/spec/input') ? pending : undefined);
     await openConversation();
     const field = screen.getByRole('textbox', { name: 'Message' });
-    fireEvent.change(field, { target: { value: 'hello' } });
-    fireEvent.submit(field.closest('form')!);
-    fireEvent.submit(field.closest('form')!);
+    await typeInto(field, 'hello');
+    await sendWithEnter(field);
+    await sendWithEnter(field);
     expect(requests.filter((request) => request.path.endsWith('/spec/input'))).toHaveLength(1);
     reject(new Error('send exploded'));
     expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
@@ -311,48 +415,26 @@ describe('spec conversation regressions', () => {
     const beforeHistory = requests.filter((request) => request.path.includes('/harness/items')).length;
     const beforeRun = requests.filter((request) => request.path.endsWith('/spec/run')).length;
     const field = screen.getByRole('textbox', { name: 'Message' });
-    fireEvent.change(field, { target: { value: 'hello' } });
-    fireEvent.submit(field.closest('form')!);
+    await typeInto(field, 'hello');
+    await sendWithEnter(field);
     await waitFor(() => {
       expect(requests.filter((request) => request.path.includes('/harness/items'))).toHaveLength(beforeHistory + 1);
       expect(requests.filter((request) => request.path.endsWith('/spec/run'))).toHaveLength(beforeRun + 1);
     });
   });
 
-  it('surfaces reset failures and prevents duplicate confirmation while reset is pending', async () => {
-    let reject!: (reason: Error) => void;
-    const pending = new Promise<ApiTransportResponse>((_resolve, rejectPromise) => { reject = rejectPromise; });
-    const { requests } = setup((request) => request.path.endsWith('/spec/reset') ? pending : undefined);
-    await openConversation();
-    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Reset conversation?' });
-    const confirm = within(dialog).getByRole('button', { name: 'Reset conversation' });
-    fireEvent.click(confirm);
-    fireEvent.click(confirm);
-    expect(requests.filter((request) => request.path.endsWith('/spec/reset'))).toHaveLength(1);
-    reject(new Error('reset exploded'));
-    expect((await screen.findByRole('alert')).textContent).toContain('Transport request failed');
-  });
-
-  it('keeps the current turn count on Today when history changes before reset fails', async () => {
-    let reject!: (reason: Error) => void;
-    const pending = new Promise<ApiTransportResponse>((_resolve, rejectPromise) => { reject = rejectPromise; });
-    const { client, router } = setup((request) => {
-      if (request.path.endsWith('/spec/reset')) return pending;
-      return request.path.includes('/harness/items') ? ok(harnessRows(1)) : undefined;
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 1 turns' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
-    fireEvent.click(within(await screen.findByRole('dialog', { name: 'Reset conversation?' }))
-      .getByRole('button', { name: 'Reset conversation' }));
-    client.setQueryData(queryKeys.harnessItems(CARD.id), {
-      pages: [harnessRows(3)], pageParams: [0],
-    });
-    await screen.findByText('reply 2');
-    await router.navigate({ to: '/' });
-    await act(() => { reject(new Error('reset exploded')); return Promise.resolve(); });
-    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 3 turns' });
-  });
+  /*
+   * Two reset-failure tests stood here — one pinning "one POST for two
+   * confirmations, and the rejection surfaced", the other "a turn count that
+   * moved while the reset was in flight is the one Today keeps". Both are
+   * gone with the action.
+   *
+   * The first one's non-reset half survives above, in `surfaces send failures
+   * and prevents a second send while the first is pending`: same shape (a
+   * pending request, a double press, one call, the error surfaced) on the one
+   * mutation the drawer still has. The second's survives in the registry test
+   * further up, which is now driven by the card list rather than by a reset.
+   */
 
   it('uses Escape to interrupt a working turn without closing the drawer', async () => {
     let resolveInterrupt!: (response: ApiTransportResponse) => void;
@@ -372,13 +454,12 @@ describe('spec conversation regressions', () => {
     resolveInterrupt(ok({ card_id: CARD.id, runtime_id: 'runtime', stopped: true }));
   });
 
-  it('cancels reset on Escape without also closing the drawer', async () => {
-    setup();
-    await openConversation();
-    fireEvent.click(screen.getByRole('button', { name: 'Reset conversation' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Reset conversation?' });
-    fireEvent.keyDown(dialog, { key: 'Escape' });
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reset conversation?' })).toBeNull());
-    expect(screen.getByRole('complementary', { name: 'Spec chat' })).toBeTruthy();
-  });
+  /*
+   * `cancels reset on Escape without also closing the drawer` stood here. The
+   * Escape layering it protected — an inner surface eats the key before the
+   * drawer does — is unchanged and still needs a guard; its new subject is the
+   * `/` command menu, and that test lives in `cove-conversation.test.tsx`
+   * beside the rest of the slash-command behaviour, because the wave route
+   * deliberately has no `/` menu (see `startAnother` in the router).
+   */
 });

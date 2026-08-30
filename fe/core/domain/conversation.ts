@@ -201,20 +201,24 @@ export function interruptSpecOperation(cardId: string): ApiOperation<{ stopped: 
   };
 }
 
-export function resetSpecOperation(cardId: string): ApiOperation<unknown> {
-  return {
-    method: 'POST', path: `/api/cards/${encodeURIComponent(cardId)}/spec/reset`,
-    responseSchema: z.object({
-      card_id: z.string(), terminal_id: z.string(), new_thread_id: z.string(), wave: z.unknown().optional(),
-    }),
-  };
-}
+/*
+ * There is no `resetSpecOperation`, and that is deliberate (#1139).
+ *
+ * `POST /api/cards/:id/spec/reset` still exists on the server and is not going
+ * anywhere; what was removed is every *front-end* way to reach it. Clearing one
+ * conversation in place has no value here, because conversations are not
+ * singular: a cove's chat wave carries as many `harness_profile: plain_chat`
+ * cards as you like, side by side. A thread that has gone wrong is answered by
+ * opening a new one — the old one stays in the list, readable — which is the
+ * model codex and Claude Code both use. "Empty this one" only makes sense when
+ * "this one" is all you get.
+ */
 
 /* ── Cove conversations (#1098) ─────────────────────────────────────────────
  *
  * A cove's conversations are ordinary plain-chat harness cards on a hidden chat
  * wave. Everything *inside* one is the spec-harness surface unchanged — items,
- * phase, input, interrupt, reset all take a card id and do not care how the
+ * phase, input, interrupt all take a card id and do not care how the
  * card was made. Only two things are new: where the list comes from, and how
  * the first message creates the card it is sent to.
  *

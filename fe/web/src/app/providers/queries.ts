@@ -33,7 +33,7 @@ import {
   type WaveDetailWire, type WavePatchBody,
 } from '../../../../core/domain/wave.ts';
 import {
-  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, resetSpecOperation, sendSpecInputOperation,
+  HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
   specRunOperation, coveConversationsOperation, createCoveConversationOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
@@ -111,7 +111,9 @@ export function useSpecMutations(transport: ApiTransportPort, cardId: string, un
   return {
     send: (text: string) => runOperation(transport, sendSpecInputOperation(cardId, text), unauthorized).then(refreshAfter),
     interrupt: () => runOperation(transport, interruptSpecOperation(cardId), unauthorized).then(refreshAfter),
-    reset: () => runOperation(transport, resetSpecOperation(cardId), unauthorized).then(refreshAfter),
+    /* No `reset` — see the note where `resetSpecOperation` used to be in
+       `core/domain/conversation.ts`. The endpoint is still served; nothing in
+       the browser calls it. */
   };
 }
 

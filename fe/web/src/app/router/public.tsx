@@ -32,7 +32,9 @@ import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { CardGridOverlay, WaveStage } from '../../features/wave/grid/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
-import { ChatComposer, ChatThread } from '../../features/chat/thread/public.tsx';
+import {
+  ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
+} from '../../features/chat/thread/public.tsx';
 import { ReportBacklinks } from '../../features/report/backlinks/public.tsx';
 import { ReportDocument } from '../../features/report/document/public.tsx';
 import { ReportEmpty } from '../../features/report/empty/public.tsx';
@@ -50,7 +52,7 @@ import {
 import { ConfirmDialog } from '../../ui/dialog/public.tsx';
 import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
 import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
-import { Drawer, DrawerAction } from '../../ui/drawer/public.tsx';
+import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
@@ -78,16 +80,13 @@ type ConversationStore = Readonly<{
   working: boolean;
   stopping: boolean;
   sending: boolean;
-  resetting: boolean;
   hasEarlier: boolean;
   loadingEarlier: boolean;
   historyError: string | null;
   actionError: string | null;
-  actionMessage: string | null;
   start: () => Conversation | null;
   send: (conversationId: string, text: string) => void;
   interrupt: () => void;
-  reset: () => Promise<boolean>;
   loadEarlier: () => void;
 }>;
 
@@ -111,16 +110,6 @@ export function pendingConversationIds(
   conversation: Conversation | null, working: boolean, sending: boolean,
 ): ReadonlySet<string> {
   return (working || sending) && conversation !== null ? new Set([conversation.id]) : new Set();
-}
-
-function sameConversationTurns(
-  left: readonly ConversationTurn[], right: readonly ConversationTurn[],
-): boolean {
-  return left.length === right.length && left.every((turn, index) => {
-    const other = right[index];
-    return other !== undefined && turn.id === other.id && turn.author === other.author
-      && turn.text === other.text && turn.atMs === other.atMs;
-  });
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -150,12 +139,8 @@ export function useConversationStore(
   const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
   const [sending, setSending] = useState(false);
   const [interruptPending, setInterruptPending] = useState(false);
-  const [resetting, setResetting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const sendingRef = useRef(false);
-  const suppressRememberRef = useRef(false);
-  const suppressedRememberSnapshotRef = useRef<readonly ConversationTurn[] | null>(null);
   const seq = useRef(0);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   const serverTurns = useMemo(() => [...items]
@@ -172,13 +157,9 @@ export function useConversationStore(
   useEffect(() => {
     setEchoes([]);
     setActionError(null);
-    setActionMessage(null);
     sendingRef.current = false;
-    suppressRememberRef.current = false;
-    suppressedRememberSnapshotRef.current = null;
     setSending(false);
     setInterruptPending(false);
-    setResetting(false);
   }, [cardId]);
 
   const turns = useMemo(
@@ -225,14 +206,10 @@ export function useConversationStore(
      * second filter, so removing it is immediately visible in the tests.
      */
     if (serverRows !== null) return;
-    if (suppressRememberRef.current && suppressedRememberSnapshotRef.current !== null
-      && sameConversationTurns(serverTurns, suppressedRememberSnapshotRef.current)) return;
-    suppressRememberRef.current = false;
-    suppressedRememberSnapshotRef.current = null;
     // Remember the full transcript so reopening the conversation preserves its
     // activity lines and looks identical to the route the user just left.
     registry.remember(conversation, transcript);
-  }, [conversation, registry, serverRows, serverTurns, transcript]);
+  }, [conversation, registry, serverRows, transcript]);
 
   const allConversations = conversation === null
     ? registry.conversations
@@ -254,7 +231,6 @@ export function useConversationStore(
     sendingRef.current = true;
     setSending(true);
     setActionError(null);
-    setActionMessage(null);
     seq.current += 1;
     const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
     setEchoes((current) => [...current, echo]);
@@ -267,37 +243,26 @@ export function useConversationStore(
     });
   };
 
+  /*
+   * Stopping says so by *stopping*, not by a line of text.
+   *
+   * A successful interrupt used to set `Turn stopped` under the composer. Two
+   * things already carry that fact at the moment it becomes true: the Stop
+   * button turns back into Send, and the activity line stops advancing. A
+   * sentence saying it a third time is the kind of confirmation that reads as
+   * chrome — and unlike every other state on this surface it had no way to
+   * expire, so it sat under the box until the next send. A state that
+   * only the *next* action can clear is not a status, it is a residue.
+   *
+   * Failure still speaks (`actionError`): that one is not visible anywhere else.
+   */
   const interrupt = () => {
     if (!working || stopping) return;
     setInterruptPending(true);
     setActionError(null);
-    void mutations.interrupt().then((result) => {
-      if (result.stopped) setActionMessage('Turn stopped');
-    }).catch((error: unknown) => {
+    void mutations.interrupt().catch((error: unknown) => {
       setActionError(errorMessage(error, 'Could not stop the turn.'));
     }).finally(() => setInterruptPending(false));
-  };
-
-  const reset = async (): Promise<boolean> => {
-    if (resetting) return false;
-    setResetting(true);
-    setActionError(null);
-    suppressRememberRef.current = true;
-    suppressedRememberSnapshotRef.current = serverTurns;
-    if (conversation !== null) registry.forget(conversation.id);
-    try {
-      await mutations.reset();
-      setEchoes([]);
-      setActionMessage(null);
-      return true;
-    } catch (error: unknown) {
-      suppressRememberRef.current = false;
-      suppressedRememberSnapshotRef.current = null;
-      setActionError(errorMessage(error, 'Could not reset the conversation.'));
-      return false;
-    } finally {
-      setResetting(false);
-    }
   };
 
   return {
@@ -309,16 +274,13 @@ export function useConversationStore(
     working,
     stopping,
     sending,
-    resetting,
     hasEarlier: history.hasNextPage,
     loadingEarlier: history.isFetchingNextPage,
     historyError: history.error instanceof Error ? history.error.message : null,
     actionError,
-    actionMessage,
     start: () => conversation,
     send,
     interrupt,
-    reset,
     loadEarlier: () => { void history.fetchNextPage().catch(() => undefined); },
   };
 }
@@ -578,7 +540,6 @@ function useConversationPanel(
   const [{ open: openTarget, held }, moveDrawerTo] = useReducer(
     moveDrawer, { open: null, held: null } as DrawerState,
   );
-  const [confirmingReset, setConfirmingReset] = useState(false);
   /* State, not a ref, unlike `store.send`'s `sendingRef`: `creating` is read by
      the render (it disables the composer and both remedy buttons) and a ref
      would not re-render. The double-submit a ref guards against cannot mint a
@@ -661,22 +622,31 @@ function useConversationPanel(
     if (open === null) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
-      if (confirmingReset) {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        if (!store.resetting) setConfirmingReset(false);
-        return;
-      }
       if (!store.working || store.stopping) return;
       const target = event.target;
       if (!(target instanceof Element) || target.closest('[role="complementary"]') === null) return;
+      /*
+       * An open `/` menu owns Escape first, and this listener is the only thing
+       * that could take it: it is on `document` in the **capture** phase, so it
+       * runs before React ever reaches the composer's own handler and before
+       * the drawer's bubble-phase listener. The menu says it is open through
+       * the ARIA the composer input already publishes — `useTriggerMenu` puts
+       * `role="combobox"` + `aria-expanded` on the editable exactly while the
+       * popover is up — so no new marker is minted for this.
+       *
+       * Order, once the menu is out of the way: Astryx `preventDefault()`s the
+       * Escape that closes the menu, and `ui/drawer` skips any
+       * `defaultPrevented` Escape, so one press closes the menu and nothing
+       * else. A second press then reaches whichever of these two is next.
+       */
+      if (target.closest('[role="combobox"][aria-expanded="true"]') !== null) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       store.interrupt();
     };
     document.addEventListener('keydown', onKeyDown, true);
     return () => document.removeEventListener('keydown', onKeyDown, true);
-  }, [confirmingReset, open, store]);
+  }, [open, store]);
 
   /*
    * The `+` opens a conversation. On a wave that is the wave's one spec card,
@@ -726,6 +696,31 @@ function useConversationPanel(
       },
     });
   };
+
+  /*
+   * `/new` in the composer runs `start` — the very callback the `+` runs — and
+   * it is offered on exactly one of the three sources.
+   *
+   * `'elsewhere'` (Today): no `+` either. There is no wave and no cove to
+   * attach a conversation to, so the action is not offered rather than offered
+   * and refused. Strict parity, and it is what `action:` below already decides.
+   *
+   * `'card'` (a wave route): the `+` is offered, and `/new` is **not**. This is
+   * the one place the two differ, deliberately. On a wave there is exactly one
+   * spec card, so `start()` there does not create anything — it opens the row,
+   * and from inside the drawer that row is the one already open, which makes
+   * the command a no-op. A menu entry named `New conversation` that reopens the
+   * conversation you are reading is a lie told by a control, and the honest
+   * `+` gets away with it only because it is pressed from *outside* the drawer,
+   * where "bring that one up" is a real outcome. Nothing is lost by omitting
+   * it: the wave route has no second conversation to start.
+   *
+   * `'rows'` (a cove route): offered, and this is the case the whole thing
+   * exists for — the `+` mints a draft, the drawer hides the panel column the
+   * `+` lives on, and the reader inside a conversation would otherwise have to
+   * close it first.
+   */
+  const startAnother = source.kind === 'rows' ? start : undefined;
 
   /*
    * The attempt `from` became row `row`: forget the draft and open the row.
@@ -987,57 +982,53 @@ function useConversationPanel(
       ? undefined
       : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
     drawer: (
-      <>
       <Drawer
         open={open !== null || draftOpen}
         /* A draft has no name yet, and naming it after the words being typed
            would rename the drawer on every keystroke. */
         title={open !== null ? conversationName(open) : draftOpen ? 'New conversation' : ''}
         onClose={closeDrawer}
-        /*
-         * Reset lives in the head, not under the composer.
-         *
-         * It is the *rarest* control on the surface and the only destructive
-         * one — it throws the transcript away and starts a new codex thread —
-         * and it was sitting beside the message box at the same weight as
-         * `Stop`, which you press casually. `destructive` is §4.3's tier:
-         * `--error-text` at rest, transparent fill, red before the pointer
-         * arrives rather than after. The confirm dialog it opens is unchanged.
-         *
-         * It is not offered when there is nothing to reset.
-         */
-        headAction={open === null ? undefined : (
-          /* DrawerAction owns the box; the shared icon owns glyph geometry. */
-          <DrawerAction danger label="Reset conversation" onClick={() => setConfirmingReset(true)}>
-            <Icon name="reset" />
-          </DrawerAction>
-        )}
         footer={draftOpen ? (
           <>
             {/* No optimistic echo: the POST starts the thread *and* delivers
                 this message, so by the time it answers the message is already
                 persisted and the first item fetch on the new card carries it. */}
-            <ChatComposer disabled={creating} onSend={sendDraft} />
-            {draft?.error != null && <p role="alert">{draft.error}</p>}
-            {draft?.remedy === 'retry' && (
-              <button type="button" disabled={creating} onClick={retryDraft}>Try again</button>
+            {/* The strip is welded to the well's top edge, so it renders
+                *before* the composer. Each child keeps the condition it had:
+                a remedy can be offered with no error beside it. */}
+            {draft != null && (draft.error != null || draft.remedy !== null) && (
+              <ChatFooterNotice>
+                {draft.error != null && <ChatFooterError message={draft.error} />}
+                {draft.remedy === 'retry' && (
+                  <ChatFooterRemedy disabled={creating} onClick={retryDraft}>Try again</ChatFooterRemedy>
+                )}
+                {draft.remedy === 'new-conversation' && (
+                  <ChatFooterRemedy disabled={creating} onClick={sendAsNewConversation}>
+                    Send as a new conversation
+                  </ChatFooterRemedy>
+                )}
+              </ChatFooterNotice>
             )}
-            {draft?.remedy === 'new-conversation' && (
-              <button type="button" disabled={creating} onClick={sendAsNewConversation}>
-                Send as a new conversation
-              </button>
-            )}
+            {/* Offered on a draft too, and it means the same thing the `+`
+                means there: throw this unsent draft away and begin another.
+                Same callback, so the two cannot disagree about that. */}
+            <ChatComposer disabled={creating} onSend={sendDraft} onNewConversation={startAnother} />
           </>
         ) : open === null ? undefined : (
           <>
-            <ChatComposer disabled={store.sending} onSend={(text) => store.send(open.id, text)} />
-            {(store.working || store.stopping) && (
-              <button type="button" disabled={store.stopping} onClick={store.interrupt}>
-                {store.stopping ? 'Stopping…' : 'Stop'}
-              </button>
+            {store.actionError !== null && (
+              <ChatFooterNotice><ChatFooterError message={store.actionError} /></ChatFooterNotice>
             )}
-            {store.actionError !== null && <p role="alert">{store.actionError}</p>}
-            {store.actionMessage !== null && <p role="status">{store.actionMessage}</p>}
+            <ChatComposer
+              disabled={store.sending}
+              onSend={(text) => store.send(open.id, text)}
+              /* `stopping` keeps Stop *shown* while the interrupt is in flight;
+                 it is not passed down as a prop of its own, because the composer
+                 cannot make Astryx's Stop unavailable and `interrupt()` above
+                 already refuses a second one. */
+              onStop={store.working || store.stopping ? store.interrupt : undefined}
+              onNewConversation={startAnother}
+            />
           </>
         )}
       >
@@ -1064,25 +1055,22 @@ function useConversationPanel(
               turns={store.turnsOf(open.id)}
               pending={store.pending.has(open.id)}
             />
+            {/*
+              * Nothing follows the transcript.
+              *
+              * `Reset conversation` used to be here, one line under the last
+              * reply. It is gone from the product (#1139), not moved: a cove's
+              * chat wave holds as many conversations as you start, so "empty
+              * this one in place" was never the answer to a thread going
+              * wrong — opening another one is, and the old thread stays
+              * readable in the list. The endpoint behind it is still served;
+              * nothing in the browser calls it. The new-conversation door that
+              * replaces it is `/new` in the composer below, which is reachable
+              * from *inside* the drawer, where the `+` is not.
+              */}
           </>
         )}
       </Drawer>
-      <ConfirmDialog
-        open={confirmingReset}
-        title="Reset conversation?"
-        description={<>
-          <p>This clears the transcript and starts a new agent thread. This cannot be undone.</p>
-          {store.actionError !== null && <p role="alert">{store.actionError}</p>}
-        </>}
-        confirmLabel="Reset conversation"
-        confirmBusyLabel="Resetting…"
-        confirmState={store.resetting ? 'busy' : 'ready'}
-        onCancel={() => { if (!store.resetting) setConfirmingReset(false); }}
-        onConfirm={() => {
-          void store.reset().then((succeeded) => { if (succeeded) setConfirmingReset(false); });
-        }}
-      />
-      </>
     ),
   };
 }

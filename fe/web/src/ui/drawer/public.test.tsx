@@ -53,18 +53,36 @@ describe('Drawer', () => {
     const { rerender } = open({ title: 'Why the resolver drops a hop', children: <p>the transcript</p> });
     rerender(<Drawer open={false} title="" onClose={vi.fn()}>{null}</Drawer>);
     expect(screen.getByText('the transcript')).toBeTruthy();
-    expect(screen.getByRole('heading').textContent).toBe('Why the resolver drops a hop');
+    /*
+     * The title is no longer painted — the head band is gone — so the last
+     * frame's title is held on the container's accessible name instead of in a
+     * heading. The assertion still binds the same bug it was written for: a
+     * drawer that re-read its props on the way out would be named by the empty
+     * string this rerender passes, and `getByRole('complementary', { name })`
+     * only matches the *retained* name. It is in fact stronger now, because
+     * the name is what a screen reader announces rather than decoration.
+     */
+    expect(screen.getByRole('complementary', { name: 'Why the resolver drops a hop' })).toBeTruthy();
+    expect(screen.queryByRole('heading')).toBeNull();
   });
 
-  /* The close control points the way it goes and says what it does to a screen
-     reader. Its explicit stroke makes it an optical peer of the reset. */
-  it('closes with a direction, not a dismissal', () => {
+  /*
+   * The close **collapses**, it does not destroy.
+   *
+   * This is the shape assertion, and it is here because the page header's
+   * delete-wave control is 58px above this one in the same column at the same
+   * 28px size: measured at 1512×950, delete centres on y 36.3 and this centres
+   * on y 94.0. An X on both would be one glyph meaning "put away" and "destroy"
+   * a pointer-flick apart. So the close is the rail's collapse chevron, and the
+   * X path is what must never come back.
+   */
+  it('closes with a collapse, not the delete X', () => {
     const onClose = vi.fn();
     open({ onClose });
     const close = screen.getByRole('button', { name: 'Close conversation' });
-    const glyph = close.querySelector('svg');
-    expect(glyph).toBeTruthy();
-    expect(glyph?.querySelector('path')?.getAttribute('d')).toBe('M6 3.5 10.5 8 6 12.5');
+    const paths = [...close.querySelectorAll('path')].map((path) => path.getAttribute('d'));
+    expect(paths).toEqual(['M6 3.5 10.5 8 6 12.5']);
+    expect(paths).not.toContain('M4 4l8 8');
     expect(close.textContent).not.toContain('›');
     close.click();
     expect(onClose).toHaveBeenCalled();
@@ -75,8 +93,13 @@ describe('Drawer', () => {
     const bodyInner = screen.getByText('the transcript').parentElement;
     const scroll = bodyInner?.parentElement;
     const drawer = screen.getByRole('complementary');
-    expect(scroll?.firstElementChild).toBe(screen.getByRole('heading').parentElement);
+    /* The scroller holds the transcript and nothing else now: the controls
+       float over it as a sibling, so the body is its only child. */
+    expect(scroll?.firstElementChild).toBe(bodyInner);
+    expect(scroll?.childElementCount).toBe(1);
     expect(scroll?.parentElement).toBe(drawer);
+    expect(screen.getByRole('button', { name: 'Close conversation' }).closest('[data-nc-drawer-scroll]'))
+      .toBeNull();
     expect(scroll?.hasAttribute('data-nc-drawer-scroll')).toBe(true);
     expect(screen.getByLabelText('composer').parentElement).toBe(drawer);
   });
@@ -156,6 +179,66 @@ describe('Drawer', () => {
     view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
     expect(document.activeElement).toBe(pageTitle);
     pageTitle.remove();
+  });
+
+  /*
+   * The half of `focusTook` that `focus()` cannot answer.
+   *
+   * `focus()` lands in an `aria-hidden` subtree and reports success, so reading
+   * the outcome back says "restored" about a target that does not exist in the
+   * tree a screen reader walks: the reader is put somewhere they are told
+   * nothing about, and the page-title fallback that would have given them a
+   * real place is cancelled. Engine-independent — jsdom's `focus()` succeeds
+   * into `aria-hidden` exactly as Chromium's does, which is the whole problem —
+   * so it is pinned here rather than in the browser tier.
+   *
+   * Reduced motion, so there is no retraction to sit through. The wait is a
+   * *different* mechanism with its own coverage (`app/shell/…`), and it would
+   * otherwise stand between this assertion and the fallback it is about: a
+   * connected target that merely refuses focus is given the length of the
+   * animation first. Under `reduce` the component skips the phase entirely,
+   * which leaves exactly one thing deciding where focus goes.
+   */
+  function withReducedMotion(run: () => void) {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    try { run(); } finally { vi.unstubAllGlobals(); }
+  }
+
+  /** An opener buried under `attribute`, plus a page title to fall back to. */
+  function hiddenOpenerPage(attribute: string, value: string) {
+    const shroud = document.body.appendChild(document.createElement('div'));
+    shroud.setAttribute(attribute, value);
+    const opener = shroud.appendChild(document.createElement('button'));
+    const pageTitle = document.body.appendChild(document.createElement('h1'));
+    pageTitle.tabIndex = -1; pageTitle.dataset.ncPageTitle = '';
+    opener.focus();
+    return { shroud, opener, pageTitle };
+  }
+
+  it('does not count a landing inside an aria-hidden subtree as a restore', () => {
+    withReducedMotion(() => {
+      const { shroud, opener, pageTitle } = hiddenOpenerPage('aria-hidden', 'true');
+      /* The trap: the ask itself succeeds, so an outcome-only test would have
+         called this a restore and stopped. */
+      expect(document.activeElement).toBe(opener);
+      const view = open();
+      view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+      expect(document.activeElement).not.toBe(opener);
+      expect(document.activeElement).toBe(pageTitle);
+      shroud.remove(); pageTitle.remove();
+    });
+  });
+
+  /* `inert` for the same reason, through the same door. */
+  it('does not count a landing inside an inert subtree as a restore', () => {
+    withReducedMotion(() => {
+      const { shroud, opener, pageTitle } = hiddenOpenerPage('inert', '');
+      const view = open();
+      view.rerender(<Drawer open={false} title="t" onClose={vi.fn()}><p>body</p></Drawer>);
+      expect(document.activeElement).not.toBe(opener);
+      expect(document.activeElement).toBe(pageTitle);
+      shroud.remove(); pageTitle.remove();
+    });
   });
 
   it('prefers a surviving opener over the page-title fallback', () => {

@@ -1,22 +1,78 @@
 @layer ui {
   /*
-   * §7.6, verbatim except for one thing: fixed to the main region's inline-end,
-   * `--drawer-w` wide, `--z-overlay`, `--shadow-float`.
+   * §7.6's drawer, now shaped as **a card**: absolutely positioned inside the
+   * main region, on the trailing panel's track, `--z-overlay`, `--shadow-float`.
    *
-   * **No corner radius.** §7.6 asked for `--radius-lg` on the inline-start
-   * corners, and built it looked wrong, which is the kind of thing only the
-   * built thing can tell you. A radius says "this object has an edge here" —
-   * true of a card, which sits *in* the page with page on all four sides. The
-   * drawer has no such edge: it is full-height, welded to the window's own
-   * edge, and three of its four sides are the window. Rounding the one
-   * remaining side made it read as a very tall card that had drifted off the
-   * screen. Cards are rounded because they are objects on a page; a region
-   * that reaches the window's edges is not an object, it is a region.
+   * **Four corners, because there are four sides of page.** §7.6 asked for
+   * `--radius-lg` on the inline-start corners only, and an earlier round
+   * deleted even those — correctly, for the shape it then had. That drawer was
+   * full-height and welded to the window: three of its four sides *were* the
+   * window, and a radius says "this object has an edge here", which was true of
+   * exactly one of them. Rounding one side of a region made it read as a very
+   * tall card that had drifted off screen.
    *
-   * The `--radius-lg` line here is the last of three related deletions this
-   * change makes to the drawer: the edge hairline, the container focus ring,
-   * and now the corner — every one of them a piece of chrome drawing a boundary
-   * the shadow and the surface step already draw.
+   * The premise has changed rather than the reasoning. The drawer is inset on
+   * all four sides now, so all four are page, so all four are edges, so all
+   * four are rounded — one `border-radius`, `--radius-lg`, the same value every
+   * other card in the app uses. Cards are rounded because they are objects on a
+   * page; this one now is.
+   *
+   * **The track, and why it stops being a track vertically.** Horizontally the
+   * card is still on the panel's rails: same inline track (`--panel-span`),
+   * same trailing page pad (`--space-10`). Vertically it is not, any more.
+   *
+   * It used to start at `--header-band + --header-h + --space-8` — the offset
+   * `features/{cove,wave}/page` gives the sticky PanelCard — so that the two
+   * cards began on one line. Measured at 1512×950 that put the top edge at
+   * **y 68.3** while the bottom sat 28 off the window: 68 above, 28 below, for
+   * an object whose whole job is to be read. The alignment was real and the
+   * cost was 40px of nothing at the top of the only surface in the window you
+   * are actually operating.
+   *
+   * **So the card covers the page header instead of queuing under it.** While a
+   * conversation is open it is the foreground: the page underneath — its title,
+   * its report, its panel — is the thing being talked *about*, and a header is
+   * part of that page, not part of the chrome that outranks it. `--z-overlay`
+   * over the header's `--z-sticky` was already true; what changes here is that
+   * the geometry now says so too.
+   *
+   * **The price, stated plainly.** Whatever the page header puts in this
+   * column is unreachable while the card is open — on the wave route that is
+   * *delete wave*, and on any route the trailing end of the title row. You
+   * close the conversation first (`›`, or Escape), then you rename or delete.
+   * (The title itself and its rename control sit at `--document-start`, far
+   * inside the card's inline edge, so those stay reachable; do not read this
+   * paragraph as "the whole header is gone".) That is a real cost on a real
+   * control, accepted knowingly: acting on the wave mid-conversation is rare,
+   * and the alternative was paying 40px of dead space on every conversation for
+   * it. It settles one thing for free — the earlier round measured the page's
+   * destructive ✕ and this card's close landing in the same column 8px apart,
+   * and a control that is covered cannot be mis-clicked.
+   *
+   * **The pair, 20 / 28, and why the top is not free to be prettier.** The
+   * header's topmost ink starts at `--header-band` — measured 20.3px from the
+   * window on every route, since the band is a constant and only the rows below
+   * it vary. A top inset larger than that leaves a live sliver of whatever is
+   * in this column *above* the card: at 24 the delete-wave button was still
+   * hit-testable across y 22.3–24.0, a 1.7px strip of a destructive control
+   * with its own glyph hidden underneath the card. An invisible strip that
+   * deletes a wave is worse than any spacing it buys. So the top is bounded by
+   * the band, and `--space-9` (20) is the largest tier under it.
+   *
+   * Compared in the same frame: 16/28 clears the band by more but reads
+   * top-heavy — the card visibly hangs off the window's top edge. 28/28 is
+   * metrically symmetric and leaves the sliver. 20/28 clears the band, and the
+   * 8px surplus at the bottom is the direction optical balance wants anyway (a
+   * shape centred by measurement sits low). The bottom stays 28 because it is
+   * `.page`'s own `padding-block-end`; the top has no such partner, only the
+   * band.
+   *
+   * Nothing here reads `--header-band` / `--header-h` any more, which is why
+   * `ui/page-header`'s publisher went back to the child combinator.
+   *
+   * **It still overlays.** Absolute inside `.main`, not a column in the page
+   * grid: opening it must not reflow the report, which is principle 3 ("在持续
+   * 变化中保持安静") broken by the app's own chrome.
    *
    * `--shadow-float` is one of §6.5's four exemptions (menu / popover / dialog /
    * toast, "抽屉按弹出算"). It is the only thing in the app that overlays
@@ -30,34 +86,30 @@
    */
   .drawer {
     /*
-     * **It covers exactly the column it replaces, plus that column's gutter.**
-     *
-     * `--drawer-w` (396) came from §7.6 before there was anything in the
-     * drawer to look at. Built and filled, a 396-wide slab of `--paper` running
-     * the full height of the window is the heaviest object on the page — for a
-     * conversation that is usually four short turns. Sized to the panel column
-     * it slides over, it reads as that column being replaced rather than as a
-     * second page arriving. The token stays as it is: this is a fact about
-     * *this* drawer's relationship to *this* page's trailing column, not a new
-     * global width.
+     * Concentric radii: card `--radius-lg` (16), inset `--space-4` (8), so the
+     * composer well and user bubble use `--radius-chat` = 8. `features/chat`
+     * reads both of these off this element.
      */
-    /* Same span as the panel column (`25cqi` of `.main`) plus the trailing
-       page pad, so the drawer covers the card at every width. Pixel widths
-       (280, 396, 1180) cannot do that. */
-    --nc-drawer-w: calc(var(--panel-span, 25cqi) + var(--space-10));
+    --nc-card-inset: var(--space-4);
+    --nc-card-radius: var(--radius-lg);
+    --radius-chat: calc(var(--nc-card-radius) - var(--nc-card-inset));
 
-    /* Absolute to `.main` because it is `position: relative` (that is the
-       containing block). `container-type` is why `25cqi` is 25% of the main
-       column, not 25vw — not why the drawer is positioned here. */
     position: absolute;
-    inset-block: 0;
-    inset-inline-end: 0;
+    /* 20 top / 28 bottom. The 20 is bounded by the header band (20.3px of ink
+       clearance), not chosen freely — see the note above. */
+    inset-block: var(--space-9) var(--space-11);
+    inset-inline-end: var(--space-10);
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;
-    inline-size: var(--nc-drawer-w);
-    max-inline-size: 100%;
-    background: var(--paper);
+    inline-size: var(--panel-span, 25cqi);
+    /* Both page pads, kept even when `--panel-span`'s 15rem floor is wider than
+       what is left of a narrow main region: a card may not slide under the
+       rail on the side the page cannot pad. */
+    max-inline-size: calc(100% - var(--space-10) * 2);
+    overflow: hidden;
+    border-radius: var(--nc-card-radius);
+    background: var(--surface-card);
     box-shadow: var(--shadow-float);
     animation: drawer-in var(--motion-medium) ease-out;
   }
@@ -84,201 +136,75 @@
   }
 
   /*
-   * ── The head ──────────────────────────────────────────────────────────────
+   * ── The floating corner control ───────────────────────────────────────────
    *
-   * One line: the title, grey, on the close button's row. Nothing else.
+   * **There is one of them, and there is now nothing else it could be.** The
+   * corner used to hold a pair — the reset and the close, 2px apart in a
+   * `.controls` flex group. The reset first became a line of text at the end
+   * of the transcript, and is now gone from the product entirely (#1139), so
+   * the close is the only control this card floats. What went with the pair is
+   * the whole §4.3 gap exception that used to be argued in this note: it was
+   * measured on ink widths of a ✕ and an ↺ inside a head band that no longer
+   * exists, for a pair that no longer exists. A rule about the distance
+   * between two controls has nothing to say about one, so it is deleted rather
+   * than restated. Anything that ever joins the close here re-opens §4.3's
+   * `--space-6` question from scratch, at today's glyphs.
    *
-   * It has now been three shapes. A 13px line pinned to a 32px bar with a rule
-   * under it — a browser toolbar. Then a "CONVERSATION" eyebrow above a
-   * full-ink title — the page-header vocabulary, which gave the head a second
-   * line and a second rank to caption a surface that needs no caption. Now the
-   * title alone, quiet, because the head's whole job is to say *which wave* and
-   * then get out of the way of the conversation, which is the P0 here.
+   * **There is no head band.** The band is deleted, and with it the 21.7px
+   * `--nc-head-band` derivation and the "the card now owes the page two
+   * alignments" argument that used to live here: both were reasoning about a
+   * title line, and the title line is gone. Nothing was salvaged, because
+   * nothing survived the premise.
    *
-   * Inset is `--space-8` — 16, not the 12 it had. The drawer is 396 wide and its
-   * content is a column of prose; 12 is the inset a dense card row wants, and
-   * against a rounded 16px corner it read as text falling off the edge.
+   * **Why the band was not worth its 40px.** It carried exactly one string —
+   * the card's *kind* ("Spec"), not the conversation's name. You arrive here
+   * by clicking the row that says "Spec"; the band restated, one click later
+   * and 40px down, the thing you had just pressed. That is zero information
+   * for the tallest fixed cost on an 854px card. The name that string still
+   * had to carry is an *accessibility* obligation, not a painting one, and it
+   * is discharged by `aria-label` on `.drawer` (see the `title` prop in
+   * public.tsx). Losing the band also loses the frosted sticky ground under
+   * it, whose entire premise was "content scrolls beneath a head" — no head,
+   * no ground, so the `backdrop-filter` and its two fallbacks went with it.
+   *
+   * **Why the close is a chevron and may never be an X.** Measured at
+   * 1512×950 with the drawer open: the page header's *delete wave* button sits
+   * at y 22.3–50.3 (centre 36.3, right edge 1488); this close sat at
+   * y 80.0–108.0 (centre 94.0, right edge 1465). Same column to within 23px,
+   * 57.7px apart, identical 28px box, identical X glyph — and the top one
+   * destroys a wave while the bottom one puts a conversation away. Two
+   * controls that look the same, one pointer-flick apart, with opposite
+   * consequences, is a mis-click waiting to be reported as data loss. So the
+   * shape carries the difference: `chevron-right` is this app's "collapse it
+   * away" word, the same one the rail's collapse uses, and it is the honest
+   * verb — closing a conversation does not end it. X stays reserved for
+   * destruction. (The note on `.action` below has claimed the close was a
+   * chevron since the card landed; until now the code rendered an X. The
+   * comment was right and the code was wrong.)
+   *
+   * Floating moves the close *closer* to the delete — measured after this
+   * change it lands at y 76.3, right edge 1480, so 54.0px below and 8px inside
+   * a control it now shares a column with almost exactly. That is fine, and it
+   * is why the glyph had to change first: proximity is what the drawer's
+   * geometry wants (the corner is where a dismiss lives), so the shape, not the
+   * distance, has to be what tells them apart. Anything added to this group
+   * later inherits that obligation.
+   *
+   * **It floats; it does not occupy a row.** Absolute against the card and
+   * above the scroller at `--z-raised`, so the transcript starts at the top of
+   * the card and a long one scrolls under it. `--nc-card-inset` from both
+   * edges puts it on the same 8px column the transcript and the composer start
+   * on. The 16px stroked SVG comes from the shared `<Icon>` line-work, so its
+   * optical weight stays stable instead of depending on a font's arrow metrics
+   * — the same system the rail collapse and the cove chevron draw from.
+   *
+   * The full 28px hit area is §5 (2.5.8).
    */
-  .head {
-    /*
-     * The page header's band, re-derived rather than imported: `--header-band`
-     * is declared by `ui/page-header` on the *page's* parent through `:has`,
-     * and this drawer is fixed-positioned outside that subtree, so it cannot
-     * inherit it. 21.7 is the route title's own top-to-baseline (a 20.7px line
-     * centred in the 32px title row is 5.7, plus 16 inside it) — the same
-     * number, kept next to the same reasoning.
-     */
-    --nc-head-band: calc(var(--header-baseline) - 21.7px);
-
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: var(--space-4);
-    position: sticky;
-    inset-block-start: 0;
-    z-index: var(--z-raised);
-
-    /*
-     * Two alignments, and the head owes both:
-     *
-     * **The baseline.** The top inset puts the title's baseline on
-     * `--header-baseline`, the same one the rail's wordmark and the route title
-     * sit on — three headers, one line, across a window you see all of at once.
-     * This title's top-to-baseline is 14 (a 15px line at `--leading-snug`), so
-     * the inset is 42 − 14 = 28.
-     *
-     * **The bottom edge.** Baseline alignment alone is not enough, and this is
-     * what a real window showed: the two heads *ended* 11.5px apart (53.3 on
-     * the page, 64.8 here), so the hairline that appears under both on scroll
-     * came out as two lines at two heights. `min-block-size` is the page
-     * header's own height arithmetic — band + one 32px title row — so a
-     * one-line title lands this head on exactly the page header's bottom edge.
-     * A title that wraps to its second line grows past it, which is honest:
-     * there is more in it.
-     *
-     * End inset is smaller because the trailing controls carry their own 28px
-     * hit areas: 8 + (28 − 16) / 2 lands the glyph optically on the 16 inset.
-     */
-    min-block-size: calc(var(--nc-head-band) + var(--control-h-lg));
-    padding: calc(var(--header-baseline) - 14px) var(--space-4) var(--space-2) var(--space-8);
-    background: color-mix(in oklch, var(--paper) 85%, transparent);
-    backdrop-filter: blur(12px) saturate(1.4);
-  }
-
-  /*
-   * The trailing controls sit on the title's **first line** and contribute no
-   * height of their own: the negative block margins are symmetric, so a 28px
-   * hit area collapses to the 19.5px line box it is centred on. Without that,
-   * the buttons — not the text — decided how tall the head was, which is what
-   * put its bottom edge 11.5px below the page header's.
-   *
-   * §4.3 requires at least `--space-6` (12px) between destructive and benign
-   * actions. This 2px gap is a user-confirmed exception limited to this reset +
-   * close pair. Measured ink widths are 8.48px and 3.82px, leaving 9.76px and
-   * 12.10px respectively on their facing sides inside the 28px boxes. The boxes
-   * therefore supply 21.86px of whitespace before any gap: zero gap would only
-   * reduce the visual separation from 29.86px to 21.86px. `--space-1` (2px) is
-   * §2.3's tightest inline tier and leaves about 23.9px of visual whitespace.
-   * The reset is *before* the close rather than after it: §4.3 wants the danger
-   * last in its group, but the corner of a panel is where a pointer goes to
-   * dismiss things, and a destructive control under a dismiss reflex is a
-   * worse failure than an ordering one.
-   */
-  .headActions {
-    display: flex;
-    align-items: center;
-    gap: var(--space-1);
-    flex: none;
-    margin-block: calc((var(--text-md) * var(--leading-snug) - var(--control-h)) / 2);
-  }
-
-  @supports not (backdrop-filter: blur(2px)) {
-    .head {
-      background: var(--paper);
-    }
-  }
-
-  @media (prefers-reduced-transparency: reduce) {
-    .head {
-      background: var(--paper);
-      backdrop-filter: none;
-    }
-  }
-
-  /*
-   * Two lines, then clamp — not one line with an ellipsis. A wave title is a
-   * sentence ("Reference resolver: this round of fixes"), and at 396px an
-   * ellipsis eats the half of it that says which round.
-   *
-   * `--text-2` and medium, not full ink and semibold. §3.3's rule is that a
-   * surface has one P0 and this is not it: the drawer's P0 is the conversation.
-   * The head is a caption saying which wave you are talking about — you read it
-   * once on open and never again, and at 15px full-ink semibold it was the
-   * darkest thing on screen, out-shouting every reply under it.
-   *
-   * On opaque `--paper`, `--text` measured 18.1:1 and `--text-3` 7.8:1 in
-   * light / 6.5:1 in dark. The frosted ground also admits 15% of whatever has
-   * scrolled behind it. On real transcript content, with blur spreading the
-   * ink and no large solid dark blocks, 20-position browser audits measured
-   * minima of 7.18 light / 5.74 dark: AAA in light and AA in dark. The
-   * analytical worst case, with a large solid full-ink block sliding behind
-   * the head, is about 5.6 light / 4.2 dark. Light still clears AA, but dark is
-   * below AA's 4.5 threshold. The guarantee here is therefore AA/AAA for the
-   * measured real-content shape; a dark-theme full-ink block is a known
-   * analytical boundary. `saturate(1.4)` is not included in that model.
-   *
-   * This remains a manual browser audit: `tools/styles/check-contrast.mjs`
-   * hard-codes token pairs with one underlay per pair, so it cannot express a
-   * translucent layer composited over arbitrary scrolling content.
-   *
-   * `--text-3` is where this stops, and the next rank is why. The ladder is
-   * 18.1 → 10.0 → 7.8 → **2.3**: `--text-4` is the *decorative* rank, and a
-   * 15px heading set in it fails AA outright. The separation this title needed
-   * from the transcript was found on the other side instead — a message is
-   * content and now sits on the content rank, so the gap is 7.8 against 18.1
-   * rather than 7.8 against 10.0. Weight carries the rest: `--weight-normal`,
-   * because a caption has no reason to be bolder than what it captions.
-   */
-  .title {
-    display: -webkit-box;
-    min-inline-size: 0;
-    overflow: hidden;
-    font-size: var(--text-md);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-snug);
-    letter-spacing: var(--tracking-tight);
-    color: var(--text-3);
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-  }
-
-  /*
-   * A head control: the same 28px square the close is, because two controls on
-   * one row that differ in size read as two ranks, and these are one.
-   *
-   * Both controls use 16px stroked SVGs so their optical weight stays stable
-   * instead of depending on a font's arrow metrics. The close keeps the same
-   * right-facing chevron shape as the rail collapse. The rail collapse and
-   * cove chevron use the same shared `<Icon>` line-work system.
-   */
-  .action {
-    display: grid;
-    place-items: center;
-    flex: none;
-    inline-size: var(--control-h);
-    block-size: var(--control-h);
-    border: 1px solid transparent;
-    border-radius: var(--radius-sm);
-    line-height: var(--leading-none);
-    color: var(--text-3);
-    cursor: pointer;
-    transition: background-color var(--motion-quick) ease-out,
-      color var(--motion-quick) ease-out,
-      border-color var(--motion-quick) ease-out;
-  }
-
-  .action:hover,
-  .action:focus-visible {
-    background: var(--overlay-hover-strong);
-    color: var(--text);
-  }
-
-  /* §4.3's destructive recipe, in an icon's geometry: red at rest, transparent
-     fill; hover adds the soft fill and the border it implies. */
-  .actionDanger {
-    color: var(--error-text);
-  }
-
-  .actionDanger:hover,
-  .actionDanger:focus-visible {
-    border-color: var(--error-border);
-    background: var(--error-soft);
-    color: var(--error-text);
-  }
-
-  /* The hit area keeps its full 28px; `.headActions` is what places it on the
-     title's first line (§5, 2.5.8). */
   .close {
+    position: absolute;
+    z-index: var(--z-raised);
+    inset-block-start: var(--nc-card-inset, var(--space-4));
+    inset-inline-end: var(--nc-card-inset, var(--space-4));
     display: grid;
     place-items: center;
     flex: none;
@@ -296,51 +222,82 @@
     color: var(--text);
   }
 
-  /* The head and transcript share the scrolling region so the sticky frosted
-     surface can separate them without adding a line. */
+  /* The transcript now has the scrolling region to itself: the close floats
+     above it (`.close`) rather than riding inside it. */
   .scroll {
     flex: 1;
     min-block-size: 0;
     overflow: auto;
     padding: 0;
     /* Reserve a classic scrollbar lane so becoming scrollable does not shift
-       the entire column. This does not affect overlay scrollbars: they may
-       paint over the sticky frosted head, an accepted tradeoff of putting the
-       head inside the scroller so content can pass beneath it. Moving the head
-       outside is the structural fix, but would remove that frosted premise. */
+       the entire column. Overlay scrollbars paint in the same corner the
+       close floats in; at a 28px box inset 8px from the edge there is no
+       collision, and a classic scrollbar gets its own lane. */
     scrollbar-gutter: stable;
   }
 
+  /*
+   * **The first line clears the floating close; it does not run under it.**
+   * The close occupies the top `--nc-card-inset + --control-h` = 36px of the
+   * card, and a reply is a full-width paragraph, so with the old 8px top pad
+   * its first line ran straight through the glyph *at rest* — not only while
+   * scrolling, which would be fine. Built and looked at both ways: the
+   * overlap version is unreadable on the one frame you most need to read (a
+   * fresh conversation's first answer), and the clearance costs nothing when
+   * the transcript is short, which is exactly when it is applied.
+   *
+   * So the top pad is the control's own height. That still nets ~27px back
+   * against the head band it replaces (which spent 32 + a 19.5px line + 4
+   * before `.bodyInner`'s own 8), and it buys back something the band could not
+   * give: once the transcript is long enough to scroll, content *does* pass
+   * under the glyph, because it no longer sits on an opaque strip of its
+   * own.
+   */
   .bodyInner {
     display: flex;
     flex-direction: column;
     gap: var(--space-4);
-    padding: var(--space-4) var(--space-8) var(--space-6);
+    padding:
+      calc(var(--nc-card-inset, var(--space-4)) + var(--control-h))
+      var(--nc-card-inset, var(--space-4))
+      var(--space-6);
   }
 
   /*
-   * It slides in from the edge and back out to it — the same distance, the same
-   * duration, reversed. §7.6 asked for an instant exit, which is right for a
-   * dialog (a thing that was in the way and is now gone) and wrong for a panel
-   * welded to an edge: retracting says "still there, off-screen", vanishing
-   * says "destroyed". See the note in public.tsx.
+   * It rises 12px and fades, and leaves the same way — same distance, same
+   * duration, reversed.
+   *
+   * The 12px is kept from the edge-panel shape, and it is still the right
+   * motion for the card one, for a different reason. A panel welded to an edge
+   * animates *along* its own axis: it travels its own width, in from off-screen
+   * and back out, because "still there, pushed off-screen" is the fact it has
+   * to state. A card is not off-screen anywhere; it appears in place, and the
+   * vocabulary for appearing in place is a short lift plus opacity — the same
+   * one `ui/dialog` and the account menu use. Restoring an inline travel here
+   * would have to be a travel of the full `--panel-span`, sliding out over the
+   * page from behind the rail edge, which says the card came *from* somewhere
+   * it never was.
+   *
+   * §7.6 asked for an instant exit, which is right for a dialog (a thing that
+   * was in the way and is now gone) and wrong here: the conversation is not
+   * destroyed by closing it. See the note in public.tsx.
    */
-  /* The custom property resolves against the animating element, so both
-     keyframes travel exactly the drawer's own width. */
   @keyframes drawer-in {
     from {
-      translate: var(--nc-drawer-w) 0;
+      opacity: 0;
+      translate: 0 12px;
     }
   }
 
   @keyframes drawer-out {
     to {
-      translate: var(--nc-drawer-w) 0;
+      opacity: 0;
+      translate: 0 12px;
     }
   }
 
   .drawerClosing {
-    /* `forwards`, so the panel stays off-screen for the frame between the
+    /* `forwards`, so the card stays at zero opacity for the frame between the
        animation ending and React unmounting it. */
     animation: drawer-out var(--motion-medium) ease-in forwards;
 

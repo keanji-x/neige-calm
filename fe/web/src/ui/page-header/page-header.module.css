@@ -13,10 +13,20 @@
    * stick underneath the header and therefore has to know how tall it is; and a
    * sibling cannot read a custom property set on a sibling.
    *
-   * `:has(> .header)` names the parent without the parent having to name
-   * itself, so the four page modules stay ignorant of this and the row
-   * arithmetic stays in one place. The value then inherits to everything in the
-   * page, the header included.
+   * `:has(> .header)` names the page without it having to name itself, so the
+   * four page modules stay ignorant of this and the row arithmetic stays in one
+   * place. The value then inherits to everything in the page, the header
+   * included.
+   *
+   * **Child, not descendant.** This was briefly relaxed to `:has(.header)` so
+   * that `.stage` / `.main` / `.shell` published the number too, for the sake of
+   * the conversation drawer — a sibling of the page, positioned against `.main`,
+   * which then started on the panel card's line. The drawer now covers the
+   * header rather than starting below it and reads neither variable, and every
+   * remaining consumer (the sticky panel in `features/{cove,wave}/page`, the
+   * report outline's sticky list) is *inside* the page, where the child form
+   * already reaches. A publisher with no reader outside the page should not
+   * publish outside the page.
    */
   :where(*):has(> .header) {
     /* The band above the title — see `.header`'s own note. */
