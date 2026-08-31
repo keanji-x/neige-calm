@@ -214,13 +214,14 @@ fn block_heading(block: &calm_types::wave_report::ReportBlock) -> String {
         .get("markdown")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    // An outline summarizes what a reader will see, so the title is taken from
-    // the block's VISIBLE TEXT, not from its source. `scan_links().plain` is
-    // the workspace's one CommonMark projection of that — it drops `Event::Html`
-    // and `Event::InlineHtml` and keeps `Event::Text` / `Event::Code`
-    // (`calm_types::report_links`), and `report_backlinks` already quotes from
-    // the same projection, so an outline title and a backlink quote can never
-    // disagree about what a block says.
+    // The title comes from `scan_links().plain`, the workspace's SHARED
+    // CommonMark plain-text projection of a block (`calm_types::report_links`):
+    // it drops `Event::Html` / `Event::InlineHtml`, keeps `Event::Text` /
+    // `Event::Code`, and drops the alt text of a standalone image. It is not a
+    // projection of "everything a reader can see" — see the known exception
+    // below — it is the one projection this workspace has, and
+    // `report_backlinks` quotes from it too, so an outline title and a backlink
+    // quote can never disagree about what a block says.
     //
     // Reusing it, rather than scanning the source for `<!-- … -->`, is the
     // whole point: a substring scanner does not respect Markdown boundaries,
@@ -236,15 +237,28 @@ fn block_heading(block: &calm_types::wave_report::ReportBlock) -> String {
     // text without its `#` markers. Re-stripping leading `#` would eat the
     // visible characters of a block whose first line is the *code* `# x`.
     //
-    // Known divergence, accepted: `plain` drops the alt text of a standalone
-    // image (`report_links.rs`'s `standalone_image_alt_is_not_plain_text`),
-    // while `fe/` renders alt as the `<img>`'s accessible name. So an
-    // image-only prose block gets an empty title. That is the right trade —
-    // the block keeps its id and stays linkable, the outline is a text index
-    // and an alt string is not the image, and the alternative is a second
-    // hand-written projection of Markdown to text, which is exactly the class
-    // of bug this replaced. If image-only blocks ever need titles, teach
-    // `plain` about them once, for both readers.
+    // KNOWN EXCEPTION, deliberately accepted — the one place where this title
+    // is NOT what a reader sees. `plain` drops a standalone image's alt text
+    // (`calm_types::report_links`'s `standalone_image_alt_is_not_plain_text`)
+    // but keeps the alt of an image inside a link
+    // (`image_alt_inside_any_link_is_plain_text`), while `fe/` renders a
+    // standalone image's alt as a VISIBLE `<span>` (never an `<img>`: a report
+    // is agent-written and must not fetch remote bytes,
+    // `fe/web/src/features/report/document/public.tsx`). So an image-only prose
+    // block gets an EMPTY title here even though the front end shows its alt,
+    // and is indistinguishable in the outline from a genuinely invisible
+    // contract block. Pinned by `an_image_only_block_gets_an_empty_heading`.
+    //
+    // Accepted because both alternatives are worse. Changing `plain` is not a
+    // local edit: it is a SHARED projection, and `report_backlinks` uses the
+    // same string to cut citation quotes (`crate::report_backlinks`), so an
+    // S1-scoped fix would silently move an unrelated subsystem's output. And a
+    // hand-written fallback here is precisely the bug this function just
+    // deleted: a second projection of Markdown to text always drifts from the
+    // rendering side. The cost is bounded — the block keeps its id and stays
+    // deep-linkable, and the outline is a text index. If image-only blocks ever
+    // need titles, teach `plain` about them once, for both readers, with the
+    // backlink-quote change reviewed alongside.
     let plain = calm_types::report_links::scan_links(markdown).plain;
     let heading = plain
         .lines()
@@ -386,9 +400,23 @@ mod tests {
 
     #[test]
     fn an_image_only_block_gets_an_empty_heading() {
-        // Documented divergence from the front ends, which render alt text:
-        // `plain` drops a standalone image's alt. The block keeps its id, so it
-        // stays linkable; see the note on `block_heading`.
+        // KNOWN EXCEPTION, recorded on purpose so it reads as a decision and
+        // not an accident: the shared `plain` projection drops a standalone
+        // image's alt while `fe/` renders it as a visible `<span>`, so this
+        // block is titled like a genuinely invisible contract block. The block
+        // keeps its id and stays deep-linkable; see the note on `block_heading`
+        // for why neither `plain` nor a local fallback is changed here.
         assert_eq!(block_heading(&prose("![一张图](chart.png)\n")), "");
+
+        // The other half of the asymmetry, pinned so a "fix" cannot quietly
+        // flatten it: an image INSIDE a link keeps its alt, because that alt is
+        // the link's label and backlink quotes are cut from the same string.
+        // Follow-up (reconcile the projection with the rendering side for both
+        // readers — outline titles and backlink citations) is tracked as its
+        // own issue off #1185; do not patch it in `block_heading`.
+        assert_eq!(
+            block_heading(&prose("[![一张图](chart.png)](https://example.com)\n")),
+            "一张图"
+        );
     }
 }

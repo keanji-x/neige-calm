@@ -263,24 +263,52 @@ async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_t
     // Stated rather than implied: the byte-truncation branch did not fire.
     assert!(value["truncated"]["bytes"].is_null());
 
-    // No block was dropped from any listed wave: neither the block cap nor the
-    // byte cap fired. This is the carrier's actual claim — a contract block in
-    // every report costs the cove nothing in outline coverage.
+    // No block was dropped from ANY wave — not just from the ones this loop
+    // happens to recognise. `truncated.blocks` is omitted entirely when the map
+    // is empty, so asserting the whole key absent also rules out truncation
+    // metadata parked under some other wave id.
+    assert!(
+        value["truncated"]["blocks"].is_null(),
+        "nothing was dropped, so `truncated.blocks` must be absent entirely; got {}",
+        value["truncated"]["blocks"]
+    );
+
+    // Every block of every seeded wave is listed. This is the carrier's actual
+    // claim — a contract block in every report costs the cove nothing in
+    // outline coverage — so the loop must also prove it actually looked at the
+    // seeded waves: a fixture whose ids stopped matching would otherwise skip
+    // every iteration and still pass.
+    let mut verified = 0usize;
+    let mut foreign = Vec::new();
     for wave in waves {
         let id = wave["id"].as_str().unwrap();
         if !seeded.iter().any(|seed| seed.id.as_str() == id) {
+            foreign.push(id.to_string());
             continue;
         }
+        verified += 1;
         assert_eq!(
             wave["blocks"].as_array().unwrap().len(),
             5,
             "every block of a seeded wave is listed ({id})"
         );
-        assert!(
-            value["truncated"]["blocks"][id].is_null(),
-            "nothing was dropped, so no truncation is reported for {id}"
-        );
     }
+    // The cove holds 51 waves — 50 seeded plus the boot wave — and `MAX_WAVES`
+    // lists the 50 lowest ids, so exactly one falls off, and which one depends
+    // on where the random ids sort. Hence: nothing but the boot wave may show
+    // up unrecognised, and at most one seeded wave may be missing.
+    assert!(
+        (seeded.len() - 1..=seeded.len()).contains(&verified),
+        "expected to have checked all {} seeded waves (at most one displaced by the wave cap); \
+         checked {verified}",
+        seeded.len()
+    );
+    assert!(
+        foreign
+            .iter()
+            .all(|id| id.as_str() == boot.wave_id.as_str()),
+        "the only listable wave this test did not seed is the boot wave; got {foreign:?}"
+    );
 }
 
 #[tokio::test]
