@@ -279,6 +279,37 @@ async fn materialize_failure_fails_the_create() {
         "the response must carry the real error, not a generic one: {body}"
     );
 
+    // ---- known state, deliberately pinned (S2 review ruling ④) ----
+    //
+    // Materialization runs *after* the wave transaction commits, because design
+    // D5 requires it outside the tx: the managed path is derived from the wave
+    // id, which does not exist until the insert. So a failure leaves the wave
+    // row behind, pointing at a directory that does not exist. S2 does NOT
+    // compensate — deleting the wave here would have to emit `WaveDeleted` and
+    // tear down the two cards minted in the same tx, which is a bigger change
+    // than this slice carries.
+    //
+    // This is asserted rather than tolerated silently: if a later slice adds
+    // compensating deletion, this test fails and the author decides
+    // deliberately instead of discovering it. Do not "fix" a failure here by
+    // loosening the assertion.
+    let orphans: Vec<(String, String)> =
+        sqlx::query_as("SELECT id, workspace_path FROM waves WHERE title='doomed'")
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        orphans.len(),
+        1,
+        "known state: the wave row survives a failed materialization"
+    );
+    assert!(
+        !std::path::Path::new(&orphans[0].1).exists(),
+        "the orphan row's managed path must not exist on disk — if it does, \
+         materialization partially succeeded and this injection is not testing \
+         what it claims: {orphans:?}"
+    );
+
     // And the injection really is what broke it: with the obstruction removed
     // the identical request succeeds.
     std::fs::remove_file(b.workspace_root.join(&b.cove_id)).unwrap();

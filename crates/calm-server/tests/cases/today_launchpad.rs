@@ -24,6 +24,8 @@ use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
+    /// #1147 S2 — the managed workspace root this boot was pinned to.
+    workspace_root: PathBuf,
     _tmp: TempDir,
 }
 
@@ -61,7 +63,8 @@ async fn boot() -> Boot {
         repo.clone(),
         None,
     ))
-    // #1147 S2 — keep any managed workspace this test mints inside the sandbox.
+    // #1147 S2 — keep every managed workspace this test mints inside the
+    // sandbox, and make the root's location assertable.
     .with_workspace_root(tmp.path().join("workspaces"));
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -71,8 +74,51 @@ async fn boot() -> Boot {
     Boot {
         app,
         repo,
+        workspace_root: tmp.path().join("workspaces"),
         _tmp: tmp,
     }
+}
+
+async fn create_cove(b: &Boot, name: &str) -> Value {
+    let response = b
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/api/coves")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({"name": name, "color": "#abc"}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+async fn create_wave(b: &Boot, body: Value) -> Value {
+    let response = b
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/api/waves")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "body={}",
+        String::from_utf8_lossy(&bytes)
+    );
+    serde_json::from_slice(&bytes).unwrap()
 }
 
 async fn ensure(app: axum::Router) -> (StatusCode, Value) {
@@ -234,7 +280,7 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
 /// the "one-shot, monotonic" property D1 gives `frozen_at`. Leaving it NULL is
 /// how re-pointing stays legal without the latch ever being violated.
 #[tokio::test]
-async fn launchpad_wave_carries_an_unfrozen_attached_workspace_on_both_branches() {
+async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches() {
     async fn workspace_row(repo: &SqlxRepo, id: &str) -> (String, String, Option<i64>) {
         sqlx::query_as(
             "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id=?1",
@@ -252,8 +298,16 @@ async fn launchpad_wave_carries_an_unfrozen_attached_workspace_on_both_branches(
 
     // Branch 1 — fresh INSERT.
     let (kind, path, frozen_at) = workspace_row(&b.repo, &wave_id).await;
-    assert_eq!(kind, "attached");
-    assert!(!path.is_empty(), "launchpad wave got a real path");
+    // #1147 S2 review ruling — `managed`, not `attached`. The directory is
+    // minted by the server, and `attached` means "the user pointed at it, the
+    // server never touches it". Labelling a server-created directory
+    // `attached` is a row that disagrees with the fact on disk.
+    assert_eq!(kind, "managed");
+    assert!(
+        std::path::Path::new(&path).starts_with(&b.workspace_root),
+        "the launchpad must live under the workspace root so \
+         `managed ⇒ under <workspace-root>` holds with no exceptions: {path}"
+    );
     assert_eq!(
         frozen_at, None,
         "the launchpad wave must stay unfrozen so the adopt branch can \
@@ -276,7 +330,7 @@ async fn launchpad_wave_carries_an_unfrozen_attached_workspace_on_both_branches(
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let dto: Value = serde_json::from_slice(&bytes).unwrap();
     let wave = dto.get("wave").unwrap_or(&dto);
-    assert_eq!(wave["workspace"]["kind"], "attached", "dto={dto}");
+    assert_eq!(wave["workspace"]["kind"], "managed", "dto={dto}");
     assert_eq!(wave["workspace"]["path"], wave["cwd"], "dto={dto}");
     assert!(wave["workspace"]["frozen_at"].is_null(), "dto={dto}");
 
@@ -285,7 +339,7 @@ async fn launchpad_wave_carries_an_unfrozen_attached_workspace_on_both_branches(
     // columns through the single writer.
     sqlx::query(
         "UPDATE waves SET purpose=NULL, workspace_path='/also-scrambled', \
-         workspace_kind='managed', workspace_frozen_at=NULL WHERE id=?1",
+         workspace_kind='attached', workspace_frozen_at=99 WHERE id=?1",
     )
     .bind(&wave_id)
     .execute(b.repo.pool())
@@ -295,161 +349,191 @@ async fn launchpad_wave_carries_an_unfrozen_attached_workspace_on_both_branches(
     let (status, adopted) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={adopted}");
     let (kind, path, frozen_at) = workspace_row(&b.repo, &wave_id).await;
-    assert_eq!(kind, "attached", "adoption re-declares the kind");
+    assert_eq!(kind, "managed", "adoption re-declares the kind");
     assert_ne!(
         path, "/also-scrambled",
         "adoption actually rewrote the path"
     );
+    assert!(std::path::Path::new(&path).starts_with(&b.workspace_root));
     assert_eq!(
         frozen_at, None,
         "adoption re-points, and re-pointing must never stamp frozen_at"
     );
 }
 
-/// #1147 S1 — the bound on the launchpad exception (design D9, r3.2 amendment).
+/// #1147 S2 review ruling ① — the invariant that pays for making the launchpad
+/// `Managed`: **`kind = Managed` ⇒ the path is under `<workspace-root>`, with
+/// no exceptions.**
 ///
-/// `frozen_at IS NULL` means "this workspace may still be re-pointed". S1
-/// creates exactly one such wave, the kernel-owned launchpad, and it lives in
-/// the **system** cove. Every user-reachable wave is frozen at creation, which
-/// is what keeps a future PATCH branch that forgets to check `kind` from
-/// relocating a real user repository.
-///
-/// Stated as a property over the whole table rather than about the one wave we
-/// happen to know about: any future create path that forgets to freeze shows
-/// up here, whether or not anybody remembered to write a test for it.
+/// S5's recycle path asserts this prefix before it removes anything. Stated
+/// over the whole table rather than per known wave, so any future create path
+/// that mints a managed workspace somewhere else shows up here whether or not
+/// somebody remembered to write a test for it — and so S5 never needs a
+/// launchpad carve-out.
 #[tokio::test]
-async fn only_system_cove_waves_may_be_unfrozen() {
+async fn every_managed_wave_lives_under_the_workspace_root() {
     let b = boot().await;
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    // A second, ordinary wave in a *user* cove, minted through the production
-    // route — otherwise the property below is only tested against the one row
-    // that motivated it.
-    let cove: Value = {
-        let response = b
-            .app
-            .clone()
-            .oneshot(
-                Request::post("/api/coves")
-                    .header("content-type", "application/json")
-                    .body(Body::from(
-                        serde_json::json!({"name": "Atlas", "color": "#abc"}).to_string(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::CREATED);
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        serde_json::from_slice(&bytes).unwrap()
-    };
-    let tmp = TempDir::new().unwrap();
-    let cwd = tmp.path().to_string_lossy().into_owned();
-    let response = b
-        .app
-        .clone()
-        .oneshot(
-            Request::post("/api/waves")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "cove_id": cove["id"],
-                        "title": "user wave",
-                        "cwd": cwd,
-                        "attach_folder": true,
-                        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(
-        status,
-        StatusCode::CREATED,
-        "body={}",
-        String::from_utf8_lossy(&bytes)
-    );
-
-    // #1147 S2 narrows the property to its actual content. S1 could say "no
-    // wave is unfrozen outside the launchpad" only because every wave it could
-    // mint was `attached`; S2 mints `managed` workspaces, and *unfrozen
-    // managed* is the intended steady state — that is what makes S3's
-    // "re-point before any work happened" reachable at all. What must stay
-    // impossible is an unfrozen **attached** row: that is a user repository
-    // sitting in the state a PATCH branch that forgot to check `kind` would
-    // relocate (design D9). The launchpad is the one documented exception.
-    // …and a managed one (title-only create, the #1131 / S2 default shape), so
-    // the narrowed predicate below is not satisfied merely because nothing
-    // unfrozen-managed exists.
-    let response = b
-        .app
-        .clone()
-        .oneshot(
-            Request::post("/api/waves")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "cove_id": cove["id"],
-                        "title": "managed wave",
-                        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let status = response.status();
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    assert_eq!(
-        status,
-        StatusCode::CREATED,
-        "body={}",
-        String::from_utf8_lossy(&bytes)
-    );
-    let unfrozen_managed: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM waves WHERE workspace_frozen_at IS NULL AND workspace_kind='managed'",
+    // A user cove with both shapes of wave, minted through the production
+    // route: a managed one (title-only) and an attached one (explicit cwd), so
+    // the property below is neither empty nor all-launchpad.
+    let cove = create_cove(&b, "Atlas").await;
+    let attached_dir = TempDir::new().unwrap();
+    create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "managed wave",
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
     )
-    .fetch_one(b.repo.pool())
+    .await;
+    create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "attached wave",
+            "cwd": attached_dir.path().to_string_lossy(),
+            "attach_folder": true,
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
+    )
+    .await;
+
+    let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+        "SELECT id, workspace_kind, workspace_path, purpose FROM waves ORDER BY created_at, id",
+    )
+    .fetch_all(b.repo.pool())
     .await
     .unwrap();
+    let managed: Vec<_> = rows.iter().filter(|r| r.1 == "managed").collect();
+    let attached: Vec<_> = rows.iter().filter(|r| r.1 == "attached").collect();
     assert!(
-        unfrozen_managed > 0,
-        "no unfrozen managed wave exists, so the `kind='attached'` filter below \
-         would pass for the wrong reason"
+        managed.len() >= 2 && managed.iter().any(|r| r.3.as_deref() == Some("launchpad")),
+        "the managed set must include the launchpad AND at least one ordinary \
+         wave, or this property is vacuous: {rows:?}"
     );
+    assert!(
+        !attached.is_empty(),
+        "an attached wave must exist too, otherwise the negative check below \
+         could be passing because every row happens to be managed: {rows:?}"
+    );
+    for (id, _, path, purpose) in managed {
+        assert!(
+            std::path::Path::new(path).starts_with(&b.workspace_root),
+            "managed wave {id} (purpose={purpose:?}) lives at {path}, outside \
+             the workspace root {}. S5 removes managed directories: a managed \
+             row pointing outside the root is either an un-recyclable orphan \
+             or, worse, something S5 would delete outside its own tree.",
+            b.workspace_root.display()
+        );
+    }
+    // The attached one must NOT be under the root — otherwise the property
+    // above would hold trivially, for the wrong reason.
+    for (id, _, path, _) in attached {
+        assert!(
+            !std::path::Path::new(path).starts_with(&b.workspace_root),
+            "attached wave {id} at {path} is inside the managed root"
+        );
+    }
+}
 
-    let unfrozen: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT w.id, w.purpose, c.kind FROM waves w JOIN coves c ON c.id = w.cove_id \
-         WHERE w.workspace_frozen_at IS NULL AND w.workspace_kind = 'attached'",
+/// #1147 — the bound on the "may still be re-pointed" state (design D9, r3.2
+/// amendment; narrowed by the S2 review).
+///
+/// S1 could say "no wave outside the launchpad is unfrozen" only because every
+/// wave it could mint was `attached`. S2 mints `managed` workspaces, and
+/// **unfrozen managed is the intended steady state** — it is exactly what
+/// makes S3's "re-point before any work has happened" reachable. So the
+/// property is not about unfrozen rows in general.
+///
+/// What must stay impossible is an unfrozen **attached** row. `attached` is a
+/// repository the user pointed at; `frozen_at IS NULL` means "a PATCH may
+/// relocate this". Together they are a real user repository sitting in the
+/// state a PATCH branch that forgot to check `kind` would move (design D9).
+/// Since the S2 review made the launchpad `managed`, that combination now has
+/// **no exceptions at all** — the set must be empty.
+///
+/// An empty-set property is worthless without proof that the population is
+/// non-empty, so this asserts both halves of the population exist first:
+/// attached rows (which must all be frozen) and unfrozen rows (which must all
+/// be managed).
+#[tokio::test]
+async fn no_attached_wave_is_ever_unfrozen() {
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    // Both shapes in a *user* cove, minted through the production route —
+    // otherwise the property is only tested against the row that motivated it.
+    let cove = create_cove(&b, "Atlas").await;
+    let tmp = TempDir::new().unwrap();
+    create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "user wave",
+            "cwd": tmp.path().to_string_lossy(),
+            "attach_folder": true,
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
+    )
+    .await;
+    create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "managed wave",
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
+    )
+    .await;
+
+    let rows: Vec<(String, String, Option<i64>, Option<String>, String)> = sqlx::query_as(
+        "SELECT w.id, w.workspace_kind, w.workspace_frozen_at, w.purpose, c.kind \
+         FROM waves w JOIN coves c ON c.id = w.cove_id",
     )
     .fetch_all(b.repo.pool())
     .await
     .unwrap();
 
+    // Non-vacuity, both directions.
     assert!(
-        !unfrozen.is_empty(),
-        "the launchpad wave should be here; an empty set would make this \
-         property vacuous"
+        rows.iter().any(|r| r.1 == "attached"),
+        "no attached wave exists, so the property below is vacuous: {rows:?}"
     );
-    for (id, purpose, cove_kind) in &unfrozen {
+    assert!(
+        rows.iter().any(|r| r.2.is_none()),
+        "no unfrozen wave exists, so the property below is vacuous: {rows:?}"
+    );
+
+    let unfrozen_attached: Vec<_> = rows
+        .iter()
+        .filter(|r| r.1 == "attached" && r.2.is_none())
+        .collect();
+    assert!(
+        unfrozen_attached.is_empty(),
+        "`attached + frozen_at IS NULL` is a user repository in the state a \
+         kind-blind PATCH would relocate (design D9). This combination has no \
+         legal instance: {unfrozen_attached:?}"
+    );
+
+    // And every surviving unfrozen row is managed — the launchpad plus
+    // whatever the managed default minted.
+    for (id, kind, frozen_at, purpose, cove_kind) in rows.iter().filter(|r| r.2.is_none()) {
         assert_eq!(
-            cove_kind, "system",
-            "wave {id} (purpose={purpose}) is unfrozen but lives in a `{cove_kind}` cove. \
-             `frozen_at IS NULL` means re-pointable; outside the kernel-owned system \
-             cove that is a user repository waiting to be moved (design D9)."
-        );
-        assert_eq!(
-            purpose, "launchpad",
-            "wave {id} is an unfrozen system-cove wave that is not the launchpad; \
-             the exception is scoped to that one wave"
+            kind, "managed",
+            "wave {id} (purpose={purpose:?}, cove={cove_kind}, frozen_at={frozen_at:?})"
         );
     }
+    assert!(
+        rows.iter()
+            .any(|r| r.3.as_deref() == Some("launchpad") && r.2.is_none() && r.4 == "system"),
+        "the kernel-owned launchpad must still be the unfrozen system-cove \
+         wave design D9 carved out: {rows:?}"
+    );
 }
 
 /// #1147 S2 (design D3) — the launchpad is the fifth wave-create entry point
@@ -462,11 +546,27 @@ async fn launchpad_workspace_is_materialized() {
     let (status, body) = ensure(b.app.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    let path: String =
-        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
-            .fetch_one(b.repo.pool())
-            .await
-            .unwrap();
+    let (path, kind, frozen_at, cove_id): (String, String, Option<i64>, String) = sqlx::query_as(
+        "SELECT workspace_path, workspace_kind, workspace_frozen_at, cove_id FROM waves \
+         WHERE purpose='launchpad'",
+    )
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    // #1147 S2 review ruling ① — a managed workspace like any other, at
+    // `<root>/<system_cove_id>/<wave_id>`, and still never frozen (design D9).
+    assert_eq!(kind, "managed");
+    assert_eq!(
+        frozen_at, None,
+        "the launchpad stays re-pointable; that D9 exception survives the move \
+         to a managed root"
+    );
+    assert_eq!(
+        std::path::PathBuf::from(&path),
+        b.workspace_root
+            .join(cove_id)
+            .join(body["wave_id"].as_str().unwrap())
+    );
     let path = std::path::Path::new(&path);
     assert!(path.join(".git").is_dir(), "no repository at {path:?}");
     assert!(

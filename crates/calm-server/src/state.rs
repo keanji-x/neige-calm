@@ -193,6 +193,12 @@ pub struct BootState {
     pub repo: Arc<dyn Repo>,
     /// #1147 D2 — see [`RouteState::workspace_root`].
     pub workspace_root: PathBuf,
+    /// #1147 S2 — owns the auto-allocated workspace root when one was minted
+    /// for a test/replay `AppState`. `None` in production, where the root is
+    /// the user's real, persistent directory. Held so the sandbox is removed
+    /// when the state drops instead of accumulating a git repository per test
+    /// run under the system temp dir.
+    pub workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -273,6 +279,7 @@ impl BootState {
             operation_runtime: self.operation_runtime,
             worker_flow: self.worker_flow,
             raw: self.repo,
+            workspace_root_guard: self.workspace_root_guard,
             route,
             worker,
             codex_shell,
@@ -384,6 +391,8 @@ pub struct AppState {
     /// out, but the production build keeps the field opaque on purpose.
     #[allow(dead_code)]
     raw: Arc<dyn Repo>,
+    /// #1147 S2 — see [`BootState::workspace_root_guard`].
+    workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     route: RouteState,
     worker: WorkerState,
     codex_shell: CodexShellState,
@@ -544,6 +553,11 @@ impl AppState {
         self
     }
 
+    /// #1147 D2 — the managed workspace root this process was booted with.
+    pub fn workspace_root(&self) -> &std::path::Path {
+        &self.route.workspace_root
+    }
+
     /// #1147 S2 test seam — pin the managed workspace root. `from_parts`
     /// defaults to a per-`AppState` directory under the system temp dir so no
     /// test can silently materialize repositories into the developer's real
@@ -551,6 +565,10 @@ impl AppState {
     /// points this at its own `TempDir` instead.
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.route.workspace_root = root;
+        // Release the auto-allocated sandbox: the caller supplied its own root,
+        // so the default one is unreachable and would otherwise only be swept
+        // when this state drops.
+        self.workspace_root_guard = None;
         self
     }
 
@@ -714,6 +732,12 @@ impl AppState {
             .with_shared_codex_appserver(shared_codex_appserver.clone()),
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
+        let workspace_root_sandbox = Arc::new(
+            tempfile::Builder::new()
+                .prefix("neige-calm-test-workspaces-")
+                .tempdir()
+                .expect("allocate a managed-workspace sandbox for AppState::from_parts"),
+        );
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
@@ -746,12 +770,13 @@ impl AppState {
         );
         BootState {
             repo,
-            // #1147 S2 — `from_parts` is the test / replay hatch. A unique
-            // per-instance temp root keeps managed materialization inside the
-            // test sandbox; see `AppState::with_workspace_root`.
-            workspace_root: std::env::temp_dir()
-                .join("neige-calm-test-workspaces")
-                .join(uuid::Uuid::new_v4().to_string()),
+            // #1147 S2 — `from_parts` is the test / replay hatch. A per-instance
+            // `TempDir` keeps managed materialization inside a sandbox AND
+            // sweeps it when the state drops; an un-owned path under the system
+            // temp dir accumulated a git repository per test run. A test that
+            // wants to *inspect* the tree calls `with_workspace_root`.
+            workspace_root: workspace_root_sandbox.path().to_path_buf(),
+            workspace_root_guard: Some(workspace_root_sandbox),
             events,
             daemon,
             terminal_renderer,
@@ -1177,6 +1202,8 @@ impl AppState {
         let state = BootState {
             repo,
             workspace_root,
+            // Production: the root is the user's real directory, never swept.
+            workspace_root_guard: None,
             events,
             daemon,
             terminal_renderer,

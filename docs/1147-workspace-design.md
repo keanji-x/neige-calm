@@ -1,7 +1,7 @@
 # 设计：wave 工作区 —— default 语义 + 托管根 + 一次性冻结
 
 > 归属：#1147（worker 工作区隔离）。相关：#1149（pending 不可见 / 失败不可读）、#1131（建 wave 只填名字，遗留 `cwd=$HOME`）、#1098（cove 对话）、#275/#1109（`cove_folders`）。
-> 状态：**r3.5 — 实现中**。S0 已合入 #1158；S1 已合入 #1163（删掉 waves.cwd，未保留投影）。下一片 S2。
+> 状态：**r3.6 — 实现中**。S0 已合入 #1158；S1 已合入 #1163（删掉 waves.cwd，未保留投影）。S2 实现完成待评审。
 
 ## 1. 问题
 
@@ -283,7 +283,15 @@ r1 推荐的 (c)「路径先定、物化延后」被两路独立证伪：今天�
 随手建的 wave 就是可回收垃圾而非永久债。**(a) 还顺带收窄了 D4 的窗口** —— 改工作区变成「删旧空目录 + 建新目录」
 的原子操作，不需要跟 operation 做时序推理（再叠加「有未完成 operation 就 409」）。
 
-执行顺序：物化在 `create_wave_structure` 的 tx **之外**、`start_spec_harness` **之前**；失败回滚 wave 行或返回 5xx。
+执行顺序：物化在 `create_wave_structure` 的 tx **之外**、`start_spec_harness` **之前**；失败返回非 2xx。
+
+> **已知状态（S2 落地，评审裁决 ④）：物化失败会留下一条孤儿 wave 行。**
+> 托管路径由 wave id 派生，而 id 只在 insert 时诞生 ⇒ 物化只能在 tx 提交之后跑 ⇒
+> 失败时行已在库里，指向一个不存在的目录。S2 **不做**补偿删除：那要连带发
+> `WaveDeleted`、清掉同 tx 建的两张卡，超出本片。
+> 这条状态由 `wave_workspace_materialize::materialize_failure_fails_the_create`
+> 显式钉住（断言「非 2xx **且** 行存在 **且** 该 path 在盘上不存在」），
+> 将来谁改成补偿删除，测试会红，是一次有意识的决定而不是意外发现。
 
 ### D6 — 允许的工作区变更：只做 managed → managed
 
@@ -328,6 +336,23 @@ r1 推荐的 (c)「路径先定、物化延后」被两路独立证伪：今天�
 ### D9 — 存量迁移
 
 - **例外：system cove 的 Today/launchpad wave 是内核所有，`frozen_at` 恒为 `NULL`**（r3.3，S1 评审）。
+  > **r3.6（S2 评审裁决 ①）：例外只有「不冻结」这一条，`kind` 不在例外之内。**
+  > S1 把它写成 `Attached` 只因为当时托管根还不存在；S2 的初版沿用了这一点，就地物化内核自建的
+  > `<data_dir>/../launchpad`。那让**行上的标签与盘上的事实不符** —— `Attached` 的定义是
+  > 「用户指向的既有仓库，服务端一根汗毛不能碰」，而这个目录是服务端自己 `mkdir` 的。
+  > 标签与事实不符正是前两片花三轮杀掉的那一类问题。
+  >
+  > 因此 launchpad 的 workspace 是 **`kind = Managed`，路径落在
+  > `<workspace-root>/<system_cove_id>/<launchpad_wave_id>/`，`frozen_at` 仍恒为 `NULL`**。
+  > 「恒 NULL」本来就是为了让内核可以自由重指向它，所以这次重指向是设计明确允许的动作，
+  > 不是数据迁移事故。旧的 `<data_dir>/../launchpad` 目录**留在盘上不动** —— 托管根之外的东西不归我们删。
+  >
+  > 收益是一条**无例外**的不变量：**`kind = Managed ⇒ path 在 `<workspace-root>` 之下`**，
+  > 由 `every_managed_wave_lives_under_the_workspace_root`（对**全表**断言，不是对单行）钉住，
+  > D8 的回收前缀断言因此不需要为 launchpad 开豁免口子。
+  > 相应地，D9 原文说的「代价是存在一条 `attached + frozen_at IS NULL` 的行」**已不成立**：
+  > 该组合现在**没有任何合法实例**，断言由 `no_attached_wave_is_ever_unfrozen` 承担
+  > （空集属性，配两个方向的非空性守卫）。
   理由：`today_launchpad_ensure_tx`（`routes/today.rs:98/107`）的收编分支会重指向这条 wave 的 path。
   若它是冻结的，D1「`frozen_at` 一次性、单调，`Some` 之后 path/kind 不可改」当场为假 —— 这是 S1 评审
   实测到的**当下可达**违约，不是 S3 的坑。让内核所有的 wave 不冻结，单调性就从不被违反，

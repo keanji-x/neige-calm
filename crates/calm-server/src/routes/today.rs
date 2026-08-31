@@ -28,6 +28,7 @@ use axum::{
 };
 use serde::Serialize;
 use sqlx::{Sqlite, Transaction};
+use std::path::Path;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
@@ -48,6 +49,12 @@ struct EnsureTxResult {
     report_card_id: String,
     created: bool,
     adopted_legacy: bool,
+    /// #1147 — this `ensure` moved the launchpad's workspace path. True on a
+    /// fresh mint and on the one-time migration of a pre-S2 row (whose path was
+    /// the kernel-minted `<data_dir>/../launchpad`). The spec harness must
+    /// re-open its thread when this happens, or it keeps working in the old
+    /// directory while every worker uses the new one.
+    repointed: bool,
 }
 
 fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
@@ -57,31 +64,46 @@ fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
     error.is_unique_violation() && error.message().contains(constraint)
 }
 
-/// #1147 S1 — the launchpad wave's workspace. `Attached`, and **never frozen**.
+/// #1147 — the launchpad wave's workspace. `Managed`, under the workspace
+/// root like every other managed workspace, and **never frozen**.
 ///
-/// This is the one documented exception to "S1 mints every wave frozen", and
-/// it exists because the launchpad wave is the one wave whose path this slice
-/// can legally *re-point*: the adopt-legacy branch below takes an existing
-/// `Today` wave and re-aims it at the caller's `cwd`, and `ensure` is
-/// idempotent, so that branch runs against a row that has already been
-/// through here.
+/// **Never frozen** is the design D9 exception, and it is the *only* thing
+/// that is exceptional here. The launchpad is the one wave whose path the
+/// kernel may legally re-point: the adopt-legacy branch below repurposes an
+/// existing `Today` wave, and `ensure` is idempotent, so that branch runs
+/// against a row that has already been through here. Freezing it would make
+/// design D1's "`frozen_at` is one-shot and monotonic" false — re-point +
+/// re-stamp is exactly the sequence the latch forbids. The alternatives were
+/// worse: refusing to re-point breaks `ensure`, and re-pointing while leaving
+/// a stale stamp makes the stamp lie about which path was frozen.
 ///
-/// Freezing it would make design D1's "`frozen_at` is one-shot and monotonic"
-/// false on the very first slice: re-point + re-stamp is exactly the sequence
-/// the latch forbids. The alternatives were worse — refusing to re-point
-/// breaks `ensure`, and re-pointing while leaving a stale stamp makes the
-/// stamp lie about which path was frozen.
+/// **`Managed`, not `Attached` (S2 review ruling).** S1 wrote `Attached` here
+/// because managed roots did not exist yet, and S2's first cut kept it,
+/// materializing the kernel-minted `<data_dir>/../launchpad` directory in
+/// place. That made the row's label disagree with the fact on disk:
+/// `Attached` means "a repository the *user* pointed at, never created or
+/// `git init`-ed by the server", and this directory is created by the server.
+/// A label that disagrees with the fact is the class of defect the previous
+/// two slices spent three review rounds removing.
 ///
-/// The cost is that `attached + frozen_at IS NULL` becomes a reachable state.
-/// It is bounded to the kernel-owned wave in the **system** cove
-/// (`purpose='launchpad'`, minted under `cove_create_system_tx`), and
-/// `only_system_cove_waves_may_be_unfrozen` in `tests/cases/today_launchpad.rs`
-/// holds that bound. S3's PATCH must refuse system-cove waves outright, so no
-/// user-reachable path ever sees an unfrozen workspace.
-fn launchpad_workspace(cwd: &str) -> WaveWorkspace {
+/// Making it managed also buys an invariant with **no exceptions**:
+/// `kind = Managed ⇒ path is under <workspace-root>`.
+/// `every_managed_wave_lives_under_the_workspace_root` in
+/// `tests/cases/today_launchpad.rs` asserts it over the whole table, so S5's
+/// recycle-path prefix assertion needs no launchpad carve-out.
+///
+/// The old `<data_dir>/../launchpad` directory is deliberately **left on
+/// disk**: nothing outside the workspace root is ours to delete.
+fn launchpad_workspace(workspace_root: &Path, cove_id: &str, wave_id: &str) -> WaveWorkspace {
     WaveWorkspace {
-        kind: WaveWorkspaceKind::Attached,
-        path: cwd.to_string(),
+        kind: WaveWorkspaceKind::Managed,
+        path: crate::workspace_materialize::managed_workspace_path(
+            workspace_root,
+            cove_id,
+            wave_id,
+        )
+        .to_string_lossy()
+        .into_owned(),
         // Never `Some(..)`. See the doc comment: writing a stamp here is what
         // would break monotonicity on re-adoption.
         frozen_at: None,
@@ -100,7 +122,7 @@ async fn today_launchpad_ensure_tx(
     tx: &mut Transaction<'_, Sqlite>,
     s: &RouteState,
     cove_id: &str,
-    cwd: &str,
+    workspace_root: &Path,
 ) -> Result<EnsureTxResult> {
     let existing = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
         "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE purpose='launchpad' LIMIT 1"
@@ -109,7 +131,7 @@ async fn today_launchpad_ensure_tx(
     .await?
     .map(Wave::from);
 
-    let (wave, created, adopted_legacy) = if let Some(wave) = existing {
+    let (mut wave, created, adopted_legacy) = if let Some(wave) = existing {
         (wave, false, false)
     } else if let Some(mut wave) = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
         "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE cove_id=?1 AND purpose IS NULL AND title='Today' ORDER BY created_at,id LIMIT 1"
@@ -120,9 +142,7 @@ async fn today_launchpad_ensure_tx(
         // and hands the workspace to the single writer below, in the same tx.
         sqlx::query("UPDATE waves SET purpose='launchpad', workflow_id=NULL, plugin_scope=NULL, workflow_input=NULL, updated_at=?2 WHERE id=?1")
             .bind(wave.id.as_str()).bind(now_ms()).execute(&mut **tx).await?;
-        let workspace = launchpad_workspace(cwd);
-        wave_workspace_write_tx(tx, wave.id.as_str(), &workspace).await?;
-        wave.purpose = Some("launchpad".into()); wave.cwd_wire_alias = cwd.into(); wave.workspace = workspace;
+        wave.purpose = Some("launchpad".into());
         wave.workflow_id = None; wave.plugin_scope = None; wave.workflow_input = None;
         (wave, false, true)
     } else {
@@ -131,17 +151,32 @@ async fn today_launchpad_ensure_tx(
             .bind(cove_id).fetch_one(&mut **tx).await?;
         // #1147 S1 — `cwd` is off this INSERT's column list (it falls to
         // migration 0018's `DEFAULT ''` for the remainder of this tx) and is
-        // written together with the workspace columns by the single writer.
+        // written together with the workspace columns by the single workspace
+        // writer below, shared by all three branches.
         sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,workflow_id,purpose,workflow_input,created_at,updated_at) VALUES(?1,?2,'Today',?3,'draft',NULL,'launchpad',NULL,?4,?4)")
             .bind(&id).bind(cove_id).bind(sort).bind(now).execute(&mut **tx).await?;
-        let workspace = launchpad_workspace(cwd);
-        wave_workspace_write_tx(tx, &id, &workspace).await?;
         s.write.cove_cache().insert(WaveId::from(id.clone()), cove_id.to_string().into());
         (Wave { id:id.into(), cove_id:cove_id.to_string().into(), title:"Today".into(), sort,
-            archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd_wire_alias:cwd.into(),
+            archived_at:None, pinned_at:None, lifecycle:Default::default(), cwd_wire_alias:String::new(),
             workflow_id:None, plugin_scope:None, purpose:Some("launchpad".into()), workflow_input:None,
-            terminal_at:None, workspace, created_at:now, updated_at:now }, true, false)
+            terminal_at:None, workspace: WaveWorkspace::default(), created_at:now, updated_at:now }, true, false)
     };
+
+    // #1147 — ONE workspace writer for all three branches, so the launchpad's
+    // row cannot differ by which branch minted it. The desired workspace is a
+    // pure function of the wave id, so this is a no-op on the steady state and
+    // a one-time re-point for a row created before S2 (whose path was the
+    // kernel-minted `<data_dir>/../launchpad`). Re-pointing is legal precisely
+    // because this wave is never frozen — see `launchpad_workspace`.
+    let desired = launchpad_workspace(workspace_root, cove_id, wave.id.as_str());
+    let repointed = wave.workspace != desired;
+    if repointed {
+        wave_workspace_write_tx(tx, wave.id.as_str(), &desired).await?;
+        wave.cwd_wire_alias = desired.path.clone();
+        wave.workspace = desired;
+    }
+    let cwd = wave.workspace.path.clone();
+    let cwd = cwd.as_str();
 
     let cards: Vec<Card> = sqlx::query_as::<_, crate::db::rows::CardRow>(
         "SELECT id,wave_id,kind,title,sort,payload,deletable,created_at,updated_at FROM cards WHERE wave_id=?1 ORDER BY created_at,id"
@@ -246,6 +281,7 @@ async fn today_launchpad_ensure_tx(
         report_card_id: report.id.to_string(),
         created,
         adopted_legacy,
+        repointed,
     })
 }
 
@@ -287,20 +323,17 @@ pub(crate) async fn ensure_today_launchpad(
             Err(e) => return Err(e),
         }
     };
-    let base = app.daemon.data_dir.parent().unwrap_or(&app.daemon.data_dir);
-    let launchpad = base.join("launchpad");
-    std::fs::create_dir_all(&launchpad)?;
-    let launchpad = launchpad.canonicalize()?;
-    if !launchpad.is_dir() {
-        return Err(CalmError::Internal(
-            "launchpad cwd is not a directory".into(),
-        ));
-    }
-    let cwd = launchpad.to_string_lossy().into_owned();
+    // #1147 — the launchpad's workspace is a managed one under the workspace
+    // root, derived from the wave id inside the transaction. The pre-S2
+    // `<data_dir>/../launchpad` directory is no longer created here, and an
+    // existing one is deliberately left on disk: nothing outside the workspace
+    // root is ours to remove.
+    let workspace_root = app.workspace_root().to_path_buf();
     let route = RouteState::from_ref(&app);
     let cove_id = cove.id.to_string();
+    let root_for_tx = workspace_root.clone();
     let attempt = write_in_tx_typed(app.repo.as_ref(), move |tx| {
-        Box::pin(async move { today_launchpad_ensure_tx(tx, &route, &cove_id, &cwd).await })
+        Box::pin(async move { today_launchpad_ensure_tx(tx, &route, &cove_id, &root_for_tx).await })
     })
     .await;
     let out = match attempt {
@@ -309,36 +342,23 @@ pub(crate) async fn ensure_today_launchpad(
             // A concurrent inserter won the partial unique index; retry selects it.
             let route = RouteState::from_ref(&app);
             let cove_id = cove.id.to_string();
-            let cwd = launchpad.to_string_lossy().into_owned();
+            let root_for_tx = workspace_root.clone();
             write_in_tx_typed(app.repo.as_ref(), move |tx| {
-                Box::pin(async move { today_launchpad_ensure_tx(tx, &route, &cove_id, &cwd).await })
+                Box::pin(async move {
+                    today_launchpad_ensure_tx(tx, &route, &cove_id, &root_for_tx).await
+                })
             })
             .await?
         }
         Err(e) => return Err(e),
     };
     // #1147 S2 (design D3) — the launchpad is the fifth wave-create entry
-    // point and it does **not** go through `create_wave_structure`, so it
-    // carries its own materialize call. Skipping it would leave every codex
-    // task on the Today panel dying with `spawn-failed`
-    // (`git rev-parse --show-toplevel` on a non-repository), which is the
-    // exact defect #1147 opened on.
-    //
-    // Two deliberate departures from the managed path, both from design D9:
-    //   * the workspace stays `Attached` at the kernel-owned
-    //     `<data_dir>/../launchpad` directory rather than moving under the
-    //     workspace root — re-pointing a live wave's cwd is a data migration
-    //     this slice does not need, and existing installs (whose launchpad row
-    //     already exists and is returned unchanged by the first branch above)
-    //     would otherwise never be materialized at all;
-    //   * it therefore materializes an `Attached` path, which no other caller
-    //     may do. The rule "attached is never created or `git init`-ed" exists
-    //     to protect *user* repositories; this directory is minted by
-    //     `ensure_today_launchpad` a few lines up and is owned by the kernel.
-    crate::workspace_materialize::materialize_managed_workspace(std::path::Path::new(
-        &out.wave.workspace.path,
-    ))
-    .map_err(|error| {
+    // point and it does **not** go through `create_wave_structure` (raw
+    // `INSERT INTO waves`), so it carries its own materialize call. Skipping it
+    // would leave every codex task on the Today panel dying with
+    // `spawn-failed` (`git rev-parse --show-toplevel` on a non-repository),
+    // which is the exact defect #1147 opened on.
+    crate::workspace_materialize::materialize_workspace(&out.wave.workspace).map_err(|error| {
         tracing::error!(
             wave_id = %out.dto.wave_id,
             path = %out.wave.workspace.path,
@@ -357,13 +377,24 @@ pub(crate) async fn ensure_today_launchpad(
         cwd: out.wave.workspace.path.clone(),
         goal: None,
         reset_harness_items: out.created || out.adopted_legacy,
-        force_new_thread: out.created || out.adopted_legacy,
+        // #1147 — a re-point also forces a new thread. The codex thread holds
+        // the cwd it was minted with, so resuming it after the workspace moved
+        // would leave the spec agent working in the old directory while every
+        // worker uses the new one. The transcript is NOT reset: harness items
+        // are persisted per card, not per thread (`db/sqlite/read.rs`,
+        // `WHERE card_id = ?1`), so re-opening the thread costs the agent its
+        // in-thread context, not the user's history.
+        force_new_thread: out.created || out.adopted_legacy || out.repointed,
         profile: Default::default(),
         create_card: None,
         first_message_sha256: None,
     };
     let start_mode = if out.created || out.adopted_legacy {
         "bootstrap"
+    } else if out.repointed {
+        // A distinct mode so the re-point's operation is not collapsed onto a
+        // previously succeeded `reuse` by the idempotency key.
+        "repoint"
     } else {
         "reuse"
     };
