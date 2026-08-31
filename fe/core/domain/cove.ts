@@ -148,6 +148,53 @@ export function sortedCoveFolders(folders: readonly CoveFolder[]): CoveFolder[] 
     : left.id - right.id));
 }
 
+/**
+ * The structured body `POST /api/waves` answers a folder clash with (#275,
+ * `cove_folder_claim.rs`). It carries **no `error` key**, so the generic
+ * failure normaliser in `core/api/client.ts` can only report the bare status
+ * text — "Conflict" — and the reader is left with no idea which path or which
+ * cove is in the way. Decoding it is therefore not a nicety: it is the only
+ * way this failure says anything at all.
+ */
+export const folderConflictSchema = z.object({
+  folder_id: z.number(),
+  cove_id: z.string(),
+  conflict_path: z.string(),
+  conflict_kind: z.enum(['equal', 'ancestor', 'descendant']),
+});
+export type FolderConflict = z.infer<typeof folderConflictSchema>;
+
+/** `null` for any other error body; the caller falls back to its own wording. */
+export function asFolderConflict(body: unknown): FolderConflict | null {
+  const parsed = folderConflictSchema.safeParse(body);
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * The sentence a human can act on. `coveName` is `null` when the conflicting
+ * cove is not in the reader's cove list — it may have been created in another
+ * tab, or deleted between the conflict and this render — and the phrasing then
+ * degrades to "another cove" rather than printing a uuid.
+ *
+ * The three kinds are three different problems and get three different
+ * remedies: `descendant` means somebody already owns this path, `ancestor`
+ * means claiming it would silently widen a narrower claim underneath it, and
+ * `equal` means this exact path is already claimed.
+ */
+export function folderConflictMessage(conflict: FolderConflict, coveName: string | null): string {
+  const owner = coveName === null ? 'another cove' : `cove “${coveName}”`;
+  switch (conflict.conflict_kind) {
+    case 'descendant':
+      return `That folder is already claimed by ${owner} (${conflict.conflict_path}). `
+        + 'Start the wave in that cove, or pick a different folder.';
+    case 'ancestor':
+      return `A narrower claim under ${conflict.conflict_path} (owned by ${owner}) blocks claiming `
+        + 'this folder. Remove the inner claim first, or pick a different folder.';
+    case 'equal':
+      return `That exact folder is already claimed by ${owner} (${conflict.conflict_path}).`;
+  }
+}
+
 /** The eight identity slots. A cove's colour is a slot, never a free hex (§6.2). */
 export const COVE_SLOT_COUNT = 8;
 

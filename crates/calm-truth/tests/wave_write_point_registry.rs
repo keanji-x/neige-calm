@@ -71,27 +71,107 @@ const WORKSPACE_COLUMNS: [&str; 3] = ["workspace_kind", "workspace_path", "works
 /// `UPDATE OR REPLACE`.
 const WRITE_KEYWORDS: [&str; 4] = ["insert", "update", "delete", "replace"];
 
-/// The production writer, pinned as exact normalized text.
+/// The production writers, pinned as exact normalized text. All of them live
+/// in one file, which is the property this list exists to keep visible.
+///
+/// #1147 S3 added the freeze half. The whole-value writer grew
+/// `AND workspace_frozen_at IS NULL` — the latch itself — and three statements
+/// that can only ever *set* a stamp were added beside it. That asymmetry is
+/// deliberate and is why there is no un-freeze writer here: monotonicity is a
+/// property of the available statements, not of a rule somebody has to follow.
 const WRITER_FILE: &str = "crates/calm-truth/src/db/sqlite/wave_workspace.rs";
-const WRITER_STATEMENT: &str = "update waves set workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3 where id = ?4";
+const WRITER_STATEMENTS: &[(&str, &str)] = &[
+    (
+        "update waves set workspace_path = ?1, workspace_kind = ?2, workspace_frozen_at = ?3 where id = ?4 and workspace_frozen_at is null",
+        "The whole-value writer. The trailing predicate is the freeze latch \
+         (#1147 S3): once a wave has a stamp, neither kind nor path may change \
+         again.",
+    ),
+    (
+        "update waves set workspace_frozen_at = ?1 where id = ?2 and workspace_frozen_at is null and (select c.kind from coves as c where c.id = waves.cove_id) <> 'system'",
+        "`wave_workspace_freeze_tx` — closes the latch, addressed by wave. \
+         Idempotent (never moves an existing stamp) and unable to clear one. \
+         The system-cove clause is the launchpad exception, expressed once here \
+         rather than at each of the freeze points.",
+    ),
+];
 
 /// Writes expected outside the production writer, by exact normalized text.
 /// `(file, statement, why)`.
 const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
     (
         "crates/calm-server/tests/cases/today_launchpad.rs",
-        "update waves set purpose=null, workspace_path='/also-scrambled', workspace_kind='attached', workspace_frozen_at=99 where id=?1",
+        "update waves set purpose=null, workspace_path='/also-scrambled', workspace_kind='attached', workspace_frozen_at=null where id=?1",
         "Deliberately desynchronizes the row so the launchpad adopt branch has \
          to visibly rewrite it; without the scramble that assertion would pass \
          on leftovers from the create branch. #1147 S2 flipped the scrambled \
          values to `attached`/`99` because the launchpad's real workspace is \
          now `managed`/`NULL` — scrambling to the expected values would have \
-         made the assertion vacuous.",
+         made the assertion vacuous. S3 flipped the STAMP back to NULL: the \
+         latch makes a frozen launchpad un-repointable, and \
+         `wave_workspace_freeze_tx` excludes the system cove precisely so that \
+         row never gets one, so scrambling to 99 would fake an unreachable \
+         state and turn the adopt branch into a 409.",
     ),
     (
         "crates/calm-server/tests/scheduler.rs",
         "insert into waves(id,cove_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) select ?1,cove_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 from waves where id=?3",
         "Clones a wave row wholesale, workspace included.",
+    ),
+    (
+        "crates/calm-server/tests/scheduler.rs",
+        "update waves set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 where id=?2",
+        "#1147 S3 — forces `boot()`'s wave to an attached, frozen, real \
+         non-git directory. The production writer refuses a frozen row (the \
+         latch) and has no un-freeze path, so a fixture that needs this state \
+         has to write it out of band.",
+    ),
+    (
+        "crates/calm-server/tests/scheduler.rs",
+        "update waves set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=?2 where id=?3",
+        "#1147 S3 — same reason as the entry above, with a real timestamp; \
+         used by the child-wave inheritance fixtures.",
+    ),
+    (
+        "crates/calm-server/tests/scheduler.rs",
+        "update waves set workspace_kind='managed', workspace_path=?1, workspace_frozen_at=?2 where id=?3",
+        "#1147 S3 — re-points a CHILD wave, which S4 freezes at creation. The \
+         fixture is deliberately simulating the thing the latch forbids, in \
+         order to pin what happens to the child bootstrap's idempotency key \
+         afterwards.",
+    ),
+    (
+        "crates/calm-server/tests/no_double_spawn.rs",
+        "update waves set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 where id=?2",
+        "#1147 S3 — forces `boot()`'s wave to an attached, frozen, real git \
+         repository. Same reason as the `scheduler.rs` entries: the production \
+         writer refuses a frozen row.",
+    ),
+    (
+        "crates/calm-truth/src/db/sqlite/wave_workspace_migration_tests.rs",
+        "update waves set workspace_frozen_at = null where id = ?1",
+        "#1147 S3 — the ONLY un-freeze in the tree, and it is a test fixture. \
+         The writer under test refuses a frozen row, so the test that pins \
+         `kind`/`path`/`stamp` moving together has to open the latch first. \
+         Production has no statement that can do this.",
+    ),
+    (
+        "crates/calm-server/tests/cases/wave_workspace_repoint.rs",
+        "update waves set workspace_kind='attached', workspace_path=?1, workspace_frozen_at=null where id=?2",
+        "#1147 S3 — constructs `attached` + unfrozen, a state no route \
+         produces, so the PATCH route's `kind` guard has a fixture of its own \
+         rather than being shadowed by the freeze guard. Migration 0077's \
+         comment names this exact state as the one a forgetful PATCH branch \
+         would use to relocate a user's repository.",
+    ),
+    (
+        "crates/calm-server/tests/cases/wave_workspace_repoint.rs",
+        "update waves set parent_wave_id=?1, workspace_frozen_at=?2 where id=?3",
+        "#1147 S3 — reproduces the row shape S4's child-wave adapter produces \
+         (a child, frozen at creation) so the PATCH route's refusal is pinned \
+         from this slice too. The adapter's own creation path is covered by \
+         S4's tests; what is asserted here is the route's behaviour on that \
+         state.",
     ),
 ];
 
@@ -286,7 +366,7 @@ fn workspace_writes_are_the_ones_we_expect() {
     let expected: BTreeSet<(&str, &str)> = EXPECTED_OTHER_WRITES
         .iter()
         .map(|(f, s, _)| (*f, *s))
-        .chain(std::iter::once((WRITER_FILE, WRITER_STATEMENT)))
+        .chain(WRITER_STATEMENTS.iter().map(|(s, _)| (WRITER_FILE, *s)))
         .collect();
 
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();

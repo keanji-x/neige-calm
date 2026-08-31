@@ -33,6 +33,28 @@
      wave's `title`, which the sidebar, the wave list and the page header all
      render as one truncated line. */
 
+  /* The Folder field's supporting line: what "empty" means, and what picking a
+     folder commits to. Secondary text, one step down from the label. */
+  .hint {
+    color: var(--text-2);
+    font-size: var(--text-xs);
+    margin: 0;
+  }
+
+  /* The way back to the default. Only rendered once a folder is chosen, and
+     styled as a quiet inline action rather than a second primary button. */
+  .clear {
+    align-self: flex-start;
+    border: 0;
+    background: none;
+    padding: 0;
+    color: var(--accent);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--text-xs);
+    text-decoration: underline;
+  }
+
   .error {
     border: 1px solid var(--warn-border);
     border-radius: var(--radius-sm);

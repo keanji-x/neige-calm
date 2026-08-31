@@ -45,7 +45,8 @@ use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{
     Card, CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
-    NewWave, RequestTheme, Wave, WaveDetail, WavePatch, new_id,
+    NewWave, RequestTheme, Wave, WaveDetail, WavePatch, WaveWorkspace, WaveWorkspaceKind,
+    WaveWorkspacePatch, new_id,
 };
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::workspace_lease::{
@@ -80,6 +81,7 @@ use crate::workflow_templates::{
     WORKFLOW_TEMPLATES, is_workflow_template_key, workflow_template_report,
 };
 use crate::workspace_recycle;
+use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -1896,6 +1898,413 @@ pub(crate) fn spec_harness_layout_payload(
     })
 }
 
+// ---------------------------------------------------------------------------
+// #1147 S3 — changing a wave's workspace
+// ---------------------------------------------------------------------------
+
+/// Test seam for the ONE timing predicate in this design.
+///
+/// Fires in the exact window design §更换与冻结 step 2 exists to close: after
+/// the fence transaction has committed, before the pre-move re-check. A test
+/// installs a hook here, writes into the workspace when it is signalled, and
+/// then requires the re-point to answer 409. Delete the re-check and that test
+/// goes red — which is the point, because no static assertion about the
+/// database can stand in for it.
+///
+/// `fixtures`-only, exactly like `wave_delete_teardown_hooks` above; a release
+/// build compiles no call, no arguments, and no map.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct WorkspaceRepointRaceHook {
+    pub entered: std::sync::Arc<Notify>,
+    pub release: std::sync::Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn workspace_repoint_race_hooks() -> &'static StdMutex<HashMap<String, WorkspaceRepointRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, WorkspaceRepointRaceHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_workspace_repoint_race_hook_for_test(wave_id: &str, hook: WorkspaceRepointRaceHook) {
+    workspace_repoint_race_hooks()
+        .lock()
+        .expect("workspace repoint hook mutex")
+        .insert(wave_id.to_string(), hook);
+}
+
+async fn wait_at_workspace_repoint_race_hook(wave_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = workspace_repoint_race_hooks()
+            .lock()
+            .expect("workspace repoint hook mutex")
+            .remove(wave_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = wave_id;
+}
+
+/// What the fence transaction decided, carried out to the filesystem half.
+struct RepointFence {
+    /// The workspace as read *inside* the transaction — the authority, not the
+    /// unlocked read the route did to answer 404.
+    old_workspace: WaveWorkspace,
+    /// Every runtime the fence superseded, so the process-side shutdown below
+    /// knows which live handles to kill and the compensating restart knows
+    /// something was torn down.
+    superseded_runtime_ids: Vec<String>,
+}
+
+/// #1147 S3 — re-point a wave's managed workspace (design §更换与冻结).
+///
+/// # Why this is not a column write
+///
+/// SQLite transactions do not isolate the filesystem, so "check inside the
+/// transaction" cannot close the window between the check and the `rename`.
+/// The spec harness is deliberately *not* frozen at this point and has run
+/// `sandbox-mode: workspace-write` since its first message, and the dispatcher
+/// pushes observations that start fresh turns. Three steps, none optional:
+///
+/// 1. **A real fence, in the same transaction as the criteria.** Every active
+///    runtime of the wave is marked `superseded`, which is the state
+///    `dispatcher::harness_runtime_id_for_spec_card` reads
+///    (`session_projection_active_for_card`, `state IN
+///    ('starting','running','idle','turn_pending')`) before it will deliver an
+///    observation. After this commit a push has nowhere to land. An
+///    `interrupt` would not do: it is asynchronous and says nothing about the
+///    *next* turn. The in-memory half — `HarnessRegistry::remove` +
+///    `shutdown()` — follows immediately, because `maybe_issue_turn` reads no
+///    database state and would otherwise turn an already-queued observation
+///    into a turn.
+/// 2. **The criteria are re-evaluated before the move.** Anything the
+///    in-flight turn wrote between the fence and here makes the re-point a
+///    409 with nothing moved.
+/// 3. **The move asserts its own preconditions.** It goes through S5's
+///    [`workspace_recycle::recycle_wave_workspace`] — the single controlled
+///    entry point — which re-checks `kind == Managed`, canonical containment
+///    in the workspace root, the exact `<root>/<cove>/<wave>` depth, and our
+///    ownership marker, and renames into `.trash` rather than deleting.
+///
+/// # What a 409 at step 2 leaves behind
+///
+/// Nothing on disk and nothing in the row: the workspace and `workspace_path`
+/// are exactly as they were. The one visible effect is that the spec harness
+/// was torn down, so this function restarts it on the **old** path before
+/// returning the 409. That restart is the same operation `POST
+/// /api/cards/{id}/reset` performs routinely, and harness items are persisted
+/// per card, so the user's transcript survives.
+async fn repoint_wave_workspace(
+    s: &RouteState,
+    w: &WorkerState,
+    actor: &Actor,
+    wave: &Wave,
+    requested: &WaveWorkspacePatch,
+) -> Result<Wave> {
+    // Scope (design §交付顺序): S3 owns `managed → managed`. `managed →
+    // attached` needs the `cove_folders` claim rules and a second set of
+    // refusals; it is a documented 400, not a silent no-op, so a client that
+    // asks for it learns the answer instead of believing it worked.
+    if requested.kind != WaveWorkspaceKind::Managed {
+        return Err(CalmError::BadRequest(
+            "wave workspace: only `managed` is implemented; `managed → attached` and \
+             `attached → *` are not available (#1147 S3). Point a wave at an existing \
+             repository when you create it."
+                .into(),
+        ));
+    }
+
+    // The system cove's launchpad path is kernel-maintained
+    // (`today_launchpad_ensure_tx` re-derives it on every `ensure`) and is the
+    // documented exception to the freeze latch. A user PATCH must not touch
+    // it. Same scope decision as S5's row-layer 403 on DELETE: the whole
+    // system cove, not a `purpose = launchpad` carve-out.
+    let cove = s.repo.cove_get(wave.cove_id.as_str()).await?;
+    if cove.as_ref().is_none_or(|c| c.kind == CoveKind::System) {
+        return Err(CalmError::Forbidden(format!(
+            "wave {} belongs to the system cove; its workspace is kernel-maintained",
+            wave.id
+        )));
+    }
+
+    let workspace_root = s.workspace_root.clone();
+    let wave_id = wave.id.to_string();
+
+    // ---- Step 1: criteria + fence, in one BEGIN IMMEDIATE -----------------
+    let fence_wave_id = wave_id.clone();
+    let fence = crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        let wave_id = fence_wave_id.clone();
+        Box::pin(async move {
+            // Authoritative re-read. The route's unlocked read answered 404
+            // and scoped the event; every decision below comes from here.
+            let old_workspace = crate::db::sqlite::wave_workspace_read_tx(tx, &wave_id).await?;
+            if old_workspace.kind != WaveWorkspaceKind::Managed {
+                return Err(CalmError::Conflict(format!(
+                    "wave {wave_id} has an attached workspace ({}); attached repositories \
+                     belong to the user and are never moved, initialized or deleted by the \
+                     server",
+                    old_workspace.path
+                )));
+            }
+            if let Some(frozen_at) = old_workspace.frozen_at {
+                return Err(CalmError::Conflict(format!(
+                    "wave {wave_id} workspace was frozen at {frozen_at}; a workspace is a \
+                     default that can be changed only before any work happens in it"
+                )));
+            }
+            // The one predicate that does not enumerate writers: it asks the
+            // disk. Runs under the writer lock so it is decided together with
+            // the fence, and is repeated after the commit because SQLite
+            // isolates none of it.
+            let verdict = workspace_pristine(std::path::Path::new(&old_workspace.path));
+            if !verdict.is_pristine() {
+                return Err(CalmError::Conflict(
+                    verdict.conflict_message(std::path::Path::new(&old_workspace.path)),
+                ));
+            }
+            // THE FENCE. Every active runtime of this wave, not just the spec
+            // harness: "no new turn may acquire the old path" is a statement
+            // about the wave, and a rule with one named exception is the shape
+            // this design line keeps being hurt by. In practice the criteria
+            // above already imply there are no worker runtimes (a lease adds a
+            // worktree, and a terminal card freezes the workspace), so this
+            // set is the spec harness — but it is not this function's job to
+            // rely on that.
+            let runtime_ids: Vec<String> = sqlx::query_scalar(
+                "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+                 AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+            )
+            .bind(&wave_id)
+            .fetch_all(&mut **tx)
+            .await?;
+            for runtime_id in &runtime_ids {
+                crate::db::sqlite::session_mark_superseded_runtime_tx(tx, runtime_id)
+                    .await
+                    .map_err(|e| CalmError::Internal(format!("workspace repoint fence: {e}")))?;
+            }
+            Ok(RepointFence {
+                old_workspace,
+                superseded_runtime_ids: runtime_ids,
+            })
+        })
+    })
+    .await?;
+
+    // The in-memory half of the fence. `maybe_issue_turn` consults no durable
+    // state, so without this an observation enqueued before the commit would
+    // still become a turn — writing into a directory that is about to be
+    // renamed, and (because a process's cwd follows the inode on Linux)
+    // continuing to write into `.trash` afterwards until the GC erases it.
+    for runtime_id in &fence.superseded_runtime_ids {
+        if let Some(harness) = w.harness.remove(runtime_id) {
+            harness.shutdown().await?;
+        }
+    }
+
+    let old_path = std::path::PathBuf::from(&fence.old_workspace.path);
+
+    // Deterministic race window for the timing test. No-op in production.
+    wait_at_workspace_repoint_race_hook(&wave_id).await;
+
+    // ---- Step 2: re-check before the move ---------------------------------
+    let verdict = workspace_pristine(&old_path);
+    if let PristineVerdict::Dirty { .. } = &verdict {
+        // Nothing has moved and no column changed. Put the spec harness back
+        // on the unchanged path so the only lasting effect of the refusal is
+        // a re-opened thread, then report the conflict.
+        restart_spec_harness_at(s, actor, wave, &fence.old_workspace.path).await;
+        return Err(CalmError::Conflict(verdict.conflict_message(&old_path)));
+    }
+
+    // ---- Step 3: move, through S5's single controlled entry point ---------
+    let decision = workspace_recycle::recycle_wave_workspace(
+        &workspace_root,
+        cove.as_ref().map(|c| c.kind),
+        &wave_id,
+        &fence.old_workspace,
+        crate::model::now_ms(),
+    )?;
+    match &decision {
+        workspace_recycle::RecycleDecision::Trashed { .. } => {}
+        // The workspace was never materialized (or was already reclaimed).
+        // There is nothing to move and nothing was left behind; carry on and
+        // materialize the new one.
+        workspace_recycle::RecycleDecision::Refused(
+            workspace_recycle::RecycleRefusal::PathMissing,
+        ) => {}
+        workspace_recycle::RecycleDecision::Refused(refusal) => {
+            // Every guard S5 checks was implied by the checks above, so a
+            // refusal here means the row and the disk disagree about what this
+            // directory is. Stop: writing a new `workspace_path` now would
+            // orphan a directory nothing can name again.
+            restart_spec_harness_at(s, actor, wave, &fence.old_workspace.path).await;
+            return Err(CalmError::Internal(format!(
+                "wave {wave_id}: refusing to re-point because its current workspace {} could \
+                 not be reclaimed ({}). The wave is unchanged.",
+                fence.old_workspace.path,
+                refusal.tag()
+            )));
+        }
+    }
+
+    // ---- Materialize the replacement --------------------------------------
+    // The path is derived, never supplied: see `WaveWorkspacePatch`.
+    let new_path = crate::workspace_materialize::managed_workspace_path(
+        &workspace_root,
+        wave.cove_id.as_str(),
+        &wave_id,
+    );
+    let new_workspace = WaveWorkspace {
+        kind: WaveWorkspaceKind::Managed,
+        path: new_path.to_string_lossy().into_owned(),
+        frozen_at: None,
+    };
+    crate::workspace_materialize::materialize_workspace(&new_workspace, &workspace_root, &wave_id)?;
+
+    // ---- Commit the new path + tell the world -----------------------------
+    let scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let actor_id = actor.to_actor_id();
+    let write_wave_id = wave_id.clone();
+    let write_workspace = new_workspace.clone();
+    let (updated, _ids) =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
+            let scope = scope.clone();
+            let wave_id = write_wave_id.clone();
+            let workspace = write_workspace.clone();
+            Box::pin(async move {
+                crate::db::sqlite::wave_workspace_write_tx(tx, &wave_id, &workspace).await?;
+                let wave = wave_get_tx(tx, &WaveId::from(wave_id)).await?;
+                let events = vec![(
+                    actor_id.clone(),
+                    scope,
+                    Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave.clone(), None)),
+                )];
+                Ok((wave, events))
+            })
+        })
+        .await?;
+
+    workspace_recycle::gc_trash_best_effort(&workspace_root, crate::model::now_ms());
+
+    // Re-open the spec thread on the new cwd. `force_new_thread` is the only
+    // mechanism that re-reads `cwd`: a resumed codex thread keeps the cwd it
+    // was minted with, so resuming here would leave the spec agent in a
+    // directory that is now in the trash.
+    restart_spec_harness_at(s, actor, &updated, &updated.workspace.path).await;
+
+    Ok(updated)
+}
+
+/// Re-open the wave's spec harness thread at `cwd`.
+///
+/// Best effort, and deliberately so: it mirrors `start_spec_harness`, whose
+/// failures are warnings ("the wave exists but the spec agent is inert")
+/// rather than a failed request. Turning a harness hiccup into a 500 here
+/// would be worse than useless — the workspace has already moved and the row
+/// already says so, so the caller must not be told the whole operation failed.
+///
+/// `idempotency_key: None`, like every other non-launchpad spec-harness start
+/// (`routes/waves.rs::start_spec_harness`, `routes/cards.rs`'s reset). The
+/// launchpad and child-wave call sites need a workspace digest in their keys
+/// because they are re-driven with the same key; this one is minted per
+/// request and cannot collide.
+async fn restart_spec_harness_at(s: &RouteState, actor: &Actor, wave: &Wave, cwd: &str) {
+    // Same resolution the dispatcher uses (`resolve_spec_card`): the role
+    // cache, not a `cards.kind` guess.
+    let cards = match s.repo.cards_by_wave(wave.id.as_str()).await {
+        Ok(cards) => cards,
+        Err(error) => {
+            tracing::warn!(wave_id = %wave.id, error = %error, "workspace repoint: spec card lookup failed");
+            return;
+        }
+    };
+    let spec_card_id = cards.into_iter().find_map(|card| {
+        (s.write.verify_role(&card.id) == Some(CardRole::Spec)).then(|| card.id.to_string())
+    });
+    let Some(spec_card_id) = spec_card_id else {
+        // Template waves (`as_template`) never start a harness. Nothing to
+        // re-anchor.
+        return;
+    };
+    let request = SpecHarnessStartOperationPayload {
+        actor: actor.to_actor_id(),
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(spec_card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: cwd.to_string(),
+        goal: None,
+        // The transcript is NOT reset: harness items are persisted per card,
+        // so re-opening the thread costs the agent its in-thread context, not
+        // the user's history.
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
+    };
+    let hash = match stable_payload_hash(
+        &serde_json::json!({"actor": actor.as_str(), "request": &request}),
+    ) {
+        Ok(hash) => hash,
+        Err(error) => {
+            tracing::warn!(wave_id = %wave.id, error = %error, "workspace repoint: payload hash failed");
+            return;
+        }
+    };
+    let payload = match serde_json::to_value(&request) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!(wave_id = %wave.id, error = %error, "workspace repoint: payload encode failed");
+            return;
+        }
+    };
+    match s
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: hash,
+            },
+            payload,
+        )
+        .await
+    {
+        Ok(op) => match s.operation_runtime.wait(&op).await {
+            Ok(result)
+                if matches!(
+                    result.outcome,
+                    OperationOutcome::Succeeded { .. }
+                        | OperationOutcome::SucceededViaCollision { .. }
+                ) => {}
+            other => tracing::warn!(
+                wave_id = %wave.id,
+                cwd,
+                outcome = ?other.map(|r| r.outcome),
+                "workspace repoint: spec harness restart did not succeed; the workspace is \
+                 correct but the spec agent is inert"
+            ),
+        },
+        Err(error) => tracing::warn!(
+            wave_id = %wave.id,
+            cwd,
+            error = %error,
+            "workspace repoint: spec harness restart submission failed"
+        ),
+    }
+}
+
 #[utoipa::path(
     patch,
     path = "/api/waves/{id}",
@@ -1904,12 +2313,16 @@ pub(crate) fn spec_harness_layout_payload(
     request_body = WavePatch,
     responses(
         (status = 200, description = "Wave updated", body = Wave),
+        (status = 400, description = "Unsupported workspace change", body = ErrorBody),
+        (status = 403, description = "Workspace change refused (system cove)", body = ErrorBody),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 409, description = "Workspace is frozen, attached, or no longer empty", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn update_wave(
     State(s): State<RouteState>,
+    State(w): State<WorkerState>,
     actor: Actor,
     Path(id): Path<String>,
     Json(p): Json<WavePatch>,
@@ -1922,6 +2335,43 @@ pub(crate) async fn update_wave(
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+
+    // #1147 S3 — a workspace change is a filesystem move bracketed by two
+    // transactions, not a column write, so it does not compose with the
+    // mechanical row patch below. Mixing them would make a partial failure
+    // ("the title changed, the workspace did not") indistinguishable from
+    // success at the wire, so the combination is a 400 rather than an
+    // ordering puzzle nobody can reason about.
+    if let Some(workspace) = p.workspace.as_ref() {
+        let mixes_other_fields = p.title.is_some()
+            || p.sort.is_some()
+            || p.archived_at.is_some()
+            || p.pinned_at.is_some()
+            || p.lifecycle.is_some()
+            || p.task_budget.is_some()
+            || p.require_task_gates.is_some()
+            || p.spec_task_ceiling.is_some()
+            || p.automation_policy.is_some()
+            || p.tree_task_budget.is_some();
+        if mixes_other_fields {
+            return Err(CalmError::BadRequest(
+                "wave workspace changes must be sent on their own; a workspace re-point moves \
+                 directories on disk and cannot share a transaction with row edits"
+                    .into(),
+            ));
+        }
+        // Issue #985's rule, applied to a strictly more destructive field:
+        // moving a directory is a human decision.
+        if !matches!(actor.to_actor_id(), ActorId::User) {
+            return Err(CalmError::Forbidden(
+                "wave workspace changes are user-only".into(),
+            ));
+        }
+        return repoint_wave_workspace(&s, &w, &actor, &existing, workspace)
+            .await
+            .map(Json);
+    }
+
     // The guard fires on *mentioning* `lifecycle`, not on changing it: a PATCH
     // that re-sends the wave's current lifecycle is 403 too. That is
     // deliberate — the chat wave has no lifecycle the user may drive, so

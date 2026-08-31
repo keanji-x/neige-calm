@@ -27,7 +27,12 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   const dialog = page.getByRole('dialog', { name: 'New wave' });
   const title = `FE e2e wave ${Date.now()}`;
   await expect(dialog.getByLabel('Task')).toBeVisible();
-  await expect(dialog.getByLabel('Folder')).toHaveCount(0);
+  // #1147 S3 — the Folder control is present and **optional**. This test walks
+  // the default path (nothing picked), which must stay byte-identical to the
+  // #1131 body: the kernel keys its managed-workspace branch on the absence of
+  // `cwd`, so a control that defaulted to `$HOME` or to `""` would silently
+  // move every wave onto the attached branch.
+  await expect(dialog.getByLabel('Folder')).toBeVisible();
   await dialog.getByLabel('Task').fill(title);
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),

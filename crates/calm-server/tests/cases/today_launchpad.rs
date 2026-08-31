@@ -353,8 +353,15 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
     // pass on leftovers from branch 1: the adoption branch must rewrite both
     // columns through the single writer.
     sqlx::query(
+        // #1147 S3 — the stamp is scrambled to NULL, not to 99. S2 flipped it
+        // to 99 to keep the assertion non-vacuous, but S3's freeze latch makes
+        // a frozen launchpad row un-repointable, so a 99 here would fake a
+        // state nothing can produce (`wave_workspace_freeze_tx` excludes the
+        // system cove precisely so this row never gets a stamp) and would turn
+        // the adopt branch into a 409. `kind` and `path` still carry the
+        // scramble, so the rewrite assertions below still bite.
         "UPDATE waves SET purpose=NULL, workspace_path='/also-scrambled', \
-         workspace_kind='attached', workspace_frozen_at=99 WHERE id=?1",
+         workspace_kind='attached', workspace_frozen_at=NULL WHERE id=?1",
     )
     .bind(&wave_id)
     .execute(b.repo.pool())

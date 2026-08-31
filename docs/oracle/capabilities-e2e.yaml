@@ -4834,3 +4834,108 @@
   verification_owner: e2e
   test_tier: browser
   migration: pending
+
+# ── #1147 S3 — choosing an existing directory when creating a wave (new `fe/`) ──
+# Mirrors the legacy E2E-CAP-WAVECREATE-014/015/016 directory-browser family,
+# re-anchored on the new app. The legacy rows stay `pending`: they describe
+# `web/`'s NewTaskForm, whose cwd field was *required* — the opposite default.
+
+- id: CAP-WAVEWORKSPACE-001
+  kind: capability
+  family: wave-workspace
+  statement: >
+    The new-wave form must offer an optional folder control, and with none chosen `NewWaveDraft`
+    must carry no cwd key at all, so `AppShell` posts neither cwd nor `attach_folder`.
+  why: >
+    The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
+    `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
+    attached branch, where the kernel neither creates nor reclaims the directory.
+  source: fe/web/src/features/cove/new-wave/public.tsx:25-33,61-62; fe/web/src/app/shell/public.tsx:150
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:106
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-002
+  kind: capability
+  family: wave-workspace
+  statement: >
+    Choosing a folder must post its absolute cwd together with `attach_folder` true; the flag may
+    not be omitted, and no `coves/resolve` pre-flight may decide it.
+  why: >
+    With the flag omitted the kernel refuses any path no cove has claimed ("is not claimed by any
+    cove", `routes/waves.rs`), i.e. exactly the folders a user is likeliest to pick; true is a
+    no-op when this cove already covers the path (same-cove arm), so a second wave in one
+    repository does not conflict. The legacy resolve round trip only ever chose false in that
+    same-cove case, which the kernel's in-transaction scan already reaches atomically.
+  source: fe/web/src/app/shell/public.tsx:135-150
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:134
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-003
+  kind: capability
+  family: wave-workspace
+  statement: >
+    The folder control must be the frozen `DirectoryField`, which pushes `DirectoryBrowser` into
+    the surrounding dialog — swapping that dialog's accessible name to "Choose a directory" —
+    rather than opening a second dialog.
+  why: >
+    Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
+    the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
+    break the focus trap the outer one owns.
+  source: fe/web/src/features/cove/new-wave/public.tsx:96-102
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:134-160
+  owner_slice: ui/directory-browser
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-004
+  kind: capability
+  family: wave-workspace
+  statement: >
+    The listdir read must decode into the browser's listing shape: `is_dir` becomes `isDirectory`,
+    and every entry gets an absolute path built with the browser's own `joinDirectoryPath`.
+  why: >
+    The kernel names an entry without placing it (`fs.rs` `DirEntry` is name + is_dir), while the
+    picker navigates by entry path. A second copy of the join rule would drift from the one the
+    picker's own input bar uses; core may not import ui, so the owner's function is injected.
+  source: fe/core/domain/fs.ts:67-79; fe/web/src/app/providers/directory.ts:25-32
+  authoritative_test: fe/web/src/app/providers/directory.test.ts:34
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-005
+  kind: capability
+  family: wave-workspace
+  statement: >
+    A wave-create folder clash must be rendered from the structured `FolderConflict` body — the
+    path, the owning cove's name, and a remedy that differs per conflict kind — never as the bare
+    status word, and never as a raw cove id.
+  why: >
+    The 409 body carries no error key, so the generic normaliser in core/api/client.ts leaves
+    `ApiError` holding the status text alone: undecoded, the only thing the user is told is
+    "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
+    by the shell and not by the form.
+  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:154-162
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:163
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated

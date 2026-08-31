@@ -1,6 +1,6 @@
 # Wave 工作区
 
-状态：实现中。S0 已合入 #1158；S1 已合入 #1163；S2 已合入 #1182；S4 已合入 #1193；S5 实现完成（安全回收）。
+状态：实现中。S0 已合入 #1158；S1 已合入 #1163；S2 已合入 #1182；S4 已合入 #1193；S5 已合入 #1201；S3 实现完成（更换与冻结 + FE attached 入口）。
 
 ## 前提
 
@@ -144,6 +144,92 @@ SQLite 事务不能隔离文件系统写入，因此“事务内检查一次”�
 
 **重指向意图必须可持久推断，不能靠一次内存比较。** 「存储路径 ≠ 期望路径」只在移动路径的那一个事务里为真，而物化在事务提交之后执行：若物化失败，或进程在提交与记录操作之间被杀，意图就丢了。下一次 ensure 看到「已是期望值」判为稳态、不强制新建 thread，于是 spec harness 的 thread 永远停在旧 cwd 而所有 worker 用新 cwd。正确的问法是一个持久事实：**这个路径上有没有成功启动过 harness**——路径摘要已在幂等键里，操作表可以直接回答，且该答案只在启动真正成功后才被写下，因而跨越所有崩溃窗口。
 
+### 更换（S3）
+
+实现在 `crates/calm-server/src/workspace_repoint.rs`（判据）与
+`routes/waves.rs::repoint_wave_workspace`（三步执行），入口是
+`PATCH /api/waves/{id}`，请求体 `{"workspace": {"kind": "managed"}}`。
+
+**请求体给的是 kind，不是路径 —— 刻意的。** managed 路径是
+`<root>/<cove_id>/<wave_id>`，由服务端派生。接受调用方给的路径会造出 S5 回收守卫 2
+（深度必须恰好两层）拒收的行，也就是**结构性泄漏**——而那条守卫的注释里写的理由正是
+「S3 是会往 `workspace_path` 写任意路径的那一片」。所以 S3 不写任意路径：它重新派生。
+`WaveWorkspacePatch` 做成单字段结构体而不是裸 enum，是为了以后 `managed → attached`
+能在同一处加 `path` 而不改已发布的形状。
+
+**因此 managed → managed 的可观察语义是「重置」而不是「搬家」**：旧目录整个 rename 进
+`.trash`，在派生路径上物化一个全新的空仓库，spec harness 以新 cwd 重开线程。
+派生路径与旧路径通常相同（`CALM_WORKSPACE_ROOT` / `$HOME` 没变时一定相同）。
+这一条在写实现时才浮现，与「更换工作区」的字面读法有出入，**留给下一轮评审裁决**，
+见文末「S3 的一处存疑」。
+
+**PATCH 的工作区字段与其它字段互斥（400）。** 重指是「两个事务夹着一次文件系统移动」，
+不是列写入；混在一起会让部分失败（标题改了、工作区没改）在 wire 上和成功无法区分。
+同理，改工作区是 user-only（与 #985 给 `automation_policy` 的口径一致，而这个动作更具破坏性）。
+
+**三步执行，缺一不可。** SQLite 事务对文件系统零隔离，「事务内查一次」关不掉检查与
+`rename` 之间的窗口：spec harness 从第一条消息起就是 `workspace-write` 且此刻**刻意
+没有冻结**，dispatcher 还会主动推 observation 开启新 turn。
+
+1. **真栅栏，与判据同一个 `BEGIN IMMEDIATE`。** 把该 wave 全部
+   `state IN ('starting','running','idle','turn_pending')` 的 `worker_sessions` 行标成
+   `superseded`——这正是 `dispatcher::harness_runtime_id_for_spec_card` 读的那条状态
+   （经 `session_projection_active_for_card`），提交之后 push 无处可落。
+   **interrupt 不算栅栏**：它是异步的，而且对「下一个 turn」什么也没说。
+   紧接着做内存那一半（`HarnessRegistry::remove` + `shutdown()`），因为
+   `maybe_issue_turn` 不读任何持久状态，否则一条提交前就入队的 observation 照样会变成 turn。
+   口径是「该 wave 的全部活跃 runtime」而不是「spec harness」：worker runtime 已被判据蕴含
+   （取租约会加 worktree，被 `worktree list` 那条挡下），但 terminal runtime **不**被蕴含
+   （见 N17），这正是宽口径值钱的地方——它不依赖任何一条「今天恰好如此」的推理。
+2. **移动前重跑判据。** 栅栏与移动之间任何写入都让整次 PATCH 变成 409，且**什么都没动**：
+   盘上没动、列没改。唯一残留是 spec harness 被拆了，所以这条路径会在**旧路径上**把它重开再返回
+   409——和 `POST /api/cards/{id}/reset` 每天做的是同一个操作，harness item 按 card 持久化，
+   用户的历史不受影响。
+3. **移动本身走 S5 的唯一受控入口** `workspace_recycle::recycle_wave_workspace`，
+   于是 `kind == Managed`、canonical 前缀、`<root>/<cove>/<wave>` 深度、所有权标记四条守卫
+   与「rename 不 `rm -rf`」「EXDEV 硬失败」「落点复验」全部免费继承。
+   `PathMissing`（从未物化）放行；其余任何拒绝都是硬错误并回滚到旧路径上重开 harness——
+   守卫在此刻拒绝意味着行与盘的说法不一致，这时写新 `workspace_path` 会造出没人能再命名的孤儿目录。
+
+**重开线程必须 `force_new_thread: true`。** 这是唯一会重新读 `cwd` 的机制
+（`spec_harness_start_adapter.rs`：resume 分支复用 `runtime.thread_id` 且根本不再发 cwd）。
+`reset_harness_items: false`：harness item 按 **card** 持久化，重开线程丢的是 agent 的
+thread 内上下文，不是用户看得见的历史。幂等键 `None`，与所有非 launchpad 的
+`spec-harness-start` 一致；带路径摘要的键只有 launchpad 与 child bootstrap 需要，因为只有它们会被同键重驱。
+
+### 冻结（S3）
+
+`wave_workspace_freeze_tx` 是唯一的关栓函数，`wave_workspace_write_tx` 里加了
+`AND workspace_frozen_at IS NULL` 作为门栓本身（S1 特意留空的那一处，理由见该文件）。
+四个冻结点都落在**真正的底层写入口**，不靠调用点枚举：
+
+| # | 冻结点 | 位置 | 为什么这里就不可重锚 |
+|---|---|---|---|
+| 1 | 首次 workspace lease | `operation/workspace_lease/mod.rs::acquire_workspace_lease_at_path_tx` | 租约行存绝对路径，而 worktree 与仓库靠 `<wt>/.git` 与 `<repo>/.git/worktrees/<n>/gitdir` 两个绝对指针互指，rename 之后双向悬空且无人重锚 |
+| 2 | terminal 持久化 | **未做，推到 S6** | 见下 N17 |
+| 3 | wave 离开 Draft | `calm-truth/db/sqlite/wave.rs::wave_update_tx` | 判据是 `w.lifecycle != Draft` 而不是「本次 patch 发生了转换」：只在转换上触发会漏掉所有转换发生在本片之前的行 |
+| 4 | child wave 创建 | S4 已做（`ManagedFrozenUnder` / `InheritAttachedFrozen`） | 机器在 spec 运行中建的，harness 立刻 bootstrap，没有可安全重指的窗口 |
+
+**N17：冻结点 2 没做，两条实测理由。** 先写了、跑门禁才发现，如实记下：
+
+1. **今天还不吃紧。** terminal 的 `cwd` 来自请求体或 `default_cwd()`
+   （`operation/terminal_adapter.rs`），**从来不读 `waves.workspace_path`**。
+   让 terminal 落进 wave 工作区的是 S6；在那之前，重指工作区不可能让任何 terminal 失效。
+2. **在 terminal 的事务里写 `waves` 会死锁。** 实测：把冻结放进 `terminal_create_tx` 之后，
+   `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`
+   永久挂在 `sqlx_sqlite::statement::unlock_notify::wait`（gdb 抓到）。内存库跑在 shared-cache 模式，
+   锁是**表级**的，这条流程里另有连接占着 `waves`。同一个事务里对 `waves` 做 `SELECT` 正常返回，
+   `UPDATE` 永不返回。把冻结留在那里等于用一个洞换一次挂死。
+
+    N17 有测试钉住（`wave_workspace_repoint::a_terminal_card_does_not_freeze_the_workspace_yet_n17`），
+    并且**同时断言了理由 1 的前提**（terminal 的 cwd ≠ wave 工作区路径）——所以 S6 一旦让
+    terminal 落进工作区，这条测试就会红，必须显式替换而不是顺手改绿。
+
+**system cove 在冻结函数内部被排除，不是在调用点。** launchpad 自带 terminal 卡、也会取租约，
+按上表它每次 boot 都会被冻上，而 `today_launchpad_ensure_tx` 下一次 `ensure` 就会撞上门栓
+→ 500 → Today 面板永久死亡。排除写成一条 SQL 子句而不是三处 `if`，理由和门栓本身一样：
+复制到三个模块的例外，会在第四个地方被忘记。
+
 ### 子 wave 的工作区（D7，S4 修正）
 
 **这条原先写错了，S4 改正。** 原文是「子 wave 必须拥有独立工作区，不能继承父 wave 的路径」，无条件。它的**依据**只有一个：删除子 wave 会 `rm -rf` 掉父 wave 的仓库。而这个事故**只对 managed 父成立**——回收只碰 `kind = managed`，attached 路径永不创建、移动或删除。结论比前提宽，代价是把功能写坏了：attached wave 的子 wave 会拿到一个空的 managed 仓库，看不见父 wave 的代码，而「把代码 wave 的活拆给子 wave」正是子 wave 的典型用法。
@@ -266,6 +352,7 @@ S5 新增的三条按同一标准登记，但状态不同，别混：**N14 有�
 | N14 | 守卫拒绝时**目录留在盘上**（行照删） | 刻意取舍，不是 bug：见下 | — |
 | N15 | 回收**不取**物化用的那把 per-path 进程内互斥锁 | 一次回收与同一路径上的一次物化并发时，物化可能在刚被 rename 走的路径上重建目录，或回收撞上物化的中间态。后果是泄漏（trash 里一个目录 + 原路径一个新空仓库），不是数据丢失——rename 是原子的，两边都不会删东西 | 与 N9 同源（真解是跨进程文件锁），归同一片 |
 | N16 | canonicalize trash root 与 `rename` 之间的 TOCTOU：`.trash` 被换成符号链接 | 工作区被 rename 到托管根之外。**已由 rename 后的复验兜住**——检测得到、报硬错误、尽力移回，所以后果是「一次失败的 DELETE」而不是静默泄漏；未做的是防御（`openat(O_NOFOLLOW)` + `renameat`） | 独立 issue；威胁模型不高（能造这个符号链接的人本来就能直接删目录） |
+| N17 | 冻结点 2（terminal 持久化）没做 | 建了 terminal 卡的 wave 仍可更换工作区。今天无害（terminal 的 cwd 不来自工作区），S6 让 terminal 落进工作区之后就是真洞 | S6；**有测试**（`a_terminal_card_does_not_freeze_the_workspace_yet_n17`，同时钉住「无害」的前提）。实现时注意：在 terminal 事务里 `UPDATE waves` 会因 shared-cache 表级锁死锁 |
 
 **N14：拒绝回收目录 ≠ 拒绝删行，这是刻意的。**
 
@@ -285,6 +372,32 @@ bootstrap 的幂等键带上了路径摘要，理由与 S2 给 launchpad 加摘�
 「没有两行 wave 共享同一 **managed** 路径」由 `today_launchpad.rs::no_two_waves_share_a_managed_workspace_path` 全表钉住，由真实创建入口驱动（launchpad ensure、`POST /api/waves` 的 managed 与 attached、child adapter 的两种父），并配一条单违规 fixture。
 
 顺带记一条实测：假如那种行真的存在，它其实**早已是砖**而不只是「将来会被误删」——worker 取 lease 时用该 wave 自己的 id 去物化它的 managed 工作区，落在父目录上时所有权标记不匹配，直接报 `is the managed workspace of wave <parent>, not <child>`，codex worker 根本起不来。
+
+## S3 的一处存疑（未自行改设计，交评审裁决）
+
+**`managed → managed 重新分配` 在派生路径不变时，观感是「重置工作区」而不是「更换工作区」。**
+
+设计 §更换与冻结 允许 `managed → managed` 与 `managed → attached`，交付顺序把 S3 定成
+「工作区更换、冻结、harness 重锚定、FE attached 入口」，而 #1147 的评审留痕里 D6 那行写的是
+「删旧目录 + 建新目录，全在 `<workspace-root>` 前缀内」。实现时才发现这三句合起来有一个空洞：
+
+* managed 路径由 `<root>/<cove_id>/<wave_id>` 派生，wave 的 cove 不可变、id 不可变
+  ⇒ 重新派生**必然得到同一个路径**（除非 `CALM_WORKSPACE_ROOT` / `$HOME` 变了，而那是被钉住的 N4）。
+* 让调用方给路径可以让它真的「换」，但 S5 回收守卫 2 要求深度恰好 `<root>/<cove>/<wave>`，
+  任何别的路径都会变成**回收拒绝 ⇒ 结构性泄漏**；而那条守卫存在的理由，注释里写的就是防 S3。
+
+所以本片选了「服务端派生」，代价是：判据（盘上必须是空的）成立时，重置一个空仓库在盘上
+几乎是恒等变换。真正被这一片买下来的是**机制**——栅栏、重检、复用 S5 的移动边界、
+harness 以新 cwd 重开——而 `managed → attached`（把 wave 指到用户真仓库）才是这套机制唯一
+有实质位移的消费者，它今天被 §不做 挡在外面。
+
+两条可能的收敛方向，本片不擅自选：
+
+1. **接受**：S3 的产品价值就是 FE 的 attached 创建入口 + 冻结门栓，PATCH 是为
+   `managed → attached` 铺的机制，下一片接上。
+2. **扩到 `managed → attached`**：那才需要 `cove_folders` 认领规则、目标校验
+   （绝对路径 / 目录存在 / 是 git 仓库，见 §托管工作区，且该校验今天**并未实现**——
+   `AttachedFromCwd` 原样收下 `cwd`）与 kind 变更，属于新的一片。
 
 ## 验收重点
 

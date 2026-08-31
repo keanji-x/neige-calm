@@ -3,14 +3,22 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { DirectoryListing } from '../../../ui/directory-browser/public.tsx';
 import { NewWaveForm } from './public.tsx';
 
 afterEach(cleanup);
+
+const LISTING: DirectoryListing = {
+  path: '/srv/app',
+  parent: '/srv',
+  entries: [{ name: 'crates', path: '/srv/app/crates', isDirectory: true }],
+};
 
 function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) {
   const props = {
     submitting: false,
     error: null,
+    listDirectory: vi.fn(() => Promise.resolve(LISTING)),
     onCancel: vi.fn(),
     onSubmit: vi.fn(),
     ...overrides,
@@ -22,34 +30,80 @@ function submitButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: /Create wave|Creating/ });
 }
 
-describe('NewWaveForm is title-only', () => {
+/** Walks the picker to `/srv/app` and confirms it. */
+async function pickTheListedFolder(): Promise<void> {
+  await userEvent.click(screen.getByLabelText('Folder'));
+  // The browser loads on mount and mirrors the listing into its path input;
+  // `Select this directory` only enables once the two agree.
+  await screen.findByDisplayValue('/srv/app/');
+  await userEvent.click(screen.getByRole('button', { name: 'Select this directory' }));
+}
+
+describe('NewWaveForm asks for a task, and optionally a folder', () => {
   it('keeps submit disabled while the task is empty', () => {
     renderForm();
     expect(submitButton().disabled).toBe(true);
   });
 
-  it('enables submit after typing a title', async () => {
+  it('enables submit after typing a title — the folder is never required', async () => {
     renderForm();
     await userEvent.type(screen.getByLabelText('Task'), 'Ship the thing');
     expect(submitButton().disabled).toBe(false);
   });
 
-  it('calls onSubmit with the trimmed title', async () => {
+  /*
+   * The default. No folder chosen ⇒ the draft has **no `cwd` key at all**, not
+   * an empty one: the caller keys the whole managed-vs-attached decision on the
+   * key's presence, and `cwd: ''` would take the attached branch with a path
+   * that cannot work. `toEqual` is what pins the absence; `toMatchObject` would
+   * stay green on an extra key.
+   */
+  it('submits the trimmed title and no folder key when none was chosen', async () => {
     const { props } = renderForm();
     await userEvent.type(screen.getByLabelText('Task'), '  Ship the thing  ');
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({ title: 'Ship the thing' });
+    expect(vi.mocked(props.onSubmit).mock.calls[0]?.[0]).not.toHaveProperty('cwd');
   });
 
-  it('asks for the task only — no folder, cove, or claim controls', async () => {
+  it('submits the picked absolute path as cwd once a folder is chosen', async () => {
+    const { props } = renderForm();
+    await userEvent.type(screen.getByLabelText('Task'), 'Ship the thing');
+    await pickTheListedFolder();
+    await userEvent.click(submitButton());
+    expect(props.onSubmit).toHaveBeenCalledWith({ title: 'Ship the thing', cwd: '/srv/app' });
+  });
+
+  /* Create time is the only entry into the attached choice, so the way *back*
+     to the default has to exist here too — there is no later screen for it. */
+  it('drops back to the managed default when the chosen folder is cleared', async () => {
+    const { props } = renderForm();
+    await userEvent.type(screen.getByLabelText('Task'), 'Ship the thing');
+    await pickTheListedFolder();
+    await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
+    await userEvent.click(submitButton());
+    expect(props.onSubmit).toHaveBeenCalledWith({ title: 'Ship the thing' });
+  });
+
+  it('offers no way back before a folder is chosen — there is nothing to clear', () => {
+    renderForm();
+    expect(screen.queryByRole('button', { name: 'Use a Neige workspace instead' })).toBeNull();
+  });
+
+  it('reads the directory through the injected port, never a transport of its own', async () => {
+    const { props } = renderForm();
+    await userEvent.click(screen.getByLabelText('Folder'));
+    await screen.findByDisplayValue('/srv/app/');
+    expect(props.listDirectory).toHaveBeenCalled();
+  });
+
+  /* Cove and claim controls stay cut (#1131): the cove is the opener's, and
+     the claim is implied by picking a folder — see `app/shell`. */
+  it('asks for no cove and no claim checkbox', async () => {
     renderForm();
     await userEvent.type(screen.getByLabelText('Task'), 'Ship the thing');
-    expect(screen.queryByLabelText('Folder')).toBeNull();
     expect(screen.queryByLabelText('Cove')).toBeNull();
-    expect(screen.queryByLabelText(/Working directory/i)).toBeNull();
-    expect(screen.queryByLabelText(/Claim this folder/)).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
-    expect(screen.queryByRole('combobox')).toBeNull();
   });
 
   /*

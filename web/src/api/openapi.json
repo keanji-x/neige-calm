@@ -3115,8 +3115,38 @@
               }
             }
           },
+          "400": {
+            "description": "Unsupported workspace change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace change refused (system cove)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace is frozen, attached, or no longer empty",
             "content": {
               "application/json": {
                 "schema": {
@@ -7089,6 +7119,17 @@
             ],
             "format": "int64",
             "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a\nwave with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
+          },
+          "workspace": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveWorkspacePatch",
+                "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::waves::update_wave` and **never** by\n`wave_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
+              }
+            ]
           }
         }
       },
@@ -7207,6 +7248,20 @@
           "managed",
           "attached"
         ]
+      },
+      "WaveWorkspacePatch": {
+        "type": "object",
+        "description": "#1147 S3 — the requested workspace, as a *kind* rather than a path.\n\nThe caller never names a directory. A managed workspace's path is\n`<workspace-root>/<cove_id>/<wave_id>` and the server derives it\n(`workspace_materialize::managed_workspace_path`); accepting a\ncaller-supplied path would produce rows that S5's recycle guard 2 refuses\non depth, i.e. workspaces that leak by construction — and that guard exists\nprecisely because S3 is the slice that writes `workspace_path`.\n\nModelled as a struct with one field rather than a bare `WaveWorkspaceKind`\nso that `managed → attached` can add `path` here later without changing the\nshape of anything already shipped.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/WaveWorkspaceKind",
+            "description": "Target kind. S3 implements `managed` only; `attached` is a documented\n400 rather than a silent no-op."
+          }
+        },
+        "additionalProperties": false
       },
       "WavesWindowQuery": {
         "type": "object",

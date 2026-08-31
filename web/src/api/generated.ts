@@ -2332,6 +2332,7 @@ export interface components {
              *     vacuous. A present null resets to the kernel default (32).
              */
             tree_task_budget?: number | null;
+            workspace?: null | components["schemas"]["WaveWorkspacePatch"];
         };
         /**
          * @description The payload persisted in a wave-report card's `payload` JSON column.
@@ -2422,6 +2423,27 @@ export interface components {
          * @enum {string}
          */
         WaveWorkspaceKind: "managed" | "attached";
+        /**
+         * @description #1147 S3 — the requested workspace, as a *kind* rather than a path.
+         *
+         *     The caller never names a directory. A managed workspace's path is
+         *     `<workspace-root>/<cove_id>/<wave_id>` and the server derives it
+         *     (`workspace_materialize::managed_workspace_path`); accepting a
+         *     caller-supplied path would produce rows that S5's recycle guard 2 refuses
+         *     on depth, i.e. workspaces that leak by construction — and that guard exists
+         *     precisely because S3 is the slice that writes `workspace_path`.
+         *
+         *     Modelled as a struct with one field rather than a bare `WaveWorkspaceKind`
+         *     so that `managed → attached` can add `path` here later without changing the
+         *     shape of anything already shipped.
+         */
+        WaveWorkspacePatch: {
+            /**
+             * @description Target kind. S3 implements `managed` only; `attached` is a documented
+             *     400 rather than a silent no-op.
+             */
+            kind: components["schemas"]["WaveWorkspaceKind"];
+        };
         /**
          * @description Issue #250 PR 2 — calendar window query parameters for
          *     `GET /api/waves`. Every field is optional so omitting all three
@@ -4954,8 +4976,35 @@ export interface operations {
                     "application/json": components["schemas"]["Wave"];
                 };
             };
+            /** @description Unsupported workspace change */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Workspace change refused (system cove) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Workspace is frozen, attached, or no longer empty */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

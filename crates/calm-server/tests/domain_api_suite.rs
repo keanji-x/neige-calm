@@ -65,3 +65,5 @@ mod wave_projection_policy_patch;
 mod wave_workspace_materialize;
 #[path = "cases/wave_workspace_recycle.rs"]
 mod wave_workspace_recycle;
+#[path = "cases/wave_workspace_repoint.rs"]
+mod wave_workspace_repoint;

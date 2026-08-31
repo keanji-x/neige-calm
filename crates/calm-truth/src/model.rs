@@ -197,6 +197,35 @@ pub struct WavePatch {
     /// migration 0041). `Some(v)` sets the flag, omit to leave alone.
     /// Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
     pub require_task_gates: Option<bool>,
+    /// #1147 S3 — request a workspace change (design §更换与冻结).
+    ///
+    /// Handled entirely by `routes::waves::update_wave` and **never** by
+    /// `wave_update_tx`: a re-point is a filesystem move bracketed by two
+    /// transactions, not a column write, so there is nothing here for the
+    /// mechanical row writer to apply. It is also mutually exclusive with
+    /// every other field in this struct — see the route.
+    #[serde(default)]
+    pub workspace: Option<WaveWorkspacePatch>,
+}
+
+/// #1147 S3 — the requested workspace, as a *kind* rather than a path.
+///
+/// The caller never names a directory. A managed workspace's path is
+/// `<workspace-root>/<cove_id>/<wave_id>` and the server derives it
+/// (`workspace_materialize::managed_workspace_path`); accepting a
+/// caller-supplied path would produce rows that S5's recycle guard 2 refuses
+/// on depth, i.e. workspaces that leak by construction — and that guard exists
+/// precisely because S3 is the slice that writes `workspace_path`.
+///
+/// Modelled as a struct with one field rather than a bare `WaveWorkspaceKind`
+/// so that `managed → attached` can add `path` here later without changing the
+/// shape of anything already shipped.
+#[derive(Clone, Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaveWorkspacePatch {
+    /// Target kind. S3 implements `managed` only; `attached` is a documented
+    /// 400 rather than a silent no-op.
+    pub kind: WaveWorkspaceKind,
 }
 
 // ---------------- Card DTOs ----------------
