@@ -123,22 +123,47 @@ describe('the a11y failure report (#1161)', () => {
   /*
    * The walk must name the subtree root, not each hidden button: a reader wants
    * "this container went away", not fifty lines of its contents.
+   *
+   * **`visibility`, not `display`.** The obvious `display: none` fixture cannot
+   * tell outermost-wins from innermost-wins: `display` is not inherited, so an
+   * inner wrapper never computes as hidden and is never a candidate root — the
+   * assertion holds under either policy. `visibility: hidden` *is* inherited,
+   * so `.inner` computes hidden too and the two policies give different
+   * answers. Verified by mutation: switching the walk to keep the first hidden
+   * ancestor instead of the highest turns this red.
    */
   it('names the outermost hidden ancestor once, not every element under it', () => {
-    mount('<div class="outer-hidden" style="display: none"><div class="inner"><button>A</button>'
+    mount('<div class="outer-hidden" style="visibility: hidden"><div class="inner"><button>A</button>'
       + '<button>B</button><button>C</button></div></div>');
     const report = reportOf(failureMessage(missing));
 
-    expect(report).toContain('<div class="outer-hidden"> — display:none (holds 3 queryable)');
+    expect(report).toContain('<div class="outer-hidden"> — visibility:hidden (holds 3 queryable)');
     expect(report).not.toContain('class="inner"');
   });
 
   /*
-   * `waitFor` calls `getElementError(lastError.message, …)` on timeout, so the
-   * message it re-wraps already ends with a report. That is the #1161 path
-   * exactly, and the synchronous cases above cannot catch it.
+   * A page whose own `body` is hidden. The ancestor walk used to stop one level
+   * short of `body`, so this reported "none" — the whole page invisible and the
+   * report saying nothing is out of the accessibility tree.
    */
-  it('appends once, not twice, through the findBy timeout path', async () => {
+  it('names body itself when the whole page is hidden', () => {
+    mount('<button>Save</button>');
+    const previous = document.body.style.display;
+    document.body.style.display = 'none';
+    try {
+      expect(reportOf(failureMessage(missing))).toContain('<body> — display:none');
+    } finally {
+      document.body.style.display = previous;
+    }
+  });
+
+  /*
+   * The re-wrap path, asserted on *position* and not only on count. Declining to
+   * re-append leaves the report stranded in the middle followed by a second
+   * `prettyDOM` dump, which is precisely what the runner's head+tail truncation
+   * would discard.
+   */
+  it('keeps the report last through the findBy timeout re-wrap', async () => {
     mount('<div aria-hidden="true"><button>Save</button></div>');
     let message = '';
     try {
@@ -147,8 +172,26 @@ describe('the a11y failure report (#1161)', () => {
       message = (error as Error).message;
     }
 
-    expect(message).toContain(MARKER);
     expect(message.split(`${MARKER} document.body children`).length - 1).toBe(1);
+    // Nothing from Testing Library may follow the report.
+    expect(message.lastIndexOf(MARKER)).toBeGreaterThan(message.lastIndexOf('Ignored nodes:'));
+  });
+
+  /*
+   * The strip is prefix-exact rather than a marker search, so a query whose own
+   * text contains the marker is not mistaken for a re-wrap and silently denied
+   * its report.
+   */
+  it('does not truncate a message whose own query text contains the marker', () => {
+    mount('<div aria-hidden="true"><button>Save</button></div>');
+    const message = failureMessage(() => screen.getByText(`${MARKER} not present`));
+
+    // The load-bearing half: searching for the bare marker instead of the exact
+    // report prefix would cut Testing Library's own sentence off right here, and
+    // the report would still be appended — so asserting only that a report
+    // exists proves nothing.
+    expect(message).toContain(`Unable to find an element with the text: ${MARKER} not present`);
+    expect(reportOf(message)).toContain('document.body children');
   });
 
   /*
@@ -223,6 +266,10 @@ describe('the a11y failure report (#1161)', () => {
       // A fresh evaluation wraps the frozen-error producer that was just installed.
       // @ts-expect-error -- a Vite cache-busting specifier, not a resolvable path.
       await import('./dom-diagnostics.ts?frozen-probe');
+      // Positive control: without this the test passes even if the fresh
+      // evaluation installed nothing at all, because the frozen producer
+      // already returns exactly this message.
+      expect(Symbol.for('nc.a11y-diagnostics.installed') in getConfig().getElementError).toBe(true);
       expect(failureMessage(missing)).toBe('frozen baseline');
     } finally {
       configure({ getElementError: installed });

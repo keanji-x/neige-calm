@@ -33,10 +33,11 @@
  * rather than asserted, because "it cannot change a test outcome" is the kind
  * of claim that is only worth what was run against it:
  *
- *  - the whole suite is green with it installed (1723 web-dom/node, 285
- *    browser). Query-failure messages *are* read — by this file's own tests,
- *    which is unavoidable — but nothing anywhere asserts on their exact text;
- *    and
+ *  - the whole suite is green with it installed. (No test count is quoted here
+ *    on purpose: the first two drafts of this comment carried totals that were
+ *    stale by the time they were read.) Query-failure messages *are* read — by
+ *    this file's own tests, unavoidably — but nothing anywhere asserts on their
+ *    exact text; and
  *  - `getElementError` is called on *every* `waitFor` poll, not just the last
  *    one, so the cost matters. Measured on a 200-node body holding 100
  *    buttons: 5.10ms per call against 4.07ms without, so the report costs
@@ -46,8 +47,12 @@
  *    25% sounds worse than it is, and the absolute number is the one that
  *    decides: only *failing* DTL queries reach here, and the worst case is a
  *    `findBy*` that times out — 1000ms at a 50ms interval is 20 polls, so
- *    ~20ms added to a 1000ms budget. That cannot move a timing-sensitive test.
- *    A `waitFor` over a plain `expect` never calls `getElementError` at all.
+ *    ~20ms added to a 1000ms budget. A `waitFor` over a plain `expect` never
+ *    calls `getElementError` at all. This is a bound, not an impossibility: a
+ *    `findBy*` whose element appears in the last ~20ms before its deadline
+ *    could be pushed over by exactly this. Nothing cheaper was available that
+ *    still answers the CSS question, and a query that close to its deadline is
+ *    already a flake.
  *
  * What it *would* break is a test asserting the exact text of a query failure
  * — `toThrow(exactMessage)` or a snapshot, not `toThrow('Unable to find')`,
@@ -143,6 +148,12 @@ if (typeof document !== 'undefined') {
    * the way is memoised, so a subtree with fifty hidden buttons pays for its
    * shared ancestors once. The *highest* hidden ancestor wins, because a reader
    * wants "this container went away", not each leaf under it.
+   *
+   * **Blind spot, stated rather than discovered later:** `querySelectorAll`
+   * does not pierce shadow roots and `parentElement` stops at the shadow
+   * boundary, so a hidden subtree inside an open shadow root is not found. No
+   * component in this app renders into one today; if one starts to, this
+   * reports "none" for it and that is a wrong answer, not a missing one.
    */
   const cssHiddenRoots = (body: HTMLElement): { roots: Map<Element, number>; examined: number; total: number } => {
     const queryable = Array.from(body.querySelectorAll(MEANINGFUL));
@@ -158,7 +169,10 @@ if (typeof document !== 'undefined') {
     const roots = new Map<Element, number>();
     for (const element of examined) {
       let root: Element | null = null;
-      for (let node: Element | null = element; node !== null && node !== body; node = node.parentElement) {
+      // `body` is included deliberately: a page whose own `body` is hidden read
+      // as fully visible while the walk stopped one level short of it, which is
+      // this file's own misdiagnosis class one level up.
+      for (let node: Element | null = element; node !== null; node = node.parentElement) {
         if (isHidden(node)) root = node;
       }
       if (root === null) continue;
@@ -240,8 +254,30 @@ if (typeof document !== 'undefined') {
    */
   const INSTALLED = Symbol.for('nc.a11y-diagnostics.installed');
   if (!(INSTALLED in inherited)) {
+    /*
+     * Testing Library re-wraps messages that already came from here, and the
+     * worst offender is the path #1161 actually takes: on timeout `waitFor`
+     * calls `getElementError(lastError.message, …)`, and the default
+     * implementation appends a *second* `prettyDOM` dump after it. Simply
+     * declining to re-append was the first attempt and it was wrong — measured,
+     * the report then sat at offset 267 of a 594-character message with the
+     * new dump running to the end, so the runner's head+tail truncation would
+     * keep the dump and drop the report. The report has to be *moved*, not
+     * skipped: strip the previous one off the incoming message and append a
+     * fresh one, so it is last no matter how many times DTL re-wraps.
+     *
+     * The prefix is matched exactly, so a test whose own query text merely
+     * contains the marker — `getByText('[nc-a11y] not present')` — is not
+     * mistaken for a re-wrap and still gets its report.
+     */
+    const REPORT_PREFIX = `\n\n${MARKER} document.body children (`;
+    const withoutReport = (text: string): string => {
+      const at = text.indexOf(REPORT_PREFIX);
+      return at === -1 ? text : text.slice(0, at);
+    };
+
     const withReport = (message: string | null, container: Container) => {
-      const error = inherited(message, container);
+      const error = inherited(message === null ? message : withoutReport(message), container);
       /*
        * Testing Library re-wraps messages that already came from here, and the
        * worst offender is the path #1161 actually takes: on timeout `waitFor`
@@ -251,7 +287,6 @@ if (typeof document !== 'undefined') {
        * noise, but it is noise in the one artifact this exists to be read from,
        * and it eats the runner's head+tail truncation budget.
        */
-      if (message !== null && message.includes(MARKER)) return error;
       /*
        * A diagnostic that throws would replace a real failure with a useless
        * one, so both halves give up quietly. Note the *second* `append` is why
