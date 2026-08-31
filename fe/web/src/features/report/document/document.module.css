@@ -72,6 +72,15 @@
     min-inline-size: 0;
   }
 
+  /* A block that rendered nothing takes no row. `ProseBlock` returns `null`
+     for a block whose top level sanitizes away — a document carrying its own
+     maintenance contract in a leading HTML comment (#1185) — and React emits
+     no children for `null`, so the slot is literally `:empty`. Without this
+     the empty grid item still claims a row and its `row-gap`. */
+  .block:empty {
+    display: none;
+  }
+
   /* The block rhythm `calm-prose` gives its own direct children, given to the
      blocks inside a block — which are now one level deeper. */
   .block > * + * {

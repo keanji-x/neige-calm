@@ -214,26 +214,55 @@ fn block_heading(block: &calm_types::wave_report::ReportBlock) -> String {
         .get("markdown")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let first_line = markdown.lines().next().unwrap_or("");
-    let first_non_empty = markdown
+    // An outline summarizes what a reader will see. An HTML comment renders as
+    // nothing on both front ends, so it may not become a block title: a
+    // document that carries its own maintenance contract in a leading comment
+    // (#1185 §0.7) would otherwise echo that contract back into the outline of
+    // every wave, as noise and against the response byte budget. The block
+    // itself stays in the outline with an empty heading — dropping it would
+    // make it undeep-linkable, and this outline is the only source of block
+    // ids.
+    let stripped = strip_html_comments(markdown);
+    let first_non_empty = stripped
         .lines()
         .find(|line| !line.trim().is_empty())
-        .unwrap_or("");
-    let hashes = first_line.bytes().take_while(|byte| *byte == b'#').count();
+        .unwrap_or("")
+        .trim_end();
+    let hashes = first_non_empty
+        .bytes()
+        .take_while(|byte| *byte == b'#')
+        .count();
     let heading = if (1..=6).contains(&hashes)
-        && first_line
+        && first_non_empty
             .as_bytes()
             .get(hashes)
             .is_none_or(|byte| *byte == b' ')
     {
-        first_line
+        first_non_empty
             .trim_start_matches('#')
             .strip_prefix(' ')
-            .unwrap_or(first_line)
+            .unwrap_or(first_non_empty)
     } else {
         first_non_empty.trim()
     };
     truncate_chars(heading, 60)
+}
+
+/// Remove every `<!-- … -->` range. An unterminated `<!--` swallows the rest of
+/// the text, which is what a renderer does with it too.
+fn strip_html_comments(markdown: &str) -> String {
+    let mut out = String::with_capacity(markdown.len());
+    let mut rest = markdown;
+    while let Some(open) = rest.find("<!--") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 4..];
+        match after.find("-->") {
+            Some(close) => rest = &after[close + 3..],
+            None => return out,
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {
@@ -253,4 +282,64 @@ async fn report_backlinks(
         .await
         .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
     Ok(crate::report_backlinks::mcp_payload(&page))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_heading;
+    use calm_types::wave_report::ReportBlock;
+    use serde_json::json;
+
+    fn prose(markdown: &str) -> ReportBlock {
+        ReportBlock {
+            id: "b_0000".into(),
+            kind: calm_types::report_blocks::KIND_PROSE.into(),
+            rev: 1,
+            payload: json!({ "markdown": markdown }),
+        }
+    }
+
+    /// The multi-line shape matters: a CommonMark HTML block of type 2 is *not*
+    /// terminated by a blank line, so a real maintenance contract is one node
+    /// spanning blank lines (#1185 §4.4 F).
+    const CONTRACT: &str = "<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）\n\
+        \n\
+        这份报告自带的结构就是规则：维护它，不要重写它。\n\
+        \n\
+        写作方式：散文正文控制在 1000 字以内。\n\
+        -->\n\n";
+
+    #[test]
+    fn a_comment_only_prose_block_has_an_empty_heading() {
+        // The block stays in the outline (it must remain deep-linkable); only
+        // its title is empty, because it renders as nothing.
+        assert_eq!(block_heading(&prose(CONTRACT)), "");
+    }
+
+    #[test]
+    fn an_atx_heading_is_still_the_title() {
+        assert_eq!(block_heading(&prose("# 概要\n\n本轮结论。\n")), "概要");
+    }
+
+    #[test]
+    fn a_contract_followed_by_prose_takes_the_first_line_of_the_prose() {
+        assert_eq!(
+            block_heading(&prose(&format!("{CONTRACT}# 概要\n\n本轮结论。\n"))),
+            "概要"
+        );
+        assert_eq!(
+            block_heading(&prose(&format!("{CONTRACT}本轮结论。\n"))),
+            "本轮结论。"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_comment_is_stripped_to_the_end() {
+        // A renderer swallows the rest of the document too, so the outline must
+        // not resurrect text nobody can see.
+        assert_eq!(
+            block_heading(&prose("<!-- 报告维护契约\n\n# 概要\n\n本轮结论。\n")),
+            ""
+        );
+    }
 }

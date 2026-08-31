@@ -155,6 +155,112 @@ async fn outline_wave_cap_is_reported_and_exact() {
     assert_eq!(value["truncated"]["waves"], 1);
 }
 
+/// A report that carries its own maintenance contract: one leading HTML
+/// comment block (multi-line, spanning blank lines — a CommonMark HTML block of
+/// type 2 does not end at one) plus four H1 sections. Built by hand on purpose:
+/// in this slice `WaveReportPayload::initial()` is still the one-line
+/// placeholder, so depending on it would measure nothing (#1185 S1).
+const CONTRACT: &str = "<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）\n\
+    \n\
+    这份报告自带的结构就是规则：维护它，不要重写它。\n\
+    \n\
+    写作方式：散文正文控制在 1000 字以内，写产出，不写过程。\n\
+    -->\n\n";
+
+fn contract_body() -> String {
+    format!(
+        "{CONTRACT}# 概要\n\n本轮结论。\n\n# 待你定\n\n等你拍板的事。\n\n\
+         # 已完成\n\n已成事实。\n\n# 决策\n\n定了的事。\n"
+    )
+}
+
+#[tokio::test]
+async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
+    // #1185 §5.8 — the contract renders as nothing, so it may not become a
+    // block title; but the entry stays, because this outline is the only
+    // source of block ids for deep links.
+    let boot = boot().await;
+    let wave = add_wave(&boot, boot.cove_id.as_str(), "Carrier", contract_body()).await;
+
+    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let entry = value["waves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["id"] == wave.id.as_str())
+        .unwrap();
+    let blocks = entry["blocks"].as_array().unwrap();
+    assert_eq!(
+        blocks.len(),
+        5,
+        "contract block + four sections: {blocks:#?}"
+    );
+    assert_eq!(blocks[0]["heading"], "");
+    assert!(blocks[0]["id"].as_str().unwrap().starts_with("b_"));
+    assert_eq!(blocks[0]["kind"], "prose");
+    assert_eq!(blocks[1]["heading"], "概要");
+    assert_eq!(blocks[4]["heading"], "决策");
+    // Nothing of the contract survives anywhere in the response.
+    let serialized = serde_json::to_string(&value).unwrap();
+    assert!(!serialized.contains("报告维护契约"));
+    assert!(!serialized.contains("散文正文"));
+}
+
+#[tokio::test]
+async fn outline_stays_within_the_response_byte_cap_with_multi_block_reports() {
+    // The existing wave-cap test seeds 50 *empty* bodies, so it exercises
+    // neither `MAX_BLOCKS_PER_WAVE` nor `MAX_RESPONSE_BYTES` (#1185 §4.4 E).
+    // Five blocks per wave times 50 waves is the shape a document-carried
+    // contract actually produces.
+    let boot = boot().await;
+    let mut seeded = Vec::new();
+    for index in 0..50 {
+        seeded.push(
+            add_wave(
+                &boot,
+                boot.cove_id.as_str(),
+                &format!("Sibling {index}"),
+                contract_body(),
+            )
+            .await,
+        );
+    }
+
+    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let bytes = serde_json::to_vec(&value).unwrap().len();
+    // Measured at 17029 bytes for these 51 waves — real headroom under the cap,
+    // not an accident of an empty fixture.
+    assert!(
+        bytes <= 32 * 1024,
+        "cove.outline must honour MAX_RESPONSE_BYTES; got {bytes} bytes"
+    );
+
+    // Degradation is reported, never silent.
+    let waves = value["waves"].as_array().unwrap();
+    let listed_waves = waves.len();
+    let omitted_waves = value["truncated"]["waves"].as_u64().unwrap_or(0) as usize;
+    // 50 siblings + the wave `boot()` itself created.
+    assert_eq!(listed_waves + omitted_waves, 51);
+
+    for wave in waves {
+        let id = wave["id"].as_str().unwrap();
+        if !seeded.iter().any(|seed| seed.id.as_str() == id) {
+            continue;
+        }
+        let listed = wave["blocks"].as_array().unwrap().len();
+        let omitted = value["truncated"]["blocks"][id].as_u64().unwrap_or(0) as usize;
+        assert_eq!(
+            listed + omitted,
+            5,
+            "a seeded wave has five blocks; each is listed or reported truncated ({id})"
+        );
+    }
+}
+
 #[tokio::test]
 async fn backlinks_returns_linking_wave_for_callers_wave() {
     let boot = boot().await;

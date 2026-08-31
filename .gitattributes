@@ -1,1 +1,7 @@
 fe/tools/mutation/fixtures/** -text
+
+# The report skeleton's maintenance-contract fragments are byte-exact input to
+# `split_body`: a CRLF-normalizing checkout would silently change where blocks
+# split and break the byte round-trip (#1185 §2.5). The files land in S2; the
+# declaration goes first so no checkout ever sees them untyped.
+crates/calm-types/src/wave_report_*.md -text

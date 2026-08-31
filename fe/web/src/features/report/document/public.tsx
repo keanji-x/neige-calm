@@ -318,6 +318,24 @@ function ProseBlock({ markdown, blockId, onOpenLink }: {
     }).map((heading) => [heading.position.start.offset ?? -1, heading.id]));
 
   const ast = sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' });
+  /*
+   * A prose block whose top level sanitizes to nothing renders nothing — and a
+   * block that renders nothing must not hold a grid row open. The case that
+   * makes this real is a document that carries its own maintenance contract in
+   * a leading HTML comment (#1185): `rawHtml: 'drop'` removes the one node it
+   * has, leaving an empty block and a `row-gap` of blank space at the top of
+   * every report.
+   *
+   * The test is *here*, after the one pipeline, rather than in the block
+   * filter above: judging emptiness up there would parse and sanitize every
+   * prose block a second time — a second implementation of this pipeline, and
+   * one that could not structurally avoid the `failed` branch, so it would
+   * hide the screen that shows an agent the source it broke.
+   *
+   * "Top-level nodes are empty" is the whole claim. It does not detect a
+   * nested empty blockquote or an empty list, and it should not try to.
+   */
+  if (ast.children.length === 0) return null;
   return <>{ast.children.map((block, index) => (
     <Block key={index} block={block} headingIds={headingIds} onOpenLink={onOpenLink} />
   ))}</>;

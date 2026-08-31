@@ -346,4 +346,53 @@ describe('ReportDocument', () => {
       expect(container.textContent?.match(/◂/g)?.length).toBe(1);
     });
   });
+
+  /*
+   * A report may carry its own maintenance contract as a leading HTML comment:
+   * dropped where the document is rendered, readable to everything that reads
+   * the body source (#1185). The fixture is deliberately multi-line and spans
+   * blank lines — a CommonMark HTML block of type 2 does not end at one, and a
+   * single-line fixture would not test the property the carrier relies on.
+   */
+  describe('a document that carries its own maintenance contract (#1185)', () => {
+    const CONTRACT = [
+      '<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）',
+      '',
+      '这份报告自带的结构就是规则：维护它，不要重写它。',
+      '',
+      '写作方式：散文正文控制在 1000 字以内。',
+      '-->',
+      '',
+    ].join('\n');
+
+    it('renders neither the contract nor a row for its block', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b_1', CONTRACT), prose('b_2', '# 概要\n\n本轮结论。\n'))}
+        empty={EMPTY}
+      />);
+      expect(container.textContent).not.toContain('报告维护契约');
+      expect(container.innerHTML).not.toContain('报告维护契约');
+      expect(container.textContent).not.toContain('散文正文');
+      expect(container.innerHTML).not.toContain('散文正文');
+      // The slot stays (it keeps the anchor and any backlink sidenote); the
+      // block inside it renders nothing, which `.block:empty` then hides.
+      expect(container.querySelector('#b_1')?.childNodes.length).toBe(0);
+      expect(container.textContent).toContain('概要');
+      expect(container.textContent).toContain('本轮结论。');
+    });
+
+    it('drops the contract on the v1 flat-body path too', () => {
+      // `report.blocks === null` sends the whole body through one ProseBlock.
+      const { container } = render(<ReportDocument
+        report={flat(`${CONTRACT}# 概要\n\n本轮结论。\n\n# 决策\n\n定了的事。\n`)}
+        empty={EMPTY}
+      />);
+      expect(container.textContent).not.toContain('报告维护契约');
+      expect(container.innerHTML).not.toContain('报告维护契约');
+      expect(container.textContent).not.toContain('散文正文');
+      expect(container.innerHTML).not.toContain('散文正文');
+      expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent))
+        .toEqual(['概要', '决策']);
+    });
+  });
 });
