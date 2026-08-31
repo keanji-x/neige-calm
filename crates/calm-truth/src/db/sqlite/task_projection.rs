@@ -153,15 +153,67 @@ struct TaskReadState {
     claim_context_json: Option<String>,
 }
 
+/// Live (non-tombstoned) declaration block ids per key, in document order.
+///
+/// This is the read-path twin of `calm-server`'s
+/// `TaskContextService::resolve_task_closure` (`crates/calm-server/src/task_context.rs`,
+/// the `let root = match live.as_slice()` arm): `[root] => Ok`,
+/// `[] if tombstoned => RootTombstoned`, `[] => RootAbsent`,
+/// `_ => DuplicateLiveKey`. The dispatch side has always failed closed on every
+/// shape but `[root]` — the scheduler leaves such a task pending instead of
+/// claiming it. #1160 applies the same verdict on the read path, so an
+/// ambiguous key answers `status: null` on the wire instead of stamping one
+/// row's run onto every block that happens to carry the key.
+///
+/// `calm-truth` cannot depend on `calm-server`, so the rule is stated twice;
+/// both sites name each other. Do not add a third spelling.
+fn live_declaration_blocks_by_key(declarations: &[TaskDeclaration]) -> BTreeMap<&str, Vec<&str>> {
+    declarations
+        .iter()
+        // The empty key is grouped like any other. `key` is not required to be
+        // non-empty on the wire, and `UNIQUE (wave_id, key)` means two blocks
+        // declaring `""` still share exactly one row — the very ambiguity this
+        // index exists to name. Dropping them here would hand both blocks the
+        // same run again.
+        .filter(|declaration| !declaration.tombstone)
+        .fold(BTreeMap::new(), |mut grouped, declaration| {
+            grouped
+                .entry(declaration.key.as_str())
+                .or_default()
+                .push(declaration.block_id.as_str());
+            grouped
+        })
+}
+
 /// Attach the task-table state carried by `wave_projection_state`'s single
 /// statement. This deliberately stays beside the projection query instead of
 /// introducing a live block data-source abstraction.
-fn attach_task_read_state(rows: &[TaskReadState], wave_id: &str, verdicts: &mut [BlockVerdict]) {
+///
+/// #1160 — run state is attached only to the *single* live declaration of a
+/// key. `tasks` is keyed by `(wave_id, key)` and carries no block identity, so
+/// when a key has zero or several live declarations nothing in the data says
+/// which block owns the run; every field below then stays `None` rather than
+/// being copied onto each candidate.
+fn attach_task_read_state(
+    rows: &[TaskReadState],
+    wave_id: &str,
+    declarations: &[TaskDeclaration],
+    verdicts: &mut [BlockVerdict],
+) {
     let by_key: BTreeMap<_, _> = rows.iter().map(|row| (row.key.as_str(), row)).collect();
+    let live_blocks = live_declaration_blocks_by_key(declarations);
     for verdict in verdicts {
         let Some(row) = by_key.get(verdict.key.as_str()) else {
             continue;
         };
+        // `[root]` and only `[root]`; every other arm is ambiguous.
+        let owned = matches!(
+            live_blocks.get(verdict.key.as_str()).map(Vec::as_slice),
+            Some([root]) if *root == verdict.block_id
+        );
+        if !owned {
+            continue;
+        }
         verdict.status = Some(row.status.clone());
         verdict.status_detail = row.status_detail.clone();
         verdict.gate_result = row
@@ -1025,7 +1077,7 @@ async fn evaluate_schedulability_with_tree_term(
         verdicts[index].schedulable = false;
     }
     if include_read_state {
-        attach_task_read_state(&state.task_read_state, wave_id, &mut verdicts);
+        attach_task_read_state(&state.task_read_state, wave_id, declarations, &mut verdicts);
     }
     Ok(verdicts)
 }
@@ -1089,39 +1141,68 @@ async fn project_tasks_from_verdicts_tx(
     verdicts: Vec<BlockVerdict>,
     tree_cte_queries: u32,
 ) -> Result<TaskProjectionOutcome> {
-    let schedulable_by_key: BTreeMap<_, _> = verdicts
-        .iter()
-        .filter(|v| !v.key.is_empty())
-        .map(|v| (v.key.clone(), v.schedulable))
-        .collect();
+    // #1160 — these three indexes ask row-level questions ("is this *key*
+    // still backed by the document?"), but used to be built as last-wins
+    // `BTreeMap` collects, so with several blocks on one key the answer
+    // depended on document order. Each is now an explicit fold over every
+    // block carrying the key. The dimension stays `key`: `tasks` rows are
+    // keyed by `(wave_id, key)` and `block_id` is not a durable identity.
+    //
+    // `schedulable` folds with `any`: the row is still wanted as long as *one*
+    // live block can produce it. Folding with `all` would let a tombstone (or
+    // a diagnosed twin) of a key that is still declared delete the pending row
+    // / raise a withdrawal.
+    let schedulable_by_key = verdicts.iter().filter(|v| !v.key.is_empty()).fold(
+        BTreeMap::<String, bool>::new(),
+        |mut folded, verdict| {
+            *folded.entry(verdict.key.clone()).or_default() |= verdict.schedulable;
+            folded
+        },
+    );
     let existing: Vec<(String, String, String, Option<String>)> =
         sqlx::query_as("SELECT id,key,status,claim_context_json FROM tasks WHERE wave_id=?1")
             .bind(wave_id)
             .fetch_all(&mut **tx)
             .await?;
     let mut verdicts = verdicts;
-    let verdict_index_by_key: BTreeMap<_, _> = verdicts
-        .iter()
-        .enumerate()
-        .filter(|(_, verdict)| !verdict.key.is_empty())
-        .map(|(index, verdict)| (verdict.key.clone(), index))
-        .collect();
-    let declaration_by_key: BTreeMap<_, _> = declarations
-        .iter()
-        .map(|declaration| (declaration.key.as_str(), declaration))
-        .collect();
+    // All verdict slots of a key, in document order.
+    let verdict_indexes_by_key = verdicts.iter().enumerate().fold(
+        BTreeMap::<String, Vec<usize>>::new(),
+        |mut folded, (index, verdict)| {
+            if !verdict.key.is_empty() {
+                folded.entry(verdict.key.clone()).or_default().push(index);
+            }
+            folded
+        },
+    );
+    // A key is removed exactly when no live block declares it any more —
+    // a tombstone standing beside a live re-declaration removes nothing.
+    let live_declarations_by_key = live_declaration_blocks_by_key(declarations);
     let mut changed = BTreeSet::new();
     let mut kernel_events = Vec::new();
     for (id, key, status, claim_context_json) in &existing {
-        let withdrawal_edge = verdict_index_by_key
+        let verdict_indexes = verdict_indexes_by_key
             .get(key)
-            .and_then(|index| verdicts[*index].withdrawal);
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        // Withdrawal folds with `all`: the key is withdrawn only when *every*
+        // block carrying it withdrew. One block that is still ready keeps the
+        // key claimed — otherwise a tombstone left beside a live
+        // re-declaration would read as a withdrawal of the new declaration.
+        // The edge itself is the first one in document order, so the rationale
+        // is deterministic.
+        let withdrawal_edge = (!verdict_indexes.is_empty()
+            && verdict_indexes
+                .iter()
+                .all(|index| verdicts[*index].withdrawal.is_some()))
+        .then(|| verdicts[verdict_indexes[0]].withdrawal)
+        .flatten();
         let withdrawal = withdrawal_edge.is_some();
         if !schedulable_by_key.get(key).is_some_and(|value| *value) || withdrawal {
             if matches!(status.as_str(), "dispatched" | "running" | "verifying") {
-                let declaration_removed = declaration_by_key
+                let declaration_removed = live_declarations_by_key
                     .get(key.as_str())
-                    .is_none_or(|declaration| declaration.tombstone);
+                    .is_none_or(Vec::is_empty);
                 if withdrawal || declaration_removed {
                     // Withdrawal is a declaration edge, not a content change. Keep
                     // the hash-typed changed_refs clean and describe the edge in the
@@ -1168,7 +1249,7 @@ async fn project_tasks_from_verdicts_tx(
                 let diagnostic = withdrawal_diagnostic(key, status);
                 // Declaration-backed rows already received this diagnostic from
                 // evaluate_schedulability; this branch only covers deleted blocks.
-                if !verdict_index_by_key.contains_key(key) {
+                if verdict_indexes.is_empty() {
                     verdicts.push(BlockVerdict {
                         block_id: String::new(),
                         key: key.clone(),
@@ -1303,6 +1384,16 @@ mod tests {
             tombstoned_by: None,
             ready: true,
             tombstone: false,
+        }
+    }
+
+    /// The shape `report_blocks::tasks` produces for a deleted task block:
+    /// `tombstone` set, `ready` absent (so `false`).
+    fn tombstone_declaration(index: usize, key: &str) -> TaskDeclaration {
+        TaskDeclaration {
+            tombstone: true,
+            ready: false,
+            ..declaration(index, key)
         }
     }
 
@@ -1689,5 +1780,119 @@ mod tests {
             .unwrap();
         assert_eq!(stale, None);
         assert_eq!(persisted_events, 0);
+    }
+
+    /// #1160 case 2 — two live blocks claim one key while the row is in
+    /// flight. `tasks` has a single row for `(wave_id, key)` and nothing in
+    /// the data says which block owns that run, so neither verdict may carry
+    /// it. Mirrors `resolve_task_closure`'s `DuplicateLiveKey`.
+    #[tokio::test]
+    async fn duplicate_live_declarations_never_stamp_run_state() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "contested", "running").await;
+        sqlx::query(
+            "UPDATE tasks SET worker_card_id='card-contested' WHERE wave_id=?1 AND key='contested'",
+        )
+        .bind(&wave)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let mut conn = repo.pool.acquire().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut conn,
+            &wave,
+            &[declaration(0, "contested"), declaration(1, "contested")],
+            &[vec![], vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verdicts.len(), 2);
+        for verdict in &verdicts {
+            assert_eq!(
+                verdict.status, None,
+                "block {} must not claim the contested run",
+                verdict.block_id
+            );
+            assert_eq!(verdict.worker_card_id, None);
+        }
+    }
+
+    /// #1160 case 1 — a tombstoned block and a live block carry the same key.
+    /// Exactly one live declaration exists, so it takes the run state; the
+    /// tombstone must stay bare.
+    #[tokio::test]
+    async fn tombstoned_declaration_never_stamps_run_state() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "redeclared", "running").await;
+        sqlx::query(
+            "UPDATE tasks SET worker_card_id='card-redeclared' WHERE wave_id=?1 AND key='redeclared'",
+        )
+        .bind(&wave)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let mut conn = repo.pool.acquire().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut conn,
+            &wave,
+            &[
+                declaration(0, "redeclared"),
+                tombstone_declaration(1, "redeclared"),
+            ],
+            &[vec![], vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(verdicts.len(), 2);
+        assert_eq!(verdicts[0].status.as_deref(), Some("running"));
+        assert_eq!(
+            verdicts[0].worker_card_id.as_deref(),
+            Some("card-redeclared")
+        );
+        assert_eq!(
+            verdicts[1].status, None,
+            "the tombstoned block must not claim the run"
+        );
+        assert_eq!(verdicts[1].worker_card_id, None);
+    }
+
+    /// #1160 — `declaration_by_key` used to be a last-wins `BTreeMap`, so the
+    /// same document content produced different kernel events depending on
+    /// whether the tombstone block sat before or after the live one.
+    #[tokio::test]
+    async fn tombstone_block_order_does_not_change_kernel_events() {
+        async fn events_for(order: [TaskDeclaration; 2]) -> Vec<String> {
+            let (repo, wave) = setup().await;
+            insert_block_task(&repo, &wave, "reordered", "running").await;
+            let mut tx = repo.pool.begin().await.unwrap();
+            let outcome = project_tasks_tx(&mut tx, &wave, &order, &[vec![], vec![]])
+                .await
+                .unwrap();
+            tx.commit().await.unwrap();
+            outcome
+                .kernel_events
+                .iter()
+                .map(|event| format!("{event:?}"))
+                .collect()
+        }
+
+        // The live re-declaration differs from the in-flight row, so it is not
+        // schedulable and the existing-row branch runs in both orders.
+        let mut live = declaration(0, "reordered");
+        live.goal = "goal reordered v2".into();
+        let tombstone = tombstone_declaration(1, "reordered");
+
+        let tombstone_first = events_for([tombstone.clone(), live.clone()]).await;
+        let live_first = events_for([live, tombstone]).await;
+        assert_eq!(
+            tombstone_first, live_first,
+            "block order must not change the kernel events of one document"
+        );
     }
 }

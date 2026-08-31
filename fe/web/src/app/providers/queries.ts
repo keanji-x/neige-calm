@@ -355,9 +355,8 @@ const TASK_VERDICT_RECOVERY_ATTEMPTS = 4;
  *
  * **Curried on the declarations** because the live branch is a question about
  * the panel's rows, not about the wire. The kernel emits a verdict for a
- * declaration that has been *deleted* (`blockId: ''`, naming no block here) and
- * `deriveReportTasks` refuses to decorate a key two live blocks both claim; in
- * either case an in-flight status produces no row, so a timer keyed on the raw
+ * declaration that has been *deleted* (`blockId: ''`, naming no block here), so
+ * an in-flight status can produce no row at all, and a timer keyed on the raw
  * verdicts would keep refetching every 3 s with nothing on screen that could
  * ever change. Joining first costs one pass over the declarations per interval
  * decision and makes "costs nothing outside that window" true as written.

@@ -366,12 +366,16 @@ describe('deriveReportTasks', () => {
     expect(row?.statusDetail).toBeNull();
   });
 
-  /* Same rule, and the one that is easy to lose: neither of two rows claiming
-     one key may report the run, so neither may report its reason. */
-  it('gives neither contested row a reason when two live blocks claim one key', () => {
+  /* Same rule from the other end: a key two live blocks claim has no owner,
+     so the kernel sends `status: null` for both (#1160) — and a reason with no
+     status to qualify is dropped here rather than printed bare. */
+  it('gives neither row of a contested key a reason', () => {
     const rows = tasksOf(
       [task('b-one', live('alpha', true)), task('b-two', live('alpha', true))],
-      [verdict({ blockId: 'b-one', key: 'alpha', status: 'failed', statusDetail: 'boom' })],
+      [
+        verdict({ blockId: 'b-one', key: 'alpha', status: null, statusDetail: 'boom' }),
+        verdict({ blockId: 'b-two', key: 'alpha', status: null, statusDetail: 'boom' }),
+      ],
     );
     expect(rows.map((row) => row.statusDetail)).toEqual([null, null]);
   });
@@ -651,22 +655,24 @@ describe('deriveReportTasks', () => {
    * 0058) so only one run can exist, and `plan.upsert` rejects duplicates only
    * *within one batch* (`plan.rs` `validate_new_batch`); the projection accepts
    * the document and merely flags each block with a `duplicate_key` diagnostic
-   * (`calm-types/src/report_blocks/tasks.rs`), after which
-   * `attach_task_read_state` stamps the single `tasks` row onto both verdicts.
-   * The frontend therefore receives two verdicts, each correctly naming its own
-   * block, each carrying the same `status` and the same `workerCardId` — and
-   * rendered naively that is one run shown as two, both rows clicking through
-   * to the same worker card.
+   * (`calm-types/src/report_blocks/tasks.rs`) and carries on.
    *
    * There is no owner to pick: the kernel itself calls this document invalid.
-   * So both rows take the withdrawn treatment — declaration word, no card.
+   * **So the kernel says so on the wire.** `attach_task_read_state` attaches
+   * run state only to the single live declaration of a key (#1160), so a
+   * contested key arrives here as `status: null` / `workerCardId: null` on
+   * *every* block that names it — this build is asserting the shape the server
+   * produces, not re-deriving the rule from the document.
+   *
+   * The rows still exist and keep their declaration word; what they lack is a
+   * run either of them could be shown to own.
    */
   it('reports no run on either row when two live blocks claim the same key', () => {
     expect(tasksOf(
       [task('b-one', live('alpha', true)), task('b-two', live('alpha', false))],
       [
-        verdict({ blockId: 'b-one', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
-        verdict({ blockId: 'b-two', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-one', key: 'alpha', status: null, workerCardId: null }),
+        verdict({ blockId: 'b-two', key: 'alpha', status: null, workerCardId: null }),
       ],
     )).toEqual([
       { blockId: 'b-one', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
@@ -678,8 +684,9 @@ describe('deriveReportTasks', () => {
   });
 
   /* And it is scoped to the contested key: the honest row beside it still
-     reports its own run. A rule that quieted the whole panel because one key
-     was declared twice would cost more than the defect it fixes. */
+     reports its own run. The kernel scopes the refusal per key, and this build
+     must not widen it — a rule that quieted the whole panel because one key was
+     declared twice would cost more than the defect it fixes. */
   it('still reports the run of an uncontested key beside a contested one', () => {
     expect(tasksOf(
       [
@@ -688,8 +695,8 @@ describe('deriveReportTasks', () => {
         task('b-solo', live('beta', true)),
       ],
       [
-        verdict({ blockId: 'b-one', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
-        verdict({ blockId: 'b-two', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-one', key: 'alpha', status: null, workerCardId: null }),
+        verdict({ blockId: 'b-two', key: 'alpha', status: null, workerCardId: null }),
         verdict({ blockId: 'b-solo', key: 'beta', status: 'running', workerCardId: 'card-7' }),
       ],
     ).map((row) => [row.status, row.workerCardId])).toEqual([
@@ -700,32 +707,22 @@ describe('deriveReportTasks', () => {
   });
 
   /*
-   * ── CHANGED EXPECTATION ──────────────────────────────────────────────────
+   * The empty key is one key like any other, on both sides of the wire.
+   * `tasks` is `UNIQUE (wave_id, key)` with `key` a plain string, so two blocks
+   * declaring `''` still share exactly one row — and the kernel's uniqueness
+   * rule groups `''` with everything else rather than skipping it (#1160,
+   * `live_declaration_blocks_by_key`), so both verdicts arrive undecorated.
    *
-   * This test used to assert the opposite — that two blocks declaring NO key
-   * each keep their own run, on the argument that "the empty string is not an
-   * identifier". The `tasks` table disagrees: it is `UNIQUE (wave_id, key)`
-   * with `key` a plain string, so `''` is one row like any other, and
-   * `attach_task_read_state` stamps that single row onto *both* verdicts by
-   * key. The old expectation only looked coherent because its fixture gave the
-   * two verdicts different worker cards (`card-9` / `card-7`), which is a shape
-   * the kernel cannot produce for one key.
-   *
-   * With the reachable fixture — one run, stamped twice — the old rule printed
-   * one run as two, both rows clicking through to the same worker card, under
-   * two names that look distinct because the display name falls back to the
-   * block id. That is precisely the state `contestedLiveKeys` exists to refuse,
-   * so the empty key is now counted like every other key.
-   *
-   * The rows still exist and still carry their fallback names; what they lose
-   * is the run neither of them can be shown to own.
+   * The rows still exist and still carry their fallback names — the display
+   * name falls back to the block id, which is what made these two look like two
+   * distinct tasks when they were both handed the same run.
    */
-  it('treats a key two live blocks both leave empty as contested, like any other shared key', () => {
+  it('carries no run on either row when two live blocks both leave the key empty', () => {
     expect(tasksOf(
       [task('b-one', live('', true)), task('b-two', live('', true))],
       [
-        verdict({ blockId: 'b-one', key: '', status: 'running', workerCardId: 'card-9' }),
-        verdict({ blockId: 'b-two', key: '', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-one', key: '', status: null, workerCardId: null }),
+        verdict({ blockId: 'b-two', key: '', status: null, workerCardId: null }),
       ],
     ).map((row) => [row.key, row.status, row.workerCardId])).toEqual([
       ['b-one', null, null],
@@ -851,9 +848,9 @@ describe('hasLiveTaskRun', () => {
   /*
    * **Rows, and produced by the real join.** The predicate used to read the raw
    * verdicts, and reading them is what made its own comment false: the kernel
-   * emits a verdict for a *deleted* declaration and `deriveReportTasks` refuses
-   * to decorate a contested key, so an in-flight status can exist with no row
-   * anywhere on screen for the poll to converge to. Hand-written rows would let
+   * emits a verdict for a *deleted* declaration, which names no block here, so
+   * an in-flight status can exist with no row anywhere on screen for the poll
+   * to converge to. Hand-written rows would let
    * that class of defect back in silently — a fixture can make any row it
    * likes — so every row below comes out of `deriveReportTasks` against real
    * declarations, which is the function the panel calls.
@@ -964,14 +961,14 @@ describe('hasLiveTaskRun', () => {
 
   /*
    * And the other rowless in-flight run: a key two live blocks both claim. The
-   * `tasks` row is stamped onto both verdicts, `contestedLiveKeys` refuses to
-   * decorate either, and the panel shows two undecorated rows however long the
-   * run takes.
+   * kernel refuses to name an owner and sends `status: null` for both (#1160),
+   * so the panel shows two undecorated rows however long the run takes — and
+   * there is nothing here a 3 s refetch could converge.
    */
   it('is false for a live run on a key two live declarations both claim', () => {
     const rows = rowsFor([
-      { blockId: 'b-1', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
-      { blockId: 'b-2', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
+      { blockId: 'b-1', key: 'dup', schedulable: true, status: null, workerCardId: null },
+      { blockId: 'b-2', key: 'dup', schedulable: true, status: null, workerCardId: null },
     ], [declared('b-1', 'dup'), declared('b-2', 'dup')]);
     expect(rows.map((row) => row.status)).toEqual([null, null]);
     expect(hasLiveTaskRun(rows)).toBe(false);

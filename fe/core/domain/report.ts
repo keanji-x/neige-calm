@@ -588,7 +588,7 @@ export type TaskWorkerKind = 'codex' | 'claude' | 'terminal';
  * the join's knowledge leaking into presentation through a format.
  *
  * So the module keeps deciding *which* facts a row may carry — that is the
- * whole point of the withdrawn / unreadable / contested rules below — and stops
+ * whole point of the withdrawn / unreadable rules below — and stops
  * deciding how they are spelled next to each other.
  */
 export type ReportTaskRow = Readonly<{
@@ -788,12 +788,13 @@ function verdictFor(
  * an explicit `tombstone: null`, so the key's presence proves nothing. Same
  * test as `features/report/task`.
  *
- * Extracted because two passes need it and they must not be able to disagree:
- * `contestedLiveKeys` decides which keys are contested *before* any row is
- * built, and the row loop decides each row's own word. A copy of this ladder in
- * each place would let a future edit make a block live for one pass and
- * withdrawn for the other, which is exactly the state the contested rule exists
- * to rule out.
+ * The row loop below is the only caller left. It used to be two — a
+ * pre-pass also counted live claims per key, so that a key two live blocks
+ * both declared could be refused decoration here (#1159). The kernel now
+ * answers that itself: `attach_task_read_state` attaches run state only to the
+ * *single* live declaration of a key, so a contested key arrives as
+ * `status: null` on the wire and there is nothing left for this module to
+ * second-guess (#1160).
  */
 function taskRowState(block: ReportBlock): ReportTaskState {
   if (block.kind !== 'task') return 'unreadable';
@@ -807,63 +808,6 @@ function taskRowState(block: ReportBlock): ReportTaskState {
  *  one task's run be reported on another task's row. */
 function declaredTaskKey(block: ReportBlock): string {
   return block.kind === 'task' ? block.payload.key : '';
-}
-
-/**
- * The keys more than one *live* row in this document claims.
- *
- * The `tasks` table is `UNIQUE (wave_id, key)` (migration 0058), so at most one
- * run can ever exist per key — but the *document* is not held to that. A report
- * may declare the same key on two live blocks, and the kernel does not reject
- * it: the projection flags each of them with a `duplicate_key` diagnostic
- * (`calm-types/src/report_blocks/tasks.rs`) and carries on, while
- * `attach_task_read_state` (`task_projection.rs`) joins run state onto verdicts
- * **by key alone**. The single `tasks` row is therefore stamped onto *both*
- * verdicts, each naming its own block, each carrying the same `status` and the
- * same `workerCardId`. Rendered, that is one run shown as two — with two rows
- * offering a click-through to the same worker card, as if two things were
- * running.
- *
- * There is no fix that picks a winner, because there is no owner to pick: the
- * kernel itself treats this document as invalid, and nothing in it says which
- * of the two blocks the run belongs to. Inventing an order (document position,
- * verdict order) would print a confident answer the data does not support, and
- * it would flip whenever the report was reordered.
- *
- * So these rows take the same treatment a withdrawn row takes: they keep their
- * declaration word and take **no runtime note and no click-through**. The rows
- * still exist — the blocks are declared and the document draws them — and the
- * `duplicate_key` diagnostic on each block is where the reader is told why,
- * which is the block's own business and not this column's.
- *
- * Withdrawn and unreadable rows are excluded from the count for the reason they
- * are excluded from decoration at all: a withdrawn key that was redeclared is
- * one live claim, not two, and that case is already handled (and tested)
- * downstream.
- *
- * **The empty key is counted like any other**, and it is the one case that is
- * easy to argue out of. `key` is `z.string()` and the kernel does not require
- * it to be non-empty (see `deriveReportTasks`'s name fallback), so two live
- * blocks may both declare `''` — and `UNIQUE (wave_id, key)` means those two
- * declarations still share exactly *one* `tasks` row, which is the whole
- * premise of this function. Skipping `''` here left both rows decorated: each
- * found a verdict at its own block id, and both printed the same `running` and
- * the same click-through to the same worker card. The row's *display* name
- * falls back to the block id, which made the two look like two different
- * tasks. An empty key is a bad name; it is not a second run.
- */
-function contestedLiveKeys(blocks: readonly ReportBlock[]): ReadonlySet<string> {
-  const claimed = new Set<string>();
-  const contested = new Set<string>();
-  for (const block of blocks) {
-    if (!isTaskBlock(block)) continue;
-    const state = taskRowState(block);
-    if (state === 'withdrawn' || state === 'unreadable') continue;
-    const key = declaredTaskKey(block);
-    if (claimed.has(key)) contested.add(key);
-    else claimed.add(key);
-  }
-  return contested;
 }
 
 /**
@@ -888,10 +832,6 @@ export function deriveReportTasks(
      that predicate is not decidable one block at a time. */
   const rowBlockIds = new Set(blocks.filter(isTaskBlock).map((block) => block.id));
   const index = indexVerdicts(verdicts, rowBlockIds);
-  /* Which keys two live rows both claim — also not decidable one block at a
-     time, and for the same reason: the second claimant is what makes the first
-     one contested, and it may come later in the document. */
-  const contested = contestedLiveKeys(blocks);
   const rows: ReportTaskRow[] = [];
   for (const block of blocks) {
     if (!isTaskBlock(block)) continue;
@@ -938,18 +878,16 @@ export function deriveReportTasks(
      * read the block's key, so it cannot vouch that a verdict is about it.
      *
      * The task existed and was withdrawn; that is what the panel owes the
-     * reader. It also removes the withdrawn row from contention when a key is
-     * withdrawn and then redeclared, which is one half of why two rows could
-     * print one run.
+     * reader.
      *
-     * A key two live rows both claim is the other half, and it is refused here
-     * for a different reason: not that this row cannot be vouched for, but that
-     * *neither* row can — see `contestedLiveKeys`. One `tasks` row stamped onto
-     * two verdicts is one run, and printing it twice (twice clickable, at the
-     * same card) states something the document does not know.
+     * A key two live blocks both claim used to be refused here as well, for a
+     * different reason: not that this row cannot be vouched for, but that
+     * *neither* row can. That rule now lives in the kernel — one `tasks` row
+     * has at most one live declaration that may carry it, and an ambiguous key
+     * is answered `status: null` for every block that names it (#1160) — so
+     * this build no longer re-derives it from the document.
      */
-    const decorated = state !== 'withdrawn' && state !== 'unreadable'
-      && !contested.has(declaredKey);
+    const decorated = state !== 'withdrawn' && state !== 'unreadable';
     const verdict = decorated ? verdictFor(block.id, declaredKey, index) : undefined;
     /*
      * `''` is not a status, for the same reason `''` is not a card id two
@@ -982,8 +920,8 @@ export function deriveReportTasks(
       status,
       /* Gated on `status`, not on the verdict: the detail is a qualifier on the
          status word and has nowhere to attach without one. That also makes it
-         inherit every rule above for free — a withdrawn, unreadable or
-         contested row has no `status`, so it cannot leak a reason either. */
+         inherit every rule above for free — a withdrawn or unreadable row
+         has no `status`, so it cannot leak a reason either. */
       statusDetail: status === null ? null : boundedStatusDetail(verdict?.statusDetail),
       kind,
       /* `''` is not a card id. The wire types it as an optional string and an
