@@ -1,586 +1,193 @@
-# 设计：wave 工作区 —— default 语义 + 托管根 + 一次性冻结
+# Wave 工作区
 
-> 归属：#1147（worker 工作区隔离）。相关：#1149（pending 不可见 / 失败不可读）、#1131（建 wave 只填名字，遗留 `cwd=$HOME`）、#1098（cove 对话）、#275/#1109（`cove_folders`）。
-> 状态：**r3.6 — 实现中**。S0 已合入 #1158；S1 已合入 #1163（删掉 waves.cwd，未保留投影）。S2 实现完成，已过两轮红队；已知遗留见 D12。
+状态：实现中。S0 已合入 #1158；S1 已合入 #1163；S2 实现完成、已过三轮红队，见「已知缺口」。
 
-## 1. 问题
+## 前提
 
-今天一个 `waves.cwd: TEXT NOT NULL` 字符串同时承担三件互不相同的事：
+新 FE 尚未上生产。S2 起不再为旧客户端新增字段别名、缺键默认或其他过渡层；破坏性的 API/DTO 变更可以一步到位。S1 已存在的 wire `cwd` 别名保留。
 
-| # | 语义 | 今天靠什么 | 现状 |
-|---|---|---|---|
-| A | spec/对话 agent 的 cwd | `waves.cwd`，建后不可改（`wave_update_tx` 的 UPDATE 语句根本没有 cwd 列，`db/sqlite/wave.rs:177-192`） | #1131 之后新 FE 不传 → `default_cwd()` = `$HOME` |
-| B | 每个 worker 的隔离工作区 | codex：`git rev-parse --show-toplevel(wave.cwd)` → `<repo>/.claude/worktrees/<wave>/<card>` + 分支 `neige/<wave>/<card>`；claude：**纯相对路径**，**完全不读 wave.cwd**（`claude_adapter/mod.rs:774-781` → `workspace_lease/mod.rs:1357-1363`） | claude 那条是 pre-3c 遗留，无隔离、无分支、cwd 靠 spawn 继承 |
-| C | 哪个 cove 拥有哪个目录 | `cove_folders(path UNIQUE, cove_id)` + 建 wave 时认领/409 | #1131 的省略-cwd 分支完全绕过它 |
+服务端仍必须迁移和回放已经持久化的数据。FE 是否上线不改变这项责任。
 
-后果（#1147 实测）：新建 wave 的 cwd 是 `$HOME`，不是 git 仓库 → 任何 `kind: codex` 任务在
-`git_repo_root_for_wave_cwd`（`mod.rs:1386`）以 `BadRequest` 死掉，`tasks.status_detail` 只剩
-`spawn-failed`，真实文本停在 `operations.phase_detail_json`。
+## 产品契约
 
-线上事实（2026-08-30 读库）：`:4040` 的 `cove_folders` 7 条全是用户真实项目目录，9 个 wave 的 cwd 全落在其上；
-`:4140`（新 FE）3 个 wave 的 cwd 是 `/home/kenji`、`/tmp`、`/` —— 即 #1131 留下的坑。
+- Neige 在 `$HOME/neige-workspaces` 下管理默认工作区。
+- Cove 只是命名空间；每个 wave 拥有独立仓库。
+- 创建 wave 时默认分配工作区，不要求用户先选目录。
+- 工作区在产生工作前可更换；开始工作后永久冻结。
+- 用户仓库可以附加，但 Neige 永不初始化、移动或删除它。
+- 子 wave 必须拥有独立工作区，不能继承父 wave 的路径。
 
-## 2. 产品意图（用户定调，不可推翻）
-
-> **前提（用户 2026-08-31 定调）：新 FE 尚未上生产，因此后续切片不需要为它做兼容妥协。**
-> 具体影响：不必为旧客户端保留字段别名、不必给 wire 加「缺键取默认」这类过渡层、
-> 破坏性的 API/DTO 形状变更可以一步到位。S1 已经付出的那部分兼容成本（`cwd` wire 别名、
-> zod 的缺键默认）保留不动，但 **S2 起不再新增**。
-> 仍然要守的是：**服务端自身的数据迁移**（事件日志回放、已落库的行）—— 那与 FE 是否上线无关。
-
-1. neige 在 home 下自建一个工作文件夹放数据；wave 工作区默认落在那里。
-2. cove 那层文件夹**只是命名空间**，不是 git 仓库；每个 wave 自己是一个仓库。
-3. 工作区是 **default 语义**：建 wave 不问用户，缺省就分配一个；**在还没发生任何工作之前可以改**；
-   一旦开始工作，固化为实际值，**不可变**。
-
-## 3. 决策
-
-### D1 — workspace 是带类型的字段，不是一个路径字符串
-
-wave 上新增（`calm-types::Wave` + 读 DTO + `WavePatch`）：
+## 数据模型
 
 ```rust
-pub enum WaveWorkspaceKind {
-    /// 服务端在托管根下创建、独占、可回收。
+enum WaveWorkspaceKind {
     Managed,
-    /// 用户指向的既有仓库。永不删除、永不 git init。
     Attached,
 }
 
-pub struct WaveWorkspace {
-    pub kind: WaveWorkspaceKind,
-    /// 绝对路径。
-    pub path: String,
-    /// 一次性、单调。Some ⇒ path 与 kind 均不可再改。
-    pub frozen_at: Option<i64>,
+struct WaveWorkspace {
+    kind: WaveWorkspaceKind,
+    path: String,
+    frozen_at: Option<i64>,
 }
 ```
 
-理由：托管目录和用户仓库在**下游行为**上是两种东西 —— 前者 wave 删除时可以回收，后者一根汗毛不能碰。
-只留 `cwd: String` 的话拆除路径无法区分二者，那是 `rm -rf` 级别的事故面。
-`waves.cwd` 保留为 `workspace.path` 的**投影**（旧客户端、terminal、`task_verify_adapter` 都还在读它），不新增第二真源。
+`waves.workspace_path` 是路径的唯一存储。wire 上的 `cwd` 从它派生，不是第二真源。
 
-> ### ⚠️ r3.4 —— 撤回「保留 `waves.cwd` 作为投影」这个决定（S1 红队三轮后）
->
-> 原文为了「不动读者」保留旧列，于是 `waves.cwd` 与 `workspace_path` 成为同一事实的**两份拷贝**，
-> 双写不变量只能靠一个扫源码的元测试来警察。**该门禁被红队连破三轮**，每轮都是「换一个更聪明的
-> 文本猜法」，每轮都有新形状绕过：表名字面量 → `format!` 常量表名 / 小写 / 多行 raw string；
-> 改成列名驱动 → `main.waves`（schema 限定名落进 fail-**open** 的 `Other` 分支）、`UPDATE OR REPLACE`
-> （关键字穷举漏项）、`include_str!` 到 `.sql`（扫描面不含 `.sql`）、`#[path]` 越界模块
-> （「编进服务器」与「被扫描」用了两套事实来源）。
->
-> **根因不是猜法不够聪明，是这个不变量是被这条设计造出来的。** 取消双写，问题类整个消失：
->
-> - **`waves.cwd` 列删除**，`workspace_path` 是唯一存储；所有读者改读它 —— 由**编译器与 sqlx 强制**，
->   不需要任何门禁。
-> - **wire 上继续输出 `cwd`**，但它是从 `workspace.path` 算出来的别名，不是存储字段；老客户端不受影响。
-> - **元测试降级为卫生检查**：只扫 `workspace_*`（waves 独有列 ⇒ 不需要表名逻辑，也就没有 fail-open 分支），
->   文件头如实列出已知缺口，**不得再声称是机械保证**。把一个守不住的检查说成安全栅栏，
->   比没有检查更糟 —— 它会让后续切片放心地把正确性押在上面。
->
-> 教训值得单独记：**当一个不变量需要靠文本扫描来维持时，先问它为什么存在**，
-> 而不是把扫描器越写越复杂。
+`Managed` 表示服务端创建、独占且可回收的目录；`Attached` 表示用户已有仓库。这个类型决定删除权限，不能由路径猜测。
 
-**r3.2 补一条不变量（已被上面的 r3.4 取代，保留作为记录）**：列还在 ⇒ 每个写者都必须同时写两处，否则漂移。
-所以 —— **`waves.cwd` 只能由写 `workspace.path` 的那一个函数写，不允许任何其它写点直接碰它。**
-§5 测试 4 的 `UPDATE waves` allowlist **显式承担这条**，不只服务于 `freeze_workspace_tx`；
-allowlist 里每一项要标明它是「冻结写点」还是「path 写点」，两类都不许有第三个成员。
+除 system cove 的 Today/launchpad wave 外，`frozen_at` 单调：一旦有值，`kind` 和 `path` 永不再变。用户 cove 中的 attached wave 创建时即冻结；launchpad 路径由内核维护，保持未冻结且不接受用户 PATCH。
 
-> r1 有 `materialized_at: Option<i64>`，**已砍**：D5 选定「建 wave 即物化」后它恒为 `Some(created_at)`，
-> 是一个永远不为 `None` 的 `Option`（`feedback_required_over_option` 的反模式）。
+## 托管工作区
 
-### D2 — 托管根
+配置：
 
-新增典型配置字段（与 `data_dir` 同一模式，clap + env）：
-
-```
---workspace-root / CALM_WORKSPACE_ROOT，默认 $HOME/neige-workspaces
+```text
+--workspace-root / CALM_WORKSPACE_ROOT
+默认：$HOME/neige-workspaces
 ```
 
-**不复用 `CALM_DATA_DIR`**（`~/.local/share/neige-calm`）：那里被定义为 runtime state（socket / db / scratch），
-会被 reset 清；工作区是用户要用编辑器打开、要备份的产出。本机 `~/neige`、`~/neige-calm`、`~/neige-calm-wt`
-已被占用，故默认名取 `neige-workspaces`。
+布局：
 
-布局（cove 层纯命名空间，**目录名一律用 id，不用 slug**）：
-
-```
-<workspace-root>/<cove_id>/<wave_id>/                                     ← wave 仓库根
-<workspace-root>/<cove_id>/<wave_id>/.claude/worktrees/<wave>/<card>      ← worker 租约（现有代码原样成立）
+```text
+<root>/<cove_id>/<wave_id>/
+<root>/<cove_id>/<wave_id>/.claude/worktrees/<wave>/<card>
 ```
 
-> r1 用「标题 slugify + id 前 8 位」，**已砍**：D2 同时规定「重命名不移动目录」，所以标题一改 slug 就撒谎；
-> 可读性收益只在 `ls` 的一瞬间，代价是 unicode/长度/冲突的 slugify 实现加一份文档债。可读性交给 FE（它有 title）。
+目录使用稳定 ID，不使用标题 slug。托管路径不写入 `cove_folders`；该表只维护 attached 路径的 cove 归属。
 
-托管路径**不写 `cove_folders`**：它由 cove 派生、天然独占；`cove_folders` 继续只管「用户真实目录归哪个 cove」这条 attached 路径。
+### 物化
 
-### D3 — 物化（materialize）
+创建 managed wave 时：
 
-在**建 wave 时**执行（见 D5），幂等：
+1. 按**所有权标记**判定目录归属，再决定是新建、修复还是拒绝（见下）。
+2. 使用隔离的 Git 配置**与隔离的 Git 环境变量**初始化仓库，避免全局 template、hook 和签名设置影响结果。
+3. 创建一个固定身份的空初始提交，使首次 `git worktree add` 可用。
+4. 在 `.git/info/exclude` 中排除 `.claude/worktrees/`。
+5. 物化后对 **canonical 路径**断言仍在 workspace root 之内。
+6. 任一步失败都让 wave 创建返回错误，不能留下一个稍后才以 `spawn-failed` 暴露的坏 wave。
 
-1. `mkdir -p <path>`；目录必须不存在或为空，非空且非本 wave 所有 → **硬失败**，绝不复用。
+所有 wave 创建入口必须走同一物化契约，包括普通 REST、workflow/template、cove chat、Today/launchpad 和 child wave。这个集合不应长期靠调用点清单维持，应收敛到统一创建边界。
 
-   > ### ⚠️ r3.6 —— 物化的四条契约（S2 红队实测，S5 必须照这个实现）
-   >
-   > **(1)「是不是本 wave 所有」必须靠我们自己写的标记判定，不能靠「这是不是一个 git 仓库根」。**
-   > 后者既不必要也不充分：实测把第三方仓库放在派生路径上，`toplevel == path` 判据直接放行 ——
-   > 仓库被复用、`.git/info/exclude` 被追加、若它还没有提交则连 `neige` 作者的初始提交都替它落了。
-   > 而 **S5 会对所有 `kind=Managed` 的目录 `remove_dir_all`**，所以**误判即误删用户仓库**。
-   > 实现：`.git/neige-workspace` 写 wave id（放在 `.git/` 里，对 D4 的「盘上是空的」判据天然不可见，
-   > 不会重蹈 `.gitignore` 的覆辙）；**在 `git init` 之前**写，`git init` 会保留 `.git/` 下的未知文件 ——
-   > 这样任何中途崩溃留下的目录都带标记、可辨认。标记不匹配一律硬拒。
-   > 标记同时是下面第 (3) 条「允许清理自己的半成品」的前提：有标记 ⇒ 确定是我们造的 ⇒ 删了安全。
-   >
-   > **(2) 路径断言必须对 `fs::canonicalize` 之后的真实路径做，不能只做词法 `starts_with`。**
-   > `create_dir_all` 跟随符号链接：实测把 `<root>/<cove_id>` 做成指向根外的软链，
-   > 存库路径在根下、仓库真身在根外，**§5 的不变量测试与 D8 的回收前缀断言双双绕过**。
-   > 实现：托管根在 boot 时 `canonicalize`（顺带消掉 `HOME` 未设时回退相对路径 `./neige-workspaces`
-   > 导致每次建 wave 都 500 的问题），物化结束后对 `fs::canonicalize(path)` 再断言一次前缀，
-   > 符号链接一律拒绝。不变量测试也必须对 canonical 路径断言。
-   >
-   > **(3) 物化必须有 per-path 互斥。** 它在 tx **之外**跑三条 git 命令，而 launchpad 的 `ensure`
-   > 并发是设计预期（代码自带 unique-index 竞态重试）。4 路并发实测复现
-   > `不能锁定配置文件 .git/config`；进程若在中途死掉，目录会停在「非空 + 非仓库」，
-   > 之后每次 `ensure` 永久 500 且**没有任何修复路径**。互斥 + 标记 + 允许清理自己的半成品，三者配套。
-   >
-   > **(4) worker 取 lease 前做一次 ensure-materialize**（对 Managed 幂等，稳态只花一条 `rev-parse`）。
-   > 物化在 tx 提交之后跑 ⇒ 失败会留下一条指向不存在目录的 wave 行（见 D5 的「已知状态」），
-   > 而除 launchpad 外**没有任何入口会重跑 materialize**。不补这一条，孤儿行上的 codex 任务
-   > 永久 `spawn-failed` —— 那正是 #1147 本身，被本片以另一种方式重新造出来。
-   >
-   > 另有一条低危同类项：`run_git` 必须 `env_remove` 掉
-   > `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_AUTHOR_DATE`/
-   > `GIT_COMMITTER_NAME` 等一组变量（任一存在即让物化失败）。步骤 3 已经隔离了**配置文件**维度，
-   > 环境变量是对称缺口，也与「显式配置优于隐式 env 旋钮」相悖。
-2. ```
-   git -c init.templateDir= -c init.defaultBranch=main init <path>
-   ```
-   ⚠️ `-c` 必须在子命令**之前**：`git init -c ...` 在 git 2.39.5 上报 `未知开关 'c'`（r1 语法错误，已实测）。
-3. **建一个空的初始提交**：
-   ```
-   git -C <path> -c commit.gpgsign=false -c user.name=neige -c user.email=neige@localhost \
-       commit --allow-empty -m "neige workspace init"
-   ```
-   ⚠️ 两条实测结论：
-   - **没有初始提交，`git worktree add` 直接失败**（`致命错误：不是一个有效的对象名：'HEAD'`，exit 255）。
-     少了这步，托管 wave 的第一个 codex worker 仍然起不来 —— 等于白做。
-   - **全局 `commit.gpgsign=true` 会让空提交硬失败**（`无法写提交对象`）；而缺 `user.name/email` **不会**失败
-     （git 自动派生 `kenji@pivot.local` 并打警告）—— 但会污染产出仓库的作者信息，所以仍要显式给。
-     `core.hooksPath` 同理必须压掉。
-4. 排除 `.claude/worktrees/` —— **写 `.git/info/exclude`，不要写 `.gitignore`**，直接复用既有
-   `ensure_workspace_worktree_root_excluded`（`workspace_lease/mod.rs:1250`，其 `git_exclude_path`(:1302)
-   走的就是 `git rev-parse --git-path info/exclude`）。
-   ⚠️ r2 写成「写 `.gitignore`」是把机制说错了，而且会**直接废掉 D4 的判据 (2)**：工作区里出现一个未提交的
-   `.gitignore` ⇒ `status --porcelain` 恒有 `?? .gitignore` ⇒ 新 wave 从第 0 秒起就判「盘上不是空的」，
-   「可改」在 UI 上永不可达（实测）。把它提交进 init commit 也不行 —— HEAD 就不再是空提交，基线计数要跟着变。
-   用 `.git/info/exclude` 两个问题一起没有：HEAD 保持真空提交，工作树保持干净。
+Attached 创建只做校验：绝对路径、目录存在、是 Git 仓库，并完成 `cove_folders` 的唯一归属检查。
 
-**物化的挂载点必须覆盖全部 5 个建 wave 入口**（r2 只点了一个，评审补齐）：
-`create_wave_structure` 的三个调用方 —— `routes/waves.rs:1017`（`POST /api/waves`）、`:525`
-（`seed_workflow_template_wave`）、`:1092-1130`（D10 的 cove chat）—— 外加**完全不经过它**的两条：
-`routes/today.rs:89`（裸 `INSERT INTO waves(... cwd ...)`，launchpad wave）与 `child_wave_adapter.rs:191`
-（走 `wave_create_tx`）。漏掉 `today.rs` 那条，Today 面板上的 codex 任务会继续以 `spawn-failed` 死掉，
-而 S2 的独立价值声明是「新 wave 的 codex 任务能跑」—— 不成立。
+以下六条都是 S2 实测得出的，**每条都有一个能让它变红的测试**；删掉任何一条都会让下一片重新踩一遍。
 
-**物化失败必须让 `POST /api/waves` 返回非 2xx**，不得走 `waves.rs:1529` 那种 `tracing::warn!` + `Ok(())` —— 否则
-wave 照样 201、看起来正常，第一个 codex worker 再次以 `spawn-failed` 死掉，就是 #1147 的原样重演换个位置。
+**所有权标记，而不是「是不是 git 仓库」。** 判据是我们自己写下的 `.git/neige-workspace`（内含 wave id），且必须写在 `git init` **之前**——git init 会保留 `.git/` 下的未知文件，所以任何中途崩溃留下的目录都带标记、可辨认。标记放在 `.git/` 内，对「盘上是空的」判据天然不可见，不会重蹈 `.gitignore` 的覆辙。
 
-attached 不做任何物化，只校验：绝对路径 + 存在 + `git rev-parse --show-toplevel` 成功 + `cove_folders` 认领/409（沿用今天规则）。
+用「这是不是一个 git 仓库根」当判据是错的：实测把第三方仓库放在派生路径上，该判据直接放行——仓库被复用、`.git/info/exclude` 被追加、若它还没有提交连 `neige` 作者的初始提交都替它落了。而删除 wave 会 `rm -rf` 所有 `kind = managed` 目录，**误判即误删用户仓库**。
 
-### D4 — 可改的判据：一条冻结闩 + 一条「盘上是空的」
+**目录非空时的两种结局。**（修正：不是「非空即失败」。）
 
-> **r3 重写。** r2 的「wave 上存在未完成 operation 就 409」被双路从两个不同角度证伪，已删除：
-> - subagent：`ChildWaveOperationPayload` 的字段是 `parent_wave_id` 不是 `wave_id`，`target_from_payload`
->   （`repo_sqlite.rs:846-871`）推不出归属而落成 `("unknown", NULL)`；`prepare_tx` 后 `TxOutput` 又把 target
->   覆写成**子** wave（`child_wave_adapter.rs:351`）。这条闸门**查不到**它要挡的那行。
-> - codex：就算查得到也**漏拦** —— operation 早已 `succeeded`，而它交出去的 cwd 还活在 codex thread 与
->   harness handle 里（`spec_harness_start_adapter.rs:646/721/936`）。operation 的生命周期 ≠ cwd 消费者的生命周期。
->
-> 更根本的教训：「wave 上的未完成 operation」这个集合本身就是跨 kind 的**逐条枚举**（harness-start 过 pending
-> 后 target 变 `card`，task-verify 是 `task`，带 `runtime_id` 的变 `runtime`）—— 正是 r1 被否掉的那个形状换层皮。
+- 非空且**没有**我们的标记 → 硬失败，绝不复用。
+- 非空且**带有**我们的标记 → 是我们自己的半成品，允许清理并重建：清掉 `.git/` 下所有 `*.lock` 再 `git init`。
 
-r3 的判据分两条。
+第二条不是让步，是必需品。互斥 + 标记 + **清理自有半成品**三者配套，缺第三条仍然砖化：实测标记存在 + `.git/config.lock` 残留（init 中途被 SIGKILL）会让之后**每一次**物化都报 `could not lock config file`，无限重复；落在 Today/launchpad 上就是面板永久死亡。清理的安全性来自两个前提同时成立——标记证明目录是我们的，`HEAD` 不可解析证明没有值得保留的仓库状态、也没有可能持有这些锁的活 worker。
 
-> ### ⚠️ r3.2 —— 「同一个 `BEGIN IMMEDIATE` 内判定」是不够的（第三方评审，阻断级）
->
-> **SQLite 事务对文件系统零隔离。** 它能真正栅住的只有并发的 **DB 写者**（lease 获取、terminal 创建——
-> 这些会在同一 tx 内写 `frozen_at`）。而：
-> - spec harness agent 被 (1) **刻意排除**在冻结之外（必须如此，否则「可改」当场作废）；
-> - D5 选了 (a) ⇒ 它从建 wave 那一刻起就是 `workspace-write`（`spec_harness_start_adapter.rs:723-724`）；
-> - dispatcher 会**主动**推送 observation 并由此开启新 turn（线上日志：
->   `dispatcher push: delivering observation to spec harness … kind="task.failed"`）。
->
-> 机械推论：
-> ```
-> 判据(2) 判定为空 → agent 的 turn 写入文件 → rename 到 .trash
->                                          → 进程 cwd 随 inode 走，继续写 .trash
->                                          → S5 的 GC 回收，产出无声蒸发
-> ```
-> 动作 0「先 interrupt 活跃 turn」**不是充分条件**：interrupt 是异步的，且没有任何东西阻止一次
-> **新** turn 开始 —— 一条 `task.completed` / `task.failed` 推送就够。
-> 这条竞态丢的恰恰是 rename **之后**才写下的字节，「rename 不 rm」那个 fail-safe 兜不住。
->
-> **因此判据的执行形状是（三步，缺一不可）**：
-> 1. **真栅栏**：在写新 path 的**同一个 tx 内**把 harness runtime 置为 superseded / parked，
->    让 `dispatcher push` 无处可推。不是「interrupt 然后祈祷」。
-> 2. **rename 之前重跑一次判据 (2)**，失败即 409，且不留任何中间状态。
-> 3. rename 自身断言 `kind == Managed && path.starts_with(<workspace-root>)` —— 见下 B。
+**空初始提交不可省。** 没有它 `git worktree add` 直接失败（`不是一个有效的对象名：'HEAD'`），托管 wave 的第一个 worker 起不来——省掉这步等于整条物化白做。
 
-两条判据（在同一个 `BEGIN IMMEDIATE` 内判定，但需叠加上面的栅栏与重检）：
+**排除写 `.git/info/exclude`，不写 `.gitignore`。** 未提交的 `.gitignore` 会让 `status --porcelain` 恒有 `?? .gitignore`，于是「盘上是空的」判据从第 0 秒起永假，工作区在 UI 上永远不可更换。
 
-**(1) 冻结闩 `frozen_at`** —— 一个幂等、单调的写入函数 `freeze_workspace_tx(tx, wave_id)`，只在
-**出现「不可重锚的持久 cwd 消费者」**时写入：
+**Git 环境隔离，不只是配置文件隔离。** `GIT_TEMPLATE_DIR` / `GIT_CONFIG_GLOBAL` / `GIT_CONFIG_SYSTEM` 的优先级**高于** `-c` 覆盖：实测设了 `GIT_TEMPLATE_DIR` 就能绕过 `-c init.templateDir=`，把 `hooks/` 拷进新仓库。初始提交因 `--no-verify` 幸存，所以它很安静——hook 只在之后 worker 在这个仓里跑的每条 git（`worktree add`、agent 的 commit）上才发作。另需清掉重定向仓库（`GIT_DIR`、`GIT_WORK_TREE`、`GIT_INDEX_FILE` 等）与污染提交身份（`GIT_AUTHOR_*` / `GIT_COMMITTER_*`）的变量。只做配置文件隔离不是隔离，只是把洞换了个位置。
 
-| 调用点 | 位置 | 为什么 |
-|---|---|---|
-| 首次取得 workspace lease | `acquire_workspace_lease_at_path_tx`（`workspace_lease/mod.rs:179`） | worker 落盘 |
-| **任何 terminal 行创建** —— 调用点**下沉到 `terminal_create_tx` 内部**（`calm-truth/src/db/sqlite/card.rs:613`，全仓唯一的 `INSERT INTO terminals`），不要在四个 `card_with_*_create_tx` 上逐个挂 | `card_composite.rs:34/229/391/508` | **卡片级 cwd 是一份独立持久真源**，重启后 `ws/terminal.rs:158` 直接拿 `term.cwd` 重新 spawn PTY（`calm-proc-supervisor/src/lib.rs:1766`）。活 PTY 不可重锚。⚠️ 挂在四个 composite 上会漏 `claude_restart_adapter.rs:182` —— 它在 terminals 行缺失时**直接调 `terminal_create_tx`** 新建带 cwd 的行，不经任何 composite。下沉到 `terminal_create_tx` 才是真正消灭「逐条枚举」这个形状，未来任何新入口自动覆盖。另需单独处理 `out_of_domain.rs:115` 的 `terminal_create`（走自有事务） |
-| lifecycle 离开 `Draft` | `wave_update_tx` 的 lifecycle 分支（`db/sqlite/wave.rs:148`） | scheduler 只调度非 Draft（`scheduler/mod.rs:146-157`） |
-| child wave 创建 | `child_wave_adapter`（见 D7） | 机器创建，用户没有理由改它 |
-| `today_launchpad_ensure_tx` 收编 legacy wave | `routes/today.rs:77-83` | 那条 `UPDATE waves SET ... cwd=?2` **绕过 PATCH**，必须自己冻 |
+**per-path 互斥，boot 时 canonicalize，物化后按 canonical 路径断言前缀。** Today/launchpad 的 ensure 并发是设计预期（自带竞态重试），而物化在事务之外跑多条 git 命令：实测并发会撞出 `.git/config` 锁冲突，进程中途死掉则留下半成品。前缀断言必须对 `canonicalize` 之后的真实路径做——`create_dir_all` 跟随符号链接，实测存库路径在根下、仓库真身在根外，而词法 `starts_with` 察觉不到，回收路径的前缀断言也就跟着失效。workspace root 在 boot 时 canonicalize 一次；`HOME` 未设时回退**绝对**路径（否则相对根会让每次建 wave 都失败——supervisor / systemd 起的进程没有 `HOME` 是常见配置）。
 
-**spec harness 线程刻意不在此列** —— 它是**唯一可重锚**的消费者（见下），否则建 wave 当场就冻死，「可改」这个产品意图直接作废。
+## 更换与冻结
 
-**(2) 盘上是空的** —— 旧目录必须「除了 init 提交之外什么都没有」。
-**r3.1 定型（三条命令都经实测，逐条都有各自要挡的东西）**：
+允许：
 
-```
-git -C <old> status --porcelain --ignored   → 空          # 含被 exclude 的 worker 产出
-git -C <old> rev-list --count --all         → == 1        # 含 slice 分支提交与 stash
-git -C <old> worktree list                  → 恰好 1 行    # 活租约
+- managed → managed
+- managed → attached
+
+拒绝：
+
+- attached → 任意目标
+- 已冻结 wave 的任何变更
+- system cove wave 的用户 PATCH
+
+不可重锚的持久 cwd 消费者出现前必须冻结工作区，包括首次 workspace lease、terminal 持久化、wave 离开 Draft、child wave 创建。冻结应位于真正的底层写入口，不能依赖上层调用点枚举。
+
+更换未冻结的 managed 工作区时，旧仓库必须同时满足：
+
+```text
+git status --porcelain --ignored 为空
+git rev-list --count --all == 1
+git worktree list 只有主工作区
 ```
 
-三条各自的证伪场景（r3 评审实测，缺任何一条都会误判为「空」而把目录搬走）：
+变更流程：
 
-| 缺的那条 | 逃逸场景 | 观测 |
-|---|---|---|
-| `--ignored` | worker 产出全在 `<wave>/.claude/worktrees/<wave>/<card>`，而该前缀在 `.git/info/exclude` 里 | 裸 `--porcelain` **空**；`--ignored` 输出 `!! .claude/` |
-| `--all`（用了 `HEAD`） | worker 提交到 slice branch → worktree 被 sweep 掉（**租约的正常终局**）；或 `git stash` | `status` 空、`HEAD` 计数 **1**，`--all` 计数 **2** |
-| `worktree list` | 活租约存在时只能靠 `!! .claude/` 间接命中 | 把「有活 worker」变成显式拒绝理由 |
+1. 在数据库事务内 park 或 supersede harness runtime，阻止新 turn 获得旧路径。
+2. 在移动前重新检查仓库仍为空。
+3. 断言旧路径属于 workspace root。
+4. 将旧目录 rename 到 `<root>/.trash/`；跨文件系统移动失败时中止，不做 copy + delete。
+5. 物化或校验新目录，更新唯一存储字段。
+6. 用新路径启动新的 harness thread。
 
-⚠️ **两路评审在 `--ignored` 的行为上给出过相反结论，已亲手实测判定**：
-空的 `.claude/worktrees/` 目录 **不会** 让 `--ignored` 非空（干净 / 空目录 / 删文件后留空目录三种情形输出均为 `[]`），
-只有目录**含文件**时才输出 `!! .claude/`。因此「加了 `--ignored` 会永远非空、导致永远不可改」的担心不成立。
-`--ignored` 会把整个 `.claude/` 折叠成一行、无法按前缀过滤 —— 这不是问题：worker 产出**本来就该**挡住改动。
+SQLite 事务不能隔离文件系统写入，因此“事务内检查一次”不足以关闭检查与 rename 之间的竞态。
 
-这条判据的价值仍然是「不问谁可能写过，只问盘上有没有东西」——spec harness 的 `workspace-write` 产出
-（`spec_harness_start_adapter.rs:723-724`）与 forge action 在 `wave.cwd` 里的提交（`transport.rs:942`）
-都不需要各自登记，天然体现在这三条上。
+### 重指向的两条持久性要求
 
-这条是本设计里唯一不需要枚举的守卫：**它不问「谁可能写过」，只问「盘上有没有东西」**。
-它一次性关掉了 r2 漏掉的整类问题 —— spec harness 是 `workspace-write`（`spec_harness_start_adapter.rs:723-724`），
-选 (a) 之后 agent 从第一条消息起就能写文件；MCP forge action 的 Spec 分支直接在 `wave.cwd` 里跑 git
-（`transport.rs:942`）。这些路径**不需要**各自登记，它们的产出天然体现在这两条 git 判据上。
+这两条都来自 S2 实测，都是「换路径」这个动作本身的正确性前提，与更换的判据无关。
 
-> **为什么不用 codex 提的 `wave_workspace_bindings` 表**：那要求「所有捕获 cwd 的路径」在同一 tx 内登记 binding
-> —— 又是一次全枚举，且 spec harness 在建 wave 那一刻就是活 binding，等于立刻锁死。(2) 用**结果**代替**枚举**，
-> 语义更强也更便宜。
+**幂等键必须包含路径摘要。** `spec-harness-start` 的载荷带 cwd，而操作运行时拒绝「同一幂等键、不同载荷哈希」。Today/launchpad 的键若只按 `<card>:<mode>` 构造，pre-S2 库里已有按旧路径算哈希的记录；升级重指向之后每次 ensure 都用同一个键提交新 cwd，从**第二次起永久 409**，而系统从不删除操作记录，因此不会自愈。任何 `CALM_WORKSPACE_ROOT` 变更同理。把路径摘要并进键即可：重指向会铸造新键，而同一工作区内的幂等性不受影响。
 
-**PATCH 通过后的动作**（同一事务 + 事务后副作用）：
+**重指向意图必须可持久推断，不能靠一次内存比较。** 「存储路径 ≠ 期望路径」只在移动路径的那一个事务里为真，而物化在事务提交之后执行：若物化失败，或进程在提交与记录操作之间被杀，意图就丢了。下一次 ensure 看到「已是期望值」判为稳态、不强制新建 thread，于是 spec harness 的 thread 永远停在旧 cwd 而所有 worker 用新 cwd。正确的问法是一个持久事实：**这个路径上有没有成功启动过 harness**——路径摘要已在幂等键里，操作表可以直接回答，且该答案只在启动真正成功后才被写下，因而跨越所有崩溃窗口。
 
-0. **先 interrupt 旧 codex thread 的活跃 turn**。Linux 下 `rename` 不会因活进程失败，进程 cwd 跟着 inode 走 ⇒
-   老写者会**静默继续往 `.trash` 里写**，等 S5 的 GC 一收，产出无声蒸发。
-1. 旧目录 **rename 到 `<workspace-root>/.trash/<wave_id>-<ts>`**，**不 `rm -rf`**。
-   这一步让「冻结判定漏了某条路径」从**静默删数据**降级成**留个垃圾目录**。
-   ⚠️ fail-safe 的承诺只到「保住文件字节」，**不保 git 历史可访问**：实测 rename 之后
-   `<wt>/.git` 与 `<repo>/.git/worktrees/<n>/gitdir` 两个**绝对路径**指针双向悬空，trash 里的东西已经不是一个可用仓库
-   （`worktree remove` 报 exit 128，`prune` 行为还不确定）。判据 (2) 的第三条（`worktree list` 恰好 1 行）
-   正是为了让这种情况根本不发生。
-   `EXDEV`（跨设备）**直接报错拒绝改动，绝不 fallback 到 copy+delete**。`.trash` 由 S5 的 GC 回收。
-2. 物化新目录（D3）。
-3. **spec harness 以新 cwd 重开线程**（`spec-harness-start` + `force_new_thread: true`）。
-   这条路今天真实可用：`/api/cards/{id}/spec/reset`（`routes/cards.rs:121/1303`）就在用，
-   `defer_runtime_start` 分支（`spec_harness_start_adapter.rs:453/669/721`）有 live-daemon 测试覆盖
-   （`tests/spec_harness_adapters.rs:573/593/972`）。旧 runtime 在同一 tx 内被 `supersede`
-   （`session_mirror.rs:285-315`），不会被 boot recovery 复活（`session_projection.rs:512-517`）。
-   ⚠️ 但 **app-server 侧没有 thread close API**（`codex_appserver.rs:613` 只有 start/resume/read/list + turn interrupt），
-   旧 codex thread 与 `thread_cache` 映射会**泄漏**（`shared_codex_appserver.rs:3165` 只在整体 rebuild 时 clear）。
-   危害有限（无人再引用），但这正是第 0 步必须先 interrupt 的原因。
-   ⚠️ **r2 说「`handle_state_json` 是第四份 cwd 快照、重开时要刷新」是错的**：`HarnessSnapshot`
-   （`harness/snapshot.rs:24-47`）根本没有 cwd 字段，`worker_sessions` 行也不存 cwd —— 那是给实现者的假任务。
-   真正的第四份在 **operation payload/result**（`spec_harness_start_adapter.rs:606` 写入、`:646/:722` 消费）。
-   要盯的是所有从**旧 operation result** 取 cwd 的重放路径（尤其 `scheduler/mod.rs:1499-1517` 的 bootstrap），
-   它们必须改成重读 `waves.path`，否则改完工作区后一次重放就指回 trash。
-   另注：`WavePatch` 今天**没有** cwd 字段（`calm-truth/src/model.rs:159`），S3 要新增。
+## 生命周期
 
-> 被砍掉的 r1 谓词（harness 首条消息 / 非自动卡片）不再需要：前者被 (2) 覆盖，后者被 (1) 的卡片创建行覆盖。
+- 删除 wave：只回收 managed 目录，并先验证路径位于 workspace root。
+- 删除 cove：回收其所有 managed wave 目录和空的 cove 目录。
+- attached 路径永不移动、初始化或删除。
+- 归档不回收；长期磁盘回收需要独立策略。
+- 子 wave 创建时分配独立 managed 仓库并立即冻结。
+- fork/template 复制报告，不继承源 wave 的工作区。
 
-### D5 — spec harness 启动时机：**选 (a) 建 wave 即物化**
+回收必须通过单一受控入口；任何直接递归删除都不得接受未经类型和根目录校验的路径。
 
-r1 推荐的 (c)「路径先定、物化延后」被两路独立证伪：今天不存在「有 cwd 但不落盘」的档位 ——
-`force_new_thread=false` ⇒ `defer_runtime_start=false`（`spec_harness_start_adapter.rs:449-453`），
-且 `thread_start_mint` 照样发带 cwd 的 `thread/start`（`shared_codex_appserver.rs:1161-1172`），
-随后还起 harness run loop（`:920-953`）。(b)「harness 推迟到首条消息」的改动面是四个建 wave 调用点
-加上前端「打开就有对话」的观感，属于「窄价值 / 深层次」，本设计不做。
+## Cove 对话与执行器
 
-**(a) 的成本被 r1 高估**：一个空 git 仓库几十 KB，`init + commit --allow-empty` < 20ms；有了 D8 的回收，
-随手建的 wave 就是可回收垃圾而非永久债。**(a) 还顺带收窄了 D4 的窗口** —— 改工作区变成「删旧空目录 + 建新目录」
-的原子操作，不需要跟 operation 做时序推理（再叠加「有未完成 operation 就 409」）。
+没有 attached folder 的 cove 仍可创建对话；它使用默认 managed 工作区。已有 folder claim 的 cove 可以继续采用 attached 语义。
 
-执行顺序：物化在 `create_wave_structure` 的 tx **之外**、`start_spec_harness` **之前**；失败返回非 2xx。
+Managed 仓库保证 Codex 能获得 Git 工作区。Claude 当前不读取 wave workspace，迁移到同等 worktree 租约是独立工作，不属于本设计。
 
-> **已知状态（S2 落地，评审裁决 ④）：物化失败会留下一条孤儿 wave 行。**
-> 托管路径由 wave id 派生，而 id 只在 insert 时诞生 ⇒ 物化只能在 tx 提交之后跑 ⇒
-> 失败时行已在库里，指向一个不存在的目录。S2 **不做**补偿删除：那要连带发
-> `WaveDeleted`、清掉同 tx 建的两张卡，超出本片。
-> 这条状态由 `wave_workspace_materialize::materialize_failure_fails_the_create`
-> 显式钉住（断言「非 2xx **且** 行存在 **且** 该 path 在盘上不存在」），
-> 将来谁改成补偿删除，测试会红，是一次有意识的决定而不是意外发现。
+Managed 仓库默认没有 remote；需要操作真实代码仓库时，用户应在创建时 attached，或在冻结前从 managed 切换到 attached。
 
-### D6 — 允许的工作区变更：只做 managed → managed
+## 交付顺序
 
-| 转换 | r2 是否支持 | 说明 |
-|---|---|---|
-| managed → managed（重新分配） | ✅ S3 | 删旧目录 + 建新目录，全在 `<workspace-root>` 前缀内，零「删到用户目录」风险；可加一条**无条件前缀断言** |
-| managed → attached | ✅ **r3.2 改判：做**（S3，FE 是唯一真实成本） |
-| 创建时指定 attached | ✅ 后端已有；**FE 必须补**；**创建时即写 `frozen_at`**（见 B） | 走既有 `cwd` + `attach_folder` 路径，后端今天就工作且有测试 `tests/cases/wave_cwd_terminal_at.rs`。⚠️ 但**新 FE 没有这个入口**（`grep cwd fe/src` 零命中；`attach_folder` 只存在于旧 `web/`）。#1131 之后新 wave 都从 `fe/` 建 ⇒ 若不补，每个新 wave 都是 managed 且禁止转 attached，「写代码的 wave 建时 attach 到真仓库」这条取舍**在 UI 上不可达**，等于把 attached 判死刑。**S3 的 FE 项必须包含「建 wave 时选已有目录」** |
-| attached → * | ❌ 不做 | 源侧是用户真仓库，任何「搬走旧目录」的动作都不该发生在它身上；换目标等于新建 wave |
+1. S0：失败原因进入 task 状态与前端。
+2. S1：typed workspace、迁移、唯一存储、wire 类型。
+3. S2：托管根、物化、所有创建入口默认 managed。
+4. S4：子 wave 独立分配并冻结。
+5. S5：安全回收和根目录断言。
+6. S3：工作区更换、冻结、harness 重锚定、FE attached 入口。
+7. S6：terminal 默认落在 wave 工作区。
 
-> **r3.2 —— 撤回 r3 拒绝 `managed → attached` 的理由。** 原文写的是「需要认领+409+删旧目录三套规则
-> 各自组合，价值低而 `rm -rf` 面大」，三处都不成立（第三方评审指出，我核实同意）：
-> - `rm -rf` 面与 `managed → managed` **完全相同** —— 两者删的都是旧的 managed 目录，attached 侧只做校验、不碰；
-> - 认领 + 409 的规则在**创建路径上已经存在**（`cove_folder_resolve` + `attach_folder`），不是新写；
-> - 需求可预期：研究型 wave 做着做着要开始写代码 —— 正是 #1147 那个 wave 的反向情形。
->
-> **真实阻力是 FE 工作量**（D6 自己已承认 attached 入口在新 FE 完全不可达）。把它写成风险论证，
-> 将来会被当成既定结论引用。所以：改判为做，成本诚实记在 S3 的 FE 项上。
+S4 必须不晚于 S5；S3 必须复用 S5 的路径安全边界。
 
-### D7 — 子 wave 与 fork（阻断级）
+## 已知缺口
 
-- **子 wave 必须独立分配自己的 managed 工作区，并在创建时立即冻结。**
-  今天 `child_wave_adapter.rs:176-192` 把父 wave 的 cwd 原样写进子 wave。若不改：
-  建 managed 父 wave P → 派 `spawn: sub-wave` → 子 wave C 拿到同一个 path → 用户删 C →
-  S8 的回收对 C 执行 `remove_dir_all` → **P 的整个仓库（含全部产出）被删**，P 还在库里但下一个 worker
-  以 `not a git repository` 死掉（`waves.rs:2188` 只挡「父有子时不许删父」，不挡「删子」）。
-  「子记为 attached 指向父目录」不自洽（父删除时会删掉子还在用的目录），**只有独立分配是自洽的**。
-  ⚠️ 同一片里必须把 `child_wave_adapter.rs:351` 写进 operation result 的那个 `cwd` 一并换成**子 wave 自己的
-  path** —— scheduler bootstrap 不重读 wave 行，而是从**旧 operation result** 取 cwd
-  （`scheduler/mod.rs:1499-1510`）。只改 adapter 不改 result，bootstrap 仍会用父路径起 harness。
-- **fork / `as_template` 今天并不继承 cwd**（r1 写错了对象）：`waves.rs:1274` 的 fork 只复制 report 快照，
-  cwd 仍来自请求体/`default_cwd()`。fork 出来的 wave 按普通新建走 default 分配即可。
+S2 实测可达、被刻意推迟的缺口。**每条都有一个断言缺口本身的测试**（`nX_` 命名或带 `KNOWN GAP (#1147 nX)` 文案），所以修好它的那一片会看到测试变红，必须显式替换而不是顺手改绿。
 
-### D8 — 回收（`rm -rf` 面）
+| # | 缺口 | 后果 | 归属 |
+|---|---|---|---|
+| N4 | 挪动 `CALM_WORKSPACE_ROOT` / `$HOME` 后，既有 managed wave 的存库路径不再落在配置根下 | 该 wave 取 lease 永久硬失败，**无迁移路径**。launchpad 会自愈（路径每次 ensure 重新派生），普通 wave 不会 | 回收/搬迁片 |
+| N5 | 我们自己的工作区丢了 `.git/neige-workspace` 标记（备份部分还原、误清理） | 永久拒绝，且没有任何管理入口能重新认领 | 回收片 / 终端片 |
+| N7 | 符号链接是「拒绝，但已经写过了」 | 根外留下一个带我们标记的完整仓库，无人回收。先拒后写不可避免：真实位置要 `create_dir_all` 之后才知道 | 回收片 |
+| N9 | 物化互斥是**进程内**的 | 两个 calm-server 实例（升级重叠、admin CLI、健康重启）仍会撞出锁残留。清理逻辑让它可自愈而非永久砖化，但撞击本身还在；真解是文件锁 | 回收片或独立 issue |
+| N10 | 环境隔离只到物化边界 | 紧邻的 `git_repo_root_for_wave_cwd` 与 worktree 相关 spawn 仍是裸 `git` 调用，同一组变量对它们仍然有效 | 独立 issue |
+| N11 | S2 **持久化**了 `kind = managed` 且路径等于父目录的 child 行 | 见下 | **子 wave 片，必须带数据迁移** |
 
-- wave 删除：只回收 `kind == Managed` 的目录；**attached 永不碰**。
-- cove 删除（`routes/coves.rs:373-392` 今天只做 lease release + worktree sweep）：还需回收其下所有 managed 目录
-  与 `<workspace-root>/<cove_id>/` 这层，否则删完 cove 留一堆**没有任何 DB 行指向**的孤儿仓库，GC 无从下手。
-- 归档（`archived_at`）**不回收**，但需要一条长期 GC 故事；「磁盘增长」在归档语义下比删除更常见。
-- 所有回收路径前置一条无条件断言：**待删路径必须以 `<workspace-root>` 为前缀**。
+**N11 单列强调。** 交付顺序把「子 wave 独立分配」排在回收之前，依据是前者消除共享目录。但子 wave 片若**只改 adapter**，只修好此后新建的子 wave；S2 已经写进库的行仍然指向父仓库，于是回收片一落地，删除子 wave 依旧会 `rm -rf` 掉父 wave 的整个仓库——事故没有被代码修复消灭，而是以**数据**的形式存活了下来。**子 wave 片的验收必须包含存量 child 行的迁移**，不能只有 adapter 改动加一条新建路径的测试。
 
-### D9 — 存量迁移
+## 验收重点
 
-- **例外：system cove 的 Today/launchpad wave 是内核所有，`frozen_at` 恒为 `NULL`**（r3.3，S1 评审）。
-  > **r3.6（S2 评审裁决 ①）：例外只有「不冻结」这一条，`kind` 不在例外之内。**
-  > S1 把它写成 `Attached` 只因为当时托管根还不存在；S2 的初版沿用了这一点，就地物化内核自建的
-  > `<data_dir>/../launchpad`。那让**行上的标签与盘上的事实不符** —— `Attached` 的定义是
-  > 「用户指向的既有仓库，服务端一根汗毛不能碰」，而这个目录是服务端自己 `mkdir` 的。
-  > 标签与事实不符正是前两片花三轮杀掉的那一类问题。
-  >
-  > 因此 launchpad 的 workspace 是 **`kind = Managed`，路径落在
-  > `<workspace-root>/<system_cove_id>/<launchpad_wave_id>/`，`frozen_at` 仍恒为 `NULL`**。
-  > 「恒 NULL」本来就是为了让内核可以自由重指向它，所以这次重指向是设计明确允许的动作，
-  > 不是数据迁移事故。旧的 `<data_dir>/../launchpad` 目录**留在盘上不动** —— 托管根之外的东西不归我们删。
-  >
-  > 收益是一条**无例外**的不变量：**`kind = Managed ⇒ path 在 `<workspace-root>` 之下`**，
-  > 由 `every_managed_wave_lives_under_the_workspace_root`（对**全表**断言，不是对单行）钉住，
-  > D8 的回收前缀断言因此不需要为 launchpad 开豁免口子。
-  > 相应地，D9 原文说的「代价是存在一条 `attached + frozen_at IS NULL` 的行」**已不成立**：
-  > 该组合现在**没有任何合法实例**，断言由 `no_attached_wave_is_ever_unfrozen` 承担
-  > （空集属性，配两个方向的非空性守卫）。
-  理由：`today_launchpad_ensure_tx`（`routes/today.rs:98/107`）的收编分支会重指向这条 wave 的 path。
-  若它是冻结的，D1「`frozen_at` 一次性、单调，`Some` 之后 path/kind 不可改」当场为假 —— 这是 S1 评审
-  实测到的**当下可达**违约，不是 S3 的坑。让内核所有的 wave 不冻结，单调性就从不被违反，
-  也不需要为它开 allowlist 豁免口子。
-  代价是存在一条 `attached + frozen_at IS NULL` 的行 —— 因此配一条断言：
-  **该状态只允许出现在 system cove 的 wave 上**；且 **S3 的 `PATCH` 必须拒绝 system cove 的 wave**
-  （它的 path 由内核管，不是用户可改的东西）。
-- **新建 attached wave（用户 cove）在创建时即写 `frozen_at`**（r3.2，第三方评审）。存量在下面已经这么做了，新建的原文没说。
-  若它是 `None`，PATCH 只要有一个分支漏判 `kind`，判据 (2) 就会跑到**用户真仓库**上 —— 而「工作树干净、
-  只有 1 个提交」的真仓库是存在的（刚 `git init` 的项目），那就真被搬走了。attached 从不需要改指向，冻它零代价。
-- 所有现存 wave → `kind = Attached`，`path = waves.cwd`，`frozen_at = created_at`（它们物理上确实在那跑过，一律视为已冻结）。
-- `:4140` 那三个 `$HOME` / `/tmp` / `/` 的 wave 同样按 attached 冻结，不做救治 —— 它们本来就坏，新建的走新路。
-- 只加列，**不得编辑已发布迁移文件**（sqlx 对整文件做 checksum，改了会 `VersionMismatch` 起不来）。
-- ⚠️ `routes/today.rs:71-95` 有**三处显式列名的 `SELECT` / `INSERT waves` + 手写 `Wave` 构造**，绕过
-  `wave_create_tx`。新增列必须同步这三处，否则是**运行时** sqlx 错误（cards 列那个老坑的 wave 版）。
-
-### D10 — cove 对话入口（阻断级）
-
-`ensure_cove_chat_wave_inner`（`waves.rs:1092-1109`）在 cove 没有 `cove_folders` claim 时直接 409
-（`POST /api/coves/{id}/conversations` 无条件先调它，`cove_conversations.rs:241-245`；唯一例外是该 cove 已有 chat wave）。
-cove 变成「纯命名空间、不选目录」后，**新 cove 的对话入口按定义永远失败**，#1098 整条路径挂掉。
-r2：该路径改用 managed 默认分配（cove 有 claim 时仍优先用 claim，保持 attached 语义）。
-
-### D11 — 与 #1147 ②③ 的关系
-
-- ②「非 git wave 策略」：本设计的答案是**托管目录一律 git init**（在应用自己拥有的目录里 init，不是在用户目录
-  里制造隐藏副作用 —— #1147 反对的是后者）。于是 `git_repo_root_for_wave_cwd` 对 managed 恒成功；
-  attached 在**声明期**校验并 409，失败前移，不再等到 dispatch 才死。
-- ③「claude 迁到对等租约」：**与本设计零耦合**。claude 完全不读 `wave.cwd`，托管根落地既不会让它更近也不会更远。
-  r1 写的「托管后才可能」是不成立的依赖论证。→ 独立 issue，不在本设计切片内。
-  ⚠️ 因此必须显式说清：**S2 落地后 claude 任务仍落在 supervisor 继承到的 cwd 下**，不要以为托管后就归位了。
-
-### D12 — S2 已知遗留（红队复验，逐条有归属切片）
-
-**这些不是「将来也许要看看」，是已经证实可达、被刻意推迟的缺口。**每条都在代码里有一条
-以 `nX_` 命名或带 `KNOWN GAP (#1147 nX)` 断言的测试钉住 —— 那些测试断言的是**缺口本身**，
-所以修好它的那一片会看到测试变红，必须显式替换而不是「顺手改绿」。
-
-| # | 缺口 | 后果 | 归属 | 钉在哪 |
-|---|---|---|---|---|
-| N4 | 挪动 `CALM_WORKSPACE_ROOT` / `$HOME` 后，既有 managed wave 的存库路径不再落在配置根下 | 该 wave 取 lease 永久硬失败，**无迁移路径**。launchpad 会自愈（路径每次 ensure 重新派生），普通 wave 不会 | **S5**（回收/搬迁机制就位时一并做） | `n4_moving_the_workspace_root_strands_existing_waves`；错误文案已明写这条 |
-| N5 | 我们自己的工作区丢了 `.git/neige-workspace` 标记（备份部分还原、误清理） | 永久拒绝，且**没有任何管理入口**能重新认领 | **S5/S6** | `n5_losing_our_own_marker_is_an_unrecoverable_refusal` |
-| N7 | 符号链接是「拒绝，但已经写过了」 | 根外留下一个带我们标记的完整仓库，无人回收。先拒后写不可避免：真实位置要 `create_dir_all` 之后才知道 | **S5** | `n7_a_refused_symlink_workspace_leaves_an_orphan_repository_outside_the_root` |
-| N9 | 物化互斥是**进程内**的 | 两个 calm-server 实例（升级重叠、admin CLI、健康重启）仍会撞出 N1 那类锁残留。N1 的清理让它可自愈而非永久砖化，但撞击本身还在 | **S5**（或独立 issue）；真解是文件锁 | 本表 + `clear_our_stale_git_locks` 的注释 |
-| N10 | 环境隔离只到 materialize 边界 | 紧邻的 `git_repo_root_for_wave_cwd` 与 worktree 相关 spawn 仍是裸 `Command::new("git")`，同一组变量对它们仍然有效 | **独立 issue**（把 `neige_git_command()` 推广到 workspace_lease 全模块） | 本表 |
-| N11 | S2 **持久化**了 `kind=managed` + 路径=父目录 的 child 行 | **S4 只改 adapter 不够**：存量行仍指向父仓库，S5 删子 wave 时照样 `remove_dir_all` 父仓库 —— D7 的事故以数据形式存活 | **S4，必须带数据迁移** | `n11_s2_persists_children_sharing_the_parents_managed_directory` |
-
-> N11 值得单独强调：D7 的合入顺序约束（S4 先于 S5）建立在「S4 消除共享目录」之上。
-> 而 S4 若只改 `child_wave_adapter`，只修好**之后**创建的子 wave；S2 已经写进库的行不动，
-> 于是 S5 一落地事故照样发生。**S4 的验收必须包含存量 child 行的迁移。**
-
-## 4. 切片
-
-| 切片 | 内容 | 独立价值 |
-|---|---|---|
-| **S0** | #1147 ① 失败可读：`last_error` 上浮到 `tasks.status_detail` + 进 `BlockVerdict` | 独立，且是 #1149 的依赖；**先做**，不要被本设计吸收 |
-| S1 | typed `WaveWorkspace`：模型 + 迁移 + 读 DTO + OpenAPI/TS；存量按 D9 回填；`waves.cwd` 降为投影；同步 `today.rs` 三处 SQL | 下游能区分 managed/attached |
-| S2 | 托管根配置 + 路径派生 + 物化（空提交、gitconfig 隔离、gitignore、幂等、失败即非 2xx）；新建 wave 默认 managed；D10 的 cove 对话入口 | 新 wave 的 codex 任务能跑 |
-| S3 | `PATCH` 改工作区（仅 managed→managed）+ `freeze_workspace_tx` 四个调用点 + 未完成 operation 409 + harness 再锚定；FE 目录展示与切换 | 用户可改 |
-| S4 | 子 wave 独立分配 + 创建即冻结（D7） | 阻断级：否则删子 wave 会删父仓库 |
-| S5 | 回收：wave 删除 / cove 删除 / 前缀断言（D8） | 不泄漏磁盘、不误删 |
-| S6 | terminal card 在 managed wave 里落到工作区而不是 `$HOME`（`terminal_adapter.rs:185-191` 今天回退到 `default_cwd()`） | 否则「wave 是一个仓库」在终端里不成立 |
-| — | claude 迁 worktree（#1147 ③） | **独立 issue**，与本设计零耦合 |
-
-**合入顺序：S0 → S1 → S2 → S4 → S5 → S3 → S6。** 评审判定的捆绑约束：
-
-- **S4 必须先于或同于 S5**。反过来（S2+S5 落地、S4 未落地）就是 D7 描述的原样事故：子 wave 与父共享 managed
-  path，删子触发对父仓库的 `remove_dir_all`。这是唯一「单独合入即破损」的组合。
-- **S3 依赖 S5 的前缀断言**（S3 要动旧目录）。要么把前缀断言提到 S2，要么 S3 排在 S5 之后。
-- **S2 必须自带 `today.rs` 的 launchpad 建 wave 路径**，否则其独立价值声明不成立（见 D3）。
-- S1、S6 单独合入安全。
-
-## 5. 必须证伪的测试（单违规 fixture）
-
-1. **空仓库 worktree**：跑 materialize → 直接调 `provision_workspace_worktree` 断言 `Ok` 且目录存在。
-   单违规：关掉「空提交」那步，断言变红且错误含 `not a valid object name`；并断言 mutation 真的生效（`git rev-parse HEAD` 失败）。
-2. **attached 永不删**：tmpdir 造真实 git 仓库 R + 哨兵文件 → attached wave 指向 R → 走完整 `delete_wave` →
-   断言 `R/.git` 与哨兵仍在。单违规：把 kind 判定改成恒 `Managed`，断言变红。
-3. **子 wave 不共享 managed 根**：父 P → child adapter 建 C → 断言 `C.path != P.path`；删 C 后 P 的
-   `git rev-parse --show-toplevel` 仍成功。
-4. **冻结写入点的注册表元测试**。⚠️ **判据必须是列名驱动，不是表名驱动**（r3.3，S1 评审实测）：
-   以 `UPDATE waves` 这类表名字面量做入口的扫描器，被 `format!("UPDATE {WAVES_TABLE} …")`、小写
-   `update waves`、以及多行 `r#"UPDATE\n  waves\n SET …"#` 三种**能编译的真写点**全部绕过 —— 而本仓
-   大量 SQL 正是多行 raw string，rustfmt 换一次行门禁就瞎。
-   正确形状：扫描前 **whitespace 折叠 + lowercase**，直接找列名（`cwd` / `workspace_*`）的词边界命中，
-   命中所在的 `sqlx::query*(` 不是单写者就红；表名 marker 只用于维护 allowlist 的集合相等。
-   **任何「豁免类」的准入判据必须是语义的，不能是文件名** —— S1 评审实测：后缀判据下，新建一个
-   `xxx_migration_tests.rs` 生产模块 + allowlist 里自我声明一行，即可让一个真写点全绿通过。⚠️ 本仓**没有运行时可枚举的写入点注册表**（写 `waves` 的是散落的裸 sqlx），
-   唯一诚实的实现是**扫源码**：对 `INSERT INTO waves` / `UPDATE waves` / `wave_create_tx(` /
-   `INSERT INTO workspace_leases` / `INSERT INTO terminals` 的命中集合与一份显式 allowlist 做**集合相等**。
-   形状必须写死在设计里，否则实现者会退化成「逐条断言四个已知点」= 空转
-   （`feedback_test_must_drive_production_wiring`）。枚举集合**必须包含 `terminals` 与三条建卡路由**。
-   单违规：加一个不在 allowlist 的假写入点，断言元测试变红。
-5. **materialize 失败让 create 失败**：⚠️ **不要用「只读目录」注入** —— CI 里以 root 跑时 `chmod 0555` 对 root
-   无效，测试会假绿。改成把 `<root>/<cove_id>` 预先造成一个**普通文件**（`mkdir` 必 `ENOTDIR`），
-   断言 `POST /api/waves` 非 2xx 且响应体含真实错误文本。
-6. **可改判据的三条命令各自可证伪**（每条都要有自己的单违规 fixture，因为每条挡的是不同的逃逸）：
-   (a) 在工作区写一个**普通**文件 → PATCH 断言 409。单违规：去掉 `status` 判据 → 变红。
-   (b) 在 `.claude/worktrees/<w>/<c>/` 里写文件（**被 exclude**）→ PATCH 断言 409。
-       单违规：把 `--ignored` 去掉 → 变红（这条是 r3 评审实测抓到的误删场景）。
-   (c) **worker 在租约 worktree 里提交、然后 sweep 掉 worktree**（租约的正常终局）→ PATCH 断言 409。
-       单违规：把 `rev-list --count --all` 换回 `HEAD` → 变红（`HEAD`=1 而 `--all`=2）。
-   (d) 建一张 terminal 卡 → PATCH 断言 409（`frozen_at` 已写）。
-   (e) **turn 进行中改工作区 → 断言 409**（r3.2，堵 A 的 TOCTOU）。单违规：去掉「rename 前重跑判据 (2)」
-       这一步，断言变红。这条测的不是「判据算得对」，而是「判据与 rename 之间没有窗口」——
-       是本设计里唯一一条**时序**判据，不能用静态状态断言代替。
-       再补一条走 `claude_restart_adapter.rs:182` 的：断言它也冻结（证明 `freeze_workspace_tx`
-       确实下沉到了 `terminal_create_tx`，而不是挂在四个 composite 上）。
-   —— r2 的「未完成 operation → 409」测试**已删除**：那条规则本身被证伪（child-wave op 的 target 是
-   `unknown`/`NULL`，`payload_json` 里也没有 `wave_id`，断言必然红）。
-7. **gitconfig 隔离**：`GIT_CONFIG_GLOBAL` 指向含 `commit.gpgsign=true` 的临时文件 → 跑 materialize → 断言成功。
-   （本机全局 config 不含 gpgsign，不注入就测不出来。）
-8. **列同步**：新增列后 `GET /api/waves/{id}` 与 `today_launchpad_ensure_tx` 两条路径都仍 200。
-9. **回收前缀断言**：任何回收调用传入非 `<workspace-root>` 前缀的路径 → panic/Err，带测试。
-
-## 6. 其余风险
-
-- **路径长度**：`root + <cove_id 32> + <wave_id 32> + .claude/worktrees/<32>/<32>` ≈ 150 字符。
-  ⚠️ 注意 **wave id 在这条路径里出现了两次** —— 在一份需要专门论证 `SUN_LEN` 的设计里白扔 32 字符。
-  这是沿用现有 `workspace_lease_path_for` 的形状，**不是刻意设计**；不改也行，但别当成有意为之。已确认 socket
-  都在 `CALM_DATA_DIR` 下、不在工作区内（`state.rs`、`spec_appserver.rs`），故 `SUN_LEN(~108)` 无风险 ——
-  但这个结论要用一条断言钉住，否则将来谁把 socket 挪进工作区就静默炸。
-- **托管仓库无 remote**：forge 的 PR 流程在 managed 上退化为只出 diff。这是**有意**取舍（研究/写作型 wave 用
-  managed，写代码的 wave 建时 attach 到真仓库），但要在 UI 上说清楚，不能让用户以为能开 PR。
-- **`waves.cwd` 的真实读者清单**（r1 列错了两个）：`mcp_server/transport.rs:958`、`tools/emit.rs:217`、
-  `task_verify_adapter.rs:670-681`（gate cwd 回退）、`child_wave_adapter.rs:176`。
-  **不是**读者：`plan.rs`（只搬运 `task.cwd`）、`terminal_adapter.rs`（回退到 `default_cwd()`，见 S6）。
-
-## 7. 评审留痕
-
-r1 → r2 的双路评审（codex 只读通道 + subagent），两路独立同意的事实纠正：
-
-| 结论 | 两路是否一致 |
-|---|---|
-| 子 wave 继承父 cwd ⇒ 删子会删父仓库 | 一致同意 |
-| `today.rs` 的 `UPDATE waves SET cwd` 绕过 PATCH 闸门；三处显式列名 SQL 必须同步 | 一致同意 |
-| 无 claim 的 cove 上开对话必然 409 | 一致同意（codex 补：已有 chat wave 的 cove 是例外） |
-| harness 无法「创建但不 spawn」，D5(c) 不成立 | 一致同意 |
-| claude 完全不读 `wave.cwd`，与本设计零耦合 | 一致同意 |
-| 空仓库 `git worktree add` 失败 / `gpgsign` 让空提交失败 | subagent 实测复现 |
-| payload hash 本身不破，破的是「同一 hash 对应稳定工作区语义」；且 child bootstrap 从旧 operation result 取 cwd 是**第二个**窗口 | codex 独有，已并入 D4/D7 |
-
-r2 → r3 的第二轮双路评审，**r2 新加的「未完成 operation 就 409」被两路从不同角度独立证伪**：
-
-| 结论 | 来源 |
-|---|---|
-| 该闸门**查不到**目标行（child-wave op 落成 `("unknown", NULL)`，`TxOutput` 又覆写成子 wave） | subagent |
-| 该闸门**漏拦**（operation 已 `succeeded`，cwd 仍活在 codex thread / harness handle 里） | codex |
-| 「wave 上的未完成 operation」本身就是跨 kind 逐条枚举 —— r1 被否掉的形状换层皮 | subagent |
-| 卡片级 cwd 是独立持久真源（`terminals.cwd`），重启后直接 spawn PTY；三条建卡路由不继承 wave、不校验绝对路径 | subagent |
-| spec harness 是 `workspace-write`，选 (a) 后「已有产出但未冻结」是常态而非边角 | subagent |
-| 物化挂载点漏了 `today.rs:89` 与另外两个 `create_wave_structure` 调用方 | subagent |
-| attached 在新 FE 完全不可达（`grep cwd fe/src` 零命中） | subagent |
-| 建完 wave 的稳态是**零未完成 operation**（`spec-harness-start` 在 201 返回前已终态），所以闸门不是「过严」而是「无效」 | 两路一致 |
-| lost-lease 会把非终态行 latch 到重启（`driver.rs:441-646` 只 log 不推进），若曾保留该闸门会变永久 409 | subagent |
-| `harness/mod.rs:114/127` 的 `handle_state_json` 是**第四份** cwd 快照 | 两路一致 |
-| `task-verify` 把 cwd 冻进 `tx_output` 且跨内核重启存活；forge action Spec 分支持久化 `wave.cwd` 进 payload | codex（均被 r3 的「盘上是空的」判据覆盖） |
-
-r3 的核心改动：删掉 operation 闸门；冻结写入点补「卡片创建」；新增**「盘上是空的」git 判据**代替枚举；
-删目录改为 rename 到 `.trash`；物化挂载点补齐 5 个入口；S3 补 FE 的 attached 入口；S4 补 operation result 的 cwd。
-
-r3 → r3.1 的第三轮（只查 D4 的新判据）。判据的**形状**两路都认可，但**命令形式全错**，三条各自独立地
-把判据变成「永假」或「误判为空」——全部是改文字级修正，方向未动：
-
-| 结论 | 处置 |
-|---|---|
-| D3 写 `.gitignore` 的说法把机制说错了（既有实现写的是 `.git/info/exclude`），且会让 `?? .gitignore` 令判据 (2) **永假** | D3 步骤 4 改写 |
-| `status --porcelain` 看不见被 exclude 的 worker 产出（全部 lease 都在 `.claude/worktrees/`）⇒ 必须 `--ignored` | D4 (2) 第一条 |
-| `rev-list --count HEAD` 看不见 slice 分支提交与 stash（租约正常终局下 `HEAD`=1 而 `--all`=2）⇒ 必须 `--all` | D4 (2) 第二条 |
-| 冻结闩仍漏 `claude_restart_adapter.rs:182`；下沉到 `terminal_create_tx` 才能消灭枚举形状 | D4 (1) 改写 |
-| rename 后 worktree 的两个绝对路径指针双向悬空 ⇒ fail-safe 只保文件不保 git 历史；且活进程会继续写 trash ⇒ 重开前必须先 interrupt | D4 动作 0/1 |
-| **`handle_state_json` 没有 cwd 字段**，r2/r3 写的「重开时刷新它」是假任务 | D4 动作 3 改写 |
-
-**两路结论冲突一处，由我亲手实测判定**：`--ignored` 在 `.claude/worktrees/` **为空目录**时是否非空 ——
-subagent 说否、codex 说是。实测（干净 / 空目录 / 含文件 / 删文件后留空目录）证明 **subagent 对**：
-只有目录含文件时才输出 `!! .claude/`。故「`--ignored` 会导致永远不可改」不成立，该形式可用。
-
-### r3.1 → r3.2（第三方通道评审，issue 上的独立评论）
-
-对方总评「结构、切片、合入顺序的捆绑约束与单违规 fixture 这一整套足够严谨，可以进实现」，
-并指出一条阻断级 + 三条应改：
-
-| 结论 | 处置 |
-|---|---|
-| **A（阻断）** 判据 (2) 与 rename 之间是 TOCTOU：SQLite 事务对文件系统零隔离，只栅得住 DB 写者；而 harness agent 刻意不冻结、从建 wave 起就 `workspace-write`，dispatcher 还会主动推 observation 开新 turn。动作 0 的「先 interrupt」是异步的，且挡不住**新** turn 开始 | D4 加「真栅栏（同 tx 内 supersede/park harness runtime）+ rename 前重跑判据 (2) + 前缀断言」三步；§5 加「turn 进行中改工作区 → 409」的可证伪测试 |
-| **B** 前缀断言只覆盖回收路径，没覆盖 rename；且新建 attached wave 没说要写 `frozen_at`，漏判 kind 就会搬走用户真仓库 | D4 第 3 步 + D9 各补一条 |
-| **C** 拒绝 `managed → attached` 的三条理由全不成立，真实阻力是 FE 工作量 | **改判为做**，理由诚实写明。用不成立的风险论证挡真需求，将来会被当既定结论引用 |
-| **D** `waves.cwd` 作为投影缺单写者约束，正文只说了意图没说成约束 | D1 明写不变量，并让 §5 测试 4 的 allowlist 显式承担 |
-| 小：wave id 在租约路径里出现两次 | §6 注明是沿用既有形状、非刻意设计 |
-
-对方已核实**不成立**、无需再查的两条（记下来免得下一轮重复劳动）：
-
-- 「wave 换 cove 会让 `<cove_id>/<wave_id>` 路径撒谎」—— `db/sqlite/wave.rs` 里没有任何
-  `UPDATE waves SET cove_id`，wave 建后不能换 cove，路径稳定。
-- 「D4 动作 3 重开 thread 会丢对话历史」—— harness item 按 **card** 持久化
-  （`db/sqlite/read.rs:671-674` 的 `WHERE card_id = ?1`），与 thread 无关；
-  `GET /api/cards/{id}/harness/items`（`routes/cards.rs:194`）读的就是这张表。
-  动作 3 的产品代价比它读起来小得多。
+- 新 managed wave 能直接创建第一个 worktree。
+- 物化失败时 create 返回非 2xx，且不留下可见 wave。
+- 删除 attached wave 不触碰用户仓库。
+- 子 wave 路径与父 wave 不同；删除子 wave 后父仓库仍可用。
+- 全局 Git 签名、模板和 hook 配置不会影响物化。
+- 工作区有普通文件、ignored worker 产出、其他分支提交、stash、活 worktree 或 terminal 时，更换均被拒绝。
+- 活跃 turn 与更换并发时不能在 trash 中继续产生产出。
+- 任意回收或 rename 传入 workspace root 外路径时失败。
+- GET wave 与 Today/launchpad 路径均只从 `workspace_path` 读取并派生 wire `cwd`。

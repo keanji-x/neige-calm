@@ -680,7 +680,7 @@ test.describe('a11y · keyboard-only navigation', () => {
     // title (we wait for both halves so the test is order-independent).
     await waitForEvent(page, 'wave.updated');
     // Disambiguate via `description` — the rename span carries
-    // `aria-describedby` → "Rename wave" (see §5 of a11y-contract.md),
+    // `aria-describedby` → "Rename wave",
     // while the sibling Delete button matches `newTitle` only as a
     // substring inside its own accessible name ("Delete wave \"<title>\"")
     // and would otherwise collide here under Playwright strict mode.

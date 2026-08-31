@@ -44,9 +44,6 @@
 // is mounted. Callers that need to suppress this (e.g. closing a popover
 // before unmount) can simply unmount — the hook noops on missing refs.
 //
-// Hand-rolled rather than pulling a headless-UI library; see issue #56
-// architecture note + `docs/a11y-contract.md` §10.
-
 import { useCallback, useEffect, useRef } from 'react';
 import { useState } from '../../shared/state';
 import type { KeyboardEvent as ReactKeyboardEvent } from 'react';

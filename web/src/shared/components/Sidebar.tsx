@@ -233,10 +233,6 @@ export function Sidebar({
   // nav. Both landmarks have unique accessible names so the
   // `landmark-unique` axe rule stays green.
   //
-  // Scoping role queries by these landmarks disambiguates buttons that
-  // share an accessible name across sections — e.g. a wave titled
-  // "Today" in the section vs. the Today nav button in the nav. See
-  // docs/a11y-contract.md §2.2.
   const collapseToggle = (
     <button
       type="button"

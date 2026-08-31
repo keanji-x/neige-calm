@@ -43,7 +43,7 @@ use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::wave_report_blocks::{
-    TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
+    TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
@@ -3464,6 +3464,28 @@ async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
     .unwrap();
 }
 
+/// `(id, rev)` of the wave's single live task block, straight from the
+/// stored report payload — the ids the document assigns, not the marker
+/// hints the test writes.
+async fn live_task_block(boot: &Boot) -> (String, u64) {
+    let card = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .expect("report card");
+    let payload: WaveReportPayload = serde_json::from_value(card.payload).unwrap();
+    let block = payload
+        .blocks
+        .expect("blocks cache")
+        .into_iter()
+        .find(|block| block.kind == "task" && block.payload.get("tombstone").is_none())
+        .expect("one live task block");
+    (block.id, u64::from(block.rev))
+}
+
 async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)], if_doc_rev: u64) {
     let body = blocks
         .iter()
@@ -3813,6 +3835,20 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
+        } else if case == "absent" {
+            // #1179: a whole-document write may no longer make a live task
+            // declaration disappear — for any author. The sanctioned way to
+            // reach "root block absent" is the block-level delete endpoint.
+            let (id, rev) = live_task_block(&boot).await;
+            call_tool(
+                &boot,
+                TOOL_REPORT_BLOCKS_DELETE,
+                spec_identity(&boot),
+                json!({"id": id, "if_rev": rev}),
+            )
+            .await
+            .expect("block-level delete of the root task block");
+            edit_report_blocks(&boot, &broken, 2).await;
         } else {
             edit_report_blocks(&boot, &broken, 1).await;
         }

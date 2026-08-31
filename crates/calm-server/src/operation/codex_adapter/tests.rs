@@ -180,6 +180,17 @@ async fn prepare_worker(
     harness: &WorkerLeaseHarness,
     key: &str,
 ) -> (TxOutput, Vec<BroadcastEnvelope>) {
+    prepare_worker_with_task_key(harness, key, key).await
+}
+
+/// Same flow as [`prepare_worker`] but lets the test choose the `tasks.key`
+/// column independently of the operation key — used by the #1149 fail-soft
+/// case where the row exists with a blank key.
+async fn prepare_worker_with_task_key(
+    harness: &WorkerLeaseHarness,
+    key: &str,
+    task_key: &str,
+) -> (TxOutput, Vec<BroadcastEnvelope>) {
     let payload = worker_payload(&harness.wave_id, key);
     let task_id = format!("{}:{key}", harness.wave_id);
     sqlx::query(
@@ -189,7 +200,7 @@ async fn prepare_worker(
     )
     .bind(&task_id)
     .bind(&harness.wave_id)
-    .bind(key)
+    .bind(task_key)
     .execute(harness.repo.pool())
     .await
     .unwrap();
@@ -400,6 +411,96 @@ async fn codex_worker_compensation_removes_workspace_before_row_release() {
         state.steps[1].arg_string("lease_id", "test").unwrap(),
         lease_id
     );
+}
+
+/// #1149 — the worker card is titled after its task's plan key, so four
+/// dispatched tasks no longer mint four cards all rendering as "codex".
+#[tokio::test]
+async fn codex_worker_prepare_titles_card_with_task_key() {
+    let harness = worker_lease_harness().await;
+    let (output, _) = prepare_worker(&harness, "slice-b").await;
+    let card_id = output.output_string("card_id", "test").unwrap();
+
+    let stored: Option<String> = sqlx::query_scalar("SELECT title FROM cards WHERE id = ?1")
+        .bind(&card_id)
+        .fetch_one(harness.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored, Some("slice-b".to_string()));
+
+    let wire: crate::model::Card = serde_json::from_value(output.result.clone()).unwrap();
+    assert_eq!(wire.title, Some("slice-b".to_string()));
+}
+
+/// #1149 fail-soft — a task row whose `key` is blank leaves the card
+/// untitled instead of failing the dispatch.
+#[tokio::test]
+async fn codex_worker_prepare_leaves_title_none_for_blank_task_key() {
+    let harness = worker_lease_harness().await;
+    let (output, _) = prepare_worker_with_task_key(&harness, "blank", "").await;
+    let card_id = output.output_string("card_id", "test").unwrap();
+
+    let stored: Option<String> = sqlx::query_scalar("SELECT title FROM cards WHERE id = ?1")
+        .bind(&card_id)
+        .fetch_one(harness.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored, None, "blank task key must not title the card");
+
+    let wire: crate::model::Card = serde_json::from_value(output.result.clone()).unwrap();
+    assert_eq!(wire.title, None);
+}
+
+/// #1149 fail-soft — the title lookup itself never errors on a missing
+/// `tasks` row (legacy `calm.task.dispatch` idempotency keys) or an empty
+/// key. Exercised directly because every worker adapter runs
+/// `refuse_if_context_stale` first, which already refuses a missing row.
+#[tokio::test]
+async fn task_key_for_card_title_is_fail_soft() {
+    let harness = worker_lease_harness().await;
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    assert_eq!(
+        crate::operation::task_key_for_card_title(&mut tx, "no-such-task").await,
+        None
+    );
+    assert_eq!(
+        crate::operation::task_key_for_card_title(&mut tx, "").await,
+        None
+    );
+    tx.commit().await.unwrap();
+}
+
+/// #1149 — a *failing* `SELECT` also yields `None` rather than an error.
+///
+/// The signature already says so (there is no error arm), but the review
+/// finding this defends was that a decode failure on `tasks.key` — the
+/// column lives in a non-STRICT table — could abort a worker spawn that
+/// previously succeeded. Dropping the table inside the transaction is the
+/// cheapest way to make the statement itself fail for real rather than
+/// asserting the type signature back at itself: `SELECT key FROM tasks`
+/// then returns `error returned from database: no such table: tasks`.
+#[tokio::test]
+async fn task_key_for_card_title_swallows_a_failing_select() {
+    let harness = worker_lease_harness().await;
+    let mut tx = begin_immediate_tx(harness.repo.pool()).await.unwrap();
+    sqlx::query("DROP TABLE tasks")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    // The statement really is broken now — otherwise this test would pass
+    // for the wrong reason (a missing row, which the case above covers).
+    assert!(
+        sqlx::query_scalar::<_, String>("SELECT key FROM tasks WHERE id = ?1")
+            .bind("any")
+            .fetch_optional(&mut *tx)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        crate::operation::task_key_for_card_title(&mut tx, "any-task").await,
+        None
+    );
+    tx.rollback().await.unwrap();
 }
 
 fn init_git_repo(path: &Path) {

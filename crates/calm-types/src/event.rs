@@ -1,27 +1,7 @@
-//! Event wire vocabulary — the data half of calm-server's `event` module
-//! (#679 PR1).
+//! Persisted event shapes, scopes, metadata, and subscription topics.
 //!
-//! This module owns everything about events that is *shape*: the typed
-//! [`Event`] enum (the ts-rs source for `fe/core/api/generated/wire.ts`),
-//! its payload types ([`ArtifactRef`], [`WaveUpdatedPayload`],
-//! [`EditAuthor`]), the persisted [`EventScope`], the
-//! [`SYNC_EVENT_VERSION`] constant, the [`EventMetadata`] classifier and the
-//! [`topics`] subscription mapping.
-//!
-//! The *transport* half — `EventBus` / `BroadcastEnvelope` /
-//! `SubscribeFilter` (tokio broadcast) — stays in calm-server's `event`
-//! module, which re-exports this one so `calm_server::event::*` paths are
-//! unchanged. Split line per issue #679: "Event data types/serde/ts-rs →
-//! calm-types; EventBus/BroadcastEnvelope (tokio broadcast) → calm-truth"
-//! (calm-server until calm-truth exists).
-//!
-//! Wire format: `{"_id": 1729, "ev": "<dotted.name>", "data": {...}}`. The
-//! frontend's TS `Event` type is auto-generated from this enum via `ts-rs`
-//! and lives at `fe/core/api/generated/wire.ts`. The runtime zod
-//! validator in `web/src/api/schemas.ts` is type-pinned to that emitted
-//! TS type via an `expectTypeOf` conformance test, so any drift between
-//! this enum and the frontend fails at the type-check step. See D7 /
-//! issue #5.
+//! The wire vocabulary is generated into `fe/core/api/generated/wire.ts`;
+//! transport and broadcast behavior live outside this IO-free crate.
 
 use crate::harness::HarnessPhaseTag;
 use crate::ids::{CardId, CoveId, WaveId};
@@ -63,30 +43,13 @@ pub struct TaskContextChangedRef {
     pub to_hash: String,
 }
 
-// ---------------------------------------------------------------------------
-// ArtifactRef — placeholder identifier for #129 Artifact Stream
-// ---------------------------------------------------------------------------
-
-/// Opaque identifier for a worker-produced artifact (file write, structured
-/// output blob, etc.). PR4 of #136 introduces this as a **placeholder**:
-/// the real Artifact Stream lands in #129, which will expand the type with
-/// hash / content-type / storage-uri fields.
-///
-/// Today the variant is referenced only by `Event::TaskCompleted.artifacts`,
-/// which carries a list of these so the dispatcher's push path can hand a
-/// spec card a manifest of what its worker produced. Keep this minimal —
-/// #129 territory expands the shape, not PR4.
-///
-/// Wire shape is a bare string via `#[serde(transparent)]`, matching the
-/// typed-id pattern in [`crate::ids`]. ts-rs emits `export type ArtifactRef
-/// = string;` so the frontend stays a thin alias.
+/// Opaque identifier for a worker-produced artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct ArtifactRef(pub String);
 
 impl ArtifactRef {
-    /// Borrow the underlying string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -110,16 +73,10 @@ impl std::fmt::Display for ArtifactRef {
     }
 }
 
-// ---------------------------------------------------------------------------
-// WaveUpdatedPayload — wave row plus optional agent rationale
-// ---------------------------------------------------------------------------
-
 /// Payload for `Event::WaveUpdated`.
 ///
 /// `wave` is flattened to preserve the historical wire shape: the event data
-/// is still the full wave row at top level, with `agent_message` added as an
-/// optional adjacent field for #597. Older persisted rows that lack the field
-/// deserialize with `None`.
+/// remains the full wave row at top level.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WaveUpdatedPayload {
@@ -153,39 +110,12 @@ impl AsRef<str> for ArtifactRef {
     }
 }
 
-// ---------------------------------------------------------------------------
-// EditAuthor — who produced a `WaveReportEdited` write
-// ---------------------------------------------------------------------------
-
-/// Producer of a single wave-report edit. Carried on every
-/// `Event::WaveReportEdited` so PR4's UI can attribute timeline entries
-/// without re-parsing the envelope's `actor` field, and so PR5's spec
-/// system prompt can react to user-authored edits specifically.
-///
-/// PR2 only emits `EditAuthor::Spec` — the spec-MCP `calm.report.*`
-/// tools are the only write path that exists today. PR3 introduces a
-/// REST entry for human edits and starts emitting `EditAuthor::User`;
-/// `EditAuthor::Kernel` is reserved for future server-internal
-/// rewrites (FSM-driven scaffolding, migrations, etc.). Adding a
-/// variant later is a non-breaking change for the wire shape (the
-/// schema gains a new union arm, old clients see an unknown tag and
-/// can ignore) but the persisted history rows must keep round-tripping,
-/// so don't rename existing arms.
-///
-/// Wire shape matches the surrounding event-payload conventions
-/// (`#[serde(rename_all = "lowercase")]`): `"spec"`, `"user"`,
-/// `"kernel"` — the bare discriminator a JSON field gets when the enum
-/// is referenced from an inline struct variant. No `tag`/`content`
-/// dance: `EditAuthor` only ever appears as a payload field, never as
-/// its own envelope.
+/// Producer of a wave-report edit. Existing variants are persisted wire values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "lowercase")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub enum EditAuthor {
-    /// Spec card calling one of the `calm.report.{write,edit}` MCP
-    /// tools. The only producer PR2 emits.
     Spec,
-    /// Human-driven edit through a REST endpoint. Wired in PR3.
     User,
     /// Server-internal rewrite — FSM scaffolding, migrations, etc.
     /// Reserved; no emitter today.
@@ -199,26 +129,12 @@ pub enum EditAuthor {
     Plugin,
 }
 
-// ---------------------------------------------------------------------------
-// EventScope — every event's "home scope"
-// ---------------------------------------------------------------------------
-
 /// Where an event lives in the cove → wave → card hierarchy.
-///
-/// PR2 of #136 stamps a scope on every persisted event so future PRs can
-/// filter / route / authorize without re-parsing the event payload:
-///
-///   * PR3 (`enforce_role`) gates writes per card scope.
-///   * PR5 (`SubscribeFilter` + `Dispatcher`) routes notifications + work
-///     queues by wave scope, and the dispatcher's push path (#293) resolves
-///     a wave's spec card to deliver task/report events as turn inputs.
 ///
 /// `EventScope::System` is the catch-all for events that genuinely don't
 /// belong to a single cove/wave/card (`Event::PluginState`, the
 /// CoveCreated case where the cove doesn't exist before the event, and
-/// the legacy NULL-on-replay fallback for pre-PR2 history rows). Pick
-/// `System` only when you've ruled out the more specific scopes — a
-/// `System`-tagged event opts out of every per-scope filter that follows.
+/// malformed legacy rows). Prefer the narrowest available scope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", content = "id")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -252,8 +168,6 @@ impl EventScope {
         }
     }
 
-    /// Owning cove id, if the scope carries one. PR5 will fan subscribers
-    /// out per-cove from this without re-parsing the variant.
     pub fn cove_id(&self) -> Option<&CoveId> {
         match self {
             EventScope::System => None,
@@ -280,15 +194,7 @@ impl EventScope {
         }
     }
 
-    /// Reconstruct the scope from the four `events.scope_*` columns. Used
-    /// by the replay path to recover the typed scope from a row.
-    ///
-    /// **NULL-tolerant**: a pre-PR2 row (NULL `scope_kind` is impossible
-    /// thanks to the column default, but defensive nonetheless) or any
-    /// row whose ancestor cols don't line up with the declared `kind`
-    /// falls back to `EventScope::System`. The fallback is deliberate —
-    /// the replay path must never strand a client because of a malformed
-    /// scope.
+    /// Malformed or incomplete rows fall back to `System` so replay continues.
     pub fn from_row(
         kind: Option<&str>,
         cove: Option<&str>,
@@ -323,73 +229,11 @@ impl EventScope {
     }
 }
 
-/// Sync-engine event envelope version. Stamped onto every
-/// `BroadcastEnvelope` the kernel emits (both fresh writes and replay rows)
-/// and persisted on each `events` row via the `event_version` column added
-/// in migration `0006_events_version.sql`. Old rows that predate the
-/// migration backfill to `1` automatically via the column default.
+/// Sync-engine event envelope version.
 ///
-/// The matching migration default and this constant must move together —
-/// when the envelope wire shape evolves in a way replicas need to gate on,
-/// bump this and ship a new migration that defaults to the new value.
-///
-/// Surfaced on the wire under the camelCase key `eventVersion` (see
-/// `ws::events::render_envelope`), and surfaced via `GET /api/version` as
-/// `syncEventVersion` so the web client can refuse to replay a log it
-/// doesn't understand. Sync event log is a Tier-A persistence contract per
-/// `docs/upgrade-stability.md`.
-///
-/// Version history:
-/// * `1` — initial envelope shape; added by migration 0006.
-/// * `2` — dispatcher request event rename (issue #581). Wire kinds
-///   `codex.job_requested` / `terminal.job_requested` are renamed to
-///   `*.worker_requested`. An open v1-tab whose per-frame gate was
-///   set to `syncEventVersion=1` at mount must drop new `eventVersion=2`
-///   frames WITHOUT advancing the cursor; if we kept SYNC_EVENT_VERSION
-///   at 1, those tabs would silently fail zod and advance past
-///   invalidation frames. Old rows backfill to `1` via the migration
-///   0006 column default.
-/// * `3` — scheduler wire kinds (issue #644). Adds `plan.updated`
-///   (PR-A) and `task.dispatched` (PR-B) to the event union. A v2 tab
-///   whose per-frame gate cached `syncEventVersion=2` at mount would
-///   treat `eventVersion=2` frames carrying the new kinds as in-range,
-///   advance its replay cursor, then silently fail zod on the unknown
-///   discriminator — permanently skipping the plan/dispatch
-///   invalidation. Bumping to `3` makes those tabs drop the frames
-///   WITHOUT advancing the cursor. Migration 0043 re-stamps any
-///   `plan.updated` / `task.dispatched` rows persisted at version 2
-///   before this bump shipped.
-/// * `4` — gate-result wire kind (issue #644 PR-C). Adds
-///   `task.gate_result` to the event union. A v3 tab whose per-frame
-///   gate cached `syncEventVersion=3` at mount would otherwise advance
-///   its replay cursor past the new variant and silently fail zod.
-/// * `5` — workspace-lease wire kinds (issue #760 slice 1). Adds
-///   `workspace.leased` and `workspace.released` to the event union.
-///   A v4 tab would otherwise advance past those rows and fail zod on
-///   replay before refreshing onto a bundle that understands them.
-/// * `6` — plugin tool registration wire kind (#760 slice 2). Adds `plugin.tool.registered`.
-/// * `7` — forge PR merge wire kind (issue #760 slice 6). Adds
-///   `forge.pr.merged` to the event union. A v6 tab would otherwise
-///   advance past those rows and fail zod before refreshing.
-/// * `8` — git/forge toolset substrate kinds (issue #760 slice ③-a).
-///   Adds 5 forge.* and 2 worktree.* events to the union.
-/// * `9` — workflow registration descriptor events (issue #760 slice ④-a).
-///   Added `workflow.registered` to the event union. #1110 S5 retired the
-///   variant; persisted rows of that kind are skipped on replay.
-/// * `10` — issue body read events (issue #760 slice ④-b). Adds
-///   `forge.issue.read` to the event union.
-/// * `11` — review/ratify workflow events (issue #760 slice ⑤-b-i).
-///   Adds `review.round`, `ratify.requested`, and `ratify.resolved`
-///   to the event union.
-/// * `12` — proposal-channel events (issue #955 §5 PR-a). Adds
-///   `proposal.submitted` / `proposal.resolved` to the event union and
-///   extends `wave.report_edited` with the `"plugin"` author arm +
-///   optional `author_plugin_id`. A v11 tab's zod union doesn't know
-///   the new discriminators (and rejects the new author arm), so it
-///   would silently fail zod past the new frames without this bump.
-/// * `13` — task-context audit events (issue #985 PR3a-i). Adds
-///   `task.context_frozen` and `task.context_advanced`; a v12 tab does not
-///   recognize either discriminator and must not advance past those frames.
+/// Bump this together with a migration default whenever clients must gate on a
+/// new persisted wire shape; otherwise old clients can advance past events they
+/// cannot parse.
 pub const SYNC_EVENT_VERSION: u32 = 13;
 
 /// Phase/slice PR identity carried by `forge.pr.merged`.

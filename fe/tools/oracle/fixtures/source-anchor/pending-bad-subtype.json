@@ -1,0 +1,5 @@
+[
+  {"id":"INV-TEST-003","subtype":"not-in-file","issue":"#1170","note":"test fixture"},
+  {"id":"INV-TEST-004","subtype":"not-in-file","issue":"#1170","note":"test fixture"},
+  {"id":"INV-TEST-005","subtype":"not-anchored","issue":"#1170","note":"test fixture"}
+]

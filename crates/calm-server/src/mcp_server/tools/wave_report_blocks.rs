@@ -12,7 +12,7 @@
 //! | `calm.report.blocks.upsert` | `{ id?, kind, markdown?, payload?, if_rev?, if_doc_rev?, position? }` | Create (`id` absent + mandatory `if_doc_rev`) or replace (`id` + mandatory `if_rev`). Returns `{ id, rev, updated_at, docRev }`. |
 //! | `calm.report.blocks.move`   | `{ id, to_index, if_doc_rev }` | Reorder; rev untouched. |
 //! | `calm.report.blocks.delete` | `{ id, if_rev }` | `if_rev` mandatory. |
-//! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev }` | Escape hatch: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
+//! | `calm.report.write_markdown`| `{ body, summary?, if_doc_rev }` | The id-preserving whole-document write: guarded full-document Markdown, optionally carrying `<!-- neige:b_xxxx -->` marker lines that pin block identity. Markers are stripped server-side and never stored. |
 //!
 //! ## Concurrency contract
 //!

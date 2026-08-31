@@ -1,46 +1,10 @@
 //! `GET /api/version` — kernel + protocol version metadata.
 //!
-//! Returns a small JSON document the web client (and operators) can hit to
-//! discover which kernel build is running, which REST contract it speaks,
-//! which sync-event envelope schema it emits, and which MCP protocol
-//! version it advertises to plugins.
-//!
-//! ## Why so many version fields?
-//!
 //! Each field tracks an independent compatibility boundary:
 //!
-//! * `kernelVersion` — the `calm-server` crate's `CARGO_PKG_VERSION`. Bumped
-//!   by normal semver on the kernel binary itself.
-//! * `apiVersion` — the REST contract version. Deliberately decoupled from
-//!   `kernelVersion` so we can break or extend the wire shape without
-//!   shipping a new kernel release, and conversely ship kernel patches that
-//!   leave the REST surface untouched.
-//! * `syncEventVersion` — the version stamped onto sync-engine envelopes.
-//!   Will be threaded into `BroadcastEnvelope` in a later PR so replicas can
-//!   refuse incompatible event logs.
-//! * `mcpProtocolVersion` — the MCP spec date the kernel-as-MCP-server
-//!   advertises to Codex clients.
-//! * `pluginMcpProtocolVersion` — the MCP spec date the plugin host advertises
-//!   to plugin processes. Sourced from `plugin_host::mcp` so the two surfaces
-//!   never drift.
-//! * `webCompatVersion` — the frontend compatibility value this server was
-//!   built with.
-//! * `minWebCompatVersion` — the minimum frontend `WEB_COMPAT_VERSION` the
-//!   running kernel still considers wire-compatible. Frontends below this
-//!   value must hard-refresh; see `docs/upgrade-stability.md` (Tier B).
-//! * `supervisorControlVersion` — the control-wire version between the kernel
-//!   and `calm-proc-supervisor`.
-//! * `buildSha` — optional git SHA baked in at compile time via
-//!   `option_env!("NEIGE_BUILD_SHA")`. `null` for local `cargo build` runs;
-//!   release CI sets the env var.
-//! * `dbInstanceId` — UUID v4 minted once per server-process startup. NOT
-//!   persisted to the DB. The web client compares it against a value it
-//!   stashes in `localStorage`; on mismatch it wipes its IndexedDB-backed
-//!   React Query cache + WS event cursor and hard-reloads, so a `make dev
-//!   RESET_DB=1` (or any other DB wipe / migration rebuild) doesn't leave
-//!   the browser holding stale row ids that would 404 at route loaders.
-//!   The field is additive on the wire — older frontends ignore it
-//!   and continue to work, so no `WEB_COMPAT_VERSION` bump is required.
+//! API, sync-event, web, MCP, plugin MCP, supervisor, and kernel versions may
+//! evolve independently. `dbInstanceId` changes on every process boot so the
+//! browser can discard state that belongs to a replaced database.
 
 use crate::event::SYNC_EVENT_VERSION;
 use crate::mcp_server::transport::KERNEL_MCP_PROTOCOL_VERSION;
@@ -51,116 +15,13 @@ use calm_session::SUPERVISOR_CONTROL_VERSION;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-/// REST contract version. Surfaced as `apiVersion` on `/api/version`.
-///
-/// **Diagnostic-only** — frontends MUST NOT gate behavior on this string.
-/// The load-bearing frontend↔backend compatibility checks live on:
-///   * `minWebCompatVersion` for the web bundle as a whole (whole-page
-///     hard-block via `ServerCompatGate`), and
-///   * `syncEventVersion` for individual `/api/events` frames (per-frame
-///     drop without advancing the replay cursor).
-///
-/// See issue #198 concern 3 and `docs/upgrade-stability.md`. Operators
-/// reading dashboards / logs are the intended audience for this field.
+/// Diagnostic only; clients gate on web and sync-event compatibility instead.
 pub const API_VERSION: &str = "1";
 
-/// Frontend ↔ backend compatibility version surfaced as `minWebCompatVersion`
-/// on `/api/version`. Monotonically increasing. Bump when REST/WS contract
-/// changes are incompatible with older frontends. Frontend's
-/// `WEB_COMPAT_VERSION` must be kept in lockstep — see
-/// `docs/upgrade-stability.md`.
-///
-/// Version history:
-/// * `1` — initial. Terminal protocol v1 (`ClientMsg::Attach` / `Stdin` /
-///   `Resize`, `DaemonMsg::Hello` / `Stdout`).
-/// * `2` — terminal protocol v2 (issue #44). Renames every wire frame
-///   under `/api/terminals/:id` (ClientHello/ServerHello, Input,
-///   ResizeCommit/ResizeApplied, RenderSnapshot/Patch, OwnerClaim/Release/
-///   Changed, ProtocolError, TerminalExited). A v1 frontend hitting a v2
-///   kernel will fail its first frame and be hard-refreshed by the compat
-///   modal — clean break, no backwards compatibility shim.
-/// * `3` — dispatcher request event rename (issue #581). Wire kinds
-///   `codex.job_requested` / `terminal.job_requested` are renamed to
-///   `*.worker_requested`. A v2 frontend's zod `WireEvent` union only
-///   accepts the old kind strings, so live frames after the bump would
-///   silently fail discriminator validation and skip
-///   `wave-files`/`overlays` invalidation. The compat modal forces a
-///   hard refresh.
-/// * `4` — scheduler wire kinds (issue #644). Adds `plan.updated` and
-///   `task.dispatched` to the WS event union (with
-///   `SYNC_EVENT_VERSION` bumped 2 → 3 in lockstep). A v3 frontend's
-///   zod `WireEvent` union doesn't know the new discriminators, so its
-///   plan/dispatch invalidation would silently drop. The compat modal
-///   forces a hard refresh.
-/// * `5` — gate-result wire kind (issue #644 PR-C). Adds
-///   `task.gate_result` to the WS event union (with
-///   `SYNC_EVENT_VERSION` bumped 3 → 4 in lockstep). A v4 frontend's
-///   zod `WireEvent` union doesn't know the new discriminator, so its
-///   gate-result invalidation would silently drop. The compat modal
-///   forces a hard refresh.
-/// * `6` — workspace lease lifecycle events (issue #760 slice 1):
-///   `workspace.leased` and `workspace.released` join the WS event union
-///   with `SYNC_EVENT_VERSION` bumped 4 → 5 in lockstep. A v5 frontend's
-///   zod `WireEvent` union doesn't know the new discriminators, so its
-///   workspace invalidation would silently drop. The compat modal forces
-///   a hard refresh.
-/// * `7` — plugin-tool registration wire kind (issue #760 slice 2). Adds
-///   `plugin.tool.registered` to the WS event union (with
-///   `SYNC_EVENT_VERSION` bumped 5 → 6 in lockstep). A v6 frontend's zod
-///   `WireEvent` union doesn't know the new discriminator, so plugin-tool
-///   registration frames would silently drop. The compat modal forces a
-///   hard refresh.
-/// * `8` — forge PR merge events (issue #760 slice 6):
-///   `forge.pr.merged` joins the WS event union with
-///   `SYNC_EVENT_VERSION` bumped 6 → 7 in lockstep. A v7 frontend's
-///   zod `WireEvent` union doesn't know the new discriminator, so its
-///   forge invalidation would silently drop. The compat modal forces a
-///   hard refresh.
-/// * `9` — git/forge toolset substrate events (issue #760 slice ③-a):
-///   5 forge.* and 2 worktree.* kinds join the WS event union with
-///   `SYNC_EVENT_VERSION` bumped 7 → 8 in lockstep. A v8 frontend's
-///   zod `WireEvent` union doesn't know the new discriminators, so its
-///   forge/worktree invalidation would silently drop. The compat modal
-///   forces a hard refresh.
-/// * `10` — trusted workflow registration events (issue #760 slice ④-a):
-///   `workflow.registered` joins the WS event union with
-///   `SYNC_EVENT_VERSION` bumped 8 → 9 in lockstep. A v9 frontend's
-///   zod `WireEvent` union doesn't know the new discriminator, so its
-///   workflow-registration frames would silently drop. The compat modal
-///   forces a hard refresh.
-/// * `11` — issue body read events (issue #760 slice ④-b):
-///   `forge.issue.read` joins the WS event union with
-///   `SYNC_EVENT_VERSION` bumped 9 → 10 in lockstep. A v10 frontend's
-///   zod `WireEvent` union doesn't know the new discriminator, so its
-///   issue-read frames would silently drop. The compat modal forces a
-///   hard refresh.
-/// * `12` — review/ratify workflow events (issue #760 slice ⑤-b-i):
-///   `review.round`, `ratify.requested`, and `ratify.resolved` join the
-///   WS event union with `SYNC_EVENT_VERSION` bumped 10 → 11 in
-///   lockstep. A v11 frontend's zod `WireEvent` union doesn't know the
-///   new discriminators, so its review/ratify frames would silently
-///   drop. The compat modal forces a hard refresh.
-/// * `13` — proposal-channel events (issue #955 §5 PR-a):
-///   `proposal.submitted` / `proposal.resolved` join the WS event union
-///   and `wave.report_edited` gains the `"plugin"` author arm +
-///   optional `author_plugin_id`, with `SYNC_EVENT_VERSION` bumped
-///   11 → 12 in lockstep. A v12 frontend's zod union doesn't know the
-///   new discriminators (and rejects the new author arm), so its
-///   proposal/report-edit frames would silently drop. The compat modal
-///   forces a hard refresh.
-/// * `14` — issue #973 withdrew the proposal REST endpoints and web UI.
-///   Historical proposal event variants and `author_plugin_id` remain
-///   parseable, so `SYNC_EVENT_VERSION` stays 12.
-/// * `15` — issue #979 adds required `ifDocRev` to whole-document report
-///   writes and exposes `docRev` on report payloads.
-/// * `16` — issue #985 PR3a-i adds task-context frozen/advanced events and
-///   bumps `SYNC_EVENT_VERSION` 12 → 13 so older zod unions refresh safely.
+/// Monotonically increasing frontend compatibility floor.
 pub const WEB_COMPAT_VERSION: u32 = 16;
 
-/// Kernel compatibility values sourced from live constants. Kept in
-/// `calm-server` for PR 1 because the manifest type lives in `neige-app`,
-/// which cannot depend back on the kernel crate; PR 2 can use this as the
-/// source for emitting manifest v2 compatibility.
+/// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KernelCompatibility {

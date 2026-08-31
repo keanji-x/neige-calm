@@ -1,13 +1,4 @@
-//! Programmatic client for a card's `codex app-server` (issue #293 PR2).
-//!
-//! The push migration (#293) attaches a daemon-side control/observe
-//! channel to the *same* codex thread a human's `--remote unix://` TUI is
-//! driving, so the spec agents can switch from polling the kernel to a
-//! push subscription on the codex event stream. PR1's spike
-//! (`docs/spikes/293-appserver-thread-sharing.md`) verified this is
-//! possible against the real binary (codex-cli 0.133.0); this module is
-//! the Rust client that implements it. **It is NOT wired into the
-//! dispatcher yet** — that is PR3.
+//! Programmatic client for a card's `codex app-server` connection.
 //!
 //! ## Wire protocol (from the spike — build to these exactly)
 //!

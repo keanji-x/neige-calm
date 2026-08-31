@@ -1,118 +1,73 @@
-# Shared codex daemon architecture (issue #410)
+# Shared Codex daemon
 
-## What changed
+状态：当前架构。
 
-Pre-PR1, each codex-backed card spawned its own `codex app-server` child
-process inside a per-card `CODEX_HOME` directory. With dozens of cards, the
-kernel ran dozens of daemon processes and duplicated session-token, config, and
-cache state across per-card homes. Typical disk use was 1-2 GB per card times N
-cards, which made 20-50 GB calm workspaces easy to produce.
+## 边界
 
-Post-PR8, one `codex app-server` runs alongside the kernel as
-`SharedCodexAppServer` ([source](../../crates/calm-server/src/shared_codex_appserver.rs)).
-Codex-backed cards open a thread on this shared daemon and run their TUI as
-`codex resume <thread_id> --remote unix://<sock>`. The daemon's `CODEX_HOME`
-lives at `<data_dir>/codex-home/` and card-to-thread ownership is persisted in
-the `card_codex_threads` SQLite table
-([migration](../../crates/calm-server/migrations/0025_card_codex_threads.sql)).
+Kernel 只运行一个 `codex app-server`。所有 Codex-backed card 在共享 daemon 中拥有独立 thread，并通过持久映射关联：
 
-## Runtime
+```text
+card
+→ card_codex_threads
+→ daemon thread
+→ turn / hook / terminal projection
+```
 
-The shared codex app-server is mandatory. `Config`
-([source](../../crates/calm-server/src/config.rs)) controls restart backoff,
-log location, and codex binary resolution, but there is no supported off mode
-or legacy per-card/per-wave rollback path.
+共享 daemon 是必需组件，没有受支持的 per-card daemon 回退。它的 `CODEX_HOME` 位于 Neige data dir 下，由 kernel 管理配置、socket、日志和重启。
 
-## Data flow per card type
+共享进程减少重复 cache/config/token 磁盘开销，但也把 daemon 生命周期变成 kernel 级故障域；任何改动都要同时考虑所有 card。
 
-### Prompt user card (PR5)
+## Card 与 thread
 
-1. `POST /api/codex-cards` receives a non-empty prompt.
-2. The route calls `shared_codex.thread_start_for_card(card_id, Plain, ...)`,
-   which starts a daemon thread, upserts `card_codex_threads`, and caches the
-   thread-to-card mapping
-   ([source](../../crates/calm-server/src/shared_codex_appserver.rs)).
-3. The route calls `shared_codex.turn_start(thread_id, prompt)` to deliver turn
-   1 ([source](../../crates/calm-server/src/routes/codex_cards.rs)).
-4. The card payload is stamped with `codex_source: "shared"` and
-   `codex_thread_id`.
-5. The PTY spawn command is `codex resume <thread_id> --remote unix://<sock>`.
+- 有初始 prompt 的 card：先创建并持久绑定 thread，再启动 turn。
+- 空 prompt 的交互 card：进入 pending registry，daemon 报告 thread started 后完成绑定。
+- Spec card：使用相同 thread 机制，但带 Spec role 和产品指令。
+- Worker card：由 scheduler/dispatcher 创建，使用 Worker role 和稳定 task identity。
+- Reset：为同一 card 创建新 thread 并原子替换映射；旧 turn 被 interrupt，旧 thread 不再作为 card 权威。
 
-### Empty user card (PR6)
+Thread id 是 provider identity，card id 是产品 identity。调用方不能靠内存 cache 猜测二者关系；重启后以数据库映射恢复。
 
-1. `POST /api/codex-cards` receives an empty prompt.
-2. The route registers the card in `pending_codex_threads` with role `Plain`
-   before spawning the PTY ([route](../../crates/calm-server/src/routes/codex_cards.rs),
-   [registry](../../crates/calm-server/src/pending_codex_threads.rs)).
-3. The PTY spawn command is `codex --remote unix://<sock>`, so the TUI
-   fresh-starts the thread.
-4. The daemon emits `thread/started`; the pending registry binds the event to
-   the FIFO front entry.
-5. The card payload is backfilled with `codex_thread_id`.
+## 权限与环境
 
-### Spec card / wave create (PR7b)
+共享 daemon 的 MCP 配置位于 daemon home；每个 thread/card 通过受控环境和 session identity获得自己的 Neige capability。
 
-Non-empty title spec cards use the prompt-card pattern with `CardRole::Spec`
-and rendered spec developer instructions. Empty title spec cards use the
-empty-card pattern with `CardRole::Spec`; the developer instructions travel on
-the TUI argv as `codex -c developer_instructions=... --remote ...`
-([source](../../crates/calm-server/src/routes/waves.rs)).
+Spec、Worker 和 Plain 的工具权限不同。共享同一进程不意味着共享 actor、token 或 role。Hook/MCP 写入仍必须解析到 card/session 并通过 role gate。
 
-### Worker card (PR7b-worker)
+任何全局 daemon 配置变更都需要评估：
 
-The dispatcher mints the worker card and then calls
-`thread_start_for_card(Worker, ...)` to create the mapping. It starts the worker
-turn with the worker prompt and spawns `codex resume <thread_id> --remote
-unix://<sock>`. Worker cards are hands-free and do not interact with the
-spec-push registry. Hook callbacks such as `task.completed` and `task.failed`
-resolve `card_id` through the bridge identity
-([source](../../crates/calm-server/src/dispatcher.rs)).
+- 是否影响已经存在的 thread；
+- 是否改变所有 card 的 approval/sandbox；
+- 是否需要重建 daemon；
+- 重建期间如何恢复 mapping、turn 和 terminal。
 
-### Reset (PR7b-reset)
+## 运行与恢复
 
-Shared spec-card reset mints a new thread and upserts `card_codex_threads`,
-replacing the old mapping for that card. The old turn is interrupted with
-`turn/interrupt`; the old thread remains loaded in the daemon because codex
-0.135 has no close RPC
-([source](../../crates/calm-server/src/routes/cards.rs)).
+Kernel 负责：
 
-## `card_codex_threads` table (PR2 + PR2b)
+- 启动与健康检查；
+- 有界退避重启；
+- 重新加载 card/thread 映射；
+- 重连 observation stream；
+- 对 pending thread 建立超时和失败原因；
+- 在 daemon 丢失时让 operation/runtime 进入可解释状态。
 
-Migration 0025 created `card_codex_threads`, keyed it by `card_id` with a unique
-constraint, and backfilled existing spec-card payload thread IDs
-([migration](../../crates/calm-server/migrations/0025_card_codex_threads.sql)).
-The table stores `(thread_id, role, wave_id)` and is the authoritative boot
-takeover read path for shared daemon threads
-([takeover](../../crates/calm-server/src/lib.rs)). UPSERT semantics in
-`card_codex_thread_upsert_tx` naturally support reset replacing one thread with
-another ([source](../../crates/calm-server/src/db/sqlite.rs)).
+Broadcast 或内存 registry 不能成为唯一事实。Daemon 重启后，数据库映射、provider thread list 和 runtime projection需要 reconcile。
 
-## Followup gates closed (post-PR7b-reset)
+同一 card 同时只能有一个 authoritative thread mapping。旧 thread 的迟到 hook 必须根据 session/thread identity 拒绝，不能写到新 runtime。
 
-| Gate | PR closing | Mechanism |
-|---|---|---|
-| #1 Runtime proxy hot-reload | PR-gates-easy | `mark_needs_respawn` records settings drift; next shared thread start reaps and respawns the daemon ([source](../../crates/calm-server/src/shared_codex_appserver.rs)) |
-| #2 TTL-expire payload clear | PR-gates-easy | TTL expiry calls `drop_stale_entry`, matching dead-terminal expiry ([source](../../crates/calm-server/src/pending_codex_threads.rs)) |
-| #3 Front-dead-then-continue race | PR-gate-front-dead | Stale FIFO front entries are dropped instead of reusing the same thread ID ([source](../../crates/calm-server/src/pending_codex_threads.rs)) |
-| #4 Persist-failure rollback for empty pending | PR-gates-easy | Empty shared paths persist card state before `pending.register()` ([user cards](../../crates/calm-server/src/routes/codex_cards.rs), [spec cards](../../crates/calm-server/src/routes/waves.rs)) |
-| #5 / #6 / #5b Orphan in-flight turn cleanup | PR-gates-orphan-thread | `turn/interrupt` is sent on card delete, spawn failure, and reset cleanup ([client](../../crates/calm-server/src/codex_appserver.rs), [reset](../../crates/calm-server/src/routes/cards.rs)) |
+## 已知限制
 
-## Known limitations
+- Provider 未提供可靠 thread close 时，reset 后的旧 thread 可能继续占 daemon 内存，但不能再被产品引用。
+- 共享 daemon 故障会影响所有 Codex card；隔离靠 thread/session 权限，不靠进程边界。
+- Empty-card pending 绑定依赖 provider started event，必须对乱序、重复和超时 fail closed。
+- Daemon 内部 transcript 是 provider 事实，不替代 Neige 的 task/report/operation 权威。
 
-- **codex 0.135 lacks `thread/close`**: interrupted threads remain loaded in
-  shared daemon memory. Current cleanup interrupts known orphaned turns, but
-  unloaded-thread GC still needs a daemon-respawn pulse, admin GC, or codex
-  close RPC followup.
-- **Soft-deterministic FIFO attribution**: empty cards rely on PTY spawn order
-  matching `thread/started` arrival order. Cross-attribution is prevented by
-  gate #3 at the cost of occasional missed binds, recoverable via TTL and user
-  retry.
-- **Operator telemetry pending**: PR-gates-easy added structured tracing under
-  `shared_codex_daemon::*` targets. Staging validation is recommended before
-  this ships to production.
+## 必须保持的测试
 
-## Resume points
-
-If issues are observed in production:
-
-1. Rollback after PR7c: redeploy a pre-PR8 binary. There is no runtime flag.
+- 多 card 并发创建不会交叉绑定 thread。
+- Kernel 在持久绑定前崩溃不会留下看似可用的 card。
+- Reset 后旧 thread hook 不能修改新 session。
+- Daemon 重启后映射恢复，不重复创建 worker turn。
+- Spec/Worker/Plain 的 MCP capability 不串权。
+- Pending thread started event 重复、乱序或缺失时结果明确。
+- 全局 daemon 重建不会丢失产品状态或把运行中状态伪装成成功。

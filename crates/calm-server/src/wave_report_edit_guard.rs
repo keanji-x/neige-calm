@@ -83,10 +83,18 @@ pub(crate) fn normalize_report_op(
 }
 
 /// Enforce task provenance and user-only control after every report operation.
+///
+/// `block_delete_id` is the block a *block-level* delete op targeted (after
+/// [`normalize_report_op`], so a user delete — which is rewritten into an
+/// in-place tombstone — never reaches here as a delete). It is the one way a
+/// live task declaration may leave the document: every other write shape
+/// (whole-document `write`/`write_markdown`, upsert) that makes a live task
+/// block disappear is rejected, for *every* author (#1179).
 pub(crate) fn guard_task_declarations(
     before: &[ReportBlock],
     after: &[ReportBlock],
     author: EditAuthor,
+    block_delete_id: Option<&str>,
 ) -> Result<(), CalmError> {
     let before_by_id: HashMap<_, _> = before.iter().map(|block| (&block.id, block)).collect();
     let after_by_id: HashMap<_, _> = after.iter().map(|block| (&block.id, block)).collect();
@@ -175,23 +183,32 @@ pub(crate) fn guard_task_declarations(
                 old.id
             )));
         }
-        if author == EditAuthor::User && !is_tombstone(old) && !next.is_some_and(is_task) {
+        if !is_tombstone(old) && !next.is_some_and(is_task) && block_delete_id != Some(&old.id) {
             let key = string_field(old, "key");
-            let has_tombstone = after.iter().any(|block| {
-                is_task(block)
-                    && is_tombstone(block)
-                    && string_field(block, "key") == key
-                    && string_field(block, "tombstoned_by") == Some("user")
-                    && !before_by_id.get(&block.id).is_some_and(|before_block| {
-                        is_task(before_block)
-                            && is_tombstone(before_block)
-                            && string_field(before_block, "key") == key
-                            && string_field(before_block, "tombstoned_by") == Some("user")
-                    })
+            // A whole-document write may retire a task only by carrying a
+            // *fresh* tombstone for the same key attributed to the writer
+            // itself — never to some other author (that is forgery, caught
+            // above) and never by reusing a same-key tombstone that already
+            // existed before the write. Reserved writers (kernel/plugin) have
+            // no attribution name and so can never satisfy this: they fail
+            // closed.
+            let has_tombstone = author_name(author).is_some_and(|writer| {
+                after.iter().any(|block| {
+                    is_task(block)
+                        && is_tombstone(block)
+                        && string_field(block, "key") == key
+                        && string_field(block, "tombstoned_by") == Some(writer)
+                        && !before_by_id.get(&block.id).is_some_and(|before_block| {
+                            is_task(before_block)
+                                && is_tombstone(before_block)
+                                && string_field(before_block, "key") == key
+                                && string_field(before_block, "tombstoned_by") == Some(writer)
+                        })
+                })
             });
             if !has_tombstone {
                 return Err(bad(format!(
-                    "user deletion of task block {} must use the block-level DELETE endpoint",
+                    "deletion of task block {} must use the block-level DELETE endpoint",
                     old.id
                 )));
             }
@@ -323,17 +340,21 @@ mod tests {
 
         // 1: attribution is pinned to the writer; reserved writers fail closed.
         assert!(
-            guard_task_declarations(&[], std::slice::from_ref(&user), EditAuthor::Spec).is_err()
+            guard_task_declarations(&[], std::slice::from_ref(&user), EditAuthor::Spec, None)
+                .is_err()
         );
         for author in [EditAuthor::Kernel, EditAuthor::Plugin] {
-            assert!(guard_task_declarations(&[], std::slice::from_ref(&spec), author).is_err());
+            assert!(
+                guard_task_declarations(&[], std::slice::from_ref(&spec), author, None).is_err()
+            );
         }
         // 2: declared_by cannot change, including the live -> tombstone transition.
         assert!(
             guard_task_declarations(
                 std::slice::from_ref(&spec),
                 std::slice::from_ref(&user),
-                EditAuthor::User
+                EditAuthor::User,
+                None
             )
             .is_err()
         );
@@ -345,7 +366,8 @@ mod tests {
             guard_task_declarations(
                 std::slice::from_ref(&spec),
                 &[changed_owner_tombstone],
-                EditAuthor::User
+                EditAuthor::User,
+                None
             )
             .is_err()
         );
@@ -358,7 +380,8 @@ mod tests {
             guard_task_declarations(
                 std::slice::from_ref(&user_tombstone),
                 &[spec_tombstone],
-                EditAuthor::User
+                EditAuthor::User,
+                None
             )
             .is_err()
         );
@@ -366,21 +389,25 @@ mod tests {
             guard_task_declarations(
                 std::slice::from_ref(&user_tombstone),
                 std::slice::from_ref(&spec),
-                EditAuthor::User
+                EditAuthor::User,
+                None
             )
             .is_err()
         );
         // 3: no non-user writer may modify/delete either form of user control.
         for author in [EditAuthor::Spec, EditAuthor::Kernel, EditAuthor::Plugin] {
-            assert!(guard_task_declarations(std::slice::from_ref(&user), &[], author).is_err());
             assert!(
-                guard_task_declarations(std::slice::from_ref(&user_tombstone), &[], author)
+                guard_task_declarations(std::slice::from_ref(&user), &[], author, None).is_err()
+            );
+            assert!(
+                guard_task_declarations(std::slice::from_ref(&user_tombstone), &[], author, None)
                     .is_err()
             );
         }
         // 4': whole-document deletion cannot bypass the block delete rewrite.
         assert!(
-            guard_task_declarations(std::slice::from_ref(&spec), &[], EditAuthor::User).is_err()
+            guard_task_declarations(std::slice::from_ref(&spec), &[], EditAuthor::User, None)
+                .is_err()
         );
         let older_same_key_tombstone = block(
             "b_older_tombstone",
@@ -390,7 +417,8 @@ mod tests {
             guard_task_declarations(
                 &[spec.clone(), older_same_key_tombstone.clone()],
                 &[older_same_key_tombstone],
-                EditAuthor::User
+                EditAuthor::User,
+                None
             )
             .is_err(),
             "an unrelated pre-existing same-key tombstone must not authorize deletion"
@@ -399,8 +427,13 @@ mod tests {
         let mut released = spec.clone();
         released.payload["released_by_user"] = json!(true);
         assert!(
-            guard_task_declarations(std::slice::from_ref(&spec), &[released], EditAuthor::Spec)
-                .is_err()
+            guard_task_declarations(
+                std::slice::from_ref(&spec),
+                &[released],
+                EditAuthor::Spec,
+                None
+            )
+            .is_err()
         );
     }
 
@@ -602,5 +635,152 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, CalmError::BadRequest(_)));
+    }
+
+    /// #1179: the whole-document shapes drop a task fence silently unless the
+    /// delete rule covers every author, not just the user.
+    #[test]
+    fn no_author_may_delete_a_live_task_through_a_whole_document_write() {
+        for author in [
+            EditAuthor::User,
+            EditAuthor::Spec,
+            EditAuthor::Kernel,
+            EditAuthor::Plugin,
+        ] {
+            for operation in [
+                ReportDocOp::WriteMarkdown {
+                    summary: None,
+                    body: "# replacement\n".into(),
+                    if_doc_rev: 0,
+                },
+                ReportDocOp::Replace {
+                    summary: None,
+                    body: "# replacement\n".into(),
+                    if_doc_rev: 0,
+                },
+            ] {
+                let (mut doc, _, _) = doc_with_task("spec");
+                let error = apply_report_op(&mut doc, &operation, author).unwrap_err();
+                let CalmError::BadRequest(message) = &error else {
+                    panic!("{author:?} whole-document delete must be a 400: {error:?}");
+                };
+                assert!(
+                    message.contains("block-level DELETE"),
+                    "{author:?}: {message}"
+                );
+            }
+        }
+    }
+
+    /// The sanctioned escape hatch stays open: a block-level delete of a task
+    /// the author itself declared still goes through.
+    #[test]
+    fn block_level_delete_of_an_own_task_remains_allowed_for_every_author() {
+        for author in [EditAuthor::Spec, EditAuthor::Kernel, EditAuthor::Plugin] {
+            let (mut doc, task, _) = doc_with_task("spec");
+            apply_report_op(
+                &mut doc,
+                &ReportDocOp::DeleteBlock {
+                    id: task.id.clone(),
+                    if_rev: task.rev,
+                },
+                author,
+            )
+            .unwrap_or_else(|error| {
+                panic!("{author:?} block-level delete must pass the guard: {error:?}")
+            });
+            assert!(
+                doc.blocks_snapshot()
+                    .unwrap()
+                    .iter()
+                    .all(|block| block.id != task.id)
+            );
+        }
+        // The user's block-level delete is rewritten into an in-place
+        // tombstone before the guard runs, so it keeps its own shape.
+        let (mut doc, task, _) = doc_with_task("spec");
+        apply_report_op(
+            &mut doc,
+            &ReportDocOp::DeleteBlock {
+                id: task.id.clone(),
+                if_rev: task.rev,
+            },
+            EditAuthor::User,
+        )
+        .expect("user block-level delete stays legal");
+        let after = doc.blocks_snapshot().unwrap();
+        let tombstone = after.iter().find(|block| block.id == task.id).unwrap();
+        assert_eq!(tombstone.payload["tombstoned_by"], "user");
+    }
+
+    /// The exemption is scoped to the block the delete op named: a delete that
+    /// also drops some *other* task block is still rejected.
+    #[test]
+    fn block_delete_exemption_covers_only_the_block_the_op_named() {
+        let deleted = block("b_deleted", live("spec"));
+        let collateral = block("b_collateral", live("spec"));
+        let error = guard_task_declarations(
+            &[deleted.clone(), collateral],
+            std::slice::from_ref(&deleted),
+            EditAuthor::Spec,
+            Some("b_deleted"),
+        )
+        .unwrap_err();
+        assert!(matches!(error, CalmError::BadRequest(_)));
+    }
+
+    /// A whole-document write may retire a task by carrying a fresh tombstone
+    /// of its own — for the writer that signs it, and only for that writer.
+    #[test]
+    fn whole_document_retirement_needs_a_fresh_tombstone_signed_by_the_writer() {
+        for (author, writer, other) in [
+            (EditAuthor::User, "user", "spec"),
+            (EditAuthor::Spec, "spec", "user"),
+        ] {
+            let old = block("b_task", live(writer));
+            let mine = block(
+                "b_tombstone",
+                json!({"key":"build","tombstone":{"reason":null},"declared_by":writer,"tombstoned_by":writer}),
+            );
+            guard_task_declarations(
+                std::slice::from_ref(&old),
+                std::slice::from_ref(&mine),
+                author,
+                None,
+            )
+            .expect("a fresh self-signed tombstone retires the declaration");
+
+            // Someone else's signature does not authorize this writer.
+            let theirs = block(
+                "b_tombstone",
+                json!({"key":"build","tombstone":{"reason":null},"declared_by":writer,"tombstoned_by":other}),
+            );
+            assert!(
+                guard_task_declarations(
+                    std::slice::from_ref(&old),
+                    std::slice::from_ref(&theirs),
+                    author,
+                    None,
+                )
+                .is_err(),
+                "{author:?} must not lean on a {other} tombstone"
+            );
+
+            // A same-key tombstone that already existed is not a new one.
+            let stale = block(
+                "b_old_tombstone",
+                json!({"key":"build","tombstone":{},"declared_by":writer,"tombstoned_by":writer}),
+            );
+            assert!(
+                guard_task_declarations(
+                    &[old.clone(), stale.clone()],
+                    std::slice::from_ref(&stale),
+                    author,
+                    None,
+                )
+                .is_err(),
+                "{author:?} must not reuse a pre-existing tombstone"
+            );
+        }
     }
 }

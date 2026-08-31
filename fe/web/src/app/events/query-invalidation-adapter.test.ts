@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { CoveWire } from '../../../../core/domain/cove.ts';
-import type { WireEvent } from '../../../../core/api/schemas.ts';
+import { wireEventSchema, type WireEvent } from '../../../../core/api/schemas.ts';
 import type { CacheWrite } from '../../../../core/events/invalidation-plan.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
@@ -39,9 +39,40 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['overlays', 'card'])).toEqual(queryKeys.overlaysByKind('card'));
     expect(mapPlannedQueryKey(['harness-items', 'card-1'])).toEqual(queryKeys.harnessItems('card-1'));
     expect(mapPlannedQueryKey(['spec-run', 'card-1'])).toEqual(queryKeys.specRun('card-1'));
+    expect(mapPlannedQueryKey(['wave-report', 'w1'])).toEqual(queryKeys.waveReport('w1'));
+    expect(mapPlannedQueryKey(['wave-report'])).toEqual(queryKeys.waveReportPrefix());
     for (const dropped of [['wave-files'], ['wave-files', 'w1'], ['waves-range'], ['wave-backlinks'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
+  });
+
+  /*
+   * The wave-report key is mapped in BOTH arities, and the bare one is the
+   * point: dropping it — the treatment every other bare key gets — would leave
+   * the TASKS panel dead for exactly the four events that change it.
+   *
+   * These four payloads are the ones the kernel actually emits, and they go
+   * through `wireEventSchema` rather than a cast so a hand-written shape cannot
+   * stand in for the wire. Note what they carry: `idempotency_key` is the task
+   * id, and a task id is `"{wave_id}:{key}"`. The wave id is therefore present
+   * in the bytes — the plan's `derivedWaveId` reads named fields only and does
+   * not take an opaque id apart, which is why the *plan* cannot key these by
+   * wave. "Carries no wave id at all" would be the wrong reason.
+   */
+  it.each([
+    ['task.dispatched', { idempotency_key: 'w-7:alpha', kind: 'codex' }],
+    ['task.completed', { idempotency_key: 'w-7:alpha', result: null, artifacts: [] }],
+    ['task.failed', { idempotency_key: 'w-7:alpha', reason: 'gate red' }],
+    ['task.gate_result', {
+      task_id: 'w-7:alpha', idempotency_key: 'w-7:alpha', passed: false,
+      log_tail: '', log_path: '/tmp/gate.log', attempt: 1,
+    }],
+  ] as const)('reaches the task-verdict cache for %s, whose wave id is only inside its task id', (ev, data) => {
+    const event = wireEventSchema.parse({ ev, data });
+    expect(event.data).toMatchObject({ idempotency_key: 'w-7:alpha' });
+    const plan = invalidationPlanFor(event);
+    const mapped = plan.invalidate.map(mapPlannedQueryKey).filter((key) => key !== null);
+    expect(mapped).toContainEqual(queryKeys.waveReportPrefix());
   });
 
   it('never emits a key the built surface does not define', () => {

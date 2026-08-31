@@ -1,75 +1,18 @@
-// ConfirmDialog — a small opinionated wrapper around `<Dialog>` for
-// destructive-action confirmations (delete wave, remove cove, etc.).
-//
-// What this primitive adds on top of Dialog
-// -----------------------------------------
-// 1. **Cancel-safe default focus.** Initial focus lands on the *Cancel*
-//    button, not Confirm. A user who reflexively mashes Enter when the
-//    dialog appears will dismiss it, not nuke their data. Implemented by
-//    passing Dialog's `initialFocusRef` to our Cancel button.
-//
-// 2. **Esc + outside-click route to onCancel.** Dialog already handles
-//    Esc and outside-click via its `onClose` prop; we wire `onClose` to
-//    `onCancel` so call sites don't have to think about two distinct
-//    dismissal callbacks. The contract: every non-confirm exit (Esc,
-//    overlay click, Cancel button, header X) calls `onCancel`.
-//
-// 3. **Destructive visual.** The Confirm button gets the `go warn` class
-//    (existing red-ish variant in `web/src/calm.css`) when `destructive`
-//    is true (the default for this primitive). Pass `destructive={false}`
-//    for a non-destructive confirmation (e.g. "Save changes?").
-//
-// What this primitive deliberately does NOT do
-// --------------------------------------------
-// - No focus trap of its own — inherited from Dialog.
-// - No Esc handler of its own — inherited from Dialog.
-// - No new CSS — uses existing `go` / `go warn` / `go outline` classes.
-// - No built-in spinner or pending visual — call sites that want one can
-//   layer it into `description` or compose it next to the dialog.
-//
-// What this primitive opts INTO for the "stay open while pending" pattern
-// -----------------------------------------------------------------------
-// The `confirmDisabled` prop lets a call site keep the dialog mounted
-// during an in-flight async confirm without exposing a window where the
-// user can fire Confirm again. Cancel stays enabled — the Cancel-safe
-// default contract continues to hold even mid-await. The call site is
-// still responsible for actually awaiting its handler and flipping
-// `confirmDisabled` back to false (or closing) when the work resolves.
-//
-// See `web/src/ui/README.md` for the Visual / A11y / Test contracts and
-// `ConfirmDialog.contract.test.tsx` for the executable behavior spec.
+// Cancel owns initial focus and stays enabled while confirmation is pending.
 
 import { useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Dialog } from '../Dialog/Dialog';
 
 export interface ConfirmDialogProps {
-  /** Whether the dialog is mounted. */
   open: boolean;
-  /** Dialog title — also becomes the dialog's accessible name. */
   title: string;
-  /** Body content explaining what the destructive action will do. */
   description?: ReactNode;
-  /** Label on the Confirm (destructive) button. Defaults to `"Confirm"`. */
   confirmLabel?: string;
-  /** Label on the Cancel (safe) button. Defaults to `"Cancel"`. */
   cancelLabel?: string;
-  /** Called when the user activates Confirm. */
   onConfirm: () => void;
-  /** Called when the user dismisses via Cancel button, Esc, overlay
-   *  click, or the header close button. */
   onCancel: () => void;
-  /** When true (the default), Confirm gets the warn-variant button
-   *  styling (`go warn`). Set to false for non-destructive confirmations
-   *  where the primary action should not look dangerous. */
   destructive?: boolean;
-  /** When true, the Confirm button is disabled. Intended for the
-   *  "stay open while pending" pattern: a call site can set this to
-   *  `true` after the user clicks Confirm, keep the dialog mounted, and
-   *  flip it back to `false` (or close the dialog) once the async work
-   *  resolves. Cancel remains enabled — the Cancel-safe default contract
-   *  is preserved during the pending window so the user can still back
-   *  out. Defaults to `false`. */
   confirmDisabled?: boolean;
 }
 

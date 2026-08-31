@@ -5,8 +5,8 @@ The `core-no-web-styles` fixture directory is the styles-path case for the
 
 Dependency-cruiser fails closed on unresolvable imports, treats `styles` as a leaf
 that cannot import any runtime layer (`core`, `app`, `features`, `systems`, `ui`, or
-`main.tsx`), and prevents runtime code from importing verification-only `mock`,
-`tools`, `e2e`, or `web/e2e` modules so fixtures cannot enter bundles. Test-shaped
+`main.tsx`), and prevents runtime code from importing verification-only `tools`,
+`e2e`, or `web/e2e` modules so fixtures cannot enter bundles. Test-shaped
 files are the explicit exception to both restrictions: `*.test.*`,
 `*.contract.test.*`, `*.browser.test.*`, and `*.spec.*` may consume runtime layers
 from `styles` or consume verification domains.
