@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -692,6 +692,59 @@ describe('ChatThread’s exchange rail', () => {
     expect(setOuterScroll).not.toHaveBeenCalled();
     expect(railDots().some((dot) => dot.getAttribute('aria-current') !== null)).toBe(false);
     outer.remove();
+  });
+
+  /*
+   * ── How long a pointer must rest before the prompt floats out ─────────────
+   *
+   * The tier that computes no layout owning the *duration* looks backwards and
+   * is exactly right: whether the panel is in the document is not a layout
+   * fact. Where it lands is, and that half stays in `thread.browser.test.tsx`.
+   * The placement effect runs here too and reads all-zero boxes, which costs
+   * nothing — it writes `inset-block-start: 0px`, and nothing in this file
+   * reads it.
+   *
+   * **It is here because the browser tier measured the number against a wall
+   * clock, and a shared runner does not hold one still.** That case polled the
+   * wait and asserted the elapsed time into `(380, 650)` — a band the shipped
+   * 450 sits in the middle of, with 200ms of room for the driver's hover
+   * round-trip, the poll's own 20ms of resolution and the runner's scheduling.
+   * Run 33380223777 spent 671.6ms of it, 221.6ms of overhead on a 450ms delay,
+   * under a mutation of the app's providers that has nothing to do with the
+   * rail. A wider band does not repair that, it disarms the band: the floor
+   * was the half that rejected 300 and the ceiling the half that rejected 700,
+   * and the overhead only ever runs one way — the same 221.6ms that pushed 450
+   * past the ceiling lifts a 300ms delay to 520ms, past the floor. Load takes
+   * both halves at once, and moving the ceiling gives up the other one.
+   *
+   * **449 and 450 are written out rather than imported from `public.tsx`.**
+   * Importing `RAIL_PREVIEW_DELAY_MS` would make this green for every value of
+   * it, which is the exact hole the wall-clock band was widened into. Measured
+   * against these literals: at `RAIL_PREVIEW_DELAY_MS = 300` the panel is
+   * already up at the 449 step, and at 700 it is still absent one millisecond
+   * past 450.
+   */
+  it('holds the prompt back for the whole delay, then floats it out', () => {
+    vi.useFakeTimers();
+    try {
+      const { outer, pane } = drawerPane();
+      render(
+        <ChatThread conversation={conversation()} turns={exchangeTurns(EXCHANGE_RAIL_MIN)} />,
+        { container: pane },
+      );
+      const preview = () => document.querySelector('[data-nc-rail-preview]');
+      fireEvent.pointerEnter(railDots()[2], { pointerType: 'mouse' });
+      expect(preview()).toBeNull();
+
+      act(() => { vi.advanceTimersByTime(449); });
+      expect(preview()).toBeNull();
+      act(() => { vi.advanceTimersByTime(1); });
+      /* The prompt itself, so a panel that mounted empty is not a pass. */
+      expect(preview()?.textContent).toBe('Ask 2');
+      outer.remove();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
