@@ -630,7 +630,7 @@ function ExchangeRail({ exchanges, active, onJump }: {
   const repaintEnvelope = useRef(NOTHING_TO_REPAINT);
   /** The identity of the list, not its contents: what has to change for the
    *  dots to have moved. A fresh array of the same exchanges is not that. */
-  const exchangeKey = exchanges.map((exchange) => exchange.id).join(' ');
+  const exchangeKey = exchanges.map((exchange) => exchange.id).join('\0');
   const activeIndex = exchanges.findIndex((exchange) => exchange.id === active);
   const rovedIndex = roved === null
     ? -1

@@ -235,7 +235,7 @@
        to fill the seam would read as a blob, not as a swell. */
     --nc-rail-dot-peak: 8px;
     /*
-     * The resting dot's fill: 3.40:1 on the light `--bg`. Carried as a property
+     * The resting dot's fill: 3.81:1 on the light `--bg`. Carried as a property
      * on the rail's root rather than written straight onto `.railDot::before`
      * for a reason that is easy to get wrong and was: the dark override has to
      * be a descendant selector (`[data-theme="dark"] …`), which outranks the
@@ -434,30 +434,36 @@
    * `--bg` is a step *darker* than the card in light mode and a step *lighter*
    * in dark — and every ratio the previous note quoted was against the card.
    * They are recomputed here against `--bg`, with the same oklch → linear sRGB
-   * conversion the repository's own `tools/styles/check-contrast.mjs` uses:
+   * conversion the repository's own `tools/styles/check-contrast.mjs` uses.
+   * **Both columns are run against today's tokens**, so the comparison is
+   * surface-against-surface and nothing else — `--bg` and the whole text ladder
+   * were re-hued by the colour-system change (`8c2b5703`), and a column left at
+   * its pre-merge figures would be comparing two things at once:
    *
-   *              vs --surface-card (old)      vs --bg (the seam)
-   *   --text-3   7.74 light / 6.48 dark       6.16 light / 8.11 dark
-   *   --text-4   2.30 light / 2.16 dark       1.83 light / 2.71 dark
+   *              vs --surface-card (the old gutter)  vs --bg (the seam)
+   *   --text-3   7.00 light / 6.47 dark              6.34 light / 8.10 dark
+   *   --text-4   2.11 light / 1.82 dark              1.91 light / 2.28 dark
    *
    * WCAG 1.4.11 asks 3:1, because this circle is the *entire* visible
    * affordance of an operable control at rest. So `--text-4` is still out —
-   * further out than before in light mode, where the seam takes it from 2.30
-   * down to 1.83 — and `--text-3` still passes comfortably.
+   * further out than before in light mode, where the seam takes it from 2.11
+   * down to 1.91 — and `--text-3` still passes comfortably.
    *
    * **But `--text-3` is not what this uses, and the reason is that it is now
-   * too loud rather than too quiet.** 6.16:1 and 8.11:1 is body-text contrast
+   * too loud rather than too quiet.** 6.34:1 and 8.10:1 is body-text contrast
    * for a column of decorative navigation ink printed down the edge of the
    * window; looked at in a live drawer, the seam read as a *line* rather than
    * as a scale. What the rail wants at rest is the quietest ink that still
    * clears 3:1 with room to spare. Walking the same conversion down the
-   * lightness ladder at the existing text chroma and hue puts the 3:1 boundary
-   * at roughly `L60%` light (3.13:1) and `L54%` dark (3.21:1) — both close
-   * enough to the line that a token nudge or a monitor profile could cross it.
+   * lightness ladder at the existing text chroma and hue puts the 3:1 line
+   * between `L62%` and `L64%` in light (3.24:1 and 2.99:1) and between `L52%`
+   * and `L54%` in dark (2.95:1 and 3.21:1) — the rungs either side of it are
+   * close enough that a token nudge or a monitor profile could cross it.
    *
-   * So the resting dot is **`oklch(58% 0.01 250)` light — 3.40:1 — and
-   * `oklch(56% 0.012 245)` dark — 3.49:1**: greyer than any text token, two
-   * lightness steps clear of the boundary in each theme, and not on it.
+   * So the resting dot is **`oklch(58% 0.01 250)` light — 3.81:1 — and
+   * `oklch(56% 0.012 245)` dark — 3.49:1**: greyer than any text token, and
+   * clear of the line rather than on it, by about six points of lightness in
+   * light and three in dark.
    *
    * **Why a raw `oklch()` here rather than a new token.** The token list is
    * locked by set equality in three places (`tokens.contract.test.ts`,
@@ -486,8 +492,8 @@
    * resting dot does on its own, which is deliberately little. The affordance
    * is completed by the two things a pointer's arrival brings — the
    * spread below and the preview — and by the active dot, which is
-   * `--accent` (6.00:1 light, 8.60:1 dark against `--bg`) at `--dot-sm`. Hover
-   * is `--text-2` (7.94:1 / 9.94:1). Both were re-checked against the seam's
+   * `--accent` (6.73:1 light, 8.61:1 dark against `--bg`) at `--dot-sm`. Hover
+   * is `--text-2` (8.20:1 / 9.92:1). Both were re-checked against the seam's
    * background rather than assumed to survive the move; both had room.
    */
   .railDot {
@@ -512,6 +518,39 @@
 
   .railDot:hover::before {
     background: var(--text-2);
+  }
+
+  /*
+   * **The focus ring is drawn *inside* the button, because the track clips
+   * everything outside it.**
+   *
+   * `.railTrack` is `overflow-y: auto`, and a scrollport on one axis is a
+   * scrollport on both — `overflow-x`'s computed value follows to `auto`,
+   * there being no `overflow` pair that scrolls one axis and lets the other
+   * paint out. The dot is `inline-size: 100%` of that 24px track, so its
+   * border box *is* the track's content box on the inline axis, and the global
+   * ring (`2px solid` at `outline-offset: 2px`, `styles/base.css`) reaches 4px
+   * past each inline edge — all of it outside the clip. What renders is not a
+   * faint ring but two horizontal dashes above and below the dot, the exact
+   * width of the track, with no vertical strokes at all. It is a geometric
+   * consequence of the two declarations, so it is the same in both themes;
+   * only the ring's colour is themed.
+   *
+   * A negative offset draws the ring flush inside the border box instead, so
+   * none of it is outside the clip on either axis, and there is room: the
+   * dot's own ink is 4px in a 24×12 row, which is more space than the 2px
+   * stroke needs. The alternative — move the clip up to `.rail` and let the
+   * track breathe — is not available, because the track has to be the
+   * scrollport (`--nc-rail-max` caps it, and every clamp in `public.tsx` reads
+   * its box).
+   *
+   * The browser tier measures the ring's reach against `.railTrack`'s box,
+   * which is the box that does the cutting. The case it replaces compared
+   * against the drawer's pane, which is two boxes out and clips nothing here —
+   * so it was green on a ring that was being cut in half.
+   */
+  .railDot:focus-visible {
+    outline-offset: -2px;
   }
 
   /*
@@ -638,7 +677,7 @@
      * padding against that arithmetic rather than trusting the two files to
      * have been changed together.
      *
-     * The cost is stated plainly: two shoulders of one opening each is 64px of
+     * The cost is stated plainly: two shoulders of two openings each is 64px of
      * the 320px cap, so what the reader sees at once is 256px of dots, about
      * 21 exchanges rather than 26. That is the price of a rail that does not
      * walk out from under the pointer, and it is not all loss — air above and

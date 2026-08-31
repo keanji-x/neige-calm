@@ -121,9 +121,12 @@
    * here. What it exists for is a caller that needs to put something *beside*
    * the card and cannot put it inside — today that is `features/chat`'s
    * exchange rail, which was in the transcript's own gutter and is now here.
-   * The element is handed to descendants through `DrawerSeamContext` in
-   * public.tsx and they portal into it; an unused seam is an empty box that
-   * paints nothing and takes no events.
+   * The element is not handed down at all: it is stamped with
+   * `data-nc-drawer-seam` and a descendant *finds* it, through
+   * `drawerSeamAround()` in public.tsx, then `createPortal`s into what it
+   * finds — see that function's note for why the seam meets its caller on a
+   * data attribute rather than on a context or a prop. An unused seam is an
+   * empty box that paints nothing and takes no events.
    *
    * **Why a sibling and not a child.** `.drawer` is `overflow: hidden` — the
    * clip that gives the card its rounded corners something to cut against —
@@ -152,7 +155,7 @@
    * the first Tab off the drawer container still lands on Close. The cost,
    * stated: a rail mounted here is the *last* stop in the drawer rather than
    * the second, so a reader tabbing to the composer now passes it. That is
-   * one stop, because the rail rovies (`features/chat/thread`), and it is the
+   * one stop, because the rail roves (`features/chat/thread`), and it is the
    * price of the card keeping the first stop it has always had.
    *
    * **Transparent by default, operable by exception.** The strip lies over the

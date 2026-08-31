@@ -1109,20 +1109,43 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 
   /*
-   * The focus ring used to be clipped. The button's border box began exactly on
-   * the pane's own left edge (the −8px pull cancelled the 8px padding), so the
-   * global `outline-offset: 2px` put the ring's leading stroke at x = −2, inside
-   * an `overflow: auto` box that cut it off. The gutter moved the button inside
-   * the padding; this is the assertion that keeps it there.
+   * ── The focus ring, measured against the box that actually clips it ───────
+   *
+   * This case used to compare the ring's leading stroke against `pane()`, and
+   * it passed on a ring that was being cut in half — the pane is two boxes out
+   * and clips nothing here. The box that clips is `.railTrack`: it is
+   * `overflow-y: auto`, so `overflow-x` computes to `auto` too, and the dot is
+   * `inline-size: 100%` of it, so a ring at the global `outline-offset: 2px`
+   * reaches 4px past each inline edge with nothing but clip on the other side.
+   * The stylesheet's `.railDot:focus-visible` note has the whole argument and
+   * the fix.
+   *
+   * The reach is read off the *focused* dot rather than assumed: the ring only
+   * exists under `:focus-visible`, which Chromium grants to a programmatic
+   * `focus()`, and the old case read `outlineOffset` from a dot that had no
+   * ring at all. Both inline edges, because a ring clipped on one side is the
+   * same defect as a ring clipped on both.
    */
-  it('leaves room for the focus ring inside the pane', async () => {
+  it('keeps the focus ring inside the box that clips it', async () => {
     await page.viewport(1400, 900);
     render(<RailPane turns={railTurns(8)} />);
     await frame();
-    const ring = Number.parseFloat(getComputedStyle(dots()[0]).outlineOffset) + 2;
-    expect(ring).toBeGreaterThan(0);
-    expect(dots()[0].getBoundingClientRect().left - ring)
-      .toBeGreaterThanOrEqual(pane().getBoundingClientRect().left);
+    dots()[0].focus();
+    await frame();
+
+    const ring = getComputedStyle(dots()[0]);
+    expect(ring.outlineStyle).toBe('solid');
+    const width = Number.parseFloat(ring.outlineWidth);
+    expect(width).toBeGreaterThan(0);
+
+    /* How far the outline's outer edge falls beyond the border box: the
+       offset pushes the outline edge outward and the stroke is painted
+       outward from there, so a negative offset brings the whole ring in. */
+    const reach = Number.parseFloat(ring.outlineOffset) + width;
+    const dot = dots()[0].getBoundingClientRect();
+    const track = railTrack().getBoundingClientRect();
+    expect(dot.left - reach).toBeGreaterThanOrEqual(track.left - 0.01);
+    expect(dot.right + reach).toBeLessThanOrEqual(track.right + 0.01);
   });
 
   /*
@@ -1140,12 +1163,12 @@ describe('the exchange rail, as the engine lays it out', () => {
    * **The surface changed, so this case had to be re-derived rather than
    * re-run.** In the transcript's gutter the dot sat on `--surface-card`; in
    * the seam it sits on the page, `--bg`. That is a real shift in both themes
-   * and it moves every ratio: `--text-3` goes 7.74 → 6.16 light and 6.48 → 8.11
-   * dark, `--text-4` 2.30 → 1.83 and 2.16 → 2.71. So the *background* this
-   * reads is the seam's, not the pane's, and reading the pane's would be
-   * measuring against a surface the dot is no longer on.
+   * and it moves every ratio: on today's tokens `--text-3` goes 7.00 → 6.34
+   * light and 6.47 → 8.10 dark, `--text-4` 2.11 → 1.91 and 1.82 → 2.28. So the
+   * *background* this reads is the seam's, not the pane's, and reading the
+   * pane's would be measuring against a surface the dot is no longer on.
    *
-   * The shipped ink is neither token: `oklch(58% 0.01 250)` light at 3.40:1 and
+   * The shipped ink is neither token: `oklch(58% 0.01 250)` light at 3.81:1 and
    * `oklch(56% 0.012 245)` dark at 3.49:1 — the quietest grey that still clears
    * 3:1 with room, which is what "greyer than the text ladder" has to mean if
    * it is to mean anything checkable. The upper bound is asserted as well as
@@ -1153,7 +1176,7 @@ describe('the exchange rail, as the engine lays it out', () => {
    * reverting to `--text-3` passes.
    *
    * Bound against `--text-4` explicitly, because that is the ink someone
-   * reaching for "quieter still" reaches for and it is 1.83:1 here — the
+   * reaching for "quieter still" reaches for and it is 1.91:1 here — the
    * assertion has to fail on it rather than merely not mention it.
    */
   it('paints the resting dot between 3:1 and the text ladder, against the page', async () => {
@@ -1175,11 +1198,12 @@ describe('the exchange rail, as the engine lays it out', () => {
 
     const ratio = contrast(ink, surface);
     expect(ratio).toBeGreaterThanOrEqual(3);
-    /* Clear of the boundary rather than sitting on it: the 3:1 line is around
-       `L60%` in this theme, and 3.2 is where a token nudge would cross it. */
+    /* Clear of the boundary rather than sitting on it: the 3:1 line is between
+       `L62%` and `L64%` in this theme, and 3.2 is where a token nudge would
+       cross it. */
     expect(ratio).toBeGreaterThan(3.2);
     /* And quieter than the ink ladder — this is a scale to glance at, not
-       body text down the edge of the window. `--text-3` is 6.16:1 here. */
+       body text down the edge of the window. `--text-3` is 6.34:1 here. */
     expect(ratio).toBeLessThan(5);
 
     /* The two tokens that were considered, measured against the same surface so
@@ -2417,6 +2441,48 @@ describe('the exchange rail, as the engine lays it out', () => {
     expect(stops()[1]).toBe('0');
 
     await scrollPaneTo(pane().scrollHeight);
+
+    expect(currentDot()).toBe(8);
+    expect(stops()[8]).toBe('0');
+    expect(stops().filter((stop) => stop === '0')).toHaveLength(1);
+  });
+
+  /*
+   * And the half the case above cannot see — which is the half the reset is
+   * actually for.
+   *
+   * That case focuses dot 2 before pressing it, so the rail is still holding
+   * focus when the lit dot moves, and the stop is carried by the effect's
+   * **focus transfer** rather than by `setRoved(null)`: delete the reset and
+   * that case stays green, named for it or not. The reset's own path is this
+   * one — the reader pressed a dot and then went back to the transcript, so
+   * focus has left the rail entirely and there is no focused dot for the
+   * transfer to move the stop to. It is also the path the component's note
+   * records as the measured original bug: click the second dot, scroll to the
+   * end, and the ninth dot is lit while the stop is still on the second.
+   */
+  it('gives the tab stop back when the reader has left the rail', async () => {
+    await page.viewport(1400, 900);
+    render(<RailPane turns={railTurns(9, 6)} />);
+    await frame();
+    await scrollPaneTo(0);
+    const stops = () => dots().map((dot) => dot.getAttribute('tabindex'));
+
+    dots()[1].focus();
+    dots()[1].click();
+    await settle();
+    expect(currentDot()).toBe(1);
+    expect(stops()[1]).toBe('0');
+
+    /* Back to reading. The pane is not focusable of its own accord, so it is
+       made a target here; what the case needs is only that `activeElement` is
+       somewhere outside the rail when the lit exchange changes. */
+    const scroller = pane();
+    scroller.setAttribute('tabindex', '-1');
+    scroller.focus();
+    expect(railTrack().contains(document.activeElement)).toBe(false);
+
+    await scrollPaneTo(scroller.scrollHeight);
 
     expect(currentDot()).toBe(8);
     expect(stops()[8]).toBe('0');
