@@ -1044,13 +1044,21 @@ async fn create_wave_with_spec_harness(
 
 /// Ensure the cove's single chat wave exists.
 ///
-/// The cwd is selected only while creating the wave: it is the claimed path
-/// with the fewest path components, breaking ties lexicographically. Cove
-/// folder claims cannot be equal, ancestors, or descendants of one another,
-/// so "closest to the cove root" is defined here as this deterministic shallow
-/// path ordering rather than containment. Once created, later folder claims or
-/// changes deliberately do not update the wave cwd, so an existing conversation
-/// cannot drift between working directories from one message to the next.
+/// The workspace is selected only while creating the wave. When the cove has
+/// folder claims it is the claimed path with the fewest path components,
+/// breaking ties lexicographically (attached semantics: the user pointed at
+/// that directory). Cove folder claims cannot be equal, ancestors, or
+/// descendants of one another, so "closest to the cove root" is defined here as
+/// this deterministic shallow path ordering rather than containment.
+///
+/// #1147 D10 — a cove with **no** claim gets a managed default instead of the
+/// 409 this used to return. Since #1109 made coves pure namespaces, "no claim"
+/// is the normal state of a new cove, so that 409 made
+/// `POST /api/coves/{id}/conversations` fail by definition for every new cove.
+///
+/// Once created, later folder claims or changes deliberately do not update the
+/// wave's workspace, so an existing conversation cannot drift between working
+/// directories from one message to the next.
 #[utoipa::path(
     post,
     path = "/api/coves/{cove_id}/chat-wave/ensure",
@@ -1059,7 +1067,10 @@ async fn create_wave_with_spec_harness(
     responses(
         (status = 200, description = "Existing chat wave", body = Wave),
         (status = 201, description = "Chat wave created", body = Wave),
-        (status = 409, description = "Cove has no claimed folder", body = ErrorBody),
+        // #1147 D10 removed the "cove has no claimed folder" 409: a claimless
+        // cove now gets a managed default. Do not re-add a 409 here without a
+        // branch that can actually produce one.
+
         (status = 404, description = "Cove not found", body = ErrorBody),
     ),
 )]
@@ -1203,6 +1214,9 @@ async fn create_wave_structure(
         template_key,
         workspace_plan,
     } = options;
+    // #1147 — captured before `s` is moved into the write closure. Only the
+    // managed branch uses it; `materialize_workspace` ignores it for attached.
+    let workspace_root_for_materialize = s.workspace_root.clone();
     let spec_card_id = new_id();
     let report_card_id = new_id();
     let actor_id = actor.to_actor_id();
@@ -1520,7 +1534,12 @@ async fn create_wave_structure(
     // different, recoverable failure) — but that returns 201 for a wave whose
     // first codex worker will then die with `spawn-failed`, which is #1147
     // itself replayed one layer down.
-    crate::workspace_materialize::materialize_workspace(&wave.workspace).map_err(|error| {
+    crate::workspace_materialize::materialize_workspace(
+        &wave.workspace,
+        &workspace_root_for_materialize,
+        wave.id.as_str(),
+    )
+    .map_err(|error| {
         tracing::error!(
             wave_id = %wave.id,
             path = %wave.workspace.path,

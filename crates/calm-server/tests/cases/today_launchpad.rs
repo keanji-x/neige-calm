@@ -6,6 +6,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use calm_server::db::RepoRead;
 use calm_server::{
     card_role_cache::CardRoleCache,
     db::{Repo, RepoOutOfDomain, sqlite::SqlxRepo},
@@ -32,9 +33,23 @@ struct Boot {
 async fn boot() -> Boot {
     let tmp = TempDir::new().unwrap();
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    boot_with(tmp, repo, "workspaces").await
+}
+
+/// #1147 S2 (red-team B1) — a second `AppState` over the **same** database and
+/// a **different** workspace root, i.e. exactly what a production upgrade (or a
+/// `CALM_WORKSPACE_ROOT` change) looks like to the rows already in
+/// `operations`.
+async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
     let waves = WaveCoveCache::new();
+    // Seeded from the DB, not left empty: `boot_with` is also used to build a
+    // SECOND server over an existing database (the B1 upgrade fixture), and an
+    // empty role cache would make `ensure` fail to recognise the existing spec
+    // card and try to mint a second one.
+    repo.seed_card_role_cache(&roles).await.unwrap();
+    repo.seed_wave_cove_cache(&waves).await.unwrap();
     let events = EventBus::new();
     let daemon = Arc::new(DaemonClient {
         data_dir: tmp.path().join("data"),
@@ -65,7 +80,7 @@ async fn boot() -> Boot {
     ))
     // #1147 S2 — keep every managed workspace this test mints inside the
     // sandbox, and make the root's location assertable.
-    .with_workspace_root(tmp.path().join("workspaces"));
+    .with_workspace_root(tmp.path().join(root_name));
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -74,7 +89,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         repo,
-        workspace_root: tmp.path().join("workspaces"),
+        workspace_root: tmp.path().join(root_name),
         _tmp: tmp,
     }
 }
@@ -596,5 +611,87 @@ async fn launchpad_workspace_is_materialized() {
 
     // `ensure` is idempotent, and so is materialize.
     let (status, body) = ensure(b.app).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+}
+
+/// #1147 S2 (red-team B1, blocking) — a workspace re-point must not wedge the
+/// Today panel on a stale idempotency key.
+///
+/// The `spec-harness-start` payload carries `cwd`, and the operation runtime
+/// refuses a key already used with a *different* payload hash. A pre-S2
+/// database already holds `today-launchpad:<card>:reuse` rows hashed against
+/// the old path; once the upgrade re-points the workspace, every later `ensure`
+/// would resubmit that key with the new cwd and 409 — permanently, because
+/// nothing ever deletes rows from `operations`.
+///
+/// Reproduced through production paths only: run `ensure` to steady state
+/// under one root (minting a real `:reuse` operation row), then rebuild the
+/// server over the same database with a different root — which is what both a
+/// pre-S2 upgrade and a `CALM_WORKSPACE_ROOT` change look like from the DB's
+/// point of view. The two `ensure` calls afterwards are the first and second
+/// request after deploy; both must succeed.
+#[tokio::test]
+async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_key() {
+    let tmp = TempDir::new().unwrap();
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let before = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-old").await;
+    // Hold the old root's tempdir for the lifetime of this test.
+    let _old_tmp = before._tmp;
+
+    let (status, body) = ensure(before.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    // Steady state: this is the call that mints the `:reuse` operation row
+    // hashed against the OLD workspace path.
+    let (status, body) = ensure(before.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let old_path: String =
+        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    let reuse_keys: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%:reuse%'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        reuse_keys > 0,
+        "the fixture must have minted a `:reuse` operation row, otherwise there \
+         is no stale key to collide with and this test proves nothing"
+    );
+
+    // --- the upgrade ---
+    let after = boot_with(tmp, repo.clone(), "workspaces-new").await;
+
+    // 200, not 201: the launchpad was neither minted nor adopted, only
+    // re-pointed. What matters is that it is a success at all.
+    let (status, body) = ensure(after.app.clone()).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "first ensure after the re-point must succeed; body={body}"
+    );
+    let new_path: String =
+        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+    assert_ne!(
+        new_path, old_path,
+        "the fixture must actually re-point the workspace, otherwise the stale \
+         key never collides and this test proves nothing"
+    );
+
+    // The one that used to 409: `:reuse` again, now with the new cwd.
+    let (status, body) = ensure(after.app.clone()).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "second ensure after the re-point 409'd on a stale idempotency key — \
+         the Today panel is wedged with no self-healing path; body={body}"
+    );
+    // And it stays healed.
+    let (status, body) = ensure(after.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }

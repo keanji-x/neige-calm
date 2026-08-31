@@ -412,6 +412,8 @@ struct OperationAdapterInputs {
     harness: HarnessRegistry,
     mcp_server: Option<Arc<McpServer>>,
     gate_logs_dir: PathBuf,
+    /// #1147 D2 — see [`RouteState::workspace_root`].
+    workspace_root: PathBuf,
 }
 
 fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn ProviderAdapter>> {
@@ -461,6 +463,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.mcp_server.clone(),
         input.card_role_cache.clone(),
         input.wave_cove_cache.clone(),
+        input.workspace_root.clone(),
     ));
     let claude_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeAdapter::new(
         input.route_repo.clone(),
@@ -505,6 +508,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
     let child_wave_adapter: Arc<dyn ProviderAdapter> = Arc::new(ChildWaveAdapter::new(
         input.card_role_cache.clone(),
         input.wave_cove_cache.clone(),
+        input.workspace_root.clone(),
     ));
 
     vec![
@@ -563,12 +567,20 @@ impl AppState {
     /// test can silently materialize repositories into the developer's real
     /// `$HOME/neige-workspaces`; a test that wants to *inspect* the tree
     /// points this at its own `TempDir` instead.
+    ///
+    /// `fixtures`-gated because it MUST rebuild the operation runtime: the
+    /// codex-worker adapter carries its own copy of the root (it re-runs
+    /// materialization when taking a lease), and a stale copy there would make
+    /// the adapter reject the very workspace the routes just created — the
+    /// containment assertion would compare against the wrong root.
+    #[cfg(feature = "fixtures")]
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.route.workspace_root = root;
         // Release the auto-allocated sandbox: the caller supplied its own root,
         // so the default one is unreachable and would otherwise only be swept
         // when this state drops.
         self.workspace_root_guard = None;
+        self.rebuild_operation_runtime();
         self
     }
 
@@ -696,6 +708,14 @@ impl AppState {
         ));
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
         let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
+        // #1147 S2 — allocated before the adapters so the codex-worker adapter
+        // and the routes agree on one root (it re-materializes on lease).
+        let workspace_root_sandbox = Arc::new(
+            tempfile::Builder::new()
+                .prefix("neige-calm-test-workspaces-")
+                .tempdir()
+                .expect("allocate a managed-workspace sandbox for AppState::from_parts"),
+        );
         let operation_repo = Arc::new(SqlxOperationRepo::new(
             repo.sqlite_pool()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
@@ -714,6 +734,7 @@ impl AppState {
             harness: harness.clone(),
             mcp_server: None,
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+            workspace_root: workspace_root_sandbox.path().to_path_buf(),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -732,12 +753,6 @@ impl AppState {
             .with_shared_codex_appserver(shared_codex_appserver.clone()),
         ));
         let card_kind_registry = Arc::new(CardKindRegistry::builtins());
-        let workspace_root_sandbox = Arc::new(
-            tempfile::Builder::new()
-                .prefix("neige-calm-test-workspaces-")
-                .tempdir()
-                .expect("allocate a managed-workspace sandbox for AppState::from_parts"),
-        );
         let write = WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone());
         // PR5 (#136): every `AppState` carries a live dispatcher. Test
         // call sites that need to assert on dispatcher behavior reach
@@ -860,6 +875,7 @@ impl AppState {
             harness: self.harness.clone(),
             mcp_server: self.mcp_server.clone(),
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+            workspace_root: self.route.workspace_root.clone(),
         });
         let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -1107,6 +1123,7 @@ impl AppState {
             harness: harness.clone(),
             mcp_server: Some(mcp_server.clone()),
             gate_logs_dir: gate_logs_dir.clone(),
+            workspace_root: workspace_root.clone(),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(

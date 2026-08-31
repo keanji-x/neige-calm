@@ -227,6 +227,8 @@ async fn loop_fixture(tag: &str) -> LoopFixture {
         None,
         registry,
         daemon,
+        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     );
 

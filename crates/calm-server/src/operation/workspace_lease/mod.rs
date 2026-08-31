@@ -12,7 +12,7 @@ use crate::db::{RepoEventWrite, write_in_tx_typed};
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventBus, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
-use crate::model::{new_id, now_ms};
+use crate::model::{WaveWorkspaceKind, new_id, now_ms};
 use crate::proc_identity::read_boot_id;
 use calm_truth::decision_gate::PermissiveGate;
 
@@ -106,15 +106,40 @@ pub(crate) async fn prepare_workspace_lease_target_tx(
     tx: &mut Tx<'_>,
     wave_id: &str,
     card_id: &str,
+    workspace_root: &Path,
 ) -> Result<WorkspaceLeaseTarget> {
     validate_path_segment("wave_id", wave_id)?;
     validate_path_segment("card_id", card_id)?;
     // #1147 S1 — `waves.cwd` dropped by migration 0077.
-    let cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id = ?1")
-        .bind(wave_id)
-        .fetch_optional(&mut **tx)
-        .await?
-        .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+    let (kind, cwd): (String, String) =
+        sqlx::query_as("SELECT workspace_kind, workspace_path FROM waves WHERE id = ?1")
+            .bind(wave_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| CalmError::NotFound(format!("wave {wave_id}")))?;
+    // #1147 S2 (red-team B5) — last-chance materialize before a worker commits
+    // to this directory.
+    //
+    // Wave create materializes too, but that call happens after its
+    // transaction commits, so a failure there leaves a committed wave row
+    // pointing at a directory that does not exist, and NO other path would
+    // ever retry it. Every codex task on such a wave would then die in
+    // `git rev-parse --show-toplevel` with nothing but `spawn-failed`
+    // visible — which is precisely the bug #1147 was opened on, re-created by
+    // the slice meant to fix it.
+    //
+    // Idempotent and ~one `rev-parse` in the steady state (see
+    // `materialize_managed_workspace`), and a no-op for attached workspaces —
+    // those are the user's directories and must never be created or
+    // `git init`-ed here.
+    if WaveWorkspaceKind::try_from(kind).map_err(CalmError::Internal)? == WaveWorkspaceKind::Managed
+    {
+        crate::workspace_materialize::materialize_managed_workspace(
+            workspace_root,
+            Path::new(&cwd),
+            wave_id,
+        )?;
+    }
     let repo_root = git_repo_root_for_wave_cwd(wave_id, &cwd)?;
     Ok(WorkspaceLeaseTarget {
         path: workspace_lease_path_for(&repo_root, wave_id, card_id)?,
@@ -1305,7 +1330,10 @@ pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Resul
 }
 
 fn git_exclude_path(repo_root: &Path) -> Result<PathBuf> {
-    let output = Command::new("git")
+    // #1147 S2 (red-team B6) — env-isolated: this runs as part of
+    // materialization, and an inherited `GIT_DIR` would send the exclude file
+    // into a completely different repository.
+    let output = crate::workspace_materialize::neige_git_command()
         .arg("-C")
         .arg(repo_root)
         .args(["rev-parse", "--git-path", "info/exclude"])

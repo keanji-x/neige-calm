@@ -73,6 +73,21 @@ impl Drop for GitEnv {
     }
 }
 
+const WAVE: &str = "wave0000000000000000000000000001";
+
+/// `(root, repo_root)` for a fresh sandbox. The repository lives at
+/// `<root>/<cove>/<wave>` like production's `managed_workspace_path`.
+fn sandbox(tmp: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+    let root = tmp.path().join("root");
+    std::fs::create_dir_all(&root).unwrap();
+    let repo_root = super::managed_workspace_path(&root, "cove0000000000000000000000000001", WAVE);
+    (root, repo_root)
+}
+
+fn materialize(root: &Path, repo_root: &Path) -> crate::error::Result<()> {
+    materialize_managed_workspace(root, repo_root, WAVE)
+}
+
 fn head_resolves(path: &Path) -> bool {
     Command::new("git")
         .arg("-C")
@@ -102,8 +117,8 @@ fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
 #[test]
 fn materialized_workspace_hosts_a_worker_worktree() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo_root = tmp.path().join("cove").join("wave");
-    materialize_managed_workspace(&repo_root).unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).unwrap();
 
     let target = lease_target(&repo_root);
     provision_workspace_worktree(&target).expect("worktree add on a materialized workspace");
@@ -121,8 +136,8 @@ fn materialized_workspace_hosts_a_worker_worktree() {
 fn without_the_init_commit_the_worker_worktree_cannot_be_created() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo_root = tmp.path().join("cove").join("wave");
-    materialize_managed_workspace_inner(&repo_root, InitCommit::Skip).unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize_managed_workspace_inner(&root, &repo_root, WAVE, InitCommit::Skip).unwrap();
 
     // Prove the mutation actually applied: the whole point of step 3 is that
     // HEAD resolves afterwards.
@@ -143,7 +158,7 @@ fn without_the_init_commit_the_worker_worktree_cannot_be_created() {
 
     // …and the unmutated path succeeds on the same directory, so the failure
     // above is attributable to the missing commit and nothing else.
-    materialize_managed_workspace(&repo_root).unwrap();
+    materialize(&root, &repo_root).unwrap();
     assert!(head_resolves(&repo_root));
     provision_workspace_worktree(&target).expect("worktree add after the commit is restored");
 }
@@ -196,8 +211,8 @@ fn materialize_survives_a_global_gpgsign_config() {
          this test would pass without materialize overriding anything"
     );
 
-    let repo_root = tmp.path().join("cove").join("wave");
-    materialize_managed_workspace(&repo_root).expect("materialize under a hostile global config");
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).expect("materialize under a hostile global config");
     assert!(head_resolves(&repo_root));
 }
 
@@ -205,12 +220,12 @@ fn materialize_survives_a_global_gpgsign_config() {
 #[test]
 fn materialize_refuses_a_foreign_non_empty_directory() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo_root = tmp.path().join("cove").join("wave");
+    let (root, repo_root) = sandbox(&tmp);
     std::fs::create_dir_all(&repo_root).unwrap();
     std::fs::write(repo_root.join("someones-notes.md"), "hi").unwrap();
 
-    let error = materialize_managed_workspace(&repo_root)
-        .expect_err("a non-empty foreign directory must be refused");
+    let error =
+        materialize(&root, &repo_root).expect_err("a non-empty foreign directory must be refused");
     assert!(
         error.to_string().contains("refusing to reuse"),
         "unexpected error: {error}"
@@ -222,8 +237,8 @@ fn materialize_refuses_a_foreign_non_empty_directory() {
 #[test]
 fn materialize_is_idempotent() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo_root = tmp.path().join("cove").join("wave");
-    materialize_managed_workspace(&repo_root).unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).unwrap();
     let head = Command::new("git")
         .arg("-C")
         .arg(&repo_root)
@@ -232,7 +247,7 @@ fn materialize_is_idempotent() {
         .unwrap();
     std::fs::write(repo_root.join("worker-output.txt"), "produced").unwrap();
 
-    materialize_managed_workspace(&repo_root).expect("second materialize");
+    materialize(&root, &repo_root).expect("second materialize");
 
     let head_again = Command::new("git")
         .arg("-C")
@@ -256,8 +271,8 @@ fn materialize_is_idempotent() {
 #[test]
 fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let repo_root = tmp.path().join("cove").join("wave");
-    materialize_managed_workspace(&repo_root).unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).unwrap();
 
     let exclude = std::fs::read_to_string(repo_root.join(".git").join("info").join("exclude"))
         .expect("`.git/info/exclude` must exist");
@@ -290,4 +305,333 @@ fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
 fn managed_path_is_root_cove_wave() {
     let path = super::managed_workspace_path(Path::new("/srv/ws"), "cove1", "wave1");
     assert_eq!(path, Path::new("/srv/ws/cove1/wave1"));
+}
+
+// ---------------------------------------------------------------------------
+// S2 red-team fixtures.
+// ---------------------------------------------------------------------------
+
+/// Build a *third-party* git repository with real history and a working file,
+/// as if the user had put one of their projects on the derived path.
+fn third_party_repo(path: &Path) {
+    let _env = GitEnv::c_locale();
+    std::fs::create_dir_all(path).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["-c", "init.templateDir=", "-c", "init.defaultBranch=main"])
+            .arg("init")
+            .arg(path)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    std::fs::write(path.join("their-work.txt"), "a year of work\n").unwrap();
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["add", "."])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "user.name=Someone Else",
+                "-c",
+                "user.email=someone@example.com",
+                "commit",
+                "-m",
+                "their commit",
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+/// **B2** — "is it ours" must be decided by our own marker, never by "is this a
+/// git repository".
+///
+/// A third-party repository sitting on the derived path answers *yes* to the
+/// latter. Adopting it means the server appends to their `.git/info/exclude`,
+/// and — since S5 `remove_dir_all`s every `kind = Managed` directory — arms a
+/// deletion of the user's real work. Nothing about their repository may change.
+#[test]
+fn a_third_party_repository_on_the_derived_path_is_refused_untouched() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    third_party_repo(&repo_root);
+
+    let exclude = repo_root.join(".git/info/exclude");
+    let exclude_before = std::fs::metadata(&exclude).map(|m| m.len()).unwrap_or(0);
+    let head_before = Command::new("git")
+        .arg("-C")
+        .arg(&repo_root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let log_before = Command::new("git")
+        .arg("-C")
+        .arg(&repo_root)
+        .args(["log", "--format=%an <%ae>"])
+        .output()
+        .unwrap()
+        .stdout;
+
+    let error =
+        materialize(&root, &repo_root).expect_err("a third-party repository must never be adopted");
+    assert!(
+        error
+            .to_string()
+            .contains("carries no neige ownership marker"),
+        "unexpected error: {error}"
+    );
+
+    // Zero changes, byte for byte.
+    assert_eq!(
+        std::fs::metadata(&exclude).map(|m| m.len()).unwrap_or(0),
+        exclude_before,
+        "the server appended to a third party's .git/info/exclude"
+    );
+    assert_eq!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+        head_before,
+        "the server moved a third party's HEAD"
+    );
+    assert_eq!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo_root)
+            .args(["log", "--format=%an <%ae>"])
+            .output()
+            .unwrap()
+            .stdout,
+        log_before,
+        "the server added a commit to a third party's repository"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo_root.join("their-work.txt")).unwrap(),
+        "a year of work\n"
+    );
+    assert!(
+        !repo_root.join(".git").join(super::OWNER_MARKER).exists(),
+        "the server claimed ownership of a third party's repository"
+    );
+}
+
+/// **B2, single-violation fixture** — prove the marker is what refuses it.
+///
+/// Same third-party repository, but pre-marked as ours: materialize now
+/// proceeds. If the guard were "is this a git repository", the marker could not
+/// change the outcome and this assertion would fail — which is exactly what
+/// makes the test above attributable to the marker and not to some other check.
+#[test]
+fn the_marker_is_what_decides_adoption() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    third_party_repo(&repo_root);
+    std::fs::write(
+        repo_root.join(".git").join(super::OWNER_MARKER),
+        format!("{WAVE}\n"),
+    )
+    .unwrap();
+
+    materialize(&root, &repo_root)
+        .expect("a directory carrying our marker is ours and must be accepted");
+}
+
+/// **B2** — a marker naming a *different* wave is corruption, not an invitation.
+#[test]
+fn a_marker_for_another_wave_is_refused() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+    std::fs::write(
+        repo_root.join(".git").join(super::OWNER_MARKER),
+        "some-other-wave\n",
+    )
+    .unwrap();
+
+    let error = materialize(&root, &repo_root).expect_err("foreign marker must be refused");
+    assert!(
+        error.to_string().contains("not `"),
+        "unexpected error: {error}"
+    );
+}
+
+/// **B3** — a symlink out of the workspace root must be refused.
+///
+/// `create_dir_all` follows symlinks, so `<root>/<cove>` pointing elsewhere
+/// yields a stored path that satisfies every *lexical* `starts_with` while the
+/// repository — and all worker output in it — lives outside the tree S5
+/// believes it owns.
+#[test]
+#[cfg(unix)]
+fn a_symlink_out_of_the_root_is_refused() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let cove_dir = repo_root.parent().unwrap();
+    std::os::unix::fs::symlink(&elsewhere, cove_dir).unwrap();
+
+    // The stored path is lexically inside the root — this is the check that
+    // the invariant test and D8's prefix assertion would both be making.
+    assert!(repo_root.starts_with(&root));
+
+    let error =
+        materialize(&root, &repo_root).expect_err("a symlink out of the root must be refused");
+    assert!(
+        error.to_string().contains("outside the managed"),
+        "unexpected error: {error}"
+    );
+}
+
+/// **B3, single-violation fixture** — the same layout with a *real* directory
+/// instead of the symlink succeeds, so the refusal above is attributable to the
+/// symlink and not to the nested path shape.
+#[test]
+#[cfg(unix)]
+fn the_same_layout_without_a_symlink_succeeds() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    std::fs::create_dir_all(repo_root.parent().unwrap()).unwrap();
+    materialize(&root, &repo_root).expect("a real directory under the root is fine");
+}
+
+/// **B4** — concurrent materialization of one path must not tear.
+///
+/// The launchpad's `ensure` is expected to race with itself (it carries a
+/// unique-index retry), and materialization runs outside the transaction.
+/// Four-way concurrency previously produced `cannot lock config file
+/// .git/config` and a spurious "not a neige-managed repository".
+#[test]
+fn concurrent_materialization_of_one_path_all_succeed() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+
+    let errors: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let root = root.clone();
+                let repo_root = repo_root.clone();
+                scope.spawn(move || materialize(&root, &repo_root).err().map(|e| e.to_string()))
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().unwrap())
+            .collect()
+    });
+    assert!(
+        errors.is_empty(),
+        "concurrent materialize failed: {errors:?}"
+    );
+    assert!(head_resolves(&repo_root));
+}
+
+/// **B4** — a directory left half-built by a crash is repairable.
+///
+/// Simulated by marking the directory as ours and then destroying the
+/// repository under it, which is the state a process killed mid-`git init`
+/// leaves behind. Before the marker existed this was permanently
+/// un-materializable: non-empty, unrecognisable, 500 on every later call with
+/// no path back.
+#[test]
+fn a_half_built_workspace_of_ours_is_repaired() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).unwrap();
+
+    // Destroy everything except our marker, the way a crash mid-init would.
+    let marker = std::fs::read_to_string(repo_root.join(".git").join(super::OWNER_MARKER)).unwrap();
+    std::fs::remove_dir_all(repo_root.join(".git")).unwrap();
+    std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+    std::fs::write(repo_root.join(".git").join(super::OWNER_MARKER), marker).unwrap();
+    assert!(!head_resolves(&repo_root), "fixture did not break the repo");
+
+    materialize(&root, &repo_root).expect("a marked half-built workspace must be repaired");
+    assert!(head_resolves(&repo_root));
+}
+
+/// **B6** — the git *environment* is isolated, not just the config files.
+///
+/// Each of these was measured to break materialization when inherited.
+#[test]
+fn materialize_survives_hostile_git_environment_variables() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let poison = tmp.path().join("poison");
+    std::fs::create_dir_all(&poison).unwrap();
+    let env = GitEnv::set(&[
+        ("LC_ALL", std::ffi::OsStr::new("C")),
+        ("LANGUAGE", std::ffi::OsStr::new("")),
+        ("GIT_DIR", poison.as_os_str()),
+        ("GIT_WORK_TREE", poison.as_os_str()),
+        ("GIT_INDEX_FILE", poison.as_os_str()),
+        ("GIT_OBJECT_DIRECTORY", poison.as_os_str()),
+        ("GIT_AUTHOR_DATE", std::ffi::OsStr::new("not-a-date")),
+        ("GIT_COMMITTER_NAME", std::ffi::OsStr::new("")),
+    ]);
+
+    // Sanity: the injected environment really does break an un-isolated git,
+    // otherwise this test would pass without the isolation doing anything.
+    let control = tmp.path().join("control");
+    std::fs::create_dir_all(&control).unwrap();
+    let control_init = Command::new("git")
+        .args(["-c", "init.templateDir=", "-c", "init.defaultBranch=main"])
+        .arg("init")
+        .arg(&control)
+        .output()
+        .unwrap();
+    let control_commit = Command::new("git")
+        .arg("-C")
+        .arg(&control)
+        .args([
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=neige",
+            "-c",
+            "user.email=neige@localhost",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "control",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !control_init.status.success() || !control_commit.status.success(),
+        "the injected git environment did not break an un-isolated git; this \
+         test would pass without any isolation"
+    );
+
+    let tmp2 = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp2);
+    materialize(&root, &repo_root).expect("materialize under a hostile git environment");
+
+    // Restore the environment before verifying, so the repository is judged by
+    // a clean `git` — proving materialize produced a genuinely good repository
+    // rather than one that only looks good through the same isolation.
+    drop(env);
+    assert!(head_resolves(&repo_root));
+    let target = lease_target(&repo_root);
+    provision_workspace_worktree(&target).expect("worktree add on the isolated workspace");
 }

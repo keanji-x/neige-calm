@@ -110,6 +110,17 @@ fn launchpad_workspace(workspace_root: &Path, cove_id: &str, wave_id: &str) -> W
     }
 }
 
+/// Short, stable digest of a workspace path for use inside an idempotency key
+/// (red-team B1). Truncated because the key is a human-readable diagnostic
+/// string; collisions here would only merge two operations that already share
+/// a spec card and a start mode, and 64 bits is far past that bar.
+fn workspace_key_digest(path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    hex::encode(hasher.finalize())[..16].to_string()
+}
+
 fn spec_payload() -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": CODEX_PAYLOAD_SCHEMA_VERSION,
@@ -358,7 +369,12 @@ pub(crate) async fn ensure_today_launchpad(
     // would leave every codex task on the Today panel dying with
     // `spawn-failed` (`git rev-parse --show-toplevel` on a non-repository),
     // which is the exact defect #1147 opened on.
-    crate::workspace_materialize::materialize_workspace(&out.wave.workspace).map_err(|error| {
+    crate::workspace_materialize::materialize_workspace(
+        &out.wave.workspace,
+        &workspace_root,
+        out.wave.id.as_str(),
+    )
+    .map_err(|error| {
         tracing::error!(
             wave_id = %out.dto.wave_id,
             path = %out.wave.workspace.path,
@@ -405,9 +421,28 @@ pub(crate) async fn ensure_today_launchpad(
             "spec-harness-start",
             OperationKey {
                 operation_key: new_id(),
+                // #1147 S2 (red-team B1) — the workspace path is part of the
+                // key, not just of the payload.
+                //
+                // The operation runtime refuses an idempotency key that was
+                // already used with a *different* payload hash, and the
+                // payload carries `cwd`. A pre-S2 database already holds
+                // `today-launchpad:<card>:reuse` rows hashed against the old
+                // `<data_dir>/../launchpad` path; after the upgrade re-points
+                // the workspace, every subsequent `ensure` would submit that
+                // same key with a new cwd and be rejected — 409, on every
+                // request, forever, because nothing ever deletes rows from
+                // `operations`. The Today panel would be dead from the first
+                // request after deploy. The same mechanism fires on any
+                // `CALM_WORKSPACE_ROOT` change.
+                //
+                // Keying on the path makes a re-point mint a *new* key instead
+                // of colliding with the old one, and keeps idempotency exactly
+                // as strong within one workspace.
                 idempotency_key: Some(format!(
-                    "today-launchpad:{}:{start_mode}",
-                    out.dto.spec_card_id
+                    "today-launchpad:{}:{start_mode}:{}",
+                    out.dto.spec_card_id,
+                    workspace_key_digest(&out.wave.workspace.path)
                 )),
                 payload_hash: hash,
             },

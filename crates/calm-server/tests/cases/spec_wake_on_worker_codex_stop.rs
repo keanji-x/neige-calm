@@ -213,6 +213,8 @@ fn spawn_dispatcher(boot: &Boot) -> Dispatcher {
         None,
         boot.harness_registry.clone(),
         boot.shared.clone(),
+        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     )
 }

@@ -69,16 +69,21 @@ pub fn render_child_seed(payload: &ChildWaveOperationPayload) -> String {
 pub struct ChildWaveAdapter {
     card_role_cache: crate::card_role_cache::CardRoleCache,
     wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+    /// #1147 D2 — the managed workspace root. The child inherits its parent's
+    /// workspace, which S2 materializes here; S4 gives the child its own.
+    workspace_root: std::path::PathBuf,
 }
 
 impl ChildWaveAdapter {
     pub fn new(
         card_role_cache: crate::card_role_cache::CardRoleCache,
         wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+        workspace_root: std::path::PathBuf,
     ) -> Self {
         Self {
             card_role_cache,
             wave_cove_cache,
+            workspace_root,
         }
     }
 }
@@ -227,7 +232,17 @@ impl ProviderAdapter for ChildWaveAdapter {
         // "every wave-create path materializes", not "four of the five do".
         // S4 replaces the inherited path with an independent allocation and
         // this call starts doing real work.
-        crate::workspace_materialize::materialize_workspace(&child.workspace)?;
+        // The ownership marker names the wave that *owns* the directory, and
+        // until S4 that is still the parent — the child merely points at it.
+        // Passing the child's id here would make the marker check refuse the
+        // parent's own workspace, which is the red team's B2 guard correctly
+        // objecting that "one directory, two owners" is not a coherent state.
+        // S4 gives the child its own allocation and this becomes `child.id`.
+        crate::workspace_materialize::materialize_workspace(
+            &child.workspace,
+            &self.workspace_root,
+            &payload.parent_wave_id,
+        )?;
         // The child must inherit its parent's cove. A cross-cove parent edge
         // makes cove deletion fail its NO ACTION self-FK (tripwire test #21c).
         sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
@@ -475,6 +490,15 @@ mod tests {
         }
     }
 
+    /// #1147 S2 — a root for adapter fixtures whose parent wave is `attached`,
+    /// so materialization is a no-op and nothing is written here. The one test
+    /// that exercises a *managed* parent
+    /// (`child_inherits_a_materialized_managed_workspace`) builds the adapter
+    /// with its own `TempDir` root instead.
+    fn test_workspace_root() -> std::path::PathBuf {
+        std::env::temp_dir().join("neige-child-wave-adapter-unused-root")
+    }
+
     async fn seed_parent(repo: &SqlxRepo, non_default_lifecycle_metadata: bool) -> String {
         let mut tx = repo.pool().begin().await.unwrap();
         let cove = cove_create_tx(
@@ -689,6 +713,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let output = adapter
@@ -761,13 +786,19 @@ mod tests {
         // The parent was minted through the DB writer directly, so nothing has
         // materialized it yet — that is what the route does. Do it here so the
         // child's own call is exercised against the real steady state.
-        crate::workspace_materialize::materialize_workspace(&parent.workspace).unwrap();
+        crate::workspace_materialize::materialize_workspace(
+            &parent.workspace,
+            &workspace_root,
+            parent.id.as_str(),
+        )
+        .unwrap();
 
         let task = seed_task(&repo, parent.id.as_str(), false).await;
         let input = serde_json::to_value(payload(&task)).unwrap();
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            workspace_root.clone(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let output = adapter
@@ -852,6 +883,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let output = adapter
@@ -958,6 +990,7 @@ mod tests {
             let adapter = ChildWaveAdapter::new(
                 repo.card_role_cache().clone(),
                 repo.wave_cove_cache().clone(),
+                test_workspace_root(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
             let output = adapter
@@ -991,6 +1024,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let error = adapter
@@ -1024,6 +1058,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         adapter
@@ -1058,6 +1093,7 @@ mod tests {
             let adapter = ChildWaveAdapter::new(
                 repo.card_role_cache().clone(),
                 repo.wave_cove_cache().clone(),
+                test_workspace_root(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
             let output = adapter
@@ -1110,6 +1146,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
             .bind(&parent)
@@ -1181,6 +1218,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         adapter
@@ -1336,6 +1374,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let error = adapter
@@ -1419,6 +1458,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
             .fetch_one(repo.pool())

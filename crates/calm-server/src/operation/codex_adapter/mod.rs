@@ -90,6 +90,10 @@ pub struct CodexWorkerAdapter {
     mcp_server: Option<Arc<McpServer>>,
     card_role_cache: CardRoleCache,
     wave_cove_cache: WaveCoveCache,
+    /// #1147 D2 — the managed workspace root, needed because taking a lease
+    /// re-runs materialization for a managed wave (red-team B5). Boot-frozen
+    /// config, threaded rather than read from a global.
+    workspace_root: std::path::PathBuf,
 }
 
 impl CodexAdapter {
@@ -142,6 +146,7 @@ impl CodexAdapter {
 }
 
 impl CodexWorkerAdapter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repo: Arc<dyn crate::db::RouteRepo>,
         codex: Arc<CodexClient>,
@@ -149,6 +154,7 @@ impl CodexWorkerAdapter {
         mcp_server: Option<Arc<McpServer>>,
         card_role_cache: CardRoleCache,
         wave_cove_cache: WaveCoveCache,
+        workspace_root: std::path::PathBuf,
     ) -> Self {
         Self {
             repo,
@@ -157,6 +163,7 @@ impl CodexWorkerAdapter {
             mcp_server,
             card_role_cache,
             wave_cove_cache,
+            workspace_root,
         }
     }
 }
@@ -777,7 +784,8 @@ impl ProviderAdapter for CodexWorkerAdapter {
         // `payload.cwd` is forward-compatible only; the isolated lease path is
         // authoritative for codex-worker execution.
         let lease_target =
-            prepare_workspace_lease_target_tx(tx, wave_id.as_str(), &card_id).await?;
+            prepare_workspace_lease_target_tx(tx, wave_id.as_str(), &card_id, &self.workspace_root)
+                .await?;
         let cwd = lease_target.path_string();
         let env = build_codex_env(self.repo.as_ref(), self.codex.as_ref(), &card_id).await?;
         let rendered_prompt = render_worker_prompt(

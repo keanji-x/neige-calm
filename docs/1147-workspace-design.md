@@ -1,7 +1,7 @@
 # 设计：wave 工作区 —— default 语义 + 托管根 + 一次性冻结
 
 > 归属：#1147（worker 工作区隔离）。相关：#1149（pending 不可见 / 失败不可读）、#1131（建 wave 只填名字，遗留 `cwd=$HOME`）、#1098（cove 对话）、#275/#1109（`cove_folders`）。
-> 状态：**r3.6 — 实现中**。S0 已合入 #1158；S1 已合入 #1163（删掉 waves.cwd，未保留投影）。S2 实现完成待评审。
+> 状态：**r3.6 — 实现中**。S0 已合入 #1158；S1 已合入 #1163（删掉 waves.cwd，未保留投影）。S2 实现完成，已过一轮红队。
 
 ## 1. 问题
 
@@ -118,6 +118,39 @@ allowlist 里每一项要标明它是「冻结写点」还是「path 写点」�
 在**建 wave 时**执行（见 D5），幂等：
 
 1. `mkdir -p <path>`；目录必须不存在或为空，非空且非本 wave 所有 → **硬失败**，绝不复用。
+
+   > ### ⚠️ r3.6 —— 物化的四条契约（S2 红队实测，S5 必须照这个实现）
+   >
+   > **(1)「是不是本 wave 所有」必须靠我们自己写的标记判定，不能靠「这是不是一个 git 仓库根」。**
+   > 后者既不必要也不充分：实测把第三方仓库放在派生路径上，`toplevel == path` 判据直接放行 ——
+   > 仓库被复用、`.git/info/exclude` 被追加、若它还没有提交则连 `neige` 作者的初始提交都替它落了。
+   > 而 **S5 会对所有 `kind=Managed` 的目录 `remove_dir_all`**，所以**误判即误删用户仓库**。
+   > 实现：`.git/neige-workspace` 写 wave id（放在 `.git/` 里，对 D4 的「盘上是空的」判据天然不可见，
+   > 不会重蹈 `.gitignore` 的覆辙）；**在 `git init` 之前**写，`git init` 会保留 `.git/` 下的未知文件 ——
+   > 这样任何中途崩溃留下的目录都带标记、可辨认。标记不匹配一律硬拒。
+   > 标记同时是下面第 (3) 条「允许清理自己的半成品」的前提：有标记 ⇒ 确定是我们造的 ⇒ 删了安全。
+   >
+   > **(2) 路径断言必须对 `fs::canonicalize` 之后的真实路径做，不能只做词法 `starts_with`。**
+   > `create_dir_all` 跟随符号链接：实测把 `<root>/<cove_id>` 做成指向根外的软链，
+   > 存库路径在根下、仓库真身在根外，**§5 的不变量测试与 D8 的回收前缀断言双双绕过**。
+   > 实现：托管根在 boot 时 `canonicalize`（顺带消掉 `HOME` 未设时回退相对路径 `./neige-workspaces`
+   > 导致每次建 wave 都 500 的问题），物化结束后对 `fs::canonicalize(path)` 再断言一次前缀，
+   > 符号链接一律拒绝。不变量测试也必须对 canonical 路径断言。
+   >
+   > **(3) 物化必须有 per-path 互斥。** 它在 tx **之外**跑三条 git 命令，而 launchpad 的 `ensure`
+   > 并发是设计预期（代码自带 unique-index 竞态重试）。4 路并发实测复现
+   > `不能锁定配置文件 .git/config`；进程若在中途死掉，目录会停在「非空 + 非仓库」，
+   > 之后每次 `ensure` 永久 500 且**没有任何修复路径**。互斥 + 标记 + 允许清理自己的半成品，三者配套。
+   >
+   > **(4) worker 取 lease 前做一次 ensure-materialize**（对 Managed 幂等，稳态只花一条 `rev-parse`）。
+   > 物化在 tx 提交之后跑 ⇒ 失败会留下一条指向不存在目录的 wave 行（见 D5 的「已知状态」），
+   > 而除 launchpad 外**没有任何入口会重跑 materialize**。不补这一条，孤儿行上的 codex 任务
+   > 永久 `spawn-failed` —— 那正是 #1147 本身，被本片以另一种方式重新造出来。
+   >
+   > 另有一条低危同类项：`run_git` 必须 `env_remove` 掉
+   > `GIT_DIR`/`GIT_WORK_TREE`/`GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY`/`GIT_AUTHOR_DATE`/
+   > `GIT_COMMITTER_NAME` 等一组变量（任一存在即让物化失败）。步骤 3 已经隔离了**配置文件**维度，
+   > 环境变量是对称缺口，也与「显式配置优于隐式 env 旋钮」相悖。
 2. ```
    git -c init.templateDir= -c init.defaultBranch=main init <path>
    ```

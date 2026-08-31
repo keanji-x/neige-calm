@@ -1830,6 +1830,7 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         None,
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let (runtime, scheduler) = build_scheduler(&boot, vec![codex]);
 
@@ -2826,6 +2827,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         None,
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let claude: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
         route_repo.clone(),
@@ -2888,6 +2890,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )) as Arc<dyn ProviderAdapter>,
         pending_operation("child-wave", &child_task_id, child_payload),
     ));
@@ -8199,6 +8202,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )) as Arc<dyn ProviderAdapter>;
     let block = BootstrapBlockHook {
         wait_entered: Arc::new(tokio::sync::Notify::new()),
@@ -8313,6 +8317,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             Arc::new(ChildWaveAdapter::new(
                 crash_boot.card_role_cache.clone(),
                 crash_boot.wave_cove_cache.clone(),
+                std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
             )),
             Arc::new(BootstrapAdapter::new_blocking(
                 crash_minted.clone(),
@@ -8352,6 +8357,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             Arc::new(ChildWaveAdapter::new(
                 crash_boot.card_role_cache.clone(),
                 crash_boot.wave_cove_cache.clone(),
+                std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
             )),
             Arc::new(BootstrapAdapter::new(crash_minted.clone())),
         ],
@@ -8419,6 +8425,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         let child_adapter = Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )) as Arc<dyn ProviderAdapter>;
         let bootstrap_adapter = Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>;
         let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
@@ -8532,6 +8539,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>,
         Arc::new(CardSpawnAdapter {
@@ -8608,6 +8616,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
@@ -8650,6 +8659,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
@@ -8724,6 +8734,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
@@ -8813,6 +8824,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback() {
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
     scheduler.sweep_all().await;

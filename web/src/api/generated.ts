@@ -267,13 +267,21 @@ export interface paths {
         put?: never;
         /**
          * Ensure the cove's single chat wave exists.
-         * @description The cwd is selected only while creating the wave: it is the claimed path
-         *     with the fewest path components, breaking ties lexicographically. Cove
-         *     folder claims cannot be equal, ancestors, or descendants of one another,
-         *     so "closest to the cove root" is defined here as this deterministic shallow
-         *     path ordering rather than containment. Once created, later folder claims or
-         *     changes deliberately do not update the wave cwd, so an existing conversation
-         *     cannot drift between working directories from one message to the next.
+         * @description The workspace is selected only while creating the wave. When the cove has
+         *     folder claims it is the claimed path with the fewest path components,
+         *     breaking ties lexicographically (attached semantics: the user pointed at
+         *     that directory). Cove folder claims cannot be equal, ancestors, or
+         *     descendants of one another, so "closest to the cove root" is defined here as
+         *     this deterministic shallow path ordering rather than containment.
+         *
+         *     #1147 D10 — a cove with **no** claim gets a managed default instead of the
+         *     409 this used to return. Since #1109 made coves pure namespaces, "no claim"
+         *     is the normal state of a new cove, so that 409 made
+         *     `POST /api/coves/{id}/conversations` fail by definition for every new cove.
+         *
+         *     Once created, later folder claims or changes deliberately do not update the
+         *     wave's workspace, so an existing conversation cannot drift between working
+         *     directories from one message to the next.
          */
         post: operations["ensure_cove_chat_wave"];
         delete?: never;
@@ -3372,15 +3380,6 @@ export interface operations {
             };
             /** @description Cove not found */
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Cove has no claimed folder */
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

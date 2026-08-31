@@ -321,3 +321,53 @@ async fn materialize_failure_fails_the_create() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 }
+
+/// #1147 S2 (red-team B5) — an orphaned wave heals when a worker takes its
+/// lease, instead of `spawn-failed`-ing forever.
+///
+/// Create materializes *after* its transaction commits (design D5 requires it
+/// outside the tx), so a failure there leaves a committed wave row pointing at
+/// a directory that does not exist — the known state pinned by
+/// `materialize_failure_fails_the_create`. Before this slice nothing would ever
+/// retry it, so every `kind: codex` task on that wave died in
+/// `git rev-parse --show-toplevel` with only `spawn-failed` visible. That is
+/// bug #1147, re-created by the slice meant to fix it.
+#[tokio::test]
+async fn an_unmaterialized_managed_wave_heals_when_a_worker_takes_its_lease() {
+    let b = boot().await;
+    let (status, body) = post(
+        b.app.clone(),
+        "/api/waves",
+        json!({"cove_id": b.cove_id, "title": "orphan", "theme": theme()}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave: Value = serde_json::from_str(&body).unwrap();
+    let wave_id = wave["id"].as_str().unwrap().to_string();
+    let (_, path, _) = workspace_row(&b.repo, &wave_id).await;
+
+    // Reproduce the orphan state: the row exists, the directory does not.
+    std::fs::remove_dir_all(&path).unwrap();
+    assert!(!std::path::Path::new(&path).exists());
+
+    // The production lease path a codex worker takes.
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let repo_root = calm_server::test_seams::prepare_workspace_lease_target_for_test(
+        &mut tx,
+        &wave_id,
+        "card0000000000000000000000000001",
+        &b.workspace_root,
+    )
+    .await
+    .expect(
+        "taking a lease on an un-materialized managed wave must repair it, not fail: \
+         a permanently `spawn-failed` wave is bug #1147 itself",
+    );
+    tx.commit().await.unwrap();
+
+    assert_eq!(repo_root, std::fs::canonicalize(&path).unwrap());
+    assert!(
+        head_resolves(std::path::Path::new(&path)),
+        "the lease path recreated the directory but not a usable repository"
+    );
+}

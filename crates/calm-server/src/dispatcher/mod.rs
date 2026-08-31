@@ -240,6 +240,7 @@ fn dispatcher_operation_runtime(
     shared_codex_appserver: Arc<SharedCodexAppServer>,
     harness: HarnessRegistry,
     plugin: Arc<PluginHost>,
+    workspace_root: std::path::PathBuf,
 ) -> Arc<OperationRuntime> {
     let route_repo: Arc<dyn RouteRepo> = repo.clone();
     let operation_repo = Arc::new(SqlxOperationRepo::new(
@@ -280,6 +281,7 @@ fn dispatcher_operation_runtime(
         mcp_server.clone(),
         write.role_cache().clone(),
         write.cove_cache().clone(),
+        workspace_root.clone(),
     ));
     let claude_adapter = Arc::new(ClaudeAdapter::new(
         route_repo.clone(),
@@ -326,6 +328,7 @@ fn dispatcher_operation_runtime(
     let child_wave_adapter = Arc::new(ChildWaveAdapter::new(
         write.role_cache().clone(),
         write.cove_cache().clone(),
+        workspace_root.clone(),
     ));
     let completion = OperationCompletionBus::new();
     Arc::new(OperationRuntime::new_unchecked(
@@ -519,6 +522,7 @@ impl Dispatcher {
         daemon: Arc<DaemonClient>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
+        workspace_root: std::path::PathBuf,
         permits: usize,
     ) -> Self {
         let route_repo: Arc<dyn RouteRepo> = repo.clone();
@@ -532,6 +536,7 @@ impl Dispatcher {
             terminal_renderer,
             mcp_server,
             shared_codex_appserver,
+            workspace_root,
             permits,
         )
     }
@@ -574,6 +579,7 @@ impl Dispatcher {
         terminal_renderer: Arc<TerminalRendererRegistry>,
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
+        workspace_root: std::path::PathBuf,
         permits: usize,
     ) -> Self {
         let plugin =
@@ -589,6 +595,7 @@ impl Dispatcher {
             shared_codex_appserver.clone(),
             HarnessRegistry::new(),
             plugin,
+            workspace_root,
         );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,
@@ -644,6 +651,7 @@ impl Dispatcher {
         mcp_server: Option<Arc<crate::mcp_server::McpServer>>,
         harness: HarnessRegistry,
         shared_codex_appserver: Arc<SharedCodexAppServer>,
+        workspace_root: std::path::PathBuf,
         permits: usize,
     ) -> Self {
         let plugin =
@@ -659,6 +667,7 @@ impl Dispatcher {
             shared_codex_appserver.clone(),
             harness.clone(),
             plugin,
+            workspace_root,
         );
         Self::spawn_with_terminal_renderer_and_harness_and_operation_runtime(
             repo,

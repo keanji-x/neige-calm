@@ -37,3 +37,28 @@ pub fn crash_point(point: &str) {
         std::process::abort();
     }
 }
+
+/// #1147 S2 (red-team B5) — reach the production worker-lease preparation from
+/// an integration test.
+///
+/// `prepare_workspace_lease_target_tx` is `pub(crate)`, and the point of the
+/// test that uses this is that the **real** lease path repairs an
+/// un-materialized managed workspace. Re-implementing the lease path in the
+/// test would prove nothing about production. `fixtures`-only, like the rest of
+/// this module, so the production binary compiles none of it.
+#[cfg(feature = "fixtures")]
+pub async fn prepare_workspace_lease_target_for_test(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    wave_id: &str,
+    card_id: &str,
+    workspace_root: &std::path::Path,
+) -> crate::error::Result<std::path::PathBuf> {
+    crate::operation::workspace_lease::prepare_workspace_lease_target_tx(
+        tx,
+        wave_id,
+        card_id,
+        workspace_root,
+    )
+    .await
+    .map(|target| target.repo_root)
+}

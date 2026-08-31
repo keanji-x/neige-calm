@@ -921,7 +921,7 @@
           "waves"
         ],
         "summary": "Ensure the cove's single chat wave exists.",
-        "description": "The cwd is selected only while creating the wave: it is the claimed path\nwith the fewest path components, breaking ties lexicographically. Cove\nfolder claims cannot be equal, ancestors, or descendants of one another,\nso \"closest to the cove root\" is defined here as this deterministic shallow\npath ordering rather than containment. Once created, later folder claims or\nchanges deliberately do not update the wave cwd, so an existing conversation\ncannot drift between working directories from one message to the next.",
+        "description": "The workspace is selected only while creating the wave. When the cove has\nfolder claims it is the claimed path with the fewest path components,\nbreaking ties lexicographically (attached semantics: the user pointed at\nthat directory). Cove folder claims cannot be equal, ancestors, or\ndescendants of one another, so \"closest to the cove root\" is defined here as\nthis deterministic shallow path ordering rather than containment.\n\n#1147 D10 — a cove with **no** claim gets a managed default instead of the\n409 this used to return. Since #1109 made coves pure namespaces, \"no claim\"\nis the normal state of a new cove, so that 409 made\n`POST /api/coves/{id}/conversations` fail by definition for every new cove.\n\nOnce created, later folder claims or changes deliberately do not update the\nwave's workspace, so an existing conversation cannot drift between working\ndirectories from one message to the next.",
         "operationId": "ensure_cove_chat_wave",
         "parameters": [
           {
@@ -957,16 +957,6 @@
           },
           "404": {
             "description": "Cove not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Cove has no claimed folder",
             "content": {
               "application/json": {
                 "schema": {
