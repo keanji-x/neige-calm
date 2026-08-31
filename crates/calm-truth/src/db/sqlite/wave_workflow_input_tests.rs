@@ -39,6 +39,7 @@ async fn wave_create_round_trips_workflow_input() {
             theme: RequestTheme::default_dark(),
         },
         Some("cove-chat"),
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await
@@ -58,6 +59,7 @@ async fn wave_create_round_trips_workflow_input() {
             theme: RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

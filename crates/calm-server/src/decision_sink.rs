@@ -715,10 +715,14 @@ mod tests {
         .expect("seed worker session");
 
         let mut tx = begin_immediate_tx(repo.pool()).await.expect("begin tx");
-        let target =
-            prepare_workspace_lease_target_tx(&mut tx, wave.id.as_str(), worker_card.id.as_str())
-                .await
-                .expect("prepare lease target");
+        let target = prepare_workspace_lease_target_tx(
+            &mut tx,
+            wave.id.as_str(),
+            worker_card.id.as_str(),
+            &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+        )
+        .await
+        .expect("prepare lease target");
         let (lease, _event) = acquire_workspace_lease_tx(
             &mut tx,
             worker_card.id.as_str(),

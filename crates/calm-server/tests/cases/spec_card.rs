@@ -407,6 +407,7 @@ async fn write_with_events_typed_persists_and_broadcasts_multiple_in_order() {
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
+                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
                     &calm_server::wave_cove_cache::WaveCoveCache::new(),
                 )
                 .await?;
@@ -575,6 +576,7 @@ async fn write_with_events_typed_rolls_back_on_enforce_role_violation() {
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
+                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
                     &wcc_for_tx,
                 )
                 .await?;

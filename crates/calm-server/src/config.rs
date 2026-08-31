@@ -25,6 +25,18 @@ pub struct Config {
     #[arg(long, env = "CALM_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
+    /// #1147 D2 — root under which server-managed wave workspaces live, one
+    /// git repository per wave at `<root>/<cove_id>/<wave_id>`.
+    /// Defaults to `$HOME/neige-workspaces`.
+    ///
+    /// Deliberately NOT `CALM_DATA_DIR`: that path is defined as runtime state
+    /// (sockets, db, scratch) and is a legitimate reset target. A wave
+    /// workspace is a user-visible product — opened in an editor, backed up —
+    /// and must survive a state reset. The default name avoids `~/neige`,
+    /// `~/neige-calm` and `~/neige-calm-wt`, which are already taken.
+    #[arg(long, env = "CALM_WORKSPACE_ROOT")]
+    pub workspace_root: Option<PathBuf>,
+
     /// Unix socket used to ask calm-proc-supervisor to fork session daemons.
     /// Defaults to `<CALM_DATA_DIR>/proc-supervisor.sock`.
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
@@ -204,6 +216,31 @@ impl Config {
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
                 .unwrap_or_else(|| PathBuf::from("."));
             base.join("neige-calm")
+        })
+    }
+
+    /// #1147 D2 — `$HOME/neige-workspaces` unless overridden. Falls back to
+    /// `./neige-workspaces` only when `HOME` is unset, mirroring
+    /// `data_dir_resolved`'s last-resort `.`.
+    /// #1147 D2 — `$HOME/neige-workspaces` unless overridden.
+    ///
+    /// The `HOME`-unset fallback is `current_dir()`, **not** `.`: a relative
+    /// root makes every derived workspace path relative, and materialization
+    /// requires an absolute path, so a process started without `HOME` — the
+    /// normal case under systemd or a supervisor — would 500 on every single
+    /// wave create (#1147 N6). Absolute-by-construction is the fix; if even
+    /// `current_dir()` fails there is no defensible answer, so this is the one
+    /// place that gives up loudly rather than inventing a path.
+    pub fn workspace_root_resolved(&self) -> PathBuf {
+        self.workspace_root.clone().unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| !home.as_os_str().is_empty())
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .expect("resolving the workspace root needs HOME or a usable cwd")
+                })
+                .join("neige-workspaces")
         })
     }
 

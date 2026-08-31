@@ -80,10 +80,13 @@ const WRITER_STATEMENT: &str = "update waves set workspace_path = ?1, workspace_
 const EXPECTED_OTHER_WRITES: &[(&str, &str, &str)] = &[
     (
         "crates/calm-server/tests/cases/today_launchpad.rs",
-        "update waves set purpose=null, workspace_path='/also-scrambled', workspace_kind='managed', workspace_frozen_at=null where id=?1",
+        "update waves set purpose=null, workspace_path='/also-scrambled', workspace_kind='attached', workspace_frozen_at=99 where id=?1",
         "Deliberately desynchronizes the row so the launchpad adopt branch has \
          to visibly rewrite it; without the scramble that assertion would pass \
-         on leftovers from the create branch.",
+         on leftovers from the create branch. #1147 S2 flipped the scrambled \
+         values to `attached`/`99` because the launchpad's real workspace is \
+         now `managed`/`NULL` — scrambling to the expected values would have \
+         made the assertion vacuous.",
     ),
     (
         "crates/calm-server/tests/scheduler.rs",

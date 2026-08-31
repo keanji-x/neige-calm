@@ -93,6 +93,11 @@ pub use calm_truth::state::WriteContext;
 #[derive(Clone)]
 pub struct RouteState {
     pub repo: Arc<dyn RouteRepo>,
+    /// #1147 D2 — root for server-managed wave workspaces
+    /// (`<root>/<cove_id>/<wave_id>`). Resolved once at boot from
+    /// `--workspace-root` / `CALM_WORKSPACE_ROOT`; never read from env at
+    /// request time.
+    pub workspace_root: PathBuf,
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
@@ -186,6 +191,14 @@ pub struct CodexShellState {
 /// Constructors build this only after resolving all boot handles.
 pub struct BootState {
     pub repo: Arc<dyn Repo>,
+    /// #1147 D2 — see [`RouteState::workspace_root`].
+    pub workspace_root: PathBuf,
+    /// #1147 S2 — owns the auto-allocated workspace root when one was minted
+    /// for a test/replay `AppState`. `None` in production, where the root is
+    /// the user's real, persistent directory. Held so the sandbox is removed
+    /// when the state drops instead of accumulating a git repository per test
+    /// run under the system temp dir.
+    pub workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -217,6 +230,7 @@ impl BootState {
         )));
         let route = RouteState {
             repo: route_repo.clone(),
+            workspace_root: self.workspace_root.clone(),
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
@@ -265,6 +279,7 @@ impl BootState {
             operation_runtime: self.operation_runtime,
             worker_flow: self.worker_flow,
             raw: self.repo,
+            workspace_root_guard: self.workspace_root_guard,
             route,
             worker,
             codex_shell,
@@ -376,6 +391,21 @@ pub struct AppState {
     /// out, but the production build keeps the field opaque on purpose.
     #[allow(dead_code)]
     raw: Arc<dyn Repo>,
+    /// #1147 S2 — see [`BootState::workspace_root_guard`].
+    ///
+    /// `allow(dead_code)` because this is an **RAII guard**: its value is never
+    /// read, only dropped, and the drop is the entire point (it removes the
+    /// per-`AppState` sandbox). The one place that touches it afterwards —
+    /// `with_workspace_root`, which releases it — is `fixtures`-gated, so under
+    /// default features nothing mentions the field at all.
+    ///
+    /// Not `expect(dead_code)`: whether the lint fires depends on the feature
+    /// set (under `fixtures` the write in `with_workspace_root` counts as a
+    /// use), and an unfulfilled `expect` is itself a warning — which, under
+    /// this workspace's `RUSTFLAGS=-D warnings`, would just move the build
+    /// failure to the other feature combination.
+    #[allow(dead_code)]
+    workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     route: RouteState,
     worker: WorkerState,
     codex_shell: CodexShellState,
@@ -395,6 +425,8 @@ struct OperationAdapterInputs {
     harness: HarnessRegistry,
     mcp_server: Option<Arc<McpServer>>,
     gate_logs_dir: PathBuf,
+    /// #1147 D2 — see [`RouteState::workspace_root`].
+    workspace_root: PathBuf,
 }
 
 fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn ProviderAdapter>> {
@@ -444,6 +476,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
         input.mcp_server.clone(),
         input.card_role_cache.clone(),
         input.wave_cove_cache.clone(),
+        input.workspace_root.clone(),
     ));
     let claude_adapter: Arc<dyn ProviderAdapter> = Arc::new(ClaudeAdapter::new(
         input.route_repo.clone(),
@@ -488,6 +521,7 @@ fn build_operation_adapters(input: OperationAdapterInputs) -> Vec<Arc<dyn Provid
     let child_wave_adapter: Arc<dyn ProviderAdapter> = Arc::new(ChildWaveAdapter::new(
         input.card_role_cache.clone(),
         input.wave_cove_cache.clone(),
+        input.workspace_root.clone(),
     ));
 
     vec![
@@ -533,6 +567,33 @@ impl AppState {
     /// keeps the env-derived default from construction.
     pub fn with_ws_replay_cap(mut self, cap: i64) -> Self {
         self.ws_replay_cap = cap;
+        self
+    }
+
+    /// #1147 D2 — the managed workspace root this process was booted with.
+    pub fn workspace_root(&self) -> &std::path::Path {
+        &self.route.workspace_root
+    }
+
+    /// #1147 S2 test seam — pin the managed workspace root. `from_parts`
+    /// defaults to a per-`AppState` directory under the system temp dir so no
+    /// test can silently materialize repositories into the developer's real
+    /// `$HOME/neige-workspaces`; a test that wants to *inspect* the tree
+    /// points this at its own `TempDir` instead.
+    ///
+    /// `fixtures`-gated because it MUST rebuild the operation runtime: the
+    /// codex-worker adapter carries its own copy of the root (it re-runs
+    /// materialization when taking a lease), and a stale copy there would make
+    /// the adapter reject the very workspace the routes just created — the
+    /// containment assertion would compare against the wrong root.
+    #[cfg(feature = "fixtures")]
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.route.workspace_root = root;
+        // Release the auto-allocated sandbox: the caller supplied its own root,
+        // so the default one is unreachable and would otherwise only be swept
+        // when this state drops.
+        self.workspace_root_guard = None;
+        self.rebuild_operation_runtime();
         self
     }
 
@@ -660,6 +721,14 @@ impl AppState {
         ));
         let pending_codex_threads_spawn_serial = Arc::new(Mutex::new(()));
         let shared_codex_appserver = SharedCodexAppServer::new_stub(repo.clone());
+        // #1147 S2 — allocated before the adapters so the codex-worker adapter
+        // and the routes agree on one root (it re-materializes on lease).
+        let workspace_root_sandbox = Arc::new(
+            tempfile::Builder::new()
+                .prefix("neige-calm-test-workspaces-")
+                .tempdir()
+                .expect("allocate a managed-workspace sandbox for AppState::from_parts"),
+        );
         let operation_repo = Arc::new(SqlxOperationRepo::new(
             repo.sqlite_pool()
                 .expect("AppState::from_parts requires a sqlite-backed Repo"),
@@ -678,6 +747,7 @@ impl AppState {
             harness: harness.clone(),
             mcp_server: None,
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+            workspace_root: workspace_root_sandbox.path().to_path_buf(),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -728,6 +798,13 @@ impl AppState {
         );
         BootState {
             repo,
+            // #1147 S2 — `from_parts` is the test / replay hatch. A per-instance
+            // `TempDir` keeps managed materialization inside a sandbox AND
+            // sweeps it when the state drops; an un-owned path under the system
+            // temp dir accumulated a git repository per test run. A test that
+            // wants to *inspect* the tree calls `with_workspace_root`.
+            workspace_root: workspace_root_sandbox.path().to_path_buf(),
+            workspace_root_guard: Some(workspace_root_sandbox),
             events,
             daemon,
             terminal_renderer,
@@ -811,6 +888,7 @@ impl AppState {
             harness: self.harness.clone(),
             mcp_server: self.mcp_server.clone(),
             gate_logs_dir: TaskVerifyAdapter::default_gate_logs_dir(),
+            workspace_root: self.route.workspace_root.clone(),
         });
         let completion = OperationCompletionBus::new();
         let runtime = Arc::new(OperationRuntime::new_unchecked(
@@ -868,6 +946,30 @@ impl AppState {
             skipped = report.skipped.len(),
             "plugin registry loaded"
         );
+
+        // #1147 D2 — the managed workspace root. Created at boot for the same
+        // reason the plugin dirs are: the first wave create should not be the
+        // thing that discovers the parent is unwritable.
+        let workspace_root = cfg.workspace_root_resolved();
+        if !workspace_root.exists() {
+            tracing::info!(
+                workspace_root = %workspace_root.display(),
+                "creating managed workspace root"
+            );
+            std::fs::create_dir_all(&workspace_root)?;
+        }
+        // #1147 D3 contract (2) — canonicalize ONCE, at boot. Every downstream
+        // prefix comparison (materialization's containment assertion, S5's
+        // recycle guard) is only sound against a canonical root; comparing a
+        // canonical path against a root that still contains a symlink or a
+        // `..` would reject correct workspaces and, worse, could accept
+        // incorrect ones.
+        let workspace_root = std::fs::canonicalize(&workspace_root).map_err(|error| {
+            anyhow::anyhow!(
+                "canonicalize managed workspace root {}: {error}",
+                workspace_root.display()
+            )
+        })?;
 
         // Same treatment for the data dir — Slice B/C will write into per-plugin
         // subdirs of this, so make sure the root exists at boot.
@@ -1046,6 +1148,7 @@ impl AppState {
             harness: harness.clone(),
             mcp_server: Some(mcp_server.clone()),
             gate_logs_dir: gate_logs_dir.clone(),
+            workspace_root: workspace_root.clone(),
         });
         let completion = OperationCompletionBus::new();
         let operation_runtime = Arc::new(
@@ -1140,6 +1243,9 @@ impl AppState {
         );
         let state = BootState {
             repo,
+            workspace_root,
+            // Production: the root is the user's real directory, never swept.
+            workspace_root_guard: None,
             events,
             daemon,
             terminal_renderer,

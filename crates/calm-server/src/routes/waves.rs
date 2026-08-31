@@ -32,10 +32,11 @@ use crate::COVE_CHAT_PURPOSE;
 use crate::actor::Actor;
 use crate::auth::Principal;
 use crate::db::sqlite::{
-    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, card_create_with_id_tx, card_update_with_crdt_tx,
-    cove_create_system_tx, cove_folder_create_tx, cove_folders_list_all_tx,
-    overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx, overlay_upsert_tx,
-    project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx, wave_update_tx,
+    MAX_TREE_TASK_BUDGET, TaskProjectionOutcome, WaveWorkspacePlan, card_create_with_id_tx,
+    card_update_with_crdt_tx, cove_create_system_tx, cove_folder_create_tx,
+    cove_folders_list_all_tx, overlay_delete_by_entity_tx, overlay_delete_card_overlays_by_wave_tx,
+    overlay_upsert_tx, project_tasks_tx, terminal_delete_tx, wave_create_tx, wave_delete_tx,
+    wave_update_tx,
 };
 use crate::db::{RepoRead, write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
@@ -543,6 +544,11 @@ async fn seed_workflow_template_wave(
             fork_report_from: None,
             as_template: true,
             template_key: Some(template_key.to_string()),
+            // #1147 S2 — the seeded workflow templates are ordinary system-cove
+            // waves; they get their own managed workspace like anything else
+            // the server mints. Pre-S2 they landed on `default_cwd()` (`$HOME`),
+            // which is exactly the #1131 defect this slice removes.
+            workspace_plan: WaveWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
         },
         None,
     )
@@ -869,6 +875,7 @@ pub(crate) async fn create_wave(
         }
     };
 
+    let workspace_root = s.workspace_root.clone();
     let created = create_wave_with_spec_harness(
         s,
         actor,
@@ -880,6 +887,15 @@ pub(crate) async fn create_wave(
             fork_report_from,
             as_template,
             template_key: None,
+            // #1147 S2 — omitting `cwd` (the #1131 title-only create, i.e. what
+            // the new FE sends) is the managed-default branch: the server picks
+            // the directory. An explicit `cwd` is the attached branch and keeps
+            // the #250 claim rules above verbatim.
+            workspace_plan: if cwd_omitted {
+                WaveWorkspacePlan::ManagedUnder(workspace_root)
+            } else {
+                WaveWorkspacePlan::AttachedFromCwd
+            },
         },
     )
     .await;
@@ -1003,6 +1019,11 @@ struct CreateWaveOptions {
     fork_report_from: Option<String>,
     as_template: bool,
     template_key: Option<String>,
+    /// #1147 S2 — managed (server allocates under the workspace root) vs
+    /// attached (the caller pointed at an existing directory). Decided by
+    /// each create entry point; `create_wave_structure` materializes the
+    /// managed case right after the transaction commits.
+    workspace_plan: WaveWorkspacePlan,
 }
 
 #[allow(deprecated)]
@@ -1023,13 +1044,21 @@ async fn create_wave_with_spec_harness(
 
 /// Ensure the cove's single chat wave exists.
 ///
-/// The cwd is selected only while creating the wave: it is the claimed path
-/// with the fewest path components, breaking ties lexicographically. Cove
-/// folder claims cannot be equal, ancestors, or descendants of one another,
-/// so "closest to the cove root" is defined here as this deterministic shallow
-/// path ordering rather than containment. Once created, later folder claims or
-/// changes deliberately do not update the wave cwd, so an existing conversation
-/// cannot drift between working directories from one message to the next.
+/// The workspace is selected only while creating the wave. When the cove has
+/// folder claims it is the claimed path with the fewest path components,
+/// breaking ties lexicographically (attached semantics: the user pointed at
+/// that directory). Cove folder claims cannot be equal, ancestors, or
+/// descendants of one another, so "closest to the cove root" is defined here as
+/// this deterministic shallow path ordering rather than containment.
+///
+/// #1147 D10 — a cove with **no** claim gets a managed default instead of the
+/// 409 this used to return. Since #1109 made coves pure namespaces, "no claim"
+/// is the normal state of a new cove, so that 409 made
+/// `POST /api/coves/{id}/conversations` fail by definition for every new cove.
+///
+/// Once created, later folder claims or changes deliberately do not update the
+/// wave's workspace, so an existing conversation cannot drift between working
+/// directories from one message to the next.
 #[utoipa::path(
     post,
     path = "/api/coves/{cove_id}/chat-wave/ensure",
@@ -1038,7 +1067,10 @@ async fn create_wave_with_spec_harness(
     responses(
         (status = 200, description = "Existing chat wave", body = Wave),
         (status = 201, description = "Chat wave created", body = Wave),
-        (status = 409, description = "Cove has no claimed folder", body = ErrorBody),
+        // #1147 D10 removed the "cove has no claimed folder" 409: a claimless
+        // cove now gets a managed default. Do not re-add a 409 here without a
+        // branch that can actually produce one.
+
         (status = 404, description = "Cove not found", body = ErrorBody),
     ),
 )]
@@ -1089,7 +1121,15 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
     #[cfg(feature = "fixtures")]
     wait_at_chat_wave_ensure_barrier(&cove_id).await;
 
-    let cwd = s
+    // #1147 D10 — a cove with a `cove_folders` claim still gets that folder
+    // (attached semantics preserved: the user pointed at it, the server never
+    // touches it). A cove *without* a claim used to 409 here, which since
+    // #1109 made coves pure namespaces means **every new cove's conversation
+    // entry point fails by definition** — `POST /api/coves/{id}/conversations`
+    // calls this unconditionally. It now falls back to a managed default,
+    // which is what "the workspace is a default, not a question we ask the
+    // user" means (design §2.3).
+    let claimed_cwd = s
         .repo
         .cove_folders_by_cove(&cove_id)
         .await?
@@ -1101,12 +1141,16 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
                 .cmp(&std::path::Path::new(&right.path).components().count())
                 .then_with(|| left.path.cmp(&right.path))
         })
-        .map(|folder| folder.path)
-        .ok_or_else(|| {
-            CalmError::Conflict(format!(
-                "chat wave ensure: cove `{cove_id}` has no claimed folder; claim a folder for this cove before starting a conversation"
-            ))
-        })?;
+        .map(|folder| folder.path);
+    let (cwd, workspace_plan) = match claimed_cwd {
+        Some(path) => (path, WaveWorkspacePlan::AttachedFromCwd),
+        None => (
+            // Ignored by `ManagedUnder`, which derives the path from the wave
+            // id; kept non-empty so the row's pre-workspace shape is unchanged.
+            default_cwd(),
+            WaveWorkspacePlan::ManagedUnder(s.workspace_root.clone()),
+        ),
+    };
     let p = NewWave {
         cove_id: cove_id.clone().into(),
         title: "Cove chat".into(),
@@ -1131,6 +1175,7 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
             fork_report_from: None,
             as_template: false,
             template_key: None,
+            workspace_plan,
         },
         Some(COVE_CHAT_PURPOSE),
     )
@@ -1167,7 +1212,11 @@ async fn create_wave_structure(
         fork_report_from,
         as_template,
         template_key,
+        workspace_plan,
     } = options;
+    // #1147 — captured before `s` is moved into the write closure. Only the
+    // managed branch uses it; `materialize_workspace` ignores it for attached.
+    let workspace_root_for_materialize = s.workspace_root.clone();
     let spec_card_id = new_id();
     let report_card_id = new_id();
     let actor_id = actor.to_actor_id();
@@ -1266,7 +1315,9 @@ async fn create_wave_structure(
                     }
                 }
 
-                let wave = wave_create_tx(tx, p, purpose, write_for_tx.cove_cache()).await?;
+                let wave =
+                    wave_create_tx(tx, p, purpose, &workspace_plan, write_for_tx.cove_cache())
+                        .await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
                 let goal = wave.title.trim().to_string();
@@ -1473,6 +1524,30 @@ async fn create_wave_structure(
         },
     )
     .await?;
+
+    // #1147 S2 (design D3/D5) — materialize outside the transaction and
+    // before the spec harness starts. `Attached` is a no-op: the directory is
+    // the user's and the server never creates or `git init`s it.
+    //
+    // A failure here MUST surface as a non-2xx. The tempting shape is
+    // `tracing::warn!` + `Ok(())` (as `start_spec_harness` below does for a
+    // different, recoverable failure) — but that returns 201 for a wave whose
+    // first codex worker will then die with `spawn-failed`, which is #1147
+    // itself replayed one layer down.
+    crate::workspace_materialize::materialize_workspace(
+        &wave.workspace,
+        &workspace_root_for_materialize,
+        wave.id.as_str(),
+    )
+    .map_err(|error| {
+        tracing::error!(
+            wave_id = %wave.id,
+            path = %wave.workspace.path,
+            error = %error,
+            "wave create: workspace materialization failed"
+        );
+        error
+    })?;
 
     Ok((wave, created, spec_card_id, report_card_id))
 }

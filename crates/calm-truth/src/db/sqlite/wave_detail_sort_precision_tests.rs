@@ -76,6 +76,7 @@ async fn seed_wave_with_sorts(repo: &SqlxRepo, sorts: &[f64]) -> (String, Vec<St
             theme: RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

@@ -306,6 +306,8 @@ async fn spawn_dispatcher_with_mcp(boot: &Boot) -> (Dispatcher, Arc<McpServer>, 
         boot.renderer.clone(),
         Some(server.clone()),
         boot.shared.clone(),
+        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         4,
     );
     (dispatcher, server, tmp)
