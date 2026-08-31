@@ -18,8 +18,10 @@ export interface ValidateOptions {
   anchorNonePath?: string;
   anchorBaselinePath?: string;
   anchorPendingPath?: string;
-  /** Overrides ANCHOR_PENDING_MAXIMUM; fixtures only, so the shrink-only rule is testable. */
+  /** Overrides ANCHOR_PENDING_MAXIMUM; fixtures only, so the count cap is testable. */
   anchorPendingMaximum?: number;
+  /** Overrides ANCHOR_PENDING_IDS; fixtures only, so the frozen-id-set rule is testable. */
+  anchorPendingIds?: readonly string[];
   anchorUnsupportedPath?: string;
   today?: string;
 }
@@ -304,13 +306,31 @@ const ANCHOR_EXPIRY_CEILING = '2026-12-31';
 
 // `anchor-pending.json` is NOT a second baseline. It holds the anchors the #1148 scanner fix exposed as
 // never having anchored anything; each row is a defect awaiting a decision in #1170, and the list exists
-// to be emptied — after which both the file and this code are deleted. Rules, all pinned by fixtures:
+// to be emptied — after which both the file and this code are deleted. Rules, each pinned by its own
+// single-violation fixture:
 //   1. exact match, no wildcards — an actual failure that is in neither account is `unbaselined`, and a row
 //      whose entry no longer fails (or fails differently) is `stale pending`. Missing and extra both fail.
-//   2. shrink-only — the row count may never exceed ANCHOR_PENDING_MAXIMUM, so admitting a 39th entry costs
-//      an edit to this source file, not just to the data file. Swapping one id for another keeps the count
-//      but is a visible line in the JSON diff, the same discipline anchor-baseline.json already carries.
-//   3. no double accounting — an id present in both accounts is an error, never a silent exemption.
+//   2. frozen id set — the admissible ids are enumerated below, in source. A row whose id is not in
+//      ANCHOR_PENDING_IDS is rejected, so the list can only ever shrink: deleting a row is a data edit,
+//      but admitting any id — including swapping one out for another at an unchanged row count — costs an
+//      edit to this file. This is the load-bearing rule; ANCHOR_PENDING_MAXIMUM below is only a count cap
+//      and on its own would let a fixed row be traded for a brand-new regression.
+//   3. row shape — every row needs a subtype, an issue reference, and a note, each checked separately so
+//      that dropping any one branch reds its own fixture.
+//   4. no double accounting — an id present in both accounts is an error, never a silent exemption.
+// The 38 ids the #1148 scanner fix exposed. Rows may leave this list; nothing may enter it without a
+// deliberate edit here, which is the visible act the mechanism exists to force.
+const ANCHOR_PENDING_IDS: ReadonlySet<string> = new Set([
+  'CAP-NEWTASK-029', 'E2E-CAP-ADDPANEL-005', 'E2E-CAP-ADDPANEL-007', 'E2E-CAP-AXE-008', 'E2E-CAP-CWD-005',
+  'E2E-CAP-DELETE-001', 'E2E-CAP-DELETE-003', 'E2E-CAP-DELETE-020', 'E2E-CAP-LIST-018', 'E2E-CAP-MODAL-012',
+  'E2E-CAP-RENAME-011', 'E2E-CAP-RENAME-015', 'E2E-CAP-RENAME-016', 'E2E-CAP-SYNC-009', 'E2E-CAP-TERMINAL-009',
+  'E2E-CAP-VIEWMODE-021', 'E2E-CAP-WAVECREATE-003', 'E2E-CAP-WAVECREATE-007', 'E2E-CAP-WAVECREATE-014',
+  'E2E-CAP-WAVECREATE-020', 'E2E-INV-ADDPANEL-009', 'E2E-INV-DELETE-002', 'E2E-INV-DELETE-005',
+  'E2E-INV-INFRA-038', 'E2E-INV-LIFECYCLE-012', 'E2E-INV-REPORT-008', 'E2E-INV-SPECCHAT-008',
+  'E2E-INV-SPECCHAT-011', 'E2E-INV-TERMINAL-005', 'E2E-INV-TERMINAL-010', 'E2E-INV-TERMTHEME-003',
+  'E2E-INV-TERMTHEME-007', 'E2E-INV-WAVECREATE-006', 'E2E-INV-WAVECREATE-011', 'E2E-INV-WHEEL-002',
+  'E2E-INV-WHEEL-003', 'INV-CARD-128', 'INV-SPECCONVO-004',
+]);
 const ANCHOR_PENDING_MAXIMUM = 38;
 const PENDING_NOTE = 'anchor-pending.json is not a baseline: these anchors are known to anchor nothing, '
   + 'are tracked in #1170, and the list exists to be emptied';
@@ -344,16 +364,38 @@ export function validateOracle(options: ValidateOptions): Violation[] {
   const pendingRows = parseStructuredList(options.anchorPendingPath);
   const pending = new Map<string, AnchorSubtype>();
   const pendingRowIds = new Set<string>();
-  for (const raw of pendingRows) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
-    const entry = raw as Record<string, unknown>;
-    if (typeof entry.id === 'string') pendingRowIds.add(entry.id);
-    if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss')
-      && typeof entry.issue === 'string' && /^#\d+$/.test(entry.issue)
-      && typeof entry.note === 'string' && entry.note.trim() !== '') {
-      pending.set(entry.id, entry.subtype);
+  const frozenPendingIds = new Set(options.anchorPendingIds ?? ANCHOR_PENDING_IDS);
+  const pendingRowErrors: Array<[string, string]> = [];
+  pendingRows.forEach((raw, index) => {
+    const entry = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+    // A row without a string id can never be in the frozen set, so it is rejected by that rule.
+    const id = typeof entry.id === 'string' ? entry.id : `<row-${index + 1}>`;
+    let admissible = true;
+    if (!frozenPendingIds.has(id)) {
+      pendingRowErrors.push([id, 'id is not in ANCHOR_PENDING_IDS, the frozen set in validator.ts: the list may'
+        + ' only shrink, so admitting any id — including trading a fixed one for a new failure at the same row'
+        + ' count — costs a deliberate source edit']);
+      admissible = false;
     }
-  }
+    if (pendingRowIds.has(id)) {
+      pendingRowErrors.push([id, 'duplicate row: an id may appear at most once']);
+      admissible = false;
+    }
+    pendingRowIds.add(id);
+    if (entry.subtype !== 'not-in-file' && entry.subtype !== 'range-miss') {
+      pendingRowErrors.push([id, `subtype must be "not-in-file" or "range-miss", got ${JSON.stringify(entry.subtype)}`]);
+      admissible = false;
+    }
+    if (typeof entry.issue !== 'string' || !/^#\d+$/.test(entry.issue)) {
+      pendingRowErrors.push([id, `issue must be a tracking reference like "#1170", got ${JSON.stringify(entry.issue)}`]);
+      admissible = false;
+    }
+    if (typeof entry.note !== 'string' || entry.note.trim() === '') {
+      pendingRowErrors.push([id, 'note must be a non-empty explanation of why the anchor never anchored']);
+      admissible = false;
+    }
+    if (admissible) pending.set(id, entry.subtype as AnchorSubtype);
+  });
   const unsupportedRows = parseStructuredList(options.anchorUnsupportedPath);
   const registeredUnsupported = new Map<string, string[]>();
   for (const raw of unsupportedRows) {
@@ -479,10 +521,8 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       add('<pending>', '<count>', 'source-anchor',
         `pending list may only shrink: declared ${pendingRows.length}, maximum ${maximum} — ${PENDING_NOTE}`);
     }
-    if (pendingRows.length !== pending.size) {
-      add('<pending>', '<count>', 'source-anchor',
-        `pending count must equal distinct valid count: declared ${pendingRows.length}, distinct valid ${pending.size}`
-        + ` (every row needs a distinct id, a subtype, an issue like #1170, and a note) — ${PENDING_NOTE}`);
+    for (const [id, message] of pendingRowErrors) {
+      add('<pending>', id, 'source-anchor', `${message} — ${PENDING_NOTE}`);
     }
     for (const [id, subtype] of pending) {
       if (actualBaseline.get(id) !== subtype) {
