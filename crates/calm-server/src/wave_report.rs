@@ -485,7 +485,16 @@ pub(crate) fn apply_report_op(
     let after = doc
         .blocks_snapshot()
         .map_err(|e| CalmError::Internal(format!("wave_report: snapshot after task guard: {e}")))?;
-    guard_task_declarations(&before, &after, author)?;
+    // The block-level delete endpoint is the ONLY way a live task
+    // declaration may leave the document (#1179); the guard needs to know
+    // which block, if any, this op deleted that way. `op` here is the
+    // normalized op, so a user delete (rewritten into an in-place
+    // tombstone) is not a delete anymore and grants no exemption.
+    let block_delete_id = match &op {
+        ReportDocOp::DeleteBlock { id, .. } => Some(id.as_str()),
+        _ => None,
+    };
+    guard_task_declarations(&before, &after, author, block_delete_id)?;
     Ok(outcome)
 }
 
