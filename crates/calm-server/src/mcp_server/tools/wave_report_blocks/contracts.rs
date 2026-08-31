@@ -326,8 +326,11 @@ pub(super) fn delete_descriptor() -> ToolDescriptor {
 pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_WRITE_MARKDOWN.into(),
-        description: "Spec-only escape hatch: wholesale-replace the \
-             report from full-document Markdown. The body MAY contain \
+        description: "Spec-only: the id-preserving whole-document write \
+             — wholesale-replace the report from full-document \
+             Markdown. Prefer this over `calm.report.write` for any \
+             full rewrite: that tool re-derives block ids \
+             best-effort, this one keeps them. The body MAY contain \
              the `<!-- neige:b_xxxx -->` marker lines that \
              `calm.report.read { with_markers: true }` emits — each \
              marker pins the block that follows it to that existing \
@@ -339,8 +342,9 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
              preserve that block, edit its JSON to update it (rev+1), \
              drop it to delete it — every fence must be well-formed \
              and schema-valid or the whole write is rejected (-32602). \
-             Prefer `calm.report.blocks.*` for targeted \
-             edits; use this for large restructurings. Omitting \
+             Use `calm.report.blocks.*` for targeted \
+             edits; use this for large restructurings. Takes no \
+             `message`/`lifecycle`. Omitting \
              `summary` keeps the existing one. Returns \
              `{ updated_at, docRev }`."
             .into(),
