@@ -33,6 +33,26 @@ pub struct Manifest {
 
     pub display_name: String,
 
+    /// #1164 §2.1 — connector kind. Absent ⇒ [`ConnectorKind::App`], which is
+    /// exactly today's plugin semantics (the tree's only checked-in manifest,
+    /// `plugins/git-forge`, carries no `kind` key). An *unknown* value is a
+    /// hard parse error, never a silent downgrade to `app` — serde's
+    /// `unknown variant` message names the accepted set.
+    ///
+    /// `#[serde(default)]` on the FIELD is load-bearing: deriving `Default`
+    /// on the enum alone does not make a missing key legal.
+    #[serde(default)]
+    pub kind: ConnectorKind,
+
+    /// Remote streamable-HTTP MCP server config. Present iff
+    /// `kind == McpHttp` (enforced in [`Manifest::validate`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_http: Option<McpHttpBlock>,
+
+    /// Read-only query CLI config. Present iff `kind == CliQuery`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_query: Option<CliQueryBlock>,
+
     #[serde(default)]
     pub description: Option<String>,
 
@@ -45,7 +65,11 @@ pub struct Manifest {
     #[serde(default)]
     pub homepage: Option<String>,
 
-    pub entrypoint: Entrypoint,
+    /// How to launch the plugin process. **Required for
+    /// [`ConnectorKind::App`], optional otherwise** (#1164 §2.1) — remote
+    /// MCP servers and query CLIs have no kernel-supervised child process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<Entrypoint>,
 
     /// At least one view recommended; an empty array is technically legal but
     /// such a plugin can never surface a card. We don't reject — the validator
@@ -78,6 +102,236 @@ pub struct Manifest {
     /// Missing block treated as the most-restrictive permission set.
     #[serde(default)]
     pub permissions: Permissions,
+}
+
+/// #1164 §2.1 — what kind of external capability this manifest describes.
+///
+/// `App` is the pre-#1164 plugin: a kernel-supervised child process speaking
+/// stdio MCP. The other two variants are *connectors* — no child process, no
+/// `neige.*` inbound router, no plugin token.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectorKind {
+    /// Today's plugin. Semantics unchanged, byte for byte.
+    #[default]
+    App,
+    /// Remote streamable-HTTP MCP server.
+    McpHttp,
+    /// Read-only local query CLI.
+    CliQuery,
+}
+
+impl ConnectorKind {
+    /// Wire token, matching the serde `kebab-case` rename.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::McpHttp => "mcp-http",
+            Self::CliQuery => "cli-query",
+        }
+    }
+
+    /// `true` for the pre-#1164 process-backed plugin.
+    pub fn is_app(self) -> bool {
+        matches!(self, Self::App)
+    }
+}
+
+/// Where the API key rides on an outbound `mcp-http` request. Closed set:
+/// `query:<name>` or `header:<name>` (§2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiKeyIn {
+    Query(String),
+    Header(String),
+}
+
+impl ApiKeyIn {
+    /// Parse the manifest's `api_key_in` string. `None` for anything outside
+    /// the closed set — the caller turns that into a validation error.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (scheme, name) = s.split_once(':')?;
+        if name.trim().is_empty() {
+            return None;
+        }
+        match scheme {
+            "query" => Some(Self::Query(name.to_string())),
+            "header" => Some(Self::Header(name.to_string())),
+            _ => None,
+        }
+    }
+}
+
+/// Default per-request timeout for a steady-state `tools/call` (§2.2).
+///
+/// **This value is deliberately NOT the bound that protects boot** — see
+/// [`MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`]. It may be raised without limit: a
+/// report-generating MCP tool legitimately runs for minutes, and nothing on the
+/// `tools/call` path is awaited by `AppState::new`.
+pub const MCP_HTTP_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
+/// Hard ceiling on the bring-up (`initialize` + `tools/list`) timeout, enforced
+/// here at manifest-parse time.
+///
+/// **Why a second knob exists at all.** `request_timeout_ms` used to govern two
+/// things with opposite constraints, and every round of review patched the
+/// arithmetic while the defect reappeared one level up:
+///
+/// * **bring-up** sits on the inline-awaited boot path (`AppState::new` →
+///   `autospawn_enabled` → `spawn_admitted` → `tools/list`), so it must be
+///   SHORT and hard-bounded — while it runs, the server does not serve;
+/// * **steady-state `tools/call`** is not on the boot path at all and is
+///   legitimately long.
+///
+/// One knob could satisfy neither: clamping it broke long tool calls, and
+/// widening the boot budget to respect it made boot latency operator-controlled
+/// and unbounded (`"request_timeout_ms": 600000` against a black-holed upstream
+/// stalled boot for 20.5 minutes). Splitting them makes the boot bound hold *by
+/// construction* for every manifest: `connector_bringup_budget` can never
+/// exceed `2 × 15 s + slack`, whatever the manifest asks for.
+///
+/// (Same shape as `trusted_forge_plugin`, one bit that gates both "may hold a
+/// wave scope" and "gets the forge credential passthrough". The general lesson:
+/// when a constant needs adjusting for the third time, stop adjusting it and
+/// look for the second constraint riding on it.)
+///
+/// 15 s is chosen as "generous for a TLS handshake plus a cold upstream's first
+/// response, still short enough that a full slate of dead connectors cannot
+/// push boot past [`super::CONNECTOR_AUTOSPAWN_BUDGET`]".
+pub const MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS: u64 = 15_000;
+
+/// `mcp_http` top-level block. Present iff `kind == "mcp-http"`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct McpHttpBlock {
+    /// Absolute `http://` or `https://` endpoint.
+    pub url: String,
+
+    /// Name of the key in the connector's `secrets.json` holding the API key.
+    /// Absent ⇒ unauthenticated requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_secret: Option<String>,
+
+    /// `query:<name>` | `header:<name>`. Required when `api_key_secret` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_in: Option<String>,
+
+    /// Hand-written allowlist of upstream tool names to expose. Names the
+    /// upstream does not serve are warned about and skipped, not fatal (§2.2).
+    #[serde(default)]
+    pub tools_allow: Vec<String>,
+
+    /// Steady-state `tools/call` timeout. Overrides
+    /// [`MCP_HTTP_DEFAULT_TIMEOUT_MS`]. **No upper bound** — see that constant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_ms: Option<u64>,
+
+    /// Bring-up (`initialize` + `tools/list`) timeout. Capped at
+    /// [`MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`], which `validate` refuses to let a
+    /// manifest exceed.
+    ///
+    /// Absent ⇒ `min(request_timeout_ms, ceiling)`. Deriving the default from
+    /// the call timeout keeps every manifest written before the split meaning
+    /// what it meant (a small `request_timeout_ms` was, in practice, an
+    /// operator asking for a fast bring-up), while the `min` is what makes the
+    /// boot bound hold regardless of what that field says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bringup_timeout_ms: Option<u64>,
+}
+
+impl McpHttpBlock {
+    /// The `tools/call` budget. Long by design; never used for bring-up.
+    pub fn timeout_ms(&self) -> u64 {
+        self.request_timeout_ms
+            .filter(|ms| *ms > 0)
+            .unwrap_or(MCP_HTTP_DEFAULT_TIMEOUT_MS)
+    }
+
+    /// The bring-up budget — the one on the inline-awaited boot path.
+    ///
+    /// The trailing `.min(...)` is not belt-and-braces with `validate`: it is
+    /// what makes the bound total. `validate` refuses an explicit value over
+    /// the ceiling, but the DERIVED default comes from an unbounded field, so
+    /// without the clamp `"request_timeout_ms": 600000` would re-create exactly
+    /// the 20.5-minute boot stall the split exists to remove.
+    pub fn bringup_timeout_ms(&self) -> u64 {
+        self.bringup_timeout_ms
+            .filter(|ms| *ms > 0)
+            .unwrap_or_else(|| self.timeout_ms())
+            .min(MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS)
+    }
+
+    /// Parsed `api_key_in`, `None` when no key is configured.
+    pub fn api_key_in_parsed(&self) -> Option<ApiKeyIn> {
+        self.api_key_in.as_deref().and_then(ApiKeyIn::parse)
+    }
+}
+
+pub const CLI_QUERY_DEFAULT_TIMEOUT_MS: u64 = 20_000;
+pub const CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES: usize = 32_768;
+
+/// `cli_query` top-level block. Present iff `kind == "cli-query"`.
+///
+/// #1164 P1 parses and validates this block; the execution runtime lands in a
+/// later slice (§7 P3).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CliQueryBlock {
+    /// Bare name (resolved against the service PATH + `search_path_extra` at
+    /// enable time) or an absolute path.
+    pub command: String,
+
+    /// Extra PATH entries used ONLY when resolving/executing this connector.
+    #[serde(default)]
+    pub search_path_extra: Vec<String>,
+
+    /// Keys forwarded from the service environment. Default empty — the child
+    /// gets `env_clear()` plus an explicit base set.
+    #[serde(default)]
+    pub env_allow: Vec<String>,
+
+    /// Env keys whose values come from the connector's `secrets.json`.
+    #[serde(default)]
+    pub secret_env: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_bytes: Option<usize>,
+
+    pub tools: Vec<CliQueryTool>,
+}
+
+impl CliQueryBlock {
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+            .filter(|ms| *ms > 0)
+            .unwrap_or(CLI_QUERY_DEFAULT_TIMEOUT_MS)
+    }
+
+    pub fn max_output_bytes(&self) -> usize {
+        self.max_output_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES)
+    }
+}
+
+/// One hand-declared CLI tool. `args` is a fixed argv template: a `{{slot}}`
+/// element is replaced *wholesale* by one argument. No shell, no string
+/// concatenation (§2.3).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CliQueryTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub input_schema: Value,
+    pub args: Vec<String>,
+}
+
+/// If `s` is exactly `{{name}}`, return `name`. Partial occurrences (e.g.
+/// `--sym={{symbol}}`) deliberately do NOT match: the template only supports
+/// whole-argv substitution.
+pub fn argv_slot(s: &str) -> Option<&str> {
+    let inner = s.strip_prefix("{{")?.strip_suffix("}}")?;
+    if inner.is_empty() { None } else { Some(inner) }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -257,6 +511,25 @@ pub struct Permissions {
     pub filesystem: Vec<String>,
 }
 
+impl Permissions {
+    /// `true` when this block grants literally nothing — i.e. it is
+    /// indistinguishable from an absent `permissions` key.
+    ///
+    /// #1164 §3 uses this to refuse a connector manifest that *requests*
+    /// anything: connectors have no `neige.*` channel, so a granted permission
+    /// would be a claim the kernel could never honour. `proposals` is excluded
+    /// on purpose — it is the withdrawn, ignored Tier-A compatibility field, so
+    /// a persisted manifest carrying it must not become unparseable.
+    pub fn grants_nothing(&self) -> bool {
+        self.overlays_write.is_empty()
+            && !self.cards_create
+            && !self.cards_read_all
+            && self.events_subscribe.is_empty()
+            && self.kv_quota_bytes == 0
+            && self.filesystem.is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -344,20 +617,41 @@ impl Manifest {
             return Err(ManifestError::invalid("display_name", "must be non-empty"));
         }
 
-        if self.entrypoint.command.trim().is_empty() {
-            return Err(ManifestError::invalid(
-                "entrypoint.command",
-                "must be non-empty",
-            ));
-        }
-        // Reject absolute paths and `..` escapes early — Slice B will also
-        // re-check, but flagging here gives users a clearer error.
-        if self.entrypoint.command.starts_with('/') || self.entrypoint.command.contains("..") {
-            return Err(ManifestError::invalid(
-                "entrypoint.command",
-                "must be a relative path inside the plugin install dir \
-                 (no leading `/`, no `..` segments)",
-            ));
+        // #1164 §2.1 — kind ↔ block consistency. Exactly one connector block
+        // may be present, and it must be the one the `kind` names.
+        self.validate_connector_blocks()?;
+        // #1164 §3 — and the app-only surfaces are refused at PARSE time for
+        // connectors, which is what §4's interception table rests on.
+        self.reject_app_only_surfaces()?;
+
+        // `entrypoint` is required only for `app`. Non-app kinds have no
+        // kernel-supervised child, so demanding a binary path there would be
+        // pure ceremony (and would force fake values into the manifest).
+        match self.entrypoint.as_ref() {
+            Some(entrypoint) => {
+                if entrypoint.command.trim().is_empty() {
+                    return Err(ManifestError::invalid(
+                        "entrypoint.command",
+                        "must be non-empty",
+                    ));
+                }
+                // Reject absolute paths and `..` escapes early — Slice B will
+                // also re-check, but flagging here gives users a clearer error.
+                if entrypoint.command.starts_with('/') || entrypoint.command.contains("..") {
+                    return Err(ManifestError::invalid(
+                        "entrypoint.command",
+                        "must be a relative path inside the plugin install dir \
+                         (no leading `/`, no `..` segments)",
+                    ));
+                }
+            }
+            None if self.kind.is_app() => {
+                return Err(ManifestError::invalid(
+                    "entrypoint",
+                    "required for `kind: \"app\"` manifests",
+                ));
+            }
+            None => {}
         }
 
         for (i, view) in self.views.iter().enumerate() {
@@ -380,6 +674,424 @@ impl Manifest {
 
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// #1164 — connector-block validation
+// ---------------------------------------------------------------------------
+
+impl Manifest {
+    /// Enforce the §2.1 contract: the two connector blocks are mutually
+    /// exclusive, and the present block must match `kind`. We deliberately do
+    /// NOT use `#[serde(flatten)]` + an internally-tagged enum — the duplicate
+    /// `kind` key that shape produces is a round-trip hazard.
+    fn validate_connector_blocks(&self) -> Result<(), ManifestError> {
+        if self.mcp_http.is_some() && self.cli_query.is_some() {
+            return Err(ManifestError::invalid(
+                "mcp_http",
+                "`mcp_http` and `cli_query` are mutually exclusive",
+            ));
+        }
+        match self.kind {
+            ConnectorKind::App => {
+                if self.mcp_http.is_some() {
+                    return Err(ManifestError::invalid(
+                        "mcp_http",
+                        "only allowed when `kind` is \"mcp-http\"",
+                    ));
+                }
+                if self.cli_query.is_some() {
+                    return Err(ManifestError::invalid(
+                        "cli_query",
+                        "only allowed when `kind` is \"cli-query\"",
+                    ));
+                }
+            }
+            ConnectorKind::McpHttp => {
+                let block = self.mcp_http.as_ref().ok_or_else(|| {
+                    ManifestError::invalid("mcp_http", "required when `kind` is \"mcp-http\"")
+                })?;
+                block.validate()?;
+            }
+            ConnectorKind::CliQuery => {
+                let block = self.cli_query.as_ref().ok_or_else(|| {
+                    ManifestError::invalid("cli_query", "required when `kind` is \"cli-query\"")
+                })?;
+                block.validate()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// #1164 §3 — **parse-time** refusal of every `app`-only surface on a
+    /// connector manifest.
+    ///
+    /// §3 lists "渲染 `ui://` 或绑 `workflows[]`（parse 期拒绝）" as a channel
+    /// that *does not exist* for connectors, and §4's interception table is
+    /// only sound if the manifest can never declare one. Enforcing it here —
+    /// rather than by hoping no downstream reader ever looks — is what makes
+    /// the negative durable: `Manifest::parse` is the single door every
+    /// manifest enters through (`registry::load_from_dir`, the install route,
+    /// `/reload`), so a connector manifest that reaches any reader is already
+    /// known to carry none of these.
+    ///
+    /// Each field gets its own error naming the field, because "your connector
+    /// manifest is invalid" is useless to whoever authored it.
+    fn reject_app_only_surfaces(&self) -> Result<(), ManifestError> {
+        if self.kind.is_app() {
+            return Ok(());
+        }
+        let kind = self.kind.wire_name();
+        let only_app = |what: &str| {
+            format!("only allowed for `kind: \"app\"` manifests; `kind: \"{kind}\"` {what}")
+        };
+
+        if self.entrypoint.is_some() {
+            return Err(ManifestError::invalid(
+                "entrypoint",
+                only_app("has no kernel-supervised child process"),
+            ));
+        }
+        if !self.views.is_empty() {
+            return Err(ManifestError::invalid(
+                "views",
+                only_app("cannot serve a `ui://` resource, so a view could never render"),
+            ));
+        }
+        if !self.workflows.is_empty() {
+            return Err(ManifestError::invalid(
+                "workflows",
+                only_app("cannot own a wave workflow"),
+            ));
+        }
+        if self.input_schema.is_some() {
+            return Err(ManifestError::invalid(
+                "input_schema",
+                only_app("declares no workflow, so there is no `workflow_input` to shape"),
+            ));
+        }
+        if !self.permissions.grants_nothing() {
+            return Err(ManifestError::invalid(
+                "permissions",
+                only_app(
+                    "has no `neige.*` callback channel, so no permission it requests \
+                     could ever be exercised",
+                ),
+            ));
+        }
+        // D6 — a forge action is dispatched with the forge credential
+        // passthrough, which is an `app`-plugin-only channel. It is not
+        // exploitable in P1 (every reader gates on `running_plugin_ids`, and a
+        // successful `mcp-http` spawn REPLACES `exposes_tools` wholesale with
+        // `materialize_http_tools`, which hard-codes `kind: None`) — but "not
+        // reachable today" is exactly the invariant P3's `cli-query` executor
+        // would silently make live. Refusing at parse time makes it durable
+        // rather than incidental.
+        if let Some(tool) = self
+            .exposes_tools
+            .iter()
+            .find(|t| t.kind == Some(ToolKind::ForgeAction))
+        {
+            return Err(ManifestError::invalid(
+                "exposes_tools",
+                format!(
+                    "tool `{}` declares `kind: \"forge-action\"`, which is {}",
+                    tool.name,
+                    only_app("cannot receive the forge credential passthrough"),
+                ),
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl McpHttpBlock {
+    fn validate(&self) -> Result<(), ManifestError> {
+        validate_mcp_http_url(self.url.trim())?;
+        // The ceiling is enforced where the manifest is PARSED, not where the
+        // spawn reads it: a connector whose bring-up budget would stall boot
+        // must fail to load, so an operator learns at install time rather than
+        // by watching the server take minutes to answer its first request.
+        if let Some(ms) = self.bringup_timeout_ms
+            && ms > MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS
+        {
+            return Err(ManifestError::invalid(
+                "mcp_http.bringup_timeout_ms",
+                format!(
+                    "must be at most {MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS} ms — bring-up is \
+                     awaited inline during server boot. Raise `request_timeout_ms` \
+                     instead if a long-running `tools/call` is what you need."
+                ),
+            ));
+        }
+        match (self.api_key_secret.as_deref(), self.api_key_in.as_deref()) {
+            (Some(secret), _) if secret.trim().is_empty() => {
+                return Err(ManifestError::invalid(
+                    "mcp_http.api_key_secret",
+                    "must be non-empty when present",
+                ));
+            }
+            (Some(_), None) => {
+                return Err(ManifestError::invalid(
+                    "mcp_http.api_key_in",
+                    "required whenever `api_key_secret` is set",
+                ));
+            }
+            (Some(_), Some(spec)) => match ApiKeyIn::parse(spec) {
+                None => {
+                    return Err(ManifestError::invalid(
+                        "mcp_http.api_key_in",
+                        "must be `query:<name>` or `header:<name>`",
+                    ));
+                }
+                // A header name that is not an RFC 9110 field-name would be
+                // rejected by the HTTP client at REQUEST time — i.e. once per
+                // call, as a transport error, long after the operator could
+                // connect it to the manifest they wrote.
+                Some(ApiKeyIn::Header(name)) if !is_http_field_name(&name) => {
+                    return Err(ManifestError::invalid(
+                        "mcp_http.api_key_in",
+                        format!(
+                            "`{name}` is not a legal HTTP header name \
+                             (RFC 9110 token: alphanumerics and any of `!#$%&'*+-.^_`|~`)"
+                        ),
+                    ));
+                }
+                // A query parameter name with characters that would have to be
+                // percent-encoded is legal but confusing; `=` and `&` would
+                // actively re-shape the query, so refuse them outright.
+                Some(ApiKeyIn::Query(name))
+                    if name.contains(['=', '&', '#', '?'])
+                        || name.contains(char::is_whitespace) =>
+                {
+                    return Err(ManifestError::invalid(
+                        "mcp_http.api_key_in",
+                        format!(
+                            "query parameter name `{name}` must not contain \
+                             whitespace or any of `=`, `&`, `#`, `?`"
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            },
+            (None, _) => {}
+        }
+        for (i, name) in self.tools_allow.iter().enumerate() {
+            validate_connector_tool_name(name, &format!("mcp_http.tools_allow[{i}]"))?;
+        }
+        Ok(())
+    }
+}
+
+impl CliQueryBlock {
+    fn validate(&self) -> Result<(), ManifestError> {
+        if self.command.trim().is_empty() {
+            return Err(ManifestError::invalid(
+                "cli_query.command",
+                "must be non-empty",
+            ));
+        }
+        if self.tools.is_empty() {
+            return Err(ManifestError::invalid(
+                "cli_query.tools",
+                "must declare at least one tool",
+            ));
+        }
+        for (i, tool) in self.tools.iter().enumerate() {
+            tool.validate(i)?;
+        }
+        Ok(())
+    }
+}
+
+impl CliQueryTool {
+    fn validate(&self, idx: usize) -> Result<(), ManifestError> {
+        let path = |s: &str| format!("cli_query.tools[{idx}].{s}");
+        validate_connector_tool_name(&self.name, &path("name"))?;
+
+        // Slot names must be declared top-level keys of `input_schema`.
+        // `input_schema` is the same JSON-Schema subset the rest of the
+        // manifest uses; here we only need its top-level property names.
+        let properties = self
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.as_object());
+        for (i, arg) in self.args.iter().enumerate() {
+            let Some(slot) = argv_slot(arg) else {
+                // A literal argv element. Reject stray braces so a typo like
+                // `--sym={{symbol}}` fails at authoring time instead of being
+                // silently passed through as a literal.
+                if arg.contains("{{") || arg.contains("}}") {
+                    return Err(ManifestError::invalid(
+                        path(&format!("args[{i}]")),
+                        "a `{{slot}}` template must occupy the whole argv element \
+                         (no string concatenation, no shell)",
+                    ));
+                }
+                continue;
+            };
+            let known = properties.is_some_and(|p| p.contains_key(slot));
+            if !known {
+                return Err(ManifestError::invalid(
+                    path(&format!("args[{i}]")),
+                    format!(
+                        "slot `{slot}` is not a top-level property of this tool's input_schema"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// #1164 §2.2 — real parse of `mcp_http.url`.
+///
+/// The previous check was `starts_with("http://") || starts_with("https://")`,
+/// which accepted a bare `https://`, a malformed authority, and — the one that
+/// is actively harmful — a **fragment**. `HttpMcpClient::new` appends the query
+/// auth AFTER whatever the manifest said, so `https://h/mcp#x` becomes
+/// `https://h/mcp#x?api_key=…`: the key lands inside the fragment and is never
+/// transmitted, and the connector fails authentication with no hint why.
+///
+/// Rejecting at manifest-parse time means the failure names the field.
+fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
+    let field = "mcp_http.url";
+    // WHATWG normalization is too forgiving for a *manifest*: it turns
+    // `https:///mcp` into host `mcp`, silently retargeting the request at a
+    // host the author never wrote. Require a non-empty authority in the RAW
+    // text before handing it to the parser.
+    match raw.split_once("://") {
+        Some((_, rest)) if !rest.split(['/', '?', '#']).next().unwrap_or("").is_empty() => {}
+        _ => {
+            return Err(ManifestError::invalid(
+                field,
+                "must be `http://<host>[…]` or `https://<host>[…]` with a non-empty authority",
+            ));
+        }
+    }
+    // The authority pre-check above only knows `/`, `?` and `#` as delimiters,
+    // but WHATWG treats a BACKSLASH as a path separator and STRIPS ASCII tabs
+    // and newlines before parsing. So `https://\evil.example/mcp` and
+    // `https://good.example\t.evil.example/mcp` both sail past it and are then
+    // normalized into a different textual target — while `HttpMcpClient`'s
+    // `log_target` splits the UNNORMALIZED raw string and would report the host
+    // the author wrote rather than the one we would actually contact.
+    if let Some(bad) = raw
+        .chars()
+        .find(|c| *c == '\\' || c.is_ascii_control() || *c == '\u{7f}')
+    {
+        return Err(ManifestError::invalid(
+            field,
+            format!(
+                "must not contain backslashes or ASCII control characters \
+                 (found {bad:?}): WHATWG URL parsing treats them as authority/path \
+                 delimiters or strips them, which retargets the request"
+            ),
+        ));
+    }
+    let parsed = url::Url::parse(raw)
+        .map_err(|e| ManifestError::invalid(field, format!("not a valid absolute URL: {e}")))?;
+    // Scheme FIRST. WHATWG lower-cases the scheme, so `FILE://x/mcp` is
+    // non-canonical *and* unsupported — and reporting "must be written in
+    // canonical form" would send the author off to fix the capitalisation of a
+    // scheme this connector will never accept.
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ManifestError::invalid(
+            field,
+            format!(
+                "scheme must be `http` or `https`, got `{}`",
+                parsed.scheme()
+            ),
+        ));
+    }
+    // The robust form of the same rule: whatever else the parser did to this
+    // string, the manifest must have been written in canonical form. Anything
+    // that re-serializes differently is a URL whose textual target is not the
+    // one the author wrote — and this crate has TWO consumers of the string
+    // (ureq, which re-parses it, and `log_target`, which does not), so a
+    // manifest where those disagree is exactly what must not exist.
+    if parsed.as_str() != raw {
+        return Err(ManifestError::invalid(
+            field,
+            format!(
+                "must be written in canonical form; `{raw}` normalizes to `{}`. \
+                 Use the normalized spelling so the URL we contact and the URL \
+                 we log are provably the same string.",
+                parsed.as_str()
+            ),
+        ));
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(ManifestError::invalid(field, "must carry a host"));
+    }
+    if parsed.fragment().is_some() {
+        return Err(ManifestError::invalid(
+            field,
+            "must not carry a `#fragment`: the API key is appended to the query \
+             string after it, so it would never be transmitted",
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ManifestError::invalid(
+            field,
+            "must not embed userinfo credentials; use `api_key_secret` + \
+             `api_key_in` so the value lives in `secrets.json`",
+        ));
+    }
+    Ok(())
+}
+
+/// RFC 9110 `field-name` = `token`. Used to reject an `api_key_in:
+/// header:<name>` the HTTP client would refuse at request time.
+fn is_http_field_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+/// Shared name check for connector-supplied tools. There is no
+/// `ExposedTool::validate` in the tree (§2.7), so materialization and manifest
+/// parsing both route through this one predicate.
+///
+/// `_` is rejected because `plugin.<id>_<tool>` uses the FIRST `_` as the
+/// id↔tool boundary only by virtue of plugin ids excluding `_`; a tool name
+/// containing `_` is fine, but an EMPTY or whitespace name would synthesize an
+/// unroutable descriptor. `.` is fine in tool names.
+pub fn validate_connector_tool_name(name: &str, field: &str) -> Result<(), ManifestError> {
+    if name.trim().is_empty() {
+        return Err(ManifestError::invalid(field, "tool name must be non-empty"));
+    }
+    if name != name.trim() {
+        return Err(ManifestError::invalid(
+            field,
+            "tool name must not have leading/trailing whitespace",
+        ));
+    }
+    if name.contains(char::is_whitespace) {
+        return Err(ManifestError::invalid(
+            field,
+            "tool name must not contain whitespace",
+        ));
+    }
+    Ok(())
 }
 
 impl View {
@@ -929,7 +1641,24 @@ mod tests {
 
     #[test]
     fn missing_required_field_fails() {
-        // `entrypoint` missing entirely.
+        // `display_name` missing entirely — still an unconditionally required
+        // field, so serde rejects it before any validator runs.
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "a.b",
+            "version": "1.0.0",
+            "min_kernel_version": "0.1.0",
+            "entrypoint": { "command": "bin/run" }
+        }"#;
+        let err = Manifest::parse(json).expect_err("missing display_name");
+        assert!(matches!(err, ManifestError::Json(_)), "got {err:?}");
+    }
+
+    /// #1164 §2.1 moved `entrypoint` from "unconditionally required" (a serde
+    /// error) to "required for `kind: app`" (a validator error). It is still
+    /// rejected for an app manifest — only the error variant changed.
+    #[test]
+    fn missing_entrypoint_is_a_validation_error_for_app_manifests() {
         let json = r#"{
             "manifest_version": 1,
             "id": "a.b",
@@ -938,7 +1667,10 @@ mod tests {
             "display_name": "X"
         }"#;
         let err = Manifest::parse(json).expect_err("missing entrypoint");
-        assert!(matches!(err, ManifestError::Json(_)), "got {err:?}");
+        match &err {
+            ManifestError::Invalid { field, .. } => assert_eq!(field, "entrypoint"),
+            other => panic!("expected an entrypoint validation error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1294,5 +2026,684 @@ mod tests {
             csp.extras.get("worker_src"),
             Some(&vec!["blob:".to_string()])
         );
+    }
+}
+
+// ===========================================================================
+// #1164 §2.1 — connector kind + mutually-exclusive blocks
+// ===========================================================================
+
+#[cfg(test)]
+mod connector_kind_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base(extra: Value) -> String {
+        let mut m = json!({
+            "manifest_version": 1,
+            "id": "conn-x",
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Conn",
+        });
+        let obj = m.as_object_mut().unwrap();
+        for (k, v) in extra.as_object().unwrap() {
+            obj.insert(k.clone(), v.clone());
+        }
+        m.to_string()
+    }
+
+    fn mcp_http_block() -> Value {
+        json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "WISBURG_API_KEY",
+            "api_key_in": "query:api_key",
+            "tools_allow": ["list_reports"],
+            "request_timeout_ms": 10000,
+        })
+    }
+
+    /// `expect_err` with the case identity in the panic message — with a dozen
+    /// table rows, "called `Result::unwrap_err()` on an `Ok` value" alone does
+    /// not say WHICH row silently passed.
+    fn expect_reject(res: Result<Manifest, ManifestError>, ctx: &str) -> ManifestError {
+        match res {
+            Ok(_) => panic!("`{ctx}` must be rejected, but it parsed"),
+            Err(e) => e,
+        }
+    }
+
+    fn cli_query_block() -> Value {
+        json!({
+            "command": "longbridge",
+            "tools": [{
+                "name": "quote",
+                "description": "Get a quote",
+                "input_schema": {
+                    "type": "object",
+                    "properties": { "symbol": { "type": "string" } },
+                    "required": ["symbol"],
+                    "additionalProperties": false
+                },
+                "args": ["quote", "{{symbol}}"]
+            }]
+        })
+    }
+
+    // ---- kind defaulting -------------------------------------------------
+
+    /// The tree's only checked-in manifest carries no `kind` key. Absent must
+    /// mean `app`, with zero change to app semantics.
+    #[test]
+    fn absent_kind_defaults_to_app() {
+        let m = Manifest::parse(&base(json!({ "entrypoint": { "command": "bin/run" } }))).unwrap();
+        assert_eq!(m.kind, ConnectorKind::App);
+        assert!(m.mcp_http.is_none());
+        assert!(m.cli_query.is_none());
+    }
+
+    #[test]
+    fn shipped_git_forge_manifest_still_parses_as_app() {
+        let text = include_str!("../../../../plugins/git-forge/manifest.json");
+        let m = Manifest::parse(text).expect("shipped manifest must keep parsing");
+        assert_eq!(m.kind, ConnectorKind::App);
+        assert!(m.entrypoint.is_some());
+    }
+
+    /// Risk R7: an unknown `kind` must be a loud parse error, never a silent
+    /// downgrade to `app` (which would spawn a process for a manifest that
+    /// describes something else entirely).
+    #[test]
+    fn unknown_kind_is_a_parse_error_not_a_silent_app() {
+        let err = Manifest::parse(&base(json!({
+            "kind": "sql-query",
+            "entrypoint": { "command": "bin/run" }
+        })))
+        .expect_err("unknown kind must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sql-query"),
+            "error must name the offending value: {msg}"
+        );
+        assert!(matches!(err, ManifestError::Json(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn kind_round_trips_through_to_json() {
+        let m = Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+        })))
+        .unwrap();
+        let re: Manifest = serde_json::from_value(m.to_json()).expect("re-parse");
+        assert_eq!(re.kind, ConnectorKind::McpHttp);
+        assert_eq!(
+            re.mcp_http.as_ref().unwrap().url,
+            "https://mcp.example.com/mcp"
+        );
+        // Exactly one `kind` key on the wire — the reason we did not use
+        // `#[serde(flatten)]` with an internally-tagged enum (D4).
+        assert_eq!(
+            m.to_json()
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|k| k.as_str() == "kind")
+                .count(),
+            1
+        );
+    }
+
+    // ---- entrypoint conditionality ---------------------------------------
+
+    #[test]
+    fn app_without_entrypoint_is_rejected() {
+        let err = Manifest::parse(&base(json!({}))).expect_err("app needs an entrypoint");
+        assert!(err.to_string().contains("entrypoint"), "{err}");
+    }
+
+    #[test]
+    fn connectors_do_not_need_an_entrypoint() {
+        Manifest::parse(&base(
+            json!({ "kind": "mcp-http", "mcp_http": mcp_http_block() }),
+        ))
+        .expect("mcp-http needs no entrypoint");
+        Manifest::parse(&base(
+            json!({ "kind": "cli-query", "cli_query": cli_query_block() }),
+        ))
+        .expect("cli-query needs no entrypoint");
+    }
+
+    // ---- kind ↔ block consistency ----------------------------------------
+
+    #[test]
+    fn kind_and_block_must_agree() {
+        for (kind, block_key, block) in [
+            ("mcp-http", "cli_query", cli_query_block()),
+            ("cli-query", "mcp_http", mcp_http_block()),
+        ] {
+            let err = Manifest::parse(&base(json!({ "kind": kind, block_key: block })))
+                .expect_err("mismatched block must be rejected");
+            assert!(err.to_string().contains("required when"), "{err}");
+        }
+    }
+
+    #[test]
+    fn both_blocks_present_is_rejected() {
+        let err = Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "cli_query": cli_query_block(),
+        })))
+        .expect_err("blocks are mutually exclusive");
+        assert!(err.to_string().contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn app_may_not_carry_a_connector_block() {
+        for (key, block) in [
+            ("mcp_http", mcp_http_block()),
+            ("cli_query", cli_query_block()),
+        ] {
+            let err = Manifest::parse(&base(json!({
+                "entrypoint": { "command": "bin/run" },
+                key: block,
+            })))
+            .expect_err("app must not carry a connector block");
+            assert!(err.to_string().contains("only allowed when"), "{err}");
+        }
+    }
+
+    // ---- §3: app-only surfaces are refused at PARSE time ------------------
+
+    /// Every field in this table is a channel §3 says does not exist for a
+    /// connector. The interception table in §4 is only sound if a connector
+    /// manifest can never declare one, and `Manifest::parse` is the single
+    /// door every manifest enters through.
+    ///
+    /// One case per field, and the error must NAME the field — "your manifest
+    /// is invalid" is useless to whoever authored it.
+    #[test]
+    fn connector_app_only_surface_errors_name_the_field() {
+        let cases: Vec<(&str, Value)> = vec![
+            ("entrypoint", json!({ "command": "bin/run" })),
+            (
+                "views",
+                json!([{ "view_id": "main", "title": "Main", "scope": "card" }]),
+            ),
+            ("workflows", json!([{ "id": "wf.build" }])),
+            (
+                "input_schema",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ),
+            ("permissions", json!({ "cards_create": true })),
+            ("permissions", json!({ "kv_quota_bytes": 1 })),
+            ("permissions", json!({ "events_subscribe": ["*"] })),
+            ("permissions", json!({ "overlays_write": ["card"] })),
+            ("permissions", json!({ "cards_read_all": true })),
+            ("permissions", json!({ "filesystem": ["/tmp"] })),
+        ];
+        for (kind, block_key, block) in [
+            ("mcp-http", "mcp_http", mcp_http_block()),
+            ("cli-query", "cli_query", cli_query_block()),
+        ] {
+            for (field, value) in &cases {
+                let mut manifest = json!({ "kind": kind, block_key: block.clone() });
+                manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .insert((*field).to_string(), value.clone());
+                let err = expect_reject(
+                    Manifest::parse(&base(manifest)),
+                    &format!("{kind}/{field}={value}"),
+                );
+                let msg = err.to_string();
+                assert!(
+                    msg.contains(field),
+                    "{kind}: error must name `{field}`: {msg}"
+                );
+                assert!(
+                    msg.contains(kind),
+                    "{kind}: error must name the kind: {msg}"
+                );
+            }
+        }
+    }
+
+    /// The same manifest MINUS the offending field must parse — otherwise the
+    /// test above would pass for the wrong reason.
+    #[test]
+    fn a_connector_without_app_only_surfaces_parses() {
+        for (kind, block_key, block) in [
+            ("mcp-http", "mcp_http", mcp_http_block()),
+            ("cli-query", "cli_query", cli_query_block()),
+        ] {
+            Manifest::parse(&base(json!({ "kind": kind, block_key: block })))
+                .unwrap_or_else(|e| panic!("{kind} must parse: {e}"));
+        }
+        // An explicitly-present but all-default `permissions` block is not a
+        // request for anything, so it must NOT be refused.
+        Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "permissions": { "proposals": ["legacy"] },
+        })))
+        .expect("an all-default permissions block grants nothing");
+    }
+
+    /// `app` manifests are untouched by §3 — the anti-regression half.
+    #[test]
+    fn app_manifests_keep_every_surface() {
+        Manifest::parse(&base(json!({
+            "entrypoint": { "command": "bin/run" },
+            "views": [{ "view_id": "main", "title": "Main", "scope": "card" }],
+            "workflows": [{ "id": "wf.build" }],
+            "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "permissions": { "cards_create": true, "kv_quota_bytes": 4096 },
+        })))
+        .expect("an app manifest may declare all of these");
+    }
+
+    // ---- mcp_http block --------------------------------------------------
+
+    #[test]
+    fn mcp_http_url_must_be_absolute_http() {
+        let mut block = mcp_http_block();
+        block["url"] = json!("mcp.example.com/mcp");
+        let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+            .expect_err("relative url rejected");
+        assert!(err.to_string().contains("mcp_http.url"), "{err}");
+    }
+
+    /// Prefix matching on `http://` accepted all of these. The FRAGMENT case
+    /// is the one that is actively harmful: `HttpMcpClient::new` appends
+    /// `?api_key=…` after whatever the manifest said, so the credential lands
+    /// inside the fragment and is never transmitted.
+    #[test]
+    fn mcp_http_url_is_really_parsed() {
+        for bad in [
+            "https://",
+            "http://",
+            "https:///mcp",
+            "https://mcp.example.com/mcp#frag",
+            "https://user:pw@mcp.example.com/mcp",
+            "ftp://mcp.example.com/mcp",
+            "https://exa mple.com/mcp",
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(bad);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("mcp_http.url"), "`{bad}`: {err}");
+        }
+        for good in [
+            "https://mcp.example.com/mcp",
+            "http://127.0.0.1:8931/mcp",
+            "https://mcp.example.com/mcp?v=1",
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(good);
+            Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+                .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
+        }
+    }
+
+    /// Round-2 finding: the raw-authority pre-check only knows `/`, `?` and
+    /// `#` as delimiters, so WHATWG's OTHER authority terminators walked past
+    /// it. Each of these parses to a host the manifest author did not write,
+    /// while `HttpMcpClient::log_target` — which splits the UNNORMALIZED raw
+    /// string — would report the host they did.
+    #[test]
+    fn mcp_http_url_rejects_whatwg_retargeting() {
+        // Each entry is `(raw, host the parser actually resolves it to)`, so
+        // the fixture proves the retargeting is real rather than asserting a
+        // refusal that might be firing for an unrelated reason.
+        for (raw, retargeted_host) in [
+            (r"https://\evil.example/mcp", "evil.example"),
+            (r"https:/\evil.example/mcp", "evil.example"),
+            // Tab/CR/LF are STRIPPED, not treated as delimiters: the two
+            // labels fuse into one host that appears nowhere in the manifest.
+            (
+                "https://good.example\t.evil.example/mcp",
+                "good.example.evil.example",
+            ),
+            (
+                "https://good.example\n.evil.example/mcp",
+                "good.example.evil.example",
+            ),
+            (
+                "https://good.example\r.evil.example/mcp",
+                "good.example.evil.example",
+            ),
+        ] {
+            // The premise: `url` really does resolve this somewhere other than
+            // the literal authority a naive reader (and `log_target`) sees.
+            if let Ok(parsed) = url::Url::parse(raw) {
+                assert_eq!(
+                    parsed.host_str(),
+                    Some(retargeted_host),
+                    "fixture assumption broken for {raw:?}"
+                );
+            }
+            let mut block = mcp_http_block();
+            block["url"] = json!(raw);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                raw,
+            );
+            assert!(err.to_string().contains("mcp_http.url"), "{raw:?}: {err}");
+        }
+    }
+
+    /// Canonical-form equality is the robust half of the same rule: whatever
+    /// the parser normalizes, the manifest must have been written that way, so
+    /// the string we contact and the string we log are provably the same.
+    #[test]
+    fn mcp_http_url_must_be_written_in_canonical_form() {
+        for noncanonical in [
+            "https://mcp.example.com",          // → `.../` (empty path added)
+            "https://MCP.Example.COM/mcp",      // → lowercased host
+            "https://mcp.example.com:443/mcp",  // → default port dropped
+            "https://mcp.example.com/a/../mcp", // → path normalized
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(noncanonical);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                noncanonical,
+            );
+            assert!(
+                err.to_string().contains("canonical"),
+                "{noncanonical}: {err}"
+            );
+        }
+        // …and the canonical spellings of the same URLs are accepted, so the
+        // rule is "write it canonically", not "we reject these hosts".
+        for good in [
+            "https://mcp.example.com/",
+            "https://mcp.example.com/mcp",
+            "https://mcp.example.com:8443/mcp",
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(good);
+            Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+                .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
+        }
+    }
+
+    /// Round-3 finding: the canonical-form check used to run BEFORE the scheme
+    /// check, so an unsupported scheme spelled in upper case was reported as a
+    /// formatting problem. `FILE://x/mcp` normalizes to `file://x/mcp`, which
+    /// is non-canonical *and* unsupported — the author must be told the scheme
+    /// is wrong, not that they capitalised it wrong.
+    #[test]
+    fn an_unsupported_scheme_is_named_even_when_it_is_also_non_canonical() {
+        for bad in ["FILE://x/mcp", "FTP://mcp.example.com/mcp"] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(bad);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("scheme must be"), "`{bad}`: {err}");
+            assert!(
+                !err.to_string().contains("canonical"),
+                "`{bad}` must not be reported as a formatting problem: {err}"
+            );
+        }
+    }
+
+    /// D6 — a forge action rides the forge credential passthrough, an
+    /// `app`-only channel. Refused at parse time so P3's `cli-query` executor
+    /// cannot quietly make it live.
+    #[test]
+    fn a_connector_may_not_declare_a_forge_action_tool() {
+        for (kind, block_key, block) in [
+            ("mcp-http", "mcp_http", mcp_http_block()),
+            ("cli-query", "cli_query", cli_query_block()),
+        ] {
+            let err = Manifest::parse(&base(json!({
+                "kind": kind,
+                block_key: block,
+                "exposes_tools": [
+                    { "name": "ok_tool" },
+                    { "name": "forge_it", "kind": "forge-action" },
+                ],
+            })))
+            .expect_err("{kind}: forge-action on a connector must be refused");
+            assert!(err.to_string().contains("exposes_tools"), "{kind}: {err}");
+            assert!(err.to_string().contains("forge_it"), "{kind}: {err}");
+        }
+        // The same manifest without the forge-action tool parses — otherwise
+        // the assertion above could be passing for an unrelated reason.
+        Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "exposes_tools": [{ "name": "ok_tool" }],
+        })))
+        .expect("a plain connector tool list is fine");
+        // And `app` plugins keep the capability.
+        Manifest::parse(&base(json!({
+            "entrypoint": { "command": "bin/run" },
+            "exposes_tools": [{ "name": "forge_it", "kind": "forge-action" }],
+        })))
+        .expect("app plugins may still declare forge actions");
+    }
+
+    /// An illegal header name would otherwise fail at REQUEST time, once per
+    /// call, as an opaque transport error.
+    #[test]
+    fn header_api_key_name_must_be_a_legal_field_name() {
+        for bad in ["x api key", "x:key", "x\nkey", "x=key", "(key)"] {
+            let mut block = mcp_http_block();
+            block["api_key_in"] = json!(format!("header:{bad}"));
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("api_key_in"), "`{bad}`: {err}");
+        }
+        for good in ["x-api-key", "Authorization", "X_Api_Key1"] {
+            let mut block = mcp_http_block();
+            block["api_key_in"] = json!(format!("header:{good}"));
+            Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+                .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn query_api_key_name_must_not_reshape_the_query() {
+        for bad in ["a=b", "a&b", "a?b", "a#b", "a b"] {
+            let mut block = mcp_http_block();
+            block["api_key_in"] = json!(format!("query:{bad}"));
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("api_key_in"), "`{bad}`: {err}");
+        }
+    }
+
+    #[test]
+    fn api_key_in_is_a_closed_set_and_required_with_a_secret() {
+        let mut block = mcp_http_block();
+        block["api_key_in"] = json!("body:token");
+        let err = Manifest::parse(&base(
+            json!({ "kind": "mcp-http", "mcp_http": block.clone() }),
+        ))
+        .expect_err("unknown api_key_in location rejected");
+        assert!(err.to_string().contains("api_key_in"), "{err}");
+
+        let mut block = mcp_http_block();
+        block.as_object_mut().unwrap().remove("api_key_in");
+        let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+            .expect_err("api_key_in required when a secret is named");
+        assert!(err.to_string().contains("api_key_in"), "{err}");
+    }
+
+    #[test]
+    fn api_key_in_parses_both_locations() {
+        assert_eq!(
+            ApiKeyIn::parse("query:api_key"),
+            Some(ApiKeyIn::Query("api_key".into()))
+        );
+        assert_eq!(
+            ApiKeyIn::parse("header:x-api-key"),
+            Some(ApiKeyIn::Header("x-api-key".into()))
+        );
+        assert_eq!(ApiKeyIn::parse("query:"), None);
+        assert_eq!(ApiKeyIn::parse("cookie:k"), None);
+        assert_eq!(ApiKeyIn::parse("api_key"), None);
+    }
+
+    #[test]
+    fn timeout_defaults_and_overrides() {
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp"
+        }})))
+        .unwrap();
+        assert_eq!(
+            m.mcp_http.unwrap().timeout_ms(),
+            MCP_HTTP_DEFAULT_TIMEOUT_MS
+        );
+
+        let m = Manifest::parse(&base(
+            json!({ "kind": "mcp-http", "mcp_http": mcp_http_block() }),
+        ))
+        .unwrap();
+        assert_eq!(m.mcp_http.unwrap().timeout_ms(), 10_000);
+    }
+
+    /// The A-fix: the two budgets are separate, and the bring-up one is bounded
+    /// **by construction** — including when it is derived from the unbounded
+    /// call timeout.
+    #[test]
+    fn bringup_timeout_is_capped_however_the_call_timeout_is_configured() {
+        // Derived default tracks a modest call timeout verbatim…
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "request_timeout_ms": 2_000,
+        }})))
+        .unwrap();
+        let block = m.mcp_http.unwrap();
+        assert_eq!(block.timeout_ms(), 2_000);
+        assert_eq!(block.bringup_timeout_ms(), 2_000);
+
+        // …and is clamped as soon as that timeout stops being a sane boot
+        // budget. This is the case that used to stall `AppState::new` for
+        // 20.5 minutes.
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "request_timeout_ms": 600_000,
+        }})))
+        .unwrap();
+        let block = m.mcp_http.unwrap();
+        assert_eq!(
+            block.timeout_ms(),
+            600_000,
+            "a long tools/call budget must stay long"
+        );
+        assert_eq!(
+            block.bringup_timeout_ms(),
+            MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS,
+            "bring-up must not inherit an unbounded call budget"
+        );
+
+        // An explicit bring-up override under the ceiling is honoured…
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "request_timeout_ms": 600_000,
+            "bringup_timeout_ms": 750,
+        }})))
+        .unwrap();
+        let block = m.mcp_http.unwrap();
+        assert_eq!(block.bringup_timeout_ms(), 750);
+        assert_eq!(block.timeout_ms(), 600_000);
+    }
+
+    /// …and one over the ceiling is refused at PARSE time, so the operator
+    /// learns at install rather than by watching boot crawl.
+    #[test]
+    fn a_bringup_timeout_over_the_ceiling_is_a_manifest_error() {
+        let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "bringup_timeout_ms": MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS + 1,
+        }})))
+        .expect_err("a bring-up budget over the ceiling must not load");
+        assert!(err.to_string().contains("bringup_timeout_ms"), "{err}");
+
+        // Exactly at the ceiling is fine — the bound is `>`, not `>=`.
+        Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "bringup_timeout_ms": MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS,
+        }})))
+        .expect("exactly the ceiling must load");
+    }
+
+    // ---- cli_query block -------------------------------------------------
+
+    #[test]
+    fn cli_query_argv_slot_must_be_a_whole_element() {
+        let mut block = cli_query_block();
+        block["tools"][0]["args"] = json!(["quote", "--sym={{symbol}}"]);
+        let err = Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block })))
+            .expect_err("partial substitution must be rejected");
+        assert!(err.to_string().contains("whole argv element"), "{err}");
+    }
+
+    #[test]
+    fn cli_query_slot_must_be_a_declared_schema_property() {
+        let mut block = cli_query_block();
+        block["tools"][0]["args"] = json!(["quote", "{{ticker}}"]);
+        let err = Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block })))
+            .expect_err("undeclared slot must be rejected");
+        assert!(err.to_string().contains("ticker"), "{err}");
+    }
+
+    #[test]
+    fn cli_query_requires_a_command_and_at_least_one_tool() {
+        let mut block = cli_query_block();
+        block["command"] = json!("   ");
+        assert!(
+            Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block }))).is_err()
+        );
+
+        let mut block = cli_query_block();
+        block["tools"] = json!([]);
+        assert!(
+            Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block }))).is_err()
+        );
+    }
+
+    #[test]
+    fn cli_query_defaults() {
+        let m = Manifest::parse(&base(
+            json!({ "kind": "cli-query", "cli_query": cli_query_block() }),
+        ))
+        .unwrap();
+        let block = m.cli_query.unwrap();
+        assert_eq!(block.timeout_ms(), CLI_QUERY_DEFAULT_TIMEOUT_MS);
+        assert_eq!(block.max_output_bytes(), CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES);
+        assert!(block.env_allow.is_empty());
+        assert!(block.search_path_extra.is_empty());
+    }
+
+    #[test]
+    fn argv_slot_matches_only_whole_elements() {
+        assert_eq!(argv_slot("{{symbol}}"), Some("symbol"));
+        assert_eq!(argv_slot("--sym={{symbol}}"), None);
+        assert_eq!(argv_slot("{{}}"), None);
+        assert_eq!(argv_slot("quote"), None);
+    }
+
+    #[test]
+    fn connector_tool_names_reject_empty_and_whitespace() {
+        assert!(validate_connector_tool_name("get_report", "f").is_ok());
+        assert!(validate_connector_tool_name("", "f").is_err());
+        assert!(validate_connector_tool_name("  ", "f").is_err());
+        assert!(validate_connector_tool_name("two words", "f").is_err());
+        assert!(validate_connector_tool_name(" pad ", "f").is_err());
     }
 }

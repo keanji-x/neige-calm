@@ -202,6 +202,36 @@ impl PluginRegistry {
         inner.manifests.insert(id, manifest);
     }
 
+    /// #1164 §2.7(2)(3) — replace ONLY the `exposes_tools` field of an
+    /// already-registered manifest, under a single write lock.
+    ///
+    /// Two properties are load-bearing and must not be "simplified" into a
+    /// `get` → mutate → [`insert`](Self::insert) sequence:
+    ///
+    /// 1. **Field-level, single lock.** `insert` swaps the WHOLE `Manifest`.
+    ///    A read-modify-write would race a concurrent `/reload` and roll the
+    ///    entire manifest back — url, `tools_allow`, permissions, views,
+    ///    workflows — with nothing to notice until the next reload. Confining
+    ///    the write to one field caps the worst case at "stale tool list".
+    ///
+    /// 2. **No-op when `id` is absent.** Uninstall removes the registry entry
+    ///    while an in-flight spawn may still be running (§5 R12: there is no
+    ///    per-plugin lifecycle lock). If materialization inserted, it would
+    ///    RESURRECT the uninstalled manifest into the registry. Returning
+    ///    `false` instead is what neutralizes that race.
+    ///
+    /// Returns whether the entry existed (and was therefore updated).
+    pub fn set_exposes_tools(&self, id: &str, tools: Vec<super::manifest::ExposedTool>) -> bool {
+        let mut inner = self.inner.write().unwrap();
+        match inner.manifests.get_mut(id) {
+            Some(manifest) => {
+                manifest.exposes_tools = tools;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Remove a manifest. Returns the previous entry, if any.
     pub fn remove(&self, id: &str) -> Option<Manifest> {
         let mut inner = self.inner.write().unwrap();
@@ -336,6 +366,70 @@ mod tests {
         );
         let prev = reg.remove("test.valid").expect("had entry");
         assert_eq!(prev.id, m.id);
+        assert!(reg.is_empty());
+        assert!(reg.install_path("test.valid").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // #1164 §2.7(2)(3) — `set_exposes_tools`
+    // -----------------------------------------------------------------
+
+    fn tool(name: &str) -> super::super::manifest::ExposedTool {
+        super::super::manifest::ExposedTool {
+            name: name.to_string(),
+            description: None,
+            kind: None,
+            input_schema: None,
+            annotations: None,
+        }
+    }
+
+    #[test]
+    fn set_exposes_tools_replaces_only_that_field() {
+        let reg = PluginRegistry::empty();
+        reg.insert(Manifest::parse(VALID).unwrap(), Some("/tmp/fake".into()));
+
+        assert!(reg.set_exposes_tools("test.valid", vec![tool("a"), tool("b")]));
+
+        let after = reg.get("test.valid").expect("still registered");
+        assert_eq!(
+            after
+                .exposes_tools
+                .iter()
+                .map(|t| t.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        // Everything else survives — this is the whole reason the mutator is
+        // field-level instead of `get` → mutate → `insert`.
+        assert_eq!(after.display_name, "Valid");
+        assert_eq!(after.version, "0.1.0");
+        assert_eq!(after.views.len(), 1);
+        assert_eq!(
+            reg.install_path("test.valid"),
+            Some(PathBuf::from("/tmp/fake"))
+        );
+    }
+
+    /// §2.7(3): the no-op is what stops an in-flight spawn from resurrecting a
+    /// manifest that uninstall already removed (risk R12).
+    #[test]
+    fn set_exposes_tools_is_a_noop_for_an_absent_id() {
+        let reg = PluginRegistry::empty();
+        reg.insert(Manifest::parse(VALID).unwrap(), None);
+
+        // Uninstall removed it while a spawn was on the wire.
+        reg.remove("test.valid");
+        assert!(reg.is_empty());
+
+        assert!(
+            !reg.set_exposes_tools("test.valid", vec![tool("a")]),
+            "must report that nothing was updated"
+        );
+        assert!(
+            reg.get("test.valid").is_none(),
+            "an uninstalled manifest must NOT be resurrected into the registry"
+        );
         assert!(reg.is_empty());
         assert!(reg.install_path("test.valid").is_none());
     }
