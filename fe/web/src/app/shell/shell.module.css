@@ -218,8 +218,9 @@
       block-size: calc(var(--mobile-dock-h) - var(--space-4));
       padding: var(--space-1) var(--space-3);
       border: 1px solid var(--hairline);
-      border-radius: var(--radius-lg);
-      background: var(--paper);
+      border-radius: var(--radius-pill);
+      background: color-mix(in oklab, var(--paper) 88%, transparent);
+      backdrop-filter: blur(18px) saturate(1.12);
       box-shadow: var(--shadow-float);
       isolation: isolate;
       translate: -50% 0;

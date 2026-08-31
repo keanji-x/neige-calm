@@ -31,9 +31,13 @@ describe('MobilePages', () => {
       onOpenWave={onOpenWave}
     />);
 
-    expect(screen.getByRole('heading', { name: 'Pinned' })).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Recently updated' })).toBeTruthy();
+    expect(screen.getByRole('radiogroup', { name: 'Page group' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'Pinned' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'Recent report' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Pinned report' }));
     expect(onOpenWave).toHaveBeenCalledWith('pinned');
+
+    await userEvent.click(screen.getByRole('radio', { name: 'Recent' }));
+    expect(screen.getByRole('button', { name: 'Recent report' })).toBeTruthy();
   });
 });

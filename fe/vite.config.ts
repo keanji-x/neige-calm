@@ -38,6 +38,7 @@ export default defineConfig({
       '@astryxdesign/core/IconButton',
       '@astryxdesign/core/List',
       '@astryxdesign/core/MoreMenu',
+      '@astryxdesign/core/SegmentedControl',
     ],
   },
   define: {

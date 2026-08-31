@@ -1,3 +1,8 @@
+import {
+  SegmentedControl as AstryxSegmentedControl,
+  SegmentedControlItem as AstryxSegmentedControlItem,
+} from '@astryxdesign/core/SegmentedControl';
+
 import { coveOf, visibleCoves, type Cove } from '../../../../core/domain/cove.ts';
 import {
   visibleWaves, waveDisplayTitle, type Wave,
@@ -5,6 +10,8 @@ import {
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../ui/mobile-list/public.tsx';
+import { useState } from '../../ui/state/public.ts';
+import styles from './mobile-pages.module.css';
 
 const RECENT_PAGE_LIMIT = 24;
 
@@ -22,6 +29,8 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
     .filter((wave) => wave.pinnedAt === null)
     .toSorted((left, right) => right.updatedAt - left.updatedAt)
     .slice(0, RECENT_PAGE_LIMIT);
+  const [group, setGroup] = useState<'pinned' | 'recent'>(() => (pinned.length > 0 ? 'pinned' : 'recent'));
+  const shown = group === 'pinned' ? pinned : recent;
   const descriptionOf = (wave: Wave) => {
     const cove = coveOf(wave.coveId, shownCoves);
     return cove?.name ?? 'Unknown cove';
@@ -29,20 +38,18 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
 
   return (
     <MobileListPage title="Pages">
-      {pinned.length > 0 && (
-        <MobileList title="Pinned">
-          {pinned.map((wave) => (
-            <MobileListItem
-              key={wave.id}
-              title={waveDisplayTitle(wave.title)}
-              meta={descriptionOf(wave)}
-              onSelect={() => onOpenWave(wave.id)}
-            />
-          ))}
-        </MobileList>
-      )}
-      <MobileList title="Recently updated">
-        {recent.map((wave) => (
+      <AstryxSegmentedControl
+        className={styles.groups}
+        value={group}
+        onChange={(value) => setGroup(value === 'pinned' ? 'pinned' : 'recent')}
+        label="Page group"
+        size="sm"
+      >
+        <AstryxSegmentedControlItem value="pinned" label="Pinned" />
+        <AstryxSegmentedControlItem value="recent" label="Recent" />
+      </AstryxSegmentedControl>
+      <MobileList>
+        {shown.map((wave) => (
           <MobileListItem
             key={wave.id}
             title={waveDisplayTitle(wave.title)}
@@ -50,7 +57,9 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
             onSelect={() => onOpenWave(wave.id)}
           />
         ))}
-        {recent.length === 0 && pinned.length === 0 && <MobileListEmpty>No Pages yet.</MobileListEmpty>}
+        {shown.length === 0 && (
+          <MobileListEmpty>{group === 'pinned' ? 'No pinned Pages.' : 'No recent Pages.'}</MobileListEmpty>
+        )}
       </MobileList>
     </MobileListPage>
   );

@@ -1,0 +1,11 @@
+@layer features {
+  .groups {
+    align-self: flex-start;
+    border-radius: var(--radius-pill) !important;
+  }
+
+  .groups [role='radio'] {
+    min-block-size: var(--control-h-lg);
+    border-radius: var(--radius-pill) !important;
+  }
+}

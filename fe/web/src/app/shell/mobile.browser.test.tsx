@@ -183,7 +183,8 @@ describe('Wave mobile presentation', () => {
     await page.getByRole('button', { name: 'Back to Pages' }).click();
     await Promise.all(navigation.getAnimations().map((animation) => animation.finished));
     expect(page.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
-    expect(page.getByRole('heading', { name: 'Pinned' })).toBeTruthy();
+    expect(page.getByRole('radiogroup', { name: 'Page group' })).toBeTruthy();
+    expect(page.getByRole('radio', { name: 'Pinned' })).toBeTruthy();
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-pages.png' });
 
