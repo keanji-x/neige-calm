@@ -281,7 +281,7 @@
   why: >
     §2.2 + §3.2：这是全项目唯一无法避免 `role="button"` 的地方——必须坐在 `<h1>` 里而
     不破坏 heading 的 accessible-name 组合
-  source: web/src/pages/Wave.tsx:210-274
+  source: web/src/pages/Wave.tsx:401-430
   authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:609
   owner_slice: features/wave/page
   intentional_omission: false

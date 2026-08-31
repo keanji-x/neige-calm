@@ -19,6 +19,7 @@ const anchorPositionShapes = [
   ['ts-single.ts', ['typescriptSingle'], { typescriptSingle: [1] }],
   ['ts-multiline.ts', ['typescriptMultiline'], { typescriptMultiline: [2] }],
   ['ts-comment.ts', ['typescriptCommentAnchor'], { typescriptCommentAnchor: [] }],
+  ['ts-template-comment.ts', ['templateCommentAnchor'], { templateCommentAnchor: [] }],
 ] as const;
 
 function run(rule: string, kind: 'positive' | 'negative') {
@@ -112,7 +113,7 @@ describe('oracle rule fixtures', () => {
       expect(run(rule, 'positive')).toEqual([]);
       const violations = run(rule, 'negative');
       expect(violations, JSON.stringify(violations)).toHaveLength(
-        rule === 'source-anchor' ? 3 : rule === 'former-id-unique' ? 2 : 1,
+        rule === 'source-anchor' ? 4 : rule === 'former-id-unique' ? 2 : 1,
       );
       expect(new Set(violations.map((violation) => violation.rule))).toEqual(new Set([rule]));
       if (rule === 'source-location') {
@@ -141,7 +142,7 @@ describe('oracle rule fixtures', () => {
     expect(added).toHaveLength(2);
     expect(added.map((violation) => violation.message)).toContain('unbaselined not-in-file');
     expect(added.map((violation) => violation.message)).toContain(
-      'baseline count must equal actual count: declared 2, distinct valid 2, actual 3',
+      'baseline count must equal actual count: declared 3, distinct valid 3, actual 4',
     );
 
     const fixedRoot = resolve(fixtures, 'source-anchor/positive');
@@ -192,7 +193,7 @@ describe('oracle rule fixtures', () => {
       ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
       anchorNonePath: resolve(fixtures, 'source-anchor/prose.md'),
     });
-    expect(violations).toHaveLength(3);
+    expect(violations).toHaveLength(4);
     expect(violations.every((violation) => violation.rule === 'source-anchor')).toBe(true);
   });
 });

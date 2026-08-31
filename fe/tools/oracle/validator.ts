@@ -85,16 +85,25 @@ function boundedOccurrenceOffsets(text: string, anchor: string): number[] {
 function typescriptAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> {
   const result = new Map(identifiers.map((identifier) => [identifier, new Set<number>()]));
   const kind = path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.TS;
-  const sourceFile = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, false, kind);
+  // A standalone ts.createScanner cannot resume a template literal that contains `${}` — that needs the
+  // parser's reScanTemplateToken — so it mis-tokenizes everything after the first such template and copies
+  // the intervening comments into the buffer. Walk the parsed AST down to leaf tokens instead: token ranges
+  // exclude trivia, so comments fall out while string/template/JSX text stays.
+  const sourceFile = ts.createSourceFile(path, contents, ts.ScriptTarget.Latest, true, kind);
   const code = Array.from({ length: contents.length }, () => ' ');
-  const scanner = ts.createScanner(ts.ScriptTarget.Latest, true,
-    kind === ts.ScriptKind.TSX || kind === ts.ScriptKind.JSX ? ts.LanguageVariant.JSX : ts.LanguageVariant.Standard,
-    contents);
-  for (let token = scanner.scan(); token !== ts.SyntaxKind.EndOfFileToken; token = scanner.scan()) {
-    for (let offset = scanner.getTokenPos(); offset < scanner.getTextPos(); offset += 1) {
+  const retainLeafTokens = (node: ts.Node): void => {
+    // getChildren surfaces attached JSDoc as children; JSDoc is trivia, so drop the whole subtree.
+    if (node.kind >= ts.SyntaxKind.FirstJSDocNode && node.kind <= ts.SyntaxKind.LastJSDocNode) return;
+    const children = node.getChildren(sourceFile);
+    if (children.length > 0) {
+      for (const child of children) retainLeafTokens(child);
+      return;
+    }
+    for (let offset = node.getStart(sourceFile); offset < node.getEnd(); offset += 1) {
       code[offset] = contents[offset]!;
     }
-  }
+  };
+  retainLeafTokens(sourceFile);
   const codeText = code.join('');
   for (const identifier of identifiers) {
     let offset = codeText.indexOf(identifier);

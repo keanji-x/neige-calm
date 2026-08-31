@@ -306,7 +306,7 @@
     FONT_ALIAS_TOKENS 不得在 `[data-theme="dark"]` 里重新声明
   why: >
     字体栈不随主题变化，dark 覆盖只会腐烂成过期值并抵消 cascade。#150 slice 2。
-  source: web/src/calm-tokens.test.ts:706-708
+  source: web/src/calm-tokens.test.ts:715-730
   authoritative_test: web/src/calm-tokens.test.ts:725-731
   owner_slice: styles/tokens
   intentional_omission: false
@@ -420,7 +420,7 @@
   why: >
     【已知缺口】注释写明"今天以警告呈现；若 CI 噪音里出现漂移可以后续提升为硬失败"。
     掩码算法把 :root / dark 块换成等行数空行，保证 warn 里的行号仍对得上原文件。#150 slice 1。
-  source: web/src/calm-tokens.test.ts:850-876
+  source: web/src/calm-tokens.test.ts:878-901
   authoritative_test: web/src/calm-tokens.test.ts:878-901
   owner_slice: styles/tokens
   intentional_omission: true
@@ -491,7 +491,7 @@
   why: >
     【已知缺口】负值隧道微调点（.sr-only / .today-clock-colon / .cal-agenda）是有据可查的
     刻意豁免，检测器不该重复报它们。#165 slice 1。
-  source: web/src/calm-tokens.test.ts:1009-1022
+  source: web/src/calm-tokens.test.ts:1024-1072
   authoritative_test: web/src/calm-tokens.test.ts:1024-1072
   owner_slice: styles/tokens
   intentional_omission: true
@@ -530,7 +530,7 @@
     【已知缺口】注释："等 #142 的 token 变动稳定、我们信任这份清单之后再提升为硬失败"。
     被排除的几个要么是按名字被 JS 直接消费，要么是非颜色形状原语，正则扫描覆盖不到，
     扫了只会产生噪音。消费者正则用 `(?![a-z0-9-])` 定界，避免 `--text` 误匹配 `--text-2`。
-  source: web/src/calm-tokens.test.ts:1135-1141
+  source: web/src/calm-tokens.test.ts:1168-1193
   authoritative_test: web/src/calm-tokens.test.ts:1168-1193
   owner_slice: styles/tokens
   intentional_omission: true
