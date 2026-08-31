@@ -128,9 +128,23 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
        * `inert` and anything not visible within the panel, so it is exactly the
        * question worth asking here.
        */
+      const reachable = focusables(panel);
       const active = document.activeElement;
-      if (active instanceof HTMLElement && focusables(panel).includes(active)) return;
-      (initialFocusRef?.current ?? focusables(panel)[0] ?? panel).focus();
+      if (active instanceof HTMLElement && reachable.includes(active)) return;
+      /*
+       * The named target is checked against the same list rather than trusted.
+       * `.focus()` on a `disabled` or hidden element is a silent no-op, and the
+       * background is `inert` by now, so focus stayed on `body` — a modal open
+       * with focus outside it, which is worse than picking the wrong control
+       * inside. Measured before the check existed: `insidePanel=false`.
+       *
+       * This one predates #1161 and no caller passes an unusable ref today; it
+       * is fixed here because this is the function being repaired and the
+       * failure is the same family — opening focus landing somewhere nobody
+       * can use.
+       */
+      const named = initialFocusRef?.current ?? null;
+      (named !== null && reachable.includes(named) ? named : reachable[0] ?? panel).focus();
     });
     return () => {
       cancelAnimationFrame(frame);

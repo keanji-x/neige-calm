@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Dialog, useDialogView, type DialogViewController } from './public.tsx';
 
 beforeEach(() => {
@@ -8,6 +8,17 @@ beforeEach(() => {
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+/** A dialog whose named focus target is disabled, i.e. cannot receive focus. */
+function DisabledTargetDialog() {
+  const target = useRef<HTMLButtonElement | null>(null);
+  return (
+    <Dialog open title="Test" onClose={vi.fn()} initialFocusRef={target}>
+      <button type="button" ref={target} disabled>Disabled target</button>
+      <input aria-label="Task" />
+    </Dialog>
+  );
+}
 
 function Capture({ onController }: { onController: (value: DialogViewController) => void }) {
   const controller = useDialogView();
@@ -119,6 +130,24 @@ describe('Dialog behavior', () => {
 
     expect(document.activeElement).not.toBe(stranded);
     expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+  });
+
+  /*
+   * A named target that cannot take focus. `.focus()` on a disabled element is
+   * a silent no-op and the background is `inert` by then, so focus stayed
+   * outside the dialog entirely — a modal with focus on `body`. Predates #1161;
+   * fixed alongside it because it is the same failure family.
+   */
+  it('falls back into the panel when the named target cannot take focus', () => {
+    const outside = document.body.appendChild(document.createElement('button'));
+    outside.textContent = 'Opener';
+    outside.focus();
+    render(<DisabledTargetDialog />);
+
+    const panel = screen.getByRole('dialog');
+    expect(panel.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(outside);
+    outside.remove();
   });
 
   it('re-queries focusables after dynamically inserting an item', () => {
