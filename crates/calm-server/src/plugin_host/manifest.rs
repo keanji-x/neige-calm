@@ -734,6 +734,28 @@ impl Manifest {
                 ),
             ));
         }
+        // D6 — a forge action is dispatched with the forge credential
+        // passthrough, which is an `app`-plugin-only channel. It is not
+        // exploitable in P1 (every reader gates on `running_plugin_ids`, and a
+        // successful `mcp-http` spawn REPLACES `exposes_tools` wholesale with
+        // `materialize_http_tools`, which hard-codes `kind: None`) — but "not
+        // reachable today" is exactly the invariant P3's `cli-query` executor
+        // would silently make live. Refusing at parse time makes it durable
+        // rather than incidental.
+        if let Some(tool) = self
+            .exposes_tools
+            .iter()
+            .find(|t| t.kind == Some(ToolKind::ForgeAction))
+        {
+            return Err(ManifestError::invalid(
+                "exposes_tools",
+                format!(
+                    "tool `{}` declares `kind: \"forge-action\"`, which is {}",
+                    tool.name,
+                    only_app("cannot receive the forge credential passthrough"),
+                ),
+            ));
+        }
         Ok(())
     }
 }
@@ -886,8 +908,45 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
             ));
         }
     }
+    // The authority pre-check above only knows `/`, `?` and `#` as delimiters,
+    // but WHATWG treats a BACKSLASH as a path separator and STRIPS ASCII tabs
+    // and newlines before parsing. So `https://\evil.example/mcp` and
+    // `https://good.example\t.evil.example/mcp` both sail past it and are then
+    // normalized into a different textual target — while `HttpMcpClient`'s
+    // `log_target` splits the UNNORMALIZED raw string and would report the host
+    // the author wrote rather than the one we would actually contact.
+    if let Some(bad) = raw
+        .chars()
+        .find(|c| *c == '\\' || c.is_ascii_control() || *c == '\u{7f}')
+    {
+        return Err(ManifestError::invalid(
+            field,
+            format!(
+                "must not contain backslashes or ASCII control characters \
+                 (found {bad:?}): WHATWG URL parsing treats them as authority/path \
+                 delimiters or strips them, which retargets the request"
+            ),
+        ));
+    }
     let parsed = url::Url::parse(raw)
         .map_err(|e| ManifestError::invalid(field, format!("not a valid absolute URL: {e}")))?;
+    // The robust form of the same rule: whatever else the parser did to this
+    // string, the manifest must have been written in canonical form. Anything
+    // that re-serializes differently is a URL whose textual target is not the
+    // one the author wrote — and this crate has TWO consumers of the string
+    // (ureq, which re-parses it, and `log_target`, which does not), so a
+    // manifest where those disagree is exactly what must not exist.
+    if parsed.as_str() != raw {
+        return Err(ManifestError::invalid(
+            field,
+            format!(
+                "must be written in canonical form; `{raw}` normalizes to `{}`. \
+                 Use the normalized spelling so the URL we contact and the URL \
+                 we log are provably the same string.",
+                parsed.as_str()
+            ),
+        ));
+    }
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(ManifestError::invalid(
             field,
@@ -2224,6 +2283,126 @@ mod connector_kind_tests {
             Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
                 .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
         }
+    }
+
+    /// Round-2 finding: the raw-authority pre-check only knows `/`, `?` and
+    /// `#` as delimiters, so WHATWG's OTHER authority terminators walked past
+    /// it. Each of these parses to a host the manifest author did not write,
+    /// while `HttpMcpClient::log_target` — which splits the UNNORMALIZED raw
+    /// string — would report the host they did.
+    #[test]
+    fn mcp_http_url_rejects_whatwg_retargeting() {
+        // Each entry is `(raw, host the parser actually resolves it to)`, so
+        // the fixture proves the retargeting is real rather than asserting a
+        // refusal that might be firing for an unrelated reason.
+        for (raw, retargeted_host) in [
+            (r"https://\evil.example/mcp", "evil.example"),
+            (r"https:/\evil.example/mcp", "evil.example"),
+            // Tab/CR/LF are STRIPPED, not treated as delimiters: the two
+            // labels fuse into one host that appears nowhere in the manifest.
+            (
+                "https://good.example\t.evil.example/mcp",
+                "good.example.evil.example",
+            ),
+            (
+                "https://good.example\n.evil.example/mcp",
+                "good.example.evil.example",
+            ),
+            (
+                "https://good.example\r.evil.example/mcp",
+                "good.example.evil.example",
+            ),
+        ] {
+            // The premise: `url` really does resolve this somewhere other than
+            // the literal authority a naive reader (and `log_target`) sees.
+            if let Ok(parsed) = url::Url::parse(raw) {
+                assert_eq!(
+                    parsed.host_str(),
+                    Some(retargeted_host),
+                    "fixture assumption broken for {raw:?}"
+                );
+            }
+            let mut block = mcp_http_block();
+            block["url"] = json!(raw);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                raw,
+            );
+            assert!(err.to_string().contains("mcp_http.url"), "{raw:?}: {err}");
+        }
+    }
+
+    /// Canonical-form equality is the robust half of the same rule: whatever
+    /// the parser normalizes, the manifest must have been written that way, so
+    /// the string we contact and the string we log are provably the same.
+    #[test]
+    fn mcp_http_url_must_be_written_in_canonical_form() {
+        for noncanonical in [
+            "https://mcp.example.com",          // → `.../` (empty path added)
+            "https://MCP.Example.COM/mcp",      // → lowercased host
+            "https://mcp.example.com:443/mcp",  // → default port dropped
+            "https://mcp.example.com/a/../mcp", // → path normalized
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(noncanonical);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                noncanonical,
+            );
+            assert!(
+                err.to_string().contains("canonical"),
+                "{noncanonical}: {err}"
+            );
+        }
+        // …and the canonical spellings of the same URLs are accepted, so the
+        // rule is "write it canonically", not "we reject these hosts".
+        for good in [
+            "https://mcp.example.com/",
+            "https://mcp.example.com/mcp",
+            "https://mcp.example.com:8443/mcp",
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(good);
+            Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+                .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
+        }
+    }
+
+    /// D6 — a forge action rides the forge credential passthrough, an
+    /// `app`-only channel. Refused at parse time so P3's `cli-query` executor
+    /// cannot quietly make it live.
+    #[test]
+    fn a_connector_may_not_declare_a_forge_action_tool() {
+        for (kind, block_key, block) in [
+            ("mcp-http", "mcp_http", mcp_http_block()),
+            ("cli-query", "cli_query", cli_query_block()),
+        ] {
+            let err = Manifest::parse(&base(json!({
+                "kind": kind,
+                block_key: block,
+                "exposes_tools": [
+                    { "name": "ok_tool" },
+                    { "name": "forge_it", "kind": "forge-action" },
+                ],
+            })))
+            .expect_err("{kind}: forge-action on a connector must be refused");
+            assert!(err.to_string().contains("exposes_tools"), "{kind}: {err}");
+            assert!(err.to_string().contains("forge_it"), "{kind}: {err}");
+        }
+        // The same manifest without the forge-action tool parses — otherwise
+        // the assertion above could be passing for an unrelated reason.
+        Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "exposes_tools": [{ "name": "ok_tool" }],
+        })))
+        .expect("a plain connector tool list is fine");
+        // And `app` plugins keep the capability.
+        Manifest::parse(&base(json!({
+            "entrypoint": { "command": "bin/run" },
+            "exposes_tools": [{ "name": "forge_it", "kind": "forge-action" }],
+        })))
+        .expect("app plugins may still declare forge actions");
     }
 
     /// An illegal header name would otherwise fail at REQUEST time, once per

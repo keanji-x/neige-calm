@@ -31,18 +31,34 @@
 //! connect and the read deadline are therefore set explicitly — but they are
 //! PER-REQUEST, not a total bound: `initialize` and `tools/list` are two round
 //! trips, and `spawn_blocking` queue delay plus DNS sit outside ureq's own
-//! clock. The total wall-clock bound is the single `tokio::time::timeout`
-//! around the whole connector bring-up in `PluginHost::spawn_mcp_http`.
+//! clock. There are two bounds above this one, and they are different things:
+//!
+//! * `PluginHost::spawn_mcp_http` wraps ONE connector's bring-up in a
+//!   `tokio::time::timeout` of `2 × request_timeout_ms + slack` — a multiple,
+//!   because the value the operator configured is a per-REQUEST budget and
+//!   this path makes two requests;
+//! * `PluginHost::autospawn_enabled` bounds the connector portion of boot as a
+//!   WHOLE. Bring-up is still inline and still serial (acceptance §4 #7 needs
+//!   materialization to precede the boot audit's `exposes_tools` read), so
+//!   without that second bound N unreachable connectors would still cost
+//!   N × the per-connector cap.
 //!
 //! **The API key must never reach a string a human or an agent can read.** It
 //! rides in the URL's query string, and `ureq::Error`'s `Display` prints that
 //! URL first — so a `{e}` anywhere in this module puts the credential into the
 //! `tracing` line, the persisted+broadcast `Event::PluginState.last_error`, the
-//! `POST /enable` 503 body, and the wave transcript. Two rules, both enforced
-//! by tests: format a `ureq::Error` only via `kind()`, and run every outgoing
-//! error string through [`HttpMcpClient::scrub`].
+//! `POST /enable` 503 body, and the wave transcript. Three rules, all enforced
+//! by tests: format a `ureq::Error` only via `kind()`; run every outgoing
+//! string — error OR success telemetry — through [`HttpMcpClient::scrub`]; and
+//! **scrub before you truncate**, never after. The last one is not pedantry: an
+//! upstream that echoes the request URL back inside a long error body gets
+//! truncated to 512 chars, and if that boundary falls inside the key the
+//! surviving prefix is no longer a literal member of `secret_forms`, so a
+//! later `replace` misses it entirely and a partial credential ships.
 
 use std::io::Read as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -57,6 +73,15 @@ const SSE_DATA_PREFIX: &str = "data:";
 /// Cap on the response body we will buffer. A `tools/list` for 13 tools is a
 /// few tens of KiB; a megabyte is generous and still bounded.
 const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+/// How much of an upstream error body survives into the operator-facing
+/// message. Applied strictly AFTER [`scrub_with`] — see the module header.
+const MAX_UPSTREAM_DETAIL_CHARS: usize = 512;
+
+/// Cap on upstream-authored identity strings we record in a `tracing` line
+/// (`serverInfo.name`, `protocolVersion`). Bounded and scrubbed, because both
+/// are attacker-controlled text that lands in the operator's log.
+const MAX_SERVER_IDENT_CHARS: usize = 128;
 
 /// One remote streamable-HTTP MCP server.
 ///
@@ -140,9 +165,16 @@ impl HttpMcpClient {
             }
             // Both literal forms, longest first, so scrubbing the encoded form
             // is not pre-empted by a shorter raw substring match.
+            //
+            // The `is_empty` filters are the braces to `read_secrets`' belt:
+            // an empty pattern turns `scrub` into a memory amplifier (see
+            // `scrub_with`), and this is the last place that could register
+            // one. `percent_encode("")` is also `""`, hence both guards.
             let encoded = percent_encode(key);
-            secret_forms.push(key.to_string());
-            if encoded != key {
+            if !key.is_empty() {
+                secret_forms.push(key.to_string());
+            }
+            if encoded != key && !encoded.is_empty() {
                 secret_forms.push(encoded);
             }
             secret_forms.sort_by_key(|s| std::cmp::Reverse(s.len()));
@@ -181,13 +213,12 @@ impl HttpMcpClient {
     /// `Event::PluginState.last_error`, the `POST /enable` 503 body, and (via
     /// `tools_call`) the wave transcript.
     fn scrub(&self, s: String) -> String {
-        let mut out = s;
-        for form in &self.secret_forms {
-            if out.contains(form.as_str()) {
-                out = out.replace(form.as_str(), "<redacted>");
-            }
-        }
-        out
+        scrub_with(&self.secret_forms, s)
+    }
+
+    /// Scrub, THEN clamp to `max` chars. Order matters — see the module header.
+    fn scrub_and_clamp(&self, s: &str, max: usize) -> String {
+        clamp_chars(self.scrub(s.to_string()), max)
     }
 
     /// Minimal `initialize`. Best-effort: a server that does not implement it
@@ -201,14 +232,24 @@ impl HttpMcpClient {
             "clientInfo": { "name": "neige-kernel", "version": env!("CARGO_PKG_VERSION") },
         });
         let result = self.request("initialize", params).await?;
-        let server_version = result
-            .get("protocolVersion")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<unset>");
-        let server_name = result
-            .pointer("/serverInfo/name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<unset>");
+        // BOTH of these are upstream-authored. The success path is not exempt
+        // from the module's scrub invariant: a server that echoes our query
+        // string into `serverInfo.name` would otherwise put the API key in the
+        // operator's log, and an unbounded `name` would let it flood the log.
+        let server_version = self.scrub_and_clamp(
+            result
+                .get("protocolVersion")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unset>"),
+            MAX_SERVER_IDENT_CHARS,
+        );
+        let server_name = self.scrub_and_clamp(
+            result
+                .pointer("/serverInfo/name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unset>"),
+            MAX_SERVER_IDENT_CHARS,
+        );
         // v0 records, never compares (§1.4): there is no kernel-side set of
         // known-good external protocol versions to compare against.
         tracing::info!(
@@ -283,8 +324,27 @@ impl HttpMcpClient {
         let agent = self.agent.clone();
         let method_owned = method.to_string();
         let target = self.log_target.clone();
+        // Scrubbing must happen INSIDE the closure, before the 512-char clamp
+        // below (module header). Cloning a handful of short strings per request
+        // is cheaper than the class of bug the alternative admits.
+        let secret_forms = self.secret_forms.clone();
+
+        // Dropping a `spawn_blocking` JoinHandle does NOT cancel the closure:
+        // the caller's outer `tokio::time::timeout` around connector bring-up
+        // (`PluginHost::spawn_mcp_http`) can elapse while this request is still
+        // queued, and without this flag the closure would later fire a
+        // credential-bearing request at an upstream whose connector is already
+        // `Unavailable`/disabled/uninstalled — once per re-enable, forever.
+        // The guard trips on ANY drop of this future; on the normal path it is
+        // dropped only after the `.await` below has already joined the closure.
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let _cancel_on_drop = CancelOnDrop(Arc::clone(&cancelled));
+        let closure_cancel = Arc::clone(&cancelled);
 
         let text = tokio::task::spawn_blocking(move || {
+            if closure_cancel.load(Ordering::SeqCst) {
+                return Err("request abandoned before it was sent (caller went away)".to_string());
+            }
             let mut req = agent
                 .post(&url)
                 .set("content-type", "application/json")
@@ -301,15 +361,28 @@ impl HttpMcpClient {
             match req.send_string(&body) {
                 Ok(resp) => read_capped(resp),
                 Err(ureq::Error::Status(code, resp)) => {
-                    let detail = read_capped(resp).unwrap_or_default();
-                    let detail: String = detail.chars().take(512).collect();
+                    // SCRUB, then clamp. Reversing these two lines is the
+                    // partial-key leak the module header describes.
+                    let detail = scrub_with(&secret_forms, read_capped(resp).unwrap_or_default());
+                    let detail = clamp_chars(detail, MAX_UPSTREAM_DETAIL_CHARS);
                     Err(format!("HTTP {code} from {target}: {detail}"))
                 }
                 Err(e) => Err(format!("request to {target} failed: {}", e.kind())),
             }
         })
         .await
-        .map_err(|e| RpcError::internal(format!("mcp-http request task failed: {e}")))?
+        // Never format the `JoinError` payload: a panic payload is an
+        // arbitrary string built from arbitrary locals, and this is the one
+        // arm that does not pass through `scrub`. `is_cancelled`/`is_panic`
+        // carry every bit of information the operator can act on anyway.
+        .map_err(|e| {
+            let what = if e.is_cancelled() {
+                "was cancelled"
+            } else {
+                "panicked"
+            };
+            RpcError::internal(format!("mcp-http {method_owned} request task {what}"))
+        })?
         .map_err(|e| {
             RpcError::custom(-32002, self.scrub(format!("mcp-http {method_owned}: {e}")))
         })?;
@@ -343,6 +416,54 @@ impl HttpMcpClient {
             ))
         })
     }
+}
+
+/// Trips its flag when dropped. See the comment at its construction site in
+/// [`HttpMcpClient::request`].
+struct CancelOnDrop(Arc<AtomicBool>);
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Replace every literal in `forms` with `<redacted>`.
+///
+/// Free function (not a method) so the blocking closure in
+/// [`HttpMcpClient::request`] can scrub before truncating without capturing
+/// `&self`.
+///
+/// **Empty forms are impossible by construction** — [`HttpMcpClient::new`]
+/// refuses to register one, and `read_secrets` refuses an empty credential
+/// upstream of that. Both halves matter: `"".replace("", "<redacted>")` inserts
+/// the marker at every character boundary, so a 4 MiB upstream error body would
+/// expand ~11× and then be cloned into the status entry, the broadcast event,
+/// and the HTTP error body. The `debug_assert` keeps the invariant honest if a
+/// future caller builds `secret_forms` some other way.
+fn scrub_with(forms: &[String], s: String) -> String {
+    let mut out = s;
+    for form in forms {
+        debug_assert!(!form.is_empty(), "an empty scrub pattern is a memory bomb");
+        if form.is_empty() {
+            continue;
+        }
+        if out.contains(form.as_str()) {
+            out = out.replace(form.as_str(), "<redacted>");
+        }
+    }
+    out
+}
+
+/// Clamp to `max` *characters* (never bytes — this must not split a UTF-8
+/// sequence), appending an explicit marker so a reader knows it is partial.
+fn clamp_chars(s: String, max: usize) -> String {
+    if s.chars().nth(max).is_none() {
+        return s;
+    }
+    let mut out: String = s.chars().take(max).collect();
+    out.push_str("…(truncated)");
+    out
 }
 
 /// Extract the JSON payload from either a bare JSON body or a single-frame
@@ -546,6 +667,82 @@ mod tests {
         let enc_msg = client.scrub(format!("https://h/mcp?api_key={encoded} failed"));
         assert!(!enc_msg.contains(&encoded), "{enc_msg}");
         assert!(enc_msg.contains("<redacted>"), "{enc_msg}");
+    }
+
+    /// THE round-2 finding: the upstream body used to be clamped to 512 chars
+    /// and only scrubbed afterwards. When the boundary falls inside the key the
+    /// surviving prefix is no longer a literal member of `secret_forms`, so the
+    /// later `replace` matches nothing and a partial credential reaches the 503
+    /// body, `PluginState.last_error`, and the wave transcript.
+    ///
+    /// This drives the exact production expression pair, so reversing the two
+    /// lines in `request`'s blocking closure fails here.
+    #[test]
+    fn key_straddling_the_truncation_boundary_is_still_redacted() {
+        let client = client_with("query:api_key");
+        // Pad so the key STARTS well before the cap and ENDS well after it.
+        let head = "x".repeat(MAX_UPSTREAM_DETAIL_CHARS - LEAKY.len() / 2);
+        let body = format!("{head}{LEAKY} trailing");
+        assert!(
+            body.chars().count() > MAX_UPSTREAM_DETAIL_CHARS,
+            "fixture must exceed the cap"
+        );
+
+        // Production order: scrub, then clamp.
+        let good = clamp_chars(
+            scrub_with(&client.secret_forms, body.clone()),
+            MAX_UPSTREAM_DETAIL_CHARS,
+        );
+        // Exactly the prefix that survives the old (clamp-first) order: the
+        // key starts at `MAX - len/2`, so `len/2` of its characters fit.
+        let leaked_prefix: String = LEAKY.chars().take(LEAKY.len() / 2).collect();
+        assert!(leaked_prefix.len() >= 8, "prefix must be a real leak");
+        assert!(
+            !good.contains(&leaked_prefix),
+            "partial key survived: {good}"
+        );
+
+        // Mutation witness: the reversed order really does leak, so the
+        // assertion above is testing something.
+        let bad = scrub_with(
+            &client.secret_forms,
+            clamp_chars(body, MAX_UPSTREAM_DETAIL_CHARS),
+        );
+        assert!(
+            bad.contains(&leaked_prefix),
+            "the clamp-first order must demonstrably leak, else this test is vacuous: {bad}"
+        );
+    }
+
+    /// `""` as a scrub pattern makes `String::replace` insert the marker at
+    /// every character boundary — an amplifier, not a redaction. `new` must
+    /// refuse to register one even if a credential slipped past `read_secrets`.
+    #[test]
+    fn an_empty_key_registers_no_scrub_pattern() {
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(""));
+        assert!(
+            client.secret_forms.is_empty(),
+            "empty key must register no pattern, got {:?}",
+            client.secret_forms
+        );
+        let big = "a".repeat(10_000);
+        assert_eq!(client.scrub(big.clone()), big, "scrub must not amplify");
+    }
+
+    #[test]
+    fn clamp_marks_truncation_and_never_splits_a_char() {
+        assert_eq!(clamp_chars("abc".to_string(), 5), "abc");
+        assert_eq!(clamp_chars("abcde".to_string(), 5), "abcde");
+        // Multi-byte: clamping at 2 chars must yield 2 chars, not 2 bytes.
+        let out = clamp_chars("日本語です".to_string(), 2);
+        assert!(out.starts_with("日本"), "{out}");
+        assert!(out.ends_with("(truncated)"), "{out}");
     }
 
     /// No key configured ⇒ nothing to scrub, and no accidental blanket

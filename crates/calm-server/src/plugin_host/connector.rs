@@ -15,6 +15,7 @@
 //!   a connector whose tool catalog does not live in `exposes_tools`.
 
 use std::collections::BTreeMap;
+use std::io::Read as _;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -145,11 +146,33 @@ pub async fn read_secrets(
 fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>, SecretsError> {
     let display = path.display().to_string();
 
-    // `metadata` (not `symlink_metadata`) on purpose: it FOLLOWS symlinks, so
-    // a symlink pointing at a FIFO resolves to the FIFO and is caught by the
-    // `is_file()` check below rather than passing as "a symlink, fine".
-    let meta = match std::fs::metadata(path) {
-        Ok(m) => m,
+    // ---- One open, one handle, one file. -------------------------------
+    //
+    // The previous shape was `metadata(path)` → checks → `read_to_string(path)`,
+    // which re-resolves the PATHNAME. That is a TOCTOU: swapping what the name
+    // points at between the two calls bypassed all three checks at once — a
+    // FIFO stranded a blocking worker despite the `is_file()` guard, and a file
+    // that grew after the stat bypassed the 64 KiB cap. Everything below is
+    // derived from THIS descriptor: `File::metadata` is `fstat(2)` on it, and
+    // the read goes through the same handle.
+    //
+    // `O_NONBLOCK` is what makes the FIFO case a prompt refusal rather than a
+    // hang: opening a FIFO read-only BLOCKS until a writer appears, so the
+    // `is_file()` check below would never be reached without it. It is a no-op
+    // for the regular files this function is actually for.
+    //
+    // The open FOLLOWS symlinks on purpose (as `metadata` did): a symlink to a
+    // FIFO must resolve to the FIFO and be refused as "not a regular file",
+    // not silently accepted as "a symlink, fine".
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match opts.open(path) {
+        Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(SecretsError::Io {
@@ -158,6 +181,10 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
             });
         }
     };
+    let meta = file.metadata().map_err(|e| SecretsError::Io {
+        path: display.clone(),
+        source: e,
+    })?;
 
     if !meta.is_file() {
         return Err(SecretsError::NotRegularFile {
@@ -191,9 +218,26 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
         }
     }
 
-    let text = std::fs::read_to_string(path).map_err(|e| SecretsError::Io {
+    // The `meta.len()` check above is a courtesy that gives the nicer error
+    // early; THIS is the enforcement. `fstat` size is a snapshot and a file can
+    // grow after it, so the cap has to ride on the read itself: `take(MAX + 1)`
+    // makes "one byte over" observable without ever buffering more than that.
+    let mut buf = Vec::with_capacity(meta.len().min(MAX_SECRETS_BYTES) as usize);
+    std::io::Read::take(&file, MAX_SECRETS_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| SecretsError::Io {
+            path: display.clone(),
+            source: e,
+        })?;
+    if buf.len() as u64 > MAX_SECRETS_BYTES {
+        return Err(SecretsError::TooLarge {
+            path: display,
+            size: buf.len() as u64,
+        });
+    }
+    let text = String::from_utf8(buf).map_err(|e| SecretsError::Malformed {
         path: display.clone(),
-        source: e,
+        reason: format!("not valid UTF-8: {e}"),
     })?;
     let parsed: Value = serde_json::from_str(&text).map_err(|e| SecretsError::Malformed {
         path: display.clone(),
@@ -210,6 +254,23 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
             path: display.clone(),
             reason: format!("value of `{k}` must be a string"),
         })?;
+        // An empty (or whitespace-only) credential is never what the author
+        // meant, and it is actively dangerous: `HttpMcpClient` would register
+        // `""` as a scrub pattern, and `"".replace("", "<redacted>")` inserts
+        // the marker at EVERY character boundary — a 4 MiB upstream error body
+        // expands by an order of magnitude and is then cloned into the live
+        // status entry, the broadcast `PluginState` event, and the HTTP error
+        // body. Refusing at the source is the belt; `HttpMcpClient::new`'s
+        // `is_empty` filter is the braces.
+        if s.trim().is_empty() {
+            return Err(SecretsError::Malformed {
+                path: display.clone(),
+                reason: format!(
+                    "value of `{k}` is empty or whitespace-only; \
+                     remove the key or give it a real credential"
+                ),
+            });
+        }
         out.insert(k.clone(), s.to_string());
     }
     Ok(Some(out))
@@ -377,6 +438,57 @@ mod tests {
         }
         let err = read_secrets(tmp.path()).await.unwrap_err();
         assert!(matches!(err, SecretsError::TooLarge { .. }), "{err:?}");
+    }
+
+    /// An empty credential would become an empty scrub pattern, and an empty
+    /// pattern turns `String::replace` into a memory amplifier rather than a
+    /// redaction. Refused at the source.
+    #[tokio::test]
+    async fn an_empty_or_whitespace_only_secret_value_is_refused() {
+        for bad in ["", "   ", "\t\n"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(SECRETS_FILENAME);
+            std::fs::write(&path, json!({ "K": bad }).to_string()).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let err = read_secrets(tmp.path()).await.unwrap_err();
+            assert!(
+                matches!(err, SecretsError::Malformed { .. }),
+                "{bad:?} must be refused, got {err:?}"
+            );
+            assert!(err.to_string().contains("empty"), "{err}");
+        }
+    }
+
+    /// The `fstat` size is a snapshot; the read-side `take(MAX + 1)` is the
+    /// actual enforcement. Pin both edges of the boundary so removing the
+    /// read-side cap (leaving only the stat check) still has a witness on the
+    /// exact-cap side and removing the stat check keeps the over-cap refusal.
+    #[tokio::test]
+    async fn the_size_cap_boundary_is_exact_in_both_directions() {
+        for len in [MAX_SECRETS_BYTES as usize, MAX_SECRETS_BYTES as usize + 1] {
+            let tmp = tempfile::tempdir().unwrap();
+            let path = tmp.path().join(SECRETS_FILENAME);
+            std::fs::write(&path, vec![b'x'; len]).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+            let err = read_secrets(tmp.path()).await.unwrap_err();
+            // At exactly the cap the bytes are read (and then rejected as
+            // non-JSON); one byte over is refused as TooLarge without the
+            // whole body ever being buffered.
+            let is_too_large = matches!(err, SecretsError::TooLarge { .. });
+            assert_eq!(
+                is_too_large,
+                len > MAX_SECRETS_BYTES as usize,
+                "len {len}: got {err:?}"
+            );
+        }
     }
 
     /// The whole reason `read_secrets` moved to `spawn_blocking` + a

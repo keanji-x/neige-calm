@@ -1819,6 +1819,10 @@ export interface components {
             installed_at: number;
             last_error?: string | null;
             manifest: Record<string, never>;
+            /**
+             * @description Same wire-name set as [`PluginListItem::state`], including the
+             *     connector-only `unavailable` — see that field's doc.
+             */
             state: string;
             /** Format: int64 */
             updated_at: number;
@@ -1838,8 +1842,16 @@ export interface components {
             manifest_description?: string | null;
             manifest_name: string;
             /**
-             * @description Wire-name string per design §7.1: `running | spawning | crashed |
-             *     disabled | installing | installed`.
+             * @description Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:
+             *     `running | spawning | crashed | unavailable | disabled | installing |
+             *     installed`.
+             *
+             *     `unavailable` is the NORMAL terminal state of a connector
+             *     (`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable
+             *     upstream, rejected `secrets.json`, boot budget exhausted. It is not an
+             *     error state of the kernel, and unlike `crashed` there is no supervisor
+             *     that will retry it: it stands until an operator re-enables. `last_error`
+             *     carries the reason.
              */
             state: string;
             version: string;

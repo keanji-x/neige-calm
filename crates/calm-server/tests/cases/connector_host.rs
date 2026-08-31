@@ -89,6 +89,12 @@ enum StubMode {
     /// Accept the connection, read the request, then never write. This is the
     /// failure that would otherwise hang boot (§2.2).
     Hang,
+    /// Healthy, but slow on `initialize` only: never answer that one (so the
+    /// client pays its full PER-REQUEST timeout), then answer `tools/list`
+    /// promptly. `initialize` is explicitly best-effort, so this upstream is
+    /// perfectly usable — it must come up Running. It cannot when the outer
+    /// bring-up bound equals ONE request's timeout.
+    HangInitialize,
 }
 
 struct StubServer {
@@ -120,84 +126,98 @@ impl StubServer {
         let queries = Arc::clone(&seen_queries);
         let methods = Arc::clone(&seen_methods);
         let received = Arc::clone(&tools_list_received);
-        let mut gate = gate;
+        // Wrapped so each per-connection task can take it. Connections are
+        // served CONCURRENTLY: a mode that stalls one request must not stop
+        // the stub from answering the client's next connection, which is the
+        // whole point of `HangInitialize`.
+        let gate = Arc::new(tokio::sync::Mutex::new(gate));
 
         let task = tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else {
                     return;
                 };
-                let (target, body) = match read_request(&mut sock).await {
-                    Some(v) => v,
-                    None => continue,
-                };
-                if let Some(q) = target.split_once('?').map(|(_, q)| q.to_string()) {
-                    queries.lock().unwrap().push(q);
-                } else {
-                    queries.lock().unwrap().push(String::new());
-                }
-                let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-                let method = req
-                    .get("method")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or_default()
-                    .to_string();
-                methods.lock().unwrap().push(method.clone());
-                let id = req.get("id").cloned().unwrap_or(json!(1));
-
-                if method == "tools/list" {
-                    received.store(true, Ordering::SeqCst);
-                    if let Some(rx) = gate.take() {
-                        let _ = rx.await;
+                let queries = Arc::clone(&queries);
+                let methods = Arc::clone(&methods);
+                let received = Arc::clone(&received);
+                let gate = Arc::clone(&gate);
+                tokio::spawn(async move {
+                    let (target, body) = match read_request(&mut sock).await {
+                        Some(v) => v,
+                        None => return,
+                    };
+                    if let Some(q) = target.split_once('?').map(|(_, q)| q.to_string()) {
+                        queries.lock().unwrap().push(q);
+                    } else {
+                        queries.lock().unwrap().push(String::new());
                     }
-                }
+                    let req: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                    let method = req
+                        .get("method")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    methods.lock().unwrap().push(method.clone());
+                    let id = req.get("id").cloned().unwrap_or(json!(1));
 
-                if mode == StubMode::Hang {
-                    // Hold the socket open forever without writing. Dropping
-                    // the task at test teardown closes it.
-                    std::future::pending::<()>().await;
-                }
-
-                let result = match method.as_str() {
-                    "initialize" => json!({
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": { "tools": {} },
-                        "serverInfo": { "name": "stub-mcp", "version": "0.8.4" }
-                    }),
-                    "tools/list" => json!({ "tools": [
-                        { "name": ALLOWED_TOOL, "description": "institutional reports",
-                          "inputSchema": { "type": "object",
-                                           "properties": { "page": { "type": "number" } } } },
-                        { "name": ALLOWED_TOOL_2, "description": "one report",
-                          "inputSchema": { "type": "object" } },
-                        { "name": DENIED_TOOL, "description": "must stay hidden",
-                          "inputSchema": { "type": "object" } },
-                    ]}),
-                    "tools/call" => {
-                        let called = req
-                            .pointer("/params/name")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or_default()
-                            .to_string();
-                        json!({
-                            "content": [{ "type": "text", "text": format!("rows for {called}") }],
-                            "structuredContent": { "rows": 3, "tool": called },
-                            "isError": false
-                        })
+                    if method == "tools/list" {
+                        received.store(true, Ordering::SeqCst);
+                        let taken = gate.lock().await.take();
+                        if let Some(rx) = taken {
+                            let _ = rx.await;
+                        }
                     }
-                    _ => json!({}),
-                };
-                let payload = json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
-                // §1.1's exact framing: one `event:` line, one `data:` line.
-                let sse = format!("event: message\ndata: {payload}\n\n");
-                let head = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+
+                    if mode == StubMode::Hang
+                        || (mode == StubMode::HangInitialize && method == "initialize")
+                    {
+                        // Hold the socket open forever without writing. Dropping
+                        // the task at test teardown closes it.
+                        std::future::pending::<()>().await;
+                    }
+
+                    let result = match method.as_str() {
+                        "initialize" => json!({
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": { "tools": {} },
+                            "serverInfo": { "name": "stub-mcp", "version": "0.8.4" }
+                        }),
+                        "tools/list" => json!({ "tools": [
+                            { "name": ALLOWED_TOOL, "description": "institutional reports",
+                              "inputSchema": { "type": "object",
+                                               "properties": { "page": { "type": "number" } } } },
+                            { "name": ALLOWED_TOOL_2, "description": "one report",
+                              "inputSchema": { "type": "object" } },
+                            { "name": DENIED_TOOL, "description": "must stay hidden",
+                              "inputSchema": { "type": "object" } },
+                        ]}),
+                        "tools/call" => {
+                            let called = req
+                                .pointer("/params/name")
+                                .and_then(|n| n.as_str())
+                                .unwrap_or_default()
+                                .to_string();
+                            json!({
+                                "content": [{ "type": "text", "text": format!("rows for {called}") }],
+                                "structuredContent": { "rows": 3, "tool": called },
+                                "isError": false
+                            })
+                        }
+                        _ => json!({}),
+                    };
+                    let payload =
+                        json!({ "jsonrpc": "2.0", "id": id, "result": result }).to_string();
+                    // §1.1's exact framing: one `event:` line, one `data:` line.
+                    let sse = format!("event: message\ndata: {payload}\n\n");
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
                      content-length: {}\r\nconnection: close\r\n\r\n",
-                    sse.len()
-                );
-                let _ = sock.write_all(head.as_bytes()).await;
-                let _ = sock.write_all(sse.as_bytes()).await;
-                let _ = sock.flush().await;
+                        sse.len()
+                    );
+                    let _ = sock.write_all(head.as_bytes()).await;
+                    let _ = sock.write_all(sse.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
             }
         });
 
@@ -1157,14 +1177,16 @@ async fn hung_upstream_lands_unavailable_without_blocking_boot() {
         .expect("boot autospawn never returned against a hung upstream");
     let elapsed = started.elapsed();
 
-    // 400 ms budget; 2 s allows for the app plugin's own spawn plus scheduling
-    // slack, and still fails if the connector pays its budget twice (once for
-    // `initialize`, once for `tools/list`) — which is exactly what the single
-    // outer `tokio::time::timeout` in `spawn_mcp_http` prevents.
+    // 400 ms PER REQUEST × 2 round trips + 500 ms slack = a 1.3 s ceiling on
+    // this connector's bring-up. 2 s allows for the app plugin's own spawn plus
+    // scheduling slack. What this fails on is an UNBOUNDED bring-up: without
+    // the per-request deadlines a hung upstream never returns at all, and
+    // without the outer `tokio::time::timeout` the parts of the round trip that
+    // sit outside ureq's clock are uncapped.
     assert!(
         elapsed < Duration::from_secs(2),
         "boot autospawn took {elapsed:?} against a hung upstream with a 400ms \
-         budget — the bring-up is not bounded as ONE total wall-clock timeout"
+         per-request budget — the bring-up is not bounded"
     );
     // `None` is NOT acceptable: a connector that failed must be observable, or
     // `GET /api/plugins/{id}` reports it as never-enabled with no last_error.
@@ -1185,6 +1207,136 @@ async fn hung_upstream_lands_unavailable_without_blocking_boot() {
     assert!(
         host.running_plugin_ids().await.contains("app-echo"),
         "one unreachable connector must not stop other plugins from starting"
+    );
+}
+
+/// Round-2 regression: the fix that introduced the single outer bound set it
+/// to `request_timeout_ms` — ONE request's worth — while `connect_mcp_http`
+/// makes TWO round trips. A healthy upstream that merely stalls on
+/// `initialize` (which is explicitly best-effort, and which the probed server
+/// class does not implement at all) therefore burned the entire budget on a
+/// call whose failure is supposed to be ignored, and landed `Unavailable`.
+///
+/// This upstream serves `tools/list` correctly and must come up **Running**.
+#[tokio::test]
+async fn a_slow_but_healthy_upstream_still_comes_up_running() {
+    let stub = StubServer::start(StubMode::HangInitialize).await;
+    let b = boot().await;
+    // `initialize` will consume this whole per-request budget before the
+    // client gives up on it; `tools/list` then answers immediately. Total
+    // wall-clock ≈ 1× timeout, which is over the old (1× timeout) outer bound
+    // and comfortably inside the new one.
+    let timeout_ms = 1_000;
+    write_connector(&b.plugins_dir, &stub.url(), timeout_ms, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    host.spawn(CONNECTOR_ID).await.expect(
+        "a healthy upstream that is merely slow on the best-effort \
+                 `initialize` must still come up",
+    );
+
+    let status = host.status(CONNECTOR_ID).await.expect("runtime entry");
+    assert!(
+        matches!(status.status, PluginRuntimeStatus::Running),
+        "expected Running, got {:?}",
+        status.status
+    );
+    assert!(host.running_plugin_ids().await.contains(CONNECTOR_ID));
+    // Both round trips really happened — otherwise this would pass for a
+    // connector that never tried `initialize` at all.
+    assert!(
+        stub.methods().contains(&"initialize".to_string()),
+        "methods: {:?}",
+        stub.methods()
+    );
+    assert!(
+        stub.methods().contains(&"tools/list".to_string()),
+        "methods: {:?}",
+        stub.methods()
+    );
+    // And the tools are really there.
+    let tools = boot_audit_tool_names(&host).await;
+    assert!(tools.iter().any(|t| t.ends_with(ALLOWED_TOOL)), "{tools:?}");
+}
+
+/// Boot latency must not scale with the number of unreachable connectors.
+///
+/// The per-connector timeout bounds ONE bring-up; `autospawn_enabled` iterates
+/// serially and `AppState::new` awaits it inline, so N dead connectors used to
+/// cost N × that bound. The connector portion of the loop now carries one
+/// overall budget. This drives the loop with several hung connectors and
+/// asserts the total stays near a single connector's cost, not N × it.
+#[tokio::test]
+async fn many_unreachable_connectors_do_not_scale_boot_latency() {
+    let stub = StubServer::start(StubMode::Hang).await;
+    let b = boot().await;
+    // 6 connectors × (2 × 900ms per-request + slack) would be well over 10s
+    // serially; the overall budget must cut it far shorter than that.
+    const N: usize = 6;
+    let timeout_ms = 900;
+    for i in 0..N {
+        let id = format!("dead-connector-{i}");
+        let dir = b.plugins_dir.join(&id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut manifest = connector_manifest_json(&stub.url(), timeout_ms);
+        manifest["id"] = json!(id);
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let secrets = dir.join("secrets.json");
+        std::fs::write(&secrets, json!({ SECRET_NAME: SECRET_VALUE }).to_string()).unwrap();
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+        seed_row(&b, &id).await;
+    }
+    let host = b.host();
+
+    // Drive the REAL loop with a budget small enough to observe it firing.
+    // Production supplies `CONNECTOR_AUTOSPAWN_BUDGET` (30 s) through
+    // `autospawn_enabled`, which is a one-line delegate to this function;
+    // bounding 30 s from outside would make this a 30 s test that could not
+    // tell the loop bound from the per-connector one.
+    let budget = Duration::from_secs(2);
+    let started = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        host.autospawn_enabled_within(budget),
+    )
+    .await
+    .expect("boot autospawn never returned");
+    let elapsed = started.elapsed();
+
+    // Serial-and-unbounded is ≈ N × (2 × 900ms + 500ms slack) ≈ 14s. Bounded,
+    // it stops at the budget plus at most one in-flight connector's own cap.
+    // 8 s fails loudly if the loop bound is removed and still passes with the
+    // per-connector bound doing its job.
+    assert!(
+        elapsed < Duration::from_secs(8),
+        "boot autospawn took {elapsed:?} for {N} unreachable connectors with a \
+         {budget:?} connector budget — the loop is not bounded as a whole"
+    );
+    // Every one of them is observable as a failure, not silently skipped —
+    // including the ones that never got their turn.
+    let mut budget_refusals = 0;
+    for i in 0..N {
+        let id = format!("dead-connector-{i}");
+        let status = host
+            .status(&id)
+            .await
+            .unwrap_or_else(|| panic!("{id} must leave an observable entry"));
+        let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
+            panic!("{id}: {:?}", status.status);
+        };
+        if reason.contains("budget") {
+            budget_refusals += 1;
+        }
+    }
+    assert!(
+        budget_refusals > 0,
+        "with a {budget:?} budget and {N} hung connectors at least one must be \
+         refused BY the budget — otherwise this test never exercised it"
     );
 }
 

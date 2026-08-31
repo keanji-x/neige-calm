@@ -102,8 +102,16 @@ pub struct PluginListItem {
     pub id: String,
     pub version: String,
     pub enabled: bool,
-    /// Wire-name string per design §7.1: `running | spawning | crashed |
-    /// disabled | installing | installed`.
+    /// Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:
+    /// `running | spawning | crashed | unavailable | disabled | installing |
+    /// installed`.
+    ///
+    /// `unavailable` is the NORMAL terminal state of a connector
+    /// (`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable
+    /// upstream, rejected `secrets.json`, boot budget exhausted. It is not an
+    /// error state of the kernel, and unlike `crashed` there is no supervisor
+    /// that will retry it: it stands until an operator re-enables. `last_error`
+    /// carries the reason.
     pub state: String,
     pub manifest_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -120,6 +128,8 @@ pub struct PluginDetail {
     pub id: String,
     pub version: String,
     pub enabled: bool,
+    /// Same wire-name set as [`PluginListItem::state`], including the
+    /// connector-only `unavailable` — see that field's doc.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
