@@ -1,9 +1,24 @@
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { IconButton as AstryxIconButton } from '@astryxdesign/core/IconButton';
-import type { ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
+import { useState } from '../state/public.ts';
 import styles from './mobile-header.module.css';
+
+function scrollHosts(header: HTMLElement): HTMLElement[] {
+  const hosts: HTMLElement[] = [];
+  const drawer = header.closest<HTMLElement>('[data-nc-drawer]');
+  const drawerScroll = drawer?.querySelector<HTMLElement>('[data-nc-drawer-scroll]');
+  if (drawerScroll !== null && drawerScroll !== undefined) hosts.push(drawerScroll);
+
+  let candidate = header.parentElement;
+  while (candidate !== null && candidate !== document.body) {
+    hosts.push(candidate);
+    candidate = candidate.parentElement;
+  }
+  return hosts;
+}
 
 export function MobileHeader({ title, level = 2, backLabel, onBack, actions }: Readonly<{
   title: string;
@@ -12,8 +27,28 @@ export function MobileHeader({ title, level = 2, backLabel, onBack, actions }: R
   onBack?: () => void;
   actions?: ReactNode;
 }>) {
+  const headerRef = useRef<HTMLElement | null>(null);
+  const [scrolled, setScrolled] = useState(false);
+
+  useEffect(() => {
+    const header = headerRef.current;
+    if (header === null) return;
+    const hosts = scrollHosts(header);
+    const sync = () => setScrolled(hosts.some((host) => host.scrollTop > 4));
+    sync();
+    for (const host of hosts) host.addEventListener('scroll', sync, { passive: true });
+    return () => {
+      for (const host of hosts) host.removeEventListener('scroll', sync);
+    };
+  }, []);
+
   return (
-    <header className={styles.header} data-nc-mobile-header="">
+    <header
+      ref={headerRef}
+      className={styles.header}
+      data-nc-mobile-header=""
+      data-scrolled={scrolled ? '' : undefined}
+    >
       <span className={styles.leading}>
         {onBack !== undefined && (
           <AstryxIconButton

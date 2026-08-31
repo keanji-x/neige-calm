@@ -11,7 +11,13 @@
     margin-block-start: var(--space-4);
     padding-block: 0;
     border-radius: var(--radius-lg);
-    background: color-mix(in oklab, var(--paper) 44%, transparent);
+    background: transparent;
+    backdrop-filter: none;
+    transition: background-color var(--motion-quick) ease-out, backdrop-filter var(--motion-quick) ease-out;
+  }
+
+  .header[data-scrolled] {
+    background: color-mix(in oklab, var(--paper) 72%, transparent);
     backdrop-filter: blur(18px) saturate(1.12);
   }
 
@@ -52,5 +58,11 @@
     min-block-size: var(--rail-w-collapsed) !important;
     border-radius: var(--radius-pill) !important;
     color: var(--text-3) !important;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .header {
+      transition: none;
+    }
   }
 }

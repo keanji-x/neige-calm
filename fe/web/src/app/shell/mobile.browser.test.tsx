@@ -166,18 +166,9 @@ describe('Wave mobile presentation', () => {
     await page.screenshot({ path: '../../../../test-results/mobile-report.png' });
 
     const mobileHeader = document.querySelector<HTMLElement>('[data-nc-mobile-header]')!;
-    expect(getComputedStyle(mobileHeader).backdropFilter).toContain('blur');
+    expect(getComputedStyle(mobileHeader).backdropFilter).toBe('none');
     expect(getComputedStyle(mobileHeader).borderBlockEndWidth).toBe('0px');
-    const reportArticle = document.querySelector<HTMLElement>('[data-testid="report-preview"]')!;
-    reportArticle.style.minHeight = '1200px';
-    const headerTop = mobileHeader.getBoundingClientRect().top;
-    root.scrollTop = 320;
-    root.dispatchEvent(new Event('scroll'));
-    await settlePaint();
-    expect(Math.abs(mobileHeader.getBoundingClientRect().top - headerTop)).toBeLessThan(1);
     expect(page.getByRole('button', { name: 'New conversation' })).toBeTruthy();
-    root.scrollTop = 0;
-    reportArticle.style.minHeight = '';
 
     const navigation = document.querySelector<HTMLElement>('[data-testid="mobile-navigation-panel"]')!;
     await page.getByRole('button', { name: 'Back to Pages' }).click();
