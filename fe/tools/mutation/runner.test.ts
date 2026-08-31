@@ -6,6 +6,7 @@ import {
   boundedInfrastructureDiagnostics, boundedTestIdList, boundedVerdict,
   byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
   evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, failureDetailMessageChars,
+  failureDetailMessageHeadFraction,
   failureDetailMessagesPerTest, failureDetailOmittedIdLimit, failureDetailTestIdChars,
   failureDetailTestLimit, infrastructureDiagnosticBytes, judgeMutation,
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
@@ -460,6 +461,9 @@ describe('over-red failure detail evidence', () => {
       .toEqual({ same: ['first', 'second'] });
   });
 
+  const messageHeadChars = Math.floor(failureDetailMessageChars * failureDetailMessageHeadFraction);
+  const messageTailChars = failureDetailMessageChars - messageHeadChars;
+
   const messages = { expected: ['expected boom'], surprise: ['surprise boom'], other: ['other boom'] };
   it('reports only the unexpected reds, sorted, and never the expected ones', () => {
     expect(unexpectedFailureDetails(['surprise', 'expected', 'other'], ['expected'], messages)).toEqual({
@@ -471,12 +475,40 @@ describe('over-red failure detail evidence', () => {
     expect(unexpectedFailureDetails(['ghost'], [], {}).tests)
       .toEqual([{ test_id: 'ghost', messages: ['[no failureMessages for this test in the vitest JSON report]'] }]);
   });
-  it('truncates a long message and announces how much it kept', () => {
-    const long = 'x'.repeat(failureDetailMessageChars + 37);
+  // A vitest/TestingLibrary failure message is "verdict line, giant dump, stack": head-only
+  // truncation kept 2000 characters of sidebar boilerplate on the real captured flake (#1152,
+  // public.test.tsx:85) and threw away the part that would have closed the diagnosis. So both ends
+  // are kept, out of the SAME budget, with the cut announced at the seam.
+  it('keeps a head AND a tail, and announces both halves at the seam', () => {
+    const long = `${'h'.repeat(messageHeadChars)}${'z'.repeat(37)}${'t'.repeat(messageTailChars)}`;
     const [only] = unexpectedFailureDetails(['big'], [], { big: [long] }).tests;
     expect(only.messages[0]).toBe(
-      `${'x'.repeat(failureDetailMessageChars)}\n[truncated: kept ${failureDetailMessageChars} of ${long.length} characters]`,
+      `${'h'.repeat(messageHeadChars)}`
+      + `\n[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail of ${long.length} characters]\n`
+      + `${'t'.repeat(messageTailChars)}`,
     );
+    // Same budget as head-only truncation spent: the kept CONTENT is exactly `messageChars`, and the
+    // only thing on top is the one-line notice.
+    expect(messageHeadChars + messageTailChars).toBe(failureDetailMessageChars);
+    expect(only.messages[0].length - failureDetailMessageChars).toBeLessThan(80);
+  });
+  // The property the head+tail split exists for, on a realistically SHAPED message rather than a run
+  // of 'x': a short verdict line, a very long middle, and the discriminating detail at the very end.
+  // A test that only checked lengths would have passed on the head-only version that lost it.
+  it('keeps both the verdict line and the end of a TestingLibrary-shaped roles dump', () => {
+    const verdict = 'TestingLibraryElementError: Unable to find an accessible element with the '
+      + 'role "button" and name "Create wave"';
+    const endMarker = 'dialog:\n  Name "Create wave": <div role="dialog" aria-label="Create wave" />';
+    const boilerplate = Array.from({ length: 400 },
+      (_v, index) => `  Name "sidebar item ${index}": <button />`).join('\n');
+    const message = `${verdict}\n\nHere are the accessible roles:\n\n  button:\n${boilerplate}\n\n${endMarker}`;
+    expect(message.length).toBeGreaterThan(failureDetailMessageChars * 5);
+    const [emitted] = unexpectedFailureDetails(['flake'], [], { flake: [message] }).tests[0].messages;
+    expect(emitted.startsWith(verdict), emitted.slice(0, 200)).toBe(true);
+    expect(emitted.endsWith(endMarker), emitted.slice(-200)).toBe(true);
+    expect(emitted).toContain(`[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail `
+      + `of ${message.length} characters]`);
+    expect(emitted.length).toBeLessThan(failureDetailMessageChars + 100);
   });
   // A per-MESSAGE bound bounds nothing on its own: parseVitestReport accumulates messages across
   // colliding fullNames, so N x the char cap is unbounded in N. Measured before the per-test cap
@@ -506,9 +538,12 @@ describe('over-red failure detail evidence', () => {
     expect(unexpectedFailureDetails(['fits'], [], { fits: [exact] }).tests[0].messages).toEqual([exact]);
   });
   it('truncates at the very first character over the cap', () => {
-    const over = 'x'.repeat(failureDetailMessageChars + 1);
+    const over = `${'h'.repeat(messageHeadChars)}z${'t'.repeat(messageTailChars)}`;
+    expect(over.length).toBe(failureDetailMessageChars + 1);
     expect(unexpectedFailureDetails(['edge'], [], { edge: [over] }).tests[0].messages[0]).toBe(
-      `${'x'.repeat(failureDetailMessageChars)}\n[truncated: kept ${failureDetailMessageChars} of ${over.length} characters]`,
+      `${'h'.repeat(messageHeadChars)}`
+      + `\n[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail of ${over.length} characters]\n`
+      + `${'t'.repeat(messageTailChars)}`,
     );
   });
   // omitted_test_ids is the OVERFLOW list, so it grows exactly when the block is already at its
@@ -601,26 +636,31 @@ describe('every id list in a report record is bounded', () => {
   // friends could all be raised to 10^6 with the suite green. This one is a HARD-CODED number over a
   // worst-case record assembled exactly the way run.mjs:141 assembles the real one.
   //
-  // Where the number comes from: the worst case built below measures 111,574 bytes today
+  // Where the number comes from: the worst case built below measures 111,844 bytes today
   // (failure_details ~45 KB + verdict ~32 KB + expected_red ~21 KB + actual_red ~12 KB). The budget
   // has to sit under the CHEAPEST single doubling, or that axis is unguarded. Measured, one at a
   // time, against this exact record:
   //
-  //   baseline                                111,574
-  //   failureDetailOmittedIdLimit  50 -> 100  124,025   <- the cheapest doubling
-  //   failureDetailOmittedIdLimit  50 -> 150  136,475
-  //   failureDetailMessageChars  2000 -> 4000 141,574
-  //   failureDetailMessagesPerTest    3 -> 6  142,444
-  //   failureDetailTestLimit          5 -> 10 144,337
-  //   reportTestIdLimit            50 -> 100  149,227
-  //   failureDetailTestIdChars    200 -> 400  178,805
+  //   baseline                                111,844
+  //   failureDetailOmittedIdLimit  50 -> 100  124,295   <- the cheapest doubling
+  //   failureDetailOmittedIdLimit  50 -> 150  136,745
+  //   failureDetailMessageChars  2000 -> 4000 141,859
+  //   failureDetailMessagesPerTest    3 -> 6  142,984
+  //   failureDetailTestLimit          5 -> 10 144,877
+  //   reportTestIdLimit            50 -> 100  149,497
+  //   failureDetailTestIdChars    200 -> 400  179,075
   //
   // 118_000 is therefore the budget: every doubling above reds it. The earlier 131_072 did NOT —
   // `failureDetailOmittedIdLimit` could be doubled with this test still green, so the comment that
   // claimed "red if any single cap is doubled" was over-claiming on that axis. The price of the
-  // tighter number is honest and stated here: ~6.4 KB of headroom (5.8%) for the wording of the
+  // tighter number is honest and stated here: ~6.2 KB of headroom (5.2%) for the wording of the
   // truncation notices, which move the total by tens of bytes, not kilobytes. A change that needs
   // more than that is a change to how much this record emits, and should re-measure the table.
+  //
+  // `failureDetailMessageHeadFraction` is NOT an axis of this table: head + tail === messageChars by
+  // construction, so moving the split re-aims the kept characters without buying any. Splitting the
+  // budget did move the baseline, by exactly the extra wording: 111,574 -> 111,844, i.e. +18 bytes on
+  // each of the 5 tests x 3 messages the record truncates.
   //
   // `expected_red` is the one axis NOT capped: it is manifest data, authored by hand and gated by
   // validateManifest (today at most 13 ids of at most 124 characters, ~1.7 KB). The worst case below
@@ -751,20 +791,21 @@ describe('every id list in a report record is bounded', () => {
     };
     // Same discipline as the test above, re-measured over BOTH fixtures (parse-error / filenames):
     //
-    //   baseline                                 104,055 / 105,164
-    //   infrastructureDiagnosticBytes 8k -> 16k  112,492 / 114,690   <- the cheapest doubling
-    //   failureDetailOmittedIdLimit    50 -> 100 116,506 / 117,615
-    //   failureDetailMessageChars    2000 -> 4000 134,055 / 135,164
-    //   failureDetailMessagesPerTest      3 -> 6  134,925 / 136,034
-    //   failureDetailTestLimit            5 -> 10 136,818 / 137,927
-    //   reportTestIdLimit              50 -> 100 129,057 / 130,166
-    //   failureDetailTestIdChars      200 -> 400 158,623 / 159,732
+    //   baseline                                 104,325 / 105,434
+    //   infrastructureDiagnosticBytes 8k -> 16k  112,762 / 114,960   <- the cheapest doubling
+    //   failureDetailOmittedIdLimit    50 -> 100 116,776 / 117,885
+    //   failureDetailMessageChars    2000 -> 4000 134,340 / 135,449
+    //   failureDetailMessagesPerTest      3 -> 6  135,465 / 136,574
+    //   failureDetailTestLimit            5 -> 10 137,358 / 138,467
+    //   reportTestIdLimit              50 -> 100 129,327 / 130,436
+    //   failureDetailTestIdChars      200 -> 400 158,893 / 160,002
     //
-    // 110_000 sits above the worse baseline (105,164) and below the cheaper of the two cheapest
-    // doublings (112,492), so every axis reds it on both fixtures. Same ~4% wording headroom caveat
-    // as the test above. Mutation-verified: revert `boundedInfrastructureDiagnostics` to charging
-    // `diagnostic.length` and the filenames fixture measures 113,939 — OVER this budget — because
-    // all 800 entries are admitted for 8000 raw characters while costing ~18 KB on the wire.
+    // 110_000 sits above the worse baseline (105,434) and below the cheaper of the two cheapest
+    // doublings (112,762), so every axis reds it on both fixtures. Same ~4% wording headroom caveat
+    // as the test above (the head+tail split spent 270 bytes of it: 104,055 -> 104,325). Mutation-
+    // verified: revert `boundedInfrastructureDiagnostics` to charging `diagnostic.length` and the
+    // filenames fixture measures 114,209 — OVER this budget — because all 800 entries are admitted
+    // for 8000 raw characters while costing ~18 KB on the wire.
     expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(110_000);
   });
 });

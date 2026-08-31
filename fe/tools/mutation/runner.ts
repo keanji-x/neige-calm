@@ -177,14 +177,45 @@ export const failureDetailLimits: Readonly<FailureDetailLimits> = Object.freeze(
 });
 
 /**
+ * The share of `messageChars` spent on the HEAD of a truncated message; the rest goes to the TAIL.
+ *
+ * Head-only truncation kept the wrong 2000 characters the first time this instrumentation caught the
+ * real flake (#1152, `public.test.tsx:85`). A vitest/TestingLibrary failure message is shaped
+ * "one line of verdict, then a giant dump, then the stack": the head is the verdict plus the first
+ * few boilerplate lines of the dump, and the discriminating detail — the END of the accessible-roles
+ * list, the stack frame that fired, the tail of a deep-equality diff — is at the far end. The
+ * captured 14,344-character message was cut to its first 2000 characters, all of which were sidebar
+ * roles, and the diagnosis could not be closed.
+ *
+ * 1/4 head : 3/4 tail. The head only has to carry the verdict line and enough of the opening to say
+ * WHICH assertion this is — ~110 characters for the TestingLibrary verdict, so 500 is already 4x
+ * what that costs and covers a multi-line `expected/received` preamble too. Everything else is more
+ * useful at the tail, where a dump's discriminating end and the stack live. A 50/50 split would
+ * spend 500 characters of budget on sidebar boilerplate to buy nothing.
+ *
+ * Total emitted size is unchanged: head + tail === limit, exactly the character count head-only
+ * truncation emitted, plus the (slightly longer) one-line notice. Same announce-the-cut discipline
+ * as everywhere else in this file — the notice sits BETWEEN the two halves so it is impossible to
+ * read the seam as contiguous text, and it names both halves and the original length.
+ *
  * Known and accepted: the cut is in UTF-16 units, so a message of astral characters is up to 4x
- * this many UTF-8 bytes and an odd cut leaves a lone surrogate. `JSON.stringify` escapes that to
- * `\udXXX` and it round-trips, so this is a size-honesty limit, not a correctness one — and vitest
- * failure messages are assertion text and stack frames, which are ASCII in practice.
+ * this many UTF-8 bytes and an odd cut leaves a lone surrogate (now possibly two, one per seam).
+ * `JSON.stringify` escapes that to `\udXXX` and it round-trips, so this is a size-honesty limit, not
+ * a correctness one — and vitest failure messages are assertion text and stack frames, which are
+ * ASCII in practice.
  */
+export const failureDetailMessageHeadFraction = 0.25;
+
 export function truncateFailureMessage(message: string, limit: number = failureDetailMessageChars): string {
   if (message.length <= limit) return message;
-  return `${message.slice(0, limit)}\n[truncated: kept ${limit} of ${message.length} characters]`;
+  const budget = Math.max(0, limit);
+  const head = Math.floor(budget * failureDetailMessageHeadFraction);
+  const tail = budget - head;
+  // `message.length - tail` rather than `slice(-tail)`: at tail === 0 the negative form is `-0`,
+  // which slices from index 0 and would emit the WHOLE message on a zero budget.
+  return `${message.slice(0, head)}`
+    + `\n[truncated: kept ${head} head + ${tail} tail of ${message.length} characters]\n`
+    + `${message.slice(message.length - tail)}`;
 }
 
 /** Same announce-the-cut discipline as truncateFailureMessage, on one line because an id is one line. */
