@@ -467,7 +467,7 @@
     源码注释逐条说明两个 handler 都是 dialog 契约本身（click-through 阻断 +
     WAI-ARIA 强制的 focus trap），"Neither is a 'fake button' — the disable is
     structural, not deferred work."
-  source: web/src/ui/Dialog/Dialog.tsx:352-363
+  source: web/src/ui/Dialog/Dialog.tsx:352-373
   authoritative_test: NONE
   owner_slice: ui/dialog
   intentional_omission: true

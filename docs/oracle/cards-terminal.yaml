@@ -1522,7 +1522,7 @@
     registry.ts 必须保持为纯 .ts 模块（用 createElement 而非 JSX）
   why: >
     保住设计文档里的文件名与模块边界；改成 .tsx 会牵连构建与文档引用
-  source: web/src/cards/registry.ts:299-303
+  source: web/src/cards/registry.ts:299-316
   authoritative_test: NONE
   owner_slice: systems/cards/registry
   intentional_omission: true
@@ -2650,7 +2650,7 @@
   why: >
     读屏与 Playwright getByRole('listitem', {name}) 都依赖它；快捷键字符串是
     Slice 9 契约的一部分
-  source: web/src/WaveList.tsx:66-80,250-253
+  source: web/src/WaveList.tsx:66-80,249-262
   authoritative_test: web/src/WaveList.test.tsx:250,273
   owner_slice: features/wave/list
   intentional_omission: false
