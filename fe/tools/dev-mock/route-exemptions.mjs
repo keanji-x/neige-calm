@@ -42,7 +42,6 @@ const routeExemptions = [
   Object.freeze({ route: "POST /api/today/launchpad/ensure", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "GET /api/waves/{id}/files/cat", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "GET /api/waves/{id}/files/ls", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
-  Object.freeze({ route: "GET /api/waves/{id}/report", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "POST /api/waves/{id}/report", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "POST /api/waves/{id}/report/blocks", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "DELETE /api/waves/{id}/report/blocks/{block_id}", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
@@ -54,7 +53,7 @@ const routeExemptions = [
   Object.freeze({ route: "POST /api/waves/{wave_id}/codex-cards", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
   Object.freeze({ route: "POST /api/waves/{wave_id}/terminal-cards", reason: 'Requires production persistence, filesystem, plugin runtime, or agent orchestration unavailable in the in-memory visual dev server.' }),
 ];
-const ROUTE_EXEMPTION_LIMIT = 51;
+const ROUTE_EXEMPTION_LIMIT = 50;
 export const DEV_MOCK_ROUTE_EXEMPTION_EXPIRY = '2026-12-31';
 if (routeExemptions.length > ROUTE_EXEMPTION_LIMIT) throw new Error('dev-mock route exemptions may only shrink');
 export const DEV_MOCK_ROUTE_EXEMPTIONS = Object.freeze(routeExemptions.map(({ route, reason }) => Object.freeze({

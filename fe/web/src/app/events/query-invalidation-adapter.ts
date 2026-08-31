@@ -39,6 +39,15 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);
   if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);
   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);
+  /* The wave's task verdicts. Both arities are mapped, and the bare one is not
+     an oversight: the four `task.*` events carry no wave-id *field*, so
+     `derivedWaveId` cannot name one and the plan emits the prefix. (Their
+     `idempotency_key` is the task id, which embeds the wave id — the plan
+     declines to parse it; see `queryKeys.waveReportPrefix` for why.) Dropping
+     the prefix would leave the TASKS panel dead for exactly the events that
+     change it. */
+  if (head === 'wave-report' && key.length === 1) return queryKeys.waveReportPrefix();
+  if (head === 'wave-report' && typeof first === 'string' && key.length === 2) return queryKeys.waveReport(first);
   return null;
 }
 

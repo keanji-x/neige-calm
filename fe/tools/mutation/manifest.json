@@ -955,7 +955,7 @@
       "oracle:INV-APP-035"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -140,7 +140,7 @@\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   'codex.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -207,7 +207,7 @@ function policies(): PolicyMap {\n     }\n     return result(keys);\n   }),\n-  'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),\n+  'terminal.deleted': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),\n   'plugin.state': noop('No plugin list query exists.'),\n   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),\n   /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.\n",
     "expected_red": [
       "invalidation plan behavior invalidates terminal runtime projection through card ownership",
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
@@ -1064,7 +1064,7 @@
       "oracle:CAP-SPECCONVO-017"
     ],
     "target": "web/src/app/events/query-invalidation-adapter.ts",
-    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   return null;\n }\n",
+    "patch": "diff --git a/web/src/app/events/query-invalidation-adapter.ts b/web/src/app/events/query-invalidation-adapter.ts\n--- a/web/src/app/events/query-invalidation-adapter.ts\n+++ b/web/src/app/events/query-invalidation-adapter.ts\n@@ -37,7 +37,7 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {\n   if (head === 'waves' && first === 'cove' && typeof second === 'string') return queryKeys.wavesInCove(second);\n   if (head === 'wave' && typeof first === 'string' && key.length === 2) return queryKeys.waveDetail(first);\n   if (head === 'overlays' && (first === 'wave' || first === 'card')) return queryKeys.overlaysByKind(first);\n-  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return queryKeys.harnessItems(first);\n+  if (head === 'harness-items' && typeof first === 'string' && key.length === 2) return null;\n   if (head === 'spec-run' && typeof first === 'string' && key.length === 2) return queryKeys.specRun(first);\n   /* The wave's task verdicts. Both arities are mapped, and the bare one is not\n      an oversight: the four `task.*` events carry no wave-id *field*, so\n",
     "expected_red": [
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations"
@@ -1101,7 +1101,8 @@
       "headless card filtering [INV-CARD-226] binds originalIndex before filtering, so surviving cards still address the wire array",
       "headless card filtering [INV-CARD-226] filters raw wave-report kinds out of the unknown branch defensively",
       "headless card filtering routes cards with a surface into the visible branch with their wire and index",
-      "wave route CARDS panel [INV-CARD-226] renders exactly the surviving cards in the kernel wire order"
+      "wave route CARDS panel [INV-CARD-226] renders exactly the surviving cards in the kernel wire order",
+      "wave route CARDS panel shows a titled card by its name AND its kind, and an untitled one by its kind alone"
     ],
     "selection_paths": [
       "web/src/systems/cards/builtins/headless-filter.test.ts",
@@ -1110,6 +1111,6 @@
       "web/src/systems/cards/builtins/register.ts",
       "web/src/systems/cards/registry.ts"
     ],
-    "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card; nothing else should notice."
+    "why_more_than_one": "The originalIndex oracles are the only thing standing between a filtered card list and deleting the wrong card. The fifth entry is the panel's #1149 name/kind row, and it is a genuine witness rather than collateral: the router merges the visible and unknown branches and re-sorts on originalIndex (app/router `panelCards`), so renumbering either branch reorders the rendered list — that test reads the whole list in order, and its fixture has cards in both branches, so it sees the reordering. It is listed rather than loosened because asserting the list unordered would give up the wire order INV-CARD-226 is about."
   }
 ]

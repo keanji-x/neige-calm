@@ -32,9 +32,11 @@ export type WavePageProps = Readonly<{
   wave: Wave;
   cards: readonly CardWire[];
   /**
-   * The wave's declared tasks, derived by `app/router` from the report's own
-   * `task` blocks (`core/domain/report`'s `deriveReportTasks`) — not a second
-   * source of truth, and deliberately statusless: see the note there.
+   * The wave's tasks, joined by `app/router` from the report's own `task`
+   * blocks and the kernel's task verdicts (`core/domain/report`'s
+   * `deriveReportTasks`) — the declarations stay the spine, so this is still
+   * not a second source of truth about what tasks exist, and each row now
+   * carries what the kernel says about the run.
    */
   tasks: readonly ReportTaskRow[];
   /** The panel card's second module, composed by `app/router` (features/chat). */
@@ -68,6 +70,25 @@ export type WavePageProps = Readonly<{
 function headerLifecycle(lifecycle: WaveLifecycle): WaveLifecycle | null {
   if (lifecycle === 'draft' || lifecycle === 'done' || lifecycle === 'canceled') return null;
   return lifecycle;
+}
+
+/**
+ * What the status dot says, in words: the status, then the kernel's reason for
+ * it when there is one (#1149 / #1147).
+ *
+ * The status word comes **first and always**, because this string is the dot's
+ * whole accessible name — the colour carries nothing on its own, and a reader
+ * who lands here must get `failed` before any prose about it. The reason is
+ * appended, never substituted: `failed — wave … is not a git repository` is
+ * strictly more than `failed`, whereas a name that printed the reason alone
+ * would have traded the one fact the row must carry for a nicer one.
+ *
+ * The em dash separator is the only formatting decision here; the reason
+ * arrives already collapsed to one bounded line from `deriveReportTasks`, which
+ * is where that judgement belongs.
+ */
+function taskStatusPhrase(status: string, detail: string | null): string {
+  return detail === null ? status : `${status} — ${detail}`;
 }
 
 export function WavePage({
@@ -185,11 +206,18 @@ export function WavePage({
 
         {/*
           The same card every route has. CARDS is this route's own module —
-          `kind` is a card's identity and `title` its label, so a card with a
-          title shows the title alone rather than printing both in a 308px
-          column. FOLDER sits with it because a wave's cwd is a fact about the
-          same object; it left the page header, where it was the largest fixed
-          cost the page paid for its least-read fact.
+          `kind` is a card's identity and `title` its label, and the row now
+          prints BOTH: the title reads first, the kind follows in the quiet
+          rank. It used to print `title ?? kind`, which was harmless while the
+          only titled cards were ones a user had named — but #1149 titles every
+          worker card after its task key, so `title ?? kind` would have deleted
+          the words `codex` / `claude` / `terminal` from the panel on exactly
+          the cards whose kind the reader most needs (three workers named after
+          three slices are otherwise indistinguishable). An untitled card still
+          shows its kind alone, in the same slot, because there is nothing else
+          to say about it. FOLDER sits with it because a wave's cwd is a fact
+          about the same object; it left the page header, where it was the
+          largest fixed cost the page paid for its least-read fact.
         */}
         {/* `data-nc-panel` is how `app/shell` hides this while the conversation
             drawer is open — see the same marker on the cove page. */}
@@ -201,7 +229,7 @@ export function WavePage({
                 : (
                   <ul className={styles.cards} data-nc-card-inventory="">
                     {cards.map((card) => {
-                      const label = card.title ?? card.kind;
+                      const title = card.title ?? null;
                       return (
                         <li key={card.id}>
                           <button
@@ -209,8 +237,14 @@ export function WavePage({
                             className={styles.cardRow}
                             onClick={() => onOpenCard?.(card.id)}
                           >
-                            <span className={styles.cardKind}>{label}</span>
-                            {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
+                            <span className={styles.cardKind}>{title ?? card.kind}</span>
+                            <span className={styles.cardMeta}>
+                              {/* Only when a title took the name slot — an
+                                  untitled card is already showing its kind
+                                  there, and printing it twice is noise. */}
+                              {title !== null && <span className={styles.cardKindTag}>{card.kind}</span>}
+                              {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
+                            </span>
                           </button>
                         </li>
                       );
@@ -254,35 +288,177 @@ export function WavePage({
                 ? <PanelEmpty>No tasks declared yet.</PanelEmpty>
                 : (
                   <ul className={styles.tasks} data-nc-task-inventory="">
-                    {tasks.map((task) => (
-                      <li key={task.blockId}>
+                    {tasks.map((task) => {
+                      /* Bound before the JSX: narrowing a property access does
+                         not survive into a click handler, and the alternative
+                         is a cast that would outlive the check it stands in
+                         for. */
+                      const workerCardId = task.workerCardId;
+                      return (
+                      /*
+                        ── Two controls in one row, not one control with two
+                        destinations ───────────────────────────────────────────
+
+                        The row used to *be* a `<button>`, and which of the two
+                        landings it took was decided for the reader: a
+                        dispatched task opened its worker card and everything
+                        else revealed the block. That is one affordance
+                        pretending to be two, and the cost fell on the case it
+                        was meant to help — once a task was running, the panel
+                        could no longer reach its declaration at all.
+
+                        So the row is a plain `<li>` carrying two siblings, and
+                        each says what it does:
+
+                          - the row itself always reveals the block — the same
+                            landing the outline, a `neige://` link and a
+                            backlink all use;
+                          - the *kind* (`terminal` / `codex` / `claude`) is the
+                            card affordance, and only when there is a card to
+                            open. `app/router` has already cleared
+                            `workerCardId` for any card the **registry** cannot
+                            draw, so such a row's kind renders as a label and
+                            routes nowhere rather than bouncing the reader off
+                            the URL.
+
+                        A `<button>` may not nest inside a `<button>`, which is
+                        the mechanical reason the row stopped being one; both
+                        controls are still `<button>` + callback, and there is
+                        still no `<a href>` here (INV-A11Y-061).
+
+                        **"The row reveals the block" is enforced in CSS, not by
+                        DOM containment.** Nesting is what would make it a DOM
+                        fact, and nesting is the one thing forbidden here — so
+                        the reveal button paints an invisible sheet over the
+                        whole `<li>` (`.taskReveal::before`), and the two things
+                        that must stay on top of it are the kind *button* and
+                        the status dot. Everything else in the row is the reveal
+                        control's own target: the kind's non-clickable `<span>`
+                        form, and the trailing lane of a row that has no dot.
+                        Both of those were dead zones, in a row whose whole
+                        contract is that it is clickable, so the claim is
+                        hit-tested in `task-row.browser.test.tsx` rather than
+                        asserted here — jsdom has no layout and reports this
+                        same tree whether the sheet covers the row or nothing.
+                      */
+                      <li key={task.blockId} className={styles.taskRow}>
                         <button
                           type="button"
-                          className={styles.taskRow}
+                          className={styles.taskReveal}
+                          title={`Show ${task.key} in the report`}
                           onClick={() => onOpenTask?.(task.blockId)}
                         >
                           {/* Mono: the key is the literal other reports and the
                               kernel address this task by (§2.2). */}
                           <span className={styles.taskKey}>{task.key}</span>
-                          {/* Only `ready` is silent. A task the agent has not
-                              finished declaring, one it withdrew, and one whose
-                              payload this build cannot parse are all things the
-                              reader would otherwise have to open the document to
-                              discover; a task that is ready is the ordinary case
-                              and gets no word for it. `Unreadable` rows carry
-                              their block id in the name column — see
-                              `deriveReportTasks` for why they are listed at
-                              all. */}
-                          {task.state !== 'ready' && (
-                            <span className={task.state === 'withdrawn' ? styles.taskWithdrawn : styles.taskNotReady}>
-                              {task.state === 'withdrawn' ? 'Withdrawn'
-                                : task.state === 'unreadable' ? 'Unreadable'
-                                  : 'Not ready'}
+                          {/*
+                            The declaration's own word — `Not ready`,
+                            `Withdrawn`, `Unreadable` — and nothing else: the
+                            run is the dot. A ready declaration is silent, and
+                            so is one the kernel has since dispatched, because
+                            `deriveReportTasks` drops the readiness word once a
+                            status exists.
+
+                            `Withdrawn` is struck through because the
+                            declaration is struck through, and it cannot collide
+                            with a run: a withdrawn row is never decorated with
+                            one, so it keeps saying it was withdrawn even when
+                            the task's `tasks` row outlived the withdrawal.
+                          */}
+                          {task.declaration !== null && (
+                            <span className={task.state === 'withdrawn'
+                              ? styles.taskWithdrawn
+                              : styles.taskNote}
+                            >
+                              {task.declaration}
                             </span>
                           )}
+                          {/*
+                            ── The status, as a dot, and never as colour alone ──
+
+                            Three carriers, not one: the accessible name spells
+                            the status out, the form spells it out (hollow ring
+                            / disc / square / ringed disc — see
+                            `page.module.css`), and colour only reinforces
+                            them. The palette alone could not do it: the four
+                            semantic fills sit within 9 ΔL of one another in
+                            light and 6 in dark, and dark's `--success` and
+                            `--error` are the same lightness exactly.
+
+                            `role="img"` + `aria-label` rather than a
+                            visually-hidden span: the dot IS the graphic, so
+                            naming it is what an accessible name is for, and the
+                            label lands in the row button's own accessible name
+                            (`bench-harness Status: running`) instead of adding
+                            a second stop for a screen reader to walk past.
+                            `title` carries the same fact to a sighted pointer,
+                            which is what makes the colour a shorthand for a
+                            word rather than the only carrier of it.
+
+                            Both carry the kernel's *reason* too when it gave
+                            one (#1147's `status_detail`), which is why the
+                            hover is worth having at all on a failure: `failed`
+                            alone is the thing the reader already sees, and
+                            `failed — wave … is not a git repository` is the
+                            answer they were about to go looking for.
+
+                            It sits *inside* the reveal button on purpose: the
+                            row's whole job is to reveal the block, and a
+                            trailing target that silently did nothing would be a
+                            hole in exactly the corner the eye is drawn to. That
+                            is also what lets the dot own its own hover without
+                            owning the click — being a DOM child is what makes
+                            the click bubble, so the dot never needs
+                            `pointer-events: none`, which is the change that
+                            would take the hover away again. The target itself
+                            is the row's whole trailing lane, not the 8px mark;
+                            see `.taskDot::before` in `page.module.css` for why
+                            the mark alone was unhoverable in practice.
+
+                            `title` is the app's hover carrier everywhere else
+                            (`ui/panel-card`, `app/shell/sidebar`,
+                            `features/report/backlinks`) and there is no tooltip
+                            primitive to reach for instead. Its limits are real
+                            and are not papered over here: no touch, no keyboard
+                            focus, a delay before it appears. What covers those
+                            is the *other* carrier — `aria-label`, which folds
+                            this same sentence into the row button's accessible
+                            name, so focusing the row says it without a pointer
+                            at all. Touch is the one seat left uncovered.
+
+                            Its trailing position is CSS, not DOM order.
+                          */}
+                          {task.status !== null && (
+                            <span
+                              className={styles.taskDot}
+                              data-nc-task-status={task.status}
+                              role="img"
+                              aria-label={`Status: ${taskStatusPhrase(task.status, task.statusDetail)}`}
+                              title={taskStatusPhrase(task.status, task.statusDetail)}
+                            />
+                          )}
                         </button>
+                        {/*
+                          The kind is a word either way — what changes is
+                          whether it is a control. `title` describes the
+                          destination without touching the accessible name,
+                          which stays the visible word (WCAG 2.5.3).
+                        */}
+                        {task.kind !== null && (workerCardId === null
+                          ? <span className={styles.taskKind}>{task.kind}</span>
+                          : (
+                            <button
+                              type="button"
+                              className={styles.taskKindButton}
+                              title={`Open the worker card for ${task.key}`}
+                              onClick={() => onOpenCard?.(workerCardId)}
+                            >
+                              {task.kind}
+                            </button>
+                          ))}
                       </li>
-                    ))}
+                      );
+                    })}
                   </ul>
                 )}
             </PanelModule>

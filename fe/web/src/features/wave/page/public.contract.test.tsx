@@ -70,11 +70,58 @@ describe('WavePage delete confirm contract', () => {
     expect(screen.getByRole('button', { name: 'Delete wave' }).getAttribute('aria-disabled')).toBeNull();
   });
 
+  /*
+   * Every row-shaped thing the page can draw, in one render, because the
+   * invariant is about the page and not about one module. The TASKS rows are
+   * here deliberately: the default fixture leaves `tasks: []`, so before this
+   * the newest navigation on the page — a task row that clicks through to a
+   * worker card — was checked against zero rendered rows. The assigned row is
+   * the one that carries a destination, and a destination is what tempts an
+   * `<a href>`.
+   *
+   * The rows also now carry TWO destinations each (#1149) — the row reveals the
+   * block, the kind opens the worker card — so this render is what keeps both
+   * of them under the invariant, and the nesting assertion below is what keeps
+   * the second one from being expressed the one way HTML forbids.
+   */
+  const taskRows = () => ([
+    { blockId: 'b-1', key: 'assigned', state: 'ready', workerCardId: 'card-9', status: 'running', statusDetail: null, kind: 'terminal', declaration: null },
+    { blockId: 'b-2', key: 'queued', state: 'ready', workerCardId: null, status: 'pending', statusDetail: null, kind: 'codex', declaration: null },
+    { blockId: 'b-3', key: 'gone', state: 'withdrawn', workerCardId: null, status: null, statusDetail: null, kind: null, declaration: 'Withdrawn' },
+    { blockId: 'b-4', key: 'plain', state: 'ready', workerCardId: null, status: null, statusDetail: null, kind: 'claude', declaration: null },
+  ] as const);
+
   it('renders no <a> element anywhere on the page (INV-A11Y-061)', () => {
     const { container } = renderPage({
       cards: [card({ id: 'k1' }), card({ id: 'k2', title: null, deletable: false })],
+      tasks: taskRows(),
     });
+    // Not vacuous: the rows really are on the page this assertion inspects.
+    expect(container.querySelectorAll('[data-nc-task-inventory] li').length).toBe(4);
     expect(container.querySelectorAll('a').length).toBe(0);
+  });
+
+  /*
+   * A `<button>` may not contain a `<button>`. It is not a style rule: the
+   * inner one is dropped from the parsed tree by every browser's HTML parser,
+   * so the affordance simply would not exist — and jsdom happily renders what a
+   * browser would discard, which is why this is asserted on the shape rather
+   * than left to a click test.
+   *
+   * The whole page is inspected, not the TASKS list, because the rule is the
+   * page's; the assertion below is what makes it non-vacuous for the module
+   * that just grew a second control per row.
+   */
+  it('nests no button inside another button (INV-A11Y-061)', () => {
+    const { container } = renderPage({
+      cards: [card({ id: 'k1' })],
+      tasks: taskRows(),
+      board: <div>grid</div>,
+      onCloseBoard: () => undefined,
+    });
+    /* Two controls on the assigned row, one on the rows with no card. */
+    expect(container.querySelectorAll('[data-nc-task-inventory] button').length).toBe(5);
+    expect(container.querySelectorAll('button button').length).toBe(0);
   });
 
   it('renames exactly once with the trimmed title and never on an unchanged value', async () => {

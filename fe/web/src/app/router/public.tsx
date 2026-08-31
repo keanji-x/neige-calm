@@ -60,7 +60,7 @@ import {
   ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
   settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
   useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
-  waveBacklinksQueryOptions, waveDetailQueryOptions,
+  waveBacklinksQueryOptions, waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
@@ -1362,14 +1362,31 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       },
     { showWave: false },
   );
-  const { report, outline, tasks } = useMemo(() => {
-    const nextReport = readWaveReport(cards);
-    return {
-      report: nextReport,
-      outline: deriveReportOutline(nextReport?.blocks ?? null),
-      tasks: deriveReportTasks(nextReport?.blocks ?? null),
-    };
-  }, [cards]);
+  /*
+   * The runtime half of the TASKS panel.
+   *
+   * Deliberately keyed `['wave-report', waveId]`, which is the key
+   * `core/events/invalidation-plan` has always planned for every `task.*`
+   * event and for `wave.report_edited` — naming it anything else would have
+   * meant a second, hand-rolled refresh path for a panel the event plan
+   * already knew how to keep live.
+   */
+  /* Read before the query, not inside the join below it: the poll's own
+     interval is a question about the rows this report can produce, so the
+     declarations have to be in hand when the query options are built. */
+  const report = useMemo(() => readWaveReport(cards), [cards]);
+  const reportBlocks = report?.blocks ?? null;
+  const verdictsQuery = useQuery(
+    waveTaskVerdictsQueryOptions(transport, wave.id, unauthorized, reportBlocks),
+  );
+  const verdicts = verdictsQuery.data;
+  const { outline, tasks: joinedTasks } = useMemo(() => ({
+    outline: deriveReportOutline(reportBlocks),
+    /* The declarations arrive with the wave detail and the verdicts land a
+       round-trip later; passing `undefined` through as "none yet" renders the
+       same statusless list this panel shipped with rather than a hole. */
+    tasks: deriveReportTasks(reportBlocks, verdicts),
+  }), [reportBlocks, verdicts]);
   /*
    * INV-CARD-226 — the CARDS module lists cards that have a surface. `spec` and
    * `wave-report` resolve to headless adapters and are dropped; anything no
@@ -1398,6 +1415,29 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
         originalIndex: slot.originalIndex,
       }));
   }, [cardRegistry, cards]);
+  /*
+   * A task row may only offer its worker card when that card can actually be
+   * opened — and "openable" is asked of the *registry*, through the very list
+   * the board draws, never of a hardcoded set of worker kinds.
+   *
+   * The kernel dispatches `codex`, `claude` and `terminal` workers, and this
+   * build's registry can draw all three — `codex` was the standing exception
+   * until `CODEX_CARD_ENTRY` landed, and nothing here changed when it did: the
+   * id simply started resolving, which is the point of asking the registry.
+   * What the filter still catches is any worker card whose kind no entry claims
+   * — a kernel newer than this bundle stamping one is the live case. Such a card
+   * is `unknown`: it is not in `gridItems`, `knownCard` below is false for it,
+   * and the effect under this line bounces `?card=` straight back off the URL.
+   * A row that clicked there would land the reader nowhere and lose the reveal
+   * it used to have. Filtering here rather than teaching `WavePage` about the
+   * registry keeps the panel a pure renderer.
+   */
+  const tasks = useMemo(() => {
+    const openable = new Set(gridItems.map((item) => item.card.id));
+    return joinedTasks.map((task) => (task.workerCardId === null || openable.has(task.workerCardId)
+      ? task
+      : { ...task, workerCardId: null }));
+  }, [gridItems, joinedTasks]);
   const knownCard = requestedCardId !== null
     && gridItems.some((item) => item.card.id === requestedCardId);
   useEffect(() => {
