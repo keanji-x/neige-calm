@@ -19,6 +19,7 @@ import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../.
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { coveConversationCardId, COVE_CONVERSATION_TEXT_MAX } from '../../../../core/domain/conversation.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import { queryKeys } from '../providers/queries.ts';
 import { APP_BASEPATH, createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
@@ -493,6 +494,72 @@ describe('cove conversations', () => {
     await screen.findByText('No conversations yet.');
     expect(screen.queryByRole('button', { name: /Conversation Read me/ })).toBeNull();
   });
+
+  /*
+   * ── Switching conversations in place builds a new transcript ──────────────
+   *
+   * The drawer stays mounted across a switch — same route, same `<Drawer>` — so
+   * `<ChatThread>` is only rebuilt if it is keyed on the conversation. Without
+   * the key it is *reused*, and what is reused with it is the pair of refs the
+   * follow-the-newest-turn effect carries: `followsNewest`, which records
+   * whether the reader was at the bottom, and `followedTo`, which records the
+   * newest turn already followed to. The effect's dependencies
+   * (`[turns.length, newestId]`) do fire on the switch — the newest id is a
+   * different one — but it then asks `followsNewest.current`, and that answer
+   * is about the *previous* conversation. A reader parked in the middle of the
+   * first therefore opens the second parked as well: `172` below is that
+   * offset, put there by this test rather than measured from anything.
+   *
+   * Both transcripts are primed and both hold two turns, and that is the whole
+   * design of this test: a switch that passed through an empty transcript would
+   * remount the component on its own and pass with or without the key.
+   */
+  it('rebuilds the transcript when another conversation opens in its place', async () => {
+    const { client } = setup((request) => request.path === CONVERSATIONS && request.method === 'GET'
+      ? ok([row({ id: 'chat-1', title: 'First' }), row({ id: 'chat-2', title: 'Second' })])
+      : undefined);
+    for (const id of ['chat-1', 'chat-2']) {
+      client.setQueryData(queryKeys.harnessItems(id), {
+        pages: [harnessTurns(id)], pageParams: [0],
+      });
+    }
+    fireEvent.click(await screen.findByRole('button', { name: /Conversation First/ }));
+    await screen.findByRole('complementary', { name: 'First' });
+
+    /* The drawer's own pane, given the geometry jsdom does not compute, so the
+       scroll it performs is a value this tier can read. */
+    const pane = document.querySelector<HTMLElement>('[data-nc-drawer-scroll]');
+    expect(pane).not.toBeNull();
+    let offset = 0;
+    const writes: number[] = [];
+    Object.defineProperty(pane, 'scrollHeight', { configurable: true, value: 800 });
+    Object.defineProperty(pane, 'scrollTop', {
+      configurable: true,
+      get: () => offset,
+      set: (value: number) => { offset = value; writes.push(value); },
+    });
+    /* The reader parks somewhere in the middle of this conversation. */
+    offset = 172;
+
+    fireEvent.click(screen.getByRole('button', { name: /Conversation Second/ }));
+    await screen.findByRole('complementary', { name: 'Second' });
+
+    /* A conversation opens at its newest turn — always, and not only when it
+       happens to hold a different number of them from the one before it. */
+    await waitFor(() => { expect(writes).toEqual([800]); });
+  });
+
+/** Two turns of transcript for `cardId`, in the shape the harness serves. */
+function harnessTurns(cardId: string) {
+  return [
+    { id: 1, runtime_id: 'r', card_id: cardId, wave_id: CHAT_WAVE_ID, thread_id: 't',
+      turn_id: null, item_uuid: null, item_type: 'userMessage', method: 'item/completed',
+      params: JSON.stringify({ item: { text: `ask ${cardId}` } }), created_at_ms: 1 },
+    { id: 2, runtime_id: 'r', card_id: cardId, wave_id: CHAT_WAVE_ID, thread_id: 't',
+      turn_id: null, item_uuid: null, item_type: 'agentMessage', method: 'item/completed',
+      params: JSON.stringify({ item: { text: `answer ${cardId}` } }), created_at_ms: 2 },
+  ];
+}
 
   /*
    * The panel is **not** remounted when the reader walks from one cove to

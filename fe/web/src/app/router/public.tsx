@@ -1050,7 +1050,31 @@ function useConversationPanel(
               </button>
             )}
             {store.historyError !== null && <p role="alert">{store.historyError}</p>}
+            {/*
+              * Keyed on the conversation, so switching threads in place builds
+              * a new transcript rather than reusing the old one's state.
+              *
+              * The drawer stays mounted across a switch — same route, same
+              * `<Drawer>` — so without the key `ChatThread` is reused, and the
+              * refs its follow-the-newest-turn effect carries are reused with
+              * it. The effect re-runs (its deps are `[turns.length, newestId]`
+              * and the newest id changed), and then asks `followsNewest`, whose
+              * answer is about A: a reader parked in the middle of A opens B
+              * parked too. `cove-conversation.test.tsx` holds that down with
+              * two primed two-turn transcripts, so the switch cannot remount
+              * the component for some other reason and pass anyway.
+              *
+              * The rail's own state goes with the instance too — the lit
+              * exchange, the roving tab stop, the installed listeners — and
+              * that is state about A being applied to B's dots. It cannot
+              * survive as A's *words*: every label is derived from B's current
+              * exchanges. What it produces is a rail with nothing lit, or, if
+              * the two conversations happen to share a turn id, one lit for the
+              * wrong reason. The same treatment the sibling state above already
+              * gets on `[cardId]`; this was the one place it was left out.
+              */}
             <ChatThread
+              key={open.id}
               conversation={open}
               turns={store.turnsOf(open.id)}
               pending={store.pending.has(open.id)}

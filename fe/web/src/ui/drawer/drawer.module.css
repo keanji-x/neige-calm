@@ -115,6 +115,78 @@
   }
 
   /*
+   * ── The seam: the 24px of page between the card and the window ────────────
+   *
+   * **It is a mount point, not a decoration.** Nothing in `ui/drawer` paints
+   * here. What it exists for is a caller that needs to put something *beside*
+   * the card and cannot put it inside — today that is `features/chat`'s
+   * exchange rail, which was in the transcript's own gutter and is now here.
+   * The element is handed to descendants through `DrawerSeamContext` in
+   * public.tsx and they portal into it; an unused seam is an empty box that
+   * paints nothing and takes no events.
+   *
+   * **Why a sibling and not a child.** `.drawer` is `overflow: hidden` — the
+   * clip that gives the card its rounded corners something to cut against —
+   * so anything parented to it that reaches past its edge is simply gone.
+   * There is no `overflow` value that clips the corners and lets a child out,
+   * and none of the alternatives (a second clipping context, `overflow:
+   * clip` with a positive `overflow-clip-margin`) survives contact with a
+   * radius. So the seam is the card's sibling, which also makes the shared
+   * containing block automatic rather than asserted: whatever positioned
+   * ancestor `.drawer` resolves against, this resolves against the same one,
+   * because they have the same parent.
+   *
+   * **The geometry is the card's own, read off the same declarations.** The
+   * card sits at `inset-inline-end: var(--space-10)` and is at most
+   * `calc(100% - var(--space-10) * 2)` wide, so the trailing `--space-10` of
+   * the region is page at *every* viewport width — there is no window in which
+   * this strip closes up. The seam takes exactly that strip
+   * (`inset-inline-end: 0`, `inline-size: var(--space-10)`) and exactly the
+   * card's block range, so anything mounted here is vertically bounded by the
+   * card whether or not it can see it.
+   *
+   * **It is after the card in source order, and that is two decisions.** It
+   * puts the seam above the card at the same `z-index`, which is what lets a
+   * mounted layer float *over* the card (the rail's prompt preview does);
+   * and it puts whatever the seam holds after the card in the tab ring, so
+   * the first Tab off the drawer container still lands on Close. The cost,
+   * stated: a rail mounted here is the *last* stop in the drawer rather than
+   * the second, so a reader tabbing to the composer now passes it. That is
+   * one stop, because the rail rovies (`features/chat/thread`), and it is the
+   * price of the card keeping the first stop it has always had.
+   *
+   * **Transparent by default, operable by exception.** The strip lies over the
+   * page's own trailing pad, so a seam that swallowed clicks would make 24px
+   * of every route dead while a conversation is open — for a box that is empty
+   * on every route that mounts nothing. `pointer-events` is therefore off on
+   * the seam and back on for its children, which is the pair that makes an
+   * empty seam indistinguishable from no seam at all.
+   *
+   * The background stays the page's; this is the one surface in the drawer's
+   * geometry that is *not* `--surface-card`, which is why anything painted here
+   * has to argue its contrast against `--bg`. `features/chat` does.
+   */
+  .seam {
+    position: absolute;
+    /* The card's own block range, repeated from `.drawer` rather than derived,
+       because a seam that is taller than the card can put ink off the end of
+       it and there is nothing else in the layout to stop that. */
+    inset-block: var(--space-9) var(--space-11);
+    inset-inline-end: 0;
+    inline-size: var(--space-10);
+    z-index: var(--z-overlay);
+    /* Same animation, same duration, same easing, same source token as the
+       card above — the two enter and leave as one object, and any change to
+       one is a change to both. */
+    animation: drawer-in var(--motion-medium) ease-out;
+    pointer-events: none;
+  }
+
+  .seam > * {
+    pointer-events: auto;
+  }
+
+  /*
    * The drawer takes focus when it opens (see the effect in public.tsx), and it
    * is `tabindex="-1"` — a landing spot, not a control.
    *
@@ -306,8 +378,21 @@
     pointer-events: none;
   }
 
+  /* The seam leaves on the card's timing, because it *is* the card as far as
+     the reader is concerned — see `.seam`. `pointer-events` is already off on
+     the seam itself; what this has to add is the children's, which `.seam > *`
+     turned back on and a box on its way out must not keep. */
+  .seamClosing {
+    animation: drawer-out var(--motion-medium) ease-in forwards;
+  }
+
+  .seamClosing > * {
+    pointer-events: none;
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .drawer {
+    .drawer,
+    .seam {
       animation: none;
     }
   }
