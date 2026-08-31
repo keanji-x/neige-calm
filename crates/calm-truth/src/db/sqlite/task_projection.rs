@@ -78,7 +78,21 @@ type FrozenDeclarationRow = (
     i64,
 );
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+/// Which declaration edge was withdrawn, in the order the rationale prefers.
+///
+/// **`Ready` outranks `ReleasedByUser`, and the variant order is that rule.**
+/// `evaluate_schedulability_with_tree_term` already picks this way for a single
+/// block — it tests `decl_ready` first and only falls to the release edge in
+/// the `else if` — because unsetting `ready` withdraws the declaration itself
+/// while unsetting `released_by_user` only withdraws the wait release, which is
+/// the narrower of the two. #1160 review ② makes the key-level fold agree:
+/// folding across several blocks used to take the *document-order first* edge,
+/// so a key declared by a `ready=false` block and a `released_by_user=false`
+/// block reported a different rationale depending on which block came first —
+/// the same block-order bug this change set exists to remove. Taking the `min`
+/// makes one document produce one rationale, and makes the one-block and
+/// many-block answers the same rule instead of two.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum WithdrawalEdge {
     Ready,
@@ -189,11 +203,11 @@ fn live_declaration_blocks_by_key(declarations: &[TaskDeclaration]) -> BTreeMap<
 /// statement. This deliberately stays beside the projection query instead of
 /// introducing a live block data-source abstraction.
 ///
-/// #1160 — run state is attached only to the *single* live declaration of a
-/// key. `tasks` is keyed by `(wave_id, key)` and carries no block identity, so
-/// when a key has zero or several live declarations nothing in the data says
-/// which block owns the run; every field below then stays `None` rather than
-/// being copied onto each candidate.
+/// #1160 — run state is attached only where the declaration index gives one
+/// unambiguous owner. `tasks` is keyed by `(wave_id, key)` and carries no block
+/// identity, so when *several* live declarations claim a key nothing in the
+/// data says which block owns the run; every field below then stays `None`
+/// rather than being copied onto each candidate. See `owned` for the arms.
 fn attach_task_read_state(
     rows: &[TaskReadState],
     wave_id: &str,
@@ -206,11 +220,30 @@ fn attach_task_read_state(
         let Some(row) = by_key.get(verdict.key.as_str()) else {
             continue;
         };
-        // `[root]` and only `[root]`; every other arm is ambiguous.
-        let owned = matches!(
-            live_blocks.get(verdict.key.as_str()).map(Vec::as_slice),
-            Some([root]) if *root == verdict.block_id
-        );
+        // Only *duplication* is ambiguous. `resolve_task_closure` returns a
+        // single answer for the other two shapes too, and this mirrors them:
+        //
+        // - `[root]` — the one live declaration owns the run.
+        // - `[]` / absent — no live declaration. `RootAbsent` /
+        //   `RootTombstoned` on the dispatch side. Two verdicts can reach this
+        //   arm and they are told apart by block id, not by guessing:
+        //     * a *tombstoned* declaration carries its own block id, and must
+        //       stay bare — that is #1160 case 1;
+        //     * the `block_id: ""` verdict the loop above synthesises for a
+        //       hard-deleted block is the only carrier the still-live row has
+        //       left, and it is unique (the synthesis is guarded by "no
+        //       declaration mentions this key at all"). Refusing it would leave
+        //       a verdict this function's caller already stamped `status` on
+        //       with no worker card for its own `open_worker_output` action,
+        //       no `status_detail`, no child wave, and neither reference
+        //       diagnostic — the §6.5 withdrawal row would name a run nobody
+        //       can open.
+        // - two or more — genuinely undecidable, `DuplicateLiveKey`.
+        let owned = match live_blocks.get(verdict.key.as_str()).map(Vec::as_slice) {
+            Some([root]) => *root == verdict.block_id,
+            None | Some([]) => verdict.block_id.is_empty(),
+            Some(_) => false,
+        };
         if !owned {
             continue;
         }
@@ -1189,13 +1222,22 @@ async fn project_tasks_from_verdicts_tx(
         // block carrying it withdrew. One block that is still ready keeps the
         // key claimed — otherwise a tombstone left beside a live
         // re-declaration would read as a withdrawal of the new declaration.
-        // The edge itself is the first one in document order, so the rationale
-        // is deterministic.
+        //
+        // The edge itself is the *strongest* one, by `WithdrawalEdge`'s own
+        // ordering — not the first one in document order, which was still a
+        // block-order dependency (#1160 review ②): two withdrawing blocks with
+        // different edges sent a different rationale for `[X, Y]` than for
+        // `[Y, X]`. See `WithdrawalEdge` for why `Ready` is the stronger.
         let withdrawal_edge = (!verdict_indexes.is_empty()
             && verdict_indexes
                 .iter()
                 .all(|index| verdicts[*index].withdrawal.is_some()))
-        .then(|| verdicts[verdict_indexes[0]].withdrawal)
+        .then(|| {
+            verdict_indexes
+                .iter()
+                .filter_map(|index| verdicts[*index].withdrawal)
+                .min()
+        })
         .flatten();
         let withdrawal = withdrawal_edge.is_some();
         if !schedulable_by_key.get(key).is_some_and(|value| *value) || withdrawal {
@@ -1361,6 +1403,7 @@ async fn project_tasks_from_verdicts_tx(
 mod tests {
     use super::*;
     use calm_types::report_blocks::tasks::TaskDeclaration;
+    use calm_types::wave_report::ReportBlock;
     use serde_json::json;
 
     fn declaration(index: usize, key: &str) -> TaskDeclaration {
@@ -1798,16 +1841,27 @@ mod tests {
         .await
         .unwrap();
 
+        // Declarations *and* diagnostics from the production producer: a
+        // contested key never reaches the projection with an empty diagnostic
+        // list, it reaches it carrying `duplicate_key` on both blocks.
+        let (declarations, block_local_diags) =
+            calm_types::report_blocks::tasks::project_task_declarations(&[
+                live_task_block(0, "contested"),
+                live_task_block(1, "contested"),
+            ]);
+        assert!(
+            block_local_diags
+                .iter()
+                .flatten()
+                .any(|d| d.code == "duplicate_key"),
+            "fixture must carry the diagnostic this document shape produces"
+        );
+
         let mut conn = repo.pool.acquire().await.unwrap();
-        let verdicts = evaluate_schedulability(
-            &mut conn,
-            &wave,
-            &[declaration(0, "contested"), declaration(1, "contested")],
-            &[vec![], vec![]],
-            true,
-        )
-        .await
-        .unwrap();
+        let verdicts =
+            evaluate_schedulability(&mut conn, &wave, &declarations, &block_local_diags, true)
+                .await
+                .unwrap();
 
         assert_eq!(verdicts.len(), 2);
         for verdict in &verdicts {
@@ -1862,37 +1916,293 @@ mod tests {
         assert_eq!(verdicts[1].worker_card_id, None);
     }
 
+    /// #1160 review ① — the run of a *hard-deleted* block still has to be
+    /// readable.
+    ///
+    /// `evaluate_schedulability` synthesises a `block_id: ""` verdict for an
+    /// in-flight row no declaration carries any more, and deliberately stamps
+    /// `status` on it by hand. The first cut of the uniqueness rule then asked
+    /// `live_blocks.get(key) == Some([root])`, which a deleted block can never
+    /// satisfy, so everything `attach_task_read_state` adds — the worker card
+    /// the `open_worker_output` action needs, the failure detail, the child
+    /// wave, and both reference diagnostics — silently fell off that verdict
+    /// while `status` stayed. The key is not ambiguous here: it has *zero*
+    /// live declarations, which `resolve_task_closure` answers `RootAbsent`,
+    /// one single answer, and there is exactly one verdict to give it to.
+    #[tokio::test]
+    async fn deleted_declaration_run_state_survives_on_the_synthetic_verdict() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "deleted-block", "running").await;
+        sqlx::query(
+            "UPDATE tasks SET worker_card_id='card-deleted',status_detail='running: step 2',\
+             child_wave_id='child-of-deleted',context_closure_truncated=1,\
+             claim_context_json=?2 WHERE wave_id=?1 AND key='deleted-block'",
+        )
+        .bind(&wave)
+        .bind(
+            json!([{"wave_id": &wave, "block_id": "b_dead", "rev": 1, "hash": "h", "is_root": true},
+                   {"wave_id": &wave, "block_id": "b_ref", "rev": 1, "hash": "h", "is_root": false}])
+            .to_string(),
+        )
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let mut conn = repo.pool.acquire().await.unwrap();
+        // The document no longer declares the key at all — the block was hard
+        // deleted, and `delete_block` leaves no tombstone behind.
+        let verdicts = evaluate_schedulability(&mut conn, &wave, &[], &[], true)
+            .await
+            .unwrap();
+
+        assert_eq!(verdicts.len(), 1, "one synthetic verdict for the live row");
+        let verdict = &verdicts[0];
+        assert_eq!(verdict.block_id, "");
+        assert_eq!(verdict.status.as_deref(), Some("running"));
+        assert_eq!(
+            verdict.worker_card_id.as_deref(),
+            Some("card-deleted"),
+            "without the card id the `open_worker_output` action is a dead link"
+        );
+        assert_eq!(verdict.status_detail.as_deref(), Some("running: step 2"));
+        assert_eq!(verdict.child_wave_id.as_deref(), Some("child-of-deleted"));
+        assert_eq!(verdict.child_wave_deleted, Some(true));
+        let codes = verdict
+            .diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            codes.contains(&"reference_chain_too_large"),
+            "diagnostics were {codes:?}"
+        );
+        assert!(
+            codes.contains(&"context_stale_declaration"),
+            "diagnostics were {codes:?}"
+        );
+    }
+
+    /// #1160 review ① — the same fix must not hand a *tombstoned* block the
+    /// run through the new zero-live-declarations arm. A tombstone carries a
+    /// real block id, so `block_id: ""` is what separates the two.
+    #[tokio::test]
+    async fn tombstone_only_document_still_never_stamps_run_state() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "only-tombstone", "running").await;
+        sqlx::query(
+            "UPDATE tasks SET worker_card_id='card-only-tombstone' WHERE wave_id=?1 AND key='only-tombstone'",
+        )
+        .bind(&wave)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+
+        let mut conn = repo.pool.acquire().await.unwrap();
+        let verdicts = evaluate_schedulability(
+            &mut conn,
+            &wave,
+            &[tombstone_declaration(0, "only-tombstone")],
+            &[vec![]],
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            verdicts.len(),
+            1,
+            "the key is declared, so nothing is synthesised"
+        );
+        assert_eq!(verdicts[0].block_id, "b_0000");
+        assert_eq!(verdicts[0].status, None);
+        assert_eq!(verdicts[0].worker_card_id, None);
+    }
+
+    /// A task block as the report card actually stores it, so the declarations
+    /// *and* the block-local diagnostics below both come out of the production
+    /// producer instead of being asserted into existence. Two live blocks
+    /// sharing a key really do carry `duplicate_key`; a tombstone standing
+    /// beside a re-declaration really does carry
+    /// `tombstone_blocks_redeclaration`. A fixture that passes `&[vec![]]`
+    /// hands the projection a document shape the kernel never produces.
+    fn task_block(index: usize, payload: serde_json::Value) -> ReportBlock {
+        ReportBlock {
+            id: format!("b_{index:04x}"),
+            kind: calm_types::report_blocks::KIND_TASK.into(),
+            rev: 0,
+            payload,
+        }
+    }
+
+    fn live_task_block(index: usize, key: &str) -> ReportBlock {
+        task_block(
+            index,
+            json!({"key": key, "kind": "codex", "goal": format!("goal {key}"),
+                   "ready": true, "declared_by": "spec", "no_gate_reason": "not needed"}),
+        )
+    }
+
+    fn tombstone_task_block(index: usize, key: &str) -> ReportBlock {
+        task_block(
+            index,
+            json!({"key": key, "tombstone": {}, "tombstoned_by": "user", "declared_by": "spec"}),
+        )
+    }
+
+    /// The rationale carried by each `task.context_advanced` this projection
+    /// emitted, which is the only field the folds under test decide.
+    fn context_advanced_rationales(outcome: &TaskProjectionOutcome) -> Vec<String> {
+        outcome
+            .kernel_events
+            .iter()
+            .map(|(_, _, event)| match event {
+                Event::TaskContextAdvanced {
+                    rationale, verdict, ..
+                } => {
+                    assert_eq!(verdict, "material");
+                    rationale.clone()
+                }
+                other => panic!("unexpected kernel event {other:?}"),
+            })
+            .collect()
+    }
+
+    async fn project_blocks(
+        repo: &super::super::SqlxRepo,
+        wave: &str,
+        blocks: &[ReportBlock],
+    ) -> TaskProjectionOutcome {
+        let (declarations, block_local_diags) =
+            calm_types::report_blocks::tasks::project_task_declarations(blocks);
+        let mut tx = repo.pool.begin().await.unwrap();
+        let outcome = project_tasks_tx(&mut tx, wave, &declarations, &block_local_diags)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        outcome
+    }
+
     /// #1160 — `declaration_by_key` used to be a last-wins `BTreeMap`, so the
     /// same document content produced different kernel events depending on
     /// whether the tombstone block sat before or after the live one.
+    ///
+    /// **This is the negative half of a pair.** On its own an equality between
+    /// two orders proves nothing — any constant predicate satisfies it — so it
+    /// asserts the *value*: a key that still has a live declaration is not
+    /// removed, therefore zero events, in both orders.
+    /// `tombstone_only_document_advances_the_in_flight_context` is the positive
+    /// half, and the two together pin the predicate rather than its symmetry.
     #[tokio::test]
-    async fn tombstone_block_order_does_not_change_kernel_events() {
-        async fn events_for(order: [TaskDeclaration; 2]) -> Vec<String> {
+    async fn tombstone_beside_live_redeclaration_emits_no_kernel_event_in_either_order() {
+        async fn rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
             let (repo, wave) = setup().await;
             insert_block_task(&repo, &wave, "reordered", "running").await;
-            let mut tx = repo.pool.begin().await.unwrap();
-            let outcome = project_tasks_tx(&mut tx, &wave, &order, &[vec![], vec![]])
-                .await
-                .unwrap();
-            tx.commit().await.unwrap();
-            outcome
-                .kernel_events
-                .iter()
-                .map(|event| format!("{event:?}"))
-                .collect()
+            let outcome = project_blocks(&repo, &wave, &blocks).await;
+            context_advanced_rationales(&outcome)
         }
 
-        // The live re-declaration differs from the in-flight row, so it is not
-        // schedulable and the existing-row branch runs in both orders.
-        let mut live = declaration(0, "reordered");
-        live.goal = "goal reordered v2".into();
-        let tombstone = tombstone_declaration(1, "reordered");
-
-        let tombstone_first = events_for([tombstone.clone(), live.clone()]).await;
-        let live_first = events_for([live, tombstone]).await;
-        assert_eq!(
-            tombstone_first, live_first,
-            "block order must not change the kernel events of one document"
+        let live = live_task_block(0, "reordered");
+        let tombstone = tombstone_task_block(1, "reordered");
+        // The document really is diagnosed — the projection is fed the shape
+        // the kernel produces for it, not an empty diagnostic list.
+        let (_, diags) = calm_types::report_blocks::tasks::project_task_declarations(&[
+            live.clone(),
+            tombstone.clone(),
+        ]);
+        assert!(
+            diags
+                .iter()
+                .flatten()
+                .any(|d| d.code == "tombstone_blocks_redeclaration"),
+            "fixture must carry the diagnostic this document shape produces"
         );
+
+        let tombstone_first = rationales_for([tombstone.clone(), live.clone()]).await;
+        let live_first = rationales_for([live, tombstone]).await;
+        assert_eq!(
+            tombstone_first,
+            Vec::<String>::new(),
+            "a live re-declaration means the key was not removed"
+        );
+        assert_eq!(
+            live_first,
+            Vec::<String>::new(),
+            "a live re-declaration means the key was not removed"
+        );
+    }
+
+    /// #1160 — the positive half. Every live declaration of the key is gone,
+    /// so the in-flight row's frozen context is material and the kernel must
+    /// say so.
+    #[tokio::test]
+    async fn tombstone_only_document_advances_the_in_flight_context() {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "reordered", "running").await;
+        let outcome = project_blocks(&repo, &wave, &[tombstone_task_block(0, "reordered")]).await;
+        assert_eq!(
+            context_advanced_rationales(&outcome),
+            ["task declaration block was removed"]
+        );
+        let stale: Option<i64> =
+            sqlx::query_scalar("SELECT context_stale_at_ms FROM tasks WHERE id=?1")
+                .bind(format!("{wave}:reordered"))
+                .fetch_one(&repo.pool)
+                .await
+                .unwrap();
+        assert!(stale.is_some(), "the row itself carries the verdict");
+    }
+
+    /// #1160 review ② — the withdrawal rationale used to be `verdict_indexes[0]`,
+    /// i.e. the first block in document order, so two blocks withdrawing
+    /// *different* edges sent a different rationale for `[X, Y]` than for
+    /// `[Y, X]` — the same block-order bug this change set removes elsewhere.
+    #[tokio::test]
+    async fn withdrawal_rationale_is_edge_ordered_not_block_ordered() {
+        async fn rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
+            let (repo, wave) = setup().await;
+            insert_block_task(&repo, &wave, "contended", "running").await;
+            // The row was established by a declaration that carried *both*
+            // edges; withdrawing either one is what the fold has to name.
+            sqlx::query(
+                "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE wave_id=?1 AND key='contended'",
+            )
+            .bind(&wave)
+            .execute(&repo.pool)
+            .await
+            .unwrap();
+            // The release edge only exists under this policy.
+            sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
+                .bind(&wave)
+                .execute(&repo.pool)
+                .await
+                .unwrap();
+            let outcome = project_blocks(&repo, &wave, &blocks).await;
+            context_advanced_rationales(&outcome)
+        }
+
+        // X dropped `ready` → `WithdrawalEdge::Ready`.
+        let x = task_block(
+            0,
+            json!({"key": "contended", "kind": "codex", "goal": "goal contended",
+                   "ready": false, "released_by_user": true, "declared_by": "spec",
+                   "no_gate_reason": "not needed"}),
+        );
+        // Y kept `ready` but dropped the user release → `ReleasedByUser`.
+        let y = task_block(
+            1,
+            json!({"key": "contended", "kind": "codex", "goal": "goal contended",
+                   "ready": true, "released_by_user": false, "declared_by": "spec",
+                   "no_gate_reason": "not needed"}),
+        );
+        let (_, diags) =
+            calm_types::report_blocks::tasks::project_task_declarations(&[x.clone(), y.clone()]);
+        assert!(
+            diags.iter().flatten().any(|d| d.code == "duplicate_key"),
+            "two live blocks on one key really do carry duplicate_key"
+        );
+
+        let expected = ["task declaration ready was withdrawn".to_string()];
+        assert_eq!(rationales_for([x.clone(), y.clone()]).await, expected);
+        assert_eq!(rationales_for([y, x]).await, expected);
     }
 }

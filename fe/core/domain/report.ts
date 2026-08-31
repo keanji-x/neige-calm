@@ -547,11 +547,11 @@ function eventlessWindowTaskStatuses(): ReadonlySet<string> {
  * "Costs nothing outside that window" is a claim about a timer whose only
  * purpose is to make something on screen converge, so the thing it asks about
  * must be something on screen. A verdict is not: the kernel synthesises one for
- * a *deleted* declaration (`blockId: ''`, matching no block in this report, and
- * no row is built for it), and `deriveReportTasks` refuses to decorate a key
- * two live blocks claim, so an in-flight status on either would have kept the
- * 3 s refetch running against a panel that will never show a difference. Rows
- * are what the reader is waiting on, so rows are what the timer waits for.
+ * a *deleted* declaration whose row is still in flight (`blockId: ''`, matching
+ * no block in this report, and no row is built for it), so an in-flight status
+ * on it would have kept the 3 s refetch running against a panel that will never
+ * show a difference. Rows are what the reader is waiting on, so rows are what
+ * the timer waits for.
  */
 export function hasLiveTaskRun(rows: readonly ReportTaskRow[] | undefined): boolean {
   if (rows === undefined) return false;
@@ -730,11 +730,19 @@ function declarationWord(state: ReportTaskState): string | null {
  * state between an edit and its refetch), and for a verdict the kernel
  * synthesised for a *deleted* declaration, which carries `blockId: ''`.
  *
- * **Both must agree when both are present.** The kernel stamps run state onto
- * verdicts by key alone (`attach_task_read_state` builds a `BTreeMap<key,
- * row>`), and it emits a verdict for a tombstoned declaration as well as for a
- * live one, so `taskDiagnostics` can legitimately contain two verdicts naming
- * the same key with different block ids, both carrying the same live run. A
+ * **Both must agree when both are present.** The kernel no longer stamps run
+ * state by key alone — since #1160 `attach_task_read_state` attaches it to the
+ * *one* block the declarations name as the key's owner, and abstains
+ * (`status: null`) when several live blocks claim the key. What survives is
+ * the reason the rule was needed in the first place: **one key still yields
+ * several verdicts.** The projection emits one per declaration, so a tombstone
+ * and its live re-declaration both arrive carrying the same key, and only one
+ * of them carries the run. On top of that, the two halves of this join are two
+ * different reads of two different snapshots — the blocks come with the wave
+ * detail, the verdicts from `['wave-report', waveId]` — and `block_id` is not
+ * a durable identity: it is minted by FNV-1a with linear probing and
+ * re-inherited heuristically on a rewrite (`report_blocks/align.rs`), so a
+ * hard-deleted block's id can be re-issued to a different declaration. A
  * block-id hit whose key contradicts the block's own declared key is therefore
  * not evidence about this row, and the key index is used *only* for a verdict
  * whose block id matches no block at all.
@@ -795,6 +803,15 @@ function verdictFor(
  * *single* live declaration of a key, so a contested key arrives as
  * `status: null` on the wire and there is nothing left for this module to
  * second-guess (#1160).
+ *
+ * The pre-pass read the *blocks*, which are a different snapshot from the
+ * verdicts, so dropping it does widen one window: a cached run can outlive the
+ * moment a second live block appeared on its key. That is staleness of a
+ * block-id-joined fact about the very row that shows it, never a run borrowed
+ * from a neighbour — see `report.test.ts`'s "keeps a run on the block the
+ * kernel gave it to when the verdicts lag the blocks" for the sequence and for
+ * why re-deriving contention here would only re-introduce a second authority
+ * on ownership.
  */
 function taskRowState(block: ReportBlock): ReportTaskState {
   if (block.kind !== 'task') return 'unreadable';

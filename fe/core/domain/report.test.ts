@@ -683,6 +683,46 @@ describe('deriveReportTasks', () => {
     ]);
   });
 
+  /*
+   * **The skew this build accepts, stated so it cannot rot into a surprise.**
+   *
+   * The two halves of the join are two cached queries — the blocks ride the
+   * wave detail (`['wave', waveId]`), the verdicts have their own key
+   * (`['wave-report', waveId]`) — so one can land a refresh the other missed.
+   * The reviewable worry: a lone block's run is cached, a second live block
+   * appears on the same key, the *blocks* refresh but the verdict refetch
+   * fails, and the row keeps a run the kernel would now abstain from. React
+   * Query keeps the last good data across a failed refetch, and a terminal
+   * status is outside `eventlessWindowTaskStatuses`, so nothing here restarts
+   * the poll on its own.
+   *
+   * **It is a skew, not a misattribution, and that is the whole reason the
+   * removed `contestedLiveKeys` pre-pass is not worth restoring.** The join is
+   * by block id, so a row can only ever display the run the kernel attached to
+   * *that block*, at the moment it said so. It cannot acquire a neighbour's
+   * run: the second block finds no verdict of its own, and `rowBlockIds` keeps
+   * the first block's verdict out of the key index precisely so the fallback
+   * cannot reach it. The stale row is a fact that was true of itself one
+   * snapshot ago — the same staleness every cached read in this app carries —
+   * and it converges on the next `wave.report_edited` or `task.*` event, on
+   * window focus, and on remount. Re-deriving contention from the blocks would
+   * buy a few seconds of that convergence back at the price of a second
+   * authority on ownership, which is the thing #1160 removed.
+   */
+  it('keeps a run on the block the kernel gave it to when the verdicts lag the blocks', () => {
+    expect(tasksOf(
+      // The document already has two live blocks on `alpha` …
+      [task('b-one', live('alpha', true)), task('b-two', live('alpha', true))],
+      // … but the cached verdicts are from before `b-two` existed.
+      [verdict({ blockId: 'b-one', key: 'alpha', status: 'done', workerCardId: 'card-1' })],
+    ).map((row) => [row.blockId, row.status, row.workerCardId])).toEqual([
+      ['b-one', 'done', 'card-1'],
+      // Never decorated by its neighbour's verdict, which is the failure that
+      // would actually mislead.
+      ['b-two', null, null],
+    ]);
+  });
+
   /* And it is scoped to the contested key: the honest row beside it still
      reports its own run. The kernel scopes the refusal per key, and this build
      must not widen it — a rule that quieted the whole panel because one key was
