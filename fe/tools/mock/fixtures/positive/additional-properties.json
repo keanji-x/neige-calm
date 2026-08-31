@@ -1,8 +1,0 @@
-{
-  "openapi": "3.1.0",
-  "paths": {
-    "/api/maps": {
-      "get": { "responses": { "204": { "description": "empty" }, "200": { "content": { "application/json": { "schema": { "type": "object", "additionalProperties": { "type": "integer" } } }, "text/plain": { "schema": { "type": "object", "additionalProperties": false } } } } } }
-    }
-  }
-}

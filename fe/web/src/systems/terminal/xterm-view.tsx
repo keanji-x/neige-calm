@@ -529,9 +529,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
     // of the natural Tab order; users still engage the terminal by
     // clicking (xterm.js's mousedown handler focuses it), and once
     // focused all keys (including Tab → tab-completion) still flow to
-    // the PTY. The a11y contract (`docs/a11y-contract.md` §2.4) already
-    // documents "xterm.js owns keys once the body is interacted with" —
-    // this just makes the "interacted with" gate explicit.
+    // the PTY.
     const helperTextarea = container.querySelector<HTMLTextAreaElement>(
       '.xterm-container textarea.xterm-helper-textarea',
     );
@@ -1141,9 +1139,7 @@ export const XtermView = forwardRef<XtermViewHandle, XtermViewProps>(function Xt
        *  flag the next palette index that happens to be brighter); the
        *  semantically-correct path is to scope axe (and AT) to the real
        *  text content, which lives outside the canvas render. The a11y
-       *  contract (`docs/a11y-contract.md` §2.4) already documents
-       *  "xterm.js owns keys once the body is interacted with" — this
-       *  just makes the AT side of that contract explicit. */}
+       *  input surface. */}
       <div
         ref={containerRef}
         className="xterm-container"

@@ -954,12 +954,6 @@
     "expiry": "2026-12-31"
   },
   {
-    "id": "INV-CARD-017",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "INV-CARD-018",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -1146,12 +1140,6 @@
     "expiry": "2026-11-30"
   },
   {
-    "id": "INV-EDITOR-002",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
     "id": "INV-ISSUEURL-004",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -1240,18 +1228,6 @@
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-12-31"
-  },
-  {
-    "id": "INV-UI-CONFIRM-064",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
-    "id": "INV-UI-CONFIRM-065",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
   },
   {
     "id": "INV-UI-CONFIRM-070",

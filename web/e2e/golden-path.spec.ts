@@ -21,7 +21,6 @@ test('loads the calm shell, bootstraps Today, then navigates into a new cove', a
   // Scope by the sidebar's top <nav aria-label="Sidebar navigation"> so a
   // seed/test that produces a "Waiting on you" wave titled "Today" doesn't
   // collide with this button on accessible name. See Sidebar.tsx +
-  // docs/a11y-contract.md §2.2.
   await expect(
     page
       .getByRole('navigation', { name: 'Sidebar navigation' })

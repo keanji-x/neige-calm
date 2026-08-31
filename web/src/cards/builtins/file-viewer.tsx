@@ -566,21 +566,8 @@ function LoadedFileContent({
 }) {
   const isMd = isMarkdownPath(path);
   const [mode, setMode] = useState<MarkdownMode>('preview');
-  // Mode is a local useState — it survives Preview/Source toggling within
-  // the same loaded file, but resets to 'preview' when the file changes,
-  // because CodeTab returns a "Loading file…" placeholder between files
-  // (unmounting LoadedFileContent). That per-file reset is what we want:
-  // opening a new .md file should start on Preview by default.
-  //
-  // Non-markdown files force `effectiveMode` to 'source' so the pane still
-  // renders through CodeMirror even if we ever mount LoadedFileContent
-  // with a stale 'preview' mode.
   const effectiveMode: MarkdownMode = isMd ? mode : 'source';
 
-  // Search state — see docs/superpowers/specs/2026-07-06-file-viewer-search-and-prose-design.md.
-  // Kept local: search never persists across file swaps, tab changes, or
-  // remounts. The active pane's adapter is registered via a callback prop
-  // and stored in a ref so callbacks stay stable.
   const [barOpen, setBarOpen] = useState(false);
   const [matchCurrent, setMatchCurrent] = useState(0);
   const [matchTotal, setMatchTotal] = useState(0);

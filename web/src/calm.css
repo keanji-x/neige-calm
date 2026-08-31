@@ -585,7 +585,7 @@ select:-webkit-autofill {
   outline-offset: -2px;
 }
 /* Sub-landmark wrappers (<nav>, <section>) inside the sidebar. They
-   exist for a11y scoping (see Sidebar.tsx + a11y-contract.md §2.2);
+   exist for accessible landmark scoping;
    visually they're invisible — children should sit in the same flex
    column as the outer .side, with the same gap. Matching the parent's
    flex axis here is cheaper than `display: contents` and keeps Safari
@@ -4040,7 +4040,7 @@ button.report-rail-head:hover {
   background: var(--paper);
   color: var(--text);
 }
-/* Focus-visible per a11y-contract §6. Mirrors .login-input's pattern
+/* Mirrors .login-input's focus-visible pattern
    (calm.css:2356-2359): soft tinted ring + border-color promotion so the
    input visibly "lights up" on keyboard focus without stripping the
    default outline elsewhere. */

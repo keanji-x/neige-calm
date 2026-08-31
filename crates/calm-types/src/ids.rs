@@ -1,40 +1,7 @@
-//! Typed identifier newtypes — `CoveId` / `WaveId` / `CardId` — plus the
-//! `ActorId` semantic enum.
+//! Typed opaque identifiers and event-producer identity.
 //!
-//! ## Why typed ids
-//!
-//! Pre-#136 the kernel passed bare `String`s everywhere. That made it
-//! mechanically impossible to tell a wave id from a card id at the type
-//! level, and every new write-path layer had to re-document the implicit
-//! contract. The typed newtypes here are the foundation for the
-//! "Wave-as-Actor" chain (#136): later PRs introduce `EventScope`,
-//! `ActorId::AiSpec(CardId)`, the dispatcher, and the role gate — all of
-//! which need the compiler to enforce "this is a card id, not a wave id".
-//!
-//! ## Wire/storage compatibility
-//!
-//! Each newtype derives `#[serde(transparent)]`, which guarantees the JSON
-//! wire shape stays a bare string (`"abc123"`, not `{"0":"abc123"}`).
-//! ts-rs picks them up via `#[ts(export)]` and emits the equivalent of
-//! `export type CoveId = string;` so the frontend's generated TS keeps
-//! working unchanged.
-//!
-//! ## #679 PR1 note — no sqlx here
-//!
-//! These types used to also derive `#[sqlx(transparent)]` while they lived
-//! in calm-server. calm-types is sqlx-free by design (compile firewall), so
-//! DB binds use `.as_str()` and row decodes go through calm-server's
-//! `db::rows` wrappers (`#[sqlx(try_from = "String")]` + the blanket
-//! `TryFrom<String>` each newtype gets via its `From<String>` impl). The
-//! stored TEXT shape is unchanged.
-//!
-//! ## #679 PR1 note — `ActorId` is frozen
-//!
-//! `ActorId` is card-shaped (`AiSpec(CardId)` / `AiCodex(CardId)` /
-//! `AiClaude(CardId)`) and lives in the persisted event log. Evolving it to
-//! session identity is issue #679 hard-problem 1, owned by #770 (HP1). PR1
-//! moves the definition verbatim — the TS-bindings byte gate pins the shape.
-//!
+//! Identifier newtypes serialize transparently as strings. `ActorId` is a
+//! persisted event-log shape and must remain wire compatible.
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use utoipa::ToSchema;
@@ -61,12 +28,6 @@ pub struct WaveId(pub String);
 pub struct CardId(pub String);
 
 /// Semantic identity of an event producer.
-///
-/// Declared in PR1 for downstream use (`EventScope` in PR2,
-/// `enforce_role` in PR3). **Has zero call sites in PR1** — the existing
-/// `crate::actor::Actor(pub String)` plumbing carries the declared
-/// `X-Calm-Actor` value through the request stack and remains the
-/// audit-log truth until PR3 swaps it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
 #[serde(tag = "kind", content = "id")]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
@@ -109,18 +70,9 @@ impl std::fmt::Display for ActorId {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Boilerplate conversions for each newtype. We generate the From / Display /
-// AsRef impls via a tiny macro so adding a future id (e.g. PluginId in some
-// later wave) is one `newtype_id_impls!(PluginId);` line.
-// ---------------------------------------------------------------------------
-
 macro_rules! newtype_id_impls {
     ($Ty:ident) => {
         impl $Ty {
-            /// Borrow the underlying string slice. Convenience over the
-            /// `AsRef<str>` impl for sites that already type the variable
-            /// as the newtype.
             pub fn as_str(&self) -> &str {
                 &self.0
             }

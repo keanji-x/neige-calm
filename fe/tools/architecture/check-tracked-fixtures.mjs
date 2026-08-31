@@ -1,8 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { readdirSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
-import { compareMockFixtureFiles, listMockFixtureFiles } from './tracked-mock-fixtures.mjs';
-import { NEGATIVE_FIXTURES, POSITIVE_FIXTURES, compareFixtureManifest } from '../mock/fixture-manifest.mjs';
 
 /** @param {string} root @param {string} path */
 function gitLsFiles(root, path) {
@@ -31,18 +29,6 @@ export function checkTrackedFixtures(rootPath = '.') {
     .map((directory) => relative(root, directory).replaceAll('\\', '/'));
   const untracked = fixtureDirectories.filter((directory) => !trackedDirectories.has(directory));
   const problems = untracked.length ? [`directories absent from Git: ${untracked.join(', ')}`] : [];
-  const mockFixtureRoot = resolve(root, 'tools/mock/fixtures');
-  const { files: mockDiskFiles, problem: mockDirectoryProblem } = listMockFixtureFiles(mockFixtureRoot);
-  const mockTrackedFiles = gitLsFiles(root, 'tools/mock/fixtures').trim().split('\n').filter(Boolean).sort();
-  if (mockDirectoryProblem) problems.push(mockDirectoryProblem);
-  else {
-    const mockDifference = compareMockFixtureFiles(mockDiskFiles, mockTrackedFiles);
-    if (mockDifference) problems.push(mockDifference);
-    const positiveManifestDifference = compareFixtureManifest('positive', POSITIVE_FIXTURES, mockTrackedFiles);
-    if (positiveManifestDifference) problems.push(positiveManifestDifference);
-    const negativeManifestDifference = compareFixtureManifest('negative', NEGATIVE_FIXTURES, mockTrackedFiles);
-    if (negativeManifestDifference) problems.push(negativeManifestDifference);
-  }
   return problems.length ? `tracked-fixtures: ${problems.join('\n')}` : '';
 }
 

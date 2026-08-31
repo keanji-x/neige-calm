@@ -1,12 +1,4 @@
-//! WorkerSession vocabulary — issue #679 §1–§3, introduced in PR1.
-//!
-//! New types only; **no table exists yet**. The `worker_sessions` DDL lands
-//! in PR2 (calm-truth), token authority flips in PR7, the reaper in PR8.
-//! Until then these types anchor the calm-exec trait signatures and the
-//! conformance suites written against them.
-//!
-//! `WorkerSessionState` is TS-exported as the single runtime/session state
-//! vocabulary; the rest of this module stays off the wire.
+//! Worker session and authority vocabulary.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,20 +8,13 @@ use utoipa::ToSchema;
 use crate::ids::{CardId, CoveId, WaveId};
 use crate::runtime::TimestampMs;
 
-// ---------------------------------------------------------------------------
-// WorkerSessionId
-// ---------------------------------------------------------------------------
-
-/// Execution-session identifier (`worker_sessions.id`, PR2). Same opaque
-/// newtype pattern as [`crate::ids`] — `#[serde(transparent)]` keeps the
-/// wire shape a bare string.
+/// Opaque execution-session identifier.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]
 #[serde(transparent)]
 #[ts(export, export_to = "fe/core/api/generated/wire.ts")]
 pub struct WorkerSessionId(pub String);
 
 impl WorkerSessionId {
-    /// Borrow the underlying string slice.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -59,33 +44,12 @@ impl AsRef<str> for WorkerSessionId {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Principal — issue #679 §3
-// ---------------------------------------------------------------------------
-
-/// Security principal — "cards exit the security model" (issue #679 §3).
-///
-/// Principals are `User`, `Kernel`, `Agent(session)` — full stop. An
-/// `Agent`'s grants are derived at gate time from its session row: the
-/// **contract** ([`WorkerContract`]) gives the I/O grants, and **root-ness**
-/// (`session_id == wave.root_session_id`, PR7) gives the recorder grant.
-/// Nothing is encoded in the token beyond session identity.
-///
-/// PR1 declares the type; the Principal gate (in-tx root check, token →
-/// session handshake) is PR7. The persisted-event `ActorId` is deliberately
-/// untouched (hard-problem 1, owned by #770).
+/// Security principal. Agent grants are derived from the session row at gate time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum Principal {
-    /// The human, via REST/WS. Maps to today's `ActorId::User` column.
     User,
-    /// Deterministic kernel machinery — dispatcher, reaper, scheduler.
-    /// (Today's `ActorId::Kernel` / `ActorId::KernelDispatcher` both
-    /// collapse here; the distinction was never an authority boundary.)
     Kernel,
-    /// An agent session. Carries the wave/cove snapshot resolved from the
-    /// session row at handshake time so the gate can scope-check without a
-    /// per-write card lookup (kills `CardRoleCache` in PR7).
     Agent {
         session_id: WorkerSessionId,
         wave_id: WaveId,
@@ -93,18 +57,7 @@ pub enum Principal {
     },
 }
 
-// ---------------------------------------------------------------------------
-// WorkerContract — issue #679 axiom 4
-// ---------------------------------------------------------------------------
-
-/// Contract = the I/O shape of a worker (issue #679 axiom 4: "worker =
-/// session × contract × grants"). Open set, extended by migration —
-/// `worker_sessions.contract` is `TEXT CHECK (contract IN ('planner',
-/// 'executor','validator'))` in the PR2 DDL.
-///
-/// Root-ness (the recorder grant) is deliberately **not** a contract: it is
-/// derived from `wave.root_session_id` (axiom 5 — the privilege attaches to
-/// recording, not planning).
+/// The I/O shape of a worker. Root authority is derived separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WorkerContract {
@@ -112,12 +65,11 @@ pub enum WorkerContract {
     Planner,
     /// Goal in, result out (`task.completed` / `task.failed`).
     Executor,
-    /// Artifacts + acceptance criteria in, verdict out (closes #644's gate).
+    /// Artifacts and acceptance criteria in, verdict out.
     Validator,
 }
 
 impl WorkerContract {
-    /// The lowercase string the PR2 `worker_sessions.contract` CHECK pins.
     pub fn as_db_str(self) -> &'static str {
         match self {
             WorkerContract::Planner => "planner",
@@ -140,14 +92,7 @@ impl TryFrom<String> for WorkerContract {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SessionMode / Liveness / ExitEvidence / ExitInterpretation — issue #679 §2
-// ---------------------------------------------------------------------------
-
-/// Whether a dead session's thread can be picked back up (issue #679 §2).
-/// Terminal/claude one-shot processes are `Ephemeral`; codex threads are
-/// `Resumable` (the `WorkerProvider::resume` default errors for ephemeral
-/// providers).
+/// Whether a dead session's thread can be resumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SessionMode {
@@ -156,7 +101,6 @@ pub enum SessionMode {
 }
 
 impl SessionMode {
-    /// The lowercase string the PR2 `worker_sessions.mode` CHECK pins.
     pub fn as_db_str(self) -> &'static str {
         match self {
             SessionMode::Ephemeral => "ephemeral",
@@ -177,12 +121,7 @@ impl TryFrom<String> for SessionMode {
     }
 }
 
-/// Result of a `WorkerProvider::probe_liveness` call (issue #679 §2).
-///
-/// This is the **observation**, not the persisted state: the reaper's
-/// three-phase loop gathers this unlocked, runs `interpret_exit` unlocked,
-/// then CAS-commits a state transition (T2: liveness probes update state
-/// without emitting events).
+/// An unlocked liveness observation, not persisted session state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Liveness {
@@ -199,24 +138,12 @@ pub enum Liveness {
     Unknown { since_ms: TimestampMs },
 }
 
-/// The codex worker death-arbiter's verdict (#741 §1.1 / §1.3).
-///
-/// Produced by `WorkerProvider::confirm_durable_death` from the §1.1 truth
-/// table: `Dead` is the only verdict that authorizes a reap (S1 daemon-down
-/// or S2 positive `thread/read` proof of no live turn); `Alive` and
-/// `Unknown` both mean **no reap**. Non-codex providers never reach the
-/// arbiter — the trait default returns `Unknown`.
+/// Only `Dead` authorizes a reap; `Alive` and `Unknown` are conservative no-reap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeathVerdict {
-    /// Positively confirmed dead — S1 (daemon down) or S2 (live pull shows
-    /// no running turn and the last turn never finished). Authorizes reap.
     Dead,
-    /// Positively confirmed alive — a turn is running or blocked on a human,
-    /// or the last turn finished/aborted cleanly. Never reap.
     Alive,
-    /// Could not rule out a live turn (within rebuild grace, RPC unreachable,
-    /// or no positive death signal). Conservative no-reap; retry next sweep.
     Unknown,
 }
 

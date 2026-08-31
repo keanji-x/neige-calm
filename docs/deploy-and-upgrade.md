@@ -1,13 +1,7 @@
 # Deploy & Upgrade Guide
 
 Operator-facing recipe for installing `neige-app` and driving upgrades
-through the `/upgrade/apply` admin endpoint. The design rationale lives in
-[`upgrade-pipeline.md`](upgrade-pipeline.md); this doc is the "how do I
-actually run it" reference.
-
-The full v2 upgrade pipeline was delivered by #396 (PR1 #397, PR2 #398),
-#399 (#403), and #404 (#405). If you're on `main` at or after `14c70f3`,
-the recipes below work as written.
+through the `/upgrade/apply` admin endpoint.
 
 ## 1. Layout
 

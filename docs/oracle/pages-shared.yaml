@@ -24,7 +24,7 @@
 #   hooks/useTodayTerminal.ts ; editor/** (README/index/types) ; LoginPage.tsx
 #   （calm.css 的 report 排版/布局片段作为契约出处一并引用）
 # 不覆盖(其它 agent 负责): ui/, app/, cards/, XtermView, WaveGrid, WaveList, input/,
-#       wave-fs-viewers/, hooks/useOverlayState*, eslint-rules/, e2e/, docs/a11y-contract.md
+#       wave-fs-viewers/, hooks/useOverlayState*, eslint-rules/, e2e/
 
 # ============================================================
 # §1 report 页外壳 —— 三栏 grid / rail / 抽屉 / 活动面板
@@ -2281,7 +2281,7 @@
     wave 列表必须包在 `<section aria-label="Waves">` 地标里。
   why: >
     源码注释:"role-scoped locators (axe scans + Playwright getByRole('region', { name: 'Waves' })) can
-    disambiguate WaveRow buttons from the sidebar's 'Today' nav button. See §2.2 of docs/a11y-contract.md."
+    disambiguate WaveRow buttons from the sidebar's 'Today' nav button."
   source: web/src/pages/Cove.tsx:168-189
   authoritative_test: NONE
   owner_slice: features/cove/page
@@ -2442,7 +2442,7 @@
     源码注释(#891 review):"Dialog's initial-focus pass only runs when `open` flips true, so switching the
     workflow … would otherwise leave focus on the type radio while the new variant's first field sits
     unfocused." 依赖"refs attach before effects run"这一 React 顺序保证。
-  source: web/src/pages/Cove.tsx:454-478,554-561
+  source: web/src/pages/Cove.tsx:470-473,549-555
   authoritative_test: web/src/pages/Cove.test.tsx:530,557
   owner_slice: features/cove/page
   intentional_omission: false
@@ -3083,24 +3083,6 @@
   test_tier: jsdom
   migration: pending
 
-- id: INV-SIDEBAR-011
-  kind: invariant
-  family: sidebar
-  statement: >
-    Sidebar 内的 WaveRow 是 `<div role="group">` 里的三个兄弟按钮,DOM 顺序必须是 pin → 标题 → delete;
-    pin/delete 的点击都要 stopPropagation。
-  why: >
-    "Pin button is on the left of the row (DOM order: pin → title → delete)" 是显式锁定的;
-    源码注释说明拆成兄弟是"to avoid nested-button a11y violations"。
-  source: web/src/shared/components/Sidebar.tsx:608-681
-  authoritative_test: web/src/shared/components/Sidebar.test.tsx:120
-  owner_slice: app/shell/sidebar
-  intentional_omission: false
-  runtime_layer: app
-  verification_owner: unit
-  test_tier: jsdom
-  migration: pending
-
 - id: INV-SIDEBAR-012
   kind: invariant
   family: sidebar
@@ -3146,7 +3128,7 @@
   why: >
     源码注释:"Both landmarks have unique accessible names so the `landmark-unique` axe rule stays green" +
     "Scoping role queries by these landmarks disambiguates buttons that share an accessible name across
-    sections — e.g. a wave titled 'Today' vs. the Today nav button. See docs/a11y-contract.md §2.2."
+    sections — e.g. a wave titled 'Today' vs. the Today nav button."
   source: web/src/shared/components/Sidebar.tsx:224-239,253-260,275,299,322,401-407
   authoritative_test: web/src/shared/components/Sidebar.pin.test.tsx:118
   owner_slice: app/shell/sidebar
@@ -4562,7 +4544,7 @@
   why: >
     前三处共享 neige:// 深链与非法 fragment 降级语义;会话气泡里的 neige 链接目前是普通 <a>(整页跳转)。
     **新架构应收敛成一个 markdown 渲染原语,并明确会话气泡是否加入深链语义。**
-    【架构裁决 · _fe-architecture.md §4.8/§4.9】本条原文要求「收敛成一个 markdown 渲染原语」，
+    本条要求「收敛成一个 markdown 渲染原语」，
     该表述已被推翻：`core` 禁 JSX，跨端共享 JSX 无真实用例（四处配置行为已发散，
     `ReportLink` 天然端相关只能注入）。修正后的收敛目标是——
     **共享 parse / normalize / sanitize-ast-policy 为单一内核（core/markdown）；
@@ -4744,60 +4726,3 @@
   test_tier: none
   migration: skipped
   skip_reason: isCompletedMessageItem 的 _itemType 参数从未被使用；新签名不保留该参数
-
-- id: INV-EDITOR-001
-  kind: invariant
-  family: editor-scaffold
-  statement: >
-    AI-first 编辑器(#330)采用 **folder-level split**:`web/src/editor/` 留在既有 web 包里,
-    刻意不升级为独立 npm workspace,直到其表面积大到值得那份构建/工具链开销。
-  why: >
-    README 原话:"This is a *folder-level* split inside the existing `web` package, not a separate npm
-    workspace — promotion to a workspace is deferred until the editor's surface area justifies the
-    build/tooling overhead." 这是对新架构有指导意义的拆分先例。
-  source: web/src/editor/README.md:19-21
-  authoritative_test: NONE
-  owner_slice: systems/editor
-  intentional_omission: true
-  runtime_layer: systems
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-- id: INV-EDITOR-002
-  kind: invariant
-  family: editor-scaffold
-  statement: >
-    编辑器的 TS/Rust 边界:`web/src/editor/` 拥有 Plate、op dispatcher、MCP client glue、block-id
-    middleware、WaveReportEditor 组件;`crates/calm-editor` 拥有 schema、校验、MCP tool server 表面,
-    以及 ts-rs 生成的类型绑定。两侧的 wire 契约就是那些生成的 TS 类型。
-  why: >
-    README "Boundary" 一节逐条写明;`editor/types/EditorDoc.ts` 头部的 ts-rs "Do not edit manually" 标记
-    是这条边界的机器证据。
-  source: web/src/editor/README.md:10-17 + web/src/editor/types/EditorDoc.ts:1-8
-  authoritative_test: NONE
-  owner_slice: systems/editor
-  intentional_omission: false
-  runtime_layer: systems
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-- id: INV-EDITOR-003
-  kind: invariant
-  family: editor-scaffold
-  statement: >
-    `web/src/editor/index.ts` 目前是空导出(`export {}`),`EditorDoc` 是 `{ value: unknown }` 占位 —— 
-    这是"脚手架 only"的有意状态,不是未完成的遗漏。
-  why: >
-    index.ts 注释:"Intentionally empty at scaffold time — Plate setup, the op dispatcher … all land in
-    Spike Day 1-3";EditorDoc 注释:"Kept as `serde_json::Value` for v0 so the wire format is open-ended
-    while the schema stabilizes."
-  source: web/src/editor/index.ts:1-10 + web/src/editor/types/EditorDoc.ts:3-8 + web/src/editor/README.md:23-25
-  authoritative_test: NONE
-  owner_slice: systems/editor
-  intentional_omission: true
-  runtime_layer: systems
-  verification_owner: architecture
-  test_tier: none
-  migration: pending
