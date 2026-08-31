@@ -11,7 +11,7 @@
     margin-block-start: var(--space-4);
     padding-block: 0;
     border-radius: var(--radius-lg);
-    background: color-mix(in oklab, var(--paper) 64%, transparent);
+    background: color-mix(in oklab, var(--paper) 44%, transparent);
     backdrop-filter: blur(18px) saturate(1.12);
   }
 
@@ -28,6 +28,10 @@
 
   .trailing {
     justify-content: flex-end;
+  }
+
+  .trailing button {
+    color: var(--text-3) !important;
   }
 
   .title {
@@ -47,5 +51,6 @@
     block-size: var(--rail-w-collapsed) !important;
     min-block-size: var(--rail-w-collapsed) !important;
     border-radius: var(--radius-pill) !important;
+    color: var(--text-3) !important;
   }
 }
