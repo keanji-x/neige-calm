@@ -4,7 +4,9 @@ import { playwright } from '@vitest/browser-playwright';
 
 // See `tools/vitest/build-constants.ts` for why this is a setup file and not a
 // second `define` block.
-const setupFiles = ['./tools/vitest/build-constants.ts'];
+// `dom-diagnostics.ts` no-ops outside the DOM projects, so it can live in the
+// shared list — a project added later gets the #1161 failure report for free.
+const setupFiles = ['./tools/vitest/build-constants.ts', './tools/vitest/dom-diagnostics.ts'];
 
 export default defineConfig({
   test: {
