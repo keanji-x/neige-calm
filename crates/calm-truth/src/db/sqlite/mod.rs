@@ -118,7 +118,8 @@ pub use task_projection::{
     project_tasks_with_tree_term_tx, task_delete_pending_tx,
 };
 pub use wave::{
-    WaveWorkspacePlan, wave_create_tx, wave_delete_tx, wave_require_leaf_tx, wave_update_tx,
+    AttachedInheritedPath, WaveWorkspacePlan, wave_create_tx, wave_delete_tx, wave_require_leaf_tx,
+    wave_update_tx,
 };
 pub use wave_tree::{
     DEFAULT_TREE_TASK_BUDGET, MAX_TREE_TASK_BUDGET, MAX_WAVE_TREE_DEPTH, TreeShare,

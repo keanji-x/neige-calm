@@ -30,6 +30,9 @@ use serde::Serialize;
 use sqlx::{Sqlite, Transaction};
 use std::path::Path;
 use utoipa::ToSchema;
+// #1147 — one definition of the path digest, shared with the scheduler's
+// child-wave bootstrap key.
+use crate::workspace_materialize::workspace_key_digest;
 
 pub fn router() -> Router<AppState> {
     Router::new().route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
@@ -111,17 +114,6 @@ fn launchpad_workspace(workspace_root: &Path, cove_id: &str, wave_id: &str) -> W
         // would break monotonicity on re-adoption.
         frozen_at: None,
     }
-}
-
-/// Short, stable digest of a workspace path for use inside an idempotency key
-/// (red-team B1). Truncated because the key is a human-readable diagnostic
-/// string; collisions here would only merge two operations that already share
-/// a spec card and a start mode, and 64 bits is far past that bar.
-fn workspace_key_digest(path: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(path.as_bytes());
-    hex::encode(hasher.finalize())[..16].to_string()
 }
 
 fn spec_payload() -> serde_json::Value {

@@ -225,6 +225,23 @@
      * 320 at a 12px pitch is about 26 exchanges shown at once, which is past
      * the length of nearly every conversation this drawer holds; longer ones
      * scroll inside the track, which they already did before the cap existed.
+     *
+     * **On a phone that headroom is half of what it looks like, and this is the
+     * only place it is written down.** Measured at rest, against this same
+     * 320px, in each branch's own rendering context:
+     *
+     *   fine     21 exchanges → 320px, fits · 22 → 328px, overflows
+     *   coarse   11 exchanges → 308px, fits · 12 → 336px, overflows
+     *
+     * The fine figure is not 320 ÷ 12 because the shoulders take 64 of it, so
+     * 256px is dots. The coarse figure is 320 ÷ 28 with nothing taken off. So a
+     * reader on a phone meets the scroll-inside-a-scroll at a twelve-exchange
+     * conversation — an ordinary one — where a reader with a mouse meets it at
+     * twenty-two. Nothing is broken by that: the track is a scrollport, the
+     * overflow all goes to the end, and every dot stays reachable. But it is a
+     * real difference in how the rail feels on the two devices, and
+     * `thread.coarse.browser.test.tsx` asserts the coarse threshold so that
+     * moving the cap or the pitch has to come back and read this.
      */
     --nc-rail-max: 320px;
     --nc-rail-dot: 4px;
@@ -272,8 +289,14 @@
   /* The geometry for the pointer that cannot hover: a taller row and a resting
      dot big enough to read without the spread. It must stay **after** the base
      rule — same specificity, so source order is the whole of why it wins on a
-     coarse device, and the browser tier asserts that ordinal rather than
-     trusting it.
+     coarse device.
+
+     That is no longer asserted as an ordinal read out of the stylesheet. There
+     is a browser project whose Playwright context reports `pointer: coarse`
+     from first paint (`browser-coarse`, `vitest.config.ts`), and
+     `thread.coarse.browser.test.tsx` measures what a finger is actually laid
+     out with: a 24×28 button, a 28px pitch, 6px of resting ink and 8px on the
+     lit dot. A block moved above `.rail` comes out at 12 there.
 
      `--nc-rail-pitch-open` is deliberately *not* redeclared here. The spread is
      the fine branch's whole mechanism and the only rule that reads that number
@@ -642,6 +665,14 @@
    * asserting that every rule reading `--nc-dot-lift` sits inside a fine
    * condition.
    *
+   * **On a genuinely coarse page the component still publishes a lift for a
+   * `pointerType: 'mouse'` event, and that is known rather than overlooked.**
+   * It is inert twice over: every consumer is inside this block, and the factor
+   * the shoulders scale by — `(--nc-rail-pitch-open − --nc-rail-pitch)` — is
+   * 28 − 28 = 0 there, so there is nothing for a lift to multiply even if a
+   * rule reached it. `thread.coarse.browser.test.tsx` measures exactly that:
+   * the full envelope published, the pitch still 28 and the ink still 6.
+   *
    * **The row's height is deliberately not transitioned, and the ink's is.**
    * The lift is recomputed every frame the pointer moves, so the position is
    * already animating at frame rate; a transition on `block-size` would be a
@@ -835,7 +866,11 @@
 
   /* Said in CSS as well as in the component: there is no hover on a touch
      screen, so the only thing this layer could do there is appear under a
-     finger that has already pressed the dot it describes. */
+     finger that has already pressed the dot it describes. The component's
+     `pointerType` guard means the layer is normally never created at all on a
+     touch press; this is the backstop, and it is asserted as one — the coarse
+     tier forces the layer up through a mouse `pointerover` and reads the
+     computed `display` and a zero-height box off the rendered element. */
   @media (pointer: coarse) {
     .railPreview {
       display: none;
