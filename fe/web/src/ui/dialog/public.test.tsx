@@ -20,6 +20,20 @@ function DisabledTargetDialog() {
   );
 }
 
+/**
+ * The named target is only disabled by its ancestor `<fieldset>`, so it carries
+ * no `disabled` attribute of its own and `focusables` accepts it. `hideClose`
+ * removes the one control that would otherwise rescue the focus.
+ */
+function InheritedDisabledDialog() {
+  const target = useRef<HTMLInputElement | null>(null);
+  return (
+    <Dialog open title="Test" hideClose onClose={vi.fn()} initialFocusRef={target}>
+      <fieldset disabled><input aria-label="Task" ref={target} /></fieldset>
+    </Dialog>
+  );
+}
+
 function Capture({ onController }: { onController: (value: DialogViewController) => void }) {
   const controller = useDialogView();
   useEffect(() => { if (controller) onController(controller); }, [controller, onController]);
@@ -147,6 +161,15 @@ describe('Dialog behavior', () => {
     const panel = screen.getByRole('dialog');
     expect(panel.contains(document.activeElement)).toBe(true);
     expect(document.activeElement).not.toBe(outside);
+    outside.remove();
+  });
+
+  it('keeps focus inside the panel when the target is disabled by an ancestor', () => {
+    const outside = document.body.appendChild(document.createElement('button'));
+    outside.focus();
+    render(<InheritedDisabledDialog />);
+
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
     outside.remove();
   });
 

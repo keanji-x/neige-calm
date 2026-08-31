@@ -124,9 +124,12 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
        *    view is pushed, so `contains` keeps saying yes about content nobody
        *    can see or reach.
        *
-       * `focusables` already excludes the panel itself and filters `disabled`,
-       * `inert` and anything not visible within the panel, so it is exactly the
-       * question worth asking here.
+       * `focusables` already excludes the panel itself and filters the
+       * `disabled` *attribute*, `inert` and anything not visible within the
+       * panel, so it is close enough to the question worth asking here. It is
+       * not exact — disability inherited from a `<fieldset disabled>` is not an
+       * attribute on the control — which is why the focus below is verified
+       * afterwards rather than assumed.
        */
       const reachable = focusables(panel);
       const active = document.activeElement;
@@ -145,6 +148,17 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
        */
       const named = initialFocusRef?.current ?? null;
       (named !== null && reachable.includes(named) ? named : reachable[0] ?? panel).focus();
+      /*
+       * And then check, rather than predict.
+       *
+       * `focusables` asks `hasAttribute('disabled')`, which is an attribute
+       * test, while disability is *inherited* — a control inside a
+       * `<fieldset disabled>` passes the filter and still cannot take focus.
+       * That is one way; enumerating the rest is the losing game, and the thing
+       * that actually matters is a single fact that can just be read back: a
+       * modal must not be open with focus outside it.
+       */
+      if (!panel.contains(document.activeElement)) panel.focus();
     });
     return () => {
       cancelAnimationFrame(frame);
