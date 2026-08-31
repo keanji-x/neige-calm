@@ -1526,7 +1526,21 @@ impl Scheduler {
                 "spec-harness-start",
                 OperationKey {
                     operation_key: new_id(),
-                    idempotency_key: Some(format!("child-wave:{child_id}:bootstrap")),
+                    // #1147 S4 — the key carries a digest of the cwd, the same
+                    // rule S2 landed for the launchpad's `spec-harness-start`.
+                    // The payload includes `cwd`, and the operation runtime
+                    // refuses "same idempotency key, different payload hash"
+                    // permanently. A child whose workspace was re-pointed by
+                    // the N11 repair (from its parent's directory to its own)
+                    // would otherwise submit a new cwd under the old key on
+                    // any re-drive and fail that task forever, with no
+                    // self-healing path because operation rows are never
+                    // deleted. Distinct paths mint distinct keys; within one
+                    // path idempotency is unchanged.
+                    idempotency_key: Some(format!(
+                        "child-wave:{child_id}:bootstrap:{}",
+                        crate::workspace_materialize::workspace_key_digest(cwd)
+                    )),
                     payload_hash: stable_payload_hash(&bootstrap_payload)?,
                 },
                 bootstrap_payload,

@@ -31,7 +31,24 @@ ITEMS = {
     "mutex + canonical prefix": ["per-path 互斥", "canonicalize", "符号链接", "starts_with"],
     "idempotency key carries path": ["幂等键必须包含路径摘要", "409"],
     "repoint intent is durable": ["可持久推断", "操作表"],
-    "known gaps table": ["## 已知缺口", "N4", "N5", "N7", "N9", "N10", "N11", "数据迁移"],
+    # N11 asked for a data migration until 2026-08-31, when the "old data is
+    # not migrated" premise landed (see below) and the answer became "rebuild
+    # the database". The token tracks that ruling: the table must still say
+    # what happens to those rows, it just no longer says "migrate them".
+    "known gaps table": ["## 已知缺口", "N4", "N5", "N7", "N9", "N10", "N11", "不迁移"],
+    # 2026-08-31 premise. Both halves are load-bearing and the second is the
+    # one that gets misread: the exemption covers OLD DATA only, never
+    # within-one-run correctness (concurrency, crash-replay, idempotency).
+    "no-old-data-migration premise": [
+        "老数据不迁移",
+        # Scope, and the half that gets softened first: it covers EVERY
+        # existing database including production, i.e. deploy starts a fresh
+        # one. A "dev may be dropped, production must be migrated" split is
+        # exactly the reading this token exists to prevent.
+        "所有现存库",
+        "全新的库",
+        "同一次运行内的正确性",
+    ],
 }
 
 # #1181's step 1 read "创建一个不存在或为空的目标目录；非空目录直接失败", which

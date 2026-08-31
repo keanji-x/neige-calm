@@ -104,6 +104,23 @@ pub fn managed_workspace_path(workspace_root: &Path, cove_id: &str, wave_id: &st
     workspace_root.join(cove_id).join(wave_id)
 }
 
+/// Short, stable digest of a workspace path, for use inside an idempotency key
+/// (#1147 S2 red-team B1, extended to child-wave bootstraps in S4).
+///
+/// Both call sites submit a `spec-harness-start` payload that contains a `cwd`.
+/// The operation runtime treats "same idempotency key, different payload hash"
+/// as a permanent conflict, and operation rows are never deleted — so a key
+/// that does not name the path turns any re-point of that path into a
+/// permanent 409 on every later submit. Truncated because the key is also a
+/// human-readable diagnostic string; a collision could only merge two
+/// operations that already agree on every other key component.
+pub(crate) fn workspace_key_digest(path: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    hex::encode(hasher.finalize())[..16].to_string()
+}
+
 /// Materialize `workspace` if — and only if — it is `Managed`.
 ///
 /// `Attached` workspaces point at directories the *user* owns. D3: attached

@@ -37,11 +37,97 @@ pub enum WaveWorkspacePlan {
     /// re-assignable until work actually happens (S3's PATCH). `NewWave.cwd`
     /// is ignored on this branch.
     ManagedUnder(std::path::PathBuf),
-    /// Copy an existing workspace verbatim (kind and path), frozen at
-    /// creation. Used by the child-wave adapter, which today hands the child
-    /// its parent's directory; S4 replaces this with an independent
-    /// allocation (design D7).
-    InheritFrozen(WaveWorkspace),
+    /// Derive `<root>/<cove_id>/<wave_id>`, `kind = Managed`, **frozen at
+    /// creation**. The child-wave path (design D7).
+    ///
+    /// Same derivation as [`Self::ManagedUnder`], opposite freeze decision, and
+    /// the difference is the whole point of S4: a child wave is machine-created
+    /// inside a running spec, so the first thing that happens to it is a
+    /// harness bootstrap at this exact path. Design §"更换与冻结" requires the
+    /// freeze *before* any non-re-anchorable cwd consumer exists, and child
+    /// creation is named there explicitly.
+    ///
+    /// This variant REPLACED an `InheritFrozen(WaveWorkspace)` that copied the
+    /// parent's kind AND path, whichever they were. That one had to go, not
+    /// just stop being called: while it existed, "two wave rows, one *managed*
+    /// directory" stayed a constructible state, and S5 recycles by
+    /// `kind = managed` + path — so any future caller of it would re-arm
+    /// "deleting the child deletes the parent's repository" (issue #1147 N11).
+    ManagedFrozenUnder(std::path::PathBuf),
+    /// Point at an existing **attached** path, `kind = Attached`, frozen at
+    /// creation. The child of an attached parent (design D7, S4 amendment).
+    ///
+    /// Deliberately NOT the same variant as the managed sibling above, and
+    /// deliberately not `AttachedFromCwd` reading `NewWave.cwd`: this is the
+    /// one place in the codebase where inheriting another wave's path is
+    /// correct, so it says so in its own name and carries the path itself. A
+    /// caller cannot reach it by accident, and a reader looking for "who can
+    /// still share a directory" finds exactly this variant.
+    ///
+    /// Sharing is safe here for one reason only, and it is a property of S5:
+    /// recycling touches `kind = managed` directories exclusively, so an
+    /// attached path is never created, moved or deleted by the server no
+    /// matter how many rows point at it. Multiple waves on one attached
+    /// repository is also a pre-existing, legal production state — the same
+    /// checkout is routinely opened by several waves.
+    ///
+    /// The payload is [`AttachedInheritedPath`], not a bare `String`, because
+    /// that reasoning has one hole and the constructor closes it — see there.
+    InheritAttachedFrozen(AttachedInheritedPath),
+}
+
+/// A path that may be inherited as an `attached` workspace: **proven to be
+/// outside the managed workspace root**.
+///
+/// The check exists because "attached rows are never recycled" is a statement
+/// about the ROW, and S5 recycles by DIRECTORY. An attached row whose path sits
+/// under `<workspace-root>` — say `<root>/<cove>/<some-managed-wave>` — is
+/// removed as collateral when that managed wave is deleted, and the attached
+/// wave silently loses its workspace. Nothing in the tree can produce that
+/// today (the only caller feeds an attached parent's own path, and an attached
+/// path under the root is itself an invariant violation caught by
+/// `every_managed_wave_lives_under_the_workspace_root`'s sibling), but this
+/// enum is `pub` and constructible from any crate, so the guard lives in the
+/// type rather than in a comment about who calls it.
+///
+/// Constructing this is the only way to reach
+/// [`WaveWorkspacePlan::InheritAttachedFrozen`], so the check cannot be
+/// skipped by a future caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttachedInheritedPath(String);
+
+impl AttachedInheritedPath {
+    /// `Err` if `path` resolves inside `workspace_root`.
+    ///
+    /// Both a lexical and a canonicalized comparison, because they fail in
+    /// opposite directions: the lexical one misses a symlink pointing into the
+    /// root, and the canonical one is unavailable when the path does not exist
+    /// yet. Either verdict of "inside" refuses.
+    pub fn new(path: String, workspace_root: &std::path::Path) -> Result<Self> {
+        let candidate = std::path::Path::new(&path);
+        let lexically_inside = candidate.starts_with(workspace_root);
+        let physically_inside = match (
+            std::fs::canonicalize(candidate),
+            std::fs::canonicalize(workspace_root),
+        ) {
+            (Ok(real_path), Ok(real_root)) => real_path.starts_with(&real_root),
+            _ => false,
+        };
+        if lexically_inside || physically_inside {
+            return Err(CalmError::Internal(format!(
+                "refusing to inherit {path} as an attached workspace: it is inside the managed \
+                 workspace root {}. Recycling works on directories, not rows, so this attached \
+                 wave would lose its workspace when the managed wave that owns that directory is \
+                 deleted.",
+                workspace_root.display()
+            )));
+        }
+        Ok(Self(path))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 pub async fn wave_create_tx(
@@ -131,9 +217,18 @@ pub async fn wave_create_tx(
                 .into_owned(),
             frozen_at: None,
         },
-        WaveWorkspacePlan::InheritFrozen(parent) => WaveWorkspace {
-            kind: parent.kind,
-            path: parent.path.clone(),
+        WaveWorkspacePlan::ManagedFrozenUnder(root) => WaveWorkspace {
+            kind: WaveWorkspaceKind::Managed,
+            path: root
+                .join(p.cove_id.as_str())
+                .join(&id)
+                .to_string_lossy()
+                .into_owned(),
+            frozen_at: Some(now),
+        },
+        WaveWorkspacePlan::InheritAttachedFrozen(path) => WaveWorkspace {
+            kind: WaveWorkspaceKind::Attached,
+            path: path.as_str().to_string(),
             frozen_at: Some(now),
         },
     };
