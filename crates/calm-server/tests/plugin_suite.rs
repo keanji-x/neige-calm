@@ -1,5 +1,7 @@
 #[path = "cases/actor_wiring.rs"]
 mod actor_wiring;
+#[path = "cases/connector_host.rs"]
+mod connector_host;
 #[path = "cases/plugin_auth.rs"]
 mod plugin_auth;
 #[path = "cases/plugin_host_callbacks.rs"]

@@ -18,9 +18,11 @@
 
 pub mod auth;
 pub mod callbacks;
+pub mod connector;
 pub mod error;
 pub mod events;
 mod glob;
+pub mod http_mcp;
 pub mod manifest;
 pub mod mcp;
 pub mod perms;
@@ -36,8 +38,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use auth::{PluginToken, hash_token, verify_token};
+pub use connector::{CliQueryRuntime, ConnectorClient, SecretsError, read_secrets};
 pub use error::{HostError, McpError, ProcessError};
-pub use manifest::Manifest;
+pub use http_mcp::HttpMcpClient;
+pub use manifest::{ConnectorKind, Manifest};
 pub use mcp::{
     CallToolResult, ContentBlock, InboundNotification, InboundRequest, McpClient, RequestId,
     ResourceContent, ResourceContents, RpcError,
@@ -91,6 +95,15 @@ pub enum PluginRuntimeStatus {
     Crashed {
         reason: String,
     },
+    /// #1164 §2.2 / §2.3 — a **connector** could not be brought up: the remote
+    /// MCP host timed out or errored, the CLI could not be resolved on PATH,
+    /// or `secrets.json` was refused. Distinct from [`Self::Crashed`] because
+    /// nothing crashed and there is no supervisor: connectors have no child
+    /// process, so there is no automatic retry. Recovery is an operator
+    /// re-enable.
+    Unavailable {
+        reason: String,
+    },
     Disabled,
 }
 
@@ -102,13 +115,14 @@ impl PluginRuntimeStatus {
             Self::Spawning => "spawning",
             Self::Running => "running",
             Self::Crashed { .. } => "crashed",
+            Self::Unavailable { .. } => "unavailable",
             Self::Disabled => "disabled",
         }
     }
 
     pub fn last_error(&self) -> Option<&str> {
         match self {
-            Self::Crashed { reason } => Some(reason.as_str()),
+            Self::Crashed { reason } | Self::Unavailable { reason } => Some(reason.as_str()),
             _ => None,
         }
     }
@@ -119,8 +133,13 @@ impl PluginRuntimeStatus {
 // ---------------------------------------------------------------------------
 
 struct RunningPlugin {
-    process: Arc<PluginProcess>,
-    mcp: Arc<McpClient>,
+    /// #1164 §2.5 — `None` for connectors: `mcp-http` and `cli-query` have no
+    /// kernel-supervised child. Every reader (`status`, `list_running`,
+    /// `stderr_tail`, the crash tail) now goes through `as_ref()`.
+    process: Option<Arc<PluginProcess>>,
+    /// Field name deliberately kept as `mcp`; the TYPE widened from
+    /// `Arc<McpClient>` to the [`ConnectorClient`] union (§2.5 / D8).
+    mcp: ConnectorClient,
     status: PluginRuntimeStatus,
     /// Lets the supervisor task know it should NOT respawn (graceful stop).
     /// Set true by `stop()` before the wait observation.
@@ -133,7 +152,10 @@ struct RunningPlugin {
     /// Slice C router task that drains inbound MCP requests and dispatches
     /// them to `callbacks::dispatch`. Held so it dies when `RunningPlugin`
     /// is dropped; also explicitly aborted on `stop()`.
-    router: tokio::task::JoinHandle<()>,
+    /// #1164 §2.5 — `None` for connectors: the kernel builds no inbound
+    /// `neige.*` router for them (and `dispatch_neige_callback` refuses any
+    /// non-`Stdio` client), so there is nothing to drain or abort.
+    router: Option<tokio::task::JoinHandle<()>>,
     /// Per-plugin subscription registry. `neige.event.subscribe` registers
     /// long-lived bridge tasks here; `stop()` aborts them all before the
     /// process is killed so they don't keep the event bus subscribed past
@@ -364,6 +386,20 @@ impl PluginHost {
     /// picks up the new token on its next spawn. The actual mint happens
     /// inside `spawn` via `ensure_plugin_token`; we just clear the slot here.
     pub async fn rotate_plugin_token(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        // #1164 §2.5 — refuse for connectors BEFORE the delete and BEFORE the
+        // restart. Connectors never had a token minted (the kind branch in
+        // `spawn_admitted` precedes `ensure_plugin_token`), so "rotating" one
+        // would be a no-op delete followed by a very real stop+respawn of a
+        // healthy connector. The ordering is the whole point of this guard.
+        if let Some(manifest) = self.registry.get(id)
+            && !manifest.kind.is_app()
+        {
+            return Err(HostError::UnsupportedForKind {
+                plugin_id: id.to_string(),
+                kind: manifest.kind.wire_name(),
+                operation: "token rotation (connectors are never issued a plugin token)",
+            });
+        }
         // Clearing the row first means: even if restart fails mid-flight, the
         // next spawn will mint fresh. Old (raw) token in any plugin's hands is
         // already worthless once the process is killed below.
@@ -518,6 +554,40 @@ impl PluginHost {
             .install_path(id)
             .unwrap_or_else(|| self.plugins_dir.join(id));
 
+        // #1164 §1.4 + §2.6 — branch by kind BEFORE `ensure_plugin_token()`.
+        // The ordering is the point: minting a token for a remote HTTP server
+        // or a query CLI would write a `plugin_tokens` row for a credential
+        // nobody will ever present, and `rotate-token` would then look like a
+        // meaningful operation on it.
+        match manifest.kind {
+            ConnectorKind::App => {}
+            ConnectorKind::McpHttp => {
+                return self
+                    .spawn_mcp_http(id, manifest, &install_path, guard)
+                    .await;
+            }
+            ConnectorKind::CliQuery => {
+                // Parse + install + materialization are all in place (see
+                // `Manifest::validate` and `connector::materialize_cli_tools`);
+                // resolving/pinning the binary and executing it is the next
+                // slice. Fail with a reason an operator can act on rather than
+                // parking a half-live entry in the table.
+                let reason = format!(
+                    "cli-query connector `{id}` cannot be enabled yet: \
+                     the execution runtime is not implemented in this slice (#1164 P3)"
+                );
+                drop(guard);
+                self.emit_state(
+                    id,
+                    &PluginRuntimeStatus::Unavailable {
+                        reason: reason.clone(),
+                    },
+                )
+                .await;
+                return Err(HostError::BadState(reason));
+            }
+        }
+
         // Slice H: mint a fresh process token + persist its hash. The raw value
         // returned here is the same value we pass via env and the same value
         // we'll require the plugin to echo back inside `initialize`.
@@ -640,14 +710,19 @@ impl PluginHost {
             table.live.insert(
                 id.to_string(),
                 RunningPlugin {
-                    process: process.clone(),
-                    mcp: mcp.clone(),
+                    process: Some(process.clone()),
+                    // App plugins are ALWAYS `Stdio`. `mcp_client()`'s
+                    // narrowed `(Running, Stdio)` match (§2.6 / D12) is only
+                    // safe because of this — if a future arm parks a
+                    // non-`Stdio` client for an `app`, every forge / card /
+                    // callback path would start reporting "not running".
+                    mcp: ConnectorClient::Stdio(mcp.clone()),
                     status: PluginRuntimeStatus::Running,
                     stopping: false,
                     crashes_in_window,
                     window_started,
                     supervisor: Some(supervisor),
-                    router,
+                    router: Some(router),
                     subscriptions,
                 },
             );
@@ -657,6 +732,171 @@ impl PluginHost {
         tracing::info!(plugin_id = %id, "plugin running");
 
         Ok(())
+    }
+
+    /// `kind: mcp-http` spawn arm (§2.2).
+    ///
+    /// No token, no process, no router, no supervisor. What it DOES do:
+    /// read `secrets.json`, build the client, run a best-effort `initialize`,
+    /// fetch + filter `tools/list`, **materialize the tool catalog into the
+    /// registry**, and only then publish the live `Running` entry.
+    ///
+    /// The materialize-before-publish order is §2.7(1) and is load-bearing:
+    /// `running_plugin_ids` gates tool discovery AND the boot audit loop in
+    /// `AppState::new`, both of which read `manifest.exposes_tools`. Publish
+    /// Running first and there is a window where the id is visible with an
+    /// empty tool list — silently, and until the next restart.
+    async fn spawn_mcp_http(
+        self: &Arc<Self>,
+        id: &str,
+        manifest: &Manifest,
+        install_path: &std::path::Path,
+        guard: AdmissionGuard,
+    ) -> Result<(), HostError> {
+        let block = manifest.mcp_http.as_ref().ok_or_else(|| {
+            HostError::BadState(format!(
+                "plugin `{id}` is kind mcp-http but has no mcp_http block"
+            ))
+        })?;
+
+        self.emit_state(id, &PluginRuntimeStatus::Spawning).await;
+
+        // §2.4 — a wrongly-permissioned secrets file refuses the enable
+        // outright. Failing open here would mean an operator never learns
+        // their API key is world-readable.
+        let secrets = match connector::read_secrets(install_path) {
+            Ok(s) => s.unwrap_or_default(),
+            Err(e) => {
+                return self
+                    .connector_unavailable(id, guard, format!("secrets.json rejected: {e}"))
+                    .await;
+            }
+        };
+        let api_key = match block.api_key_secret.as_deref() {
+            Some(name) => match secrets.get(name) {
+                Some(v) => Some(v.clone()),
+                None => {
+                    return self
+                        .connector_unavailable(
+                            id,
+                            guard,
+                            format!(
+                                "mcp_http.api_key_secret names `{name}`, \
+                                 which is absent from {}",
+                                install_path.join(connector::SECRETS_FILENAME).display()
+                            ),
+                        )
+                        .await;
+                }
+            },
+            None => None,
+        };
+
+        let client = Arc::new(http_mcp::HttpMcpClient::new(id, block, api_key.as_deref()));
+
+        // Best-effort: the probed server class answers `tools/list` with no
+        // handshake at all, so an `initialize` failure is informational.
+        if let Err(e) = client.initialize().await {
+            tracing::info!(
+                plugin_id = %id,
+                target = %client.log_target(),
+                error = %e,
+                "mcp-http connector did not answer initialize; continuing to tools/list"
+            );
+        }
+
+        // Bounded by the client's explicit connect + request timeouts, so this
+        // await cannot stall boot no matter how the upstream misbehaves.
+        let upstream = match client.tools_list().await {
+            Ok(t) => t,
+            Err(e) => {
+                return self
+                    .connector_unavailable(
+                        id,
+                        guard,
+                        format!("tools/list against {} failed: {e}", client.log_target()),
+                    )
+                    .await;
+            }
+        };
+        let tools = connector::materialize_http_tools(id, block, &upstream);
+        let tool_count = tools.len();
+
+        // §2.7(2)(3) — field-level mutation, and a NO-OP if the id vanished
+        // from the registry while we were on the wire (uninstall races an
+        // in-flight spawn; see R12). Losing the race means we abandon the
+        // spawn rather than resurrect an uninstalled connector.
+        if !self.registry.set_exposes_tools(id, tools) {
+            let reason = format!(
+                "plugin `{id}` left the registry while its connector was starting \
+                 (uninstalled or reloaded mid-spawn); abandoning spawn"
+            );
+            tracing::warn!(plugin_id = %id, "{reason}");
+            drop(guard);
+            return Err(HostError::NotFound(id.to_string()));
+        }
+
+        {
+            let mut table = self.lock_table();
+            let (crashes_in_window, window_started) = match table.live.get(id) {
+                Some(prev) => (prev.crashes_in_window, prev.window_started),
+                None => (0, Instant::now()),
+            };
+            table.spawning.remove(id);
+            guard.disarm();
+            table.live.insert(
+                id.to_string(),
+                RunningPlugin {
+                    process: None,
+                    mcp: ConnectorClient::Http(Arc::clone(&client)),
+                    status: PluginRuntimeStatus::Running,
+                    stopping: false,
+                    crashes_in_window,
+                    window_started,
+                    supervisor: None,
+                    router: None,
+                    subscriptions: Arc::new(Mutex::new(Vec::new())),
+                },
+            );
+        }
+
+        self.emit_state(id, &PluginRuntimeStatus::Running).await;
+        tracing::info!(
+            plugin_id = %id,
+            target = %client.log_target(),
+            tool_count,
+            "mcp-http connector running"
+        );
+        Ok(())
+    }
+
+    /// Shared connector failure exit: release the admission reservation, emit
+    /// [`PluginRuntimeStatus::Unavailable`], return a typed error.
+    ///
+    /// Connectors have no supervisor, so this is terminal until an operator
+    /// re-enables (§2.2). Crucially it does NOT block boot: `autospawn_enabled`
+    /// logs per-plugin errors and moves on.
+    async fn connector_unavailable(
+        self: &Arc<Self>,
+        id: &str,
+        guard: AdmissionGuard,
+        reason: String,
+    ) -> Result<(), HostError> {
+        // Drop the reservation before the await so a re-enable is not blocked
+        // by an `AlreadyRunning` shadow.
+        drop(guard);
+        tracing::warn!(plugin_id = %id, reason = %reason, "connector unavailable");
+        self.emit_state(
+            id,
+            &PluginRuntimeStatus::Unavailable {
+                reason: reason.clone(),
+            },
+        )
+        .await;
+        Err(HostError::ConnectorUnavailable {
+            plugin_id: id.to_string(),
+            reason,
+        })
     }
 
     /// Gracefully stop a plugin. Sets `stopping=true` so the supervisor task
@@ -672,13 +912,16 @@ impl PluginHost {
                 return Err(HostError::BadState(format!("{id} is already stopping")));
             }
             rp.stopping = true;
-            let process = Arc::clone(&rp.process);
+            let process = rp.process.clone();
             let supervisor = rp.supervisor.take();
             let subs = Arc::clone(&rp.subscriptions);
             // Abort the router so it doesn't race the channel-close on
             // mcp drop. The handle itself stays in the struct until we
             // remove() below; abort() is idempotent and we don't await.
-            rp.router.abort();
+            // Connectors have no router (§2.5).
+            if let Some(router) = rp.router.as_ref() {
+                router.abort();
+            }
             (process, supervisor, subs)
         };
 
@@ -696,13 +939,19 @@ impl PluginHost {
         if let Some(h) = supervisor {
             h.abort();
         }
-        match process.stop(STOP_GRACE).await {
-            Ok(_status) => {}
-            Err(ProcessError::AlreadyDead) => {
-                // Supervisor was already going to react to this. Fine.
-            }
-            Err(e) => {
-                return Err(HostError::Spawn(e));
+        // §2.5 — kind-aware: a connector has no child to signal, so stopping
+        // it is exactly "drop the client and forget the live entry". Dropping
+        // the last `ConnectorClient` clone closes the HTTP client / releases
+        // the CLI runtime; nothing else is owed.
+        if let Some(process) = process {
+            match process.stop(STOP_GRACE).await {
+                Ok(_status) => {}
+                Err(ProcessError::AlreadyDead) => {
+                    // Supervisor was already going to react to this. Fine.
+                }
+                Err(e) => {
+                    return Err(HostError::Spawn(e));
+                }
             }
         }
 
@@ -740,7 +989,7 @@ impl PluginHost {
         table.live.get(id).map(|rp| PluginHostStatus {
             id: id.to_string(),
             status: rp.status.clone(),
-            pid: rp.process.pid(),
+            pid: rp.process.as_ref().and_then(|p| p.pid()),
         })
     }
 
@@ -766,7 +1015,7 @@ impl PluginHost {
                 .map(|(id, rp)| PluginHostStatus {
                     id: id.clone(),
                     status: rp.status.clone(),
-                    pid: rp.process.pid(),
+                    pid: rp.process.as_ref().and_then(|p| p.pid()),
                 }),
         );
         out
@@ -787,20 +1036,53 @@ impl PluginHost {
 
     /// Most-recent stderr lines, oldest → newest. `n` clamps to the ring
     /// capacity inside `PluginProcess`.
+    /// #1164 §2.5 — a connector has no child, hence no stderr ring: it reports
+    /// an empty tail rather than `None`, so `GET /api/plugins/{id}/log`
+    /// (which already defaults `None` to `[]`) needs no change either way.
     pub async fn stderr_tail(&self, id: &str, n: usize) -> Option<Vec<String>> {
         let table = self.lock_table();
-        table.live.get(id).map(|rp| rp.process.stderr_tail(n))
+        table.live.get(id).map(|rp| {
+            rp.process
+                .as_ref()
+                .map(|p| p.stderr_tail(n))
+                .unwrap_or_default()
+        })
     }
 
-    /// Borrow the live MCP client. Slice C calls this to issue `tools/list`
-    /// or to drive other outbound RPC.
+    /// Borrow the live **stdio** MCP client.
+    ///
+    /// #1164 §2.6 / D12 narrowed this from "running" to
+    /// `(Running, ConnectorClient::Stdio)`. Callers that structurally require
+    /// a process-backed `app` plugin — forge-action dispatch, card creation
+    /// via tool call, `neige.*` callback fan-out — keep using this and get a
+    /// `None` for connectors, which is the truthful answer. Ordinary agent
+    /// tool dispatch moved to [`Self::connector_client`].
+    ///
+    /// This cannot make an `app` plugin look "not running": the app spawn arm
+    /// always parks a `Stdio` client.
     pub async fn mcp_client(&self, id: &str) -> Option<Arc<McpClient>> {
         let table = self.lock_table();
         table
             .live
             .get(id)
             .filter(|rp| matches!(rp.status, PluginRuntimeStatus::Running))
-            .map(|rp| Arc::clone(&rp.mcp))
+            .and_then(|rp| rp.mcp.as_stdio().cloned())
+    }
+
+    /// Borrow the live client of a running plugin **whatever its kind**
+    /// (#1164 §2.6). This is the accessor ordinary `plugin.<id>_<tool>`
+    /// dispatch uses.
+    ///
+    /// The clone happens under the synchronous process-table mutex and the
+    /// guard is dropped before the caller awaits — which is why every
+    /// [`ConnectorClient`] variant is `Arc`-wrapped.
+    pub async fn connector_client(&self, id: &str) -> Option<ConnectorClient> {
+        let table = self.lock_table();
+        table
+            .live
+            .get(id)
+            .filter(|rp| matches!(rp.status, PluginRuntimeStatus::Running))
+            .map(|rp| rp.mcp.clone())
     }
 
     /// Dispatch a `neige.*` callback method against the in-kernel handler,
@@ -837,7 +1119,22 @@ impl PluginHost {
             if !matches!(rp.status, PluginRuntimeStatus::Running) {
                 return Err(RpcError::custom(-32002, "plugin not running"));
             }
-            (Arc::clone(&rp.mcp), Arc::clone(&rp.subscriptions))
+            // #1164 §2.5 — `CallbackCtx.mcp` is deliberately still typed
+            // `Arc<McpClient>`; the `neige.*` channel does not exist for
+            // connectors (no inbound router is built for them), so a
+            // non-`Stdio` client is refused here rather than widening the
+            // callback surface.
+            let Some(stdio) = rp.mcp.as_stdio() else {
+                return Err(RpcError::custom(
+                    -32002,
+                    format!(
+                        "plugin `{plugin_id}` is a `{}` connector; \
+                         neige.* callbacks are only available to app plugins",
+                        rp.mcp.variant_name()
+                    ),
+                ));
+            };
+            (Arc::clone(stdio), Arc::clone(&rp.subscriptions))
         };
 
         let ctx = CallbackCtx {
@@ -934,7 +1231,8 @@ impl PluginHost {
             table
                 .live
                 .get(&id)
-                .map(|rp| rp.process.stderr_tail(10).join("\n"))
+                .and_then(|rp| rp.process.as_ref())
+                .map(|p| p.stderr_tail(10).join("\n"))
                 .unwrap_or_default()
         };
         let combined_reason = if tail.is_empty() {

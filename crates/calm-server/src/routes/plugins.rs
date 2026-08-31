@@ -1035,10 +1035,16 @@ pub(crate) async fn rotate_plugin_token(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
-    cs.plugin
-        .rotate_plugin_token(&id)
-        .await
-        .map_err(|e| CalmError::Internal(format!("rotate failed: {e}")))?;
+    // #1164 §2.5 — a connector never had a token minted, so rotation is a
+    // 400, not a 500. The host refuses BEFORE deleting any row and BEFORE
+    // restarting anything, so a mistaken call is fully inert.
+    cs.plugin.rotate_plugin_token(&id).await.map_err(|e| {
+        if matches!(e, crate::plugin_host::HostError::UnsupportedForKind { .. }) {
+            CalmError::BadRequest(e.to_string())
+        } else {
+            CalmError::Internal(format!("rotate failed: {e}"))
+        }
+    })?;
     let plug = s
         .repo
         .plugin_get_by_id(&id)
@@ -1088,6 +1094,16 @@ fn spawn_error_to_calm(e: crate::plugin_host::HostError) -> CalmError {
         )),
         conflict @ crate::plugin_host::HostError::WorkflowConflict { .. } => {
             CalmError::PluginConflict(conflict.to_string())
+        }
+        // #1164 §2.2 — an unreachable/misconfigured connector is not a kernel
+        // fault: the request was well-formed, the upstream (or the operator's
+        // `secrets.json`) is the problem. 503 carries the reason verbatim, and
+        // the row stays `enabled` so a re-enable is the whole recovery.
+        unavailable @ crate::plugin_host::HostError::ConnectorUnavailable { .. } => {
+            CalmError::ServiceUnavailable(unavailable.to_string())
+        }
+        unsupported @ crate::plugin_host::HostError::UnsupportedForKind { .. } => {
+            CalmError::BadRequest(unsupported.to_string())
         }
         other => CalmError::Internal(format!("spawn failed: {other}")),
     }

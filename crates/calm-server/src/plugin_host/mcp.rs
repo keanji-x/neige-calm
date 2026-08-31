@@ -521,6 +521,22 @@ impl McpClient {
         })
     }
 
+    /// MCP `tools/list` (#1164): the plugin's own tool catalog.
+    ///
+    /// A thin wrapper over [`Self::call`] — the client had `tools_call`,
+    /// `resources_read` and the generic `call`, but no `tools_list`. Returns
+    /// the raw `tools` array entries so the caller decides how to project
+    /// them; a response without a `tools` array yields an empty vec rather
+    /// than an error (some servers omit the key when they expose nothing).
+    pub async fn tools_list(&self) -> Result<Vec<Value>, RpcError> {
+        let raw = self.call("tools/list", json!({})).await?;
+        Ok(raw
+            .get("tools")
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default())
+    }
+
     /// MCP `resources/read` (M3): fetch a resource by URI. Pattern-mirror of
     /// `tools_call`. Returns the parsed `ResourceContents` (one or more entries
     /// per the spec). Note that `ui://<plugin>/<view>` resources are served by

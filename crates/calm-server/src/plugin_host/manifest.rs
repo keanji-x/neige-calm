@@ -50,6 +50,26 @@ pub struct Manifest {
 
     pub display_name: String,
 
+    /// #1164 §2.1 — connector kind. Absent ⇒ [`ConnectorKind::App`], which is
+    /// exactly today's plugin semantics (the tree's only checked-in manifest,
+    /// `plugins/git-forge`, carries no `kind` key). An *unknown* value is a
+    /// hard parse error, never a silent downgrade to `app` — serde's
+    /// `unknown variant` message names the accepted set.
+    ///
+    /// `#[serde(default)]` on the FIELD is load-bearing: deriving `Default`
+    /// on the enum alone does not make a missing key legal.
+    #[serde(default)]
+    pub kind: ConnectorKind,
+
+    /// Remote streamable-HTTP MCP server config. Present iff
+    /// `kind == McpHttp` (enforced in [`Manifest::validate`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_http: Option<McpHttpBlock>,
+
+    /// Read-only query CLI config. Present iff `kind == CliQuery`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli_query: Option<CliQueryBlock>,
+
     #[serde(default)]
     pub description: Option<String>,
 
@@ -62,7 +82,11 @@ pub struct Manifest {
     #[serde(default)]
     pub homepage: Option<String>,
 
-    pub entrypoint: Entrypoint,
+    /// How to launch the plugin process. **Required for
+    /// [`ConnectorKind::App`], optional otherwise** (#1164 §2.1) — remote
+    /// MCP servers and query CLIs have no kernel-supervised child process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entrypoint: Option<Entrypoint>,
 
     /// At least one view recommended; an empty array is technically legal but
     /// such a plugin can never surface a card. We don't reject — the validator
@@ -95,6 +119,174 @@ pub struct Manifest {
     /// Missing block treated as the most-restrictive permission set.
     #[serde(default)]
     pub permissions: Permissions,
+}
+
+/// #1164 §2.1 — what kind of external capability this manifest describes.
+///
+/// `App` is the pre-#1164 plugin: a kernel-supervised child process speaking
+/// stdio MCP. The other two variants are *connectors* — no child process, no
+/// `neige.*` inbound router, no plugin token.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectorKind {
+    /// Today's plugin. Semantics unchanged, byte for byte.
+    #[default]
+    App,
+    /// Remote streamable-HTTP MCP server.
+    McpHttp,
+    /// Read-only local query CLI.
+    CliQuery,
+}
+
+impl ConnectorKind {
+    /// Wire token, matching the serde `kebab-case` rename.
+    pub fn wire_name(self) -> &'static str {
+        match self {
+            Self::App => "app",
+            Self::McpHttp => "mcp-http",
+            Self::CliQuery => "cli-query",
+        }
+    }
+
+    /// `true` for the pre-#1164 process-backed plugin.
+    pub fn is_app(self) -> bool {
+        matches!(self, Self::App)
+    }
+}
+
+/// Where the API key rides on an outbound `mcp-http` request. Closed set:
+/// `query:<name>` or `header:<name>` (§2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiKeyIn {
+    Query(String),
+    Header(String),
+}
+
+impl ApiKeyIn {
+    /// Parse the manifest's `api_key_in` string. `None` for anything outside
+    /// the closed set — the caller turns that into a validation error.
+    pub fn parse(s: &str) -> Option<Self> {
+        let (scheme, name) = s.split_once(':')?;
+        if name.trim().is_empty() {
+            return None;
+        }
+        match scheme {
+            "query" => Some(Self::Query(name.to_string())),
+            "header" => Some(Self::Header(name.to_string())),
+            _ => None,
+        }
+    }
+}
+
+/// Default request/connect timeout for `mcp-http` (§2.2). A hung upstream must
+/// not stall boot: `autospawn_enabled` is awaited inline in `AppState::new`.
+pub const MCP_HTTP_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
+/// `mcp_http` top-level block. Present iff `kind == "mcp-http"`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct McpHttpBlock {
+    /// Absolute `http://` or `https://` endpoint.
+    pub url: String,
+
+    /// Name of the key in the connector's `secrets.json` holding the API key.
+    /// Absent ⇒ unauthenticated requests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_secret: Option<String>,
+
+    /// `query:<name>` | `header:<name>`. Required when `api_key_secret` is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_in: Option<String>,
+
+    /// Hand-written allowlist of upstream tool names to expose. Names the
+    /// upstream does not serve are warned about and skipped, not fatal (§2.2).
+    #[serde(default)]
+    pub tools_allow: Vec<String>,
+
+    /// Overrides [`MCP_HTTP_DEFAULT_TIMEOUT_MS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_timeout_ms: Option<u64>,
+}
+
+impl McpHttpBlock {
+    pub fn timeout_ms(&self) -> u64 {
+        self.request_timeout_ms
+            .filter(|ms| *ms > 0)
+            .unwrap_or(MCP_HTTP_DEFAULT_TIMEOUT_MS)
+    }
+
+    /// Parsed `api_key_in`, `None` when no key is configured.
+    pub fn api_key_in_parsed(&self) -> Option<ApiKeyIn> {
+        self.api_key_in.as_deref().and_then(ApiKeyIn::parse)
+    }
+}
+
+pub const CLI_QUERY_DEFAULT_TIMEOUT_MS: u64 = 20_000;
+pub const CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES: usize = 32_768;
+
+/// `cli_query` top-level block. Present iff `kind == "cli-query"`.
+///
+/// #1164 P1 parses and validates this block; the execution runtime lands in a
+/// later slice (§7 P3).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CliQueryBlock {
+    /// Bare name (resolved against the service PATH + `search_path_extra` at
+    /// enable time) or an absolute path.
+    pub command: String,
+
+    /// Extra PATH entries used ONLY when resolving/executing this connector.
+    #[serde(default)]
+    pub search_path_extra: Vec<String>,
+
+    /// Keys forwarded from the service environment. Default empty — the child
+    /// gets `env_clear()` plus an explicit base set.
+    #[serde(default)]
+    pub env_allow: Vec<String>,
+
+    /// Env keys whose values come from the connector's `secrets.json`.
+    #[serde(default)]
+    pub secret_env: Vec<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_output_bytes: Option<usize>,
+
+    pub tools: Vec<CliQueryTool>,
+}
+
+impl CliQueryBlock {
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout_ms
+            .filter(|ms| *ms > 0)
+            .unwrap_or(CLI_QUERY_DEFAULT_TIMEOUT_MS)
+    }
+
+    pub fn max_output_bytes(&self) -> usize {
+        self.max_output_bytes
+            .filter(|n| *n > 0)
+            .unwrap_or(CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES)
+    }
+}
+
+/// One hand-declared CLI tool. `args` is a fixed argv template: a `{{slot}}`
+/// element is replaced *wholesale* by one argument. No shell, no string
+/// concatenation (§2.3).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct CliQueryTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub input_schema: Value,
+    pub args: Vec<String>,
+}
+
+/// If `s` is exactly `{{name}}`, return `name`. Partial occurrences (e.g.
+/// `--sym={{symbol}}`) deliberately do NOT match: the template only supports
+/// whole-argv substitution.
+pub fn argv_slot(s: &str) -> Option<&str> {
+    let inner = s.strip_prefix("{{")?.strip_suffix("}}")?;
+    if inner.is_empty() { None } else { Some(inner) }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -361,20 +553,38 @@ impl Manifest {
             return Err(ManifestError::invalid("display_name", "must be non-empty"));
         }
 
-        if self.entrypoint.command.trim().is_empty() {
-            return Err(ManifestError::invalid(
-                "entrypoint.command",
-                "must be non-empty",
-            ));
-        }
-        // Reject absolute paths and `..` escapes early — Slice B will also
-        // re-check, but flagging here gives users a clearer error.
-        if self.entrypoint.command.starts_with('/') || self.entrypoint.command.contains("..") {
-            return Err(ManifestError::invalid(
-                "entrypoint.command",
-                "must be a relative path inside the plugin install dir \
-                 (no leading `/`, no `..` segments)",
-            ));
+        // #1164 §2.1 — kind ↔ block consistency. Exactly one connector block
+        // may be present, and it must be the one the `kind` names.
+        self.validate_connector_blocks()?;
+
+        // `entrypoint` is required only for `app`. Non-app kinds have no
+        // kernel-supervised child, so demanding a binary path there would be
+        // pure ceremony (and would force fake values into the manifest).
+        match self.entrypoint.as_ref() {
+            Some(entrypoint) => {
+                if entrypoint.command.trim().is_empty() {
+                    return Err(ManifestError::invalid(
+                        "entrypoint.command",
+                        "must be non-empty",
+                    ));
+                }
+                // Reject absolute paths and `..` escapes early — Slice B will
+                // also re-check, but flagging here gives users a clearer error.
+                if entrypoint.command.starts_with('/') || entrypoint.command.contains("..") {
+                    return Err(ManifestError::invalid(
+                        "entrypoint.command",
+                        "must be a relative path inside the plugin install dir \
+                         (no leading `/`, no `..` segments)",
+                    ));
+                }
+            }
+            None if self.kind.is_app() => {
+                return Err(ManifestError::invalid(
+                    "entrypoint",
+                    "required for `kind: \"app\"` manifests",
+                ));
+            }
+            None => {}
         }
 
         for (i, view) in self.views.iter().enumerate() {
@@ -397,6 +607,181 @@ impl Manifest {
 
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// #1164 — connector-block validation
+// ---------------------------------------------------------------------------
+
+impl Manifest {
+    /// Enforce the §2.1 contract: the two connector blocks are mutually
+    /// exclusive, and the present block must match `kind`. We deliberately do
+    /// NOT use `#[serde(flatten)]` + an internally-tagged enum — the duplicate
+    /// `kind` key that shape produces is a round-trip hazard.
+    fn validate_connector_blocks(&self) -> Result<(), ManifestError> {
+        if self.mcp_http.is_some() && self.cli_query.is_some() {
+            return Err(ManifestError::invalid(
+                "mcp_http",
+                "`mcp_http` and `cli_query` are mutually exclusive",
+            ));
+        }
+        match self.kind {
+            ConnectorKind::App => {
+                if self.mcp_http.is_some() {
+                    return Err(ManifestError::invalid(
+                        "mcp_http",
+                        "only allowed when `kind` is \"mcp-http\"",
+                    ));
+                }
+                if self.cli_query.is_some() {
+                    return Err(ManifestError::invalid(
+                        "cli_query",
+                        "only allowed when `kind` is \"cli-query\"",
+                    ));
+                }
+            }
+            ConnectorKind::McpHttp => {
+                let block = self.mcp_http.as_ref().ok_or_else(|| {
+                    ManifestError::invalid("mcp_http", "required when `kind` is \"mcp-http\"")
+                })?;
+                block.validate()?;
+            }
+            ConnectorKind::CliQuery => {
+                let block = self.cli_query.as_ref().ok_or_else(|| {
+                    ManifestError::invalid("cli_query", "required when `kind` is \"cli-query\"")
+                })?;
+                block.validate()?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl McpHttpBlock {
+    fn validate(&self) -> Result<(), ManifestError> {
+        let url = self.url.trim();
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(ManifestError::invalid(
+                "mcp_http.url",
+                "must be an absolute http:// or https:// URL",
+            ));
+        }
+        match (self.api_key_secret.as_deref(), self.api_key_in.as_deref()) {
+            (Some(secret), _) if secret.trim().is_empty() => {
+                return Err(ManifestError::invalid(
+                    "mcp_http.api_key_secret",
+                    "must be non-empty when present",
+                ));
+            }
+            (Some(_), None) => {
+                return Err(ManifestError::invalid(
+                    "mcp_http.api_key_in",
+                    "required whenever `api_key_secret` is set",
+                ));
+            }
+            (Some(_), Some(spec)) => {
+                if ApiKeyIn::parse(spec).is_none() {
+                    return Err(ManifestError::invalid(
+                        "mcp_http.api_key_in",
+                        "must be `query:<name>` or `header:<name>`",
+                    ));
+                }
+            }
+            (None, _) => {}
+        }
+        for (i, name) in self.tools_allow.iter().enumerate() {
+            validate_connector_tool_name(name, &format!("mcp_http.tools_allow[{i}]"))?;
+        }
+        Ok(())
+    }
+}
+
+impl CliQueryBlock {
+    fn validate(&self) -> Result<(), ManifestError> {
+        if self.command.trim().is_empty() {
+            return Err(ManifestError::invalid(
+                "cli_query.command",
+                "must be non-empty",
+            ));
+        }
+        if self.tools.is_empty() {
+            return Err(ManifestError::invalid(
+                "cli_query.tools",
+                "must declare at least one tool",
+            ));
+        }
+        for (i, tool) in self.tools.iter().enumerate() {
+            tool.validate(i)?;
+        }
+        Ok(())
+    }
+}
+
+impl CliQueryTool {
+    fn validate(&self, idx: usize) -> Result<(), ManifestError> {
+        let path = |s: &str| format!("cli_query.tools[{idx}].{s}");
+        validate_connector_tool_name(&self.name, &path("name"))?;
+
+        // Slot names must be declared top-level keys of `input_schema`.
+        // `input_schema` is the same JSON-Schema subset the rest of the
+        // manifest uses; here we only need its top-level property names.
+        let properties = self
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.as_object());
+        for (i, arg) in self.args.iter().enumerate() {
+            let Some(slot) = argv_slot(arg) else {
+                // A literal argv element. Reject stray braces so a typo like
+                // `--sym={{symbol}}` fails at authoring time instead of being
+                // silently passed through as a literal.
+                if arg.contains("{{") || arg.contains("}}") {
+                    return Err(ManifestError::invalid(
+                        path(&format!("args[{i}]")),
+                        "a `{{slot}}` template must occupy the whole argv element \
+                         (no string concatenation, no shell)",
+                    ));
+                }
+                continue;
+            };
+            let known = properties.is_some_and(|p| p.contains_key(slot));
+            if !known {
+                return Err(ManifestError::invalid(
+                    path(&format!("args[{i}]")),
+                    format!(
+                        "slot `{slot}` is not a top-level property of this tool's input_schema"
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Shared name check for connector-supplied tools. There is no
+/// `ExposedTool::validate` in the tree (§2.7), so materialization and manifest
+/// parsing both route through this one predicate.
+///
+/// `_` is rejected because `plugin.<id>_<tool>` uses the FIRST `_` as the
+/// id↔tool boundary only by virtue of plugin ids excluding `_`; a tool name
+/// containing `_` is fine, but an EMPTY or whitespace name would synthesize an
+/// unroutable descriptor. `.` is fine in tool names.
+pub fn validate_connector_tool_name(name: &str, field: &str) -> Result<(), ManifestError> {
+    if name.trim().is_empty() {
+        return Err(ManifestError::invalid(field, "tool name must be non-empty"));
+    }
+    if name != name.trim() {
+        return Err(ManifestError::invalid(
+            field,
+            "tool name must not have leading/trailing whitespace",
+        ));
+    }
+    if name.contains(char::is_whitespace) {
+        return Err(ManifestError::invalid(
+            field,
+            "tool name must not contain whitespace",
+        ));
+    }
+    Ok(())
 }
 
 impl View {
@@ -946,7 +1331,24 @@ mod tests {
 
     #[test]
     fn missing_required_field_fails() {
-        // `entrypoint` missing entirely.
+        // `display_name` missing entirely — still an unconditionally required
+        // field, so serde rejects it before any validator runs.
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "a.b",
+            "version": "1.0.0",
+            "min_kernel_version": "0.1.0",
+            "entrypoint": { "command": "bin/run" }
+        }"#;
+        let err = Manifest::parse(json).expect_err("missing display_name");
+        assert!(matches!(err, ManifestError::Json(_)), "got {err:?}");
+    }
+
+    /// #1164 §2.1 moved `entrypoint` from "unconditionally required" (a serde
+    /// error) to "required for `kind: app`" (a validator error). It is still
+    /// rejected for an app manifest — only the error variant changed.
+    #[test]
+    fn missing_entrypoint_is_a_validation_error_for_app_manifests() {
         let json = r#"{
             "manifest_version": 1,
             "id": "a.b",
@@ -955,7 +1357,10 @@ mod tests {
             "display_name": "X"
         }"#;
         let err = Manifest::parse(json).expect_err("missing entrypoint");
-        assert!(matches!(err, ManifestError::Json(_)), "got {err:?}");
+        match &err {
+            ManifestError::Invalid { field, .. } => assert_eq!(field, "entrypoint"),
+            other => panic!("expected an entrypoint validation error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1311,5 +1716,307 @@ mod tests {
             csp.extras.get("worker_src"),
             Some(&vec!["blob:".to_string()])
         );
+    }
+}
+
+// ===========================================================================
+// #1164 §2.1 — connector kind + mutually-exclusive blocks
+// ===========================================================================
+
+#[cfg(test)]
+mod connector_kind_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base(extra: Value) -> String {
+        let mut m = json!({
+            "manifest_version": 1,
+            "id": "conn-x",
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Conn",
+        });
+        let obj = m.as_object_mut().unwrap();
+        for (k, v) in extra.as_object().unwrap() {
+            obj.insert(k.clone(), v.clone());
+        }
+        m.to_string()
+    }
+
+    fn mcp_http_block() -> Value {
+        json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "WISBURG_API_KEY",
+            "api_key_in": "query:api_key",
+            "tools_allow": ["list_reports"],
+            "request_timeout_ms": 10000,
+        })
+    }
+
+    fn cli_query_block() -> Value {
+        json!({
+            "command": "longbridge",
+            "tools": [{
+                "name": "quote",
+                "description": "Get a quote",
+                "input_schema": {
+                    "type": "object",
+                    "properties": { "symbol": { "type": "string" } },
+                    "required": ["symbol"],
+                    "additionalProperties": false
+                },
+                "args": ["quote", "{{symbol}}"]
+            }]
+        })
+    }
+
+    // ---- kind defaulting -------------------------------------------------
+
+    /// The tree's only checked-in manifest carries no `kind` key. Absent must
+    /// mean `app`, with zero change to app semantics.
+    #[test]
+    fn absent_kind_defaults_to_app() {
+        let m = Manifest::parse(&base(json!({ "entrypoint": { "command": "bin/run" } }))).unwrap();
+        assert_eq!(m.kind, ConnectorKind::App);
+        assert!(m.mcp_http.is_none());
+        assert!(m.cli_query.is_none());
+    }
+
+    #[test]
+    fn shipped_git_forge_manifest_still_parses_as_app() {
+        let text = include_str!("../../../../plugins/git-forge/manifest.json");
+        let m = Manifest::parse(text).expect("shipped manifest must keep parsing");
+        assert_eq!(m.kind, ConnectorKind::App);
+        assert!(m.entrypoint.is_some());
+    }
+
+    /// Risk R7: an unknown `kind` must be a loud parse error, never a silent
+    /// downgrade to `app` (which would spawn a process for a manifest that
+    /// describes something else entirely).
+    #[test]
+    fn unknown_kind_is_a_parse_error_not_a_silent_app() {
+        let err = Manifest::parse(&base(json!({
+            "kind": "sql-query",
+            "entrypoint": { "command": "bin/run" }
+        })))
+        .expect_err("unknown kind must fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sql-query"),
+            "error must name the offending value: {msg}"
+        );
+        assert!(matches!(err, ManifestError::Json(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn kind_round_trips_through_to_json() {
+        let m = Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+        })))
+        .unwrap();
+        let re: Manifest = serde_json::from_value(m.to_json()).expect("re-parse");
+        assert_eq!(re.kind, ConnectorKind::McpHttp);
+        assert_eq!(
+            re.mcp_http.as_ref().unwrap().url,
+            "https://mcp.example.com/mcp"
+        );
+        // Exactly one `kind` key on the wire — the reason we did not use
+        // `#[serde(flatten)]` with an internally-tagged enum (D4).
+        assert_eq!(
+            m.to_json()
+                .as_object()
+                .unwrap()
+                .keys()
+                .filter(|k| k.as_str() == "kind")
+                .count(),
+            1
+        );
+    }
+
+    // ---- entrypoint conditionality ---------------------------------------
+
+    #[test]
+    fn app_without_entrypoint_is_rejected() {
+        let err = Manifest::parse(&base(json!({}))).expect_err("app needs an entrypoint");
+        assert!(err.to_string().contains("entrypoint"), "{err}");
+    }
+
+    #[test]
+    fn connectors_do_not_need_an_entrypoint() {
+        Manifest::parse(&base(
+            json!({ "kind": "mcp-http", "mcp_http": mcp_http_block() }),
+        ))
+        .expect("mcp-http needs no entrypoint");
+        Manifest::parse(&base(
+            json!({ "kind": "cli-query", "cli_query": cli_query_block() }),
+        ))
+        .expect("cli-query needs no entrypoint");
+    }
+
+    // ---- kind ↔ block consistency ----------------------------------------
+
+    #[test]
+    fn kind_and_block_must_agree() {
+        for (kind, block_key, block) in [
+            ("mcp-http", "cli_query", cli_query_block()),
+            ("cli-query", "mcp_http", mcp_http_block()),
+        ] {
+            let err = Manifest::parse(&base(json!({ "kind": kind, block_key: block })))
+                .expect_err("mismatched block must be rejected");
+            assert!(err.to_string().contains("required when"), "{err}");
+        }
+    }
+
+    #[test]
+    fn both_blocks_present_is_rejected() {
+        let err = Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "cli_query": cli_query_block(),
+        })))
+        .expect_err("blocks are mutually exclusive");
+        assert!(err.to_string().contains("mutually exclusive"), "{err}");
+    }
+
+    #[test]
+    fn app_may_not_carry_a_connector_block() {
+        for (key, block) in [
+            ("mcp_http", mcp_http_block()),
+            ("cli_query", cli_query_block()),
+        ] {
+            let err = Manifest::parse(&base(json!({
+                "entrypoint": { "command": "bin/run" },
+                key: block,
+            })))
+            .expect_err("app must not carry a connector block");
+            assert!(err.to_string().contains("only allowed when"), "{err}");
+        }
+    }
+
+    // ---- mcp_http block --------------------------------------------------
+
+    #[test]
+    fn mcp_http_url_must_be_absolute_http() {
+        let mut block = mcp_http_block();
+        block["url"] = json!("mcp.example.com/mcp");
+        let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+            .expect_err("relative url rejected");
+        assert!(err.to_string().contains("mcp_http.url"), "{err}");
+    }
+
+    #[test]
+    fn api_key_in_is_a_closed_set_and_required_with_a_secret() {
+        let mut block = mcp_http_block();
+        block["api_key_in"] = json!("body:token");
+        let err = Manifest::parse(&base(
+            json!({ "kind": "mcp-http", "mcp_http": block.clone() }),
+        ))
+        .expect_err("unknown api_key_in location rejected");
+        assert!(err.to_string().contains("api_key_in"), "{err}");
+
+        let mut block = mcp_http_block();
+        block.as_object_mut().unwrap().remove("api_key_in");
+        let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+            .expect_err("api_key_in required when a secret is named");
+        assert!(err.to_string().contains("api_key_in"), "{err}");
+    }
+
+    #[test]
+    fn api_key_in_parses_both_locations() {
+        assert_eq!(
+            ApiKeyIn::parse("query:api_key"),
+            Some(ApiKeyIn::Query("api_key".into()))
+        );
+        assert_eq!(
+            ApiKeyIn::parse("header:x-api-key"),
+            Some(ApiKeyIn::Header("x-api-key".into()))
+        );
+        assert_eq!(ApiKeyIn::parse("query:"), None);
+        assert_eq!(ApiKeyIn::parse("cookie:k"), None);
+        assert_eq!(ApiKeyIn::parse("api_key"), None);
+    }
+
+    #[test]
+    fn timeout_defaults_and_overrides() {
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp"
+        }})))
+        .unwrap();
+        assert_eq!(
+            m.mcp_http.unwrap().timeout_ms(),
+            MCP_HTTP_DEFAULT_TIMEOUT_MS
+        );
+
+        let m = Manifest::parse(&base(
+            json!({ "kind": "mcp-http", "mcp_http": mcp_http_block() }),
+        ))
+        .unwrap();
+        assert_eq!(m.mcp_http.unwrap().timeout_ms(), 10_000);
+    }
+
+    // ---- cli_query block -------------------------------------------------
+
+    #[test]
+    fn cli_query_argv_slot_must_be_a_whole_element() {
+        let mut block = cli_query_block();
+        block["tools"][0]["args"] = json!(["quote", "--sym={{symbol}}"]);
+        let err = Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block })))
+            .expect_err("partial substitution must be rejected");
+        assert!(err.to_string().contains("whole argv element"), "{err}");
+    }
+
+    #[test]
+    fn cli_query_slot_must_be_a_declared_schema_property() {
+        let mut block = cli_query_block();
+        block["tools"][0]["args"] = json!(["quote", "{{ticker}}"]);
+        let err = Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block })))
+            .expect_err("undeclared slot must be rejected");
+        assert!(err.to_string().contains("ticker"), "{err}");
+    }
+
+    #[test]
+    fn cli_query_requires_a_command_and_at_least_one_tool() {
+        let mut block = cli_query_block();
+        block["command"] = json!("   ");
+        assert!(
+            Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block }))).is_err()
+        );
+
+        let mut block = cli_query_block();
+        block["tools"] = json!([]);
+        assert!(
+            Manifest::parse(&base(json!({ "kind": "cli-query", "cli_query": block }))).is_err()
+        );
+    }
+
+    #[test]
+    fn cli_query_defaults() {
+        let m = Manifest::parse(&base(
+            json!({ "kind": "cli-query", "cli_query": cli_query_block() }),
+        ))
+        .unwrap();
+        let block = m.cli_query.unwrap();
+        assert_eq!(block.timeout_ms(), CLI_QUERY_DEFAULT_TIMEOUT_MS);
+        assert_eq!(block.max_output_bytes(), CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES);
+        assert!(block.env_allow.is_empty());
+        assert!(block.search_path_extra.is_empty());
+    }
+
+    #[test]
+    fn argv_slot_matches_only_whole_elements() {
+        assert_eq!(argv_slot("{{symbol}}"), Some("symbol"));
+        assert_eq!(argv_slot("--sym={{symbol}}"), None);
+        assert_eq!(argv_slot("{{}}"), None);
+        assert_eq!(argv_slot("quote"), None);
+    }
+
+    #[test]
+    fn connector_tool_names_reject_empty_and_whitespace() {
+        assert!(validate_connector_tool_name("get_report", "f").is_ok());
+        assert!(validate_connector_tool_name("", "f").is_err());
+        assert!(validate_connector_tool_name("  ", "f").is_err());
+        assert!(validate_connector_tool_name("two words", "f").is_err());
+        assert!(validate_connector_tool_name(" pad ", "f").is_err());
     }
 }
