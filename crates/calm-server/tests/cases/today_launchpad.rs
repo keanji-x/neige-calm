@@ -440,6 +440,11 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     }
 }
 
+/// `(wave id, workspace_kind, workspace_frozen_at, purpose, cove kind)` —
+/// named so `no_attached_wave_is_ever_unfrozen`'s query stays inside clippy's
+/// `type_complexity` budget.
+type WorkspaceFreezeRow = (String, String, Option<i64>, Option<String>, String);
+
 /// #1147 — the bound on the "may still be re-pointed" state (design D9, r3.2
 /// amendment; narrowed by the S2 review).
 ///
@@ -491,7 +496,7 @@ async fn no_attached_wave_is_ever_unfrozen() {
     )
     .await;
 
-    let rows: Vec<(String, String, Option<i64>, Option<String>, String)> = sqlx::query_as(
+    let rows: Vec<WorkspaceFreezeRow> = sqlx::query_as(
         "SELECT w.id, w.workspace_kind, w.workspace_frozen_at, w.purpose, c.kind \
          FROM waves w JOIN coves c ON c.id = w.cove_id",
     )
