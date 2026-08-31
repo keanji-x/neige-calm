@@ -178,9 +178,43 @@ impl ApiKeyIn {
     }
 }
 
-/// Default request/connect timeout for `mcp-http` (§2.2). A hung upstream must
-/// not stall boot: `autospawn_enabled` is awaited inline in `AppState::new`.
+/// Default per-request timeout for a steady-state `tools/call` (§2.2).
+///
+/// **This value is deliberately NOT the bound that protects boot** — see
+/// [`MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`]. It may be raised without limit: a
+/// report-generating MCP tool legitimately runs for minutes, and nothing on the
+/// `tools/call` path is awaited by `AppState::new`.
 pub const MCP_HTTP_DEFAULT_TIMEOUT_MS: u64 = 10_000;
+
+/// Hard ceiling on the bring-up (`initialize` + `tools/list`) timeout, enforced
+/// here at manifest-parse time.
+///
+/// **Why a second knob exists at all.** `request_timeout_ms` used to govern two
+/// things with opposite constraints, and every round of review patched the
+/// arithmetic while the defect reappeared one level up:
+///
+/// * **bring-up** sits on the inline-awaited boot path (`AppState::new` →
+///   `autospawn_enabled` → `spawn_admitted` → `tools/list`), so it must be
+///   SHORT and hard-bounded — while it runs, the server does not serve;
+/// * **steady-state `tools/call`** is not on the boot path at all and is
+///   legitimately long.
+///
+/// One knob could satisfy neither: clamping it broke long tool calls, and
+/// widening the boot budget to respect it made boot latency operator-controlled
+/// and unbounded (`"request_timeout_ms": 600000` against a black-holed upstream
+/// stalled boot for 20.5 minutes). Splitting them makes the boot bound hold *by
+/// construction* for every manifest: `connector_bringup_budget` can never
+/// exceed `2 × 15 s + slack`, whatever the manifest asks for.
+///
+/// (Same shape as `trusted_forge_plugin`, one bit that gates both "may hold a
+/// wave scope" and "gets the forge credential passthrough". The general lesson:
+/// when a constant needs adjusting for the third time, stop adjusting it and
+/// look for the second constraint riding on it.)
+///
+/// 15 s is chosen as "generous for a TLS handshake plus a cold upstream's first
+/// response, still short enough that a full slate of dead connectors cannot
+/// push boot past [`super::CONNECTOR_AUTOSPAWN_BUDGET`]".
+pub const MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS: u64 = 15_000;
 
 /// `mcp_http` top-level block. Present iff `kind == "mcp-http"`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -202,16 +236,44 @@ pub struct McpHttpBlock {
     #[serde(default)]
     pub tools_allow: Vec<String>,
 
-    /// Overrides [`MCP_HTTP_DEFAULT_TIMEOUT_MS`].
+    /// Steady-state `tools/call` timeout. Overrides
+    /// [`MCP_HTTP_DEFAULT_TIMEOUT_MS`]. **No upper bound** — see that constant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_timeout_ms: Option<u64>,
+
+    /// Bring-up (`initialize` + `tools/list`) timeout. Capped at
+    /// [`MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`], which `validate` refuses to let a
+    /// manifest exceed.
+    ///
+    /// Absent ⇒ `min(request_timeout_ms, ceiling)`. Deriving the default from
+    /// the call timeout keeps every manifest written before the split meaning
+    /// what it meant (a small `request_timeout_ms` was, in practice, an
+    /// operator asking for a fast bring-up), while the `min` is what makes the
+    /// boot bound hold regardless of what that field says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bringup_timeout_ms: Option<u64>,
 }
 
 impl McpHttpBlock {
+    /// The `tools/call` budget. Long by design; never used for bring-up.
     pub fn timeout_ms(&self) -> u64 {
         self.request_timeout_ms
             .filter(|ms| *ms > 0)
             .unwrap_or(MCP_HTTP_DEFAULT_TIMEOUT_MS)
+    }
+
+    /// The bring-up budget — the one on the inline-awaited boot path.
+    ///
+    /// The trailing `.min(...)` is not belt-and-braces with `validate`: it is
+    /// what makes the bound total. `validate` refuses an explicit value over
+    /// the ceiling, but the DERIVED default comes from an unbounded field, so
+    /// without the clamp `"request_timeout_ms": 600000` would re-create exactly
+    /// the 20.5-minute boot stall the split exists to remove.
+    pub fn bringup_timeout_ms(&self) -> u64 {
+        self.bringup_timeout_ms
+            .filter(|ms| *ms > 0)
+            .unwrap_or_else(|| self.timeout_ms())
+            .min(MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS)
     }
 
     /// Parsed `api_key_in`, `None` when no key is configured.
@@ -763,6 +825,22 @@ impl Manifest {
 impl McpHttpBlock {
     fn validate(&self) -> Result<(), ManifestError> {
         validate_mcp_http_url(self.url.trim())?;
+        // The ceiling is enforced where the manifest is PARSED, not where the
+        // spawn reads it: a connector whose bring-up budget would stall boot
+        // must fail to load, so an operator learns at install time rather than
+        // by watching the server take minutes to answer its first request.
+        if let Some(ms) = self.bringup_timeout_ms
+            && ms > MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS
+        {
+            return Err(ManifestError::invalid(
+                "mcp_http.bringup_timeout_ms",
+                format!(
+                    "must be at most {MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS} ms — bring-up is \
+                     awaited inline during server boot. Raise `request_timeout_ms` \
+                     instead if a long-running `tools/call` is what you need."
+                ),
+            ));
+        }
         match (self.api_key_secret.as_deref(), self.api_key_in.as_deref()) {
             (Some(secret), _) if secret.trim().is_empty() => {
                 return Err(ManifestError::invalid(
@@ -2513,6 +2591,72 @@ mod connector_kind_tests {
         ))
         .unwrap();
         assert_eq!(m.mcp_http.unwrap().timeout_ms(), 10_000);
+    }
+
+    /// The A-fix: the two budgets are separate, and the bring-up one is bounded
+    /// **by construction** — including when it is derived from the unbounded
+    /// call timeout.
+    #[test]
+    fn bringup_timeout_is_capped_however_the_call_timeout_is_configured() {
+        // Derived default tracks a modest call timeout verbatim…
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "request_timeout_ms": 2_000,
+        }})))
+        .unwrap();
+        let block = m.mcp_http.unwrap();
+        assert_eq!(block.timeout_ms(), 2_000);
+        assert_eq!(block.bringup_timeout_ms(), 2_000);
+
+        // …and is clamped as soon as that timeout stops being a sane boot
+        // budget. This is the case that used to stall `AppState::new` for
+        // 20.5 minutes.
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "request_timeout_ms": 600_000,
+        }})))
+        .unwrap();
+        let block = m.mcp_http.unwrap();
+        assert_eq!(
+            block.timeout_ms(),
+            600_000,
+            "a long tools/call budget must stay long"
+        );
+        assert_eq!(
+            block.bringup_timeout_ms(),
+            MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS,
+            "bring-up must not inherit an unbounded call budget"
+        );
+
+        // An explicit bring-up override under the ceiling is honoured…
+        let m = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "request_timeout_ms": 600_000,
+            "bringup_timeout_ms": 750,
+        }})))
+        .unwrap();
+        let block = m.mcp_http.unwrap();
+        assert_eq!(block.bringup_timeout_ms(), 750);
+        assert_eq!(block.timeout_ms(), 600_000);
+    }
+
+    /// …and one over the ceiling is refused at PARSE time, so the operator
+    /// learns at install rather than by watching boot crawl.
+    #[test]
+    fn a_bringup_timeout_over_the_ceiling_is_a_manifest_error() {
+        let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "bringup_timeout_ms": MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS + 1,
+        }})))
+        .expect_err("a bring-up budget over the ceiling must not load");
+        assert!(err.to_string().contains("bringup_timeout_ms"), "{err}");
+
+        // Exactly at the ceiling is fine — the bound is `>`, not `>=`.
+        Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": {
+            "url": "https://x.example/mcp",
+            "bringup_timeout_ms": MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS,
+        }})))
+        .expect("exactly the ceiling must load");
     }
 
     // ---- cli_query block -------------------------------------------------

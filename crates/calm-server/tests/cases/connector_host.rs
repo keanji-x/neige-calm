@@ -108,7 +108,19 @@ enum StubMode {
     /// behaviour the scrub-before-truncate rule exists for, and the only way
     /// to reach the production expression pair end-to-end.
     EchoQueryIn4xx,
+    /// Healthy bring-up, then a `tools/call` that takes
+    /// [`SLOW_TOOLS_CALL`] to answer — far longer than any bring-up budget a
+    /// manifest is allowed to ask for. This is the report-generating tool the
+    /// call timeout exists for; it must succeed.
+    SlowToolsCall,
+    /// Healthy, but echoes the request's own query string (API key and all)
+    /// into every `tools/list` description and every `tools/call` result. The
+    /// success-path leak the scrub layer exists for.
+    EchoQueryInResults,
 }
+
+/// How long [`StubMode::SlowToolsCall`] takes to answer a `tools/call`.
+const SLOW_TOOLS_CALL: Duration = Duration::from_millis(1_500);
 
 struct StubServer {
     addr: std::net::SocketAddr,
@@ -209,14 +221,30 @@ impl StubServer {
                         std::future::pending::<()>().await;
                     }
 
+                    if mode == StubMode::SlowToolsCall && method == "tools/call" {
+                        sleep(SLOW_TOOLS_CALL).await;
+                    }
+
+                    // What an upstream that quotes our own request back looks
+                    // like on the SUCCESS path. Includes the API key verbatim.
+                    let echo = if mode == StubMode::EchoQueryInResults {
+                        format!(
+                            " [upstream saw ?{}]",
+                            target.split_once('?').map(|(_, q)| q).unwrap_or("")
+                        )
+                    } else {
+                        String::new()
+                    };
+
                     let result = match method.as_str() {
                         "initialize" => json!({
                             "protocolVersion": "2025-06-18",
                             "capabilities": { "tools": {} },
-                            "serverInfo": { "name": "stub-mcp", "version": "0.8.4" }
+                            "serverInfo": { "name": format!("stub-mcp{echo}"), "version": "0.8.4" }
                         }),
                         "tools/list" => json!({ "tools": [
-                            { "name": ALLOWED_TOOL, "description": "institutional reports",
+                            { "name": ALLOWED_TOOL,
+                              "description": format!("institutional reports{echo}"),
                               "inputSchema": { "type": "object",
                                                "properties": { "page": { "type": "number" } } } },
                             { "name": ALLOWED_TOOL_2, "description": "one report",
@@ -231,7 +259,8 @@ impl StubServer {
                                 .unwrap_or_default()
                                 .to_string();
                             json!({
-                                "content": [{ "type": "text", "text": format!("rows for {called}") }],
+                                "content": [{ "type": "text",
+                                              "text": format!("rows for {called}{echo}") }],
                                 "structuredContent": { "rows": 3, "tool": called },
                                 "isError": false
                             })
@@ -335,7 +364,37 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 // On-disk fixtures
 // ===========================================================================
 
-fn connector_manifest_json(url: &str, timeout_ms: u64) -> Value {
+/// The two budgets a connector manifest carries, kept together so a test that
+/// cares about only one still has to say what the other is (round-4 finding A:
+/// they are separate constraints and conflating them is the whole defect).
+#[derive(Clone, Copy)]
+struct Budgets {
+    /// `mcp_http.request_timeout_ms` — the steady-state `tools/call` budget.
+    call_ms: u64,
+    /// `mcp_http.bringup_timeout_ms`. `None` ⇒ omit the field, exercising the
+    /// derived `min(call_ms, ceiling)` default.
+    bringup_ms: Option<u64>,
+}
+
+impl Budgets {
+    /// The pre-split shape: one number, and the bring-up budget derived from it.
+    fn uniform(ms: u64) -> Self {
+        Self {
+            call_ms: ms,
+            bringup_ms: None,
+        }
+    }
+}
+
+fn connector_manifest_json(url: &str, budgets: Budgets) -> Value {
+    let mut m = connector_manifest_base(url, budgets.call_ms);
+    if let Some(ms) = budgets.bringup_ms {
+        m["mcp_http"]["bringup_timeout_ms"] = json!(ms);
+    }
+    m
+}
+
+fn connector_manifest_base(url: &str, timeout_ms: u64) -> Value {
     json!({
         "manifest_version": 1,
         "kind": "mcp-http",
@@ -357,11 +416,20 @@ fn connector_manifest_json(url: &str, timeout_ms: u64) -> Value {
 /// source must live there so install hits the `src == dst` short-circuit and
 /// lands a real directory, not the symlink `load_from_dir` skips).
 fn write_connector(plugins_dir: &Path, url: &str, timeout_ms: u64, secret_mode: u32) -> PathBuf {
+    write_connector_with(plugins_dir, url, Budgets::uniform(timeout_ms), secret_mode)
+}
+
+fn write_connector_with(
+    plugins_dir: &Path,
+    url: &str,
+    budgets: Budgets,
+    secret_mode: u32,
+) -> PathBuf {
     let dir = plugins_dir.join(CONNECTOR_ID);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("manifest.json"),
-        serde_json::to_string_pretty(&connector_manifest_json(url, timeout_ms)).unwrap(),
+        serde_json::to_string_pretty(&connector_manifest_json(url, budgets)).unwrap(),
     )
     .unwrap();
 
@@ -1315,7 +1383,7 @@ async fn many_unreachable_connectors_do_not_scale_boot_latency() {
         let id = format!("dead-connector-{i}");
         let dir = b.plugins_dir.join(&id);
         std::fs::create_dir_all(&dir).unwrap();
-        let mut manifest = connector_manifest_json(&stub.url(), timeout_ms);
+        let mut manifest = connector_manifest_json(&stub.url(), Budgets::uniform(timeout_ms));
         manifest["id"] = json!(id);
         std::fs::write(
             dir.join("manifest.json"),
@@ -1453,16 +1521,25 @@ async fn a_connector_that_came_up_is_not_overwritten_by_the_elapsing_boot_budget
     let (release_gate, gate) = oneshot::channel::<()>();
     let stub = StubServer::start_gated(StubMode::Normal, Some(gate)).await;
     let b = boot().await;
-    // 1 s per request ⇒ a 2.5 s per-connector cap, which the loop budget below
-    // must exceed: the point of this test is the LOOP bound firing on a
-    // connector that already came up, not the per-connector one.
-    write_connector(&b.plugins_dir, &stub.url(), 1_000, 0o600);
+    // 3 s per bring-up request ⇒ a 6.5 s per-connector cap, which the loop
+    // budget below must exceed: the point of this test is the LOOP bound firing
+    // on a connector that already came up, not the per-connector one.
+    //
+    // **The 3 s is flake headroom, and it is deliberately not milliseconds.**
+    // The stub gates `tools/list` while this clock runs, and between
+    // `wait_for_tools_list()` and `release_gate` the test polls at 5 ms
+    // granularity, spawns a task, checks out a pool connection (running
+    // `after_connect`), executes `BEGIN IMMEDIATE`, and round-trips a oneshot.
+    // At the old 1 s that whole sequence had to finish inside one second on a
+    // loaded box, and blowing it produced a timeout that looked exactly like a
+    // real regression.
+    write_connector_with(&b.plugins_dir, &stub.url(), Budgets::uniform(3_000), 0o600);
     let host = b.host();
     seed_row(&b, CONNECTOR_ID).await;
 
-    // > (2 × 1 s + 500 ms slack) + 500 ms, so `autospawn_enabled_within` uses
+    // > (2 × 3 s + 500 ms slack) + 500 ms, so `autospawn_enabled_within` uses
     // it verbatim rather than widening it (see the F1 fix).
-    const BUDGET: Duration = Duration::from_millis(3_500);
+    const BUDGET: Duration = Duration::from_millis(7_500);
     let loop_host = Arc::clone(&host);
     let autospawn = tokio::spawn(async move { loop_host.autospawn_enabled_within(BUDGET).await });
 
@@ -1524,7 +1601,7 @@ async fn a_connector_that_came_up_is_not_overwritten_by_the_elapsing_boot_budget
 
     let _ = release_db.send(());
     let _ = holder.await;
-    tokio::time::timeout(Duration::from_secs(15), autospawn)
+    tokio::time::timeout(Duration::from_secs(30), autospawn)
         .await
         .expect("autospawn never returned")
         .expect("autospawn task panicked");
@@ -1536,6 +1613,303 @@ async fn a_connector_that_came_up_is_not_overwritten_by_the_elapsing_boot_budget
         "{:?}",
         status.status
     );
+}
+
+// ===========================================================================
+// Round-4 finding A — the bring-up budget and the tools/call budget are two
+// knobs with opposite constraints
+// ===========================================================================
+
+/// Boot must stay bounded **however large the operator's `tools/call` budget
+/// is**, without a `min`/`max` juggling act at the spawn site.
+///
+/// Before the split, `connector_bringup_budget` read `request_timeout_ms`, and
+/// `autospawn_enabled_within` then widened the loop budget to fit it — so
+/// `"request_timeout_ms": 600000` against a black-holed upstream stalled
+/// `AppState::new` for 2 × 600 s + slack ≈ 20.5 minutes, during which the
+/// server does not serve. The value here is absurd on purpose.
+///
+/// Mutation witness: point `connector_bringup_budget` back at `timeout_ms()`
+/// and this test stops finishing at all — the outer `tokio::time::timeout`
+/// fires instead of the assertion.
+#[tokio::test]
+async fn an_absurd_tools_call_budget_cannot_stall_boot() {
+    let stub = StubServer::start(StubMode::Hang).await;
+    let b = boot().await;
+    write_connector_with(
+        &b.plugins_dir,
+        &stub.url(),
+        Budgets {
+            // Ten minutes per tool call — legal, and irrelevant to boot.
+            call_ms: 600_000,
+            // …while bring-up is what the boot path actually waits on.
+            bringup_ms: Some(400),
+        },
+        0o600,
+    );
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(20), host.autospawn_enabled())
+        .await
+        .expect("boot autospawn never returned; the bring-up bound is not independent");
+    let elapsed = started.elapsed();
+
+    // 400 ms × 2 + 500 ms slack = 1.3 s. Nothing about the 600 s call budget
+    // may appear in this number.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "boot took {elapsed:?} — the tools/call budget is leaking onto the boot path"
+    );
+    let status = host.status(CONNECTOR_ID).await.expect("observable entry");
+    let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
+        panic!("expected Unavailable, got {:?}", status.status);
+    };
+    assert!(
+        reason.contains("tools/list") || reason.contains("bringup_timeout_ms"),
+        "the reason must name what failed: {reason}"
+    );
+}
+
+/// The bound the test above exercises for one fixture, stated as the invariant
+/// it actually is: **no manifest that loads** can make one connector's bring-up
+/// cap exceed [`MAX_CONNECTOR_BRINGUP_BUDGET`].
+///
+/// This is what "bounded by construction" has to mean after three rounds of
+/// adjusting constants. It drives the real `Manifest::parse` (so a value the
+/// validator refuses cannot be smuggled in) and the real
+/// `connector_bringup_budget` (so the formula and the constant cannot drift).
+#[test]
+fn no_loadable_manifest_can_exceed_the_bringup_cap() {
+    use calm_server::plugin_host::manifest::{
+        MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS as CEILING, Manifest,
+    };
+    use calm_server::plugin_host::{MAX_CONNECTOR_BRINGUP_BUDGET, connector_bringup_budget};
+
+    let hostile = [
+        json!({}),
+        json!({ "request_timeout_ms": 600_000 }),
+        json!({ "request_timeout_ms": u32::MAX }),
+        json!({ "bringup_timeout_ms": CEILING }),
+        json!({ "bringup_timeout_ms": CEILING, "request_timeout_ms": 600_000 }),
+        json!({ "bringup_timeout_ms": 0, "request_timeout_ms": 600_000 }),
+        // …and the values a validator must REFUSE outright.
+        json!({ "bringup_timeout_ms": CEILING + 1 }),
+        json!({ "bringup_timeout_ms": u64::MAX }),
+    ];
+    let mut loaded = 0;
+    let mut refused = 0;
+    for extra in hostile {
+        let mut m = connector_manifest_base("https://x.example/mcp", 10_000);
+        m["mcp_http"]
+            .as_object_mut()
+            .unwrap()
+            .remove("request_timeout_ms");
+        for (k, v) in extra.as_object().unwrap() {
+            m["mcp_http"][k] = v.clone();
+        }
+        match Manifest::parse(&m.to_string()) {
+            Err(_) => refused += 1,
+            Ok(parsed) => {
+                loaded += 1;
+                let budget = connector_bringup_budget(&parsed);
+                assert!(
+                    budget <= MAX_CONNECTOR_BRINGUP_BUDGET,
+                    "{m} yields a {budget:?} bring-up cap, over the \
+                     {MAX_CONNECTOR_BRINGUP_BUDGET:?} bound"
+                );
+            }
+        }
+    }
+    // Neither half may be vacuous: some of these must load, and some must be
+    // refused rather than silently clamped.
+    assert!(loaded >= 6, "only {loaded} manifests loaded");
+    assert_eq!(refused, 2, "the over-ceiling values must be refused");
+}
+
+/// The other half of the same split: a `tools/call` that runs far longer than
+/// any legal bring-up budget must still succeed.
+///
+/// Mutation witness: make `tools_call` spend `Phase::Bringup` and this fails
+/// with a transport timeout — 1.5 s of upstream work against a 400 ms bring-up
+/// deadline.
+#[tokio::test]
+async fn a_long_running_tools_call_outlives_the_bringup_budget() {
+    let stub = StubServer::start(StubMode::SlowToolsCall).await;
+    let b = boot().await;
+    write_connector_with(
+        &b.plugins_dir,
+        &stub.url(),
+        Budgets {
+            call_ms: 20_000,
+            bringup_ms: Some(400),
+        },
+        0o600,
+    );
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+    host.spawn(CONNECTOR_ID)
+        .await
+        .expect("a prompt upstream must come up inside a 400 ms bring-up budget");
+
+    let ConnectorClient::Http(client) = host
+        .connector_client(CONNECTOR_ID)
+        .await
+        .expect("live client")
+    else {
+        panic!("expected the http connector client");
+    };
+    let started = Instant::now();
+    let out = client
+        .tools_call(ALLOWED_TOOL, json!({ "page": 1 }))
+        .await
+        .expect("a long-running tool call must not be cut off by the bring-up budget");
+    let elapsed = started.elapsed();
+
+    // The upstream really was slow — otherwise the deadline was never tested.
+    assert!(
+        elapsed >= SLOW_TOOLS_CALL,
+        "the fixture must actually outlast the bring-up budget, took {elapsed:?}"
+    );
+    let text = serde_json::to_string(&out).unwrap();
+    assert!(text.contains(&format!("rows for {ALLOWED_TOOL}")), "{text}");
+}
+
+// ===========================================================================
+// Round-4 finding B — the success path is scrubbed after parsing
+// ===========================================================================
+
+/// An upstream that quotes our own query string back inside `tools/list`
+/// descriptions and `tools/call` results is the success-path leak: those
+/// strings become `ExposedTool` entries agents read and wave-transcript
+/// payloads. Nothing here is an error path, so `MAX_UPSTREAM_DETAIL_CHARS` and
+/// the 4xx arm are not involved — this is the JSON-tree scrub.
+#[tokio::test]
+async fn a_success_path_that_echoes_the_query_never_leaks_the_key() {
+    let stub = StubServer::start(StubMode::EchoQueryInResults).await;
+    let b = boot().await;
+    write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+    host.spawn(CONNECTOR_ID).await.expect("connector spawns");
+
+    // The fixture really did put the key on the wire AND echo it back.
+    assert!(
+        stub.queries().iter().any(|q| q.contains(SECRET_VALUE)),
+        "the fixture must actually send the key: {:?}",
+        stub.queries()
+    );
+
+    // 1. The materialized tool catalog — what agents and operators read.
+    let manifest = host.registry().get(CONNECTOR_ID).expect("registry entry");
+    let catalog = serde_json::to_string(&manifest.exposes_tools).unwrap();
+    assert!(
+        catalog.contains("upstream saw"),
+        "the fixture must have echoed into the description: {catalog}"
+    );
+    assert!(!catalog.contains(SECRET_VALUE), "{catalog}");
+    assert!(catalog.contains("<redacted>"), "{catalog}");
+
+    // 2. The `tools/call` result — what reaches the wave transcript.
+    let ConnectorClient::Http(client) = host
+        .connector_client(CONNECTOR_ID)
+        .await
+        .expect("live client")
+    else {
+        panic!("expected the http connector client");
+    };
+    let out = client.tools_call(ALLOWED_TOOL, json!({})).await.unwrap();
+    let text = serde_json::to_string(&out).unwrap();
+    assert!(text.contains("upstream saw"), "fixture check: {text}");
+    assert!(!text.contains(SECRET_VALUE), "{text}");
+    assert!(text.contains("<redacted>"), "{text}");
+}
+
+// ===========================================================================
+// Round-4 finding C — the reconcile decision and its emission must agree
+// ===========================================================================
+
+/// `publish_unavailable` returning `false` is a SNAPSHOT taken under the
+/// process-table lock and then released. The old code emitted `Running` after
+/// that release, so a `stop()` landing in the window removed the entry and
+/// emitted `Disabled` — and this stale `Running` then overwrote it. The
+/// persisted and broadcast state said a connector with no client and no tools
+/// was running.
+///
+/// Driven without racing anything: the connector is stopped **before**
+/// `reaffirm_running` is called, so the emission has to notice on its own that
+/// its decision no longer holds.
+#[tokio::test]
+async fn the_boot_budget_reconcile_does_not_resurrect_a_stopped_connector() {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+    host.spawn(CONNECTOR_ID).await.expect("connector spawns");
+    assert!(
+        host.reaffirm_running(CONNECTOR_ID).await,
+        "sanity: it is up"
+    );
+
+    // The operator disables it. This is the concurrent `stop()` of the race,
+    // resolved to its completed form so the test is deterministic.
+    host.stop(CONNECTOR_ID).await.expect("stop");
+    assert!(host.status(CONNECTOR_ID).await.is_none());
+
+    // Now the boot-budget arm gets around to re-emitting. It must not.
+    assert!(
+        !host.reaffirm_running(CONNECTOR_ID).await,
+        "a connector that is gone must not be re-announced as Running"
+    );
+
+    // …and the last word in the event log is still `disabled`.
+    let states = plugin_state_events(&b).await;
+    assert_eq!(
+        states.last().map(String::as_str),
+        Some("disabled"),
+        "the persisted+broadcast state must end at disabled: {states:?}"
+    );
+    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+}
+
+/// The mirror case, so the test above cannot pass by never emitting: a
+/// connector that IS up and not stopping gets its `Running` re-announced, which
+/// is the whole reason the arm exists (the dropped spawn future never reached
+/// its own `emit_state`).
+#[tokio::test]
+async fn the_boot_budget_reconcile_does_re_emit_for_a_live_connector() {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+    host.spawn(CONNECTOR_ID).await.expect("connector spawns");
+
+    let before = plugin_state_events(&b).await.len();
+    assert!(host.reaffirm_running(CONNECTOR_ID).await);
+    let after = plugin_state_events(&b).await;
+    assert_eq!(after.len(), before + 1, "{after:?}");
+    assert_eq!(after.last().map(String::as_str), Some("running"));
+}
+
+/// Every `PluginState` state string recorded for [`CONNECTOR_ID`], oldest
+/// first. Reads the persisted log rather than the live table, because the
+/// defect being pinned is about what was PERSISTED and BROADCAST.
+async fn plugin_state_events(b: &Boot) -> Vec<String> {
+    b.repo
+        .events_since(0, 500)
+        .await
+        .expect("events")
+        .into_iter()
+        .filter_map(|(_, _, _, event)| match event {
+            calm_server::event::Event::PluginState { id, state, .. } if id == CONNECTOR_ID => {
+                Some(state)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// Round-3 F3: the scrub-before-truncate rule had only a unit test over the

@@ -311,11 +311,27 @@ pub struct PluginHost {
     /// #1164 §2.7(1) — recorded order of the two connector-spawn steps whose
     /// RELATIVE ORDER is the invariant. See [`Self::connector_spawn_order`].
     spawn_order: std::sync::Mutex<HashMap<String, ConnectorSpawnOrder>>,
+    /// Serializes "decide what the terminal state is" with "emit it", for the
+    /// two paths that can disagree about a single connector at the same moment.
+    ///
+    /// The process table alone cannot do this. A read of `live` is a SNAPSHOT:
+    /// [`Self::reaffirm_running`] takes the table lock, sees `Running`, drops
+    /// the lock, and only then awaits `emit_state`. In that window a concurrent
+    /// [`Self::stop`] can remove the entry and emit `Disabled` — leaving the
+    /// persisted and broadcast state falsely `Running` for a connector that is
+    /// gone. Holding a *sync* mutex across those awaits is not an option
+    /// (`emit_state` writes to the repo), hence an async one; it is taken only
+    /// around the short decide-and-emit tails, never across the network.
+    ///
+    /// This is the mirror image of the F0 bug: F0 was a stale `Unavailable`
+    /// overwriting a live `Running`, this is a stale `Running` overwriting a
+    /// live `Disabled`. One lock closes both directions.
+    state_emit: Mutex<()>,
 }
 
 /// Round trips `connect_mcp_http` makes: `initialize` then `tools/list`. The
 /// outer bring-up timeout is this multiple of the per-request budget, because
-/// `mcp_http.request_timeout_ms` configures ONE request, not the whole spawn.
+/// `mcp_http.bringup_timeout_ms` configures ONE request, not the whole spawn.
 const MCP_HTTP_ROUND_TRIPS: u32 = 2;
 
 /// Headroom on top of `MCP_HTTP_ROUND_TRIPS × request_timeout_ms` for the work
@@ -341,21 +357,38 @@ const CONNECTOR_BRINGUP_SLACK: Duration = Duration::from_millis(500);
 /// #7 requires materialization to have happened before the boot audit loop
 /// reads `exposes_tools`, so bring-up must remain inline.
 ///
-/// **Floor is enforced by construction, not by choosing a big number.**
-/// `mcp_http.request_timeout_ms` has no upper bound, so no constant can be
-/// "comfortably larger" than every connector's own cap: a manifest asking for
-/// 15 s per request already wants `2 × 15 s + 500 ms = 30.5 s`. A constant
-/// floor therefore guaranteed that such a connector was cut off by the LOOP
-/// budget at boot — blaming "earlier connectors" that need not exist — while
-/// `POST /enable`, which has no loop budget, brought the same connector up
-/// against its own cap. Boot and enable disagreed about the same manifest.
-/// [`PluginHost::autospawn_enabled_within`] widens this value to
-/// [`connector_bringup_budget`]'s largest value over the enabled connectors
-/// (plus [`CONNECTOR_BRINGUP_SLACK`], so the per-connector bound is always the
-/// one that fires first), which makes "a lone connector always gets its full
-/// cap at boot" true for every manifest rather than for manifests under a
-/// magic threshold.
+/// **Floor is enforced by construction, not by choosing a big number.** A
+/// constant floor alone guaranteed that a connector whose own cap exceeded it
+/// was cut off by the LOOP budget at boot — blaming "earlier connectors" that
+/// need not exist — while `POST /enable`, which has no loop budget, brought the
+/// same connector up against its own cap. Boot and enable disagreed about the
+/// same manifest. [`PluginHost::autospawn_enabled_within`] therefore widens this
+/// value to [`connector_bringup_budget`]'s largest value over the enabled
+/// connectors (plus [`CONNECTOR_BRINGUP_SLACK`], so the per-connector bound is
+/// always the one that fires first).
+///
+/// **And that widening is itself bounded, which is what makes boot latency an
+/// invariant rather than a hope.** It was not always: while one manifest field
+/// governed both bring-up and `tools/call`, `"request_timeout_ms": 600000`
+/// widened this budget to 20.5 minutes — the server did not serve for that
+/// long, at the operator's unwitting discretion. The bring-up budget now has
+/// its own field with a ceiling validated at manifest parse time
+/// ([`manifest::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`]), so
+/// [`MAX_CONNECTOR_BRINGUP_BUDGET`] caps `widest` for EVERY manifest that can
+/// load, and the widened loop budget can never exceed
+/// `max(30 s, MAX_CONNECTOR_BRINGUP_BUDGET + slack)`.
 pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
+
+/// The largest value [`connector_bringup_budget`] can return for any manifest
+/// that passes `Manifest::validate`.
+///
+/// This is the constant that makes the boot bound structural. Asserted against
+/// the real function in the manifest-driven test suite; if the formula or the
+/// ceiling moves without this following, that test fails.
+pub const MAX_CONNECTOR_BRINGUP_BUDGET: Duration = Duration::from_millis(
+    manifest::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS * MCP_HTTP_ROUND_TRIPS as u64
+        + CONNECTOR_BRINGUP_SLACK.as_millis() as u64,
+);
 
 /// The wall-clock cap on ONE connector's bring-up — the single source of the
 /// formula.
@@ -367,10 +400,15 @@ pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
 ///
 /// A connector kind with no network bring-up (there is none in this slice —
 /// `cli-query` has no enable path yet) costs only the slack.
+///
+/// Reads `bringup_timeout_ms`, **never** `request_timeout_ms`: the latter is
+/// the (uncapped) `tools/call` budget and has no business on the boot path.
+/// Because the former is capped at manifest parse time, the result is bounded
+/// by [`MAX_CONNECTOR_BRINGUP_BUDGET`] for every manifest that can load.
 pub fn connector_bringup_budget(manifest: &Manifest) -> Duration {
     match manifest.mcp_http.as_ref() {
         Some(block) => {
-            Duration::from_millis(block.timeout_ms()) * MCP_HTTP_ROUND_TRIPS
+            Duration::from_millis(block.bringup_timeout_ms()) * MCP_HTTP_ROUND_TRIPS
                 + CONNECTOR_BRINGUP_SLACK
         }
         None => CONNECTOR_BRINGUP_SLACK,
@@ -494,6 +532,7 @@ impl PluginHost {
             write,
             processes: std::sync::Mutex::new(ProcessTable::default()),
             spawn_order: std::sync::Mutex::new(HashMap::new()),
+            state_emit: Mutex::new(()),
         }
     }
 
@@ -611,13 +650,18 @@ impl PluginHost {
             }
         };
         // The budget must never be smaller than a single connector's own cap,
-        // or a lone connector with a large `request_timeout_ms` is cut off by
+        // or a lone connector with a large `bringup_timeout_ms` is cut off by
         // the LOOP bound at boot and comes up fine through `POST /enable` —
         // two different answers for one manifest, with a reason that blames
         // earlier connectors that need not exist. See
         // [`CONNECTOR_AUTOSPAWN_BUDGET`]. The extra slack keeps the
         // per-connector bound the one that fires first, so the operator-facing
         // reason names the connector's own timeout rather than the budget.
+        //
+        // This widening is bounded: `connector_bringup_budget` cannot exceed
+        // `MAX_CONNECTOR_BRINGUP_BUDGET`, because the field it reads has a
+        // ceiling validated at manifest parse time. That is what stops an
+        // operator-supplied number from turning boot into a 20-minute stall.
         let widest = rows
             .iter()
             .filter(|p| p.enabled)
@@ -714,8 +758,14 @@ impl PluginHost {
                         // The dropped future never reached its own
                         // `emit_state(Running)`, so the event log would
                         // otherwise sit at `spawning` for a live connector.
-                        self.emit_state(&plug.id, &PluginRuntimeStatus::Running)
-                            .await;
+                        //
+                        // NOT `emit_state(Running)` directly: `publish_unavailable`
+                        // returning `false` is a SNAPSHOT taken under the table
+                        // lock and then released. `reaffirm_running` re-decides
+                        // and emits as one serialized step, so a `stop()` that
+                        // lands in the window cannot be overwritten by this
+                        // stale `Running`.
+                        self.reaffirm_running(&plug.id).await;
                     }
                 }
             }
@@ -1067,7 +1117,7 @@ impl PluginHost {
 
         // ONE outer wall-clock bound over the WHOLE bring-up (§2.2).
         //
-        // `mcp_http.request_timeout_ms` is a PER-REQUEST budget, and
+        // `mcp_http.bringup_timeout_ms` is a PER-REQUEST budget, and
         // `connect_mcp_http` makes two round trips (`initialize`, then
         // `tools/list`). Setting the outer bound to exactly one request's worth
         // therefore condemned a healthy-but-slow upstream — or one that merely
@@ -1076,7 +1126,11 @@ impl PluginHost {
         // plus slack for what sits outside ureq's own clock (DNS, TLS, and
         // `spawn_blocking` queue delay), so it stays a real cap on a black-holed
         // host without redefining what the operator configured.
-        let per_request = Duration::from_millis(block.timeout_ms());
+        //
+        // `request_timeout_ms` is deliberately NOT consulted here: it is the
+        // `tools/call` budget, it may be minutes long, and this expression is
+        // awaited inline by `AppState::new`.
+        let per_request = Duration::from_millis(block.bringup_timeout_ms());
         // One formula, one place: `autospawn_enabled_within` widens the loop
         // budget by this same value, and the two drifting apart is exactly the
         // boot-vs-enable disagreement documented on CONNECTOR_AUTOSPAWN_BUDGET.
@@ -1095,7 +1149,7 @@ impl PluginHost {
                         guard,
                         format!(
                             "connector bring-up timed out after {} ms \
-                             ({} × mcp_http.request_timeout_ms = {} ms, plus {} ms slack)",
+                             ({} × mcp_http.bringup_timeout_ms = {} ms, plus {} ms slack)",
                             budget.as_millis(),
                             MCP_HTTP_ROUND_TRIPS,
                             per_request.as_millis(),
@@ -1315,6 +1369,56 @@ impl PluginHost {
         true
     }
 
+    /// Re-emit `Running` for a connector whose own `emit_state(Running)` never
+    /// ran, but **only if it is still running when the emission happens**.
+    /// Returns whether it emitted.
+    ///
+    /// This exists because "is it Running?" and "say it is Running" cannot be
+    /// two independent steps. `publish_unavailable` answering `false` proves
+    /// only that the entry was `Running` at the instant it held the table lock;
+    /// by the time the caller awaits an emission, a concurrent [`Self::stop`]
+    /// may have removed the entry and emitted `Disabled`, and this emission
+    /// would then be the LAST word — persisting and broadcasting `Running` for
+    /// a connector that no longer exists, with no client and no tools. That is
+    /// the exact mirror of the F0 regression, so it gets the same treatment
+    /// from the other side.
+    ///
+    /// Two things make the decision and the emission agree:
+    ///
+    /// * [`Self::state_emit`] is held across both, and `stop`'s own
+    ///   remove-then-emit tail takes the same lock — so the two orderings are
+    ///   "stop finished, we see no entry and stay quiet" or "we emitted first,
+    ///   and stop's `Disabled` lands after us". Either way the last word is
+    ///   correct;
+    /// * `stopping` is checked as well as `Running`. `stop` sets that flag under
+    ///   the table lock at its very start, so a stop that is merely IN FLIGHT
+    ///   (still awaiting subscriptions/supervisor teardown, not yet at its
+    ///   locked tail) also suppresses this emission rather than racing it.
+    ///
+    /// **Test coverage, stated honestly.** The re-check is driven by
+    /// `the_boot_budget_reconcile_does_not_resurrect_a_stopped_connector` and
+    /// is mutation-verified (delete it and that test fails). The `state_emit`
+    /// serialization and the `stopping` arm are not separately test-driven:
+    /// both cover windows an external caller cannot open deterministically —
+    /// the only tests available would be racy ones, which prove nothing when
+    /// green. They are correct by the lock discipline above, not by assertion.
+    /// `pub` so the acceptance test can drive THIS function rather than a
+    /// fixture that re-implements its check: the defect is precisely that the
+    /// decision and the emission were two steps, and only the real one can
+    /// witness that they have been joined.
+    pub async fn reaffirm_running(self: &Arc<Self>, id: &str) -> bool {
+        let _serialized = self.state_emit.lock().await;
+        {
+            let table = self.lock_table();
+            match table.live.get(id) {
+                Some(rp) if matches!(rp.status, PluginRuntimeStatus::Running) && !rp.stopping => {}
+                _ => return false,
+            }
+        }
+        self.emit_state(id, &PluginRuntimeStatus::Running).await;
+        true
+    }
+
     /// Gracefully stop a plugin. Sets `stopping=true` so the supervisor task
     /// won't respawn, sends SIGTERM via PluginProcess::stop, awaits exit.
     ///
@@ -1387,12 +1491,19 @@ impl PluginHost {
             }
         }
 
+        // Removing the entry and announcing `Disabled` is ONE serialized step.
+        // Without the lock these are two, and `reaffirm_running` can slip a
+        // stale `Running` between them — see its doc. The lock is taken here,
+        // after the (possibly slow) child teardown above, so it never spans a
+        // SIGTERM grace period.
         {
-            let mut table = self.lock_table();
-            table.live.remove(id);
+            let _serialized = self.state_emit.lock().await;
+            {
+                let mut table = self.lock_table();
+                table.live.remove(id);
+            }
+            self.emit_state(id, &PluginRuntimeStatus::Disabled).await;
         }
-
-        self.emit_state(id, &PluginRuntimeStatus::Disabled).await;
         Ok(())
     }
 

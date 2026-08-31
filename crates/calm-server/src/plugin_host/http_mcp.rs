@@ -24,19 +24,27 @@
 //!   does not exist in this codebase (only `KERNEL_PROTOCOL_VERSION`), so v0
 //!   records the server's version in a log line and moves on.
 //!
-//! **Timeouts are a correctness requirement, not a nicety.** `tools/list`
-//! runs inside `spawn_admitted`, which `AppState::new` awaits inline via
-//! `autospawn_enabled`. An upstream that accepts the connection and then
-//! never answers would otherwise hang the entire server boot. Both the
-//! connect and the read deadline are therefore set explicitly — but they are
-//! PER-REQUEST, not a total bound: `initialize` and `tools/list` are two round
-//! trips, and `spawn_blocking` queue delay plus DNS sit outside ureq's own
-//! clock. There are two bounds above this one, and they are different things:
+//! **Timeouts are a correctness requirement, not a nicety, and there are TWO
+//! of them because they answer opposite questions.** `tools/list` runs inside
+//! `spawn_admitted`, which `AppState::new` awaits inline via
+//! `autospawn_enabled`: while bring-up runs, the server does not serve, so the
+//! bring-up deadline must be short and hard-bounded
+//! ([`super::manifest::MCP_HTTP_MAX_BRINGUP_TIMEOUT_MS`], enforced at manifest
+//! parse time). A steady-state `tools/call` is on nobody's boot path and may
+//! legitimately take minutes, so its deadline is generous and uncapped. One
+//! knob carrying both constraints is what produced three successive rounds of
+//! "adjust the arithmetic, watch the defect reappear one level up"; see that
+//! constant for the history.
+//!
+//! Neither deadline is a TOTAL bound on bring-up: `initialize` and `tools/list`
+//! are two round trips, and `spawn_blocking` queue delay plus DNS sit outside
+//! ureq's own clock. There are two bounds above this one:
 //!
 //! * `PluginHost::spawn_mcp_http` wraps ONE connector's bring-up in a
-//!   `tokio::time::timeout` of `2 × request_timeout_ms + slack` — a multiple,
-//!   because the value the operator configured is a per-REQUEST budget and
-//!   this path makes two requests;
+//!   `tokio::time::timeout` of `2 × bringup_timeout_ms + slack` — a multiple,
+//!   because the configured value is per-REQUEST and this path makes two
+//!   requests. Since `bringup_timeout_ms` has a validated ceiling, this
+//!   product has one too;
 //! * `PluginHost::autospawn_enabled` bounds the connector portion of boot as a
 //!   WHOLE. Bring-up is still inline and still serial (acceptance §4 #7 needs
 //!   materialization to precede the boot audit's `exposes_tools` read), so
@@ -53,21 +61,45 @@
 //! **scrub before you truncate**, never after.
 //!
 //! The middle rule is enforced at ONE choke point, in
-//! [`HttpMcpClient::request`], on the raw response text before it is parsed.
-//! Scrubbing only the two identity strings `initialize` logs would have left
-//! the success path open: `tools/list` descriptions become `ExposedTool`
-//! entries that agents and operators read, and a `tools/call` result reaches
-//! the wave transcript — both are upstream-authored and both could echo our
-//! query string back. Replacing a key literal with `<redacted>` inside a JSON
-//! document is safe (the marker introduces no quote, backslash or control
-//! character), so the scrub can sit before `serde_json::from_str` and cover
-//! every string the module can hand back, in one pass.
+//! [`HttpMcpClient::request`]. Scrubbing only the two identity strings
+//! `initialize` logs would leave the success path open: `tools/list`
+//! descriptions become `ExposedTool` entries that agents and operators read,
+//! and a `tools/call` result reaches the wave transcript — both are
+//! upstream-authored and both could echo our query string back.
 //!
-//! The scrub-before-truncate rule is not pedantry: an
-//! upstream that echoes the request URL back inside a long error body gets
-//! truncated to 512 chars, and if that boundary falls inside the key the
-//! surviving prefix is no longer a literal member of `secret_forms`, so a
-//! later `replace` misses it entirely and a partial credential ships.
+//! **That choke point sits AFTER the parse, not before it** ([`parse_scrubbed`]
+//! → [`scrub_value`]). Literal-replacing a credential in the raw response text
+//! is the wrong layer, and it is wrong in both directions:
+//!
+//! * it **corrupts valid JSON** whenever the credential happens to look like
+//!   JSON structure. A credential of `":` matches the separator between a key
+//!   and a string value; one containing `\` collides with escape pairs in
+//!   documents that never echoed the credential at all; a short one (`e`)
+//!   breaks bare tokens like `true`; one that is a substring of a field name
+//!   silently deletes part of that key. All of those turn a healthy upstream
+//!   into "malformed JSON";
+//! * it **misses the secret it exists to catch**. A credential containing a
+//!   newline or any control character appears JSON-*escaped* in the raw text
+//!   (`\n`), so a literal search does not find it — and the DECODED secret then
+//!   reaches `tools/list` descriptions and `tools/call` results on the success
+//!   path. That is a leak, not merely corruption.
+//!
+//! Parsing first and then walking the tree — string values AND object keys —
+//! removes both: every string the module can hand back is scrubbed in its
+//! decoded form, and the document's syntax is never touched.
+//! [`super::connector::read_secrets`] constrains the credential at the source
+//! as defence in depth so the pathological shapes cannot be authored either.
+//! (Residual, accepted: an upstream that echoes an all-digit credential back as
+//! a JSON *number* rather than a string is not covered — there is no string to
+//! scrub, and coercing numbers would corrupt the payload.)
+//!
+//! The raw-text scrub survives in exactly one place: the non-2xx arm, where the
+//! body is an arbitrary error page with nothing to parse. There the
+//! scrub-before-truncate rule applies and is not pedantry — an upstream that
+//! echoes the request URL back inside a long error body gets truncated to 512
+//! chars, and if that boundary falls inside the key the surviving prefix is no
+//! longer a literal member of `secret_forms`, so a later `replace` misses it
+//! entirely and a partial credential ships.
 
 use std::io::Read as _;
 use std::sync::Arc;
@@ -129,7 +161,23 @@ pub struct HttpMcpClient {
     /// ~150-certificate webpki root store and gives up all connection/TLS
     /// reuse, per `tools/call`.
     agent: ureq::Agent,
+    /// Deadline for `initialize` + `tools/list` — the pair on the inline-awaited
+    /// boot path. Hard-capped at manifest parse time.
+    bringup_timeout: Duration,
+    /// Deadline for a steady-state `tools/call`. Uncapped on purpose.
+    call_timeout: Duration,
     next_id: std::sync::atomic::AtomicU64,
+}
+
+/// Which of the two budgets a round trip is spending. There is no default:
+/// picking the wrong one is the whole defect class this type exists to make
+/// unrepresentable, so every call site names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    /// `initialize` / `tools/list` — bounded, because boot waits on it.
+    Bringup,
+    /// `tools/call` — generous, because a real tool may run for minutes.
+    Call,
 }
 
 impl std::fmt::Debug for HttpMcpClient {
@@ -196,7 +244,8 @@ impl HttpMcpClient {
             secret_forms.sort_by_key(|s| std::cmp::Reverse(s.len()));
         }
 
-        let timeout = Duration::from_millis(block.timeout_ms());
+        let bringup_timeout = Duration::from_millis(block.bringup_timeout_ms());
+        let call_timeout = Duration::from_millis(block.timeout_ms());
         Self {
             plugin_id: plugin_id.to_string(),
             log_target: log_target(&base),
@@ -204,13 +253,23 @@ impl HttpMcpClient {
             header_auth,
             secret_forms,
             agent: ureq::AgentBuilder::new()
-                // Both halves matter: `timeout_connect` bounds a black-holed
-                // SYN, `timeout` bounds a server that accepts and then stalls.
-                // Neither is a TOTAL bound — the caller wraps the whole
-                // connector spawn in one outer `tokio::time::timeout` (§2.2).
-                .timeout_connect(timeout)
-                .timeout(timeout)
+                // Connect is bounded by the BRING-UP budget in both phases, and
+                // that is deliberate: opening a TCP+TLS connection is the same
+                // work whether the tool behind it runs for 200 ms or ten
+                // minutes, and `timeout_connect` is the one deadline ureq will
+                // not let a per-request override relax. Bounding it by the
+                // (uncapped) call budget would hand a black-holed host an
+                // operator-controlled stall on the `tools/call` path too.
+                //
+                // The overall per-request deadline is NOT set here: it is
+                // supplied per call from [`Phase`], because the two phases have
+                // opposite constraints. Neither is a TOTAL bound — the caller
+                // wraps the whole connector spawn in one outer
+                // `tokio::time::timeout` (§2.2).
+                .timeout_connect(bringup_timeout)
                 .build(),
+            bringup_timeout,
+            call_timeout,
             next_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -247,7 +306,7 @@ impl HttpMcpClient {
             "capabilities": {},
             "clientInfo": { "name": "neige-kernel", "version": env!("CARGO_PKG_VERSION") },
         });
-        let result = self.request("initialize", params).await?;
+        let result = self.request(Phase::Bringup, "initialize", params).await?;
         // BOTH of these are upstream-authored. The success path is not exempt
         // from the module's scrub invariant: a server that echoes our query
         // string into `serverInfo.name` would otherwise put the API key in the
@@ -280,7 +339,9 @@ impl HttpMcpClient {
 
     /// `tools/list`, returning the raw `tools` array entries.
     pub async fn tools_list(&self) -> Result<Vec<Value>, RpcError> {
-        let result = self.request("tools/list", json!({})).await?;
+        let result = self
+            .request(Phase::Bringup, "tools/list", json!({}))
+            .await?;
         let tools = result
             .get("tools")
             .and_then(|t| t.as_array())
@@ -306,6 +367,7 @@ impl HttpMcpClient {
         );
         let raw = self
             .request(
+                Phase::Call,
                 "tools/call",
                 json!({ "name": name, "arguments": arguments }),
             )
@@ -321,9 +383,9 @@ impl HttpMcpClient {
     ///
     /// The blocking HTTP call is moved onto the blocking pool so the async
     /// runtime keeps turning; the deadline is enforced by the client itself,
-    /// so the blocking task cannot outlive `timeout` by more than scheduling
-    /// jitter.
-    pub async fn request(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+    /// so the blocking task cannot outlive `phase`'s budget by more than
+    /// scheduling jitter.
+    async fn request(&self, phase: Phase, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -340,9 +402,14 @@ impl HttpMcpClient {
         let agent = self.agent.clone();
         let method_owned = method.to_string();
         let target = self.log_target.clone();
-        // Scrubbing must happen INSIDE the closure, before the 512-char clamp
-        // below (module header). Cloning a handful of short strings per request
-        // is cheaper than the class of bug the alternative admits.
+        let deadline = match phase {
+            Phase::Bringup => self.bringup_timeout,
+            Phase::Call => self.call_timeout,
+        };
+        // Scrubbing the non-2xx body must happen INSIDE the closure, before the
+        // 512-char clamp below (module header). Cloning a handful of short
+        // strings per request is cheaper than the class of bug the alternative
+        // admits.
         let secret_forms = self.secret_forms.clone();
 
         // Dropping a `spawn_blocking` JoinHandle does NOT cancel the closure:
@@ -363,6 +430,10 @@ impl HttpMcpClient {
             }
             let mut req = agent
                 .post(&url)
+                // Per-request, from `phase`: `Request::timeout` overrides the
+                // agent's read/write deadlines but NOT `timeout_connect`, which
+                // is exactly the split we want.
+                .timeout(deadline)
                 .set("content-type", "application/json")
                 // The probed server answers `text/event-stream`; accepting
                 // both means a plain-JSON server works unchanged.
@@ -377,6 +448,9 @@ impl HttpMcpClient {
             match req.send_string(&body) {
                 Ok(resp) => read_capped(resp),
                 Err(ureq::Error::Status(code, resp)) => {
+                    // The one surviving RAW-text scrub, and the right layer for
+                    // it: a non-2xx body is an arbitrary error page (HTML, a
+                    // proxy banner, plain text) with no JSON tree to walk.
                     // SCRUB, then clamp. Reversing these two lines is the
                     // partial-key leak the module header describes.
                     let detail = scrub_with(&secret_forms, read_capped(resp).unwrap_or_default());
@@ -407,16 +481,10 @@ impl HttpMcpClient {
         // rule (see the module header). Everything below — `result`, the
         // `tools/list` catalog that becomes `ExposedTool` descriptions, a
         // `tools/call` payload bound for the wave transcript, and the
-        // upstream-authored `error.message` — is derived from this string.
-        let text = self.scrub(text);
-        let payload = strip_sse_envelope(&text).ok_or_else(|| {
-            RpcError::internal(format!(
-                "mcp-http {method_owned}: response carried no JSON payload"
-            ))
-        })?;
-        let parsed: Value = serde_json::from_str(payload).map_err(|e| {
-            RpcError::internal(self.scrub(format!("mcp-http {method_owned}: malformed JSON: {e}")))
-        })?;
+        // upstream-authored `error.message` — is derived from this value, and
+        // it is scrubbed as a JSON TREE (decoded strings and object keys),
+        // never as raw text.
+        let parsed = parse_scrubbed(&self.secret_forms, &text, &method_owned)?;
 
         if let Some(err) = parsed.get("error")
             && !err.is_null()
@@ -429,14 +497,88 @@ impl HttpMcpClient {
                 .to_string();
             // The upstream authored this string; it may quote our own query
             // string back at us (risk R6's residual, narrowed to the one form
-            // we can actually recognize).
-            return Err(RpcError::custom(code, self.scrub(message)));
+            // we can actually recognize). `parse_scrubbed` already walked it —
+            // this is a decoded string value inside the tree it scrubbed.
+            return Err(RpcError::custom(code, message));
         }
         parsed.get("result").cloned().ok_or_else(|| {
             RpcError::internal(format!(
                 "mcp-http {method_owned}: response had neither `result` nor `error`"
             ))
         })
+    }
+}
+
+/// Strip the SSE envelope, parse, and scrub the resulting JSON **tree**.
+///
+/// This is the production choke point for the success path — `request` calls
+/// exactly this and does nothing else with the raw body — so a unit test that
+/// drives this function is driving the real code, not a re-implementation of
+/// it. See the module header for why the scrub must not happen on the raw text.
+///
+/// Recursion is bounded by `serde_json`'s own 128-level nesting limit, which
+/// rejects deeper documents before this function ever sees them; an
+/// attacker-controlled body therefore cannot drive this into a stack overflow.
+fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, RpcError> {
+    let payload = strip_sse_envelope(text).ok_or_else(|| {
+        RpcError::internal(format!(
+            "mcp-http {method}: response carried no JSON payload"
+        ))
+    })?;
+    // `serde_json::Error`'s Display carries a line/column and a category, never
+    // the input — but it is passed through `scrub_with` anyway, because "this
+    // error text is safe" is exactly the assumption this module refuses to make
+    // anywhere else.
+    let mut parsed: Value = serde_json::from_str(payload).map_err(|e| {
+        RpcError::internal(scrub_with(
+            forms,
+            format!("mcp-http {method}: malformed JSON: {e}"),
+        ))
+    })?;
+    scrub_value(forms, &mut parsed);
+    Ok(parsed)
+}
+
+/// Recursively replace every literal in `forms` inside a JSON tree — string
+/// values **and object keys**.
+///
+/// Keys matter as much as values: an upstream is free to answer
+/// `{"<our-api-key>": "…"}`, and a `tools/list` entry's `inputSchema`
+/// properties are object keys that reach `ExposedTool` and, from there, the
+/// agent-visible tool catalog.
+fn scrub_value(forms: &[String], v: &mut Value) {
+    if forms.is_empty() {
+        return;
+    }
+    match v {
+        // `scrub_with` already skips the allocation when nothing matches, so
+        // this arm costs one substring search per form per string on the clean
+        // path — the same shape as the raw-text scrub it replaced, minus the
+        // 4 MiB `String::replace` copies.
+        Value::String(s) => *s = scrub_with(forms, std::mem::take(s)),
+        Value::Array(items) => {
+            for item in items {
+                scrub_value(forms, item);
+            }
+        }
+        Value::Object(map) => {
+            let rekey = map
+                .keys()
+                .any(|k| forms.iter().any(|f| k.contains(f.as_str())));
+            if rekey {
+                let taken = std::mem::take(map);
+                *map = taken
+                    .into_iter()
+                    .map(|(k, v)| (scrub_with(forms, k), v))
+                    .collect();
+            }
+            for (_, child) in map.iter_mut() {
+                scrub_value(forms, child);
+            }
+        }
+        // Numbers, booleans and null carry no string to redact. See the
+        // module header's accepted residual about all-digit credentials.
+        _ => {}
     }
 }
 
@@ -772,6 +914,141 @@ mod tests {
         let out = clamp_chars("日本語です".to_string(), 2);
         assert!(out.starts_with("日本"), "{out}");
         assert!(out.ends_with("(truncated)"), "{out}");
+    }
+
+    // ---- Round-4 finding B: scrub the parsed tree, not the raw text -------
+    //
+    // These drive `parse_scrubbed`, which is the whole of what `request` does
+    // with a 2xx body — not a re-implementation of it. Each one also runs the
+    // OLD order (`scrub_with` on the raw text, then parse) and asserts it
+    // demonstrably misbehaves, so none of them is vacuous.
+
+    /// The corruption direction. A credential containing `":` is a literal
+    /// match for JSON's key/value separator, so replacing it in the raw text
+    /// mangles a document that is otherwise perfectly valid — and the connector
+    /// reports a healthy upstream as "malformed JSON".
+    ///
+    /// `read_secrets` now refuses to let this value be authored, but that is
+    /// the second line of defence, not this one: `HttpMcpClient` is handed a
+    /// credential string and must be correct for whatever it gets.
+    #[test]
+    fn a_json_shaped_credential_does_not_corrupt_an_innocent_response() {
+        let key = r#"":"#;
+        let forms = vec![key.to_string()];
+        let body =
+            r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"t","description":"d"}]}}"#;
+
+        let parsed = parse_scrubbed(&forms, body, "tools/list")
+            .expect("a valid JSON document must survive a hostile credential");
+        assert_eq!(
+            parsed.pointer("/result/tools/0/description"),
+            Some(&Value::String("d".into())),
+            "the document must come through byte-identical: {parsed}"
+        );
+
+        // Mutation witness: the raw-text order really does destroy it.
+        let mangled = scrub_with(&forms, body.to_string());
+        assert!(
+            serde_json::from_str::<Value>(&mangled).is_err(),
+            "the raw-text order must demonstrably corrupt this body, else the \
+             assertion above proves nothing: {mangled}"
+        );
+    }
+
+    /// A credential containing a backslash collides with JSON escape pairs in
+    /// responses that never echoed the credential at all.
+    #[test]
+    fn a_backslash_credential_does_not_corrupt_an_escaped_response() {
+        let key = r"abc\defgh";
+        let forms = vec![key.to_string()];
+        // The upstream describes a Windows path: `C:\dir` — `C:\\dir` on the
+        // wire. Nothing here is the credential.
+        let body = r#"{"result":{"tools":[{"name":"t","description":"C:\\dir"}]}}"#;
+
+        let parsed = parse_scrubbed(&forms, body, "tools/list").expect("must parse");
+        assert_eq!(
+            parsed.pointer("/result/tools/0/description"),
+            Some(&Value::String(r"C:\dir".into())),
+            "an escaped backslash must decode intact: {parsed}"
+        );
+        assert!(
+            !parsed.to_string().contains("redacted"),
+            "nothing was redacted here — the credential does not appear: {parsed}"
+        );
+    }
+
+    /// The LEAK direction, which is the serious one. A credential containing a
+    /// newline appears JSON-escaped on the wire, so literal matching on the raw
+    /// text never finds it — and the DECODED secret then reaches the
+    /// `ExposedTool` description and the `tools/call` result.
+    #[test]
+    fn a_control_character_credential_echoed_by_the_upstream_is_still_redacted() {
+        let key = "line1\nline2xx";
+        let forms = vec![key.to_string()];
+        let body = serde_json::json!({
+            "result": {
+                "tools": [{ "name": "t", "description": format!("rejected key {key}") }],
+                "content": [{ "type": "text", "text": key }],
+            }
+        })
+        .to_string();
+
+        let parsed = parse_scrubbed(&forms, &body, "tools/list").expect("must parse");
+        let rendered = parsed.to_string();
+        assert!(
+            !rendered.contains("line2xx"),
+            "the decoded credential survived into the tool catalog: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"), "{rendered}");
+
+        // Mutation witness: raw-text scrubbing misses it entirely, because the
+        // wire form is `line1\nline2xx` (an escape pair), not the literal.
+        let raw_scrubbed = scrub_with(&forms, body.clone());
+        assert_eq!(
+            raw_scrubbed, body,
+            "the raw-text order must demonstrably match nothing here, else this \
+             test does not distinguish the two layers"
+        );
+        let leaked: Value = serde_json::from_str(&raw_scrubbed).unwrap();
+        assert!(
+            leaked.to_string().contains("line2xx"),
+            "…and the decoded secret really does reach the caller under it"
+        );
+    }
+
+    /// Keys are scrubbed too: an upstream is free to answer
+    /// `{"<our-key>": …}`, and `inputSchema.properties` names reach the
+    /// agent-visible tool catalog.
+    #[test]
+    fn object_keys_are_scrubbed_as_well_as_values() {
+        let key = "sk-keyed-8213";
+        let forms = vec![key.to_string()];
+        let body = format!(r#"{{"result":{{"props":{{"{key}":1,"safe":2}}}}}}"#);
+        let parsed = parse_scrubbed(&forms, &body, "tools/list").expect("must parse");
+        let props = parsed
+            .pointer("/result/props")
+            .unwrap()
+            .as_object()
+            .unwrap();
+        assert!(!props.contains_key(key), "key survived: {parsed}");
+        assert_eq!(props.get("<redacted>"), Some(&serde_json::json!(1)));
+        assert_eq!(props.get("safe"), Some(&serde_json::json!(2)));
+    }
+
+    /// Deeply nested strings are reached, and a no-key client is a no-op.
+    #[test]
+    fn nesting_is_traversed_and_no_key_means_no_walk() {
+        let key = "sk-nested-8213";
+        let forms = vec![key.to_string()];
+        let body = format!(r#"{{"result":{{"a":[{{"b":[["{key}"]]}}]}}}}"#);
+        let parsed = parse_scrubbed(&forms, &body, "x").unwrap();
+        assert_eq!(
+            parsed.pointer("/result/a/0/b/0/0"),
+            Some(&Value::String("<redacted>".into()))
+        );
+
+        let untouched = parse_scrubbed(&[], &body, "x").unwrap();
+        assert!(untouched.to_string().contains(key));
     }
 
     /// No key configured ⇒ nothing to scrub, and no accidental blanket
