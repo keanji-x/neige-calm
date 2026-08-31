@@ -49,6 +49,7 @@ use crate::operation::forge_action_adapter::{
     FORGE_ACTION_KIND, ForgeActionPayload, ProbeSpec, SUPPORTED_FORGE_EVENT_KINDS,
 };
 use crate::operation::{OperationKey, OperationOutcome, OperationResult, OperationRuntime};
+use crate::plugin_host::ConnectorClient;
 use crate::plugin_host::manifest::ToolKind;
 use crate::session_projection_repo::AgentProvider;
 use crate::state::WriteContext;
@@ -558,8 +559,23 @@ async fn plugin_tool_descriptors(
     };
 
     let running_ids = plugin_host.running_plugin_ids().await;
+    plugin_tool_descriptors_from(plugin_host.registry().list(), &running_ids, scope)
+}
+
+/// Pure core of [`plugin_tool_descriptors`]. Split out (#1164) so tests can
+/// drive the REAL discovery projection — including `exposes_tools` entries a
+/// connector materialized into the registry — without standing up an
+/// `AppContext`, a socket, and a child process.
+///
+/// This function is the only place `plugin.<id>_<tool>` names are minted for
+/// discovery; `plugin_tool_route` is its inverse.
+fn plugin_tool_descriptors_from(
+    manifests: Vec<crate::plugin_host::Manifest>,
+    running_ids: &BTreeSet<String>,
+    scope: &WavePluginScope,
+) -> Vec<ToolDescriptor> {
     let mut descriptors = Vec::new();
-    for manifest in plugin_host.registry().list() {
+    for manifest in manifests {
         let plugin_id = manifest.id;
         if !running_ids.contains(&plugin_id) || !scope.allows(&plugin_id) {
             continue;
@@ -676,7 +692,8 @@ async fn dispatch_plugin_tools_call(
         return Err(unknown_tool());
     };
     let running_ids = plugin_host.running_plugin_ids().await;
-    let Some((plugin_id, tool_name, kind)) = plugin_tool_route(&plugin_host, name, &running_ids)?
+    let Some((plugin_id, tool_name, kind)) =
+        plugin_tool_route(plugin_host.registry(), name, &running_ids)?
     else {
         return Err(unknown_tool());
     };
@@ -695,10 +712,21 @@ async fn dispatch_plugin_tools_call(
     require_role_any(&identity, PLUGIN_TOOL_ROLES)?;
     match kind {
         None => {
-            let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
-                RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
-            })?;
-            let result = client.tools_call(&tool_name, arguments).await?;
+            // #1164 §2.7 — ordinary tool dispatch is kind-agnostic and so goes
+            // through `connector_client()`, not the narrowed `mcp_client()`.
+            // Connector tools materialize into `exposes_tools` with
+            // `kind: None`, so without this arm they would fall through to the
+            // stdio-only accessor and get a spurious `-32002 not running`.
+            let client = plugin_host
+                .connector_client(&plugin_id)
+                .await
+                .ok_or_else(|| {
+                    RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
+                })?;
+            let result = match &client {
+                ConnectorClient::Stdio(c) => c.tools_call(&tool_name, arguments).await?,
+                ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await?,
+            };
             serde_json::to_value(result)
                 .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))
         }
@@ -708,6 +736,9 @@ async fn dispatch_plugin_tools_call(
                     "plugin not trusted to submit forge actions",
                 ));
             }
+            // Deliberately still `mcp_client()`: forge actions are stdio-only
+            // (D6/D12). A connector cannot reach this arm anyway — its
+            // materialized tools always carry `kind: None`.
             let client = plugin_host.mcp_client(&plugin_id).await.ok_or_else(|| {
                 RpcError::custom(-32002, format!("plugin `{plugin_id}` not running"))
             })?;
@@ -719,8 +750,16 @@ async fn dispatch_plugin_tools_call(
     }
 }
 
+/// Inverse of [`plugin_tool_descriptors_from`]: resolve a minted
+/// `plugin.<id>_<tool>` name back to its owner.
+///
+/// #1164 narrowed the parameter from `&Arc<PluginHost>` to the registry it was
+/// already the only consumer of — the routing decision depends purely on
+/// manifests + the running set, and taking the registry directly makes the
+/// underscore-boundary uniqueness property (acceptance §4 #9) unit-testable
+/// against the production function rather than a re-implementation.
 fn plugin_tool_route(
-    plugin_host: &Arc<crate::plugin_host::PluginHost>,
+    registry: &crate::plugin_host::PluginRegistry,
     name: &str,
     running_ids: &BTreeSet<String>,
 ) -> Result<Option<(String, String, Option<ToolKind>)>, RpcError> {
@@ -729,7 +768,7 @@ fn plugin_tool_route(
     };
 
     let mut candidates = Vec::new();
-    for manifest in plugin_host.registry().list() {
+    for manifest in registry.list() {
         let plugin_id = manifest.id;
         if !running_ids.contains(&plugin_id) {
             continue;
@@ -1143,6 +1182,184 @@ fn mcp_error_result_with_structured(message: String, structured: Value) -> Value
         "structuredContent": structured,
         "isError": true,
     })
+}
+
+/// #1164 §4 #2 + #9 — discovery and routing for connector-materialized tools.
+///
+/// These drive the production `plugin_tool_descriptors_from` /
+/// `plugin_tool_route` pair against a registry in exactly the state
+/// `spawn_admitted` leaves it in after materialization (§2.7): the manifest's
+/// `exposes_tools` holds the synthesized catalog, and the connector id is in
+/// the running set.
+#[cfg(test)]
+mod connector_tool_routing_tests {
+    use super::*;
+    use crate::plugin_host::{Manifest, PluginRegistry};
+
+    const CONNECTOR_ID: &str = "mcp-wisburg";
+    /// Underscores, not hyphens — §4 #9 is explicit that the test must use a
+    /// tool name that actually contains `_`, because that is the character the
+    /// `plugin.<id>_<tool>` boundary is built on.
+    const UNDERSCORE_TOOL: &str = "list_institutional_reports";
+    const OTHER_TOOL: &str = "get_report_detail";
+    const DENIED_TOOL: &str = "admin_purge_everything";
+
+    fn connector_manifest(id: &str, tools: &[&str]) -> Manifest {
+        let manifest = json!({
+            "manifest_version": 1,
+            "kind": "mcp-http",
+            "id": id,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Wisburg",
+            "mcp_http": {
+                "url": "https://mcp.example.com/mcp",
+                "tools_allow": tools,
+            },
+        });
+        Manifest::parse(&manifest.to_string()).expect("connector manifest parses")
+    }
+
+    /// Registry in the post-materialization state: manifest parsed from disk,
+    /// then `set_exposes_tools` applied exactly as `spawn_admitted` does.
+    fn registry_after_materialization(id: &str, allow: &[&str], served: &[&str]) -> PluginRegistry {
+        let registry = PluginRegistry::empty();
+        let manifest = connector_manifest(id, allow);
+        let block = manifest.mcp_http.clone().expect("mcp_http block");
+        registry.insert(manifest, None);
+        let upstream: Vec<Value> = served
+            .iter()
+            .map(|name| json!({ "name": name, "inputSchema": { "type": "object" } }))
+            .collect();
+        let tools = crate::plugin_host::connector::materialize_http_tools(id, &block, &upstream);
+        assert!(
+            registry.set_exposes_tools(id, tools),
+            "materialization must find the seeded entry"
+        );
+        registry
+    }
+
+    fn running(ids: &[&str]) -> BTreeSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn unbound_wave_sees_allowlisted_connector_tools_and_nothing_else() {
+        let registry = registry_after_materialization(
+            CONNECTOR_ID,
+            &[UNDERSCORE_TOOL, OTHER_TOOL],
+            &[UNDERSCORE_TOOL, OTHER_TOOL, DENIED_TOOL],
+        );
+        // `WavePluginScope::All` is what an UNBOUND wave resolves to
+        // (`plugin_scope_for_wave`: no wave / no `plugin_scope` → All).
+        let names: Vec<String> = plugin_tool_descriptors_from(
+            registry.list(),
+            &running(&[CONNECTOR_ID]),
+            &WavePluginScope::All,
+        )
+        .into_iter()
+        .map(|d| d.name)
+        .collect();
+
+        assert!(
+            names.contains(&format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}")),
+            "allowlisted connector tool must be discoverable: {names:?}"
+        );
+        assert!(
+            names.contains(&format!("plugin.{CONNECTOR_ID}_{OTHER_TOOL}")),
+            "second allowlisted tool must be discoverable: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| n.contains(DENIED_TOOL)),
+            "a tool the upstream serves but `tools_allow` omits must NOT be \
+             discoverable: {names:?}"
+        );
+    }
+
+    #[test]
+    fn stopped_connector_tools_are_invisible() {
+        let registry =
+            registry_after_materialization(CONNECTOR_ID, &[UNDERSCORE_TOOL], &[UNDERSCORE_TOOL]);
+        // Same registry, empty running set — the ONLY thing that changed.
+        let names: Vec<String> =
+            plugin_tool_descriptors_from(registry.list(), &running(&[]), &WavePluginScope::All)
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
+        assert!(
+            names.is_empty(),
+            "tools must vanish the instant the id leaves the running set: {names:?}"
+        );
+    }
+
+    #[test]
+    fn underscore_bearing_connector_tool_routes_uniquely() {
+        let registry = registry_after_materialization(
+            CONNECTOR_ID,
+            &[UNDERSCORE_TOOL, OTHER_TOOL],
+            &[UNDERSCORE_TOOL, OTHER_TOOL],
+        );
+        let minted = format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
+        let route = plugin_tool_route(&registry, &minted, &running(&[CONNECTOR_ID]))
+            .expect("route resolution must not be ambiguous")
+            .expect("minted name must route");
+        assert_eq!(route.0, CONNECTOR_ID);
+        assert_eq!(route.1, UNDERSCORE_TOOL);
+        // Connector tools are never forge actions (D6) — a `Some(ForgeAction)`
+        // here would hand them the forge credential passthrough.
+        assert!(route.2.is_none(), "connector tools must carry kind: None");
+    }
+
+    /// The uniqueness guarantee under maximal adversarial pressure: a second
+    /// connector whose id is a strict PREFIX of the first's, whose own tool
+    /// name is chosen to reconstruct the first's minted name as closely as the
+    /// id charset allows.
+    ///
+    /// It cannot actually collide, and that is the property: ids exclude `_`
+    /// (`is_valid_plugin_id`), so `plugin.mcp_wisburg_list_…` (id `mcp`) and
+    /// `plugin.mcp-wisburg_list_…` (id `mcp-wisburg`) differ at the boundary
+    /// character itself. Every minted name therefore has exactly one possible
+    /// split, no matter how many `_` the TOOL name contains.
+    #[test]
+    fn prefix_sibling_connector_cannot_shadow_the_route() {
+        let registry =
+            registry_after_materialization(CONNECTOR_ID, &[UNDERSCORE_TOOL], &[UNDERSCORE_TOOL]);
+
+        let sibling = "mcp";
+        let near_miss = format!("wisburg_{UNDERSCORE_TOOL}");
+        registry.insert(connector_manifest(sibling, &[&near_miss]), None);
+        let tools = crate::plugin_host::connector::materialize_http_tools(
+            sibling,
+            &connector_manifest(sibling, &[&near_miss]).mcp_http.unwrap(),
+            &[json!({ "name": near_miss })],
+        );
+        assert_eq!(tools.len(), 1, "sibling tool must materialize");
+        assert!(registry.set_exposes_tools(sibling, tools));
+
+        let minted = format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
+        let sibling_minted = format!("plugin.{sibling}_{near_miss}");
+        assert_ne!(
+            minted, sibling_minted,
+            "the `_` boundary must keep these distinct"
+        );
+
+        let running = running(&[CONNECTOR_ID, sibling]);
+        let route = plugin_tool_route(&registry, &minted, &running)
+            .expect("must not be ambiguous")
+            .expect("must route");
+        assert_eq!(
+            (route.0.as_str(), route.1.as_str()),
+            (CONNECTOR_ID, UNDERSCORE_TOOL)
+        );
+
+        let sibling_route = plugin_tool_route(&registry, &sibling_minted, &running)
+            .expect("must not be ambiguous")
+            .expect("must route");
+        assert_eq!(
+            (sibling_route.0.as_str(), sibling_route.1.as_str()),
+            (sibling, near_miss.as_str())
+        );
+    }
 }
 
 #[cfg(test)]

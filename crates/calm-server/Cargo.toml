@@ -132,6 +132,19 @@ axum = { version = "0.8", features = ["ws", "macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+# #1164 §2.2 — the `mcp-http` connector's outbound client. `ureq` (already in
+# the workspace via calm-codex-bridge, rustls-backed, no new transitive tree)
+# rather than `reqwest`: the transport we need is "POST one JSON, read one
+# body" with an explicit connect + request timeout, and ureq gives both as
+# first-class knobs. The blocking call runs on `spawn_blocking` so the
+# inline-awaited boot path (`AppState::new` → `autospawn_enabled`) is never
+# parked on a socket. See design doc §2.2 + risk R10.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+# #1164 §2.2 — real URL parsing for `mcp_http.url` at manifest-parse time.
+# Prefix matching on "http://" accepted bare authorities and, worse, FRAGMENTS:
+# the query-string API key is appended after a `#`, so it would never be
+# transmitted. Already in the lock via ureq/rustls, so no new tree.
+url = "2"
 
 # Async
 tokio = { version = "1", features = ["full"] }
