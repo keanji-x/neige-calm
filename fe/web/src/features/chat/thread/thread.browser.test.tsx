@@ -1764,6 +1764,98 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 
   /*
+   * ── And the same number of exchanges under different ids ──────────────────
+   *
+   * The case above changes the *count*, and the count is the only thing the
+   * envelope's per-dot write cache watches: it throws the cache away when its
+   * length stops matching the dot array's. So a list that keeps its length and
+   * changes its ids walks straight past that guard. React keys the dots by
+   * exchange id, so every button is unmounted and a fresh one mounted in its
+   * slot — carrying no inline style, because inline styles are the effect's and
+   * not the render's — while the cache still holds the lifts it wrote to the
+   * elements that are gone. Every write is then skipped as a no-op against a
+   * value nothing on the page has any more.
+   *
+   * Measured against the unfixed component, pointer parked on the sixth dot of
+   * twelve: the arc `4 / 4.609 / 6 / 7.375 / 8 / 7.375 / 6 / 4.609 / 4` px and
+   * its inline lifts `0.156 / 0.5 / 0.844 / 1 / …` were there before the swap
+   * and **every one of them was gone after it** — all twelve dots flat at their
+   * 4px rest, every `--nc-dot-lift` removed, and the 26.75px of aim the spread
+   * had opened between two centres back down to the resting 12. It does not
+   * heal on the next pointer move at the same y either, because that pass
+   * computes the same lifts and skips the same writes.
+   *
+   * **The shoulders are not part of what this asserts, and the reason is worth
+   * writing down.** `--nc-rail-lead`/`--nc-rail-tail` are published outside the
+   * cache, so they come out the same either way — measured at `0` and `2.2e-16`
+   * both before and after, because a fully interior envelope is exactly the
+   * growth the shoulders exist to complement. That is the failure rather than
+   * the alibi: the track is holding back four openings of blank in exchange for
+   * a spread that is no longer on the page. What that is visible *as* is the
+   * dots, which is what is asserted.
+   *
+   * Not currently reachable from the product — `ChatThread` is keyed by the
+   * drawer's own id and exchange ids are server turn ids, so nothing swaps a
+   * list of the same length for a different one — which is why the fixture
+   * constructs it directly rather than driving it through a route.
+   */
+  it('keeps the envelope when the ids change under the pointer', async () => {
+    await page.viewport(1400, 900);
+    /* The same twelve exchanges twice over, differing in nothing a reader could
+       see: identical prompts, identical replies, identical times. The geometry
+       is therefore identical too, which is what makes this a clean test of the
+       cache rather than of a relayout — the pointer is over the same row, and
+       every lift the pass computes is the one it computed before. */
+    const turns = (era: string) => Array.from({ length: 12 }).flatMap((_unused, index) => [
+      { id: `${era}-you-${index}`, author: 'you' as const, text: `Ask ${index}`,
+        atMs: index * 2_000 },
+      { id: `${era}-agent-${index}`, author: 'agent' as const, text: 'Short.',
+        atMs: index * 2_000 + 1 },
+    ]);
+    const { rerender } = render(<RailPane turns={turns('a')} />);
+    await frame();
+    await scrollPaneTo(0);
+    await userEvent.hover(pane());
+    await pause(150);
+    expect(dots()).toHaveLength(12);
+
+    const centre = (index: number) => {
+      const box = dots()[index].getBoundingClientRect();
+      return box.top + box.height / 2;
+    };
+    const aimed = dots()[5].getBoundingClientRect();
+    await pointRailAt(aimed.top + aimed.height / 2);
+    expect(dotInk(5)).toBeCloseTo(8, 1);
+
+    rerender(<RailPane turns={turns('b')} />);
+    await settle();
+    await pause(150);
+
+    /* Same length, and not one of the elements that carried the envelope. */
+    expect(dots()).toHaveLength(12);
+    expect(dots()[5].getAttribute('aria-label')).toContain('Ask 5');
+
+    /* The envelope, still on the row the pointer never left: the peak, and the
+       arc either side of it, which together are the claim a cache stuck on
+       departed elements cannot satisfy — it leaves twelve dots at their rest
+       and no maximum anywhere. */
+    const inks = dots().map((_dot, index) => dotInk(index));
+    expect(dotInk(5)).toBe(Math.max(...inks));
+    expect(dotInk(5)).toBeCloseTo(8, 1);
+    expect(dotInk(6)).toBeGreaterThan(dotInk(7));
+    expect(dotInk(7)).toBeGreaterThan(dotInk(8));
+    expect(dotInk(8)).toBeGreaterThan(dotInk(9));
+    expect(dotInk(9)).toBeCloseTo(4, 1);
+    /* And the aim the spread is for is still open, which is the same claim in
+       the units a cursor cares about. */
+    expect(centre(6) - centre(5)).toBeGreaterThanOrEqual(24);
+
+    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
+    await settle();
+    await pause(150);
+  });
+
+  /*
    * ── The coarse branch, and the source order it stands on ──────────────────
    *
    * A finger gets a wider gutter, a wider pitch and a resting dot it can see,

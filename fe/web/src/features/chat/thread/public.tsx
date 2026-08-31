@@ -824,6 +824,31 @@ function ExchangeRail({ exchanges, active, onJump }: {
     /** The last lift written per dot, so a pass that changes nothing writes
      *  nothing — which on a forty-dot rail is most of them, most frames. */
     let written: number[] = [];
+    /**
+     * And **which element each of those was written to**, because the value on
+     * its own is a claim about a node that may not be on the page any more.
+     *
+     * The dots are keyed by exchange id, so a list that keeps its length and
+     * changes its ids — which a refetch handing back re-identified turns would
+     * be — unmounts every button and mounts a fresh one in its slot. The fresh
+     * one carries no inline style, because the inline style is this effect's
+     * and not the render's, while the cache still holds what was written to the
+     * button that is gone. Measured on twelve dots with the pointer parked on
+     * the sixth: the arc `4 / 4.609 / 6 / 7.375 / 8 / …` px and every one of
+     * its `--nc-dot-lift` values vanished at the swap and did not come back on
+     * a further move at the same y, because that pass computes the same lifts
+     * and skips the same writes. The shoulders kept publishing the complement
+     * of an envelope that was no longer on the page, so the 26.75px of aim the
+     * spread had opened went back to the resting 12 with the track still
+     * holding four openings of blank for it.
+     *
+     * Keyed by identity rather than by deleting the cache outright: the writes
+     * it saves are only about forty string sets a frame against a pass that is
+     * already doing a fixed point over every dot's box, but the reason to keep
+     * it is that the skip is what makes a *quiet* frame — a wheel that moved
+     * nothing, a settling step that converged — touch no style at all.
+     */
+    let writtenTo: (HTMLElement | null)[] = [];
 
     /*
      * ── One settling step, because the answer moves what the answer was read
@@ -851,7 +876,10 @@ function ExchangeRail({ exchanges, active, onJump }: {
      */
     const paint = () => {
       queued = null;
-      if (written.length !== dots.length) written = Array.from({ length: dots.length }, () => Number.NaN);
+      if (written.length !== dots.length) {
+        written = Array.from({ length: dots.length }, () => Number.NaN);
+        writtenTo = Array.from({ length: dots.length }, () => null);
+      }
       let settled = Number.NaN;
       for (let step = 0; step < RAIL_SETTLE_STEPS; step += 1) {
           /* Read every box first, write after: one forced layout for the step. */
@@ -969,7 +997,8 @@ function ExchangeRail({ exchanges, active, onJump }: {
 
         lifts.forEach((lift, index) => {
           const dot = dots[index];
-          if (dot == null || written[index] === lift) return;
+          if (dot == null || (writtenTo[index] === dot && written[index] === lift)) return;
+          writtenTo[index] = dot;
           written[index] = lift;
           if (lift === 0) dot.style.removeProperty('--nc-dot-lift');
           else dot.style.setProperty('--nc-dot-lift', `${lift}`);
