@@ -14,12 +14,15 @@ export default defineConfig({
     include: [
       '@astryxdesign/core/Button',
       '@astryxdesign/core/Calendar',
+      '@astryxdesign/core/Card',
       '@astryxdesign/core/Heading',
       '@astryxdesign/core/Icon',
       '@astryxdesign/core/IconButton',
       '@astryxdesign/core/List',
+      '@astryxdesign/core/MetadataList',
       '@astryxdesign/core/MoreMenu',
       '@astryxdesign/core/SegmentedControl',
+      '@astryxdesign/core/TextInput',
     ],
   },
   test: {
