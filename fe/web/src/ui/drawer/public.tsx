@@ -16,6 +16,50 @@ import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
 
 /**
+ * The marker on the drawer's seam — the strip of page between the card's
+ * trailing edge and the window — for a caller that has something to put beside
+ * the card rather than inside it.
+ *
+ * **Why a data attribute and not a context or a prop.** The thing that needs
+ * the seam is `features/chat`'s exchange rail, several layers below the
+ * `<Drawer>` element: the router composes `<Drawer><ChatThread/></Drawer>` and
+ * the rail is `ChatThread`'s own child. A prop would have to be declared and
+ * forwarded by every component in between, none of which has any use for it. A
+ * context would work, but `architecture/no-create-context-outside-allowlist`
+ * governs those by an allowlist with a written reason per entry, and expanding
+ * a governance list is a heavier change than this needs.
+ *
+ * What it needs is the mechanism this seam already uses everywhere else.
+ * `features/chat` finds the drawer's scrolling pane with
+ * `closest('[data-nc-drawer-scroll]')`, and `app/shell` hides the panel column
+ * off `[data-nc-drawer]` for the reason recorded there: a CSS Module class
+ * cannot be named from another module, so the two ends of a cross-module seam
+ * meet on a data attribute. This is the same seam and the same idiom — one
+ * more attribute, no new mechanism, and it stays greppable from both sides.
+ *
+ * The attribute is written out as a literal at both ends rather than shared
+ * through a constant, which is what `data-nc-drawer` and
+ * `data-nc-drawer-scroll` already do — and here it is not merely convention:
+ * `architecture/no-class-dom-query` requires a runtime selector to be a static
+ * string, and a template built from a constant fails it closed.
+ */
+
+/**
+ * The seam belonging to the drawer `inside` is rendered in, or `null`.
+ *
+ * Scoped through the drawer rather than taken off the document, so it cannot
+ * pick up a second drawer's seam: the card and the seam are siblings, so the
+ * card's parent is the box that holds exactly this pair. `null` means there is
+ * no drawer above `inside` — a transcript rendered in place has no seam and
+ * therefore no rail, which is the honest answer rather than a fallback, since
+ * the rail's whole geometry *is* the seam.
+ */
+export function drawerSeamAround(inside: Element | null): HTMLElement | null {
+  const card = inside?.closest('[data-nc-drawer]');
+  return card?.parentElement?.querySelector<HTMLElement>('[data-nc-drawer-seam]') ?? null;
+}
+
+/**
  * Ask `element` to take focus, and report whether the focus landed somewhere a
  * reader can actually be.
  *
@@ -255,6 +299,7 @@ export function Drawer({ open, title, onClose, children, footer }: {
    * card has finished going away.
    */
   return (
+    <>
     <div
       ref={panelRef}
       className={`${styles.drawer} ${closing ? styles.drawerClosing : ''}`}
@@ -297,5 +342,19 @@ export function Drawer({ open, title, onClose, children, footer }: {
       </div>
       {frame.footer}
     </div>
+    {/*
+      * The seam, and it is **after** the card in source order deliberately —
+      * see `.seam` in the stylesheet for what that buys and what it costs.
+      * It carries the card's own closing class so the two move as one object,
+      * and it is not marked `data-nc-drawer`: `app/shell` hides the panel
+      * column off that marker with `:has()`, and one drawer must present one
+      * marker or the rule's set-equality with "routes that render a drawer"
+      * stops being checkable.
+      */}
+    <div
+      className={`${styles.seam} ${closing ? styles.seamClosing : ''}`}
+      data-nc-drawer-seam=""
+    />
+    </>
   );
 }
