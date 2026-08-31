@@ -300,6 +300,7 @@ async fn acquire_test_workspace_lease(
         &mut tx,
         wave_id.as_str(),
         card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     )
     .await
     .expect("prepare workspace lease target");

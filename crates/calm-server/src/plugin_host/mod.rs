@@ -1,20 +1,7 @@
 //! Plugin host — the kernel's side of the plugin protocol.
 //!
-//! This module is sliced across the M3 implementation plan:
-//!
-//!   * **Slice A** — `manifest` (parser + validator), `registry`
-//!     (in-memory map of `id → Manifest`), and `PluginHost` (thin container
-//!     that owns the registry + a repo handle).
-//!   * **Slice B** — `process` + `mcp` + `error`: child supervision,
-//!     JSON-RPC framing, real `spawn`/`stop`/`restart` on `PluginHost`,
-//!     crash-loop disabling.
-//!   * **Slice C (this commit)** — `callbacks` + `perms` + `events`:
-//!     real `neige.*` dispatch. Replaces Slice B's MethodNotFound drainer
-//!     with a permission-gated router that writes overlays/cards/kv and
-//!     bridges the event bus to MCP notifications.
-//!   * **Slice H** — `auth`: per-plugin token mint/verify + iframe tokens.
-//!
-//! See `docs/m3-design.md` §8 for the full slice table.
+//! It owns manifests, process supervision, MCP transport, callbacks,
+//! permissions, resources, events, and plugin authentication.
 
 pub mod auth;
 pub mod callbacks;

@@ -329,6 +329,10 @@ impl TaskContextMonitor {
                 }
             }
         }
+        // #1160 — the read path states the same rule in
+        // `calm-truth::db::sqlite::task_projection::live_declaration_blocks_by_key`
+        // (calm-truth cannot depend on calm-server). Keep the two arms in sync;
+        // do not add a third spelling of "which block owns this key".
         let root = match live.as_slice() {
             [root] => root.clone(),
             [] if tombstoned => return Err(ResolveError::RootTombstoned),

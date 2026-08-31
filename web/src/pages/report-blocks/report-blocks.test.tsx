@@ -1007,3 +1007,70 @@ describe('degraded blocks', () => {
     }).success).toBe(true);
   });
 });
+
+/*
+ * A report may carry its own maintenance contract as a leading HTML comment:
+ * invisible where the document is rendered, readable to everything that reads
+ * the body source (#1185). react-markdown@10 does not drop raw HTML by
+ * default — it turns it into *text* — so without `skipHtml` this old front end
+ * printed the whole contract, escaped, at the top of every user's report.
+ */
+const CONTRACT_FIXTURE = [
+  '<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）',
+  '',
+  '这份报告自带的结构就是规则：维护它，不要重写它。',
+  '',
+  '写作方式：散文正文控制在 1000 字以内。',
+  '-->',
+  '',
+].join('\n');
+
+describe('a prose block that carries a maintenance contract (#1185)', () => {
+  const contractBlock = (markdown: string): ReportBlock =>
+    ({
+      id: 'b_contract',
+      kind: 'prose',
+      rev: 1,
+      payload: { markdown },
+    }) as ReportBlock;
+
+  it('renders nothing for a comment-only block', () => {
+    const { container } = render(
+      <ReportBlockView block={contractBlock(CONTRACT_FIXTURE)} />,
+    );
+
+    // The multi-line shape is the point: a CommonMark HTML block of type 2 is
+    // not terminated by a blank line, so the whole contract is one raw node.
+    expect(container.textContent).not.toContain('报告维护契约');
+    expect(container.innerHTML).not.toContain('报告维护契约');
+    expect(container.textContent).not.toContain('散文正文');
+    expect(container.innerHTML).not.toContain('散文正文');
+    expect(container.querySelector('#b_contract')?.childNodes.length).toBe(0);
+  });
+
+  it('keeps the prose that follows the contract in the same block', () => {
+    render(
+      <ReportBlockView
+        block={contractBlock(`${CONTRACT_FIXTURE}# 概要\n\n本轮结论。\n`)}
+      />,
+    );
+
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('概要');
+    expect(screen.getByText('本轮结论。')).toBeInTheDocument();
+  });
+
+  it('drops hand-written HTML entirely — the price of skipHtml', () => {
+    // This test does not defend the behaviour; it exists so that the next
+    // person who reaches for `rehype-raw` to make `<details>` work again goes
+    // red here first. Installing it re-opens the leak above: the maintenance
+    // contract would render as visible page content for every user.
+    const { container } = render(
+      <ReportBlockView
+        block={contractBlock('<details><summary>x</summary>y</details>\n')}
+      />,
+    );
+
+    expect(container.textContent).not.toContain('x');
+    expect(container.textContent).not.toContain('y');
+  });
+});

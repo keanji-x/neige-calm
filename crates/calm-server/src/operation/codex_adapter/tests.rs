@@ -60,6 +60,7 @@ async fn worker_lease_harness() -> WorkerLeaseHarness {
             None,
             CardRoleCache::new(),
             WaveCoveCache::new(),
+            std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         ),
         repo,
         wave_id: wave.id.to_string(),

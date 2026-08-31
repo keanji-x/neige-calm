@@ -18,9 +18,14 @@ async fn acquire_workspace_lease_anchors_under_git_root_without_creating_leaf() 
     let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     assert!(target.repo_root.is_absolute());
     assert_eq!(
         target.repo_root.canonicalize().unwrap(),
@@ -52,9 +57,14 @@ async fn worktree_mode_workspace_leased_is_not_ready_until_worktree_provisioned(
     let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     let (lease, leased) =
         acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
             .await
@@ -104,9 +114,14 @@ async fn workspace_lease_target_rejects_non_git_wave_cwd_without_rows() {
     let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let err = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap_err();
+    let err = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap_err();
     assert!(matches!(err, CalmError::BadRequest(_)));
     tx.rollback().await.unwrap();
 
@@ -300,9 +315,14 @@ async fn workspace_worktree_provision_resolves_exclude_for_linked_wave_worktree(
 
     let (repo, wave_id, card_id) = lease_fixture(&linked).await;
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     assert_eq!(
         target.repo_root.canonicalize().unwrap(),
         linked.canonicalize().unwrap()
@@ -355,9 +375,14 @@ async fn card_release_preserves_worktree_branch_and_emits_no_removed_event() {
     let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     let (lease, _event) =
         acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
             .await
@@ -401,9 +426,14 @@ async fn rollback_removes_worktree_before_releasing_lease_row() {
     let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     let (lease, _event) =
         acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
             .await
@@ -449,9 +479,14 @@ async fn release_by_id_removes_artifact_before_workspace_released() {
     let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     let (lease, _event) =
         acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
             .await
@@ -499,9 +534,14 @@ async fn wave_release_sweeps_worktrees_plain_dirs_and_branches_post_commit() {
     let (repo, wave_id, card_id) = lease_fixture(tmp.path()).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     let (_lease, _event) =
         acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
             .await
@@ -596,9 +636,14 @@ async fn wave_sweep_uses_persisted_lease_paths_when_wave_cwd_is_deleted() {
     let (repo, wave_id, card_id) = lease_fixture(&wave_cwd).await;
 
     let mut tx = begin_immediate_tx(repo.pool()).await.unwrap();
-    let target = prepare_workspace_lease_target_tx(&mut tx, &wave_id, &card_id)
-        .await
-        .unwrap();
+    let target = prepare_workspace_lease_target_tx(
+        &mut tx,
+        &wave_id,
+        &card_id,
+        &std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
+    )
+    .await
+    .unwrap();
     let (_lease, _event) =
         acquire_workspace_lease_tx(&mut tx, &card_id, &wave_id, "op-test", &target)
             .await

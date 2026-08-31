@@ -61,3 +61,5 @@ mod today_launchpad;
 mod version;
 #[path = "cases/wave_projection_policy_patch.rs"]
 mod wave_projection_policy_patch;
+#[path = "cases/wave_workspace_materialize.rs"]
+mod wave_workspace_materialize;

@@ -557,6 +557,12 @@ jobs:
       - name: Install Chromium with system dependencies
         run: npx playwright install --with-deps chromium
 
+      # Two Vitest projects, one job: `browser` and `browser-coarse`. The second
+      # exists because `pointer: coarse` can only be set on a Playwright
+      # *context*, and CDP touch emulation is a one-way door that poisons the
+      # shared page for every file after it. Both are in the `test:browser`
+      # script, so this step covers them; splitting them into two jobs would
+      # buy a second `npx playwright install` and nothing else.
       - name: npm run test:browser
         run: npm run test:browser
 
@@ -1044,7 +1050,7 @@ jobs:
         env:
           CI: "true"
           FE_API_PROXY_TARGET: http://127.0.0.1:4041
-        run: env -u FE_DEV_MOCK npm run e2e
+        run: npm run e2e
       - name: upload playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4

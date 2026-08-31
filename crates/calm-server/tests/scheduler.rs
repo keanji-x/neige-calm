@@ -34,6 +34,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, status_detail_class,
+    wave_workspace_write_tx,
 };
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
@@ -43,13 +44,13 @@ use calm_server::mcp_server::registry::AppContext;
 use calm_server::mcp_server::tools::emit::{TOOL_TASK_COMPLETE, TOOL_TASK_FAIL};
 use calm_server::mcp_server::tools::wave_report::TOOL_REPORT_READ;
 use calm_server::mcp_server::tools::wave_report_blocks::{
-    TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
+    TOOL_REPORT_BLOCKS_DELETE, TOOL_REPORT_BLOCKS_UPSERT, TOOL_REPORT_WRITE_MARKDOWN,
 };
 use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
     CardRole, NewCard, NewCove, NewOverlay, NewTerminal, NewWave, RequestTheme, Task, TaskKind,
-    TaskStatus, WaveLifecycle, WavePatch, new_id, now_ms,
+    TaskStatus, WaveLifecycle, WavePatch, WaveWorkspace, WaveWorkspaceKind, new_id, now_ms,
 };
 use calm_server::operation::child_wave_adapter::ChildWaveAdapter;
 use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
@@ -83,6 +84,20 @@ use calm_types::report_blocks::render_fence;
 use calm_types::wave_report::{ReportBlock, WaveReportPayload};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+
+/// #1147 S4 — a REAL managed workspace root for the child-wave adapter.
+///
+/// Every child wave now allocates and materializes its own repository under
+/// this root (design D7), so the old "unused workspace root" placeholder would
+/// make these tests write git repositories into a fixed, shared `/tmp` path.
+/// One process-wide `TempDir`, never dropped, so no test can observe a root a
+/// sibling test removed.
+fn child_wave_workspace_root() -> PathBuf {
+    static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| tempfile::TempDir::new().expect("child-wave test workspace root"))
+        .path()
+        .to_path_buf()
+}
 
 struct Boot {
     repo: Arc<dyn Repo>,
@@ -1830,6 +1845,7 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
         None,
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let (runtime, scheduler) = build_scheduler(&boot, vec![codex]);
 
@@ -2826,6 +2842,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         None,
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let claude: Arc<dyn ProviderAdapter> = Arc::new(ClaudeWorkerAdapter::new(
         route_repo.clone(),
@@ -2888,6 +2905,7 @@ async fn every_registered_task_adapter_refuses_material_context() {
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         pending_operation("child-wave", &child_task_id, child_payload),
     ));
@@ -3461,6 +3479,28 @@ async fn insert_report_payload(boot: &Boot, id: &str, payload: Value) {
     .unwrap();
 }
 
+/// `(id, rev)` of the wave's single live task block, straight from the
+/// stored report payload — the ids the document assigns, not the marker
+/// hints the test writes.
+async fn live_task_block(boot: &Boot) -> (String, u64) {
+    let card = boot
+        .repo
+        .cards_by_wave(boot.wave_id.as_str())
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .expect("report card");
+    let payload: WaveReportPayload = serde_json::from_value(card.payload).unwrap();
+    let block = payload
+        .blocks
+        .expect("blocks cache")
+        .into_iter()
+        .find(|block| block.kind == "task" && block.payload.get("tombstone").is_none())
+        .expect("one live task block");
+    (block.id, u64::from(block.rev))
+}
+
 async fn edit_report_blocks(boot: &Boot, blocks: &[(&str, &str, Value)], if_doc_rev: u64) {
     let body = blocks
         .iter()
@@ -3810,6 +3850,20 @@ async fn deterministic_root_location_failures_do_not_freeze_or_index() {
                 .await
                 .unwrap();
             tx.commit().await.unwrap();
+        } else if case == "absent" {
+            // #1179: a whole-document write may no longer make a live task
+            // declaration disappear — for any author. The sanctioned way to
+            // reach "root block absent" is the block-level delete endpoint.
+            let (id, rev) = live_task_block(&boot).await;
+            call_tool(
+                &boot,
+                TOOL_REPORT_BLOCKS_DELETE,
+                spec_identity(&boot),
+                json!({"id": id, "if_rev": rev}),
+            )
+            .await
+            .expect("block-level delete of the root task block");
+            edit_report_blocks(&boot, &broken, 2).await;
         } else {
             edit_report_blocks(&boot, &broken, 1).await;
         }
@@ -8185,9 +8239,168 @@ async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snaps
     }
 }
 
+/// #1147 S4 — give this boot's wave a REAL attached workspace directory.
+///
+/// `boot()` mints its wave with an empty `cwd`, which was harmless while
+/// nothing read it. Since S4 a child of an attached parent inherits the
+/// parent's path, so a test asserting inheritance against the default fixture
+/// would be pinning the empty string as expected output. The tests below care
+/// that the path is inherited, not what it is — so they give the parent an
+/// ordinary directory and assert against that.
+async fn attach_boot_wave_to_a_real_directory(boot: &Boot) -> (tempfile::TempDir, String) {
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().to_string_lossy().into_owned();
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    wave_workspace_write_tx(
+        &mut tx,
+        boot.wave_id.as_str(),
+        &WaveWorkspace {
+            kind: WaveWorkspaceKind::Attached,
+            path: path.clone(),
+            frozen_at: Some(now_ms()),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    (dir, path)
+}
+
+/// #1147 S4 — the child-wave bootstrap's idempotency key must follow the
+/// workspace path, so a child whose workspace is re-pointed between drives can
+/// still be re-driven.
+///
+/// The bootstrap payload carries `cwd`, and the operation runtime treats "same
+/// key, different payload hash" as a **permanent** conflict. A key that did
+/// not name the path would therefore turn the first re-drive after any
+/// re-point into `child-wave-bootstrap-failed` forever — operation rows are
+/// never deleted, so nothing would clear it. This is the same failure S2
+/// measured on the launchpad and fixed the same way.
+///
+/// The re-point here is done by the fixture rather than by a particular
+/// re-pointer's code: S3's workspace PATCH is the caller that will produce
+/// this state, and the key's correctness must not depend on which one it is.
+/// Measured: mutating the digest out of `drive_child_wave`'s key fails this
+/// test.
+#[tokio::test]
+async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
+    let boot = boot().await;
+    let (_attached_dir, attached_path) = attach_boot_wave_to_a_real_directory(&boot).await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    let mut task = plan_task(&boot.wave_id, "repaired-bootstrap", TaskKind::Codex, &[]);
+    task.spawn = "sub-wave".into();
+    task.status = TaskStatus::Dispatched;
+    let task_id = task.id.clone();
+    seed_task(&boot, task).await;
+    let minted = Arc::new(AtomicUsize::new(0));
+    let child_adapter = Arc::new(ChildWaveAdapter::new(
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+        child_wave_workspace_root(),
+    )) as Arc<dyn ProviderAdapter>;
+    let bootstrap_adapter =
+        Arc::new(BootstrapAdapter::new(minted.clone())) as Arc<dyn ProviderAdapter>;
+    let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
+    scheduler.sweep_all().await;
+    assert_eq!(
+        boot.repo.task_get(&task_id).await.unwrap().unwrap().status,
+        TaskStatus::Running
+    );
+    assert_eq!(operation_count(&boot, "spec-harness-start").await, 1);
+    let pool = boot.repo.sqlite_pool().unwrap();
+    let child_id: String = sqlx::query_scalar("SELECT child_wave_id FROM tasks WHERE id=?1")
+        .bind(&task_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let bootstrap_key = |cwd: &str| {
+        let mut hasher = Sha256::new();
+        hasher.update(cwd.as_bytes());
+        format!(
+            "child-wave:{child_id}:bootstrap:{}",
+            &hex::encode(hasher.finalize())[..16]
+        )
+    };
+    // The path the first bootstrap ran on: this fixture's wave is attached, so
+    // the child inherited it (design D7 as amended).
+    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id=?1")
+        .bind(&child_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(child_cwd, attached_path);
+
+    // Re-point the child's workspace, and with it the stored `child-wave`
+    // result the scheduler reads its cwd from. Any re-pointer produces this
+    // state — S3's workspace PATCH is the one that will — so the fixture moves
+    // the row directly rather than borrowing some particular mover's code.
+    //
+    // The already-recorded `spec-harness-start` stays behind on the OLD path:
+    // that row is what the re-drive below has to get past.
+    let repointed_cwd = calm_server::workspace_materialize::managed_workspace_path(
+        &child_wave_workspace_root(),
+        boot.cove_id.as_str(),
+        &child_id,
+    )
+    .to_string_lossy()
+    .into_owned();
+    assert_ne!(repointed_cwd, child_cwd);
+    let mut tx = pool.begin().await.unwrap();
+    wave_workspace_write_tx(
+        &mut tx,
+        &child_id,
+        &WaveWorkspace {
+            kind: WaveWorkspaceKind::Managed,
+            path: repointed_cwd.clone(),
+            frozen_at: Some(now_ms()),
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query(
+        "UPDATE operations SET tx_output_json = \
+         json_set(tx_output_json,'$.result.cwd',?1,'$.data.cwd',?1) WHERE kind='child-wave'",
+    )
+    .bind(&repointed_cwd)
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    sqlx::query("UPDATE tasks SET status='dispatched' WHERE id=?1")
+        .bind(&task_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    scheduler.sweep_all().await;
+    let row = boot.repo.task_get(&task_id).await.unwrap().unwrap();
+    assert_eq!(
+        row.status,
+        TaskStatus::Running,
+        "re-driving a re-pointed child must not fail the parent task: {:?}",
+        row.status_detail
+    );
+    assert_eq!(operation_count(&boot, "child-wave").await, 1);
+    assert_eq!(
+        operation_count(&boot, "spec-harness-start").await,
+        2,
+        "the new path must mint a second bootstrap, not collide with the old key"
+    );
+    let keys: Vec<String> = sqlx::query_scalar(
+        "SELECT idempotency_key FROM operations WHERE kind='spec-harness-start' ORDER BY created_at_ms",
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(keys[0], bootstrap_key(&child_cwd));
+    assert_eq!(keys[1], bootstrap_key(&repointed_cwd));
+}
+
 #[tokio::test]
 async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_redrive() {
     let boot = boot().await;
+    let (_attached_dir, attached_path) = attach_boot_wave_to_a_real_directory(&boot).await;
     set_lifecycle(&boot, WaveLifecycle::Working).await;
     let mut task = plan_task(&boot.wave_id, "bootstrap", TaskKind::Codex, &[]);
     task.spawn = "sub-wave".into();
@@ -8199,6 +8412,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        child_wave_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let block = BootstrapBlockHook {
         wait_entered: Arc::new(tokio::sync::Notify::new()),
@@ -8288,7 +8502,31 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
     .fetch_one(&boot.repo.sqlite_pool().unwrap())
     .await
     .unwrap();
-    assert_eq!(idem, format!("child-wave:{child_id}:bootstrap"));
+    // #1147 S4 — the key carries a digest of the cwd the bootstrap was
+    // submitted with (same rule S2 gave the launchpad). Two things must hold
+    // and both are asserted: the key is stable for an unchanged path (the
+    // re-drive above deduped, `spec-harness-start` count is still 1), and it
+    // *moves* when the path does — see the repair scenario below.
+    let child_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id=?1")
+        .bind(&child_id)
+        .fetch_one(&boot.repo.sqlite_pool().unwrap())
+        .await
+        .unwrap();
+    let bootstrap_key = |cwd: &str| {
+        let mut hasher = Sha256::new();
+        hasher.update(cwd.as_bytes());
+        format!(
+            "child-wave:{child_id}:bootstrap:{}",
+            &hex::encode(hasher.finalize())[..16]
+        )
+    };
+    assert_eq!(idem, bootstrap_key(&child_cwd));
+    // #1147 S4 (D7 as amended) — this fixture's wave is ATTACHED, so the child
+    // inherits its path verbatim rather than allocating one.
+    assert_eq!(
+        child_cwd, attached_path,
+        "a child of an attached parent must inherit the parent's path"
+    );
 
     // Crash while bootstrap is blocked after its prepare transaction. Drop
     // the first runtime, recover the durable operation with a new runtime,
@@ -8313,6 +8551,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             Arc::new(ChildWaveAdapter::new(
                 crash_boot.card_role_cache.clone(),
                 crash_boot.wave_cove_cache.clone(),
+                child_wave_workspace_root(),
             )),
             Arc::new(BootstrapAdapter::new_blocking(
                 crash_minted.clone(),
@@ -8352,6 +8591,7 @@ async fn acceptance_19_child_bootstrap_is_before_running_and_exactly_once_after_
             Arc::new(ChildWaveAdapter::new(
                 crash_boot.card_role_cache.clone(),
                 crash_boot.wave_cove_cache.clone(),
+                child_wave_workspace_root(),
             )),
             Arc::new(BootstrapAdapter::new(crash_minted.clone())),
         ],
@@ -8419,6 +8659,7 @@ async fn acceptance_13e_failed_and_stuck_at_both_operation_levels_close_once() {
         let child_adapter = Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>;
         let bootstrap_adapter = Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>;
         let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter, bootstrap_adapter]);
@@ -8532,6 +8773,7 @@ async fn acceptance_3b_claim_frozen_spawn_routes_recovery_without_report_reread(
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(minted)) as Arc<dyn ProviderAdapter>,
         Arc::new(CardSpawnAdapter {
@@ -8608,6 +8850,7 @@ async fn acceptance_3a_claim_frozen_spawn_routes_live_after_post_claim_report_ed
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
@@ -8650,6 +8893,7 @@ async fn acceptance_3c_claim_success_uses_transaction_reread_spawn() {
         Arc::new(ChildWaveAdapter::new(
             boot.card_role_cache.clone(),
             boot.wave_cove_cache.clone(),
+            child_wave_workspace_root(),
         )) as Arc<dyn ProviderAdapter>,
         Arc::new(BootstrapAdapter::new(Arc::new(AtomicUsize::new(0)))) as Arc<dyn ProviderAdapter>,
     ];
@@ -8724,6 +8968,7 @@ async fn acceptance_5b_stale_frozen_context_refuses_real_child_operation() {
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        child_wave_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
@@ -8813,6 +9058,7 @@ async fn acceptance_9_depth_exhaustion_fails_parent_without_in_wave_fallback() {
     let child_adapter = Arc::new(ChildWaveAdapter::new(
         boot.card_role_cache.clone(),
         boot.wave_cove_cache.clone(),
+        child_wave_workspace_root(),
     )) as Arc<dyn ProviderAdapter>;
     let (_runtime, scheduler) = build_scheduler(&boot, vec![child_adapter]);
     scheduler.sweep_all().await;

@@ -471,6 +471,7 @@ pub async fn boot_forge_e2e_fixture(
                     Some(server.clone()),
                     cache.clone(),
                     wave_cove_cache.clone(),
+                    std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
                 )) as Arc<dyn ProviderAdapter>,
                 Arc::new(SpecHarnessStartAdapter::new(
                     repo_dyn.clone(),

@@ -2743,4 +2743,37 @@ describe('WaveReportPage', () => {
       'report-block--highlight',
     );
   });
+
+  it("never renders a v1 body's maintenance contract (#1185)", () => {
+    // The flat-body path renders the whole report source in one pass through
+    // `MemoizedMarkdownBody`. A document that carries its own maintenance
+    // contract as a leading HTML comment must render none of it — react-markdown
+    // prints raw HTML as text unless `skipHtml` is set, and the comment spans
+    // blank lines (CommonMark HTML block type 2), so the whole contract is one
+    // raw node.
+    const contract = [
+      '<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）',
+      '',
+      '这份报告自带的结构就是规则：维护它，不要重写它。',
+      '',
+      '写作方式：散文正文控制在 1000 字以内。',
+      '-->',
+      '',
+    ].join('\n');
+    const { container } = render(
+      <WaveReportPage
+        wave={makeWave()}
+        cards={[reportSlot(`${contract}# 概要\n\n本轮结论。\n`)]}
+      />,
+    );
+
+    expect(container.textContent).not.toContain('报告维护契约');
+    expect(container.innerHTML).not.toContain('报告维护契约');
+    expect(container.textContent).not.toContain('散文正文');
+    expect(container.innerHTML).not.toContain('散文正文');
+    expect(
+      screen.getByRole('heading', { level: 1, name: '概要' }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('本轮结论。')).toBeInTheDocument();
+  });
 });

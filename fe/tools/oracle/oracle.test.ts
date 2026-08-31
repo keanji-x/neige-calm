@@ -19,6 +19,7 @@ const anchorPositionShapes = [
   ['ts-single.ts', ['typescriptSingle'], { typescriptSingle: [1] }],
   ['ts-multiline.ts', ['typescriptMultiline'], { typescriptMultiline: [2] }],
   ['ts-comment.ts', ['typescriptCommentAnchor'], { typescriptCommentAnchor: [] }],
+  ['ts-template-comment.ts', ['templateCommentAnchor'], { templateCommentAnchor: [] }],
 ] as const;
 
 function run(rule: string, kind: 'positive' | 'negative') {
@@ -112,7 +113,7 @@ describe('oracle rule fixtures', () => {
       expect(run(rule, 'positive')).toEqual([]);
       const violations = run(rule, 'negative');
       expect(violations, JSON.stringify(violations)).toHaveLength(
-        rule === 'source-anchor' ? 3 : rule === 'former-id-unique' ? 2 : 1,
+        rule === 'source-anchor' ? 4 : rule === 'former-id-unique' ? 2 : 1,
       );
       expect(new Set(violations.map((violation) => violation.rule))).toEqual(new Set([rule]));
       if (rule === 'source-location') {
@@ -141,7 +142,7 @@ describe('oracle rule fixtures', () => {
     expect(added).toHaveLength(2);
     expect(added.map((violation) => violation.message)).toContain('unbaselined not-in-file');
     expect(added.map((violation) => violation.message)).toContain(
-      'baseline count must equal actual count: declared 2, distinct valid 2, actual 3',
+      'baseline count must equal actual count: declared 3, distinct valid 3, actual 4',
     );
 
     const fixedRoot = resolve(fixtures, 'source-anchor/positive');
@@ -156,6 +157,95 @@ describe('oracle rule fixtures', () => {
     expect(stale.map((violation) => violation.message)).toContain(
       'baseline count must equal actual count: declared 1, distinct valid 1, actual 0',
     );
+  });
+
+  // anchor-pending.json is the temporary #1170 holding list, not a second baseline. Every branch of every
+  // rule gets its own single-violation fixture, so deleting that branch alone from validator.ts reds
+  // exactly its own case; a fixture that violates two branches at once would pin neither.
+  const FIXTURE_PENDING_IDS = ['INV-TEST-003', 'INV-TEST-004', 'INV-TEST-005'];
+  const withPending = (
+    pendingFile: string, baselineFile: string,
+    overrides: { maximum?: number; ids?: readonly string[] } = {},
+  ) => validateOracle({
+    repoRoot: fixtures,
+    oracleDir: resolve(fixtures, 'source-anchor/negative'),
+    ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+    anchorBaselinePath: resolve(fixtures, 'source-anchor', baselineFile),
+    anchorPendingPath: resolve(fixtures, 'source-anchor', pendingFile),
+    anchorPendingMaximum: overrides.maximum,
+    anchorPendingIds: overrides.ids ?? FIXTURE_PENDING_IDS,
+  });
+
+  it('pending list splits the actual failures with the baseline and accepts an exact split', () => {
+    expect(withPending('pending.json', 'pending-baseline.json')).toEqual([]);
+  });
+
+  it('pending list is exact: a missing entry is unbaselined, never silently tolerated', () => {
+    const violations = withPending('pending-missing.json', 'pending-baseline.json');
+    expect(violations, JSON.stringify(violations)).toHaveLength(2);
+    expect(violations.map((violation) => violation.message)).toContain('unbaselined not-in-file');
+    expect(violations.map((violation) => violation.message)).toContain(
+      'baseline count must equal actual count: declared 2, distinct valid 2, actual 3',
+    );
+  });
+
+  it('pending list is exact: an entry that no longer fails must be deleted', () => {
+    const violations = withPending('pending-stale.json', 'pending-baseline.json');
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.id).toBe('INV-TEST-005');
+    expect(violations[0]?.message).toContain('stale pending not-in-file');
+    expect(violations[0]?.message).toContain('is not a baseline');
+  });
+
+  it('pending list may only shrink: exceeding the row-count cap needs a source edit', () => {
+    const violations = withPending('pending.json', 'pending-baseline.json', { maximum: 1 });
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.message).toContain('pending list may only shrink: declared 2, maximum 1');
+  });
+
+  // The load-bearing shrink-only rule: the count cap alone would let a fixed row be traded for a
+  // brand-new failure at an unchanged count. Narrowing the frozen set is the same shape as that trade.
+  it('pending list may only shrink: an id outside the frozen set is rejected however well-formed', () => {
+    const violations = withPending('pending-unfrozen-id.json', 'pending-baseline.json',
+      { ids: ['INV-TEST-003', 'INV-TEST-004'] });
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.id).toBe('INV-TEST-005');
+    expect(violations[0]?.message).toContain('id is not in ANCHOR_PENDING_IDS');
+  });
+
+  it('pending list rejects a row whose only fault is an empty note', () => {
+    const violations = withPending('pending-empty-note.json', 'pending-baseline.json');
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.id).toBe('INV-TEST-005');
+    expect(violations[0]?.message).toContain('note must be a non-empty explanation');
+  });
+
+  it('pending list rejects a row whose only fault is a malformed issue reference', () => {
+    const violations = withPending('pending-bad-issue.json', 'pending-baseline.json');
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.id).toBe('INV-TEST-005');
+    expect(violations[0]?.message).toContain('issue must be a tracking reference like "#1170"');
+  });
+
+  it('pending list rejects a row whose only fault is an unknown subtype', () => {
+    const violations = withPending('pending-bad-subtype.json', 'pending-baseline.json');
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.id).toBe('INV-TEST-005');
+    expect(violations[0]?.message).toContain('subtype must be "not-in-file" or "range-miss"');
+  });
+
+  it('pending list rejects a row whose only fault is a duplicated id', () => {
+    const violations = withPending('pending-duplicate-id.json', 'pending-baseline.json');
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.id).toBe('INV-TEST-004');
+    expect(violations[0]?.message).toContain('duplicate row: an id may appear at most once');
+  });
+
+  it('pending list rejects an id also carried by the baseline', () => {
+    const violations = withPending('pending-overlap.json', 'baseline.json');
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.id).toBe('INV-TEST-004');
+    expect(violations[0]?.message).toContain('id is in both anchor-baseline.json and anchor-pending.json');
   });
 
   it.each([
@@ -192,7 +282,7 @@ describe('oracle rule fixtures', () => {
       ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
       anchorNonePath: resolve(fixtures, 'source-anchor/prose.md'),
     });
-    expect(violations).toHaveLength(3);
+    expect(violations).toHaveLength(4);
     expect(violations.every((violation) => violation.rule === 'source-anchor')).toBe(true);
   });
 });

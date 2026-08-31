@@ -21,7 +21,7 @@
   migration: pending          # pending | migrated | skipped（skipped 必须同时写 skip_reason）
 ```
 
-## 归一化后的四个字段（见 owner-aliases.yaml / NORMALIZATION-REPORT.md）
+## 归一化字段
 
 - **owner_slice** 规范格式 `<layer>/<slice>[/<detail>]`，取值必须出现在 `owner-aliases.yaml` 的值域里
 - **runtime_layer** 直接由 owner_slice 的层前缀派生，不得与之冲突。

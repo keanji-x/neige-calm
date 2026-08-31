@@ -1,59 +1,5 @@
-# meta:
-#   source_doc: docs/a11y-contract.md (326 lines, 11 top-level sections)
-#   sections_covered: §1, §2 (2.1-2.7), §3 (3.1-3.4), §4, §5, §6, §7, §8 (8.1-8.5),
-#                     §9, §10, §10a, §11
-#   §11 (References) yields no extractable contract — reference list only; its issue
-#   numbers are folded into the `why` of the entries they anchor.
-#   total_entries: 110
-#   kind_split: invariant 80 / capability 24 / gate 6
-#   intentional_omission_true: 18
-#   authoritative_test_NONE: 74
-#   NOTE: 74/110 entries have NO locking test. This document IS the only record for
-#   those — most notably the entire §3.1 Tab-order stop sequences, the §6
-#   focus-visible inventory, and the §7 motion policy. Losing this file loses them.
-
 # ---------------------------------------------------------------------------
 # §1 — Why this contract exists
-# ---------------------------------------------------------------------------
-
-- id: INV-A11Y-001
-  kind: invariant
-  family: locator-discipline
-  statement: >
-    每个 UI 元素必须能通过稳定的 role + accessible-name 对被定位；role 必须匹配
-    widget 实际的行为，而不是它的 CSS 外观
-  why: >
-    §1 明示：Neige 的设计目标是「可被 AI agent 驱动」，AT 与 AI agent 是同一条
-    定位通道；accessible name 脆化会同时打断屏幕阅读器与外部 agent
-  source: docs/a11y-contract.md:11-14
-  authoritative_test: web/e2e/a11y-axe.spec.ts:229
-  owner_slice: none/policy/a11y-doc
-  intentional_omission: false
-  runtime_layer: none
-  verification_owner: e2e
-  test_tier: browser
-  migration: pending
-
-- id: CAP-A11Y-002
-  kind: capability
-  family: event-trace
-  statement: >
-    测试必须能把 UI 断言与针对 `window.__neigeEvents__` 的 event-trace 断言配对，
-    形成「点击 role/name X 之后，事件序列 Y 发生了」的联合契约
-  why: >
-    §1 称这是本文档存在的首要理由（Neige-specific angle）；单独的 UI 断言或单独的
-    事件断言都弱于两者配对。Slice 5 (#66) 落地
-  source: docs/a11y-contract.md:16
-  authoritative_test: web/e2e/a11y-trace-smoke.spec.ts:47
-  owner_slice: none/e2e/infra
-  intentional_omission: false
-  runtime_layer: none
-  verification_owner: e2e
-  test_tier: browser
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §2.1 — Cove object semantics
 # ---------------------------------------------------------------------------
 
 - id: INV-A11Y-003
@@ -73,6 +19,54 @@
   verification_owner: e2e
   test_tier: browser
   migration: pending
+
+- id: INV-A11Y-037
+  kind: invariant
+  family: card-semantics
+  statement: >
+    Card 不得声明 role="region"
+  why: >
+    为每张 card 增加未命名 region 会降低屏幕阅读器的叙述质量；落地有标题的 landmark 前保持省略
+  source: fe/web/src/systems/cards/README.md:26
+  authoritative_test: NONE
+  owner_slice: systems/cards/semantics
+  intentional_omission: true
+  runtime_layer: systems
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: INV-A11Y-058
+  kind: invariant
+  family: tab-order
+  statement: >
+    当前短 sidebar 不提供 skip-to-main 链接
+  why: >
+    sidebar 仍短且没有形成键盘导航痛点；增加新的常驻分区时必须重新评估
+  source: fe/web/src/app/shell/sidebar.tsx:76-78
+  authoritative_test: fe/web/src/app/shell/sidebar.contract.test.tsx:164-170
+  owner_slice: app/shell/sidebar
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: INV-A11Y-061
+  kind: invariant
+  family: activation
+  statement: >
+    应用内导航使用 button 与回调，不混入原生 href 导航
+  why: >
+    单一导航入口保持焦点、路由状态和激活语义一致
+  source: fe/web/src/app/router/navigation.ts:27-34
+  authoritative_test: fe/web/src/app/shell/sidebar.contract.test.tsx:173-190; fe/web/src/features/cove/page/public.contract.test.tsx:91-97
+  owner_slice: app/router/navigation
+  intentional_omission: true
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
 
 - id: INV-A11Y-004
   kind: invariant
@@ -281,7 +275,7 @@
   why: >
     §2.2 + §3.2：这是全项目唯一无法避免 `role="button"` 的地方——必须坐在 `<h1>` 里而
     不破坏 heading 的 accessible-name 组合
-  source: web/src/pages/Wave.tsx:210-274
+  source: web/src/pages/Wave.tsx:401-430
   authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:609
   owner_slice: features/wave/page
   intentional_omission: false
@@ -396,7 +390,7 @@
     Report 视图在 spec agent 尚未产出 report 时必须渲染 report 空态，而不是空白
   why: >
     §2.2 明示 "or the report empty state while the spec agent has not produced one"
-  source: web/src/pages/WaveReportPage.tsx:924-945
+  source: web/src/pages/WaveReportPage.tsx:929-950
   authoritative_test: NONE
   owner_slice: features/report/page
   intentional_omission: false
@@ -466,7 +460,7 @@
     原生语义
   why: >
     #891 slice ③：不得以自定义 aria 替代原生 select 语义；非 Chromium 引擎必须无回归
-  source: web/src/calm.css:4196-4326
+  source: web/src/calm.css:4214-4344
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: false
@@ -485,7 +479,7 @@
     隐藏该子树有剥掉 Chrome 播报的「已选值」的风险。宁可多出一个 inert 节点，也要保证
     值能被播报。`<select>` 拥有焦点与语义（base-select），trigger 永不成为 tab stop
     且拒绝程序化聚焦（real-chromium probe 已验证）
-  source: web/src/calm.css:4205-4270
+  source: web/src/calm.css:4223-4288
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true
@@ -520,7 +514,7 @@
     drawer 内的选中态必须只用勾（`option::checkmark`，`--accent` 色）表示，不得用选中填充色
   why: >
     §2.2：hover 填充是瞬态的，再加一个持久填充会与 hover 视觉混淆
-  source: web/src/calm.css:4303-4325
+  source: web/src/calm.css:4321-4343
   authoritative_test: NONE
   owner_slice: ui/calm-select
   intentional_omission: true
@@ -557,7 +551,7 @@
   why: >
     #891 slice ③：per-variant state 必须干净起步；Dialog 自身的 initial-focus 只在 open
     时跑一次，所以 variant-change effect 必须自己接管切换后的焦点（共用 `initialFocusRef`）
-  source: web/src/pages/Cove.tsx:450-478,554-560
+  source: web/src/pages/Cove.tsx:470-473,549-555
   authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
@@ -658,27 +652,6 @@
   verification_owner: e2e
   test_tier: browser
   migration: pending
-
-- id: INV-A11Y-037
-  kind: invariant
-  family: card-semantics
-  statement: >
-    Card **不得**声明 `role="region"`
-  why: >
-    §2.3 明示：今天加上会让每个 card 标题前都播报 "region"，降低叙述质量。等落地
-    per-card titled landmark 后可重新评估——这是刻意不做，不是遗漏
-  source: docs/a11y-contract.md:67
-  authoritative_test: NONE
-  owner_slice: systems/cards/semantics
-  intentional_omission: true
-  runtime_layer: systems
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §2.4 — Terminal card
-# ---------------------------------------------------------------------------
 
 - id: INV-A11Y-038
   kind: invariant
@@ -936,28 +909,6 @@
   test_tier: browser
   migration: pending
 
-- id: INV-A11Y-052
-  kind: invariant
-  family: view-mode
-  statement: >
-    kernel 侧不需要为 view-mode overlay 加 validator 条目——未知 overlay kind 会落到
-    `validate_overlay_payload` 的兜底 `_ => Ok(())`
-  why: >
-    Slice 9 记录的既有事实；重写时若把兜底改成 fail-closed，view-mode 会静默失效
-  source: docs/a11y-contract.md:101
-  authoritative_test: NONE
-  owner_slice: core/domain/overlay
-  intentional_omission: true
-  runtime_layer: core
-  verification_owner: null
-  test_tier: none
-  migration: skipped
-  skip_reason: 服务端强制契约，前端无实现责任
-
-# ---------------------------------------------------------------------------
-# §3.1 — Tab order
-# ---------------------------------------------------------------------------
-
 - id: INV-A11Y-053
   kind: invariant
   family: tab-order
@@ -1047,27 +998,6 @@
   test_tier: browser
   migration: pending
 
-- id: INV-A11Y-058
-  kind: invariant
-  family: tab-order
-  statement: >
-    项目**故意**没有 skip-to-main 链接
-  why: >
-    §3.1 与 §9 明示：sidebar 足够短，尚未被提出为痛点；若再加一个 sidebar 分区则应重新评估。
-    新写的人只会看到「没有 skip link」而误判为缺陷
-  source: docs/a11y-contract.md:111
-  authoritative_test: NONE
-  owner_slice: app/shell/sidebar
-  intentional_omission: true
-  runtime_layer: app
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §3.2 — Activation
-# ---------------------------------------------------------------------------
-
 - id: INV-A11Y-059
   kind: invariant
   family: activation
@@ -1101,26 +1031,6 @@
   verification_owner: unit
   test_tier: jsdom
   migration: pending
-
-- id: INV-A11Y-061
-  kind: invariant
-  family: activation
-  statement: >
-    导航一律走 `<button>` + `onGo`，不铺开原生 `<a href>` 链接
-  why: >
-    §3.2 记录的既定形状（"We don't have many links today"）；混用会让 Tab/激活语义分叉
-  source: docs/a11y-contract.md:121
-  authoritative_test: NONE
-  owner_slice: app/router/navigation
-  intentional_omission: true
-  runtime_layer: app
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §3.3 — Escape
-# ---------------------------------------------------------------------------
 
 - id: CAP-A11Y-062
   kind: capability
@@ -1672,27 +1582,6 @@
   test_tier: static
   migration: pending
 
-- id: CAP-A11Y-093
-  kind: capability
-  family: focus-visible
-  statement: >
-    新增可聚焦元素时必须走检查表：(1) 开箱是否有可见焦点指示？有则完成；(2) 否则加一条
-    `:focus-visible` 规则，采用 soft / hard 两种范式之一
-  why: >
-    §6 结尾给出的操作流程；没有它就没有判定「什么时候需要加规则」的标准
-  source: docs/a11y-contract.md:213
-  authoritative_test: NONE
-  owner_slice: styles/global
-  intentional_omission: false
-  runtime_layer: styles
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §7 — Motion policy
-# ---------------------------------------------------------------------------
-
 - id: GATE-A11Y-094
   kind: gate
   family: motion
@@ -1702,29 +1591,13 @@
   why: >
     Slice 4 (#65)：`!important` 是**必需的**——否则赢不过任何内联 `animation:` 简写。
     这是全局覆盖，新增 `animation:` 因此是免费的
-  source: web/src/calm.css:2483-2492
+  source: web/src/calm.css:2501-2510
   authoritative_test: NONE
   owner_slice: styles/global
   intentional_omission: false
   runtime_layer: styles
   verification_owner: css
   test_tier: static
-  migration: pending
-
-- id: INV-A11Y-095
-  kind: invariant
-  family: motion
-  statement: >
-    代码库中每一条动画/过渡都必须是装饰性的：不得有任何动效单独承载 load 状态或信息
-  why: >
-    §7 的根前提；GATE-A11Y-094 的全局折叠只有在这条成立时才安全
-  source: docs/a11y-contract.md:219
-  authoritative_test: NONE
-  owner_slice: styles/global
-  intentional_omission: false
-  runtime_layer: styles
-  verification_owner: review-waiver
-  test_tier: none
   migration: pending
 
 - id: INV-A11Y-096
@@ -1745,44 +1618,6 @@
   test_tier: jsdom
   migration: pending
 
-- id: INV-A11Y-097
-  kind: invariant
-  family: motion
-  statement: >
-    `web/src/` 中的 JS **不得**监听 `animationend` / `transitionend`
-  why: >
-    §7：契约是「动效仅供装饰」，逻辑不得挂在动效生命周期上。文档同时指出即使误加，
-    0.01ms 折叠后事件仍会足够同步地触发——但这不是许可，是缓冲
-  source: docs/a11y-contract.md:223
-  authoritative_test: NONE
-  owner_slice: styles/global
-  intentional_omission: true
-  runtime_layer: styles
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-- id: INV-A11Y-098
-  kind: invariant
-  family: motion
-  statement: >
-    若新增**功能性**动画（动效承载信息，例如旋转方向编码加载状态），必须在同一个 PR 里
-    记录它的 reduced-motion 替代方案
-  why: >
-    §7 明示的唯一豁免通道；不记录则该动画在 reduced-motion 下静默失去含义
-  source: docs/a11y-contract.md:225
-  authoritative_test: NONE
-  owner_slice: styles/global
-  intentional_omission: false
-  runtime_layer: styles
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §8 — AI agent test contract
-# ---------------------------------------------------------------------------
-
 - id: GATE-A11Y-099
   kind: gate
   family: locator-discipline
@@ -1800,40 +1635,6 @@
   runtime_layer: none
   verification_owner: e2e
   test_tier: browser
-  migration: pending
-
-- id: INV-A11Y-100
-  kind: invariant
-  family: locator-discipline
-  statement: >
-    `getByText` 只可用于无歧义的正文（如 `Codex is starting…` 占位符）；当文本位于有
-    role 的元素内时必须改用 `getByRole`
-  why: >
-    §8.1 的例外边界
-  source: docs/a11y-contract.md:237
-  authoritative_test: NONE
-  owner_slice: none/e2e/infra
-  intentional_omission: false
-  runtime_layer: none
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-- id: INV-A11Y-101
-  kind: invariant
-  family: locator-discipline
-  statement: >
-    `getByTitle` 只可用于 plugin iframe（其 accessible name 就是 title）；
-    不得为了可查询而给别处加 `title` 属性——别处的逃生舱是 `aria-label`
-  why: >
-    §8.1 + §2.6
-  source: docs/a11y-contract.md:238
-  authoritative_test: NONE
-  owner_slice: none/e2e/infra
-  intentional_omission: false
-  runtime_layer: none
-  verification_owner: review-waiver
-  test_tier: none
   migration: pending
 
 - id: CAP-A11Y-102
@@ -1907,47 +1708,6 @@
   test_tier: browser
   migration: pending
 
-- id: INV-A11Y-106
-  kind: invariant
-  family: e2e-projects
-  statement: >
-    a11y / role-name 契约测试放在 `web/e2e/` 下；触碰 replay fixture 的测试必须用
-    `a11y` project。约定是**一个表面一个 spec**（dialog 一个、rename 一个），
-    跨表面覆盖可以收在单个 `describe` 里
-  why: >
-    §8.4 的命名与切分约定
-  source: docs/a11y-contract.md:262
-  authoritative_test: NONE
-  owner_slice: none/e2e/infra
-  intentional_omission: false
-  runtime_layer: none
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-- id: INV-A11Y-107
-  kind: invariant
-  family: locator-discipline
-  statement: >
-    **故意不采用** Playwright 的 `toMatchAriaSnapshot()` —— #56 的「ARIA snapshots」
-    验收标准视为已退役；出厂契约是 `getByRole(role,{name})` + axe 扫描 + 键盘 E2E
-  why: >
-    §8.5：role/name 断言只在公共契约（role、accessible name、focus path）变化时才断，
-    而快照会因无关的 DOM 抖动反复卡住 PR。快照路径保持开放（Playwright ≥1.49），
-    若 role tree 开始悄悄漂移可按主要页面状态逐个加回
-  source: docs/a11y-contract.md:266
-  authoritative_test: NONE
-  owner_slice: none/e2e/infra
-  intentional_omission: true
-  runtime_layer: none
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §9 — Deferred / known gaps
-# ---------------------------------------------------------------------------
-
 - id: INV-A11Y-108
   kind: invariant
   family: dialog-focus
@@ -1965,47 +1725,4 @@
   runtime_layer: ui
   verification_owner: e2e
   test_tier: browser
-  migration: pending
-
-# ---------------------------------------------------------------------------
-# §10 / §10a — Library policy & primitive layer
-# ---------------------------------------------------------------------------
-
-- id: INV-A11Y-109
-  kind: invariant
-  family: library-policy
-  statement: >
-    立场是**手写到痛为止**，不引入 headless UI 库。重新评估的触发条件有三：
-    (1) 活跃维护的 disclosure widget 超过约 5 个（今天是 Dialog + AddPanel popover）；
-    (2) 落地一个无法合理手写键盘语义的新控件类别（Combobox / 命令面板最可能）；
-    (3) 两个以上手写控件的 focus-management 代码开始分叉
-  why: >
-    §10 的 Slice 7 判词：完整 WAI-ARIA 菜单契约只花了 ~290 LOC hook + ~30 LOC 集成，
-    痛点边缘案例只有 1 个（React 19 StrictMode 暴露的 Dialog inert/focus effect 顺序 bug）。
-    候选评估过 Radix（最可能）/ Headless UI / React Aria / Ark UI
-  source: docs/a11y-contract.md:285-300
-  authoritative_test: NONE
-  owner_slice: none/policy/ui-doc
-  intentional_omission: true
-  runtime_layer: none
-  verification_owner: review-waiver
-  test_tier: none
-  migration: pending
-
-- id: INV-A11Y-110
-  kind: invariant
-  family: doc-boundary
-  statement: >
-    逐原语的契约（视觉 / a11y / 测试）归 `web/src/ui/README.md`；本文档只放跨切面规则
-    （对象语义、键盘契约、locator 规则、motion 政策）。两边**故意不互相复制**
-  why: >
-    #60 引入该 README 作为 `web/src/ui/` 每个原语契约的正典家（今天是 `Dialog`，
-    `Menu` 与 `ConfirmDialog` 后续 slice 跟进）。重复会导致两份说法漂移
-  source: web/src/ui/README.md:217-289
-  authoritative_test: NONE
-  owner_slice: none/policy/ui-doc
-  intentional_omission: true
-  runtime_layer: none
-  verification_owner: review-waiver
-  test_tier: none
   migration: pending

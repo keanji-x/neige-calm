@@ -57,6 +57,7 @@ async fn seed_wave(repo: &SqlxRepo, cove_id: &str, title: &str) -> String {
             theme: RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

@@ -613,6 +613,8 @@ pub mod terminal_sweeper;
 pub mod test_seams;
 pub mod validation;
 pub mod wave_cove_cache;
+// #1147 S2 — managed workspace root derivation + materialization (D2/D3).
+pub mod workspace_materialize;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
 pub mod report_backlinks;

@@ -28,6 +28,7 @@ async fn seed_card(repo: &SqlxRepo) -> String {
             theme: RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

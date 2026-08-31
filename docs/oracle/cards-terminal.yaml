@@ -84,6 +84,70 @@
   test_tier: browser
   migration: pending
 
+- id: INV-CARD-017
+  kind: invariant
+  family: xterm-geometry
+  statement: >
+    term.cols 小于 MIN_COMMIT_COLS 或 term.rows 小于 MIN_COMMIT_ROWS 时必须 dispose，并返回 deferUntilUsableGeometry
+  why: >
+    瞬时无效尺寸不能成为共享 PTY 的提交尺寸
+  source: fe/web/src/systems/terminal/xterm-view.tsx:130-138,551-560
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-geometry
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: CAP-CARD-046
+  kind: capability
+  family: xterm-data
+  statement: >
+    SnapshotRequired 必须清空本地终端并等待随后下发的 RenderSnapshot
+  why: >
+    daemon 已决定恢复方式，客户端不能自行请求或重连制造第二条恢复路径
+  source: fe/web/src/systems/terminal/xterm-view.tsx:801-805
+  authoritative_test: NONE
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: INV-CARD-048
+  kind: invariant
+  family: xterm-data
+  statement: >
+    JSON 线格以普通 number array 传输，写入 xterm 前转换成 Uint8Array
+  why: >
+    JSON 不能承载二进制，xterm.write 需要 Uint8Array
+  source: fe/web/src/systems/terminal/xterm-view.tsx:175-177,715-724
+  authoritative_test: NONE
+  owner_slice: systems/terminal/protocol
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
+- id: CAP-CARD-056
+  kind: capability
+  family: xterm-exit
+  statement: >
+    protocol-error 是唯一接管式覆盖层，并提供 assertive alert、错误详情和刷新动作
+  why: >
+    协议不兼容需要阻止继续交互，其余终端状态不应遮盖线格
+  source: fe/web/src/systems/terminal/xterm-view.tsx:1161-1188
+  authoritative_test: NONE
+  owner_slice: systems/terminal/xterm-view
+  intentional_omission: false
+  runtime_layer: systems
+  verification_owner: review-waiver
+  test_tier: none
+  migration: pending
+
 - id: CAP-CARD-002
   kind: capability
   family: xterm-connection
@@ -346,23 +410,6 @@
     失败尺寸缓存不能变成永久拒绝；变化即代表布局真的动了
   source: web/src/XtermView.tsx:348-360
   authoritative_test: web/src/XtermView.test.tsx:546
-  owner_slice: systems/terminal/xterm-geometry
-  intentional_omission: false
-  runtime_layer: systems
-  verification_owner: unit
-  test_tier: browser
-  migration: pending
-
-- id: INV-CARD-017
-  kind: invariant
-  family: xterm-geometry
-  statement: >
-    初次 fit() 后若 term.cols < 8 或 term.rows < 4，必须 dispose 掉刚建的 Terminal、
-    移除 dump 钩子、记录失败尺寸，并回到延迟态；不得开 WebSocket
-  why: >
-    低于 8x4 不是可用 PTY 视口；把这种瞬时/失败的 fit 结果提交上去会污染共享模型
-  source: web/src/XtermView.tsx:123-126,514-527
-  authoritative_test: web/src/XtermView.test.tsx:515
   owner_slice: systems/terminal/xterm-geometry
   intentional_omission: false
   runtime_layer: systems
@@ -865,23 +912,6 @@
   test_tier: browser
   migration: pending
 
-- id: CAP-CARD-046
-  kind: capability
-  family: xterm-data
-  statement: >
-    收到 SnapshotRequired 时必须 term.clear() 并等待随后的 RenderSnapshot，
-    不得自行请求或重连
-  why: >
-    守护进程已决定要下发全量快照；客户端只需清干净本地状态
-  source: web/src/XtermView.tsx:789-794
-  authoritative_test: NONE
-  owner_slice: systems/terminal/protocol
-  intentional_omission: false
-  runtime_layer: systems
-  verification_owner: e2e
-  test_tier: browser
-  migration: pending
-
 - id: INV-CARD-047
   kind: invariant
   family: xterm-data
@@ -895,22 +925,6 @@
   intentional_omission: true
   runtime_layer: systems
   verification_owner: e2e
-  test_tier: browser
-  migration: pending
-
-- id: INV-CARD-048
-  kind: invariant
-  family: xterm-data
-  statement: >
-    Vec<u8> 线格必须以普通 JS Array<number> 传输，写入前用 Uint8Array.from 转换
-  why: >
-    JSON 编码的 ClientMsg/DaemonMsg 无法承载二进制；xterm.write 需要 Uint8Array
-  source: web/src/XtermView.tsx:166-181,704,711,764,770
-  authoritative_test: web/src/XtermView.test.tsx:610
-  owner_slice: systems/terminal/protocol
-  intentional_omission: false
-  runtime_layer: systems
-  verification_owner: unit
   test_tier: browser
   migration: pending
 
@@ -1037,24 +1051,6 @@
   authoritative_test: web/src/XtermView.test.tsx:1263
   owner_slice: systems/terminal/xterm-view
   intentional_omission: true
-  runtime_layer: systems
-  verification_owner: unit
-  test_tier: browser
-  migration: pending
-
-- id: CAP-CARD-056
-  kind: capability
-  family: xterm-exit
-  statement: >
-    'protocol-error' 是唯一保留的接管式覆盖层，必须带 role="alert" +
-    aria-live="assertive"，显示 code 与 message，UnsupportedVersion 额外提示
-    需刷新，并提供一个 Refresh 按钮
-  why: >
-    协议错误是开发者向的红色错误（线格版本不匹配等），值得接管表面；其它状态不值得
-  source: web/src/XtermView.tsx:1158-1178
-  authoritative_test: web/src/XtermView.test.tsx:1130
-  owner_slice: systems/terminal/xterm-view
-  intentional_omission: false
   runtime_layer: systems
   verification_owner: unit
   test_tier: browser
@@ -1297,23 +1293,6 @@
   test_tier: browser
   migration: pending
 
-- id: INV-CARD-070
-  kind: invariant
-  family: xterm-input-a11y
-  statement: >
-    XtermView 根节点必须带 className="xterm-view" 与 data-terminal-id 属性
-  why: >
-    .xterm-view 是滚轮路由识别“这是 xterm 卡片但 handle 尚未注册”的兜底选择器
-    （见 wheelRouter XTERM_ROOT_SELECTOR）；data-terminal-id 供 e2e 定位
-  source: web/src/XtermView.tsx:1108
-  authoritative_test: web/src/input/wheelRouter.test.ts:286
-  owner_slice: systems/terminal/xterm-view
-  intentional_omission: false
-  runtime_layer: systems
-  verification_owner: unit
-  test_tier: browser
-  migration: pending
-
 - id: CAP-CARD-071
   kind: capability
   family: xterm-input-a11y
@@ -1522,7 +1501,7 @@
     registry.ts 必须保持为纯 .ts 模块（用 createElement 而非 JSX）
   why: >
     保住设计文档里的文件名与模块边界；改成 .tsx 会牵连构建与文档引用
-  source: web/src/cards/registry.ts:299-303
+  source: web/src/cards/registry.ts:299-316
   authoritative_test: NONE
   owner_slice: systems/cards/registry
   intentional_omission: true
@@ -2650,7 +2629,7 @@
   why: >
     读屏与 Playwright getByRole('listitem', {name}) 都依赖它；快捷键字符串是
     Slice 9 契约的一部分
-  source: web/src/WaveList.tsx:66-80,250-253
+  source: web/src/WaveList.tsx:66-80,249-262
   authoritative_test: web/src/WaveList.test.tsx:250,273
   owner_slice: features/wave/list
   intentional_omission: false
@@ -3591,7 +3570,7 @@
   why: >
     md-h-N 这种 id 在多张 file-viewer 卡片之间不唯一，全局查找会滚错卡片；
     '#id' 选择器在部分引擎对 "短横线接数字" 有怪异行为
-  source: web/src/cards/builtins/file-viewer.tsx:632-647
+  source: web/src/cards/builtins/file-viewer.tsx:630-635
   authoritative_test: web/src/cards/builtins/file-viewer.test.tsx:606
   owner_slice: systems/fs-viewers/file-viewer
   intentional_omission: false

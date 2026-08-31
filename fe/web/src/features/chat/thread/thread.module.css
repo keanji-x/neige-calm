@@ -43,6 +43,840 @@
    * visible edges, aligns to neither side, and reads as an accident — which is
    * why the version before this one had to set `text-align: end` instead.
    */
+  /*
+   * The box wrapped around `.thread`, doing nothing else.
+   *
+   * It exists for one reason: the three rules below `.thread` space its
+   * children (`> * + *`, `> * + .exchange`, `> .exchange + *`), and anything
+   * rendered as one of those children takes a 32px gap above the first
+   * exchange and changes a layout that has nothing to do with it. This is the
+   * wrapper that lets the component hold a marker-search root above that list
+   * without joining it.
+   *
+   * **It has no rail-shown variant any more, and that is the point of this
+   * revision.** `.threadFrameRailed` used to switch this element to a
+   * two-column grid and hand the first column to the dots — 10px of every
+   * line's measure, argued down from 14 and up from an overhanging zero. The
+   * rail is now painted in the drawer's *seam* (`ui/drawer`), a strip of page
+   * outside the card entirely, so the transcript's geometry is identical
+   * whether or not there are dots. One class, one layout, nothing to switch.
+   */
+  .threadFrame {
+    min-inline-size: 0;
+  }
+
+  /*
+   * ── The rail, in the drawer's seam ────────────────────────────────────────
+   *
+   * **The transcript pays nothing, and three rounds of arguing about the price
+   * are deleted rather than kept.** The rail used to live in a gutter cut out
+   * of the transcript's own column, and the only open question was how wide to
+   * cut it: zero (the dot ink hidden in the card's 8px inset, with a 14px hit
+   * box whose transparent half overhung the paragraph, so dragging to select
+   * the start of a line pressed a dot); then 14px, "3.54% of 396", against a
+   * 396 the drawer does not actually have; then 10px, "≈1.7 characters of the
+   * reply's measured 5.91px serif advance". Every one of those was an argument
+   * about how much of the reading measure a navigation aid may eat, on a
+   * surface whose whole design is that nothing competes with the prose. The
+   * answer this revision gives is **none**, and it gives it by moving the rail
+   * out of the column rather than by shaving it.
+   *
+   * `ui/drawer` renders a **seam**: the `--space-10` strip of page between the
+   * card's trailing edge and the window. The card is `inset-inline-end:
+   * var(--space-10)` and is capped at `calc(100% - var(--space-10) * 2)`, so
+   * that strip is page at every viewport width — it cannot close up, and no
+   * other surface paints in it. The rail is portalled into it (`public.tsx`),
+   * which is also why it cannot be a descendant of the card: `.drawer` is
+   * `overflow: hidden`, and anything inside it that reaches into the seam is
+   * clipped away.
+   *
+   * ── The hit area, and the 2.5.8 departure this revision takes knowingly ───
+   *
+   * The seam is **24px** wide on both pointer branches. The fine-pointer row is
+   * **12px** tall at rest and opens to **28px** under the pointer; the coarse
+   * row is a flat **28px**.
+   *
+   * **So the fine branch does not meet WCAG 2.5.8 as presented, and this note
+   * says so rather than arguing around it.** One round ago the fine row was
+   * 24px and this heading read "why 2.5.8 is now met outright": a 24×24 box,
+   * the criterion satisfied by target size at its stated minimum. That claim is
+   * withdrawn, not restated — the box it described does not exist any more.
+   * What is true now is narrower and worth stating exactly:
+   *
+   *   - At rest the target is 24 × 12. Twelve is under the criterion's floor,
+   *     and the *presented* size is the reading of 2.5.8 that is safe.
+   *   - Under the pointer the target is 24 × 28, and the measured
+   *     centre-to-centre distance to its neighbours is 26.75px — which the
+   *     browser tier asserts at ≥24 rather than leaving to this paragraph.
+   *   - "It reaches 24 once you are pointing at it" is an *arguable* reading of
+   *     the spacing exception and is not being claimed as a sound one. A
+   *     criterion evaluated on the resting presentation is not satisfied by a
+   *     hover state, and nobody should read this file and come away thinking
+   *     the box is ticked.
+   *
+   * What was traded, plainly: a resting scale dense enough to show how many
+   * exchanges a conversation has, in exchange for aim that arrives with the
+   * pointer instead of being there all along. The reader asked for the density;
+   * the spread is what pays for the aim it costs. Anyone re-taking this
+   * decision should re-take it as the accessibility trade it is.
+   *
+   * **The coarse branch is not offered as cover for the fine one.** It never
+   * could be — a mouse user with a tremor is on the *fine* branch and is
+   * exactly who the criterion is written for, and a branch cannot carry a
+   * criterion for a device it does not run on. What the coarse branch is for is
+   * what it was always actually for: a finger is a blunter instrument than a
+   * cursor, so the row is `--control-h` (28) and the resting dot `--dot-sm` (6)
+   * — a bigger target because the pointer is bigger, and a dot you can *see* at
+   * rest because there is no hover, so the spread that makes a 12px row aimable
+   * on a fine pointer never runs there. It is unchanged by this revision, and
+   * on that branch the 24 × 28 box does clear 2.5.8 on size.
+   *
+   * The keyboard path is untouched by any of it: the roving `tabIndex` and the
+   * arrows in `public.tsx` reach every dot at either pitch, and 2.5.8 is a
+   * claim about pointer targets.
+   *
+   * ── The box ───────────────────────────────────────────────────────────────
+   *
+   * It fills the seam, and it is `position: relative` for one reason: the
+   * preview is absolutely positioned against it and the component writes that
+   * panel's `inset-block-start` relative to this element's own box.
+   *
+   * **Not sticky, and the deletion is the point.** It used to be `position:
+   * sticky; inset-block-start: var(--space-4); block-size: 0` inside the
+   * scrolling pane, because the pane was what scrolled and an absolutely
+   * positioned rail would have been pinned to the top of a transcript that
+   * scrolled away from it. In the seam nothing scrolls under it: the seam is
+   * absolutely positioned against the same box the card is, with the card's own
+   * block range, so the rail is simply *there* for as long as the drawer is.
+   */
+  .rail {
+    /*
+     * The numbers the rest of the rail is drawn from, declared here because
+     * this is now the rail's own root — the frame no longer knows the rail
+     * exists. Descendants read them by inheritance; nothing else hard-codes
+     * them.
+     */
+    /*
+     * ── The resting pitch is 12, and the floor it sits on is legibility ──────
+     *
+     * It was 24 for one round, and 24 was chosen as a *target* size — a 24×24
+     * button, WCAG 2.5.8 met by size. That whole argument is withdrawn below
+     * (see "the hit area"), because aiming is now bought by the spread instead,
+     * and once aiming is paid for elsewhere the resting pitch is free to answer
+     * a different question: how dense can the scale be and still read as a
+     * count of exchanges?
+     *
+     * **The floor is not aim, it is countability.** A 4px dot with 8px of space
+     * either side still resolves as a *dot* — you can look at a column of them
+     * and see that there are, say, nine. Below that the gaps close up and the
+     * column reads as a dashed line: the one fact the rail exists to publish at
+     * rest — "this conversation has about this many turns in it" — is gone, and
+     * what is left is decoration. 12 is the tightest pitch at which the dots
+     * are still separately visible at a 4px diameter, which is why it is the
+     * number and not 10 or 8.
+     *
+     * The gain is what the reader asked for: at 24 a twenty-exchange
+     * conversation was a 480px column, taller than most drawers, so the rail
+     * was always scrolled and never showed the whole conversation. At 12 the
+     * same twenty exchanges are 240px and fit inside `--nc-rail-max` with room.
+     */
+    --nc-rail-pitch: 12px;
+    /*
+     * The pitch of the dot directly under the pointer, and the number the
+     * ≥24px aim assertion stands on.
+     *
+     * The spread is a cumulative sum (see `RAIL_SPREAD_SPAN` in `public.tsx`):
+     * each dot's row grows toward this from `--nc-rail-pitch` in proportion to
+     * its published lift, and because the rows are stacked, a row that grows
+     * *pushes* the rows past it rather than swelling into them. So the
+     * centre-to-centre distance the reader actually aims across is the mean of
+     * two adjacent row heights.
+     *
+     * With the pointer on a dot's centre, that dot is at lift 1 and its
+     * neighbour — one index out on a span of four — is at
+     * `smoothstep(1 − 1/4) = 0.84375`. The distance between them is therefore
+     * `(28 + (12 + 16 × 0.84375)) ÷ 2 = 26.75px`. 28 is the smallest round
+     * number that clears 24 there with margin to spare: 26 would give 25.06,
+     * which is over the line but close enough to it that a change to the span
+     * or the curve could cross it without anyone noticing. The browser tier
+     * measures the distance off the rendered boxes rather than trusting this
+     * paragraph.
+     */
+    --nc-rail-pitch-open: 28px;
+    /*
+     * How long the column of dots is allowed to be, before it starts scrolling
+     * inside itself.
+     *
+     * **The reason is not that a longer one is ugly.** A thin vertical bar
+     * pinned to the trailing edge of a panel and running the full height of it
+     * *is the shape of a scrollbar*, and readers treat shapes before they read
+     * them: the seam is 24px wide, sits exactly where an overlay scrollbar
+     * sits, and a full-height column of ink in it will be grabbed and dragged.
+     * That is a wrong affordance, not a busy one — the drag does nothing, and
+     * the reader concludes the scrollbar is broken.
+     *
+     * Two things together take the shape away, and neither does it alone.
+     * Bounding the column keeps it from running edge to edge; centring it (see
+     * `.railTrack`, and `justify-content` there) puts clear page above and
+     * below it. Short, centred, with air at both ends reads as an *index*
+     * beside the panel. Full-height, flush to both ends, reads as a scrollbar.
+     * The cap without the centring would just be a short scrollbar.
+     *
+     * 320 at a 12px pitch is about 26 exchanges shown at once, which is past
+     * the length of nearly every conversation this drawer holds; longer ones
+     * scroll inside the track, which they already did before the cap existed.
+     *
+     * **On a phone that headroom is half of what it looks like, and this is the
+     * only place it is written down.** Measured at rest, against this same
+     * 320px, in each branch's own rendering context:
+     *
+     *   fine     21 exchanges → 320px, fits · 22 → 328px, overflows
+     *   coarse   11 exchanges → 308px, fits · 12 → 336px, overflows
+     *
+     * The fine figure is not 320 ÷ 12 because the shoulders take 64 of it, so
+     * 256px is dots. The coarse figure is 320 ÷ 28 with nothing taken off. So a
+     * reader on a phone meets the scroll-inside-a-scroll at a twelve-exchange
+     * conversation — an ordinary one — where a reader with a mouse meets it at
+     * twenty-two. Nothing is broken by that: the track is a scrollport, the
+     * overflow all goes to the end, and every dot stays reachable. But it is a
+     * real difference in how the rail feels on the two devices, and
+     * `thread.coarse.browser.test.tsx` asserts the coarse threshold so that
+     * moving the cap or the pitch has to come back and read this.
+     */
+    --nc-rail-max: 320px;
+    --nc-rail-dot: 4px;
+    --nc-rail-dot-current: var(--dot-sm);
+    /* Where a spread dot's ink tops out. It is bounded by the 24px seam rather
+       than by the old 10px gutter, so the clearance is no longer tight; it
+       stays at 8 because the peak is a *legibility* ceiling — a dot that grew
+       to fill the seam would read as a blob, not as a swell. */
+    --nc-rail-dot-peak: 8px;
+    /*
+     * The resting dot's fill: 3.81:1 on the light `--bg`. Carried as a property
+     * on the rail's root rather than written straight onto `.railDot::before`
+     * for a reason that is easy to get wrong and was: the dark override has to
+     * be a descendant selector (`[data-theme="dark"] …`), which outranks the
+     * plain class selector `.railDotActive::before` uses — so writing the two
+     * themes directly onto the `::before` silently repainted the *active* dot
+     * grey in dark mode instead of `--accent`. A custom property is resolved
+     * before the cascade picks a `background`, so both themes reach the dot
+     * through one declaration at one specificity and the active and hover rules
+     * keep winning by source order exactly as they did.
+     */
+    --nc-rail-ink: oklch(58% 0.01 250);
+
+    position: relative;
+    block-size: 100%;
+    /* The box the cap is *centred in*. `.rail` still spans the whole seam —
+       the preview is positioned against it and the component writes that
+       panel's offset relative to this element's own top — and the track,
+       which is the thing the cap applies to, is a flex item centred inside
+       it. Doing it the other way round (capping `.rail` itself) would move
+       the preview's origin and put the two clamps on different boxes. */
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  /* 3.49:1 on the dark `--bg`. Same shape as `styles/wave-grid.css` and
+     `styles/xterm-view.css`, which are the two existing places in this
+     repository that carry a use-specific colour through both themes without
+     spending a token name on it. */
+  [data-theme="dark"] .rail {
+    --nc-rail-ink: oklch(56% 0.012 245);
+  }
+
+  /* The geometry for the pointer that cannot hover: a taller row and a resting
+     dot big enough to read without the spread. It must stay **after** the base
+     rule — same specificity, so source order is the whole of why it wins on a
+     coarse device.
+
+     That is no longer asserted as an ordinal read out of the stylesheet. There
+     is a browser project whose Playwright context reports `pointer: coarse`
+     from first paint (`browser-coarse`, `vitest.config.ts`), and
+     `thread.coarse.browser.test.tsx` measures what a finger is actually laid
+     out with: a 24×28 button, a 28px pitch, 6px of resting ink and 8px on the
+     lit dot. A block moved above `.rail` comes out at 12 there.
+
+     `--nc-rail-pitch-open` is deliberately *not* redeclared here. The spread is
+     the fine branch's whole mechanism and the only rule that reads that number
+     lives inside `@media (pointer: fine)`; a coarse device gets a flat 28px
+     row at rest instead, because a finger has no hover to open anything with.
+     That is the same 28 by coincidence of `--control-h`, not by derivation, and
+     nothing here couples the two. */
+  @media (pointer: coarse) {
+    .rail {
+      --nc-rail-pitch: var(--control-h);
+      --nc-rail-dot: var(--dot-sm);
+      --nc-rail-dot-current: var(--dot-md);
+    }
+  }
+
+  /*
+   * ── The dots scroll inside the rail ───────────────────────────────────────
+   *
+   * The rail used to be as tall as its dots with the drawer's pane clipping it,
+   * so every dot past `(pane height − 8) ÷ pitch` was in the DOM and in the tab
+   * order and **could never be brought into view** — sticky positioning moved
+   * the rail with the pane, so there was no scroll that reached them. Measured
+   * in a 400px pane at the 28px pitch of the day: 14 dots reachable; about 31
+   * in a 900px window. (The same arithmetic at today's 12px pitch and 320px cap
+   * gives 26, at *every* window height — a different number, and the identical
+   * failure. Density does not fix this and neither does the cap; between them
+   * they only move where the tail starts, and the cap moves it to a fixed
+   * place instead of a window-dependent one.) A conversation long enough to
+   * need a jump list is exactly the conversation whose jump list did not work.
+   * So the track is a scrollport, and that much is unchanged.
+   *
+   * **What is deleted is the arithmetic that used to bound it.** The bound was
+   * `calc(var(--nc-rail-room) - var(--space-4))`, where `--nc-rail-room` was
+   * published by `public.tsx` once a frame while scrolling: the distance from
+   * the track's own top edge to the bottom of the pane. It could not be
+   * anything simpler, because a sticky rail's top edge *moves* — it sat below
+   * the drawer's 36px of close-clearance and below anything else in the body
+   * (a *Load earlier* button, a history error) until the pane had scrolled
+   * past, and nothing in CSS could name where it had got to. That mechanism,
+   * its `100vh` first-paint fallback, and the republication gap it shipped with
+   * are all gone.
+   *
+   * The track is now inside the seam, whose height is `inset-block:
+   * var(--space-9) var(--space-11)` against the same box the card resolves
+   * against — a CSS fact. `100%` of the rail is `100%` of the seam is exactly
+   * the card's block range, so the dots are bounded by the card's own top and
+   * bottom edges with no measurement, no per-frame write, and no fallback to be
+   * wrong for a frame.
+   *
+   * **And then bounded again, by `--nc-rail-max`, which is the tighter of the
+   * two on any drawer taller than 320px** — i.e. on most of them. The reason is
+   * on that property: a full-height bar in the seam is scrollbar-shaped, and
+   * gets dragged. `min()` is not needed and is not used; `block-size: 100%`
+   * with a `max-block-size` already resolves to the smaller, and keeps the
+   * short-drawer case (a 200px seam) at the seam's height rather than at a cap
+   * it never reaches.
+   *
+   * **The pitch is still not a variable this rule may spend.** The pitch is
+   * decided once, on `.rail`, against the pointer; shortening it *here*, to fit
+   * more dots into a track that is already a scrollport, would be buying
+   * reachability the scrollport already provides at the price of the target
+   * geometry that rule owns.
+   *
+   * No scrollbar: a classic one is wider than this whole track and would leave
+   * the dots nowhere to paint. What moves the track is the component — it
+   * writes this box's own `scrollTop` to bring the lit dot inside it, on every
+   * change of the lit dot *and on every change of this box's height*, and the
+   * arrow keys do the same for the focused one — so the scrollbar has no job
+   * here that something else is not already doing. The height half of that is
+   * still not a flourish, and the seam has not retired it: a window that
+   * shortens shortens the seam, and shortening the track is the one way a dot
+   * that was inside it ends up outside it without the lit exchange having
+   * changed at all.
+   */
+  /*
+   * ── The column is centred in the seam, and `safe` is load-bearing ─────────
+   *
+   * The dots used to start at the seam's top edge and hang down from it, which
+   * on the five-exchange conversation the rail first appears at is a short
+   * stub of ink in the top corner of a 900px window. Centred, the scale reads
+   * as belonging to the card beside it at every length.
+   *
+   * **It is also half of what stops the rail reading as a scrollbar**, and that
+   * is the newer half of the reason. `--nc-rail-max` is the other half; neither
+   * works alone, and the argument for the pair is written out on that property.
+   * The short version: a centred column that cannot reach either end of the
+   * seam has page above and below it, and a scrollbar never does.
+   *
+   * **The track is `block-size: 100%` rather than `max-block-size: 100%`, and
+   * that is what makes the centring expressible at all.** A shrink-to-fit
+   * track *is* its content's height, so no alignment inside it has anywhere to
+   * put anything; the box has to be the seam before "centre in the seam" is a
+   * question. Its bound is unchanged by the swap — 100% of `.rail` is 100% of
+   * the seam either way — and so is everything measured against its edges: the
+   * track still starts at the seam's top and ends at the card's bottom, which
+   * is what `place()`'s clamp and `keepInRailView` both read.
+   *
+   * **`safe center`, never plain `center`, and this is the trap to not
+   * un-learn.** This box is a scrollport (`overflow-y: auto`), and when the
+   * dots outgrow it a plain `center` distributes the overflow to *both* ends:
+   * the first dots sit above the scrollport's origin, at a scroll offset that
+   * does not exist, because `scrollTop` cannot go below zero. There is no
+   * gesture that brings them back. That is precisely the "the later dots
+   * cannot be reached" defect this rail was built to fix — it was a sticky
+   * rail clipped by the pane then, and re-introducing it through the alignment
+   * axis would be the same hole with a different cause. `safe` is the keyword
+   * that says "align this way while it fits, and fall back to `start` when it
+   * does not", so the overflow all goes to the end, where the scrollport can
+   * reach it. `margin-block: auto` on the dots would degrade the same way; the
+   * keyword is preferred because it says *why* on the property that does it.
+   *
+   * The browser tier pins both halves: a count that fits is asserted centred on
+   * the seam's own middle, and a count that overflows is asserted scrollable
+   * with the *first* dot inside the box at `scrollTop: 0` — which is the
+   * assertion plain `center` fails.
+   */
+  .railTrack {
+    display: flex;
+    flex-direction: column;
+    justify-content: safe center;
+    block-size: 100%;
+    /* The cap, and `flex: none` beside it so that `.rail`'s own centring
+       cannot shrink the track back out of it — a flex item's default
+       `flex-shrink: 1` would let a short seam squeeze the box the dots are
+       measured against, and every clamp in `public.tsx` reads that box. */
+    max-block-size: var(--nc-rail-max);
+    flex: none;
+    overflow-y: auto;
+    scrollbar-width: none;
+    /*
+     * **The engine must not second-guess this scrollport's position.** Scroll
+     * anchoring is on by default and is normally exactly right: when content
+     * above the visible area changes size, the browser moves `scrollTop` to
+     * keep what you are looking at where it is. Here it is a second mechanism
+     * solving a problem that is already solved. The spread's shoulders (see the
+     * fine-pointer block) hold every dot's position in *content* coordinates
+     * fixed, so there is nothing left for anchoring to correct — and what it
+     * corrects instead is the shoulder itself, which it sees as content above
+     * the fold changing size. Measured with anchoring left on: hovering a dot
+     * halfway down a forty-exchange rail moved `scrollTop` from 100 to 68 and
+     * carried the aimed dot 49px out from under the pointer, which then landed
+     * the envelope on a different dot and fed the next correction. The two
+     * mechanisms cannot both own the offset; this one is the one that knows
+     * about the pointer.
+     */
+    overflow-anchor: none;
+  }
+
+  /*
+   * ── The dot's ink, against a background that is no longer the card ────────
+   *
+   * The dot at rest is 4px on a fine pointer (6 on a coarse one), centred in
+   * the 24px seam.
+   *
+   * **The surface behind it changed, so the whole colour decision had to be
+   * re-taken from scratch.** In the gutter the dot sat on `--surface-card`;
+   * in the seam it sits on the page, `--bg`. That is not a small shift —
+   * `--bg` is a step *darker* than the card in light mode and a step *lighter*
+   * in dark — and every ratio the previous note quoted was against the card.
+   * They are recomputed here against `--bg`, with the same oklch → linear sRGB
+   * conversion the repository's own `tools/styles/check-contrast.mjs` uses.
+   * **Both columns are run against today's tokens**, so the comparison is
+   * surface-against-surface and nothing else — `--bg` and the whole text ladder
+   * were re-hued by the colour-system change (`8c2b5703`), and a column left at
+   * its pre-merge figures would be comparing two things at once:
+   *
+   *              vs --surface-card (the old gutter)  vs --bg (the seam)
+   *   --text-3   7.00 light / 6.47 dark              6.34 light / 8.10 dark
+   *   --text-4   2.11 light / 1.82 dark              1.91 light / 2.28 dark
+   *
+   * WCAG 1.4.11 asks 3:1, because this circle is the *entire* visible
+   * affordance of an operable control at rest. So `--text-4` is still out —
+   * further out than before in light mode, where the seam takes it from 2.11
+   * down to 1.91 — and `--text-3` still passes comfortably.
+   *
+   * **But `--text-3` is not what this uses, and the reason is that it is now
+   * too loud rather than too quiet.** 6.34:1 and 8.10:1 is body-text contrast
+   * for a column of decorative navigation ink printed down the edge of the
+   * window; looked at in a live drawer, the seam read as a *line* rather than
+   * as a scale. What the rail wants at rest is the quietest ink that still
+   * clears 3:1 with room to spare. Walking the same conversion down the
+   * lightness ladder at the existing text chroma and hue puts the 3:1 line
+   * between `L62%` and `L64%` in light (3.24:1 and 2.99:1) and between `L52%`
+   * and `L54%` in dark (2.95:1 and 3.21:1) — the rungs either side of it are
+   * close enough that a token nudge or a monitor profile could cross it.
+   *
+   * So the resting dot is **`oklch(58% 0.01 250)` light — 3.81:1 — and
+   * `oklch(56% 0.012 245)` dark — 3.49:1**: greyer than any text token, and
+   * clear of the line rather than on it, by about six points of lightness in
+   * light and three in dark.
+   *
+   * **Why a raw `oklch()` here rather than a new token.** The token list is
+   * locked by set equality in three places (`tokens.contract.test.ts`,
+   * `public.contract.test.ts`, `public.ts`), so a new name is a public-contract
+   * change — for one fill used by one pseudo-element on one surface, which is
+   * the definition of a use-specific value rather than a semantic step. The
+   * repository already has this exact shape twice: `styles/wave-grid.css`
+   * writes eight per-theme `oklch()` card-head fills, and `styles/xterm-view.css`
+   * writes its own light/dark status fills, both keyed on `[data-theme="dark"]`
+   * outside `tokens.css`. This follows that precedent, and the dark override
+   * below is written the same way they write theirs.
+   *
+   * The pair is *not* added to `check-contrast.mjs`, and the reason survives
+   * the move unchanged. The tool says of itself that it is "deliberately a
+   * small semantic-pair check, not a CSS/DOM contrast audit", protecting "only
+   * the explicitly listed text/fill recipes", while "actual inherited
+   * foregrounds and ancestor backgrounds require a browser render audit". This
+   * dot is exactly that: a pseudo-element's fill over whatever ancestor happens
+   * to be behind it. So the binding assertion lives in
+   * `thread.browser.test.tsx`, where the dot's *rendered* colour and the
+   * surface behind it are both read off the engine — a measurement of this rule
+   * rather than of the names it uses.
+   *
+   * **1.4.11 has no size term**, so the 4px resting size neither moves these
+   * ratios nor buys relief from them; what it does change is how much work the
+   * resting dot does on its own, which is deliberately little. The affordance
+   * is completed by the two things a pointer's arrival brings — the
+   * spread below and the preview — and by the active dot, which is
+   * `--accent` (6.73:1 light, 8.61:1 dark against `--bg`) at `--dot-sm`. Hover
+   * is `--text-2` (8.20:1 / 9.92:1). Both were re-checked against the seam's
+   * background rather than assumed to survive the move; both had room.
+   */
+  .railDot {
+    display: grid;
+    place-items: center;
+    flex: none;
+    inline-size: 100%;
+    block-size: var(--nc-rail-pitch);
+    padding: 0;
+    border: 0;
+    background: none;
+    cursor: pointer;
+  }
+
+  .railDot::before {
+    content: '';
+    inline-size: var(--nc-rail-dot);
+    block-size: var(--nc-rail-dot);
+    border-radius: var(--radius-pill);
+    background: var(--nc-rail-ink);
+  }
+
+  .railDot:hover::before {
+    background: var(--text-2);
+  }
+
+  /*
+   * **The focus ring is drawn *inside* the button, because the track clips
+   * everything outside it.**
+   *
+   * `.railTrack` is `overflow-y: auto`, and a scrollport on one axis is a
+   * scrollport on both — `overflow-x`'s computed value follows to `auto`,
+   * there being no `overflow` pair that scrolls one axis and lets the other
+   * paint out. The dot is `inline-size: 100%` of that 24px track, so its
+   * border box *is* the track's content box on the inline axis, and the global
+   * ring (`2px solid` at `outline-offset: 2px`, `styles/base.css`) reaches 4px
+   * past each inline edge — all of it outside the clip. What renders is not a
+   * faint ring but two horizontal dashes above and below the dot, the exact
+   * width of the track, with no vertical strokes at all. It is a geometric
+   * consequence of the two declarations, so it is the same in both themes;
+   * only the ring's colour is themed.
+   *
+   * A negative offset draws the ring flush inside the border box instead, so
+   * none of it is outside the clip on either axis, and there is room: the
+   * dot's own ink is 4px in a 24×12 row, which is more space than the 2px
+   * stroke needs. The alternative — move the clip up to `.rail` and let the
+   * track breathe — is not available, because the track has to be the
+   * scrollport (`--nc-rail-max` caps it, and every clamp in `public.tsx` reads
+   * its box).
+   *
+   * The browser tier measures the ring's reach against `.railTrack`'s box,
+   * which is the box that does the cutting. The case it replaces compared
+   * against the drawer's pane, which is two boxes out and clips nothing here —
+   * so it was green on a ring that was being cut in half.
+   */
+  .railDot:focus-visible {
+    outline-offset: -2px;
+  }
+
+  /*
+   * The one you are in **grows**, and only then does it also change colour.
+   *
+   * Colour alone would be the whole signal on a circle this small, which fails
+   * anyone reading it in monochrome or with a red-green deficit — and at this
+   * size a weight or a border has nowhere to go. Size is the signal that
+   * survives every one of those, and the ratio got *stronger* when the resting
+   * dot shrank: 6 → 8 was a third wider, 4 → 6 is half again, on a shape whose
+   * neighbours are identical to it. The `--accent` on top is the second,
+   * redundant, signal, and the `aria-current` on the button is the third, for
+   * the reader who sees neither.
+   */
+  .railDotActive::before {
+    inline-size: var(--nc-rail-dot-current);
+    block-size: var(--nc-rail-dot-current);
+    background: var(--accent);
+  }
+
+  /*
+   * ── The spread: the dots push apart around the pointer ────────────────────
+   *
+   * **What the shape is.** `public.tsx` publishes one number per dot,
+   * `--nc-dot-lift`, between 0 and 1: how near to the pointer this dot is, on a
+   * falloff whose span and curve are the component's — the arithmetic and the
+   * reason for a smoothstep rather than a straight line are on
+   * `RAIL_SPREAD_SPAN` there. This block is the whole of what that number
+   * *means* on screen, and it now means two things rather than one.
+   *
+   * **The second one is the point of this revision, and it is spacing.** The
+   * rule used to grow the ink and nothing else, on a row that was a fixed 24px
+   * tall — so a dot could get bigger but never got any further from its
+   * neighbours, and the 24px of aim came from the resting pitch. The resting
+   * pitch is 12 now. What replaces it is the row itself growing: `.railDot` is
+   * `--nc-rail-pitch` tall at rest and `--nc-rail-pitch-open` at full lift, and
+   * because the rows are stacked in a flex column, **a row that grows pushes
+   * every row past it along**. Each dot's position is therefore the running sum
+   * of the current heights of the rows before it — the dots are *moved apart*,
+   * not merely inflated in place, and what the reader aims across is real
+   * distance between real targets rather than a bigger circle in the same slot.
+   *
+   * The arithmetic that says this clears 24px, and the reason 28 is the number,
+   * are on `--nc-rail-pitch-open`. It is not asserted from here: the browser
+   * tier measures the rendered centre-to-centre distance.
+   *
+   * **This is a knowing departure from WCAG 2.5.8, and it is not to be written
+   * up as compliance.** The criterion is most defensibly read as a property of
+   * the target *as presented* — i.e. at rest, where these are 24 wide and 12
+   * tall and the vertical dimension does not reach 24. "It becomes 24 once you
+   * hover it" is an arguable reading of the spacing exception, not a safe one,
+   * and the honest description is that this trades a strict reading of 2.5.8
+   * for a denser scale plus an aid that opens under the pointer. The note above
+   * `.rail` that claimed the criterion was "met outright" by a 24×24 box is
+   * deleted rather than softened, because that box no longer exists. The coarse
+   * branch is unchanged and is not offered as cover for this one — a finger has
+   * no hover, which is exactly why it keeps a flat 28px row.
+   *
+   * **Why the row and not a `translate` on each dot.** A transform would move
+   * the ink and the hit box together and would leave the flex layout alone,
+   * which is tempting: nothing about the track's height or its scroll would
+   * change. What it also would not change is the *scrollable* extent, so the
+   * dots pushed past the track's edges would be clipped with no scroll that
+   * reaches them — the defect this rail was built to fix, arriving through the
+   * transform axis. Growing the rows keeps the column a real column: it gets
+   * longer, `safe center` hands the overflow to the end, and the scrollport
+   * reaches all of it. The browser tier asserts exactly that, at both ends,
+   * with the rail spread open.
+   *
+   * **Why size and not `scale` for the ink.** `scale` is the cheaper property
+   * and it was the first thing tried. It cannot express this: the lift has to
+   * grow the 4px dot and the 6px active dot *to the same peak*, which under
+   * `scale` means two different factors, and the active one (8 ÷ 6) would then
+   * be a different curve — the active dot would reach its peak on a different
+   * part of the envelope than its neighbours and the wave would visibly dent as
+   * it passed over it.
+   *
+   * **`(pointer: fine)` and nothing else.** A coarse pointer has no hover to
+   * drive this; what it would get instead is a latched swell under the last
+   * place a finger touched, which is a state the reader cannot clear — and now
+   * also a latched *gap*, which is worse, because it moves every dot below it.
+   *
+   * **The media query is not the guard on a hybrid device, and the component's
+   * own check is.** A laptop with a touchscreen reports `pointer: fine`, so
+   * this block is live there and a finger's `pointermove` would open whatever
+   * it landed on. `public.tsx` publishes no lift for `pointerType === 'touch'`
+   * for exactly that case; the two are independent, and the browser tier binds
+   * both — the component's guard by dispatching a touch move, this block by
+   * asserting that every rule reading `--nc-dot-lift` sits inside a fine
+   * condition.
+   *
+   * **On a genuinely coarse page the component still publishes a lift for a
+   * `pointerType: 'mouse'` event, and that is known rather than overlooked.**
+   * It is inert twice over: every consumer is inside this block, and the factor
+   * the shoulders scale by — `(--nc-rail-pitch-open − --nc-rail-pitch)` — is
+   * 28 − 28 = 0 there, so there is nothing for a lift to multiply even if a
+   * rule reached it. `thread.coarse.browser.test.tsx` measures exactly that:
+   * the full envelope published, the pitch still 28 and the ink still 6.
+   *
+   * **The row's height is deliberately not transitioned, and the ink's is.**
+   * The lift is recomputed every frame the pointer moves, so the position is
+   * already animating at frame rate; a transition on `block-size` would be a
+   * second animation fighting the first, and — because the row's height is what
+   * every dot after it is positioned from — it would smear the whole column
+   * below the pointer through 60ms of catch-up on every frame. The ink keeps
+   * its 0.06s for the reason it always had: the settle when the pointer *stops*
+   * or leaves, without which the swell snaps flat and reads as a glitch.
+   */
+  @media (pointer: fine) {
+    .railDot {
+      block-size: calc(
+        var(--nc-rail-pitch)
+        + (var(--nc-rail-pitch-open) - var(--nc-rail-pitch)) * var(--nc-dot-lift, 0)
+      );
+    }
+
+    /*
+     * ── The shoulders ────────────────────────────────────────────────────────
+     *
+     * Blank at each end of the column, sized so that shoulder + growth is the
+     * same on every frame — which is what keeps the column's length, and the
+     * distance from the track's top edge to the dot under the pointer, from
+     * depending on where the pointer is. The whole argument, and the two
+     * measured slides (12px centred, 49px overflowing) it replaces, is in
+     * `public.tsx` above the pair being read here.
+     *
+     * **The fallback is the resting value and it is load-bearing**, because the
+     * component only ever publishes from a pointer event: until a pointer has
+     * touched this rail there is no `--nc-rail-lead` and this number *is* the
+     * layout. It is `RAIL_SPREAD_SPAN ÷ 2` — the growth a fully interior
+     * envelope puts on one side — and the browser tier asserts the resting
+     * padding against that arithmetic rather than trusting the two files to
+     * have been changed together.
+     *
+     * The cost is stated plainly: two shoulders of two openings each is 64px of
+     * the 320px cap, so what the reader sees at once is 256px of dots, about
+     * 21 exchanges rather than 26. That is the price of a rail that does not
+     * walk out from under the pointer, and it is not all loss — air above and
+     * below the column is the other half of not reading as a scrollbar.
+     *
+     * Inside `(pointer: fine)` because the spread is: a coarse device has no
+     * hover, never grows a row, and would be paying 64px of track for a
+     * shoulder that is only ever the same 64px.
+     *
+     * **Margins on the end dots, and emphatically not `padding` on the track.**
+     * Padding was the first shape and it was wrong for a reason worth keeping
+     * written down: padding is part of the track's *content box*, the track is
+     * watched by a `ResizeObserver` (see the effect that keeps the lit dot in
+     * view), and a `ResizeObserver` reports the content box by default. So
+     * every pointer that touched the rail resized it in the observer's eyes and
+     * ran the keep-in-view pass, which scrolled the track to the lit dot —
+     * measured, on a forty-exchange rail: hovering any dot threw the scroll to
+     * the end, `scrollTop` 100 → 224. Margins on the children change nothing
+     * about the box the observer is watching, so the observer keeps meaning
+     * what its own note says it means: the *window* got shorter.
+     */
+    .railDot:first-child {
+      margin-block-start: calc(
+        (var(--nc-rail-pitch-open) - var(--nc-rail-pitch)) * var(--nc-rail-lead, 2)
+      );
+    }
+
+    .railDot:last-child {
+      margin-block-end: calc(
+        (var(--nc-rail-pitch-open) - var(--nc-rail-pitch)) * var(--nc-rail-tail, 2)
+      );
+    }
+
+    .railDot::before {
+      --nc-dot-size: calc(
+        var(--nc-rail-dot)
+        + (var(--nc-rail-dot-peak) - var(--nc-rail-dot)) * var(--nc-dot-lift, 0)
+      );
+
+      inline-size: var(--nc-dot-size);
+      block-size: var(--nc-dot-size);
+      transition:
+        inline-size var(--motion-instant) linear,
+        block-size var(--motion-instant) linear,
+        background-color var(--motion-quick) ease-out;
+    }
+
+    .railDotActive::before {
+      --nc-dot-size: calc(
+        var(--nc-rail-dot-current)
+        + (var(--nc-rail-dot-peak) - var(--nc-rail-dot-current)) * var(--nc-dot-lift, 0)
+      );
+    }
+  }
+
+  /*
+   * ── The prompt, floated out over the transcript ───────────────────────────
+   *
+   * **It is a pointer-only enhancement and it is `aria-hidden`, and those two
+   * facts are one decision.** The prompt is already the button's accessible
+   * name — `Jump to exchange 4: …` — so a screen reader has had this text since
+   * the rail existed. Painting it again in a live region, or in anything a
+   * reader can land on, would put the same sentence into the same reader twice
+   * and add a second thing in the drawer that can hold focus. So the layer
+   * takes no events, holds no focus, and is invisible to the accessibility
+   * tree; it exists for the one reader who has a pointer, no way to hear the
+   * name, and a 4px dot to aim at. That is also why it *may* be longer than the
+   * name — `RAIL_LABEL_MAX` is short because a screen reader should not read a
+   * paragraph to announce a button, and none of that binds a thing you glance
+   * at.
+   *
+   * **It floats inline-*start* now, back across the card.** The rail used to be
+   * in the transcript's leading gutter and the panel opened away from it, over
+   * the prose to its inline-end. The rail is on the other side of the
+   * transcript now — in the trailing seam — so the only direction with room is
+   * back toward the card. Same offset, opposite edge.
+   *
+   * **What bounds its width is CSS again, and the measurement it replaces is
+   * deleted.** The cap used to be `--nc-rail-reach`, published per frame by
+   * `public.tsx`: the distance from the track's inline-end edge to the frame's,
+   * measured because the drawer's width is `max(15rem, 25cqi)` of a flex
+   * ancestor and no rule could name it from inside the pane. From the seam it
+   * *can* be named. `--panel-span` is declared on `.main` — the same container
+   * `.drawer` reads its own `inline-size` from — and the card's own cap is
+   * `calc(100% - var(--space-10) * 2)` of that container, which in the
+   * container's own units is `100cqi - var(--space-10) * 2`. Taking the `min`
+   * of the two reproduces the card's rendered width exactly, at every viewport,
+   * with no measurement and no first-paint fallback to be wrong for a frame.
+   * `--space-6` comes off it for clearance on the far edge.
+   *
+   * **Containment changed hands, and this is the part to read carefully.**
+   * The old note said the pane's `overflow` clip was "the whole of the
+   * containment guarantee" — the layer was a descendant of the scrolling pane,
+   * the pane clipped, and the composer was a `flex: none` sibling below it. It
+   * also recorded, correctly, that the component's clamp was *not* a second
+   * guarantee: the clamp bounds the panel's **top** against the track's box, so
+   * a panel taller than the track still overran it, measured at a 205px bottom
+   * against a 165px track bottom in a 240px drawer.
+   *
+   * In the seam there is no pane to clip: the layer is outside the card
+   * altogether. What replaces the clip is that **the track's bottom is now the
+   * seam's bottom, which is the card's bottom** — the seam is `inset-block:
+   * var(--space-9) var(--space-11)`, and `.railTrack` is `max-block-size: 100%`
+   * of it. So `Math.min(wanted, trackBox.bottom - height)` in the component's
+   * `place()` is measuring against the card's own lower edge, and the clamp
+   * that used to be only a legibility fix is now the containment guarantee as
+   * well. The 205-against-165 overrun is not reachable in this geometry,
+   * because there is no box between the track and the drawer's bottom edge for
+   * the panel to spill into. The browser tier asserts the panel's bottom
+   * against the seam's, which is the assertion that would have failed before
+   * and now has something to bind to.
+   *
+   * The clamp's other job is unchanged and is still the visible one: a panel
+   * centred on the first or the last dot would otherwise start above the track
+   * or run past it, and be cut with half a sentence showing.
+   *
+   * `--paper` plus `--shadow-float` is tokens.css §elevation's "+2 floating",
+   * the same rank the drawer and the `/` menu take. It matters more here than
+   * it did: the panel is over the *card* now rather than over the transcript
+   * inside it, so it has to read as a layer above a surface that is itself a
+   * layer above the page.
+   */
+  .railPreview {
+    position: absolute;
+    inset-block-start: 0;
+    inset-inline-end: calc(100% + var(--space-3));
+    z-index: var(--z-raised);
+    /*
+     * `max-content` is doing something specific and it is not a preference.
+     * The containing block here is `.rail`, which is the seam's 24px wide, and
+     * an absolutely-positioned box with only an end inset sizes shrink-to-fit
+     * against *that* — 24px minus the 16px this starts at, i.e. nothing.
+     * Measured before this line existed, at the old 10px gutter: a 358px cap, a
+     * 29px box, and 1199px of one-character-per-line text hanging out of the
+     * drawer. The seam is wider than that gutter and changes none of it.
+     * `max-content` is the one keyword that sizes from the content instead of
+     * from the space, and the cap below is then what brings a long prompt back
+     * to a wrap.
+     */
+    inline-size: max-content;
+    max-inline-size: calc(
+      min(var(--panel-span, 15rem), 100cqi - var(--space-10) * 2) - var(--space-6)
+    );
+    padding: var(--space-3) var(--space-5);
+    border-radius: var(--radius-md);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+    overflow-wrap: anywhere;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-snug);
+    color: var(--text-2);
+    pointer-events: none;
+  }
+
+  /* Said in CSS as well as in the component: there is no hover on a touch
+     screen, so the only thing this layer could do there is appear under a
+     finger that has already pressed the dot it describes. The component's
+     `pointerType` guard means the layer is normally never created at all on a
+     touch press; this is the backstop, and it is asserted as one — the coarse
+     tier forces the layer up through a mouse `pointerover` and reads the
+     computed `display` and a zero-height box off the rendered element. */
+  @media (pointer: coarse) {
+    .railPreview {
+      display: none;
+    }
+  }
+
   .thread {
     display: flex;
     flex-direction: column;
@@ -55,10 +889,15 @@
      * messaging-app convention — and this is not a messaging app. Four short
      * exchanges in a 900px drawer left roughly 60% of it empty above the first
      * thing anyone said, which reads as a broken surface, not as a calm one.
-     * Every serious agent surface top-anchors for exactly this reason. The
-     * newest turn is still followed on arrival; that is the drawer's scroller's
-     * job (`data-nc-drawer-scroll`), and it only has work to do once the
-     * transcript actually overflows.
+     * Every serious agent surface top-anchors for exactly this reason.
+     *
+     * Following the newest turn is a separate job and not this rule's: the
+     * component writes the drawer's own scroller (`data-nc-drawer-scroll`), and
+     * only for a reader who is already at the end — see the follow effect in
+     * `public.tsx`. A transcript short enough to leave space under it is one
+     * that cannot scroll, so that write has nothing to do; what does have
+     * something to do on such a transcript is the rail's rule, which has to
+     * know it cannot scroll or it lights the last dot at the top.
      */
   }
 
@@ -673,9 +1512,40 @@
     }
   }
 
+  /*
+   * ── Reduced motion takes the transition and keeps the sizes ───────────────
+   *
+   * The pulse goes, unconditionally: it is a loop that runs on its own with
+   * nothing driving it, which is the plain case the preference is about.
+   *
+   * **The envelope is the harder call, and it is deliberately not switched
+   * off.** The temptation is to read "the dots swell as the pointer moves" as
+   * decoration and delete it here. The reason not to is that the swell is the
+   * aiming aid for a 4px dot: a reduced-motion mouse user who lost it would be
+   * left with 4px of ink in a 24px row and nothing telling them which row they
+   * are on until they are on it, i.e. a motion preference answered with a
+   * targeting failure. That is a worse trade than the one being avoided.
+   *
+   * So what is dropped is the part that is genuinely animation rather than
+   * feedback: the transition. With it gone each dot is simply whatever size the
+   * pointer's current position makes it — a hover state that changes when the
+   * hover changes, and, crucially, one that **stops the instant the pointer
+   * does**. The 0.06s settle and the ease-out release, which are the parts that
+   * keep moving after the input has stopped, are what the preference removes.
+   *
+   * This block sits after `@media (pointer: fine)` on purpose: the two
+   * conditions are independent, both can match at once, and equal specificity
+   * means source order is what decides. Move it above and the transition comes
+   * back — so the browser tier asserts the ordinal as well as the declaration,
+   * by the same walk it uses on the coarse block.
+   */
   @media (prefers-reduced-motion: reduce) {
     .live {
       animation: none;
+    }
+
+    .railDot::before {
+      transition: none;
     }
   }
 }

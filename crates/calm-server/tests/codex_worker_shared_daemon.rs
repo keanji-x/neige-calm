@@ -302,6 +302,8 @@ fn spawn_dispatcher_with_permits(boot: &Boot, permits: usize) -> Dispatcher {
         boot.renderer.clone(),
         Some(boot.mcp_server.clone()),
         boot.shared.clone(),
+        // #1147 S2 — attached fixtures: materialization on lease is a no-op.
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
         permits,
     )
 }
@@ -569,6 +571,7 @@ async fn prepared_worker_operation(
         None,
         state.card_role_cache.clone(),
         state.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     let mut tx = repo.pool().begin().await.unwrap();
     let output = adapter.prepare_tx(&mut tx, &payload, &op).await.unwrap();
@@ -1153,6 +1156,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         None,
         state.card_role_cache.clone(),
         state.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     insert_pending_operation_row(&repo, &op).await;
     let mut tx = repo.pool().begin().await.unwrap();
@@ -1207,6 +1211,7 @@ async fn worker_recovery_compensation_falls_back_to_persisted_turn_interrupt() {
         None,
         state.card_role_cache.clone(),
         state.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     );
     let operation_repo = Arc::new(SqlxOperationRepo::new(repo.pool().clone()));
     let completion = OperationCompletionBus::new();

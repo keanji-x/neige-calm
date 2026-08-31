@@ -2404,6 +2404,7 @@ async fn worker_recovery_skips_respawn_when_terminal_already_exited() {
         None,
         boot.state.card_role_cache.clone(),
         boot.state.wave_cove_cache.clone(),
+        std::env::temp_dir().join("neige-calm-test-unused-workspace-root"),
     ));
     let operation_repo = Arc::new(SqlxOperationRepo::new(boot.repo.pool().clone()));
     let completion = OperationCompletionBus::new();

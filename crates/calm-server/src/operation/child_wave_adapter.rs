@@ -4,12 +4,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_create_with_id_tx, overlay_upsert_tx, wave_create_tx,
+    AttachedInheritedPath, WaveWorkspacePlan, append_decision_event_in_tx, card_create_with_id_tx,
+    overlay_upsert_tx, wave_create_tx,
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId};
-use crate::model::{CardRole, NewCard, NewOverlay, NewWave, RequestTheme, new_id, now_ms};
+use crate::model::{
+    CardRole, NewCard, NewOverlay, NewWave, RequestTheme, WaveWorkspace, WaveWorkspaceKind, new_id,
+    now_ms,
+};
 use crate::routes::waves::{spec_harness_card_payload, spec_harness_layout_payload};
 use crate::wave_report::{WaveReportPayload, tasks_rebuild_tree_tx};
 
@@ -65,18 +69,63 @@ pub fn render_child_seed(payload: &ChildWaveOperationPayload) -> String {
 pub struct ChildWaveAdapter {
     card_role_cache: crate::card_role_cache::CardRoleCache,
     wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+    /// #1147 D2/D7 — the managed workspace root. The child's own workspace is
+    /// derived under it and materialized in `prepare_tx`.
+    workspace_root: std::path::PathBuf,
 }
 
 impl ChildWaveAdapter {
     pub fn new(
         card_role_cache: crate::card_role_cache::CardRoleCache,
         wave_cove_cache: crate::wave_cove_cache::WaveCoveCache,
+        workspace_root: std::path::PathBuf,
     ) -> Self {
         Self {
             card_role_cache,
             wave_cove_cache,
+            workspace_root,
         }
     }
+}
+
+/// #1147 S4 (design D7, amended) — a child wave's workspace plan, by the
+/// parent's `kind`.
+///
+/// The original D7 said "a child must always allocate independently". That
+/// conclusion was drawn from one hazard — deleting a child `rm -rf`s the
+/// parent's repository — and that hazard exists **only for a managed parent**,
+/// because S5 recycles `kind = managed` directories and nothing else. Stated
+/// unconditionally it also broke the feature: a sub-wave of an attached wave
+/// would get an empty repository and could not see the code it was spawned to
+/// work on, which is the normal reason to spawn one.
+///
+/// * **Managed parent** → the child allocates its own managed workspace,
+///   frozen at creation. Two rows must never share a *managed* directory.
+/// * **Attached parent** → the child inherits the same attached path, frozen
+///   at creation. Nothing recycles it, and several waves pointing at one
+///   checkout is an ordinary, pre-existing state.
+///
+/// Frozen on both branches: a child is machine-created inside a running spec
+/// and its harness bootstraps on this path immediately, so there is no window
+/// in which re-pointing it would be safe.
+fn child_workspace_plan(
+    parent: &WaveWorkspace,
+    workspace_root: &std::path::Path,
+) -> Result<WaveWorkspacePlan> {
+    Ok(match parent.kind {
+        WaveWorkspaceKind::Managed => {
+            WaveWorkspacePlan::ManagedFrozenUnder(workspace_root.to_path_buf())
+        }
+        // `AttachedInheritedPath::new` refuses a path inside the managed root:
+        // recycling works on directories, not rows, so an attached wave living
+        // under the root would lose its workspace when the managed wave owning
+        // that directory is deleted. Unreachable from here (an attached parent
+        // under the root is already an invariant violation), and checked
+        // anyway because the check belongs to the type, not to this caller.
+        WaveWorkspaceKind::Attached => WaveWorkspacePlan::InheritAttachedFrozen(
+            AttachedInheritedPath::new(parent.path.clone(), workspace_root)?,
+        ),
+    })
 }
 
 async fn root_and_depth(tx: &mut Tx<'_>, parent_wave_id: &str) -> Result<(String, i64)> {
@@ -173,16 +222,29 @@ impl ProviderAdapter for ChildWaveAdapter {
             )));
         }
 
-        let parent: Option<(String, String, Option<String>)> =
-            // #1147 S1 — `waves.cwd` dropped by migration 0077; the child
-            // still inherits the parent's path here (S4 gives it its own).
-            sqlx::query_as("SELECT cove_id, workspace_path, plugin_scope FROM waves WHERE id=?1")
-                .bind(&payload.parent_wave_id)
-                .fetch_optional(&mut **tx)
-                .await?;
-        let (cove_id, parent_cwd, parent_plugin_scope) = parent.ok_or_else(|| {
-            CalmError::Conflict(format!("parent wave {} is missing", payload.parent_wave_id))
-        })?;
+        // #1147 S4 — the parent's WORKSPACE KIND decides the child's plan, so
+        // it is read here together with the cove and the plugin scope. The
+        // parent's *path* is read on exactly one branch (attached) and is
+        // otherwise unused; see `child_workspace_plan`.
+        let parent: Option<(String, Option<String>, String, String)> = sqlx::query_as(
+            "SELECT cove_id, plugin_scope, workspace_kind, workspace_path FROM waves WHERE id=?1",
+        )
+        .bind(&payload.parent_wave_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let (cove_id, parent_plugin_scope, parent_workspace_kind, parent_workspace_path) = parent
+            .ok_or_else(
+            || CalmError::Conflict(format!("parent wave {} is missing", payload.parent_wave_id)),
+        )?;
+        let parent_workspace = WaveWorkspace {
+            kind: WaveWorkspaceKind::try_from(parent_workspace_kind)
+                .map_err(CalmError::Internal)?,
+            path: parent_workspace_path,
+            // Not read by `child_workspace_plan`; the child's own stamp is set
+            // by the plan, not copied.
+            frozen_at: None,
+        };
+        let plan = child_workspace_plan(&parent_workspace, &self.workspace_root)?;
         let seed = render_child_seed(&payload);
         let child = wave_create_tx(
             tx,
@@ -190,7 +252,13 @@ impl ProviderAdapter for ChildWaveAdapter {
                 cove_id: cove_id.into(),
                 title: payload.goal.clone(),
                 sort: None,
-                cwd: parent_cwd,
+                // Ignored by both plans this adapter can pick: the managed
+                // path is derived from the id (which does not exist until
+                // `wave_create_tx` mints it) and the attached path travels
+                // inside `InheritAttachedFrozen`. Empty rather than the
+                // parent's path so no plan can pick up an inherited path
+                // through a field that is supposed to be dead here.
+                cwd: String::new(),
                 workflow_id: None,
                 plugin_scope: parent_plugin_scope,
                 workflow_input: None,
@@ -198,9 +266,29 @@ impl ProviderAdapter for ChildWaveAdapter {
                 theme: RequestTheme::default_dark(),
             },
             None,
+            &plan,
             &self.wave_cove_cache,
         )
         .await?;
+        // #1147 S4 — the fifth wave-create entry point. On the managed branch
+        // it does real work (the child's directory is its own, so nothing else
+        // has created it); on the attached branch it is a no-op by contract —
+        // `materialize_workspace` never creates, `git init`s or writes to a
+        // directory the user owns.
+        //
+        // On the managed branch the ownership marker names the CHILD, which is
+        // what makes the allocation checkable rather than merely intended: the
+        // same marker check that refuses a third-party repository also refuses
+        // a directory already owned by another wave, so "the child quietly
+        // ended up on the parent's managed path" cannot survive this call.
+        // Under S2 the marker had to name the *parent* precisely because the
+        // path was the parent's — that asymmetry was the shape of the bug
+        // (issue #1147 N11).
+        crate::workspace_materialize::materialize_workspace(
+            &child.workspace,
+            &self.workspace_root,
+            child.id.as_str(),
+        )?;
         // The child must inherit its parent's cove. A cross-cove parent edge
         // makes cove deletion fail its NO ACTION self-FK (tripwire test #21c).
         sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
@@ -343,6 +431,14 @@ impl ProviderAdapter for ChildWaveAdapter {
             });
         }
 
+        // #1147 S4 — `cwd` here is not a convenience copy. The scheduler's
+        // child-wave bootstrap (`scheduler::drive_child_wave`) never re-reads
+        // the wave row: it takes `cwd` from THIS result — including from the
+        // persisted `tx_output` of an older operation on an idempotency
+        // collision — and hands it to `spec-harness-start`. Changing the
+        // adapter's allocation without changing this field would leave the
+        // child's harness anchored on the parent's directory, which is the
+        // adapter-only half of the same bug.
         let result = json!({
             "child_wave_id": child.id,
             "spec_card_id": CardId::from(spec_card_id),
@@ -448,6 +544,25 @@ mod tests {
         }
     }
 
+    /// #1147 S4 — a REAL workspace root for adapter fixtures.
+    ///
+    /// Under S2 this was a path that did not exist, because a child inherited
+    /// its (attached) parent's workspace and materialization was a no-op. Since
+    /// S4 every child allocates and materializes its own managed directory, so
+    /// every one of these tests now writes real repositories — a fake root
+    /// would turn them all into materialization failures.
+    ///
+    /// One process-wide `TempDir`, deliberately never dropped: adapter tests
+    /// only ever write ids under it, so they cannot collide, and keeping it
+    /// alive means no test can observe a root that was removed by another
+    /// test's teardown. It lives in the OS temp dir, never in `$HOME`.
+    fn test_workspace_root() -> std::path::PathBuf {
+        static ROOT: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+        ROOT.get_or_init(|| tempfile::TempDir::new().expect("adapter test workspace root"))
+            .path()
+            .to_path_buf()
+    }
+
     async fn seed_parent(repo: &SqlxRepo, non_default_lifecycle_metadata: bool) -> String {
         let mut tx = repo.pool().begin().await.unwrap();
         let cove = cove_create_tx(
@@ -474,6 +589,7 @@ mod tests {
                 theme: RequestTheme::default_dark(),
             },
             None,
+            &WaveWorkspacePlan::AttachedFromCwd,
             repo.wave_cove_cache(),
         )
         .await
@@ -661,6 +777,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let output = adapter
@@ -680,6 +797,439 @@ mod tests {
             context: serde_json::from_str(&task.context_json).unwrap(),
             cwd: task.cwd.clone(),
         }
+    }
+
+    /// #1147 S4 (design D7) — the child-wave adapter is the fifth
+    /// wave-create entry point and does not go through
+    /// `create_wave_structure`, so it carries its own allocation and its own
+    /// materialize call.
+    ///
+    /// What is asserted: the child's directory is ITS OWN
+    /// (`<root>/<cove>/<child_id>`, not the parent's), it is frozen at
+    /// creation (design "更换与冻结": freeze before any non-re-anchorable cwd
+    /// consumer, and child creation is named there), the row says `managed`,
+    /// and the directory is a real repository with a resolvable `HEAD` — i.e.
+    /// the child's first codex worker can `git worktree add` in it.
+    #[tokio::test]
+    async fn child_allocates_and_materializes_its_own_frozen_managed_workspace() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspaces");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let parent = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: "parent".into(),
+                sort: None,
+                cwd: "/ignored-by-managed".into(),
+                workflow_id: None,
+                plugin_scope: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            None,
+            &WaveWorkspacePlan::ManagedUnder(workspace_root.clone()),
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(parent.workspace.kind, WaveWorkspaceKind::Managed);
+        // The parent was minted through the DB writer directly, so nothing has
+        // materialized it yet — that is what the route does. Do it here so the
+        // child's own call is exercised against the real steady state.
+        crate::workspace_materialize::materialize_workspace(
+            &parent.workspace,
+            &workspace_root,
+            parent.id.as_str(),
+        )
+        .unwrap();
+
+        let task = seed_task(&repo, parent.id.as_str(), false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+            workspace_root.clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let output = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let child_id = output.data["child_wave_id"].as_str().unwrap().to_string();
+
+        let (kind, path, frozen_at): (String, String, Option<i64>) = sqlx::query_as(
+            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id=?1",
+        )
+        .bind(&child_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(kind, "managed");
+        assert_eq!(
+            path,
+            crate::workspace_materialize::managed_workspace_path(
+                &workspace_root,
+                parent.cove_id.as_str(),
+                &child_id,
+            )
+            .to_string_lossy(),
+            "the child's path must be derived from its OWN id"
+        );
+        assert_ne!(
+            path, parent.workspace.path,
+            "a child must never be handed its parent's directory (design D7)"
+        );
+        assert!(
+            frozen_at.is_some(),
+            "a child workspace is frozen at creation: the very next thing that \
+             happens to it is a harness bootstrap on this exact path"
+        );
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(["rev-parse", "--verify", "HEAD"])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "the child's workspace has no init commit; its first codex worker \
+             would die in `git worktree add`"
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                std::path::Path::new(&path)
+                    .join(".git")
+                    .join("neige-workspace")
+            )
+            .unwrap()
+            .trim(),
+            child_id,
+            "the ownership marker must name the child; under S2 it named the \
+             parent, which is exactly what let two waves claim one directory"
+        );
+    }
+
+    /// **#1147 N11 — REPLACES the S2 gap test of the same subject.**
+    ///
+    /// The pinned gap asserted the hazard itself: S2's adapter wrote child rows
+    /// with `kind = managed` and a path equal to the parent's directory, so
+    /// S5's recycle would destroy the parent's repository when a child was
+    /// deleted. This test asserts the fixed behaviour instead.
+    ///
+    /// No data migration accompanies it, and that is a checked fact rather than
+    /// an omission: the hazardous row can only be produced by S2's adapter, S2
+    /// was never deployed (both live databases sit below it with zero child
+    /// waves), and S2 and S4 ship together — see the N11 row in the design's
+    /// 已知缺口 table, including the ordering constraint it records.
+    ///
+    /// Two assertions, both of which the S2 shape fails:
+    ///
+    /// * no two wave rows share a **managed** workspace path — checked over the
+    ///   WHOLE table, not just this pair, because "the child got its own
+    ///   directory" is only worth anything as a table-wide invariant. Scoped to
+    ///   managed because attached sharing is legal and pre-existing (see
+    ///   `child_of_an_attached_parent_shares_the_parents_path`);
+    /// * removing the child's directory (what S5 will do) leaves the parent's
+    ///   repository usable — the design's acceptance line
+    ///   "删除子 wave 后父仓库仍可用", executed rather than argued.
+    #[tokio::test]
+    async fn n11_deleting_a_child_workspace_cannot_destroy_the_parents_repository() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspaces");
+        std::fs::create_dir_all(&workspace_root).unwrap();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let parent = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: "parent".into(),
+                sort: None,
+                cwd: "/ignored-by-managed".into(),
+                workflow_id: None,
+                plugin_scope: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            None,
+            &WaveWorkspacePlan::ManagedUnder(workspace_root.clone()),
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        crate::workspace_materialize::materialize_workspace(
+            &parent.workspace,
+            &workspace_root,
+            parent.id.as_str(),
+        )
+        .unwrap();
+        // Real parent work: a commit that must still be there afterwards, so
+        // "the parent repository survived" is a claim about its history and
+        // not merely about a directory still existing.
+        std::fs::write(
+            std::path::Path::new(&parent.workspace.path).join("parent-work.txt"),
+            "parent work",
+        )
+        .unwrap();
+
+        let task = seed_task(&repo, parent.id.as_str(), false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+            workspace_root.clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let output = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let child_id = output.data["child_wave_id"].as_str().unwrap().to_string();
+        let child_path: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id=?1")
+            .bind(&child_id)
+            .fetch_one(repo.pool())
+            .await
+            .unwrap();
+
+        // The invariant is scoped to MANAGED paths, and the scope is the S4
+        // amendment to design D7: sharing is a hazard only where recycling can
+        // reach, and S5 recycles `kind = managed` exclusively. Attached paths
+        // are shared today in production (several waves open the same
+        // checkout), so an unscoped version of this assertion would call a
+        // long-standing legal state a violation — see
+        // `child_of_an_attached_parent_shares_the_parents_path`.
+        let shared: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT workspace_path, count(*) FROM waves WHERE workspace_kind='managed' \
+             GROUP BY workspace_path HAVING count(*) > 1",
+        )
+        .fetch_all(repo.pool())
+        .await
+        .unwrap();
+        assert!(
+            shared.is_empty(),
+            "two wave rows share a MANAGED workspace path: {shared:?}"
+        );
+
+        // What S5 will do to a deleted child.
+        std::fs::remove_dir_all(&child_path).unwrap();
+        assert!(
+            std::path::Path::new(&parent.workspace.path)
+                .join("parent-work.txt")
+                .exists(),
+            "recycling the child's workspace took the parent's work with it"
+        );
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&parent.workspace.path)
+                .args(["rev-parse", "--verify", "HEAD"])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "recycling the child's workspace destroyed the parent's repository"
+        );
+
+        // The scheduler bootstraps the child's spec harness from THIS field,
+        // never from the wave row.
+        assert_eq!(output.data["cwd"], child_path);
+        assert_eq!(output.result["cwd"], child_path);
+    }
+
+    /// #1147 S4 — an attached path INSIDE the managed workspace root may not
+    /// be inherited.
+    ///
+    /// "Attached rows are never recycled" is a claim about the row; S5 recycles
+    /// by DIRECTORY. An attached wave parked under `<workspace-root>` loses its
+    /// workspace as collateral when the managed wave owning that directory is
+    /// deleted. Unreachable from the adapter (an attached parent under the root
+    /// is already an invariant violation elsewhere), so the guard lives in
+    /// `AttachedInheritedPath::new` where a cross-crate caller also hits it —
+    /// this test drives that constructor through the plan chooser.
+    #[test]
+    fn an_attached_path_inside_the_managed_root_cannot_be_inherited() {
+        let root = tempfile::TempDir::new().unwrap();
+        let inside = root.path().join("cove").join("some-managed-wave");
+        let error = child_workspace_plan(
+            &WaveWorkspace {
+                kind: WaveWorkspaceKind::Attached,
+                path: inside.to_string_lossy().into_owned(),
+                frozen_at: None,
+            },
+            root.path(),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("inside the managed workspace root"),
+            "{error}"
+        );
+
+        // The ordinary case still works, and a managed parent is unaffected.
+        let outside = tempfile::TempDir::new().unwrap();
+        assert!(matches!(
+            child_workspace_plan(
+                &WaveWorkspace {
+                    kind: WaveWorkspaceKind::Attached,
+                    path: outside.path().to_string_lossy().into_owned(),
+                    frozen_at: None,
+                },
+                root.path(),
+            )
+            .unwrap(),
+            WaveWorkspacePlan::InheritAttachedFrozen(_)
+        ));
+        assert!(matches!(
+            child_workspace_plan(
+                &WaveWorkspace {
+                    kind: WaveWorkspaceKind::Managed,
+                    path: inside.to_string_lossy().into_owned(),
+                    frozen_at: None,
+                },
+                root.path(),
+            )
+            .unwrap(),
+            WaveWorkspacePlan::ManagedFrozenUnder(_)
+        ));
+    }
+
+    /// #1147 S4 amendment to design D7 — the child of an ATTACHED parent
+    /// inherits the parent's path, and that is the correct answer, not a
+    /// leftover of the S2 bug.
+    ///
+    /// This is a POSITIVE case: sharing an attached directory is legal, and
+    /// pre-existing in production (several waves are pointed at the same
+    /// checkout today). D7's "always allocate independently" was derived from
+    /// one hazard — a deleted child recycling its parent's repository — and
+    /// S5 recycles `kind = managed` only, so the derivation does not reach
+    /// attached parents. Stated unconditionally it also broke the feature: a
+    /// sub-wave spawned to work on the parent's code would be handed an empty
+    /// repository instead.
+    ///
+    /// Asserted here: same path, `kind = attached`, frozen at creation, the
+    /// scheduler's bootstrap cwd is that same path, and the user's directory
+    /// was NOT touched — no `git init`, no ownership marker, nothing created.
+    #[tokio::test]
+    async fn child_of_an_attached_parent_shares_the_parents_path() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let user_repo = tempfile::TempDir::new().unwrap();
+        let user_path = user_repo.path().to_string_lossy().into_owned();
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let parent = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: "parent".into(),
+                sort: None,
+                cwd: user_path.clone(),
+                workflow_id: None,
+                plugin_scope: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            None,
+            &WaveWorkspacePlan::AttachedFromCwd,
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(parent.workspace.kind, WaveWorkspaceKind::Attached);
+
+        let task = seed_task(&repo, parent.id.as_str(), false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+            test_workspace_root(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let output = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let child_id = output.data["child_wave_id"].as_str().unwrap().to_string();
+
+        let (kind, path, frozen_at): (String, String, Option<i64>) = sqlx::query_as(
+            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id=?1",
+        )
+        .bind(&child_id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            (kind.as_str(), path.as_str()),
+            ("attached", user_path.as_str()),
+            "a sub-wave of an attached wave must see the parent's checkout"
+        );
+        assert!(frozen_at.is_some(), "child workspaces freeze at creation");
+        assert_eq!(output.data["cwd"], user_path);
+        assert_eq!(output.result["cwd"], user_path);
+
+        // The user's directory is untouched: attached means the server never
+        // creates, `git init`s, marks or writes anything here.
+        assert_eq!(
+            std::fs::read_dir(&user_path).unwrap().count(),
+            0,
+            "materialization wrote into a user-owned attached directory"
+        );
+
+        // And the narrowed invariant still holds over the whole table: the
+        // shared path is attached, so no MANAGED path is shared.
+        let shared_managed: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT workspace_path, count(*) FROM waves WHERE workspace_kind='managed' \
+             GROUP BY workspace_path HAVING count(*) > 1",
+        )
+        .fetch_all(repo.pool())
+        .await
+        .unwrap();
+        assert!(shared_managed.is_empty(), "{shared_managed:?}");
     }
 
     /// Both fragments this adapter runs keep their only cycle-termination
@@ -731,6 +1281,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let output = adapter
@@ -764,8 +1315,26 @@ mod tests {
         ] {
             assert!(!spec_payload.contains(current_value), "{spec_payload}");
         }
-        assert_eq!(output.data["cwd"], "/parent-cwd");
         let child_id = output.data["child_wave_id"].as_str().unwrap();
+        // #1147 S4 (D7 as amended) — this parent is ATTACHED (`/parent-cwd`, a
+        // directory the user owns), so the child inherits that path and stays
+        // attached. Sharing an attached directory arms nothing: S5 recycles
+        // `kind = managed` only. The alternative — handing the child an empty
+        // managed repository — would mean a sub-wave spawned to work on the
+        // parent's code cannot see it, which is what this test's `cwd`
+        // assertions exist to keep visible.
+        let expected_child_workspace = "/parent-cwd".to_string();
+        assert_eq!(output.data["cwd"], expected_child_workspace);
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT workspace_kind FROM waves WHERE id=?1")
+                .bind(child_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap(),
+            "attached",
+            "inheriting the path must inherit the kind; a `managed` row on a \
+             user directory would arm S5 against it"
+        );
         type InheritedChildFields = (
             String,
             Option<String>,
@@ -785,7 +1354,10 @@ mod tests {
         .fetch_one(repo.pool())
         .await
         .unwrap();
-        assert_eq!(inherited.0, "/parent-cwd");
+        assert_eq!(
+            inherited.0, expected_child_workspace,
+            "an attached parent's path IS inherited (design D7, S4 amendment)"
+        );
         assert_eq!(inherited.1, None, "workflow_id must not inherit");
         assert_eq!(
             inherited.2.as_deref(),
@@ -837,6 +1409,7 @@ mod tests {
             let adapter = ChildWaveAdapter::new(
                 repo.card_role_cache().clone(),
                 repo.wave_cove_cache().clone(),
+                test_workspace_root(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
             let output = adapter
@@ -870,6 +1443,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let error = adapter
@@ -903,6 +1477,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         adapter
@@ -937,6 +1512,7 @@ mod tests {
             let adapter = ChildWaveAdapter::new(
                 repo.card_role_cache().clone(),
                 repo.wave_cove_cache().clone(),
+                test_workspace_root(),
             );
             let mut tx = repo.pool().begin().await.unwrap();
             let output = adapter
@@ -989,6 +1565,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         sqlx::query("UPDATE waves SET tree_task_budget=2 WHERE id=?1")
             .bind(&parent)
@@ -1060,6 +1637,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         adapter
@@ -1215,6 +1793,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let mut tx = repo.pool().begin().await.unwrap();
         let error = adapter
@@ -1298,6 +1877,7 @@ mod tests {
         let adapter = ChildWaveAdapter::new(
             repo.card_role_cache().clone(),
             repo.wave_cove_cache().clone(),
+            test_workspace_root(),
         );
         let before: i64 = sqlx::query_scalar("SELECT count(*) FROM waves")
             .fetch_one(repo.pool())

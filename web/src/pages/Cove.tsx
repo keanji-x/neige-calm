@@ -165,11 +165,6 @@ export function CovePage({
         </div>
       )}
 
-      {/* The wave list lives inside a single `aria-label`-ed region so
-          role-scoped locators (axe scans + Playwright `getByRole('region',
-          { name: 'Waves' })`) can disambiguate WaveRow buttons from the
-          sidebar's "Today" nav button. The landmark gives tests a clean
-          scope. See §2.2 of `docs/a11y-contract.md`. */}
       {sortedWaves.length > 0 && (
         <section aria-label="Waves">
           <div className="waves">

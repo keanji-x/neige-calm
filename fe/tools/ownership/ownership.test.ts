@@ -122,12 +122,10 @@ it('filters an injected tracked-file list to ownership scope', () => {
   expect(repositoryFiles('', [
     'README.md',
     'fe/core/model.ts',
-    'fe/mock/.gitkeep',
     'fe/tools/ownership/validator.ts',
     'fe/web/index.html',
   ])).toEqual([
     'fe/core/model.ts',
-    'fe/mock/.gitkeep',
     'fe/tools/ownership/validator.ts',
     'fe/web/index.html',
   ]);
@@ -141,7 +139,6 @@ it('includes every frontend gate control file in ownership scope', () => {
 
 describe('P8b2 ownership exit', () => {
   const trackedRepositoryFiles = repositoryFiles('', [
-    'fe/mock/.gitkeep',
     'fe/web/index.html',
     'fe/tools/ownership/validator.ts',
     'fe/module-file-inventory.yaml',
@@ -153,9 +150,9 @@ describe('P8b2 ownership exit', () => {
     expect(validateOwnership(ownershipManifest, trackedRepositoryFiles)).toEqual([]);
   });
 
-  it('includes mock, web bootstrap, and tooling in repository coverage', () => {
+  it('includes web bootstrap and tooling in repository coverage', () => {
     expect(trackedRepositoryFiles).toEqual(expect.arrayContaining([
-      'fe/mock/.gitkeep', 'fe/web/index.html', 'fe/tools/ownership/validator.ts',
+      'fe/web/index.html', 'fe/tools/ownership/validator.ts',
       'fe/module-file-inventory.yaml', 'fe/ownership-manifest.mjs', 'fe/stylelint.config.js',
     ]));
   });

@@ -921,7 +921,7 @@
           "waves"
         ],
         "summary": "Ensure the cove's single chat wave exists.",
-        "description": "The cwd is selected only while creating the wave: it is the claimed path\nwith the fewest path components, breaking ties lexicographically. Cove\nfolder claims cannot be equal, ancestors, or descendants of one another,\nso \"closest to the cove root\" is defined here as this deterministic shallow\npath ordering rather than containment. Once created, later folder claims or\nchanges deliberately do not update the wave cwd, so an existing conversation\ncannot drift between working directories from one message to the next.",
+        "description": "The workspace is selected only while creating the wave. When the cove has\nfolder claims it is the claimed path with the fewest path components,\nbreaking ties lexicographically (attached semantics: the user pointed at\nthat directory). Cove folder claims cannot be equal, ancestors, or\ndescendants of one another, so \"closest to the cove root\" is defined here as\nthis deterministic shallow path ordering rather than containment.\n\n#1147 D10 — a cove with **no** claim gets a managed default instead of the\n409 this used to return. Since #1109 made coves pure namespaces, \"no claim\"\nis the normal state of a new cove, so that 409 made\n`POST /api/coves/{id}/conversations` fail by definition for every new cove.\n\nOnce created, later folder claims or changes deliberately do not update the\nwave's workspace, so an existing conversation cannot drift between working\ndirectories from one message to the next.",
         "operationId": "ensure_cove_chat_wave",
         "parameters": [
           {
@@ -957,16 +957,6 @@
           },
           "404": {
             "description": "Cove not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Cove has no claimed folder",
             "content": {
               "application/json": {
                 "schema": {
@@ -4412,7 +4402,7 @@
           },
           "kind": {
             "type": "string",
-            "description": "`\"terminal\"` for built-in PTY cards, `\"ui://<plugin>/<view>\"` for\nplugin-provided cards (the canonical MCP Apps resource URI). The\nkernel never interprets beyond that prefix. `[legacy]`\n`\"plugin:<plugin-id>:<view-id>\"` may also appear on rows persisted\nbefore the M4 cut-over and in server-side perms/manifest enforcement\n— see `docs/architecture/terminology-glossary.md` (plugin card kind)."
+            "description": "`\"terminal\"` for built-in PTY cards, `\"ui://<plugin>/<view>\"` for\nplugin-provided cards (the canonical MCP Apps resource URI). The\nkernel never interprets beyond that prefix. `[legacy]`\n`\"plugin:<plugin-id>:<view-id>\"` may still appear on persisted rows."
           },
           "payload": {
             "type": "object",
@@ -4486,7 +4476,7 @@
       },
       "CardRole": {
         "type": "string",
-        "description": "Wave-as-Actor PR3 (#136): authorization label persisted on each card.\n\nThe role decides whether the card's implicit actor (the AI agent bound\nto it, or the user when no agent is bound) is allowed to emit a given\nevent. The gate is checked at the single write entry — see\n`role_gate::enforce_role` — *inside* the transaction, before the event\nrow is appended. Violations roll the txn back; nothing is broadcast.\n\n  * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards\n    may emit `WaveUpdated`; this is the structural choke point that\n    keeps AI workers from rewriting wave-level metadata.\n  * [`CardRole::Worker`] is the default for user-facing card inserts\n    and dispatcher-spawned worker cards. Its events are scoped to the\n    card itself and never broaden.\n  * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated\n    report card. Same kernel-ownership profile as `Spec` — minted by\n    the wave-create path (PR B), one per wave (partial unique index\n    in migration 0013), undeletable from REST / plugin-callback paths.\n    Role-gate-wise it behaves like `Worker`: it only emits `CardUpdated`\n    for its own scope; it does **not** emit `WaveUpdated` (only `Spec`\n    does — preserving the #136 contract).\n\nPersisted as a lowercase string in `cards.role` (migration 0008). The\nserde + sqlx `rename_all = \"lowercase\"` keeps the wire / storage shape\nstable; ts-rs exports the matching TS union (`\"spec\" | \"worker\" |\n\"reportcard\"`) into `fe/core/api/generated/wire.ts` so the\nfrontend can adopt the enum once any UI lands.",
+        "description": "Authorization role persisted on each card and enforced by `role_gate`.",
         "enum": [
           "worker",
           "spec",
@@ -4575,8 +4565,7 @@
             "type": "string"
           },
           "kind": {
-            "$ref": "#/components/schemas/CoveKind",
-            "description": "Issue #175 — `User` for sidebar-visible coves, `System` for the\ninternal singleton that hosts the default Today terminal's wave.\nMirror of `CardRole` precedent on `Card`: persisted at storage\ntime via DB DEFAULT, never accepted on `POST /api/coves` (which\nhas no `kind` field — `NewCove` deliberately omits it).\n\n`#[serde(default)]` so wire payloads emitted before #175 landed\n(event-log replay fixtures, old test seeds) parse as `User`\nwithout forcing a fixture rewrite — matches the DB DEFAULT in\nmigration 0009."
+            "$ref": "#/components/schemas/CoveKind"
           },
           "name": {
             "type": "string"
@@ -4639,7 +4628,7 @@
       },
       "CoveFolder": {
         "type": "object",
-        "description": "Issue #250 PR 1 — a filesystem path claimed by a cove.\n\nOne row per claimed directory; `path` is absolute and globally\nunique across the table. A folder transparently covers every\ndescendant path — the kernel resolves a `cwd` to its owning cove by\nfinding the claim that covers it (see `GET /api/coves/resolve`).\nThe create endpoint rejects ancestor/descendant overlap with a 409,\nso at most one claim can cover any given path.\n\n`id` is an autoincrement integer rather than the kernel's usual\nuuid-shaped TEXT id because cove_folders is a small, kernel-internal\nmapping that never appears in the sync engine's event log — there's\nno replay scenario where two replicas mint divergent ids that must\nlater reconcile. The compact integer also keeps `/folders/:id` URLs\nreadable.",
+        "description": "One row per claimed directory; `path` is absolute and globally\nunique across the table. A folder transparently covers every\ndescendant path — the kernel resolves a `cwd` to its owning cove by\nfinding the claim that covers it (see `GET /api/coves/resolve`).\nThe create endpoint rejects ancestor/descendant overlap with a 409,\nso at most one claim can cover any given path.",
         "required": [
           "id",
           "cove_id",
@@ -4665,7 +4654,7 @@
       },
       "CoveKind": {
         "type": "string",
-        "description": "Issue #175 — visibility / ownership gate persisted on each cove.\n\nThe kind decides whether the row participates in the user-visible\nworkspace surface (sidebar nav, default `GET /api/coves`) or is an\ninternal kernel-owned entity hidden from the regular UI.\n\n  * [`CoveKind::User`] is the default for every existing cove and\n    every cove minted via `POST /api/coves`. There is no\n    authorization difference from the pre-#175 product — these are\n    the only coves the user ever sees in the sidebar.\n  * [`CoveKind::System`] is a singleton (DB-enforced via a partial\n    unique index in migration 0009) hosting the default Today\n    terminal's wave + card. Created via `cove_create_system_tx`,\n    reachable via the idempotent `POST /api/coves/system` upsert.\n    `GET /api/coves` filters these out by default — opt-in via\n    `?include_system=true`. The user never interacts with this\n    cove directly; it's storage scaffolding, not UI.\n\nPersisted as a lowercase string in `coves.kind` (migration 0009).\nThe serde + sqlx `rename_all = \"lowercase\"` keeps the wire / storage\nshape stable; ts-rs exports the matching TS union\n(`\"user\" | \"system\"`) into `fe/core/api/generated/wire.ts` so the\nfrontend can validate against it. UI types intentionally don't\nsurface `kind` — the server's default filter already hides system\ncoves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /\nrouter belt-and-suspenders is the only frontend consumer.",
+        "description": "Whether a cove is user-visible or kernel-owned storage scaffolding.",
         "enum": [
           "user",
           "system"
@@ -6471,14 +6460,13 @@
           },
           "cwd": {
             "type": "string",
-            "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`.\n\n**Do not read this from Rust — read `workspace.path`.** The awkward\nfield name is the point: `waves.cwd` was deleted in migration 0077, and\nthis field exists only so the JSON wire shape, the OpenAPI spec, the\nts-rs bindings and the `wave.updated` event goldens are byte-identical\nfor clients that predate #1147. It is computed in exactly one place,\n`impl From<WaveRow> for Wave`, from the one stored column.\n\nRenaming it (rather than leaving `cwd`) is what turned \"update the four\nreaders\" from a grep into a compile error — which is how two readers\nnobody had listed (`workspace_lease::{112,551}`) were found.\n\nIssue #250 PR 2 originally introduced `cwd` as the working directory\nthe wave's spec daemon runs in; that role now belongs to\n`workspace.path`.\n\n`#[serde(default)]` keeps replay of a pre-#250 event log parsing (no\n`cwd` key), matching the old DB DEFAULT."
+            "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`.\n\nRust readers must use `workspace.path`; this field only preserves the\nexisting wire shape."
           },
           "id": {
             "type": "string"
           },
           "lifecycle": {
-            "$ref": "#/components/schemas/WaveLifecycle",
-            "description": "Issue #145 — the wave's lifecycle state. **Required** (no\n`Option`): every wave-creating code path must seed\n[`WaveLifecycle::Draft`] explicitly. Per the project's\n\"required over Option\" preference, Option here would silently\nhide missing-data bugs — the field is core kernel contract.\n\n`#[serde(default)]` lets wire payloads emitted before #145\nlanded (event-log replay fixtures) parse as `Draft` without\nforcing a fixture rewrite — matches the DB DEFAULT in\nmigration 0012."
+            "$ref": "#/components/schemas/WaveLifecycle"
           },
           "pinned_at": {
             "type": [
@@ -6492,7 +6480,7 @@
               "string",
               "null"
             ],
-            "description": "#1110 S4 — owning plugin id copied at create from the bound workflow's\nManifest. `Some(id)` limits plugin tools to that running plugin;\n`None` is unbound (`All`). Immutable after create (not on `WavePatch`).\n`#[serde(default)]` hydrates pre-S4 `wave.updated` replays as `None`."
+            "description": "Owning plugin copied from the bound workflow. Immutable after creation."
           },
           "purpose": {
             "type": [
@@ -6524,19 +6512,17 @@
             "type": [
               "string",
               "null"
-            ],
-            "description": "`#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`."
+            ]
           },
           "workflow_input": {
             "type": [
               "object",
               "null"
             ],
-            "description": "Issue #891 / #1110 S2 — input JSON for the bound workflow, validated\nagainst the owning plugin Manifest's `input_schema` at create time and\npersisted verbatim; the kernel never interprets it. `#[serde(default)]`\nhydrates pre-#891 `wave.updated` replays as `None` (same pattern as\n`workflow_id`). Explicit `unknown` override — see `Card.payload` for\nthe rationale."
+            "description": "Workflow input is validated at creation and otherwise remains opaque."
           },
           "workspace": {
-            "$ref": "#/components/schemas/WaveWorkspace",
-            "description": "Issue #1147 S1 (design D1) — the typed workspace. `cwd` above is a\nprojection of `workspace.path`; see [`WaveWorkspace`] for the\nsingle-writer invariant that keeps the two from drifting.\n\n`#[serde(default)]` mirrors the `cwd` / `lifecycle` precedent: a\npre-#1147 `wave.updated` replay fixture has no `workspace` key and\nhydrates as `Attached` / `\"\"` / unfrozen, matching the DB defaults in\nmigration 0077 before its backfill runs."
+            "$ref": "#/components/schemas/WaveWorkspace"
           }
         }
       },
@@ -7181,7 +7167,7 @@
       },
       "WaveWorkspace": {
         "type": "object",
-        "description": "Issue #1147 S1 (design D1) — the typed workspace of a wave.\n\n`workspace_path` is the **only** stored copy of the path. `waves.cwd` used\nto hold a second copy \"so existing readers don't have to change\"; migration\n0077 drops that column instead. Two columns holding one fact needs a rule\nsaying they must agree, and this codebase has no way to enforce such a rule\n— writers of `waves` are scattered raw `sqlx` statements, so the only\navailable policeman is a source-text scanner, and three rounds of\nred-teaming walked past three successive scanners. One column cannot\ndisagree with itself.\n\n`cwd` still exists **on the wire**: see [`Wave::cwd_wire_alias`]. It is\ncomputed from `path`, not stored.",
+        "description": "A wave's typed workspace. `path` is its single stored path.",
         "required": [
           "kind",
           "path"
@@ -7193,20 +7179,20 @@
               "null"
             ],
             "format": "int64",
-            "description": "One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change\nagain.\n\nIn S1 every wave **in a user cove** is frozen at creation: it is\n`Attached`, attached workspaces never need re-pointing, and freezing\nthem costs nothing while removing the \"unfrozen attached row\" state in\nwhich a future PATCH branch that forgot to check `kind` would relocate\na real user repository (design D9).\n\n**Exception (design D9, r3.3):** the kernel-owned Today/launchpad wave\nin the *system* cove stays `None` forever, because\n`today_launchpad_ensure_tx` re-points it — freezing it would make this\nfield's own one-shot-and-monotonic promise false on the next `ensure`.\n`only_system_cove_waves_may_be_unfrozen` bounds that exception to that\none wave."
+            "description": "One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change\nagain.\n\nThe system-cove launchpad remains unfrozen because it is repointed by\n`today_launchpad_ensure_tx`."
           },
           "kind": {
             "$ref": "#/components/schemas/WaveWorkspaceKind"
           },
           "path": {
             "type": "string",
-            "description": "Absolute path. The single stored copy — `waves.workspace_path`."
+            "description": "Absolute path."
           }
         }
       },
       "WaveWorkspaceKind": {
         "type": "string",
-        "description": "Issue #1147 S1 (design D1) — what kind of directory a wave's workspace is.\n\nThe distinction exists purely for **downstream behavior**, and only one of\nthose behaviors is destructive: a `Managed` directory is server-created,\nserver-owned and (from S5 on) server-*recycled*; an `Attached` directory is\na repository the user pointed at and must never be deleted, `git init`-ed\nor renamed. Collapsing both into the bare `cwd: String` we have today would\nleave the future teardown path unable to tell them apart — that is an\n`rm -rf`-grade accident surface, which is why the kind is typed rather\nthan inferred from a path prefix.\n\nPersisted lowercase in `waves.workspace_kind` (migration 0077), same\n`rename_all = \"lowercase\"` serde/db shape as [`WaveLifecycle`].\n\n`Attached` is the `Default` because that is the only kind S1 can mint:\nmanaged roots do not exist until S2, and every pre-existing wave points at\na directory somebody else created.",
+        "description": "Ownership must be explicit because only managed workspaces may be recycled.",
         "enum": [
           "managed",
           "attached"

@@ -122,9 +122,10 @@ writes are transactional.
      `#<block_id>` for the whole report. Get block ids from `calm.cove.outline`, \
      the single source for the whole cove, including your own wave. Links resolve \
      only within the cove; missing anchors fall back to the whole report.
-   * Keep the wave report current with `calm.report.write` or \
-     `calm.report.edit`. Each requires `message` and accepts optional \
-     `lifecycle`.
+   * Keep the wave report current — see the Wave Report section below \
+     for which write tool to use. Only `calm.report.write` and \
+     `calm.report.edit` take `message` (required) and optional \
+     `lifecycle`; the block-addressed writes do not.
 3. **END YOUR TURN.** Do NOT poll or loop waiting for the next event. \
    The kernel schedules ready tasks, runs gates, and pushes the next \
    observation as a fresh turn the moment it arrives — you will be \
@@ -145,8 +146,10 @@ Wave 有一份面向用户的 Markdown 报告，由你维护。它显示在 Wave
 * **当前快照，不是历史日志** — 报告反映 *当下* 的状态。每次更新，REWRITE \
   相关 section，让陈旧条目消失。历史由内核 event timeline 承载，不需要 \
   你在报告里复述。
-* **长度上限** — body 控制在 **1000 字以内**，硬上限 2000。超了就 \
-  consolidate（合并相似条目、删掉已经不重要的细节、把长描述压成要点）。
+* **长度上限** — **散文正文**（所有 prose 块的文字合计）控制在 \
+  **1000 字以内**，硬上限 2000。`task` 等非 prose 块在 body 里的 fence 投影 \
+  **不计入** 这个预算——它们是结构化数据，不是你写的散文。超了就 consolidate \
+  （合并相似条目、删掉已经不重要的细节、把长描述压成要点）。
 * **写产出，不写过程** — 不要写 \"重新读取了 wave state\"、\"分析了 worker \
   结果\"、\"调用了 plan.upsert\"、\"incorporated the worker's analysis\" \
   这类描述你内部动作的句子。读者不关心你怎么运转的；他们想知道 *做成 \
@@ -158,12 +161,27 @@ Wave 有一份面向用户的 Markdown 报告，由你维护。它显示在 Wave
 
 READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是当前正文，
 `docRev` 是下一次整文档写必须携带的锚。`neige cat report.md` 只返回 body，
-不提供 `docRev`，因此不能用它为整文档写取锚。WRITE/EDIT 用：
+不提供 `docRev`，因此不能用它为整文档写取锚。WRITE 按下面的优先级选：
 
-  * `calm.report.write(body, if_doc_rev, summary?, message, lifecycle?)` — 整体替换 \
-    （首选 — 用来重写 section 或重组报告）。
-  * `calm.report.edit(old_string, new_string, if_doc_rev, replace_all?, message, lifecycle?)` \
-    — 字符串替换（精修局部时用）。
+  * **首选 · 局部修改** — `calm.report.blocks.upsert`：替换已有块传 `id` + \
+    该块的 `if_rev`，新建块传 `if_doc_rev`（可选 `position`）。只动一个块，\
+    块 id 保持不变，深链 / 反链不会失效。
+  * **确实需要整文档重写** — 先 `calm.report.read({ with_markers: true })` \
+    拿到每个块前面带 `<!-- neige:b_xxxx -->` 标记行的正文，在这份文本上改，\
+    改完用 `calm.report.write_markdown(body, if_doc_rev, summary?)` 写回。\
+    标记行把每个块钉回原来的 id（服务端剥掉，永不入库），这是整文档重写里 \
+    **唯一** 能保住块 id 的通道。
+  * **兼容 / 局部精修** — `calm.report.write(body, if_doc_rev, summary?, message, \
+    lifecycle?)` 整体替换、`calm.report.edit(old_string, new_string, if_doc_rev, \
+    replace_all?, message, lifecycle?)` 字符串替换。⚠️ 这两个没有标记通道：\
+    整体替换会 best-effort 重新推导块 id，可能把已有块打散（深链 / 反链失效）；\
+    而且新正文里每个非 prose 块的 ```neige-block <kind>``` fence 必须 \
+    逐字节原样带回，碰坏一个整次写就被守卫拒绝。所以只在小范围精修、或需要带上 \
+    `message` / `lifecycle` 时才用它们，不要拿它们做大改写。
+  * `message` / `lifecycle` 只有 `calm.report.write` / `calm.report.edit` 接受；\
+    `calm.report.blocks.*` 与 `calm.report.write_markdown` 不接受这两个参数，\
+    需要推进 lifecycle 时改用 `calm.task.verdict` / `calm.plan.cancel` 上的 \
+    `lifecycle`。
 
 整文档写必须把最近一次 `calm.report.read` 返回的 `docRev` 原样作为
 `if_doc_rev` 传入；写响应会返回新的 `docRev`，后续写使用这个新锚。它不是
@@ -179,23 +197,22 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
     每条都带链接或具体引用。任务完成后挪到这里。
   * `# 决策` — 重要取舍。格式 \"决定 X，因为 Y\"。候选 / 讨论过程不写在 \
     这里 — 只写已经定下来的事。
-  * `# 进行中` — 当前活跃的任务（worker 在跑 / gate 在等结果）。完成 \
-    后从这里移除，挪到 `# 已完成`。没有就写 \"目前空闲，等待你的下一 \
-    步指令\"。
 
 `summary` 是侧栏的 1-行预览，~80 字符以内。
 
 **什么时候更新报告：**
 
-  * 任务完成 → 从 `# 进行中` 移除 + 加到 `# 已完成`
+  * 任务完成 → 加到 `# 已完成`
   * 做了一个决定 → 在 `# 决策` 加一行
   * 被阻塞 → 在 `# 待你定` 写明白具体要什么
   * 当前状态发生变化 → 重写 `# 概要`
 
 **初次接管旧格式报告：** 当 `calm.report.read` 返回的 body 还是旧的英文 \
 `# Goal / # Progress / # Needs attention / # Results / # Timeline` \
-格式时，**一次性整体 REWRITE 成新的中文 section 结构**（用 `calm.report.write` \
-整体替换），不要在旧格式上做局部 edit — partial 迁移会产生中英混杂、 \
+格式时，**一次性整体 REWRITE 成新的中文 section 结构**（用 \
+`calm.report.read({ with_markers: true })` 取带标记的正文，改完用 \
+`calm.report.write_markdown` 写回），不要在旧格式上做局部 edit — \
+partial 迁移会产生中英混杂、 \
 section 重复的 Frankensteinian body。迁移时保留仍然有效的事实，丢弃 \
 已经过时的流水账条目。
 
@@ -203,10 +220,10 @@ section 重复的 Frankensteinian body。迁移时保留仍然有效的事实，
 
   * 不要用旧的 `# Goal / # Progress / # Needs attention / # Results / # Timeline` \
     词汇 — 那套词汇引导流水账式写作。新格式只用 `# 概要 / # 已完成 / # 决策 / \
-    # 待你定 / # 进行中` 这五个 H1。
-  * 不要 append 后不删 — `# 已完成` 和 `# 进行中` 都会失效；旧条目失效 \
-    就删掉，不要堆积。
+    # 待你定` 这四个 H1。
+  * 不要 append 后不删 — `# 已完成` 会失效；旧条目失效就删掉，不要堆积。
   * 不要复述 lifecycle 状态（用户在卡头已经看到 badge 了）。
+  * 不要复述任务状态和进度（TASKS 面板已经渲染了任务的真实运行态）。
   * 不要把工具调用、wave_state 读取等内部机械动作写进报告。
   * 不要把对话历史 / 长引用 dump 进报告 — 摘要后写要点。
 
@@ -662,8 +679,12 @@ mod tests {
                 && p.contains("calm.task.verdict")
                 && p.contains("calm.cove.outline")
                 && p.contains("calm.report.links.backlinks")
-                && p.contains("calm.report.write")
-                && p.contains("calm.report.edit"),
+                // Signature-anchored: bare "calm.report.write" is now also a
+                // prefix of "calm.report.write_markdown", so the loose form
+                // would pass even if the compatibility tool disappeared.
+                && p.contains("calm.report.write(body,")
+                && p.contains("calm.report.edit(old_string,")
+                && p.contains("calm.report.write_markdown"),
             "prompt must document retained wave/task write tools and omit retired update_wave_state"
         );
         assert!(
@@ -701,7 +722,7 @@ mod tests {
             "spec prompt must document the canonical post-completion read"
         );
         assert!(
-            p.contains("calm.report.write") && p.contains("calm.report.edit"),
+            p.contains("calm.report.write(body,") && p.contains("calm.report.edit(old_string,"),
             "spec prompt must document report write/edit MCP tools"
         );
         assert!(
@@ -730,13 +751,22 @@ mod tests {
     fn spec_prompt_pins_chinese_current_snapshot_report_semantics() {
         let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
 
-        // New Chinese section vocab present (all five required H1s).
-        for section in ["# 概要", "# 已完成", "# 决策", "# 待你定", "# 进行中"] {
+        // New Chinese section vocab present (all four required H1s).
+        for section in ["# 概要", "# 已完成", "# 决策", "# 待你定"] {
             assert!(
                 p.contains(section),
                 "Wave Report prompt must document the new Chinese section `{section}`"
             );
         }
+
+        // `# 进行中` was dropped in #1172: the TASKS panel renders the real
+        // task runtime state, so making the spec agent hand-maintain a prose
+        // mirror of it every turn is pure LLM restatement of kernel-known,
+        // already-rendered data.
+        assert!(
+            !p.contains("# 进行中"),
+            "prompt must NOT reintroduce `# 进行中` — task runtime state is owned by the TASKS panel"
+        );
 
         // Old English vocab is explicitly banned (the banned-list bullet must
         // name all of them so future drift back to append-log is structurally
@@ -775,9 +805,21 @@ mod tests {
         );
 
         // Length budget present (soft, prompt-only) and process-narration ban.
+        // #1146 S1: the budget must scope to PROSE, not `body`. `body` is the
+        // flat projection that also serializes every non-prose block's fence,
+        // so a `body`-scoped budget was vacuously false on any wave with task
+        // blocks — no amount of concise prose could satisfy it.
         assert!(
-            p.contains("1000 字") && p.contains("2000"),
-            "prompt must declare the body word budget"
+            p.contains("散文正文") && p.contains("1000 字") && p.contains("2000"),
+            "prompt must scope the word budget to prose, not the flat body"
+        );
+        assert!(
+            p.contains("不计入"),
+            "prompt must state that non-prose fence projection is excluded from the budget"
+        );
+        assert!(
+            !p.contains("body 控制在"),
+            "prompt must NOT reintroduce the vacuous body-scoped budget"
         );
         assert!(
             p.contains("写产出，不写过程"),
@@ -789,6 +831,62 @@ mod tests {
         assert!(
             p.contains("一次性整体 REWRITE") || p.contains("整体 REWRITE"),
             "prompt must give explicit one-shot migration guidance"
+        );
+        // #1146 S1: the migration itself stays one-shot, but its write mouth
+        // moved to the id-preserving marker channel.
+        assert!(
+            p.contains("write_markdown` 写回"),
+            "the one-shot migration must write back through write_markdown"
+        );
+    }
+
+    /// #1146 S1 — whole-document rewrites must go through the ONLY
+    /// id-preserving mouth: `calm.report.read { with_markers: true }` →
+    /// `calm.report.write_markdown`. `calm.report.write` re-derives block ids
+    /// best-effort (`reassign_ids`) and its new body must carry every
+    /// non-prose fence back byte-for-byte or `guard_non_prose_stomp` rejects
+    /// the write, so it must NOT be advertised as the preferred mouth.
+    #[test]
+    fn spec_prompt_routes_whole_document_rewrite_through_the_marker_channel() {
+        let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
+
+        assert!(
+            p.contains("calm.report.write_markdown"),
+            "prompt must name the id-preserving whole-document write tool"
+        );
+        assert!(
+            p.contains("with_markers"),
+            "prompt must name the `with_markers` read that supplies the block-id markers"
+        );
+        assert!(
+            p.contains("<!-- neige:b_xxxx -->"),
+            "prompt must show the marker line shape the read emits"
+        );
+        // Targeted edits stay the first choice.
+        assert!(
+            p.contains("**首选 · 局部修改** — `calm.report.blocks.upsert`"),
+            "prompt must make block-addressed upsert the preferred write"
+        );
+        // The trap must be spelled out, not merely de-emphasized.
+        assert!(
+            p.contains("best-effort 重新推导块 id"),
+            "prompt must warn that wholesale replace re-derives block ids"
+        );
+        assert!(
+            p.contains("neige-block <kind>") && p.contains("逐字节原样"),
+            "prompt must warn that non-prose fences must survive byte-for-byte"
+        );
+        // The old wording promoted `calm.report.write` as 首选 — that is the
+        // exact trap this slice removes.
+        assert!(
+            !p.contains("整体替换 （首选"),
+            "prompt must NOT re-promote calm.report.write as the preferred write"
+        );
+        // `message`/`lifecycle` are NOT accepted by write_markdown or
+        // blocks.*; the prompt must not leave the agent guessing.
+        assert!(
+            p.contains("`calm.report.blocks.*` 与 `calm.report.write_markdown` 不接受这两个参数"),
+            "prompt must state that the block-addressed writes take no message/lifecycle"
         );
     }
 

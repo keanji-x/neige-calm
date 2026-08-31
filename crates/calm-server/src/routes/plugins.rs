@@ -1,34 +1,4 @@
-//! `/api/plugins/*` — plugin install, list, configure, lifecycle (M3 Slice D).
-//!
-//! All endpoints wire `Repo` (the installed-plugins table + tokens + kv) and
-//! `PluginHost` (the runtime supervisor) together so a single REST surface
-//! drives the whole install → enable → disable → uninstall lifecycle. The
-//! route contract is spec'd in `docs/m3-design.md` §7.
-//!
-//! Notable decisions made here that the design doc leaves to the
-//! implementation:
-//!
-//!   * **Permissions auto-granted** on install. Design §10 row 8 resolved
-//!     this: M3 has no pending-permission state, so the manifest's declared
-//!     `permissions` block is what the runtime enforces from the first
-//!     `/enable` onwards. No UI consent flow.
-//!   * **Plugin disabled by default**. `/install` does not implicitly call
-//!     `/enable`. Callers (UI, e2e scripts) explicitly toggle to spawn.
-//!   * **Install is symlink-by-default on Unix, copy on Windows.** Symlinks
-//!     let plugin authors `cargo build` then `curl install` without copying
-//!     a fresh tree; Windows requires admin privileges for symlinks so we
-//!     fall back. (M3 only ships unix, but the branch is here for M4.)
-//!   * **Uninstall drops overlays** owned by the plugin. Design §2.7 leaves
-//!     this open ("keep for forensics" vs "drop"); we drop. Tokens, KV, and
-//!     plugin-rendered overlays all go.
-//!   * **M5 (m3-mcp-apps): iframe cookies are scrapped.** AppBridge owns the
-//!     iframe ↔ host channel via a postMessage `MessageChannel` the host
-//!     minted; the user's session reaches `POST /api/plugins/:id/tool-call`
-//!     gated by the kernel's `neige.*` prefix check (§7.6 row 5). The
-//!     `iframe-write` REST route and `IframeCookieCache` are gone in this
-//!     slice; the new iframe-HTML route lives at
-//!     `GET /api/plugins/:id/resources/:view_id` and resolves through the
-//!     kernel-internal `read_ui_resource()`.
+//! `/api/plugins/*` — plugin install, configuration, and lifecycle.
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{NewPlugin, Plugin};

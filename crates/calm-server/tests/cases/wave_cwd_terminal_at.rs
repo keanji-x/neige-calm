@@ -29,7 +29,7 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
-use calm_server::model::{CoveKind, NewCove, WaveLifecycle, WavePatch};
+use calm_server::model::{CoveKind, NewCove, WaveLifecycle, WavePatch, WaveWorkspaceKind};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::state::{AppState, CodexClient, DaemonClient};
@@ -41,6 +41,8 @@ use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
     cove_id: String,
+    /// #1147 S2 — the managed workspace root this boot was pinned to.
+    workspace_root: std::path::PathBuf,
     /// A second cove pre-created so cross-cove conflict tests have a
     /// stable target. Used by the descendant/ancestor cases below.
     other_cove_id: String,
@@ -106,7 +108,10 @@ async fn boot() -> Boot {
         Arc::new(CodexClient::new_stub()),
         Some(card_role_cache.clone()),
         Some(wave_cove_cache.clone()),
-    );
+    )
+    // #1147 S2 — omitted-cwd creates now allocate a managed workspace and
+    // `git init` it. Pin the root inside this test's TempDir.
+    .with_workspace_root(tmp.path().join("workspaces"));
 
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -117,6 +122,7 @@ async fn boot() -> Boot {
     Boot {
         app,
         cove_id: cove.id.to_string(),
+        workspace_root: tmp.path().join("workspaces"),
         other_cove_id: other.id.to_string(),
         repo,
         sqlx_repo,
@@ -596,15 +602,23 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
 }
 
 /// Issue #1131 — omitted `cwd` (and `attach_folder`) is not the same as
-/// sending `cwd: "$HOME"`. Omission stores `default_cwd()` / `$HOME` on
-/// the wave row and skips `cove_folders` entirely. An *explicit* HOME
-/// path with `attach_folder: false` and no prior claim still 409s —
-/// that is `post_api_waves_rejects_unclaimed_cwd_without_attach_folder`.
+/// sending `cwd: "$HOME"`. Omission skips `cove_folders` entirely. An
+/// *explicit* HOME path with `attach_folder: false` and no prior claim still
+/// 409s — that is `post_api_waves_rejects_unclaimed_cwd_without_attach_folder`.
 /// Do not special-case an explicit HOME path; only omission takes this
 /// branch. Never claim `$HOME` into `cove_folders` (longest-prefix
 /// would poison every other cove).
+///
+/// #1147 S2 — what omission *stores* changed. It used to persist
+/// `default_cwd()` (`$HOME`), which is not a git repository, so every
+/// `kind: codex` task on such a wave died in `git rev-parse --show-toplevel`
+/// with nothing but `spawn-failed` to show for it — the defect #1147 opened
+/// on. Omission is now the managed-default branch: the server allocates
+/// `<workspace-root>/<cove_id>/<wave_id>` and materializes it. The
+/// `cove_folders`-untouched half of this test is unchanged and still the
+/// point of the #1131 branch.
 #[tokio::test]
-async fn post_api_waves_omitted_cwd_defaults_to_home_and_skips_cove_folders() {
+async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
     let boot = boot().await;
     assert_eq!(
         boot.repo
@@ -632,11 +646,21 @@ async fn post_api_waves_omitted_cwd_defaults_to_home_and_skips_cove_folders() {
         "expected 201 or 500 (daemon stub may fail post-commit); got {status} body={body}",
     );
 
-    let expected_cwd = expected_default_cwd();
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "exactly one wave created");
-    assert_eq!(waves[0].workspace.path, expected_cwd);
     assert_eq!(waves[0].title, "w-title-only");
+    assert_eq!(waves[0].workspace.kind, WaveWorkspaceKind::Managed);
+    assert_eq!(
+        std::path::PathBuf::from(&waves[0].workspace.path),
+        boot.workspace_root
+            .join(&boot.cove_id)
+            .join(waves[0].id.as_str())
+    );
+    assert_ne!(
+        waves[0].workspace.path,
+        expected_default_cwd(),
+        "the pre-#1147 behavior was `$HOME`, which is not a repository"
+    );
 
     let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
     assert!(
@@ -662,7 +686,14 @@ async fn post_api_waves_omitted_cwd_defaults_to_home_and_skips_cove_folders() {
     );
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 2, "null cwd must also mint a wave");
-    assert!(waves.iter().all(|w| w.workspace.path == expected_cwd));
+    assert!(
+        waves
+            .iter()
+            .all(|w| w.workspace.kind == WaveWorkspaceKind::Managed
+                && std::path::Path::new(&w.workspace.path)
+                    .starts_with(boot.workspace_root.join(&boot.cove_id))),
+        "`cwd: null` must take the same managed-default branch as omission: {waves:?}"
+    );
     assert!(
         boot.repo
             .cove_folders_by_cove(&boot.cove_id)
@@ -771,14 +802,21 @@ async fn post_api_waves_omitted_cwd_ignores_attach_folder_true() {
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "wave must land");
-    assert_eq!(waves[0].workspace.path, expected_default_cwd());
+    assert_eq!(waves[0].workspace.kind, WaveWorkspaceKind::Managed);
+    assert_eq!(
+        std::path::PathBuf::from(&waves[0].workspace.path),
+        boot.workspace_root
+            .join(&boot.cove_id)
+            .join(waves[0].id.as_str())
+    );
     assert!(
         boot.repo
             .cove_folders_by_cove(&boot.cove_id)
             .await
             .unwrap()
             .is_empty(),
-        "attach_folder true must not claim HOME when cwd is omitted"
+        "attach_folder true must claim nothing when cwd is omitted — there is \
+         no user-pointed directory to claim"
     );
 }
 

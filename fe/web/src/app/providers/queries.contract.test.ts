@@ -285,18 +285,18 @@ describe('task-verdict poll interval', () => {
    * from the document — `blockId: ''`, naming no block this report has. No row
    * is built for it, so nothing on screen can converge, and a 3 s refetch on
    * its account is the unbounded cost this callback's comment says it does not
-   * pay. Same for a key two live declarations both claim: one `tasks` row,
-   * stamped onto both verdicts, and `deriveReportTasks` decorates neither.
+   * pay.
+   *
+   * The sibling case — a key two live declarations both claim — used to be
+   * asserted here too, against a fixture where both verdicts carried
+   * `status: 'running'`. The kernel no longer produces that shape: an
+   * ambiguous key is answered `status: null` on every block that names it
+   * (#1160), so the fixture would be testing a wire shape that cannot occur.
+   * `report.test.ts` covers the reachable one.
    */
   it('does not poll for an in-flight run the report has no row for', () => {
     expect(interval(state({
       data: [{ blockId: '', key: 'deleted', schedulable: true, status: 'running', workerCardId: 'c-9' }],
-    }))).toBe(false);
-    expect(taskVerdictsRefetchInterval(blocks([declaration('b-1', 'dup'), declaration('b-2', 'dup')]))(state({
-      data: [
-        { blockId: 'b-1', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
-        { blockId: 'b-2', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
-      ],
     }))).toBe(false);
   });
 
