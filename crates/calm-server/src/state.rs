@@ -945,6 +945,18 @@ impl AppState {
             );
             std::fs::create_dir_all(&workspace_root)?;
         }
+        // #1147 D3 contract (2) — canonicalize ONCE, at boot. Every downstream
+        // prefix comparison (materialization's containment assertion, S5's
+        // recycle guard) is only sound against a canonical root; comparing a
+        // canonical path against a root that still contains a symlink or a
+        // `..` would reject correct workspaces and, worse, could accept
+        // incorrect ones.
+        let workspace_root = std::fs::canonicalize(&workspace_root).map_err(|error| {
+            anyhow::anyhow!(
+                "canonicalize managed workspace root {}: {error}",
+                workspace_root.display()
+            )
+        })?;
 
         // Same treatment for the data dir — Slice B/C will write into per-plugin
         // subdirs of this, so make sure the root exists at boot.

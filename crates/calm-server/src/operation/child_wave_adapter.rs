@@ -834,6 +834,95 @@ mod tests {
         );
     }
 
+    /// **#1147 N11 — pinned, NOT fixed in S2. S4 must carry a DATA MIGRATION.**
+    ///
+    /// S2 *persists* rows with `kind = managed` and a path equal to the
+    /// parent's directory. Design D7 orders S4 before S5 on the assumption
+    /// that S4 removes the shared-directory hazard — but S4 changing the
+    /// adapter only fixes children created *afterwards*. Every child row
+    /// written by S2 keeps pointing at its parent's repository, so S5's
+    /// `remove_dir_all` on a deleted child still destroys the parent's
+    /// repository: D7's accident survives in the data even after the code is
+    /// fixed.
+    ///
+    /// This test exists so S4 cannot land as an adapter-only change without
+    /// someone reading this. If S4 adds the migration, this test should fail
+    /// and be replaced by one asserting the migrated shape.
+    #[tokio::test]
+    async fn n11_s2_persists_children_sharing_the_parents_managed_directory() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspaces");
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let parent = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: "parent".into(),
+                sort: None,
+                cwd: "/ignored-by-managed".into(),
+                workflow_id: None,
+                plugin_scope: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            None,
+            &WaveWorkspacePlan::ManagedUnder(workspace_root.clone()),
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        crate::workspace_materialize::materialize_workspace(
+            &parent.workspace,
+            &workspace_root,
+            parent.id.as_str(),
+        )
+        .unwrap();
+
+        let task = seed_task(&repo, parent.id.as_str(), false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+            workspace_root.clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let output = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let child_id = output.data["child_wave_id"].as_str().unwrap().to_string();
+
+        let (kind, path): (String, String) =
+            sqlx::query_as("SELECT workspace_kind, workspace_path FROM waves WHERE id=?1")
+                .bind(&child_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(kind, "managed");
+        assert_eq!(
+            path, parent.workspace.path,
+            "KNOWN GAP (#1147 N11): this row is what makes an adapter-only S4 \
+             insufficient — deleting this child would still `remove_dir_all` \
+             the parent's repository. S4 owes a data migration for rows like \
+             this one."
+        );
+    }
+
     /// Both fragments this adapter runs keep their only cycle-termination
     /// guard. The crate-wide property gate independently scans every SQL
     /// string touching `parent_wave_id`; there is intentionally no registry.

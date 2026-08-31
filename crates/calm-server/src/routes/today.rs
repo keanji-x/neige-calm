@@ -49,11 +49,14 @@ struct EnsureTxResult {
     report_card_id: String,
     created: bool,
     adopted_legacy: bool,
-    /// #1147 — this `ensure` moved the launchpad's workspace path. True on a
-    /// fresh mint and on the one-time migration of a pre-S2 row (whose path was
-    /// the kernel-minted `<data_dir>/../launchpad`). The spec harness must
-    /// re-open its thread when this happens, or it keeps working in the old
-    /// directory while every worker uses the new one.
+    /// #1147 — the spec harness has never successfully started at the
+    /// launchpad's *current* workspace path, so its thread must be re-opened.
+    ///
+    /// True on a fresh mint, on the one-time migration of a pre-S2 row, and on
+    /// every retry after a failure in between — because it is derived from
+    /// `operations` rather than from a one-shot in-memory comparison (N3).
+    /// Without that, a materialize failure or a crash between commit and
+    /// operation-submit would silently strand the agent in the old directory.
     repointed: bool,
 }
 
@@ -180,8 +183,7 @@ async fn today_launchpad_ensure_tx(
     // kernel-minted `<data_dir>/../launchpad`). Re-pointing is legal precisely
     // because this wave is never frozen — see `launchpad_workspace`.
     let desired = launchpad_workspace(workspace_root, cove_id, wave.id.as_str());
-    let repointed = wave.workspace != desired;
-    if repointed {
+    if wave.workspace != desired {
         wave_workspace_write_tx(tx, wave.id.as_str(), &desired).await?;
         wave.cwd_wire_alias = desired.path.clone();
         wave.workspace = desired;
@@ -281,6 +283,36 @@ async fn today_launchpad_ensure_tx(
         )
         .await?
     };
+    // #1147 N3 — "does the spec harness need re-anchoring?" must be derived
+    // from DURABLE state, not from the in-memory comparison above.
+    //
+    // That comparison is true for exactly one `ensure`: the one whose
+    // transaction moves the path. Materialization runs after that transaction
+    // commits, so if it fails (500), or the process dies before the
+    // `spec-harness-start` operation is recorded, the intent is gone. The next
+    // `ensure` sees `stored == desired`, concludes "steady state", and starts
+    // the harness with `force_new_thread: false` — leaving the spec agent's
+    // codex thread pinned to the OLD cwd forever while every worker uses the
+    // new one. Reproduced end to end by the reviewer.
+    //
+    // The durable question is instead: *has a harness start ever succeeded at
+    // THIS path?* The path digest is already in the idempotency key, so the
+    // `operations` table answers it directly, and the answer survives every
+    // crash window because it is only written once the start actually
+    // succeeded.
+    let started_at_this_path: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM operations \
+         WHERE kind='spec-harness-start' AND phase='succeeded' AND idempotency_key LIKE ?1)",
+    )
+    .bind(format!(
+        "today-launchpad:{}:%:{}",
+        spec.id.as_str(),
+        workspace_key_digest(&wave.workspace.path)
+    ))
+    .fetch_one(&mut **tx)
+    .await?;
+    let repointed = !started_at_this_path;
+
     Ok(EnsureTxResult {
         dto: TodayLaunchpad {
             wave_id: wave.id.to_string(),

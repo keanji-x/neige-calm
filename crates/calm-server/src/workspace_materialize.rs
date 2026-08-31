@@ -31,37 +31,57 @@ const INIT_COMMIT_MESSAGE: &str = "neige workspace init";
 /// [`materialize_managed_workspace`] for why that ordering matters.
 const OWNER_MARKER: &str = "neige-workspace";
 
-/// Git environment variables that override, redirect or poison the operations
-/// below. Every one of these was measured to break materialization when set:
-/// `GIT_DIR`/`GIT_WORK_TREE`/`GIT_COMMON_DIR` redirect the repository out from
-/// under us, `GIT_INDEX_FILE`/`GIT_OBJECT_DIRECTORY` split the commit's state
-/// across directories, `GIT_CEILING_DIRECTORIES` can make the repo invisible to
-/// its own `rev-parse`, and an empty `GIT_COMMITTER_NAME` or a malformed
-/// `GIT_AUTHOR_DATE` fails the commit outright.
+/// Git environment variables removed before every spawn on this path.
 ///
-/// D3 already isolates the *config file* dimension (`-c` overrides for
-/// `commit.gpgsign`, `core.hooksPath`, `user.*`). The environment is the
-/// symmetric hole: leaving it inherited would make correctness depend on an
-/// implicit ambient variable, which is exactly what this project's
-/// "explicit config over env knobs" rule forbids.
+/// They fall into three groups, and the third is the dangerous one:
+///
+/// * **Redirect the repository out from under us** — `GIT_DIR`,
+///   `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`,
+///   `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
+///   `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`. Each was measured to make
+///   materialization fail outright.
+/// * **Poison the commit's identity** — `GIT_AUTHOR_*`/`GIT_COMMITTER_*`. An
+///   empty `GIT_COMMITTER_NAME` or a malformed `GIT_AUTHOR_DATE` fails the
+///   commit; a valid one silently mis-attributes it.
+/// * **Defeat the `-c` isolation entirely** — `GIT_TEMPLATE_DIR`,
+///   `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG`,
+///   `GIT_CONFIG_COUNT`.
+///
+/// That last group is why this list exists at all, and `GIT_TEMPLATE_DIR` is
+/// the sharpest edge in it. Git's precedence is
+/// `--template` > `GIT_TEMPLATE_DIR` > `init.templateDir`, so D3 step 2's
+/// `-c init.templateDir=` is **outranked**: with `GIT_TEMPLATE_DIR` set,
+/// `git init` copies the template's `hooks/` into the new repository. The
+/// init commit itself survives (it runs `--no-verify`), but every later git
+/// command a worker runs inside that workspace — `worktree add`, codex's own
+/// commits — would execute the injected hook. Config-file isolation without
+/// environment isolation is not isolation; it just moves the hole.
 const HOSTILE_GIT_ENV: &[&str] = &[
+    // Repository redirection.
     "GIT_DIR",
     "GIT_WORK_TREE",
     "GIT_COMMON_DIR",
     "GIT_INDEX_FILE",
+    "GIT_INDEX_VERSION",
     "GIT_OBJECT_DIRECTORY",
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_NAMESPACE",
     "GIT_CEILING_DIRECTORIES",
-    "GIT_CONFIG",
-    "GIT_CONFIG_COUNT",
-    "GIT_INDEX_VERSION",
+    // Identity.
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
     "GIT_AUTHOR_DATE",
     "GIT_COMMITTER_NAME",
     "GIT_COMMITTER_EMAIL",
     "GIT_COMMITTER_DATE",
+    // Outrank the `-c` overrides. `GIT_TEMPLATE_DIR` beats
+    // `-c init.templateDir=` and injects hooks; the config vars beat every
+    // other `-c` this module relies on.
+    "GIT_TEMPLATE_DIR",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
 ];
 
 /// A `git` command with the ambient environment's repository-redirecting and
@@ -250,6 +270,21 @@ fn materialize_managed_workspace_inner(
     // crash mid-materialize gets repaired instead of bricking every later call.
     // Safe precisely because the marker proved the directory is ours.
     if !git_head_resolves(path) {
+        // Third leg of D3 contract (3): mutex + marker + **clear our own
+        // half-built state**. The first two alone still brick the workspace.
+        //
+        // Measured: marker present, `.git/config.lock` left behind by a
+        // process killed mid-`init` (this host's `neige-killer.log` shows that
+        // is not a theoretical risk) — `git init` then fails with
+        // `could not lock config file` on *every* subsequent call, forever.
+        // Same permanent 500 the contract exists to abolish, entered through
+        // a lock file instead of an unmarked directory. On the launchpad that
+        // is a permanently dead Today panel.
+        //
+        // Safe precisely because the marker proved the directory is ours AND
+        // `HEAD` does not resolve, so there is no repository state worth
+        // preserving and no live worker that could own these locks.
+        clear_our_stale_git_locks(path)?;
         run_git(
             path,
             neige_git_command()
@@ -324,14 +359,61 @@ fn assert_physically_inside_root(workspace_root: &Path, path: &Path) -> Result<(
     if !real_path.starts_with(&real_root) {
         return Err(CalmError::Internal(format!(
             "materialize workspace: {} resolves to {}, which is outside the managed \
-             workspace root {}. A symlink out of the root would put worker output where \
-             the recycle path's prefix assertion cannot see it.",
+             workspace root {}. Two things reach this: a symlink under the root \
+             (which would put worker output where the recycle path's prefix assertion \
+             cannot see it), or a workspace root that has MOVED since this wave was \
+             created — `CALM_WORKSPACE_ROOT` or `$HOME` changed — in which case the \
+             stored path is simply no longer under the configured root and this wave \
+             has no migration path (issue #1147 N4).",
             path.display(),
             real_path.display(),
             real_root.display()
         )));
     }
     Ok(())
+}
+
+/// Remove `*.lock` files anywhere under `.git/`. See the call site for why
+/// this is both necessary and safe.
+fn clear_our_stale_git_locks(path: &Path) -> Result<()> {
+    fn walk(dir: &Path) -> Result<()> {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(CalmError::Internal(format!(
+                    "materialize workspace: read {}: {error}",
+                    dir.display()
+                )));
+            }
+        };
+        for entry in entries {
+            let entry = entry.map_err(|error| {
+                CalmError::Internal(format!(
+                    "materialize workspace: read {}: {error}",
+                    dir.display()
+                ))
+            })?;
+            let entry_path = entry.path();
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir {
+                walk(&entry_path)?;
+            } else if entry_path.extension().is_some_and(|ext| ext == "lock") {
+                match std::fs::remove_file(&entry_path) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(CalmError::Internal(format!(
+                            "materialize workspace: remove stale lock {}: {error}",
+                            entry_path.display()
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+    walk(&path.join(".git"))
 }
 
 fn owner_marker_path(path: &Path) -> PathBuf {

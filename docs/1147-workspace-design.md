@@ -1,7 +1,7 @@
 # 设计：wave 工作区 —— default 语义 + 托管根 + 一次性冻结
 
 > 归属：#1147（worker 工作区隔离）。相关：#1149（pending 不可见 / 失败不可读）、#1131（建 wave 只填名字，遗留 `cwd=$HOME`）、#1098（cove 对话）、#275/#1109（`cove_folders`）。
-> 状态：**r3.6 — 实现中**。S0 已合入 #1158；S1 已合入 #1163（删掉 waves.cwd，未保留投影）。S2 实现完成，已过一轮红队。
+> 状态：**r3.6 — 实现中**。S0 已合入 #1158；S1 已合入 #1163（删掉 waves.cwd，未保留投影）。S2 实现完成，已过两轮红队；已知遗留见 D12。
 
 ## 1. 问题
 
@@ -417,6 +417,25 @@ r2：该路径改用 managed 默认分配（cove 有 claim 时仍优先用 claim
 - ③「claude 迁到对等租约」：**与本设计零耦合**。claude 完全不读 `wave.cwd`，托管根落地既不会让它更近也不会更远。
   r1 写的「托管后才可能」是不成立的依赖论证。→ 独立 issue，不在本设计切片内。
   ⚠️ 因此必须显式说清：**S2 落地后 claude 任务仍落在 supervisor 继承到的 cwd 下**，不要以为托管后就归位了。
+
+### D12 — S2 已知遗留（红队复验，逐条有归属切片）
+
+**这些不是「将来也许要看看」，是已经证实可达、被刻意推迟的缺口。**每条都在代码里有一条
+以 `nX_` 命名或带 `KNOWN GAP (#1147 nX)` 断言的测试钉住 —— 那些测试断言的是**缺口本身**，
+所以修好它的那一片会看到测试变红，必须显式替换而不是「顺手改绿」。
+
+| # | 缺口 | 后果 | 归属 | 钉在哪 |
+|---|---|---|---|---|
+| N4 | 挪动 `CALM_WORKSPACE_ROOT` / `$HOME` 后，既有 managed wave 的存库路径不再落在配置根下 | 该 wave 取 lease 永久硬失败，**无迁移路径**。launchpad 会自愈（路径每次 ensure 重新派生），普通 wave 不会 | **S5**（回收/搬迁机制就位时一并做） | `n4_moving_the_workspace_root_strands_existing_waves`；错误文案已明写这条 |
+| N5 | 我们自己的工作区丢了 `.git/neige-workspace` 标记（备份部分还原、误清理） | 永久拒绝，且**没有任何管理入口**能重新认领 | **S5/S6** | `n5_losing_our_own_marker_is_an_unrecoverable_refusal` |
+| N7 | 符号链接是「拒绝，但已经写过了」 | 根外留下一个带我们标记的完整仓库，无人回收。先拒后写不可避免：真实位置要 `create_dir_all` 之后才知道 | **S5** | `n7_a_refused_symlink_workspace_leaves_an_orphan_repository_outside_the_root` |
+| N9 | 物化互斥是**进程内**的 | 两个 calm-server 实例（升级重叠、admin CLI、健康重启）仍会撞出 N1 那类锁残留。N1 的清理让它可自愈而非永久砖化，但撞击本身还在 | **S5**（或独立 issue）；真解是文件锁 | 本表 + `clear_our_stale_git_locks` 的注释 |
+| N10 | 环境隔离只到 materialize 边界 | 紧邻的 `git_repo_root_for_wave_cwd` 与 worktree 相关 spawn 仍是裸 `Command::new("git")`，同一组变量对它们仍然有效 | **独立 issue**（把 `neige_git_command()` 推广到 workspace_lease 全模块） | 本表 |
+| N11 | S2 **持久化**了 `kind=managed` + 路径=父目录 的 child 行 | **S4 只改 adapter 不够**：存量行仍指向父仓库，S5 删子 wave 时照样 `remove_dir_all` 父仓库 —— D7 的事故以数据形式存活 | **S4，必须带数据迁移** | `n11_s2_persists_children_sharing_the_parents_managed_directory` |
+
+> N11 值得单独强调：D7 的合入顺序约束（S4 先于 S5）建立在「S4 消除共享目录」之上。
+> 而 S4 若只改 `child_wave_adapter`，只修好**之后**创建的子 wave；S2 已经写进库的行不动，
+> 于是 S5 一落地事故照样发生。**S4 的验收必须包含存量 child 行的迁移。**
 
 ## 4. 切片
 

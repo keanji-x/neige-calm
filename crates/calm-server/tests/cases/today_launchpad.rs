@@ -695,3 +695,77 @@ async fn repointing_the_workspace_does_not_wedge_ensure_on_a_stale_idempotency_k
     let (status, body) = ensure(after.app.clone()).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 }
+
+/// #1147 N3 (blocking) — a re-point that fails midway must still re-anchor the
+/// spec harness on the next `ensure`.
+///
+/// The intent used to be an in-memory comparison inside the transaction, true
+/// for exactly one request. Materialization runs *after* that transaction
+/// commits, so a failure there (500) threw the intent away: the next `ensure`
+/// saw `stored == desired`, called it steady state, and started the harness
+/// with `force_new_thread: false` — pinning the spec agent's codex thread to
+/// the OLD cwd forever while every worker used the new one.
+///
+/// Sequence below is exactly that: upgrade, obstruct materialization so the
+/// first post-upgrade `ensure` 500s, clear the obstruction, and require that
+/// the harness is still re-anchored (a `:repoint` operation exists).
+#[tokio::test]
+async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let before = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-old").await;
+    let _old_tmp = before._tmp;
+
+    let (status, body) = ensure(before.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let (status, body) = ensure(before.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    // --- the upgrade, with materialization obstructed ---
+    let tmp = TempDir::new().unwrap();
+    let after = boot_with(tmp, repo.clone(), "workspaces-new").await;
+    let cove_id: String = sqlx::query_scalar("SELECT cove_id FROM waves WHERE purpose='launchpad'")
+        .fetch_one(repo.pool())
+        .await
+        .unwrap();
+    std::fs::create_dir_all(&after.workspace_root).unwrap();
+    // A plain file where `<root>/<cove_id>` must be a directory: `mkdir` gets
+    // ENOTDIR. (Not a read-only parent — CI runs as root, for whom mode bits
+    // are advisory, and that injection would pass vacuously.)
+    std::fs::write(after.workspace_root.join(&cove_id), "not a directory").unwrap();
+
+    let (status, _) = ensure(after.app.clone()).await;
+    assert!(
+        !status.is_success(),
+        "materialization was obstructed, so this ensure must fail"
+    );
+
+    std::fs::remove_file(after.workspace_root.join(&cove_id)).unwrap();
+    let (status, body) = ensure(after.app.clone()).await;
+    assert!(status.is_success(), "body={body}");
+
+    // The load-bearing assertion: the harness was re-anchored at the new path,
+    // not resumed at the old one.
+    let repoints: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%:repoint:%'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        repoints > 0,
+        "no `:repoint` operation exists: the re-point intent was lost when the \
+         first attempt failed, so the spec harness resumed its thread in the \
+         OLD workspace while every worker uses the new one"
+    );
+
+    // And it settles: once started at this path, later ensures are plain reuse.
+    let (status, body) = ensure(after.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let reuse_at_new_path: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM operations WHERE idempotency_key LIKE 'today-launchpad:%:reuse:%'",
+    )
+    .fetch_one(repo.pool())
+    .await
+    .unwrap();
+    assert!(reuse_at_new_path > 0, "steady state never resumed");
+}

@@ -12,10 +12,17 @@ use std::sync::{Mutex, MutexGuard};
 use super::{InitCommit, materialize_managed_workspace, materialize_managed_workspace_inner};
 use crate::operation::workspace_lease::{WorkspaceLeaseTarget, provision_workspace_worktree};
 
-/// `GIT_CONFIG_GLOBAL` is process-global. `cargo-nextest` gives each test its
-/// own process so this is belt-and-braces, but a plain `cargo test` run shares
-/// one process across threads and the two env-touching tests below would race
-/// every other git-spawning test in this binary.
+/// The git environment is **process-global**, so any test in this module that
+/// spawns git must hold this lock for its whole body.
+///
+/// `cargo-nextest` (what CI runs) gives each test its own process and would
+/// hide a violation completely. A plain `cargo test` shares one process across
+/// threads: with the lock scoped to a *helper function* instead of the test
+/// body, `cargo test -p calm-server --lib workspace_materialize` failed 5 runs
+/// out of 20, and `--test-threads=1` was always green. A test whose colour
+/// depends on the runner is not evidence, so every test below takes a
+/// [`GitEnv`] guard first — including the ones that only want the default
+/// environment.
 static GIT_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 struct GitEnv {
@@ -29,9 +36,11 @@ impl GitEnv {
         let mut previous = Vec::new();
         for (key, value) in vars {
             previous.push((*key, std::env::var_os(key)));
-            // SAFETY: the process-wide lock above is the only writer of these
-            // vars in this crate's tests, and every git-spawning test in this
-            // module takes the same lock before reading them.
+            // SAFETY: `GIT_ENV_LOCK` is held for as long as the returned guard
+            // lives, and the guard is bound in the *test body* (never inside a
+            // helper that returns before the git spawns). Every git-spawning
+            // test in this module holds one, so there is no concurrent reader
+            // or writer of these variables.
             unsafe { std::env::set_var(key, value) };
         }
         Self {
@@ -116,6 +125,7 @@ fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
 /// worker lease worktree.
 #[test]
 fn materialized_workspace_hosts_a_worker_worktree() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     materialize(&root, &repo_root).unwrap();
@@ -219,6 +229,7 @@ fn materialize_survives_a_global_gpgsign_config() {
 /// D3 step 1: a directory we did not create is never adopted.
 #[test]
 fn materialize_refuses_a_foreign_non_empty_directory() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     std::fs::create_dir_all(&repo_root).unwrap();
@@ -236,6 +247,7 @@ fn materialize_refuses_a_foreign_non_empty_directory() {
 /// worker output already sitting in the workspace.
 #[test]
 fn materialize_is_idempotent() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     materialize(&root, &repo_root).unwrap();
@@ -270,6 +282,7 @@ fn materialize_is_idempotent() {
 /// "nothing on disk" predicate permanently false.
 #[test]
 fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     materialize(&root, &repo_root).unwrap();
@@ -303,6 +316,7 @@ fn materialize_excludes_worktrees_via_git_info_exclude_not_gitignore() {
 /// D2: the layout is `<root>/<cove_id>/<wave_id>`, ids only.
 #[test]
 fn managed_path_is_root_cove_wave() {
+    let _env = GitEnv::c_locale();
     let path = super::managed_workspace_path(Path::new("/srv/ws"), "cove1", "wave1");
     assert_eq!(path, Path::new("/srv/ws/cove1/wave1"));
 }
@@ -371,8 +385,8 @@ impl Drop for OverlapProbe {
 
 /// Build a *third-party* git repository with real history and a working file,
 /// as if the user had put one of their projects on the derived path.
+/// Caller must already hold a [`GitEnv`] guard — this spawns git.
 fn third_party_repo(path: &Path) {
-    let _env = GitEnv::c_locale();
     std::fs::create_dir_all(path).unwrap();
     assert!(
         Command::new("git")
@@ -426,6 +440,7 @@ fn third_party_repo(path: &Path) {
 /// deletion of the user's real work. Nothing about their repository may change.
 #[test]
 fn a_third_party_repository_on_the_derived_path_is_refused_untouched() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     third_party_repo(&repo_root);
@@ -502,6 +517,7 @@ fn a_third_party_repository_on_the_derived_path_is_refused_untouched() {
 /// makes the test above attributable to the marker and not to some other check.
 #[test]
 fn the_marker_is_what_decides_adoption() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     third_party_repo(&repo_root);
@@ -518,6 +534,7 @@ fn the_marker_is_what_decides_adoption() {
 /// **B2** — a marker naming a *different* wave is corruption, not an invitation.
 #[test]
 fn a_marker_for_another_wave_is_refused() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     std::fs::create_dir_all(repo_root.join(".git")).unwrap();
@@ -543,6 +560,7 @@ fn a_marker_for_another_wave_is_refused() {
 #[test]
 #[cfg(unix)]
 fn a_symlink_out_of_the_root_is_refused() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     let elsewhere = tmp.path().join("elsewhere");
@@ -568,6 +586,7 @@ fn a_symlink_out_of_the_root_is_refused() {
 #[test]
 #[cfg(unix)]
 fn the_same_layout_without_a_symlink_succeeds() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     std::fs::create_dir_all(repo_root.parent().unwrap()).unwrap();
@@ -582,6 +601,7 @@ fn the_same_layout_without_a_symlink_succeeds() {
 /// .git/config` and a spurious "not a neige-managed repository".
 #[test]
 fn concurrent_materialization_of_one_path_all_succeed() {
+    let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
 
@@ -720,4 +740,201 @@ fn materialize_survives_hostile_git_environment_variables() {
     assert!(head_resolves(&repo_root));
     let target = lease_target(&repo_root);
     provision_workspace_worktree(&target).expect("worktree add on the isolated workspace");
+}
+
+/// **N1** — third leg of D3 contract (3): clear our own half-built state.
+///
+/// Marker present (so the directory is provably ours) + a `.git/config.lock`
+/// left by a process killed mid-`init`. Without the cleanup `git init` fails
+/// with `could not lock config file` on *every* subsequent call — the same
+/// permanent 500 the contract exists to abolish, entered through a lock file
+/// instead of an unmarked directory. On the launchpad that is a permanently
+/// dead Today panel.
+#[test]
+fn a_stale_lock_file_from_a_killed_init_is_cleared() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+
+    // The state a SIGKILL mid-`git init` leaves: ours, no resolvable HEAD, and
+    // a lock file guarding the config.
+    std::fs::create_dir_all(repo_root.join(".git")).unwrap();
+    std::fs::write(
+        repo_root.join(".git").join(super::OWNER_MARKER),
+        format!("{WAVE}\n"),
+    )
+    .unwrap();
+    std::fs::write(repo_root.join(".git/config.lock"), "").unwrap();
+    assert!(
+        !head_resolves(&repo_root),
+        "fixture must start un-materialized"
+    );
+
+    materialize(&root, &repo_root).expect("a stale lock of ours must be cleared, not reported");
+    assert!(head_resolves(&repo_root));
+    assert!(
+        !repo_root.join(".git/config.lock").exists(),
+        "the stale lock is still there; the next call will fail the same way"
+    );
+
+    // Idempotent afterwards — the failure mode was that it repeated forever.
+    materialize(&root, &repo_root).expect("second call");
+}
+
+/// **N1** — the same for a lock deeper in `.git/`, e.g. a killed `commit`.
+#[test]
+fn a_stale_ref_lock_is_cleared() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize_managed_workspace_inner(&root, &repo_root, WAVE, InitCommit::Skip).unwrap();
+    std::fs::write(repo_root.join(".git/HEAD.lock"), "").unwrap();
+    assert!(!head_resolves(&repo_root));
+
+    materialize(&root, &repo_root).expect("a stale ref lock of ours must be cleared");
+    assert!(head_resolves(&repo_root));
+}
+
+/// **N2** — `GIT_TEMPLATE_DIR` outranks `-c init.templateDir=`.
+///
+/// Git's precedence is `--template` > `GIT_TEMPLATE_DIR` > `init.templateDir`,
+/// so D3 step 2's `-c` override does **not** stop a template's `hooks/` from
+/// being copied into the new repository. The init commit itself survives
+/// (`--no-verify`), which is exactly what makes this quiet: the hook only
+/// fires later, on every git command a worker runs inside the workspace.
+#[test]
+fn a_template_dir_in_the_environment_cannot_inject_hooks() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let template = tmp.path().join("tmpl");
+    std::fs::create_dir_all(template.join("hooks")).unwrap();
+    let hook = template.join("hooks").join("pre-commit");
+    std::fs::write(&hook, "#!/bin/sh\nexit 1\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let env = GitEnv::set(&[
+        ("LC_ALL", std::ffi::OsStr::new("C")),
+        ("LANGUAGE", std::ffi::OsStr::new("")),
+        ("GIT_TEMPLATE_DIR", template.as_os_str()),
+    ]);
+
+    // Sanity: the injection really does work against an un-isolated git, even
+    // WITH the `-c init.templateDir=` override D3 step 2 relies on. Without
+    // this the test could pass on a git that ignores the variable entirely.
+    let control = tmp.path().join("control");
+    assert!(
+        Command::new("git")
+            .args(["-c", "init.templateDir=", "-c", "init.defaultBranch=main"])
+            .arg("init")
+            .arg(&control)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        control.join(".git/hooks/pre-commit").exists(),
+        "GIT_TEMPLATE_DIR did not inject through `-c init.templateDir=` on this \
+         git, so this test cannot detect the hole it is guarding"
+    );
+
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).expect("materialize under an injected template dir");
+    assert!(
+        !repo_root.join(".git/hooks/pre-commit").exists(),
+        "a hook was injected into a server-owned workspace; every later git \
+         command a worker runs there would execute it"
+    );
+
+    drop(env);
+    assert!(head_resolves(&repo_root));
+}
+
+/// **N7** — pinned, NOT fixed in S2.
+///
+/// The symlink refusal happens *after* materialization has already written a
+/// complete repository at the resolved location, so a rejected create leaves a
+/// marked, fully-formed repository outside the workspace root that nothing
+/// will ever collect. Refusing earlier is not enough on its own (the resolved
+/// location is only knowable after `create_dir_all`), so this needs a real
+/// cleanup path — S5's job, and this test is here so S5 does not rediscover it
+/// as a new bug.
+#[test]
+#[cfg(unix)]
+fn n7_a_refused_symlink_workspace_leaves_an_orphan_repository_outside_the_root() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    let elsewhere = tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, repo_root.parent().unwrap()).unwrap();
+
+    materialize(&root, &repo_root).expect_err("symlink must be refused");
+
+    let orphan = elsewhere.join(WAVE);
+    assert!(
+        orphan.join(".git").is_dir() && orphan.join(".git").join(super::OWNER_MARKER).exists(),
+        "KNOWN GAP (#1147 N7): if this assertion starts failing, the orphan is \
+         being cleaned up — delete this test and note the fix, do not loosen it"
+    );
+}
+
+/// **N5** — pinned, NOT fixed in S2.
+///
+/// Losing the ownership marker (a partially restored backup, an over-eager
+/// cleanup) makes our own workspace permanently un-materializable, and there is
+/// no administrative way to re-claim it: the refusal is unconditional and
+/// nothing exposes "adopt this directory". S5/S6 need a re-claim path.
+#[test]
+fn n5_losing_our_own_marker_is_an_unrecoverable_refusal() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize(&root, &repo_root).unwrap();
+    std::fs::remove_file(repo_root.join(".git").join(super::OWNER_MARKER)).unwrap();
+
+    let error = materialize(&root, &repo_root)
+        .expect_err("KNOWN GAP (#1147 N5): a marker-less workspace of ours is refused forever");
+    assert!(
+        error
+            .to_string()
+            .contains("carries no neige ownership marker"),
+        "unexpected error: {error}"
+    );
+    // Deliberately asserting the *gap*: there is no supported recovery. If a
+    // later slice adds one, this test fails and the author must record it.
+}
+
+/// **N4** — pinned, NOT fixed in S2.
+///
+/// Moving `CALM_WORKSPACE_ROOT` (or `$HOME`) strands every existing managed
+/// wave: its stored path is no longer under the configured root, so the
+/// containment assertion refuses it and the wave can never take a lease again.
+/// The launchpad self-heals because its path is re-derived on every `ensure`;
+/// an ordinary wave has no such path. A migration is owed — S5, with the
+/// recycle/relocate machinery.
+#[test]
+fn n4_moving_the_workspace_root_strands_existing_waves() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (old_root, repo_root) = sandbox(&tmp);
+    materialize(&old_root, &repo_root).unwrap();
+
+    let new_root = tmp.path().join("moved-root");
+    std::fs::create_dir_all(&new_root).unwrap();
+    let error = materialize_managed_workspace(&new_root, &repo_root, WAVE).expect_err(
+        "KNOWN GAP (#1147 N4): an existing wave under the old root is refused \
+         outright after the root moves, with no migration path",
+    );
+    assert!(
+        error.to_string().contains("outside the managed"),
+        "unexpected error: {error}"
+    );
+    assert!(
+        error.to_string().contains("N4"),
+        "the error must name the gap so the next reader is not left guessing \
+         about a symlink that is not there: {error}"
+    );
 }

@@ -222,11 +222,24 @@ impl Config {
     /// #1147 D2 — `$HOME/neige-workspaces` unless overridden. Falls back to
     /// `./neige-workspaces` only when `HOME` is unset, mirroring
     /// `data_dir_resolved`'s last-resort `.`.
+    /// #1147 D2 — `$HOME/neige-workspaces` unless overridden.
+    ///
+    /// The `HOME`-unset fallback is `current_dir()`, **not** `.`: a relative
+    /// root makes every derived workspace path relative, and materialization
+    /// requires an absolute path, so a process started without `HOME` — the
+    /// normal case under systemd or a supervisor — would 500 on every single
+    /// wave create (#1147 N6). Absolute-by-construction is the fix; if even
+    /// `current_dir()` fails there is no defensible answer, so this is the one
+    /// place that gives up loudly rather than inventing a path.
     pub fn workspace_root_resolved(&self) -> PathBuf {
         self.workspace_root.clone().unwrap_or_else(|| {
             std::env::var_os("HOME")
                 .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from("."))
+                .filter(|home| !home.as_os_str().is_empty())
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .expect("resolving the workspace root needs HOME or a usable cwd")
+                })
                 .join("neige-workspaces")
         })
     }
