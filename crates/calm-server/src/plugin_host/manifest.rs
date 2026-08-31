@@ -1,20 +1,7 @@
 //! Plugin manifest parsing and validation.
 //!
 //! Every plugin ships a `manifest.json` at the root of its install directory.
-//! This module owns the serde-typed shape, the validator (id / version / scope
-//! rules locked in by §1 + §10 of `docs/m3-design.md`), and `ManifestError` —
-//! the unified error surface install + boot paths report.
-//!
-//! M3 scope reminders (do not relax without re-reading the design doc):
-//!
-//!   * `manifest_version` must equal `1`.
-//!   * `views[].scope` is the closed set `["card"]` — `"wave"` and `"cove"`
-//!     are explicitly rejected per §10 #1 and #5.
-//!   * Validation is hand-written (no `jsonschema` crate). The surface is
-//!     small enough that pulling the dep is not worth it for Slice A.
-//!
-//! NOTE: This file is Slice A only. Slice B will read the parsed `Manifest`
-//! to spawn the process; Slice C will consult `Permissions` on every callback.
+//! This module owns its typed shape, validation, and shared error surface.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -24,10 +11,6 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-
-// ---------------------------------------------------------------------------
-// Public types — the on-disk JSON shape, 1:1 with §1.1 of the design doc.
-// ---------------------------------------------------------------------------
 
 /// Top-level manifest blob loaded from `<install_path>/manifest.json`.
 ///

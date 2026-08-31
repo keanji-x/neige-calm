@@ -384,7 +384,7 @@
   skip_reason: >
     新架构用 typestate 取代：`UnconfiguredEventStream.configure({syncEventVersion, topics})`
     返回 `ConfiguredEventStream`，只有后者有 `start()`；subscribe 折进 configure。
-    三段顺序在类型层不可倒置，不再需要运行期约定。见 _fe-architecture.md §4.7.1。
+    三段顺序在类型层不可倒置，不再需要运行期约定。
     ⚠️ INV-APP-020/021 不随之消失（typestate 管不了「只有一处调 start」与「configure 本身不得连接」）。
 
 - id: INV-APP-020
@@ -1974,7 +1974,7 @@
   intentional_omission: false
   migration: skipped
   skip_reason: >
-    由 configure() 原子化取代（_fe-architecture.md §4.7.1）。新 API 不提供绕过配置的路径；
+    由 configure() 原子化取代。新 API 不提供绕过配置的路径；
     测试逃生口改走 EventStream.forTest(url).configure({...}).start()，
     保留「不经 bridge 也能连」的能力，但不保留「跳过配置」的能力。
 

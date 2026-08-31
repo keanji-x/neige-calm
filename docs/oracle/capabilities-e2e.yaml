@@ -80,8 +80,8 @@
     The suite must expose a `color-anchor` project bound to `color-system-anchor.spec.ts`
     with the replay baseURL, separate from `a11y`.
   why: >
-    e2e/README.md:134-143 — it drives a dedicated `color-anchor.html` harness page rather
-    than the SPA, so it cannot share the a11y project's spec glob.
+    It drives a dedicated `color-anchor.html` harness page rather than the SPA,
+    so it cannot share the a11y project's spec glob.
   source: web/playwright.config.ts:128-135
   authoritative_test: web/playwright.config.ts:128
   owner_slice: none/e2e/infra
@@ -677,42 +677,6 @@
   test_tier: browser
   migration: pending
 
-- id: E2E-GATE-INFRA-035
-  kind: gate
-  family: a11y-gate
-  statement: >
-    The CI a11y gate must run the WHOLE `a11y` project via `--project=a11y` (glob
-    `**/a11y-*.spec.ts`) plus the `color-anchor` project — never an explicit per-file list.
-  why: >
-    e2e/README.md:99-112 (#690) — the previous explicit 6-file list silently skipped 9 specs
-    the glob already owned. Whole-project running means adding an `a11y-*.spec.ts` gates it
-    automatically with no registration step.
-  source: web/e2e/README.md:84-112
-  authoritative_test: web/e2e/README.md:96
-  owner_slice: none/ci
-  intentional_omission: false
-  runtime_layer: none
-  verification_owner: e2e
-  test_tier: browser
-  migration: pending
-
-- id: E2E-INV-INFRA-036
-  kind: invariant
-  family: a11y-gate
-  statement: >
-    `a11y:axe` and `a11y:spec-chat` must NOT be chained into the `a11y` gate script.
-  why: >
-    e2e/README.md:105-110 — the whole-project `a11y:e2e` already covers them; re-listing would
-    double-run those files. They stay as standalone dev conveniences.
-  source: web/e2e/README.md:105-110
-  authoritative_test: web/e2e/README.md:96
-  owner_slice: none/ci
-  intentional_omission: true
-  runtime_layer: none
-  verification_owner: e2e
-  test_tier: browser
-  migration: pending
-
 - id: E2E-CAP-INFRA-037
   kind: capability
   family: test-hooks
@@ -840,8 +804,7 @@
     separate `<nav aria-label="Coves">`.
   why: >
     golden-path.spec.ts:19-29 — the two named navigation landmarks are what let role-scoped
-    queries disambiguate a sidebar `Today` button from a wave row also named "Today"
-    (docs/a11y-contract.md §2.2).
+    queries disambiguate a sidebar `Today` button from a wave row also named "Today".
   source: web/e2e/golden-path.spec.ts:14-49
   authoritative_test: web/e2e/golden-path.spec.ts:14
   owner_slice: app/shell/sidebar
@@ -1888,7 +1851,7 @@
     The wave title must render as a `<span role="button">` whose accessible NAME is the bare
     wave title and whose aria-describedby resolves to exactly `Rename wave`.
   why: >
-    a11y-keyboard.spec.ts:656-662 (a11y-contract.md §5) — keeping the verb out of the name is
+    a11y-keyboard.spec.ts:656-662 — keeping the verb out of the name is
     what lets the sibling `Delete wave "<title>"` button coexist without strict-mode collision.
   source: web/e2e/a11y-keyboard.spec.ts:656-662
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:687
@@ -4709,7 +4672,7 @@
     (per-slug kind/bg/color/caret/scheme/rect for light and dark) — and must NOT diff against the
     committed baseline.
   why: >
-    e2e/README.md:139-143 — diffing computed colours across environments is fragile; the table is
+    Diffing computed colours across environments is fragile; the table is
     committed drift documentation for humans, not an assertion.
   source: web/e2e/color-system-anchor.spec.ts:85-109
   authoritative_test: web/e2e/color-system-anchor.spec.ts:41

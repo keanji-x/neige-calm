@@ -1,5 +1,4 @@
-//! `WorkerProvider` — extend the spawn saga into the execution period
-//! (issue #679 §2).
+//! Execution-period provider contract.
 
 use async_trait::async_trait;
 use calm_types::error::CoreError;
@@ -8,14 +7,7 @@ use calm_types::worker::{
     DeathVerdict, ExitEvidence, ExitInterpretation, Liveness, SessionMode, WorkerSession,
 };
 
-/// Handle to whatever a successful spawn produced. Moved verbatim from
-/// calm-server's `operation` module (#679 PR1) — the operations saga
-/// constructs it, and `WorkerProvider::resume` returns it, so it belongs to
-/// the exec contract layer rather than the saga internals. calm-server
-/// re-exports it at the old path.
-///
-/// Note the variants are still runtime/card-era shaped (`Harness` carries a
-/// `runtime_id`); PR6 re-keys them to sessions when the providers move in.
+/// Handle produced by a successful spawn or resume.
 #[derive(Clone, Debug)]
 pub enum SpawnHandle {
     Terminal {
@@ -29,24 +21,9 @@ pub enum SpawnHandle {
 }
 
 /// Minimal execution-period context handed to [`WorkerProvider`] calls.
-///
-/// **Deliberately not** calm-server's `operation::SpawnCtx`, which bundles
-/// `Arc<dyn RouteRepo>` + `Arc<DaemonClient>` + the event bus + the
-/// terminal renderer registry — exactly the IO coupling this crate
-/// firewalls away. Provider implementations receive their heavyweight
-/// dependencies (daemon client, app-server handles) at **construction**
-/// (PR6); per-call context carries only data the execution layer is
-/// entitled to see.
-///
-/// PR1 ships the smallest honest version: a clock. The reaper's
-/// `Unknown { since_ms }` deadlines and `ExitEvidence.observed_at_ms`
-/// stamps need an injected "now" so L1 tests (PR5) stay zero-process and
-/// deterministic. `#[non_exhaustive]` + [`SpawnCtx::new`] keep PR6 free to
-/// widen it (cwd/env for `resume`) without breaking implementors.
 #[derive(Clone, Debug, Default)]
 #[non_exhaustive]
 pub struct SpawnCtx {
-    /// Unix-ms "now", injected by the driver (kernel reaper / test clock).
     pub now_ms: TimestampMs,
 }
 
@@ -56,66 +33,26 @@ impl SpawnCtx {
     }
 }
 
-/// The execution-period provider contract (issue #679 §2).
+/// Owns a worker session after spawn: liveness, exit interpretation, and resume.
 ///
-/// The existing `ProviderAdapter` saga (calm-server `operation/mod.rs`)
-/// ends at `spawn_succeeded` and drops the `SpawnHandle` on the floor;
-/// `WorkerProvider` is the part that owns the session **after** spawn:
-/// liveness probing, exit interpretation, resume.
-///
-/// ## Relation to `ProviderAdapter`
-///
-/// The issue declares `trait WorkerProvider: ProviderAdapter`. PR1 cannot
-/// express that supertrait yet — `ProviderAdapter` lives in calm-server and
-/// is welded to sqlx transactions and the IO-coupled `SpawnCtx` (the very
-/// coupling this crate exists to break). So PR1 defines `WorkerProvider`
-/// standalone with its own `kind()` discriminator.
-/// TODO(#679 PR6): when the adapters move into calm-provider and
-/// `ProviderAdapter`'s tx/ctx types are abstracted, fold the spawn saga in —
-/// either as the supertrait per the issue or by merging both into one
-/// session-provider trait. Until then the two traits are bridged at
-/// assembly by implementing both on the same concrete provider.
-///
-/// ## Driver obligations (the PR8 reaper)
-///
-/// * `probe_liveness` / `interpret_exit` are async provider calls and must
-///   **never run inside the write lock** — three-phase: gather evidence
-///   (unlocked) → interpret (unlocked) → CAS commit (`WHERE status IN
-///   active` + the transition matrix). See issue §2 "Reaper".
-/// * `interpret_exit` is the **single exit authority**: every exit
-///   observation (attach reader, sweeper, probe, daemon) funnels through it
-///   before any state write (issue hard-problem 3).
+/// Probes and interpretation must run outside the write lock; only the final
+/// CAS transition is committed under it. `interpret_exit` is the sole exit
+/// authority for every observation source.
 #[async_trait]
 pub trait WorkerProvider: Send + Sync {
-    /// Provider discriminator (`"codex"` / `"claude"` / `"terminal"` /
-    /// `"fake"`…). Mirrors `ProviderAdapter::kind` so one concrete type can
-    /// implement both traits with a single identity during the PR6 bridge.
     fn kind(&self) -> &'static str;
 
-    /// Whether sessions of this provider can be resumed after the driving
-    /// process dies (issue §2): terminal/claude are `Ephemeral`, codex
-    /// threads are `Resumable`.
     fn session_mode(&self) -> SessionMode;
 
     /// One observation round against a live-or-unknown session.
     ///
-    /// Probe reality per provider (issue §2, audited): terminal — supervisor
-    /// `ControlMsg::Probe`; claude — same PTY probe; codex — composite
-    /// evidence only (PTY + daemon `is_running` + in-memory turn cache),
-    /// degrading to [`Liveness::Unknown`] after a daemon restart.
-    ///
-    /// T2: the resulting state update is an observation write — no event.
     async fn probe_liveness(
         &self,
         session: &WorkerSession,
         ctx: &SpawnCtx,
     ) -> Result<Liveness, CoreError>;
 
-    /// The single exit authority (issue §2): given raw evidence, rule what
-    /// it means for this session. The kernel commits the verdict via CAS +
-    /// transition matrix; a `Failed` verdict on a session with no
-    /// `TaskCompleted`/`TaskFailed` makes the kernel emit the convergence
-    /// `TaskFailed` (same path as the existing spawn-failure fallback).
+    /// Interpret raw exit evidence before the kernel applies a CAS transition.
     async fn interpret_exit(
         &self,
         session: &WorkerSession,
@@ -137,20 +74,7 @@ pub trait WorkerProvider: Send + Sync {
         )))
     }
 
-    /// The codex worker death-arbiter (#741 §1.1, design-of-record truth
-    /// table). Given a reap candidate's `thread_id`, the current time, the
-    /// daemon's last (re)connect time, and the rebuild-grace window, return
-    /// the only verdict that authorizes a reap ([`DeathVerdict::Dead`]) —
-    /// or `Alive` / `Unknown` (both = NO reap).
-    ///
-    /// **DORMANT in 741-2:** nothing on the live path calls this yet; the
-    /// reaper wiring is 741-3. Only [`CodexProvider`](crate) overrides it;
-    /// the default returns [`DeathVerdict::Unknown`] so non-codex providers
-    /// never manufacture a death (they never reach the arbiter path).
-    ///
-    /// MUST run UNLOCKED (it issues an async `thread/read` pull); the
-    /// reaper's CAS commit is guarded separately against a pull→commit flip
-    /// (design §1.5).
+    /// Confirm durable death outside the write lock. Only `Dead` authorizes reap.
     async fn confirm_durable_death(
         &self,
         _thread_id: &str,
@@ -161,12 +85,7 @@ pub trait WorkerProvider: Send + Sync {
         DeathVerdict::Unknown
     }
 
-    /// Wall-clock ms of the provider daemon's most recent successful
-    /// (re)connect (#741 §1.3). Feeds the reaper's `REBUILD_GRACE` window so
-    /// `confirm_durable_death` can hold off S2 pulls while the daemon's
-    /// loaded-thread roster is still rebuilding. Only [`CodexProvider`] has a
-    /// daemon; the default returns `None` (no grace concept for ephemeral
-    /// providers, which never reach the arbiter path anyway).
+    /// Wall-clock ms of the provider daemon's latest successful connection.
     fn daemon_connected_at_ms(&self) -> Option<TimestampMs> {
         None
     }

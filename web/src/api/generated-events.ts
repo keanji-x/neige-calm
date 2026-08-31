@@ -2,31 +2,13 @@
 
 /**
  * Semantic identity of an event producer.
- *
- * Declared in PR1 for downstream use (`EventScope` in PR2,
- * `enforce_role` in PR3). **Has zero call sites in PR1** — the existing
- * `crate::actor::Actor(pub String)` plumbing carries the declared
- * `X-Calm-Actor` value through the request stack and remains the
- * audit-log truth until PR3 swaps it.
  */
 export type ActorId = { "kind": "User" } | { "kind": "Kernel" } | { "kind": "KernelDispatcher" } | { "kind": "Plugin", "id": string } | { "kind": "AiSpec", "id": CardId } | { "kind": "AiCodex", "id": CardId } | { "kind": "AiClaude", "id": CardId } | { "kind": "AiSpecSession", "id": WorkerSessionId } | { "kind": "AiCodexSession", "id": WorkerSessionId } | { "kind": "AiClaudeSession", "id": WorkerSessionId };
 
 export type AgentProvider = "codex" | "claude";
 
 /**
- * Opaque identifier for a worker-produced artifact (file write, structured
- * output blob, etc.). PR4 of #136 introduces this as a **placeholder**:
- * the real Artifact Stream lands in #129, which will expand the type with
- * hash / content-type / storage-uri fields.
- *
- * Today the variant is referenced only by `Event::TaskCompleted.artifacts`,
- * which carries a list of these so the dispatcher's push path can hand a
- * spec card a manifest of what its worker produced. Keep this minimal —
- * #129 territory expands the shape, not PR4.
- *
- * Wire shape is a bare string via `#[serde(transparent)]`, matching the
- * typed-id pattern in [`crate::ids`]. ts-rs emits `export type ArtifactRef
- * = string;` so the frontend stays a thin alias.
+ * Opaque identifier for a worker-produced artifact.
  */
 export type ArtifactRef = string;
 
@@ -35,9 +17,7 @@ export type Card = { id: CardId, wave_id: WaveId,
  * `"terminal"` for built-in PTY cards, `"ui://<plugin>/<view>"` for
  * plugin-provided cards (the canonical MCP Apps resource URI). The
  * kernel never interprets beyond that prefix. `[legacy]`
- * `"plugin:<plugin-id>:<view-id>"` may also appear on rows persisted
- * before the M4 cut-over and in server-side perms/manifest enforcement
- * — see `docs/architecture/terminology-glossary.md` (plugin card kind).
+ * `"plugin:<plugin-id>:<view-id>"` may still appear on persisted rows.
  */
 kind: string, sort: number, 
 /**
@@ -69,33 +49,7 @@ deletable: boolean, created_at: number, updated_at: number, };
 export type CardId = string;
 
 /**
- * Wave-as-Actor PR3 (#136): authorization label persisted on each card.
- *
- * The role decides whether the card's implicit actor (the AI agent bound
- * to it, or the user when no agent is bound) is allowed to emit a given
- * event. The gate is checked at the single write entry — see
- * `role_gate::enforce_role` — *inside* the transaction, before the event
- * row is appended. Violations roll the txn back; nothing is broadcast.
- *
- *   * [`CardRole::Spec`] (PR6) is the wave's spec card. Only spec cards
- *     may emit `WaveUpdated`; this is the structural choke point that
- *     keeps AI workers from rewriting wave-level metadata.
- *   * [`CardRole::Worker`] is the default for user-facing card inserts
- *     and dispatcher-spawned worker cards. Its events are scoped to the
- *     card itself and never broaden.
- *   * [`CardRole::ReportCard`] (#229 PR A) is the wave's auto-generated
- *     report card. Same kernel-ownership profile as `Spec` — minted by
- *     the wave-create path (PR B), one per wave (partial unique index
- *     in migration 0013), undeletable from REST / plugin-callback paths.
- *     Role-gate-wise it behaves like `Worker`: it only emits `CardUpdated`
- *     for its own scope; it does **not** emit `WaveUpdated` (only `Spec`
- *     does — preserving the #136 contract).
- *
- * Persisted as a lowercase string in `cards.role` (migration 0008). The
- * serde + sqlx `rename_all = "lowercase"` keeps the wire / storage shape
- * stable; ts-rs exports the matching TS union (`"spec" | "worker" |
- * "reportcard"`) into `fe/core/api/generated/wire.ts` so the
- * frontend can adopt the enum once any UI lands.
+ * Authorization role persisted on each card and enforced by `role_gate`.
  */
 export type CardRole = "worker" | "spec" | "reportcard";
 
@@ -118,20 +72,7 @@ export type ChannelVerdict = { role: string, verdict: ChannelVerdictKind, };
 
 export type ChannelVerdictKind = "approved" | "changes_requested";
 
-export type Cove = { id: CoveId, name: string, color: string, sort: number, 
-/**
- * Issue #175 — `User` for sidebar-visible coves, `System` for the
- * internal singleton that hosts the default Today terminal's wave.
- * Mirror of `CardRole` precedent on `Card`: persisted at storage
- * time via DB DEFAULT, never accepted on `POST /api/coves` (which
- * has no `kind` field — `NewCove` deliberately omits it).
- *
- * `#[serde(default)]` so wire payloads emitted before #175 landed
- * (event-log replay fixtures, old test seeds) parse as `User`
- * without forcing a fixture rewrite — matches the DB DEFAULT in
- * migration 0009.
- */
-kind: CoveKind, created_at: number, updated_at: number, };
+export type Cove = { id: CoveId, name: string, color: string, sort: number, kind: CoveKind, created_at: number, updated_at: number, };
 
 /**
  * One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
@@ -176,21 +117,12 @@ state: WorkerSessionState | null,
 updatedAt: number, };
 
 /**
- * Issue #250 PR 1 — a filesystem path claimed by a cove.
- *
  * One row per claimed directory; `path` is absolute and globally
  * unique across the table. A folder transparently covers every
  * descendant path — the kernel resolves a `cwd` to its owning cove by
  * finding the claim that covers it (see `GET /api/coves/resolve`).
  * The create endpoint rejects ancestor/descendant overlap with a 409,
  * so at most one claim can cover any given path.
- *
- * `id` is an autoincrement integer rather than the kernel's usual
- * uuid-shaped TEXT id because cove_folders is a small, kernel-internal
- * mapping that never appears in the sync engine's event log — there's
- * no replay scenario where two replicas mint divergent ids that must
- * later reconcile. The compact integer also keeps `/folders/:id` URLs
- * readable.
  */
 export type CoveFolder = { id: number, cove_id: CoveId, path: string, created_at: number, };
 
@@ -201,32 +133,7 @@ export type CoveFolder = { id: number, cove_id: CoveId, path: string, created_at
 export type CoveId = string;
 
 /**
- * Issue #175 — visibility / ownership gate persisted on each cove.
- *
- * The kind decides whether the row participates in the user-visible
- * workspace surface (sidebar nav, default `GET /api/coves`) or is an
- * internal kernel-owned entity hidden from the regular UI.
- *
- *   * [`CoveKind::User`] is the default for every existing cove and
- *     every cove minted via `POST /api/coves`. There is no
- *     authorization difference from the pre-#175 product — these are
- *     the only coves the user ever sees in the sidebar.
- *   * [`CoveKind::System`] is a singleton (DB-enforced via a partial
- *     unique index in migration 0009) hosting the default Today
- *     terminal's wave + card. Created via `cove_create_system_tx`,
- *     reachable via the idempotent `POST /api/coves/system` upsert.
- *     `GET /api/coves` filters these out by default — opt-in via
- *     `?include_system=true`. The user never interacts with this
- *     cove directly; it's storage scaffolding, not UI.
- *
- * Persisted as a lowercase string in `coves.kind` (migration 0009).
- * The serde + sqlx `rename_all = "lowercase"` keeps the wire / storage
- * shape stable; ts-rs exports the matching TS union
- * (`"user" | "system"`) into `fe/core/api/generated/wire.ts` so the
- * frontend can validate against it. UI types intentionally don't
- * surface `kind` — the server's default filter already hides system
- * coves, so a one-line `.filter(c => c.kind === 'user')` in CalmApp /
- * router belt-and-suspenders is the only frontend consumer.
+ * Whether a cove is user-visible or kernel-owned storage scaffolding.
  */
 export type CoveKind = "user" | "system";
 
@@ -238,27 +145,7 @@ export type CoveKind = "user" | "system";
 export type CoveResolve = { cove_id: CoveId, folder_id: number, folder_path: string, };
 
 /**
- * Producer of a single wave-report edit. Carried on every
- * `Event::WaveReportEdited` so PR4's UI can attribute timeline entries
- * without re-parsing the envelope's `actor` field, and so PR5's spec
- * system prompt can react to user-authored edits specifically.
- *
- * PR2 only emits `EditAuthor::Spec` — the spec-MCP `calm.report.*`
- * tools are the only write path that exists today. PR3 introduces a
- * REST entry for human edits and starts emitting `EditAuthor::User`;
- * `EditAuthor::Kernel` is reserved for future server-internal
- * rewrites (FSM-driven scaffolding, migrations, etc.). Adding a
- * variant later is a non-breaking change for the wire shape (the
- * schema gains a new union arm, old clients see an unknown tag and
- * can ignore) but the persisted history rows must keep round-tripping,
- * so don't rename existing arms.
- *
- * Wire shape matches the surrounding event-payload conventions
- * (`#[serde(rename_all = "lowercase")]`): `"spec"`, `"user"`,
- * `"kernel"` — the bare discriminator a JSON field gets when the enum
- * is referenced from an inline struct variant. No `tag`/`content`
- * dance: `EditAuthor` only ever appears as a payload field, never as
- * its own envelope.
+ * Producer of a wave-report edit. Existing variants are persisted wire values.
  */
 export type EditAuthor = "spec" | "user" | "kernel" | "plugin";
 
@@ -364,20 +251,10 @@ idem_key: string, } } | { "ev": "proposal.resolved", "data": { wave_id: WaveId, 
 /**
  * Where an event lives in the cove → wave → card hierarchy.
  *
- * PR2 of #136 stamps a scope on every persisted event so future PRs can
- * filter / route / authorize without re-parsing the event payload:
- *
- *   * PR3 (`enforce_role`) gates writes per card scope.
- *   * PR5 (`SubscribeFilter` + `Dispatcher`) routes notifications + work
- *     queues by wave scope, and the dispatcher's push path (#293) resolves
- *     a wave's spec card to deliver task/report events as turn inputs.
- *
  * `EventScope::System` is the catch-all for events that genuinely don't
  * belong to a single cove/wave/card (`Event::PluginState`, the
  * CoveCreated case where the cove doesn't exist before the event, and
- * the legacy NULL-on-replay fallback for pre-PR2 history rows). Pick
- * `System` only when you've ruled out the more specific scopes — a
- * `System`-tagged event opts out of every per-scope filter that follows.
+ * malformed legacy rows). Prefer the narrowest available scope.
  */
 export type EventScope = { "kind": "System" } | { "kind": "Cove", "id": { cove: CoveId, } } | { "kind": "Wave", "id": { wave: WaveId, cove: CoveId, } } | { "kind": "Card", "id": { card: CardId, wave: WaveId, cove: CoveId, } };
 
@@ -484,51 +361,16 @@ export type TaskContextChangedRef = { wave_id: WaveId, block_id: string, from_re
  */
 export type TaskContextRef = { wave_id: WaveId, block_id: string, rev: number, hash: string, is_root: boolean, };
 
-export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
-/**
- * Issue #145 — the wave's lifecycle state. **Required** (no
- * `Option`): every wave-creating code path must seed
- * [`WaveLifecycle::Draft`] explicitly. Per the project's
- * "required over Option" preference, Option here would silently
- * hide missing-data bugs — the field is core kernel contract.
- *
- * `#[serde(default)]` lets wire payloads emitted before #145
- * landed (event-log replay fixtures) parse as `Draft` without
- * forcing a fixture rewrite — matches the DB DEFAULT in
- * migration 0012.
- */
-lifecycle: WaveLifecycle, 
+export type Wave = { id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
  *
- * **Do not read this from Rust — read `workspace.path`.** The awkward
- * field name is the point: `waves.cwd` was deleted in migration 0077, and
- * this field exists only so the JSON wire shape, the OpenAPI spec, the
- * ts-rs bindings and the `wave.updated` event goldens are byte-identical
- * for clients that predate #1147. It is computed in exactly one place,
- * `impl From<WaveRow> for Wave`, from the one stored column.
- *
- * Renaming it (rather than leaving `cwd`) is what turned "update the four
- * readers" from a grep into a compile error — which is how two readers
- * nobody had listed (`workspace_lease::{112,551}`) were found.
- *
- * Issue #250 PR 2 originally introduced `cwd` as the working directory
- * the wave's spec daemon runs in; that role now belongs to
- * `workspace.path`.
- *
- * `#[serde(default)]` keeps replay of a pre-#250 event log parsing (no
- * `cwd` key), matching the old DB DEFAULT.
+ * Rust readers must use `workspace.path`; this field only preserves the
+ * existing wire shape.
  */
-cwd: string, 
+cwd: string, workflow_id: string | null, 
 /**
- * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
- */
-workflow_id: string | null, 
-/**
- * #1110 S4 — owning plugin id copied at create from the bound workflow's
- * Manifest. `Some(id)` limits plugin tools to that running plugin;
- * `None` is unbound (`All`). Immutable after create (not on `WavePatch`).
- * `#[serde(default)]` hydrates pre-S4 `wave.updated` replays as `None`.
+ * Owning plugin copied from the bound workflow. Immutable after creation.
  */
 plugin_scope: string | null, 
 /**
@@ -536,12 +378,7 @@ plugin_scope: string | null,
  */
 purpose: string | null, 
 /**
- * Issue #891 / #1110 S2 — input JSON for the bound workflow, validated
- * against the owning plugin Manifest's `input_schema` at create time and
- * persisted verbatim; the kernel never interprets it. `#[serde(default)]`
- * hydrates pre-#891 `wave.updated` replays as `None` (same pattern as
- * `workflow_id`). Explicit `unknown` override — see `Card.payload` for
- * the rationale.
+ * Workflow input is validated at creation and otherwise remains opaque.
  */
 workflow_input: unknown, 
 /**
@@ -563,18 +400,7 @@ workflow_input: unknown,
  * re-Done cycle stamps the column with the current time, which
  * is the first defensible point.
  */
-terminal_at: number | null, 
-/**
- * Issue #1147 S1 (design D1) — the typed workspace. `cwd` above is a
- * projection of `workspace.path`; see [`WaveWorkspace`] for the
- * single-writer invariant that keeps the two from drifting.
- *
- * `#[serde(default)]` mirrors the `cwd` / `lifecycle` precedent: a
- * pre-#1147 `wave.updated` replay fixture has no `workspace` key and
- * hydrates as `Attached` / `""` / unfrozen, matching the DB defaults in
- * migration 0077 before its backfill runs.
- */
-workspace: WaveWorkspace, created_at: number, updated_at: number, };
+terminal_at: number | null, workspace: WaveWorkspace, created_at: number, updated_at: number, };
 
 export type WaveFsCardMeta = { created_at: number, deletable: boolean, id: CardId, kind: string, role: CardRole, sort: number, updated_at: number, };
 
@@ -683,55 +509,18 @@ blocks?: Array<ReportBlock> | null, };
  * Payload for `Event::WaveUpdated`.
  *
  * `wave` is flattened to preserve the historical wire shape: the event data
- * is still the full wave row at top level, with `agent_message` added as an
- * optional adjacent field for #597. Older persisted rows that lack the field
- * deserialize with `None`.
+ * remains the full wave row at top level.
  */
-export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, 
-/**
- * Issue #145 — the wave's lifecycle state. **Required** (no
- * `Option`): every wave-creating code path must seed
- * [`WaveLifecycle::Draft`] explicitly. Per the project's
- * "required over Option" preference, Option here would silently
- * hide missing-data bugs — the field is core kernel contract.
- *
- * `#[serde(default)]` lets wire payloads emitted before #145
- * landed (event-log replay fixtures) parse as `Draft` without
- * forcing a fixture rewrite — matches the DB DEFAULT in
- * migration 0012.
- */
-lifecycle: WaveLifecycle, 
+export type WaveUpdatedPayload = { agent_message?: string, id: WaveId, cove_id: CoveId, title: string, sort: number, archived_at: number | null, pinned_at: number | null, lifecycle: WaveLifecycle, 
 /**
  * Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
  *
- * **Do not read this from Rust — read `workspace.path`.** The awkward
- * field name is the point: `waves.cwd` was deleted in migration 0077, and
- * this field exists only so the JSON wire shape, the OpenAPI spec, the
- * ts-rs bindings and the `wave.updated` event goldens are byte-identical
- * for clients that predate #1147. It is computed in exactly one place,
- * `impl From<WaveRow> for Wave`, from the one stored column.
- *
- * Renaming it (rather than leaving `cwd`) is what turned "update the four
- * readers" from a grep into a compile error — which is how two readers
- * nobody had listed (`workspace_lease::{112,551}`) were found.
- *
- * Issue #250 PR 2 originally introduced `cwd` as the working directory
- * the wave's spec daemon runs in; that role now belongs to
- * `workspace.path`.
- *
- * `#[serde(default)]` keeps replay of a pre-#250 event log parsing (no
- * `cwd` key), matching the old DB DEFAULT.
+ * Rust readers must use `workspace.path`; this field only preserves the
+ * existing wire shape.
  */
-cwd: string, 
+cwd: string, workflow_id: string | null, 
 /**
- * `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
- */
-workflow_id: string | null, 
-/**
- * #1110 S4 — owning plugin id copied at create from the bound workflow's
- * Manifest. `Some(id)` limits plugin tools to that running plugin;
- * `None` is unbound (`All`). Immutable after create (not on `WavePatch`).
- * `#[serde(default)]` hydrates pre-S4 `wave.updated` replays as `None`.
+ * Owning plugin copied from the bound workflow. Immutable after creation.
  */
 plugin_scope: string | null, 
 /**
@@ -739,12 +528,7 @@ plugin_scope: string | null,
  */
 purpose: string | null, 
 /**
- * Issue #891 / #1110 S2 — input JSON for the bound workflow, validated
- * against the owning plugin Manifest's `input_schema` at create time and
- * persisted verbatim; the kernel never interprets it. `#[serde(default)]`
- * hydrates pre-#891 `wave.updated` replays as `None` (same pattern as
- * `workflow_id`). Explicit `unknown` override — see `Card.payload` for
- * the rationale.
+ * Workflow input is validated at creation and otherwise remains opaque.
  */
 workflow_input: unknown, 
 /**
@@ -766,83 +550,32 @@ workflow_input: unknown,
  * re-Done cycle stamps the column with the current time, which
  * is the first defensible point.
  */
-terminal_at: number | null, 
-/**
- * Issue #1147 S1 (design D1) — the typed workspace. `cwd` above is a
- * projection of `workspace.path`; see [`WaveWorkspace`] for the
- * single-writer invariant that keeps the two from drifting.
- *
- * `#[serde(default)]` mirrors the `cwd` / `lifecycle` precedent: a
- * pre-#1147 `wave.updated` replay fixture has no `workspace` key and
- * hydrates as `Attached` / `""` / unfrozen, matching the DB defaults in
- * migration 0077 before its backfill runs.
- */
-workspace: WaveWorkspace, created_at: number, updated_at: number, };
+terminal_at: number | null, workspace: WaveWorkspace, created_at: number, updated_at: number, };
 
 /**
- * Issue #1147 S1 (design D1) — the typed workspace of a wave.
- *
- * `workspace_path` is the **only** stored copy of the path. `waves.cwd` used
- * to hold a second copy "so existing readers don't have to change"; migration
- * 0077 drops that column instead. Two columns holding one fact needs a rule
- * saying they must agree, and this codebase has no way to enforce such a rule
- * — writers of `waves` are scattered raw `sqlx` statements, so the only
- * available policeman is a source-text scanner, and three rounds of
- * red-teaming walked past three successive scanners. One column cannot
- * disagree with itself.
- *
- * `cwd` still exists **on the wire**: see [`Wave::cwd_wire_alias`]. It is
- * computed from `path`, not stored.
+ * A wave's typed workspace. `path` is its single stored path.
  */
 export type WaveWorkspace = { kind: WaveWorkspaceKind, 
 /**
- * Absolute path. The single stored copy — `waves.workspace_path`.
+ * Absolute path.
  */
 path: string, 
 /**
  * One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
  * again.
  *
- * In S1 every wave **in a user cove** is frozen at creation: it is
- * `Attached`, attached workspaces never need re-pointing, and freezing
- * them costs nothing while removing the "unfrozen attached row" state in
- * which a future PATCH branch that forgot to check `kind` would relocate
- * a real user repository (design D9).
- *
- * **Exception (design D9, r3.3):** the kernel-owned Today/launchpad wave
- * in the *system* cove stays `None` forever, because
- * `today_launchpad_ensure_tx` re-points it — freezing it would make this
- * field's own one-shot-and-monotonic promise false on the next `ensure`.
- * `only_system_cove_waves_may_be_unfrozen` bounds that exception to that
- * one wave.
+ * The system-cove launchpad remains unfrozen because it is repointed by
+ * `today_launchpad_ensure_tx`.
  */
 frozen_at: number | null, };
 
 /**
- * Issue #1147 S1 (design D1) — what kind of directory a wave's workspace is.
- *
- * The distinction exists purely for **downstream behavior**, and only one of
- * those behaviors is destructive: a `Managed` directory is server-created,
- * server-owned and (from S5 on) server-*recycled*; an `Attached` directory is
- * a repository the user pointed at and must never be deleted, `git init`-ed
- * or renamed. Collapsing both into the bare `cwd: String` we have today would
- * leave the future teardown path unable to tell them apart — that is an
- * `rm -rf`-grade accident surface, which is why the kind is typed rather
- * than inferred from a path prefix.
- *
- * Persisted lowercase in `waves.workspace_kind` (migration 0077), same
- * `rename_all = "lowercase"` serde/db shape as [`WaveLifecycle`].
- *
- * `Attached` is the `Default` because that is the only kind S1 can mint:
- * managed roots do not exist until S2, and every pre-existing wave points at
- * a directory somebody else created.
+ * Ownership must be explicit because only managed workspaces may be recycled.
  */
 export type WaveWorkspaceKind = "managed" | "attached";
 
 /**
- * Execution-session identifier (`worker_sessions.id`, PR2). Same opaque
- * newtype pattern as [`crate::ids`] — `#[serde(transparent)]` keeps the
- * wire shape a bare string.
+ * Opaque execution-session identifier.
  */
 export type WorkerSessionId = string;
 

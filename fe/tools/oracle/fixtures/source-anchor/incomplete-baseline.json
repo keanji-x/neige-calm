@@ -10,5 +10,11 @@
     "subtype": "not-in-file",
     "reason": "test fixture",
     "expiry": "2026-12-31"
+  },
+  {
+    "id": "INV-TEST-004",
+    "subtype": "not-in-file",
+    "reason": "test fixture",
+    "expiry": "2026-12-31"
   }
 ]

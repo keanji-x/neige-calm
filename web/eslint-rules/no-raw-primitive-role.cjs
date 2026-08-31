@@ -1,35 +1,5 @@
-// Custom ESLint rule: `no-raw-primitive-role`.
-//
-// Purpose
-// -------
-// Forbid raw `role="dialog"`, `role="menu"`, or `role="menuitem"` in JSX
-// outside the `web/src/ui/` primitive layer. App code should compose the
-// Neige primitives (`<Dialog>`, `<Menu>`, `<ConfirmDialog>`) — which own
-// the role, focus, and keyboard contracts — rather than hand-rolling the
-// ARIA role on a `<div>` / `<ul>` / `<button>`.
-//
-// This rule was promised in `web/src/ui/README.md` (Rules section) as
-// part of issue #60 slice 1 ("App code does not query primitives by raw
-// `role="…"`"). The primitives themselves legitimately implement the
-// roles, so files under `web/src/ui/` are exempt.
-//
-// Stable message ids
-// ------------------
-// Per-role ids so call sites can pin against the exact violation in
-// snapshot tests or future codemods:
-//
-//   - `noRawDialogRole`   — `role="dialog"` in app code
-//   - `noRawMenuRole`     — `role="menu"` in app code
-//   - `noRawMenuitemRole` — `role="menuitem"` in app code
-//
-// Detection
-// ---------
-// Match `JSXAttribute` nodes whose name is `role` and whose value is a
-// string literal equal to one of the flagged roles. The match is purely
-// syntactic — no type-checker required, and dynamic `role={expr}`
-// expressions are deliberately not flagged (rare, and the linter can't
-// statically prove the value).
-//
+// Prevent app code from reimplementing dialog and menu primitive roles.
+// Dynamic `role={expr}` is deliberately not inspected without type information.
 // Fixable: NO. The correct fix is to replace the surrounding element
 // with the corresponding primitive, which is not a safe mechanical
 // transform (props, children, and focus wiring all differ).

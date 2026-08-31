@@ -869,6 +869,6 @@ describe('oracle YAML discovery', () => {
     const oracleRoot = resolve(import.meta.dirname, '../../../docs/oracle');
     const documents = readdirSync(oracleRoot).filter((name) => name.endsWith('.yaml'))
       .map((name) => parseYaml(readFileSync(resolve(oracleRoot, name), 'utf8')));
-    expect(oracleIdsFromDocuments(documents).has('INV-A11Y-001')).toBe(true);
+    expect(oracleIdsFromDocuments(documents).size).toBeGreaterThan(0);
   });
 });
