@@ -1885,11 +1885,23 @@ describe('the exchange rail, as the engine lays it out', () => {
    * with it at zero the layer fires on every dot a pointer crosses on its way
    * to the composer, which is a strobe over the thing the reader is looking at.
    *
-   * **The delay is measured rather than bracketed**, because bracketing it did
-   * not bind it: "absent at 150ms, present at 550ms" is satisfied by anything
-   * in `(150, 550]`, and `RAIL_PREVIEW_DELAY_MS = 300` stayed green. The wait
-   * is polled and the elapsed time asserted, which costs the poll's own 20ms of
-   * resolution and buys a band the shipped number sits in the middle of.
+   * **This tier no longer pins the number, and the assertion below is not a
+   * measurement of it.** It used to be: the wait was polled and the elapsed
+   * time asserted into `(380, 650)`, which the shipped 450 sits in the middle
+   * of and which 300 and 700 both fall outside. That left 200ms for the
+   * driver's hover round-trip, the poll's own 20ms of resolution and the
+   * runner's scheduling, and on a shared runner it ran out: run 33380223777
+   * measured 671.6ms — 221.6ms of overhead on a 450ms delay — under a mutation
+   * of the app's providers. Widening the band does not repair it, it disarms
+   * it: the ceiling was the half that rejected 700, and the overhead runs one
+   * way, so the same 221.6ms lifts a 300ms delay to 520ms and past the floor
+   * that was rejecting *it*. The number is pinned on fake timers in
+   * `public.test.tsx` instead — absent at 449, present at 450, no clock in it.
+   *
+   * What is left here needs a real engine and a real pointer, and neither half
+   * is a millisecond claim: the panel is **not** up 150ms after the hover,
+   * which is the strobe this delay exists to prevent, and it is up well inside
+   * a ceiling on the feature being discoverable at all.
    */
   it('floats the prompt out only after the pointer has rested', async () => {
     await page.viewport(1400, 900);
@@ -1905,10 +1917,11 @@ describe('the exchange rail, as the engine lays it out', () => {
     const shownAfter = performance.now() - startedAt;
     const preview = railPreview()!;
     expect(preview).not.toBeNull();
-    /* Wide enough for the hover itself and for the poll's granularity, narrow
-       enough that 300 and 700 are both outside it. */
-    expect(shownAfter).toBeGreaterThan(380);
-    expect(shownAfter).toBeLessThan(650);
+    /* A usability ceiling, not a band around the constant: past about this
+       long nobody who merely paused on a 4px dot is still there. It leaves
+       750ms over the shipped delay, three times the worst overhead on record
+       (221.6ms). */
+    expect(shownAfter).toBeLessThan(1_200);
 
     /* It carries **more** than the accessible name, which is the only reason a
        second rendering of the same fact is worth its ink: the name is capped so
