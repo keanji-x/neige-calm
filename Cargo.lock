@@ -484,6 +484,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "ureq",
+ "url",
  "utoipa",
  "uuid",
 ]

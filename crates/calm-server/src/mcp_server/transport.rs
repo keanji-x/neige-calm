@@ -726,7 +726,6 @@ async fn dispatch_plugin_tools_call(
             let result = match &client {
                 ConnectorClient::Stdio(c) => c.tools_call(&tool_name, arguments).await?,
                 ConnectorClient::Http(c) => c.tools_call(&tool_name, arguments).await?,
-                ConnectorClient::Cli(c) => c.tools_call(&tool_name, arguments).await?,
             };
             serde_json::to_value(result)
                 .map_err(|e| RpcError::internal(format!("plugin tools/call serialization: {e}")))

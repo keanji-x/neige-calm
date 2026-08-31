@@ -466,6 +466,25 @@ pub struct Permissions {
     pub filesystem: Vec<String>,
 }
 
+impl Permissions {
+    /// `true` when this block grants literally nothing — i.e. it is
+    /// indistinguishable from an absent `permissions` key.
+    ///
+    /// #1164 §3 uses this to refuse a connector manifest that *requests*
+    /// anything: connectors have no `neige.*` channel, so a granted permission
+    /// would be a claim the kernel could never honour. `proposals` is excluded
+    /// on purpose — it is the withdrawn, ignored Tier-A compatibility field, so
+    /// a persisted manifest carrying it must not become unparseable.
+    pub fn grants_nothing(&self) -> bool {
+        self.overlays_write.is_empty()
+            && !self.cards_create
+            && !self.cards_read_all
+            && self.events_subscribe.is_empty()
+            && self.kv_quota_bytes == 0
+            && self.filesystem.is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -556,6 +575,9 @@ impl Manifest {
         // #1164 §2.1 — kind ↔ block consistency. Exactly one connector block
         // may be present, and it must be the one the `kind` names.
         self.validate_connector_blocks()?;
+        // #1164 §3 — and the app-only surfaces are refused at PARSE time for
+        // connectors, which is what §4's interception table rests on.
+        self.reject_app_only_surfaces()?;
 
         // `entrypoint` is required only for `app`. Non-app kinds have no
         // kernel-supervised child, so demanding a binary path there would be
@@ -655,17 +677,70 @@ impl Manifest {
         }
         Ok(())
     }
+
+    /// #1164 §3 — **parse-time** refusal of every `app`-only surface on a
+    /// connector manifest.
+    ///
+    /// §3 lists "渲染 `ui://` 或绑 `workflows[]`（parse 期拒绝）" as a channel
+    /// that *does not exist* for connectors, and §4's interception table is
+    /// only sound if the manifest can never declare one. Enforcing it here —
+    /// rather than by hoping no downstream reader ever looks — is what makes
+    /// the negative durable: `Manifest::parse` is the single door every
+    /// manifest enters through (`registry::load_from_dir`, the install route,
+    /// `/reload`), so a connector manifest that reaches any reader is already
+    /// known to carry none of these.
+    ///
+    /// Each field gets its own error naming the field, because "your connector
+    /// manifest is invalid" is useless to whoever authored it.
+    fn reject_app_only_surfaces(&self) -> Result<(), ManifestError> {
+        if self.kind.is_app() {
+            return Ok(());
+        }
+        let kind = self.kind.wire_name();
+        let only_app = |what: &str| {
+            format!("only allowed for `kind: \"app\"` manifests; `kind: \"{kind}\"` {what}")
+        };
+
+        if self.entrypoint.is_some() {
+            return Err(ManifestError::invalid(
+                "entrypoint",
+                only_app("has no kernel-supervised child process"),
+            ));
+        }
+        if !self.views.is_empty() {
+            return Err(ManifestError::invalid(
+                "views",
+                only_app("cannot serve a `ui://` resource, so a view could never render"),
+            ));
+        }
+        if !self.workflows.is_empty() {
+            return Err(ManifestError::invalid(
+                "workflows",
+                only_app("cannot own a wave workflow"),
+            ));
+        }
+        if self.input_schema.is_some() {
+            return Err(ManifestError::invalid(
+                "input_schema",
+                only_app("declares no workflow, so there is no `workflow_input` to shape"),
+            ));
+        }
+        if !self.permissions.grants_nothing() {
+            return Err(ManifestError::invalid(
+                "permissions",
+                only_app(
+                    "has no `neige.*` callback channel, so no permission it requests \
+                     could ever be exercised",
+                ),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl McpHttpBlock {
     fn validate(&self) -> Result<(), ManifestError> {
-        let url = self.url.trim();
-        if !(url.starts_with("http://") || url.starts_with("https://")) {
-            return Err(ManifestError::invalid(
-                "mcp_http.url",
-                "must be an absolute http:// or https:// URL",
-            ));
-        }
+        validate_mcp_http_url(self.url.trim())?;
         match (self.api_key_secret.as_deref(), self.api_key_in.as_deref()) {
             (Some(secret), _) if secret.trim().is_empty() => {
                 return Err(ManifestError::invalid(
@@ -679,14 +754,43 @@ impl McpHttpBlock {
                     "required whenever `api_key_secret` is set",
                 ));
             }
-            (Some(_), Some(spec)) => {
-                if ApiKeyIn::parse(spec).is_none() {
+            (Some(_), Some(spec)) => match ApiKeyIn::parse(spec) {
+                None => {
                     return Err(ManifestError::invalid(
                         "mcp_http.api_key_in",
                         "must be `query:<name>` or `header:<name>`",
                     ));
                 }
-            }
+                // A header name that is not an RFC 9110 field-name would be
+                // rejected by the HTTP client at REQUEST time — i.e. once per
+                // call, as a transport error, long after the operator could
+                // connect it to the manifest they wrote.
+                Some(ApiKeyIn::Header(name)) if !is_http_field_name(&name) => {
+                    return Err(ManifestError::invalid(
+                        "mcp_http.api_key_in",
+                        format!(
+                            "`{name}` is not a legal HTTP header name \
+                             (RFC 9110 token: alphanumerics and any of `!#$%&'*+-.^_`|~`)"
+                        ),
+                    ));
+                }
+                // A query parameter name with characters that would have to be
+                // percent-encoded is legal but confusing; `=` and `&` would
+                // actively re-shape the query, so refuse them outright.
+                Some(ApiKeyIn::Query(name))
+                    if name.contains(['=', '&', '#', '?'])
+                        || name.contains(char::is_whitespace) =>
+                {
+                    return Err(ManifestError::invalid(
+                        "mcp_http.api_key_in",
+                        format!(
+                            "query parameter name `{name}` must not contain \
+                             whitespace or any of `=`, `&`, `#`, `?`"
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            },
             (None, _) => {}
         }
         for (i, name) in self.tools_allow.iter().enumerate() {
@@ -755,6 +859,88 @@ impl CliQueryTool {
         }
         Ok(())
     }
+}
+
+/// #1164 §2.2 — real parse of `mcp_http.url`.
+///
+/// The previous check was `starts_with("http://") || starts_with("https://")`,
+/// which accepted a bare `https://`, a malformed authority, and — the one that
+/// is actively harmful — a **fragment**. `HttpMcpClient::new` appends the query
+/// auth AFTER whatever the manifest said, so `https://h/mcp#x` becomes
+/// `https://h/mcp#x?api_key=…`: the key lands inside the fragment and is never
+/// transmitted, and the connector fails authentication with no hint why.
+///
+/// Rejecting at manifest-parse time means the failure names the field.
+fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
+    let field = "mcp_http.url";
+    // WHATWG normalization is too forgiving for a *manifest*: it turns
+    // `https:///mcp` into host `mcp`, silently retargeting the request at a
+    // host the author never wrote. Require a non-empty authority in the RAW
+    // text before handing it to the parser.
+    match raw.split_once("://") {
+        Some((_, rest)) if !rest.split(['/', '?', '#']).next().unwrap_or("").is_empty() => {}
+        _ => {
+            return Err(ManifestError::invalid(
+                field,
+                "must be `http://<host>[…]` or `https://<host>[…]` with a non-empty authority",
+            ));
+        }
+    }
+    let parsed = url::Url::parse(raw)
+        .map_err(|e| ManifestError::invalid(field, format!("not a valid absolute URL: {e}")))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ManifestError::invalid(
+            field,
+            format!(
+                "scheme must be `http` or `https`, got `{}`",
+                parsed.scheme()
+            ),
+        ));
+    }
+    if parsed.host_str().is_none_or(str::is_empty) {
+        return Err(ManifestError::invalid(field, "must carry a host"));
+    }
+    if parsed.fragment().is_some() {
+        return Err(ManifestError::invalid(
+            field,
+            "must not carry a `#fragment`: the API key is appended to the query \
+             string after it, so it would never be transmitted",
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(ManifestError::invalid(
+            field,
+            "must not embed userinfo credentials; use `api_key_secret` + \
+             `api_key_in` so the value lives in `secrets.json`",
+        ));
+    }
+    Ok(())
+}
+
+/// RFC 9110 `field-name` = `token`. Used to reject an `api_key_in:
+/// header:<name>` the HTTP client would refuse at request time.
+fn is_http_field_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
 }
 
 /// Shared name check for connector-supplied tools. There is no
@@ -1753,6 +1939,16 @@ mod connector_kind_tests {
         })
     }
 
+    /// `expect_err` with the case identity in the panic message — with a dozen
+    /// table rows, "called `Result::unwrap_err()` on an `Ok` value" alone does
+    /// not say WHICH row silently passed.
+    fn expect_reject(res: Result<Manifest, ManifestError>, ctx: &str) -> ManifestError {
+        match res {
+            Ok(_) => panic!("`{ctx}` must be rejected, but it parsed"),
+            Err(e) => e,
+        }
+    }
+
     fn cli_query_block() -> Value {
         json!({
             "command": "longbridge",
@@ -1894,6 +2090,96 @@ mod connector_kind_tests {
         }
     }
 
+    // ---- §3: app-only surfaces are refused at PARSE time ------------------
+
+    /// Every field in this table is a channel §3 says does not exist for a
+    /// connector. The interception table in §4 is only sound if a connector
+    /// manifest can never declare one, and `Manifest::parse` is the single
+    /// door every manifest enters through.
+    ///
+    /// One case per field, and the error must NAME the field — "your manifest
+    /// is invalid" is useless to whoever authored it.
+    #[test]
+    fn connector_app_only_surface_errors_name_the_field() {
+        let cases: Vec<(&str, Value)> = vec![
+            ("entrypoint", json!({ "command": "bin/run" })),
+            (
+                "views",
+                json!([{ "view_id": "main", "title": "Main", "scope": "card" }]),
+            ),
+            ("workflows", json!([{ "id": "wf.build" }])),
+            (
+                "input_schema",
+                json!({ "type": "object", "properties": {}, "additionalProperties": false }),
+            ),
+            ("permissions", json!({ "cards_create": true })),
+            ("permissions", json!({ "kv_quota_bytes": 1 })),
+            ("permissions", json!({ "events_subscribe": ["*"] })),
+            ("permissions", json!({ "overlays_write": ["card"] })),
+            ("permissions", json!({ "cards_read_all": true })),
+            ("permissions", json!({ "filesystem": ["/tmp"] })),
+        ];
+        for (kind, block_key, block) in [
+            ("mcp-http", "mcp_http", mcp_http_block()),
+            ("cli-query", "cli_query", cli_query_block()),
+        ] {
+            for (field, value) in &cases {
+                let mut manifest = json!({ "kind": kind, block_key: block.clone() });
+                manifest
+                    .as_object_mut()
+                    .unwrap()
+                    .insert((*field).to_string(), value.clone());
+                let err = expect_reject(
+                    Manifest::parse(&base(manifest)),
+                    &format!("{kind}/{field}={value}"),
+                );
+                let msg = err.to_string();
+                assert!(
+                    msg.contains(field),
+                    "{kind}: error must name `{field}`: {msg}"
+                );
+                assert!(
+                    msg.contains(kind),
+                    "{kind}: error must name the kind: {msg}"
+                );
+            }
+        }
+    }
+
+    /// The same manifest MINUS the offending field must parse — otherwise the
+    /// test above would pass for the wrong reason.
+    #[test]
+    fn a_connector_without_app_only_surfaces_parses() {
+        for (kind, block_key, block) in [
+            ("mcp-http", "mcp_http", mcp_http_block()),
+            ("cli-query", "cli_query", cli_query_block()),
+        ] {
+            Manifest::parse(&base(json!({ "kind": kind, block_key: block })))
+                .unwrap_or_else(|e| panic!("{kind} must parse: {e}"));
+        }
+        // An explicitly-present but all-default `permissions` block is not a
+        // request for anything, so it must NOT be refused.
+        Manifest::parse(&base(json!({
+            "kind": "mcp-http",
+            "mcp_http": mcp_http_block(),
+            "permissions": { "proposals": ["legacy"] },
+        })))
+        .expect("an all-default permissions block grants nothing");
+    }
+
+    /// `app` manifests are untouched by §3 — the anti-regression half.
+    #[test]
+    fn app_manifests_keep_every_surface() {
+        Manifest::parse(&base(json!({
+            "entrypoint": { "command": "bin/run" },
+            "views": [{ "view_id": "main", "title": "Main", "scope": "card" }],
+            "workflows": [{ "id": "wf.build" }],
+            "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "permissions": { "cards_create": true, "kv_quota_bytes": 4096 },
+        })))
+        .expect("an app manifest may declare all of these");
+    }
+
     // ---- mcp_http block --------------------------------------------------
 
     #[test]
@@ -1903,6 +2189,75 @@ mod connector_kind_tests {
         let err = Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
             .expect_err("relative url rejected");
         assert!(err.to_string().contains("mcp_http.url"), "{err}");
+    }
+
+    /// Prefix matching on `http://` accepted all of these. The FRAGMENT case
+    /// is the one that is actively harmful: `HttpMcpClient::new` appends
+    /// `?api_key=…` after whatever the manifest said, so the credential lands
+    /// inside the fragment and is never transmitted.
+    #[test]
+    fn mcp_http_url_is_really_parsed() {
+        for bad in [
+            "https://",
+            "http://",
+            "https:///mcp",
+            "https://mcp.example.com/mcp#frag",
+            "https://user:pw@mcp.example.com/mcp",
+            "ftp://mcp.example.com/mcp",
+            "https://exa mple.com/mcp",
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(bad);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("mcp_http.url"), "`{bad}`: {err}");
+        }
+        for good in [
+            "https://mcp.example.com/mcp",
+            "http://127.0.0.1:8931/mcp",
+            "https://mcp.example.com/mcp?v=1",
+        ] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(good);
+            Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+                .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
+        }
+    }
+
+    /// An illegal header name would otherwise fail at REQUEST time, once per
+    /// call, as an opaque transport error.
+    #[test]
+    fn header_api_key_name_must_be_a_legal_field_name() {
+        for bad in ["x api key", "x:key", "x\nkey", "x=key", "(key)"] {
+            let mut block = mcp_http_block();
+            block["api_key_in"] = json!(format!("header:{bad}"));
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("api_key_in"), "`{bad}`: {err}");
+        }
+        for good in ["x-api-key", "Authorization", "X_Api_Key1"] {
+            let mut block = mcp_http_block();
+            block["api_key_in"] = json!(format!("header:{good}"));
+            Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
+                .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn query_api_key_name_must_not_reshape_the_query() {
+        for bad in ["a=b", "a&b", "a?b", "a#b", "a b"] {
+            let mut block = mcp_http_block();
+            block["api_key_in"] = json!(format!("query:{bad}"));
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("api_key_in"), "`{bad}`: {err}");
+        }
     }
 
     #[test]

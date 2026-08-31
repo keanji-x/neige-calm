@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use auth::{PluginToken, hash_token, verify_token};
-pub use connector::{CliQueryRuntime, ConnectorClient, SecretsError, read_secrets};
+pub use connector::{ConnectorClient, SecretsError, read_secrets};
 pub use error::{HostError, McpError, ProcessError};
 pub use http_mcp::HttpMcpClient;
 pub use manifest::{ConnectorKind, Manifest};
@@ -138,8 +138,12 @@ struct RunningPlugin {
     /// `stderr_tail`, the crash tail) now goes through `as_ref()`.
     process: Option<Arc<PluginProcess>>,
     /// Field name deliberately kept as `mcp`; the TYPE widened from
-    /// `Arc<McpClient>` to the [`ConnectorClient`] union (§2.5 / D8).
-    mcp: ConnectorClient,
+    /// `Arc<McpClient>` to the [`ConnectorClient`] union (§2.5 / D8), and then
+    /// to `Option<…>` so a **failed connector** can hold a live table entry.
+    /// `None` means exactly one thing: this entry exists to make a terminal
+    /// [`PluginRuntimeStatus::Unavailable`] observable via `status` / `list` /
+    /// `GET /api/plugins/{id}`; there is nothing to call.
+    mcp: Option<ConnectorClient>,
     status: PluginRuntimeStatus,
     /// Lets the supervisor task know it should NOT respawn (graceful stop).
     /// Set true by `stop()` before the wait observation.
@@ -304,6 +308,96 @@ pub struct PluginHost {
     write: WriteContext,
     /// See [`ProcessTable`] for why this is a std (not tokio) mutex.
     processes: std::sync::Mutex<ProcessTable>,
+    /// #1164 §2.7(1) — recorded order of the two connector-spawn steps whose
+    /// RELATIVE ORDER is the invariant. See [`Self::connector_spawn_order`].
+    spawn_order: std::sync::Mutex<HashMap<String, ConnectorSpawnOrder>>,
+}
+
+/// Process-global monotonic tick behind [`ConnectorSpawnOrder`]. A single
+/// counter (rather than per-host) keeps the comparison meaningful even when a
+/// test drives two hosts over the same plugin dir.
+static SPAWN_ORDER_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+enum SpawnOrderStep {
+    Materialized,
+    LiveInserted,
+}
+
+/// When each half of the §2.7(1) pair happened, on the process-global tick.
+///
+/// This exists because the ordering is otherwise **unobservable**: the two
+/// production steps are adjacent synchronous blocks with no `.await` between
+/// them, so no concurrent observer — however fast it samples — can ever be
+/// scheduled in the gap. A sampling test therefore passes just as green when
+/// the two blocks are swapped, which makes it not a test of the ordering at
+/// all. The recorded ticks are a structural witness instead: swap the blocks
+/// and the ticks swap with them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ConnectorSpawnOrder {
+    /// Tick at which the tool catalog reached the registry.
+    pub materialized_at: Option<u64>,
+    /// Tick at which the id became visible as `Running`.
+    pub live_inserted_at: Option<u64>,
+}
+
+impl ConnectorSpawnOrder {
+    /// `true` iff materialization is recorded strictly before the live insert.
+    /// Missing either half is NOT ok — an unrecorded step means the spawn did
+    /// not reach that point.
+    pub fn materialized_before_live_insert(&self) -> bool {
+        match (self.materialized_at, self.live_inserted_at) {
+            (Some(m), Some(l)) => m < l,
+            _ => false,
+        }
+    }
+}
+
+/// The network half of [`PluginHost::spawn_mcp_http`], factored out so ONE
+/// `tokio::time::timeout` can bound all of it. Returns the operator-facing
+/// reason string on failure (already scrubbed of the API key by
+/// [`HttpMcpClient`]).
+async fn connect_mcp_http(
+    id: &str,
+    block: &manifest::McpHttpBlock,
+    install_path: PathBuf,
+) -> Result<(Arc<HttpMcpClient>, Vec<serde_json::Value>), String> {
+    // §2.4 — a wrongly-permissioned secrets file refuses the enable outright.
+    // Failing open here would mean an operator never learns their API key is
+    // world-readable.
+    let secrets = connector::read_secrets(&install_path)
+        .await
+        .map_err(|e| format!("secrets.json rejected: {e}"))?
+        .unwrap_or_default();
+
+    let api_key = match block.api_key_secret.as_deref() {
+        Some(name) => Some(secrets.get(name).cloned().ok_or_else(|| {
+            format!(
+                "mcp_http.api_key_secret names `{name}`, which is absent from {}",
+                install_path.join(connector::SECRETS_FILENAME).display()
+            )
+        })?),
+        None => None,
+    };
+
+    let client = Arc::new(HttpMcpClient::new(id, block, api_key.as_deref()));
+
+    // Best-effort: the probed server class answers `tools/list` with no
+    // handshake at all, so an `initialize` failure is informational. It shares
+    // the caller's single budget rather than owning one of its own.
+    if let Err(e) = client.initialize().await {
+        tracing::info!(
+            plugin_id = %id,
+            target = %client.log_target(),
+            error = %e,
+            "mcp-http connector did not answer initialize; continuing to tools/list"
+        );
+    }
+
+    let upstream = client
+        .tools_list()
+        .await
+        .map_err(|e| format!("tools/list against {} failed: {e}", client.log_target()))?;
+    Ok((client, upstream))
 }
 
 #[allow(deprecated)]
@@ -335,6 +429,7 @@ impl PluginHost {
             events_arc,
             write,
             processes: std::sync::Mutex::new(ProcessTable::default()),
+            spawn_order: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -391,9 +486,19 @@ impl PluginHost {
         // `spawn_admitted` precedes `ensure_plugin_token`), so "rotating" one
         // would be a no-op delete followed by a very real stop+respawn of a
         // healthy connector. The ordering is the whole point of this guard.
-        if let Some(manifest) = self.registry.get(id)
-            && !manifest.kind.is_app()
-        {
+        //
+        // **Fail closed when the kind is unknown.** An earlier shape made the
+        // guard conditional on `registry.get(id)` returning `Some`, so an
+        // absent registry entry fell straight through to the delete + restart —
+        // i.e. the one case where we cannot prove the plugin is an `app` was
+        // also the case that got the side effects. There is no legitimate
+        // rotation for an id the registry does not know: `spawn` itself starts
+        // with the same lookup and returns `NotFound`, so a rotation could not
+        // have restarted anything either way.
+        let Some(manifest) = self.registry.get(id) else {
+            return Err(HostError::NotFound(id.to_string()));
+        };
+        if !manifest.kind.is_app() {
             return Err(HostError::UnsupportedForKind {
                 plugin_id: id.to_string(),
                 kind: manifest.kind.wire_name(),
@@ -567,24 +672,23 @@ impl PluginHost {
                     .await;
             }
             ConnectorKind::CliQuery => {
-                // Parse + install + materialization are all in place (see
-                // `Manifest::validate` and `connector::materialize_cli_tools`);
+                // Parse + install are in place (see `Manifest::validate`);
                 // resolving/pinning the binary and executing it is the next
-                // slice. Fail with a reason an operator can act on rather than
-                // parking a half-live entry in the table.
-                let reason = format!(
-                    "cli-query connector `{id}` cannot be enabled yet: \
-                     the execution runtime is not implemented in this slice (#1164 P3)"
-                );
-                drop(guard);
-                self.emit_state(
-                    id,
-                    &PluginRuntimeStatus::Unavailable {
-                        reason: reason.clone(),
-                    },
-                )
-                .await;
-                return Err(HostError::BadState(reason));
+                // slice. Reported through the SAME channel as every other
+                // connector bring-up failure — `ConnectorUnavailable`, hence a
+                // 503 — rather than `BadState`, which `spawn_error_to_calm`
+                // has no arm for and would render as a kernel-fault 500 for a
+                // plain "not implemented yet".
+                return self
+                    .connector_unavailable(
+                        id,
+                        guard,
+                        format!(
+                            "cli-query connector `{id}` cannot be enabled yet: \
+                             the execution runtime is not implemented in this slice (#1164 P3)"
+                        ),
+                    )
+                    .await;
             }
         }
 
@@ -716,7 +820,7 @@ impl PluginHost {
                     // safe because of this — if a future arm parks a
                     // non-`Stdio` client for an `app`, every forge / card /
                     // callback path would start reporting "not running".
-                    mcp: ConnectorClient::Stdio(mcp.clone()),
+                    mcp: Some(ConnectorClient::Stdio(mcp.clone())),
                     status: PluginRuntimeStatus::Running,
                     stopping: false,
                     crashes_in_window,
@@ -761,66 +865,51 @@ impl PluginHost {
 
         self.emit_state(id, &PluginRuntimeStatus::Spawning).await;
 
-        // §2.4 — a wrongly-permissioned secrets file refuses the enable
-        // outright. Failing open here would mean an operator never learns
-        // their API key is world-readable.
-        let secrets = match connector::read_secrets(install_path) {
-            Ok(s) => s.unwrap_or_default(),
-            Err(e) => {
-                return self
-                    .connector_unavailable(id, guard, format!("secrets.json rejected: {e}"))
-                    .await;
-            }
-        };
-        let api_key = match block.api_key_secret.as_deref() {
-            Some(name) => match secrets.get(name) {
-                Some(v) => Some(v.clone()),
-                None => {
-                    return self
-                        .connector_unavailable(
-                            id,
-                            guard,
-                            format!(
-                                "mcp_http.api_key_secret names `{name}`, \
-                                 which is absent from {}",
-                                install_path.join(connector::SECRETS_FILENAME).display()
-                            ),
-                        )
-                        .await;
-                }
-            },
-            None => None,
-        };
+        // ONE outer wall-clock bound over the WHOLE bring-up (§2.2).
+        //
+        // The per-request `ureq` deadlines are not a total bound: `initialize`
+        // and `tools/list` are two independent round trips, so a black-holed
+        // host used to cost 2× the configured timeout — and `autospawn_enabled`
+        // iterates serially on the boot path `AppState::new` awaits inline, so
+        // N dead connectors cost N × 2 × timeout. `spawn_blocking` queue delay
+        // and DNS resolution sit outside ureq's own timeout as well. This
+        // `tokio::time::timeout` is the only construct that actually caps the
+        // total, and it is why `initialize` — which is best-effort anyway — no
+        // longer buys a second full budget.
+        let budget = Duration::from_millis(block.timeout_ms());
+        let outcome = tokio::time::timeout(
+            budget,
+            connect_mcp_http(id, block, install_path.to_path_buf()),
+        )
+        .await;
 
-        let client = Arc::new(http_mcp::HttpMcpClient::new(id, block, api_key.as_deref()));
-
-        // Best-effort: the probed server class answers `tools/list` with no
-        // handshake at all, so an `initialize` failure is informational.
-        if let Err(e) = client.initialize().await {
-            tracing::info!(
-                plugin_id = %id,
-                target = %client.log_target(),
-                error = %e,
-                "mcp-http connector did not answer initialize; continuing to tools/list"
-            );
-        }
-
-        // Bounded by the client's explicit connect + request timeouts, so this
-        // await cannot stall boot no matter how the upstream misbehaves.
-        let upstream = match client.tools_list().await {
-            Ok(t) => t,
-            Err(e) => {
+        let (client, upstream) = match outcome {
+            Err(_elapsed) => {
                 return self
                     .connector_unavailable(
                         id,
                         guard,
-                        format!("tools/list against {} failed: {e}", client.log_target()),
+                        format!(
+                            "connector bring-up timed out after {} ms \
+                             (mcp_http.request_timeout_ms)",
+                            budget.as_millis()
+                        ),
                     )
                     .await;
             }
+            Ok(Err(reason)) => return self.connector_unavailable(id, guard, reason).await,
+            Ok(Ok(v)) => v,
         };
+
         let tools = connector::materialize_http_tools(id, block, &upstream);
         let tool_count = tools.len();
+
+        // ---- §2.7(1): materialization, then the live insert. -------------
+        // The ORDER of the next two blocks is the invariant. Each stamps the
+        // process-global monotonic tick as its LAST action, so the recorded
+        // pair is a structural witness of the order the source is written in:
+        // swapping the two blocks swaps the two ticks, and
+        // `connector_spawn_order()` reports it. See the acceptance test.
 
         // §2.7(2)(3) — field-level mutation, and a NO-OP if the id vanished
         // from the registry while we were on the wire (uninstall races an
@@ -833,8 +922,16 @@ impl PluginHost {
             );
             tracing::warn!(plugin_id = %id, "{reason}");
             drop(guard);
+            // Every other failure exit emits a terminal state; without this the
+            // event log would sit at `spawning` forever for an id that will
+            // never come up. No live entry is inserted on purpose: the id was
+            // uninstalled, and a runtime row would be exactly the resurrection
+            // §2.7(3) exists to prevent.
+            self.emit_state(id, &PluginRuntimeStatus::Unavailable { reason })
+                .await;
             return Err(HostError::NotFound(id.to_string()));
         }
+        self.stamp_spawn_order(id, SpawnOrderStep::Materialized);
 
         {
             let mut table = self.lock_table();
@@ -848,7 +945,7 @@ impl PluginHost {
                 id.to_string(),
                 RunningPlugin {
                     process: None,
-                    mcp: ConnectorClient::Http(Arc::clone(&client)),
+                    mcp: Some(ConnectorClient::Http(Arc::clone(&client))),
                     status: PluginRuntimeStatus::Running,
                     stopping: false,
                     crashes_in_window,
@@ -858,6 +955,8 @@ impl PluginHost {
                     subscriptions: Arc::new(Mutex::new(Vec::new())),
                 },
             );
+            drop(table);
+            self.stamp_spawn_order(id, SpawnOrderStep::LiveInserted);
         }
 
         self.emit_state(id, &PluginRuntimeStatus::Running).await;
@@ -870,21 +969,87 @@ impl PluginHost {
         Ok(())
     }
 
-    /// Shared connector failure exit: release the admission reservation, emit
-    /// [`PluginRuntimeStatus::Unavailable`], return a typed error.
+    /// Record one half of the §2.7(1) ordering pair. Two atomic operations and
+    /// a small map write per connector spawn — cheap enough to keep in the
+    /// production path, which is the point: an ordering probe that only exists
+    /// under `cfg(test)` cannot witness the production ordering.
+    fn stamp_spawn_order(&self, id: &str, step: SpawnOrderStep) {
+        let tick = SPAWN_ORDER_TICK.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let mut map = self
+            .spawn_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let entry = map.entry(id.to_string()).or_default();
+        match step {
+            SpawnOrderStep::Materialized => entry.materialized_at = Some(tick),
+            SpawnOrderStep::LiveInserted => entry.live_inserted_at = Some(tick),
+        }
+    }
+
+    /// The recorded §2.7(1) ordering for `id`'s most recent connector spawn.
+    ///
+    /// `materialized_at < live_inserted_at` is the invariant: the tool catalog
+    /// must be in the registry before the id can be observed Running, because
+    /// `running_plugin_ids` gates both tool discovery and the boot audit loop,
+    /// and both then read `manifest.exposes_tools`.
+    pub fn connector_spawn_order(&self, id: &str) -> Option<ConnectorSpawnOrder> {
+        self.spawn_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .copied()
+    }
+
+    /// Shared connector failure exit: swap the admission reservation for a
+    /// live `Unavailable` entry, emit [`PluginRuntimeStatus::Unavailable`],
+    /// return a typed error.
+    ///
+    /// The live entry is what makes a failed connector **observable**: without
+    /// it `status()` returns `None` and `GET /api/plugins/{id}` reports the
+    /// connector as if it had never been enabled, with no `last_error` — an
+    /// operator's only signal would be the HTTP response to the `enable` call
+    /// they may not have made (boot autospawn).
     ///
     /// Connectors have no supervisor, so this is terminal until an operator
-    /// re-enables (§2.2). Crucially it does NOT block boot: `autospawn_enabled`
-    /// logs per-plugin errors and moves on.
+    /// re-enables (§2.2) — and an `Unavailable` entry does not shadow that
+    /// re-enable: the admission check only refuses `Running`/`Spawning`.
+    /// Crucially it does NOT block boot: `autospawn_enabled` logs per-plugin
+    /// errors and moves on.
     async fn connector_unavailable(
         self: &Arc<Self>,
         id: &str,
         guard: AdmissionGuard,
         reason: String,
     ) -> Result<(), HostError> {
-        // Drop the reservation before the await so a re-enable is not blocked
-        // by an `AlreadyRunning` shadow.
-        drop(guard);
+        {
+            // One lock: release the reservation and publish the terminal entry
+            // together, so no observer sees the id as neither reserved nor
+            // failed.
+            let mut table = self.lock_table();
+            let (crashes_in_window, window_started) = match table.live.get(id) {
+                Some(prev) => (prev.crashes_in_window, prev.window_started),
+                None => (0, Instant::now()),
+            };
+            table.spawning.remove(id);
+            guard.disarm();
+            table.live.insert(
+                id.to_string(),
+                RunningPlugin {
+                    process: None,
+                    // Nothing to call — see the field doc.
+                    mcp: None,
+                    status: PluginRuntimeStatus::Unavailable {
+                        reason: reason.clone(),
+                    },
+                    stopping: false,
+                    crashes_in_window,
+                    window_started,
+                    supervisor: None,
+                    router: None,
+                    subscriptions: Arc::new(Mutex::new(Vec::new())),
+                },
+            );
+        }
         tracing::warn!(plugin_id = %id, reason = %reason, "connector unavailable");
         self.emit_state(
             id,
@@ -1066,7 +1231,7 @@ impl PluginHost {
             .live
             .get(id)
             .filter(|rp| matches!(rp.status, PluginRuntimeStatus::Running))
-            .and_then(|rp| rp.mcp.as_stdio().cloned())
+            .and_then(|rp| rp.mcp.as_ref()?.as_stdio().cloned())
     }
 
     /// Borrow the live client of a running plugin **whatever its kind**
@@ -1082,7 +1247,7 @@ impl PluginHost {
             .live
             .get(id)
             .filter(|rp| matches!(rp.status, PluginRuntimeStatus::Running))
-            .map(|rp| rp.mcp.clone())
+            .and_then(|rp| rp.mcp.clone())
     }
 
     /// Dispatch a `neige.*` callback method against the in-kernel handler,
@@ -1124,13 +1289,16 @@ impl PluginHost {
             // connectors (no inbound router is built for them), so a
             // non-`Stdio` client is refused here rather than widening the
             // callback surface.
-            let Some(stdio) = rp.mcp.as_stdio() else {
+            let Some(stdio) = rp.mcp.as_ref().and_then(|c| c.as_stdio()) else {
                 return Err(RpcError::custom(
                     -32002,
                     format!(
                         "plugin `{plugin_id}` is a `{}` connector; \
                          neige.* callbacks are only available to app plugins",
-                        rp.mcp.variant_name()
+                        rp.mcp
+                            .as_ref()
+                            .map(|c| c.variant_name())
+                            .unwrap_or("unavailable")
                     ),
                 ));
             };

@@ -16,11 +16,19 @@
 //! * **#7** the boot audit's `PluginToolRegistered` read sees connector tools,
 //!   which is only possible if materialization happens BEFORE the live
 //!   `Running` publication (§2.7(1)).
-//! * **#8** `rotate-token` on a connector is a 4xx AND has no side effects.
+//! * **#8** `rotate-token` on a connector is a 4xx AND has no side effects —
+//!   including when the registry has no entry at all, where the guard must fail
+//!   CLOSED rather than fall through to the delete + restart.
 //! * **#10** a hung upstream does not block boot; the connector lands
 //!   `Unavailable`.
 //! * **#11** `set_exposes_tools` no-ops for an absent id: an uninstall that
 //!   completes while a spawn is in flight must not resurrect the entry.
+//!
+//! Plus two things §4 does not enumerate but a review found missing:
+//! the API key must appear in NO error sink (`Unavailable` reason, `/enable`
+//! body, `tools_call` error) for either a refused connection or a hung
+//! upstream; and a connector's card-creation refusal is asserted by driving
+//! the REAL `POST /api/waves/{id}/cards` route, not its two accessors.
 //!
 //! §4 #2 and #9 (discovery + underscore routing) are unit tests against the
 //! production projection/route functions in `mcp_server::transport`; §4 #4 is
@@ -32,7 +40,7 @@ use std::io::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use axum::body::Body;
@@ -92,9 +100,6 @@ struct StubServer {
     /// Set once `tools/list` has been received (used to line up the
     /// uninstall-vs-in-flight-spawn race deterministically).
     tools_list_received: Arc<AtomicBool>,
-    /// Number of `tools/list` responses still gated. When a gate is installed,
-    /// the server waits for it before replying.
-    _gate_count: Arc<AtomicUsize>,
     _task: tokio::task::JoinHandle<()>,
 }
 
@@ -111,7 +116,6 @@ impl StubServer {
         let seen_queries = Arc::new(std::sync::Mutex::new(Vec::new()));
         let seen_methods = Arc::new(std::sync::Mutex::new(Vec::new()));
         let tools_list_received = Arc::new(AtomicBool::new(false));
-        let gate_count = Arc::new(AtomicUsize::new(0));
 
         let queries = Arc::clone(&seen_queries);
         let methods = Arc::clone(&seen_methods);
@@ -202,7 +206,6 @@ impl StubServer {
             seen_queries,
             seen_methods,
             tools_list_received,
-            _gate_count: gate_count,
             _task: task,
         }
     }
@@ -410,9 +413,51 @@ impl Boot {
     }
 }
 
+impl Boot {
+    /// One cove + one wave, so a test can drive `POST /api/waves/{id}/cards`.
+    async fn seed_wave(&self) -> String {
+        let cove = self
+            .repo
+            .cove_create(calm_server::model::NewCove {
+                name: "demo".into(),
+                color: "#fff".into(),
+                sort: None,
+            })
+            .await
+            .unwrap();
+        self.repo
+            .wave_create(calm_server::model::NewWave {
+                workflow_input: None,
+                cove_id: cove.id.clone(),
+                title: "demo".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap()
+            .id
+            .to_string()
+    }
+}
+
 fn app(state: AppState) -> axum::Router {
     axum::Router::new()
         .merge(routes::plugins::router())
+        .with_state(state)
+}
+
+/// The cards router needs the actor middleware (it reads `Actor` from
+/// extensions), exactly as `main.rs` wires it.
+fn cards_app(state: AppState) -> axum::Router {
+    axum::Router::new()
+        .merge(routes::cards::router())
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
         .with_state(state)
 }
 
@@ -657,6 +702,123 @@ async fn secrets_json_values_never_appear_in_any_plugin_api_response() {
     assert!(manifest_json.contains(SECRET_NAME));
 }
 
+/// The happy-path secrets test above walks only successful requests, so it
+/// would stay green with the key leaking through every FAILURE path. This one
+/// drives the two failure shapes an operator actually hits and asserts the
+/// secret appears in NONE of the three sinks a `ureq` transport error reaches:
+/// the `Unavailable` reason (persisted + broadcast as
+/// `Event::PluginState.last_error`), the `POST /enable` 503 body, and the
+/// `tools_call` error that becomes wave transcript text.
+///
+/// The leak this pins: `ureq::Error`'s `Display` prints the FULL URL first, and
+/// `HttpMcpClient::new` folds the API key into that URL's query string.
+#[tokio::test]
+async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
+    // ---- case A: connection refused (bind, note the port, then drop) ----
+    let dead_port = {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    };
+    let refused_url = format!("http://127.0.0.1:{dead_port}/mcp");
+    // ---- case B: upstream accepts then never answers ----
+    let hung = StubServer::start(StubMode::Hang).await;
+
+    for (label, url) in [
+        ("connection refused", refused_url),
+        ("hung upstream", hung.url()),
+    ] {
+        let b = boot().await;
+        let dir = write_connector(&b.plugins_dir, &url, 400, 0o600);
+        let state = b.state(b.host());
+
+        let (status, body) = post_json(
+            &state,
+            "/api/plugins/install",
+            json!({ "source": { "kind": "local_path", "path": dir.display().to_string() } }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{label}: install: {body}");
+
+        // Sink 1: the `/enable` response body, read as raw text so we see it
+        // verbatim rather than through a parsed `Value`.
+        let resp = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/plugins/{CONNECTOR_ID}/enable"))
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let enable_status = resp.status();
+        let enable_body = String::from_utf8(
+            resp.into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(
+            enable_status.is_client_error() || enable_status.is_server_error(),
+            "{label}: enable must fail, got {enable_status}: {enable_body}"
+        );
+        assert!(
+            !enable_body.contains(SECRET_VALUE),
+            "{label}: the API key leaked into the enable response body: {enable_body}"
+        );
+
+        // Sink 3: the runtime `Unavailable` reason — the same string that is
+        // persisted and broadcast as `PluginState.last_error`.
+        let st = state
+            .plugin
+            .status(CONNECTOR_ID)
+            .await
+            .expect("a failed connector must be observable");
+        let PluginRuntimeStatus::Unavailable { reason } = &st.status else {
+            panic!("{label}: expected Unavailable, got {:?}", st.status);
+        };
+        assert!(
+            !reason.contains(SECRET_VALUE),
+            "{label}: the API key leaked into last_error: {reason}"
+        );
+
+        // Sink 4: a `tools_call` failure, which becomes wave transcript text.
+        // Build the client the same way `spawn_mcp_http` does, then call it
+        // against the same dead/hung upstream.
+        let manifest = state.plugin.registry().get(CONNECTOR_ID).unwrap();
+        let client = calm_server::plugin_host::HttpMcpClient::new(
+            CONNECTOR_ID,
+            manifest.mcp_http.as_ref().unwrap(),
+            Some(SECRET_VALUE),
+        );
+        let err = client
+            .tools_call(ALLOWED_TOOL, json!({}))
+            .await
+            .expect_err("tools/call against a dead upstream must fail");
+        assert!(
+            !err.message.contains(SECRET_VALUE),
+            "{label}: the API key leaked into a tools/call error: {}",
+            err.message
+        );
+        // And a `Debug` of the client itself, which is what a `RunningPlugin`
+        // dump or a `tracing` field would render.
+        let dbg = format!("{client:?}");
+        assert!(!dbg.contains(SECRET_VALUE), "{label}: {dbg}");
+
+        // The failures must still SAY something useful.
+        assert!(
+            reason.contains("127.0.0.1") || reason.contains("timed out"),
+            "{label}: reason must remain diagnosable: {reason}"
+        );
+    }
+}
+
 /// §2.4 — a wrongly-permissioned secrets file refuses the enable outright.
 #[tokio::test]
 async fn world_readable_secrets_file_refuses_enable() {
@@ -676,7 +838,18 @@ async fn world_readable_secrets_file_refuses_enable() {
         matches!(err, HostError::ConnectorUnavailable { .. }),
         "got {err:?}"
     );
-    assert!(host.status(CONNECTOR_ID).await.is_none());
+    // The failure must be OBSERVABLE, not just returned to whoever called
+    // `enable`. Boot autospawn swallows the error, so the runtime entry is an
+    // operator's only signal.
+    let status = host
+        .status(CONNECTOR_ID)
+        .await
+        .expect("a failed connector must still have a status");
+    let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
+        panic!("expected Unavailable, got {:?}", status.status);
+    };
+    assert!(reason.contains("secrets.json"), "{reason}");
+    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
     assert!(
         !stub.methods().iter().any(|m| m == "tools/list"),
         "the upstream must not be contacted at all: {:?}",
@@ -731,48 +904,40 @@ async fn connector_tools_are_materialized_before_the_id_becomes_running() {
     let host = b.host();
     seed_row(&b, CONNECTOR_ID).await;
 
-    // Sample the two observables as fast as the runtime allows for the whole
-    // duration of the spawn. If the order were reversed — live insert first,
-    // materialize second — the `emit_state(Running)` DB write in between would
-    // leave a wide window in which a sample sees Running with zero tools.
-    let observer_host = Arc::clone(&host);
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_c = Arc::clone(&stop);
-    let observer = tokio::spawn(async move {
-        let mut violations = 0usize;
-        let mut saw_running = false;
-        while !stop_c.load(Ordering::SeqCst) {
-            let running = observer_host
-                .running_plugin_ids()
-                .await
-                .contains(CONNECTOR_ID);
-            let tools = observer_host
-                .registry()
-                .get(CONNECTOR_ID)
-                .map(|m| m.exposes_tools.len())
-                .unwrap_or(0);
-            if running {
-                saw_running = true;
-                if tools == 0 {
-                    violations += 1;
-                }
-            }
-            tokio::task::yield_now().await;
-        }
-        (violations, saw_running)
-    });
-
     host.spawn(CONNECTOR_ID).await.expect("connector spawns");
-    // Give the observer a chance to catch the post-spawn steady state.
-    sleep(Duration::from_millis(20)).await;
-    stop.store(true, Ordering::SeqCst);
-    let (violations, saw_running) = observer.await.unwrap();
 
-    assert!(saw_running, "observer never saw the connector Running");
+    // STRUCTURAL, not sampled. The two production steps are adjacent
+    // SYNCHRONOUS blocks with no `.await` between them, so no concurrent
+    // observer can ever be scheduled in the gap — a sampling test passes just
+    // as green with the two blocks swapped, which makes it not a test of the
+    // ordering at all. `connector_spawn_order` stamps a process-global
+    // monotonic tick as the last action of each block, so swapping the blocks
+    // swaps the ticks and this assertion fails.
+    let order = host
+        .connector_spawn_order(CONNECTOR_ID)
+        .expect("a successful connector spawn must record both steps");
+    let (materialized, inserted) = (
+        order.materialized_at.expect("materialization tick"),
+        order.live_inserted_at.expect("live-insert tick"),
+    );
+    assert!(
+        materialized < inserted,
+        "materialization (tick {materialized}) must strictly precede the live \
+         `Running` insert (tick {inserted}) — §2.7(1). `running_plugin_ids` gates \
+         both tool discovery and the boot audit, and both then read \
+         `manifest.exposes_tools`; publishing Running first opens a window in \
+         which the connector is visible with an empty catalog."
+    );
+    assert!(order.materialized_before_live_insert());
+
+    // And the steady state is what the ordering was protecting: Running WITH a
+    // populated catalog.
+    assert!(host.running_plugin_ids().await.contains(CONNECTOR_ID));
     assert_eq!(
-        violations, 0,
-        "observed the connector Running with an empty tool catalog — \
-         materialization must happen BEFORE the live-table insert (§2.7(1))"
+        host.registry()
+            .get(CONNECTOR_ID)
+            .map(|m| m.exposes_tools.len()),
+        Some(2)
     );
 
     // And the boot audit's own read sees them, so `PluginToolRegistered`
@@ -853,6 +1018,50 @@ async fn rotate_token_on_a_connector_is_rejected_without_side_effects() {
     );
 }
 
+/// §4 #8, the fail-open hole: the kind guard used to be conditional on
+/// `registry.get(id)` returning `Some`, so an id the registry does not know
+/// fell straight THROUGH the guard into the token delete + restart — i.e. the
+/// one case where the kind cannot be proven was also the case that got the
+/// side effects. Acceptance §4 #8 requires no side effect.
+#[tokio::test]
+async fn rotate_token_with_no_registry_entry_has_no_side_effects() {
+    let b = boot().await;
+    let state = b.state(b.host());
+
+    // A plugin ROW exists (so the route's own lookup succeeds) but the
+    // registry does not know the id — uninstall-mid-flight, a manifest that
+    // failed to load, a plugins_dir the operator moved.
+    seed_row(&b, CONNECTOR_ID).await;
+    b.repo
+        .plugin_token_set(CONNECTOR_ID, "planted-hash", i64::MAX)
+        .await
+        .expect("plant token row");
+    assert!(
+        state.plugin.registry().get(CONNECTOR_ID).is_none(),
+        "precondition: the registry must NOT know this id"
+    );
+
+    let (status, body) = post_json(
+        &state,
+        &format!("/api/plugins/{CONNECTOR_ID}/rotate-token"),
+        json!({}),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "an unprovable kind must fail CLOSED, got {status}: {body}"
+    );
+    assert_eq!(
+        b.repo.plugin_token_get(CONNECTOR_ID).await.unwrap(),
+        Some(("planted-hash".to_string(), i64::MAX)),
+        "the token row must NOT have been deleted"
+    );
+    assert!(
+        state.plugin.status(CONNECTOR_ID).await.is_none(),
+        "nothing may have been started"
+    );
+}
+
 // ===========================================================================
 // §4 #10 — a hung upstream does not block boot
 // ===========================================================================
@@ -871,28 +1080,36 @@ async fn hung_upstream_lands_unavailable_without_blocking_boot() {
 
     let started = Instant::now();
     // This is the call `AppState::new` awaits INLINE. If it can hang, boot
-    // hangs.
-    host.autospawn_enabled().await;
+    // hangs. The OUTER timeout is what makes this test able to fail fast
+    // instead of wedging the suite; the elapsed assertion below is what makes
+    // it able to fail at all.
+    tokio::time::timeout(Duration::from_secs(5), host.autospawn_enabled())
+        .await
+        .expect("boot autospawn never returned against a hung upstream");
     let elapsed = started.elapsed();
 
+    // 400 ms budget; 2 s allows for the app plugin's own spawn plus scheduling
+    // slack, and still fails if the connector pays its budget twice (once for
+    // `initialize`, once for `tools/list`) — which is exactly what the single
+    // outer `tokio::time::timeout` in `spawn_mcp_http` prevents.
     assert!(
-        elapsed < Duration::from_secs(10),
-        "boot autospawn took {elapsed:?} against a hung upstream — the \
-         connect/request timeouts are not being applied"
+        elapsed < Duration::from_secs(2),
+        "boot autospawn took {elapsed:?} against a hung upstream with a 400ms \
+         budget — the bring-up is not bounded as ONE total wall-clock timeout"
     );
-    let status = host.status(CONNECTOR_ID).await;
-    match status.as_ref().map(|s| &s.status) {
-        Some(PluginRuntimeStatus::Unavailable { reason }) => {
-            assert!(
-                reason.contains("tools/list") || reason.contains("timed out"),
-                "reason must say what failed: {reason}"
-            );
-        }
-        // No live entry at all is also acceptable — what must NOT happen is
-        // Running, or the call never returning.
-        None => {}
-        other => panic!("connector must not be {other:?} after a hung upstream"),
-    }
+    // `None` is NOT acceptable: a connector that failed must be observable, or
+    // `GET /api/plugins/{id}` reports it as never-enabled with no last_error.
+    let status = host
+        .status(CONNECTOR_ID)
+        .await
+        .expect("a hung upstream must leave an observable runtime entry");
+    let PluginRuntimeStatus::Unavailable { reason } = &status.status else {
+        panic!("connector must be Unavailable, got {:?}", status.status);
+    };
+    assert!(
+        reason.contains("tools/list") || reason.contains("timed out"),
+        "reason must say what failed: {reason}"
+    );
     assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 
     // The rest of boot happened.
@@ -961,22 +1178,96 @@ async fn connector_card_creation_is_a_4xx_that_names_the_real_reason() {
     let host = b.host();
     seed_row(&b, CONNECTOR_ID).await;
     host.spawn(CONNECTOR_ID).await.expect("connector spawns");
+    let wave_id = b.seed_wave().await;
+    let state = b.state(Arc::clone(&host));
 
-    // The seam the route consults: `mcp_client` (stdio-only) says None while
-    // `connector_client` says "yes, and it's an mcp-http one" — which is what
-    // lets the route distinguish "not running" from "wrong kind".
+    // Drive the REAL route. Asserting only on the two accessors would pass
+    // unchanged if `routes/cards.rs` were reverted to the misleading 404.
+    let resp = cards_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/waves/{wave_id}/cards"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "via_tool_call": {
+                            "plugin_id": CONNECTOR_ID,
+                            "tool_name": ALLOWED_TOOL,
+                            "arguments": {}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = String::from_utf8(
+        resp.into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a running connector must NOT get the `not running` 404: {body}"
+    );
+    assert!(
+        body.contains("connector") && body.contains("mcp-http"),
+        "the message must name the real reason (wrong KIND, not `not running`): {body}"
+    );
+    assert!(
+        !body.contains("not running"),
+        "telling an operator a demonstrably-Running connector is not running \
+         sends them to debug the wrong thing: {body}"
+    );
+    assert!(
+        state.repo.cards_by_wave(&wave_id).await.unwrap().is_empty(),
+        "no card may have been written"
+    );
+
+    // A genuinely-absent plugin still gets the 404 — the two cases must not
+    // have collapsed into one.
+    let resp = cards_app(state.clone())
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/waves/{wave_id}/cards"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "via_tool_call": {
+                            "plugin_id": "nope", "tool_name": "t", "arguments": {}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // The seam the route consults, asserted directly as well: `mcp_client`
+    // (stdio-only) says None while `connector_client` says "yes, mcp-http".
     assert!(
         host.mcp_client(CONNECTOR_ID).await.is_none(),
         "mcp_client() must narrow to (Running, Stdio)"
     );
-    let client = host
-        .connector_client(CONNECTOR_ID)
-        .await
-        .expect("connector is running");
-    assert_eq!(client.variant_name(), "mcp-http");
-
-    // And a genuinely-absent plugin still yields None from BOTH, so the route
-    // falls through to its 404.
+    assert_eq!(
+        host.connector_client(CONNECTOR_ID)
+            .await
+            .expect("connector is running")
+            .variant_name(),
+        "mcp-http"
+    );
     assert!(host.mcp_client("nope").await.is_none());
     assert!(host.connector_client("nope").await.is_none());
 }

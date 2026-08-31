@@ -28,9 +28,21 @@
 //! runs inside `spawn_admitted`, which `AppState::new` awaits inline via
 //! `autospawn_enabled`. An upstream that accepts the connection and then
 //! never answers would otherwise hang the entire server boot. Both the
-//! connect and the read deadline are therefore set explicitly.
+//! connect and the read deadline are therefore set explicitly — but they are
+//! PER-REQUEST, not a total bound: `initialize` and `tools/list` are two round
+//! trips, and `spawn_blocking` queue delay plus DNS sit outside ureq's own
+//! clock. The total wall-clock bound is the single `tokio::time::timeout`
+//! around the whole connector bring-up in `PluginHost::spawn_mcp_http`.
+//!
+//! **The API key must never reach a string a human or an agent can read.** It
+//! rides in the URL's query string, and `ureq::Error`'s `Display` prints that
+//! URL first — so a `{e}` anywhere in this module puts the credential into the
+//! `tracing` line, the persisted+broadcast `Event::PluginState.last_error`, the
+//! `POST /enable` 503 body, and the wave transcript. Two rules, both enforced
+//! by tests: format a `ureq::Error` only via `kind()`, and run every outgoing
+//! error string through [`HttpMcpClient::scrub`].
 
-use std::sync::Arc;
+use std::io::Read as _;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -51,7 +63,11 @@ const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 /// Cheap to construct, `Send + Sync`, and held behind an `Arc` inside
 /// [`super::ConnectorClient`] so the process-table lock can clone it out
 /// without being held across an await.
-#[derive(Debug)]
+///
+/// **No `#[derive(Debug)]`.** A derived `Debug` prints `url` (which carries the
+/// API key when `api_key_in` is `query:<name>`) and `header_auth` (name AND
+/// value), which would defeat the hand-written redacting `Debug` on
+/// [`super::ConnectorClient`] the moment anything formatted the inner client.
 pub struct HttpMcpClient {
     plugin_id: String,
     /// Endpoint with the API key already appended when `api_key_in` is
@@ -61,8 +77,35 @@ pub struct HttpMcpClient {
     header_auth: Option<(String, String)>,
     /// Host only, for the per-call audit line required by risk R2.
     log_target: String,
-    timeout: Duration,
+    /// Every literal form the secret takes on the wire (raw + percent-encoded).
+    /// [`Self::scrub`] strips these from any string that could reach a log
+    /// line, an `Event::PluginState.last_error`, an HTTP body, or a wave
+    /// transcript. This is the belt to the "never format a `ureq::Error`"
+    /// braces: an *upstream* 4xx body may quote the query string back at us,
+    /// and that path is not ours to control.
+    secret_forms: Vec<String>,
+    /// Built once (§ review finding 9): a fresh `ureq::Agent` re-parses the
+    /// ~150-certificate webpki root store and gives up all connection/TLS
+    /// reuse, per `tools/call`.
+    agent: ureq::Agent,
     next_id: std::sync::atomic::AtomicU64,
+}
+
+impl std::fmt::Debug for HttpMcpClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpMcpClient")
+            .field("plugin_id", &self.plugin_id)
+            .field("target", &self.log_target)
+            .field(
+                "auth",
+                &match (&self.header_auth, self.secret_forms.is_empty()) {
+                    (Some((name, _)), _) => format!("header:{name}=<redacted>"),
+                    (None, false) => "query:<redacted>".to_string(),
+                    (None, true) => "none".to_string(),
+                },
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 impl HttpMcpClient {
@@ -75,6 +118,7 @@ impl HttpMcpClient {
         let base = block.url.trim().to_string();
         let mut url = base.clone();
         let mut header_auth = None;
+        let mut secret_forms = Vec::new();
 
         if let Some(key) = api_key {
             match block.api_key_in_parsed() {
@@ -94,14 +138,31 @@ impl HttpMcpClient {
                 // key into an unexpected slot.
                 None => {}
             }
+            // Both literal forms, longest first, so scrubbing the encoded form
+            // is not pre-empted by a shorter raw substring match.
+            let encoded = percent_encode(key);
+            secret_forms.push(key.to_string());
+            if encoded != key {
+                secret_forms.push(encoded);
+            }
+            secret_forms.sort_by_key(|s| std::cmp::Reverse(s.len()));
         }
 
+        let timeout = Duration::from_millis(block.timeout_ms());
         Self {
             plugin_id: plugin_id.to_string(),
             log_target: log_target(&base),
             url,
             header_auth,
-            timeout: Duration::from_millis(block.timeout_ms()),
+            secret_forms,
+            agent: ureq::AgentBuilder::new()
+                // Both halves matter: `timeout_connect` bounds a black-holed
+                // SYN, `timeout` bounds a server that accepts and then stalls.
+                // Neither is a TOTAL bound — the caller wraps the whole
+                // connector spawn in one outer `tokio::time::timeout` (§2.2).
+                .timeout_connect(timeout)
+                .timeout(timeout)
+                .build(),
             next_id: std::sync::atomic::AtomicU64::new(1),
         }
     }
@@ -110,6 +171,23 @@ impl HttpMcpClient {
     /// safe to log, since the API key may ride in the query string.
     pub fn log_target(&self) -> &str {
         &self.log_target
+    }
+
+    /// Replace every literal occurrence of the API key with `<redacted>`.
+    ///
+    /// Applied to EVERY string this module can hand back, because those
+    /// strings all converge on operator- and agent-visible sinks:
+    /// `tracing::warn!(reason)`, the persisted+broadcast
+    /// `Event::PluginState.last_error`, the `POST /enable` 503 body, and (via
+    /// `tools_call`) the wave transcript.
+    fn scrub(&self, s: String) -> String {
+        let mut out = s;
+        for form in &self.secret_forms {
+            if out.contains(form.as_str()) {
+                out = out.replace(form.as_str(), "<redacted>");
+            }
+        }
+        out
     }
 
     /// Minimal `initialize`. Best-effort: a server that does not implement it
@@ -176,9 +254,9 @@ impl HttpMcpClient {
             )
             .await?;
         serde_json::from_value(raw).map_err(|e| {
-            RpcError::internal(format!(
+            RpcError::internal(self.scrub(format!(
                 "mcp-http tools/call: response did not parse as CallToolResult: {e}"
-            ))
+            )))
         })
     }
 
@@ -202,17 +280,11 @@ impl HttpMcpClient {
 
         let url = self.url.clone();
         let header_auth = self.header_auth.clone();
-        let timeout = self.timeout;
+        let agent = self.agent.clone();
         let method_owned = method.to_string();
         let target = self.log_target.clone();
 
         let text = tokio::task::spawn_blocking(move || {
-            let agent = ureq::AgentBuilder::new()
-                // Both halves matter: `timeout_connect` bounds a black-holed
-                // SYN, `timeout` bounds a server that accepts and then stalls.
-                .timeout_connect(timeout)
-                .timeout(timeout)
-                .build();
             let mut req = agent
                 .post(&url)
                 .set("content-type", "application/json")
@@ -222,27 +294,25 @@ impl HttpMcpClient {
             if let Some((name, value)) = header_auth.as_ref() {
                 req = req.set(name, value);
             }
+            // NOTE: a `ureq::Error` must NEVER be formatted with `{e}`. Its
+            // `Display` prints the full URL first, and this client folds the
+            // API key into that URL's query string. Only `kind()` — a closed
+            // set of English descriptions — is safe.
             match req.send_string(&body) {
-                Ok(resp) => resp
-                    .into_string()
-                    .map_err(|e| format!("reading response body failed: {e}")),
+                Ok(resp) => read_capped(resp),
                 Err(ureq::Error::Status(code, resp)) => {
-                    let detail = resp.into_string().unwrap_or_default();
+                    let detail = read_capped(resp).unwrap_or_default();
                     let detail: String = detail.chars().take(512).collect();
                     Err(format!("HTTP {code} from {target}: {detail}"))
                 }
-                Err(e) => Err(format!("request to {target} failed: {e}")),
+                Err(e) => Err(format!("request to {target} failed: {}", e.kind())),
             }
         })
         .await
         .map_err(|e| RpcError::internal(format!("mcp-http request task failed: {e}")))?
-        .map_err(|e| RpcError::custom(-32002, format!("mcp-http {method_owned}: {e}")))?;
-
-        if text.len() > MAX_BODY_BYTES {
-            return Err(RpcError::internal(format!(
-                "mcp-http {method_owned}: response body exceeds {MAX_BODY_BYTES} bytes"
-            )));
-        }
+        .map_err(|e| {
+            RpcError::custom(-32002, self.scrub(format!("mcp-http {method_owned}: {e}")))
+        })?;
 
         let payload = strip_sse_envelope(&text).ok_or_else(|| {
             RpcError::internal(format!(
@@ -250,7 +320,7 @@ impl HttpMcpClient {
             ))
         })?;
         let parsed: Value = serde_json::from_str(payload).map_err(|e| {
-            RpcError::internal(format!("mcp-http {method_owned}: malformed JSON: {e}"))
+            RpcError::internal(self.scrub(format!("mcp-http {method_owned}: malformed JSON: {e}")))
         })?;
 
         if let Some(err) = parsed.get("error")
@@ -262,7 +332,10 @@ impl HttpMcpClient {
                 .and_then(|m| m.as_str())
                 .unwrap_or("upstream error")
                 .to_string();
-            return Err(RpcError::custom(code, message));
+            // The upstream authored this string; it may quote our own query
+            // string back at us (risk R6's residual, narrowed to the one form
+            // we can actually recognize).
+            return Err(RpcError::custom(code, self.scrub(message)));
         }
         parsed.get("result").cloned().ok_or_else(|| {
             RpcError::internal(format!(
@@ -328,9 +401,23 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
-/// Convenience alias so callers can hold the client without importing `Arc`
-/// plumbing at every site.
-pub type SharedHttpMcpClient = Arc<HttpMcpClient>;
+/// Read a response body with [`MAX_BODY_BYTES`] enforced **before** buffering.
+///
+/// `Response::into_string()` buffers first and only then could a caller measure
+/// the length, so the operative bound was ureq's own 10 MiB cap, not ours.
+/// `take(MAX + 1)` makes the check exact: one byte over the cap is observable
+/// without ever allocating the whole body.
+fn read_capped(resp: ureq::Response) -> Result<String, String> {
+    let mut buf = Vec::with_capacity(8 * 1024);
+    resp.into_reader()
+        .take(MAX_BODY_BYTES as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| format!("reading response body failed: {}", e.kind()))?;
+    if buf.len() > MAX_BODY_BYTES {
+        return Err(format!("response body exceeds {MAX_BODY_BYTES} bytes"));
+    }
+    String::from_utf8(buf).map_err(|_| "response body is not valid UTF-8".to_string())
+}
 
 #[cfg(test)]
 mod tests {
@@ -409,5 +496,68 @@ mod tests {
             client.header_auth,
             Some(("x-api-key".to_string(), "abc".to_string()))
         );
+    }
+
+    const LEAKY: &str = "sk-super-secret-8213";
+
+    fn client_with(api_key_in: &str) -> HttpMcpClient {
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": api_key_in,
+        }))
+        .unwrap();
+        HttpMcpClient::new("c", &block, Some(LEAKY))
+    }
+
+    /// A derived `Debug` would print `url` (key in the query) and
+    /// `header_auth` (name AND value), defeating `ConnectorClient`'s own
+    /// redacting `Debug`.
+    #[test]
+    fn debug_never_prints_the_key_in_either_placement() {
+        for spec in ["query:api_key", "header:x-api-key"] {
+            let rendered = format!("{:?}", client_with(spec));
+            assert!(
+                !rendered.contains(LEAKY),
+                "{spec}: Debug leaked the key: {rendered}"
+            );
+            assert!(rendered.contains("redacted"), "{spec}: {rendered}");
+            assert!(rendered.contains("mcp.example.com"), "{spec}: {rendered}");
+        }
+    }
+
+    /// The scrubber must catch the percent-encoded form too — that is the
+    /// literal an upstream echoing our query string back would use.
+    #[test]
+    fn scrub_removes_raw_and_percent_encoded_forms() {
+        let key = "sk a/b+c";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(key));
+        let encoded = percent_encode(key);
+        assert_ne!(encoded, key);
+
+        let raw_msg = client.scrub(format!("boom: {key}"));
+        assert!(!raw_msg.contains(key), "{raw_msg}");
+        let enc_msg = client.scrub(format!("https://h/mcp?api_key={encoded} failed"));
+        assert!(!enc_msg.contains(&encoded), "{enc_msg}");
+        assert!(enc_msg.contains("<redacted>"), "{enc_msg}");
+    }
+
+    /// No key configured ⇒ nothing to scrub, and no accidental blanket
+    /// replacement of the empty string.
+    #[test]
+    fn scrub_is_identity_without_a_key() {
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, None);
+        assert_eq!(client.scrub("plain".to_string()), "plain");
+        assert!(format!("{client:?}").contains("none"));
     }
 }

@@ -11,8 +11,8 @@
 //!   the existing code is careful to avoid (`plugin_host::mod` §"Process
 //!   table"), and a non-`Clone` client would have forced exactly that.
 //! * [`read_secrets`] — §2.4's `secrets.json`. No DB table in v0.
-//! * the `materialize_*` helpers — §2.7's synthesis of `ExposedTool` entries
-//!   for connectors whose tool catalog does not live in `exposes_tools`.
+//! * [`materialize_http_tools`] — §2.7's synthesis of `ExposedTool` entries for
+//!   a connector whose tool catalog does not live in `exposes_tools`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,10 +21,8 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use super::http_mcp::HttpMcpClient;
-use super::manifest::{
-    CliQueryBlock, ExposedTool, ManifestError, McpHttpBlock, validate_connector_tool_name,
-};
-use super::mcp::{CallToolResult, McpClient, RpcError};
+use super::manifest::{ExposedTool, McpHttpBlock, validate_connector_tool_name};
+use super::mcp::McpClient;
 
 /// File name of the per-connector secret bundle, read only by the kernel.
 pub const SECRETS_FILENAME: &str = "secrets.json";
@@ -44,8 +42,11 @@ pub enum ConnectorClient {
     Stdio(Arc<McpClient>),
     /// `kind: mcp-http` — remote streamable-HTTP MCP server.
     Http(Arc<HttpMcpClient>),
-    /// `kind: cli-query` — pinned local query CLI.
-    Cli(Arc<CliQueryRuntime>),
+    // NOTE: there is deliberately no `Cli` variant. `kind: cli-query` parses
+    // and validates in this slice but its enable path fails before any runtime
+    // is constructed (#1164 P3), so a variant here would be a state no code
+    // path can reach — dead weight that a reader would mistake for a live
+    // capability. P3 reintroduces it together with the executor.
 }
 
 impl std::fmt::Debug for ConnectorClient {
@@ -55,7 +56,6 @@ impl std::fmt::Debug for ConnectorClient {
         f.write_str(match self {
             Self::Stdio(_) => "ConnectorClient::Stdio",
             Self::Http(_) => "ConnectorClient::Http",
-            Self::Cli(_) => "ConnectorClient::Cli",
         })
     }
 }
@@ -66,7 +66,6 @@ impl ConnectorClient {
         match self {
             Self::Stdio(_) => "stdio",
             Self::Http(_) => "mcp-http",
-            Self::Cli(_) => "cli-query",
         }
     }
 
@@ -82,50 +81,12 @@ impl ConnectorClient {
 }
 
 // ---------------------------------------------------------------------------
-// cli-query runtime (execution lands in a later slice — see §7 P3)
-// ---------------------------------------------------------------------------
-
-/// Everything a `cli-query` connector needs at call time: the pinned absolute
-/// command path, its fingerprint, the child environment, and the declared tool
-/// table.
-///
-/// #1164 P1 defines and validates the shape; the resolve/pin/exec runtime is
-/// the next slice. Construction is therefore only exercised by tests today,
-/// and [`Self::tools_call`] returns a clear "not implemented" rather than
-/// pretending.
-pub struct CliQueryRuntime {
-    pub plugin_id: String,
-    /// Absolute path resolved once at enable time (§2.3). Empty until the
-    /// execution slice lands.
-    pub command_path: std::path::PathBuf,
-    /// `<command> --version` first line, or a size+mtime stamp on failure.
-    pub fingerprint: String,
-    /// Fully-built child environment: `env_clear()` + base set + `env_allow`
-    /// + `secret_env`. Never logged.
-    pub env: BTreeMap<String, String>,
-    pub block: CliQueryBlock,
-}
-
-impl CliQueryRuntime {
-    pub async fn tools_call(
-        &self,
-        name: &str,
-        _arguments: Value,
-    ) -> Result<CallToolResult, RpcError> {
-        Err(RpcError::custom(
-            -32002,
-            format!(
-                "cli-query connector `{}` cannot run `{name}` yet: \
-                 the execution runtime is not implemented in this slice (#1164 P3)",
-                self.plugin_id
-            ),
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
 // secrets.json (§2.4)
 // ---------------------------------------------------------------------------
+
+/// Cap on `secrets.json`. It holds a handful of API keys; anything larger is a
+/// mistake or an attempt to make the kernel buffer an unbounded file.
+pub const MAX_SECRETS_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, thiserror::Error)]
 pub enum SecretsError {
@@ -138,10 +99,16 @@ pub enum SecretsError {
     /// The refusal that matters: a world- or group-readable secret file is not
     /// quietly accepted. Enable fails and says exactly what to run.
     #[error(
-        "{path} must be mode 0600 (owner read/write only), found {found:04o}; \
+        "{path} must be mode 0600 or stricter (no group/other bits), found {found:04o}; \
          run `chmod 600 {path}` and re-enable"
     )]
     BadPermissions { path: String, found: u32 },
+    /// Not a regular file. A FIFO here would block the reader forever — and
+    /// before this slice that reader was an async runtime worker.
+    #[error("{path} must be a regular file (found {found})")]
+    NotRegularFile { path: String, found: &'static str },
+    #[error("{path} is {size} bytes, over the {MAX_SECRETS_BYTES}-byte limit")]
+    TooLarge { path: String, size: u64 },
     #[error("{path} is not a JSON object of string values: {reason}")]
     Malformed { path: String, reason: String },
 }
@@ -150,16 +117,38 @@ pub enum SecretsError {
 ///
 /// Returns `Ok(None)` when the file is absent — a connector with no
 /// credentials is legal. Returns an error (never a partial map) when the file
-/// exists but is unreadable, wrongly permissioned, or malformed.
+/// exists but is unreadable, wrongly permissioned, not a regular file, over
+/// [`MAX_SECRETS_BYTES`], or malformed.
+///
+/// **Async on purpose.** The synchronous `metadata` + `read_to_string` this
+/// replaced ran directly on the spawn path, which `AppState::new` awaits
+/// inline: a 0600 FIFO at that path blocked a runtime worker and, with it,
+/// boot. `spawn_blocking` + the regular-file check close both halves.
 ///
 /// Values are returned to the caller and go nowhere else: they are not merged
 /// into the `Manifest`, so they cannot reach `GET /api/plugins/{id}` (which
 /// serves the DB row's manifest blob) or any other REST surface.
-pub fn read_secrets(install_path: &Path) -> Result<Option<BTreeMap<String, String>>, SecretsError> {
+pub async fn read_secrets(
+    install_path: &Path,
+) -> Result<Option<BTreeMap<String, String>>, SecretsError> {
     let path = install_path.join(SECRETS_FILENAME);
+    tokio::task::spawn_blocking(move || read_secrets_blocking(&path))
+        .await
+        .unwrap_or_else(|e| {
+            Err(SecretsError::Io {
+                path: SECRETS_FILENAME.to_string(),
+                source: std::io::Error::other(format!("secrets read task failed: {e}")),
+            })
+        })
+}
+
+fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>, SecretsError> {
     let display = path.display().to_string();
 
-    let meta = match std::fs::metadata(&path) {
+    // `metadata` (not `symlink_metadata`) on purpose: it FOLLOWS symlinks, so
+    // a symlink pointing at a FIFO resolves to the FIFO and is caught by the
+    // `is_file()` check below rather than passing as "a symlink, fine".
+    let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
@@ -170,21 +159,39 @@ pub fn read_secrets(install_path: &Path) -> Result<Option<BTreeMap<String, Strin
         }
     };
 
+    if !meta.is_file() {
+        return Err(SecretsError::NotRegularFile {
+            path: display,
+            found: if meta.is_dir() {
+                "a directory"
+            } else {
+                "not a regular file"
+            },
+        });
+    }
+    if meta.len() > MAX_SECRETS_BYTES {
+        return Err(SecretsError::TooLarge {
+            path: display,
+            size: meta.len(),
+        });
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = meta.permissions().mode() & 0o777;
-        if mode != 0o600 {
+        // 0600-or-stricter: the requirement is that NOTHING outside the owner
+        // can read it. Demanding exactly 0600 rejected the strictly safer
+        // 0400, which is a refusal with no security story behind it.
+        if mode & 0o077 != 0 {
             return Err(SecretsError::BadPermissions {
                 path: display,
                 found: mode,
             });
         }
     }
-    #[cfg(not(unix))]
-    let _ = &meta;
 
-    let text = std::fs::read_to_string(&path).map_err(|e| SecretsError::Io {
+    let text = std::fs::read_to_string(path).map_err(|e| SecretsError::Io {
         path: display.clone(),
         source: e,
     })?;
@@ -260,21 +267,10 @@ pub fn materialize_http_tools(
     out
 }
 
-/// Turn a validated `cli_query.tools` table into `ExposedTool` entries.
-pub fn materialize_cli_tools(block: &CliQueryBlock) -> Result<Vec<ExposedTool>, ManifestError> {
-    let mut out = Vec::with_capacity(block.tools.len());
-    for (i, tool) in block.tools.iter().enumerate() {
-        validate_connector_tool_name(&tool.name, &format!("cli_query.tools[{i}].name"))?;
-        out.push(ExposedTool {
-            name: tool.name.clone(),
-            description: tool.description.clone(),
-            kind: None,
-            input_schema: Some(tool.input_schema.clone()),
-            annotations: None,
-        });
-    }
-    Ok(out)
-}
+// NOTE: there is no `materialize_cli_tools` here. `kind: cli-query` has no
+// enable path that reaches materialization in this slice, so the function had
+// no production caller — only its own test. #1164 P3 adds it alongside the
+// executor that would actually call it.
 
 #[cfg(test)]
 mod tests {
@@ -314,28 +310,95 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[test]
-    fn secrets_require_0600() {
+    #[tokio::test]
+    async fn secrets_reject_group_or_other_readable_but_accept_stricter_than_0600() {
         use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(SECRETS_FILENAME);
         std::fs::write(&path, r#"{"K":"v"}"#).unwrap();
 
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-        let err = read_secrets(tmp.path()).unwrap_err();
-        assert!(
-            matches!(err, SecretsError::BadPermissions { found: 0o644, .. }),
-            "got {err:?}"
-        );
+        for bad in [0o644, 0o640, 0o604, 0o660, 0o666] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(bad)).unwrap();
+            let err = read_secrets(tmp.path()).await.unwrap_err();
+            assert!(
+                matches!(err, SecretsError::BadPermissions { found, .. } if found == bad),
+                "mode {bad:04o} must be refused, got {err:?}"
+            );
+            assert!(err.to_string().contains("0600"), "{err}");
+        }
 
+        // 0600 and everything STRICTER must be accepted: 0400 is safer than
+        // 0600, and refusing it would be a rule with no security story.
+        for good in [0o600, 0o400, 0o200] {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(good)).unwrap();
+            if good == 0o200 {
+                // Write-only: the read itself fails, but NOT as a permissions
+                // refusal — the mode check must have passed.
+                let err = read_secrets(tmp.path()).await.unwrap_err();
+                assert!(matches!(err, SecretsError::Io { .. }), "got {err:?}");
+                continue;
+            }
+            let got = read_secrets(tmp.path()).await.unwrap().unwrap();
+            assert_eq!(
+                got.get("K").map(String::as_str),
+                Some("v"),
+                "mode {good:04o} must be accepted"
+            );
+        }
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        let got = read_secrets(tmp.path()).unwrap().unwrap();
-        assert_eq!(got.get("K").map(String::as_str), Some("v"));
     }
 
-    #[test]
-    fn missing_secrets_file_is_not_an_error() {
+    #[tokio::test]
+    async fn missing_secrets_file_is_not_an_error() {
         let tmp = tempfile::tempdir().unwrap();
-        assert!(read_secrets(tmp.path()).unwrap().is_none());
+        assert!(read_secrets(tmp.path()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_directory_at_the_secrets_path_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join(SECRETS_FILENAME)).unwrap();
+        let err = read_secrets(tmp.path()).await.unwrap_err();
+        assert!(
+            matches!(err, SecretsError::NotRegularFile { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_oversized_secrets_file_is_refused_without_being_buffered() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SECRETS_FILENAME);
+        std::fs::write(&path, vec![b'x'; MAX_SECRETS_BYTES as usize + 1]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let err = read_secrets(tmp.path()).await.unwrap_err();
+        assert!(matches!(err, SecretsError::TooLarge { .. }), "{err:?}");
+    }
+
+    /// The whole reason `read_secrets` moved to `spawn_blocking` + a
+    /// regular-file check: a 0600 FIFO at this path used to block a runtime
+    /// worker (and therefore boot) forever. It must now be refused promptly.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fifo_at_the_secrets_path_is_refused_and_does_not_hang() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SECRETS_FILENAME);
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: plain libc call on a path inside a fresh temp dir.
+        let rc = unsafe { libc::mkfifo(c.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo failed: {}", std::io::Error::last_os_error());
+
+        let err = tokio::time::timeout(std::time::Duration::from_secs(5), read_secrets(tmp.path()))
+            .await
+            .expect("read_secrets must not block on a FIFO")
+            .unwrap_err();
+        assert!(
+            matches!(err, SecretsError::NotRegularFile { .. }),
+            "{err:?}"
+        );
     }
 }

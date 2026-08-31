@@ -1038,13 +1038,21 @@ pub(crate) async fn rotate_plugin_token(
     // #1164 §2.5 — a connector never had a token minted, so rotation is a
     // 400, not a 500. The host refuses BEFORE deleting any row and BEFORE
     // restarting anything, so a mistaken call is fully inert.
-    cs.plugin.rotate_plugin_token(&id).await.map_err(|e| {
-        if matches!(e, crate::plugin_host::HostError::UnsupportedForKind { .. }) {
-            CalmError::BadRequest(e.to_string())
-        } else {
-            CalmError::Internal(format!("rotate failed: {e}"))
-        }
-    })?;
+    cs.plugin
+        .rotate_plugin_token(&id)
+        .await
+        .map_err(|e| match e {
+            crate::plugin_host::HostError::UnsupportedForKind { .. } => {
+                CalmError::BadRequest(e.to_string())
+            }
+            // The host fails CLOSED when it cannot determine the plugin's kind
+            // (no registry entry). That is a 404, not a kernel fault — and, like
+            // the connector refusal, it happens before any token delete/restart.
+            crate::plugin_host::HostError::NotFound(_) => {
+                CalmError::NotFound(format!("plugin {id} is not loaded"))
+            }
+            other => CalmError::Internal(format!("rotate failed: {other}")),
+        })?;
     let plug = s
         .repo
         .plugin_get_by_id(&id)

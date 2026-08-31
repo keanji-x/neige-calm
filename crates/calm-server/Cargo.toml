@@ -140,6 +140,11 @@ tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 # inline-awaited boot path (`AppState::new` → `autospawn_enabled`) is never
 # parked on a socket. See design doc §2.2 + risk R10.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# #1164 §2.2 — real URL parsing for `mcp_http.url` at manifest-parse time.
+# Prefix matching on "http://" accepted bare authorities and, worse, FRAGMENTS:
+# the query-string API key is appended after a `#`, so it would never be
+# transmitted. Already in the lock via ureq/rustls, so no new tree.
+url = "2"
 
 # Async
 tokio = { version = "1", features = ["full"] }
