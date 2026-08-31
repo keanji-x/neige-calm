@@ -323,16 +323,18 @@ fn managed_path_is_root_cove_wave() {
 /// removing the lock turns it red deterministically.
 pub(super) struct OverlapProbe(std::path::PathBuf);
 
-type OverlapCounts = std::collections::HashMap<std::path::PathBuf, (usize, usize)>;
+/// `path -> (currently inside, peak simultaneous, total entries)`
+type OverlapCounts = std::collections::HashMap<std::path::PathBuf, (usize, usize, usize)>;
 static OVERLAP: Mutex<Option<OverlapCounts>> = Mutex::new(None);
 
 impl OverlapProbe {
     pub(super) fn enter(path: &Path) -> Self {
         let mut guard = OVERLAP.lock().unwrap_or_else(|e| e.into_inner());
         let map = guard.get_or_insert_with(Default::default);
-        let entry = map.entry(path.to_path_buf()).or_insert((0, 0));
+        let entry = map.entry(path.to_path_buf()).or_insert((0, 0, 0));
         entry.0 += 1;
         entry.1 = entry.1.max(entry.0);
+        entry.2 += 1;
         OverlapProbe(path.to_path_buf())
     }
 
@@ -342,7 +344,18 @@ impl OverlapProbe {
         guard
             .as_ref()
             .and_then(|m| m.get(path))
-            .map(|(_, peak)| *peak)
+            .map(|(_, peak, _)| *peak)
+            .unwrap_or(0)
+    }
+
+    /// How many materializations of `path` the probe saw in total. Guards the
+    /// peak assertion against passing because nothing ever entered.
+    fn entries(path: &Path) -> usize {
+        let guard = OVERLAP.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(|m| m.get(path))
+            .map(|(_, _, entries)| *entries)
             .unwrap_or(0)
     }
 }
@@ -610,9 +623,14 @@ fn concurrent_materialization_of_one_path_all_succeed() {
          is not doing its job, and the interleaving that leaves a half-built \
          directory behind is reachable again"
     );
-    // …and the probe genuinely saw more than one thread arrive, so `peak == 1`
-    // cannot be passing because nothing ran.
-    assert!(THREADS > 1);
+    // …and the probe genuinely saw every thread arrive, so `peak == 1` cannot
+    // be passing because the critical section was never entered.
+    assert_eq!(
+        OverlapProbe::entries(&repo_root),
+        THREADS,
+        "the probe did not observe every materialization, so the peak above is \
+         not evidence of anything"
+    );
 }
 
 /// **B4** — a directory left half-built by a crash is repairable.
