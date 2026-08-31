@@ -127,13 +127,37 @@
       "test-tier-project fixtures accepts the positive directory",
       "uses a layout engine for rendered element geometry",
       "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once",
-      "vitest project partition assigns representative path tools/probe.coarse.browser.test.ts exactly once"
+      "vitest project partition assigns representative path tools/probe.coarse.browser.test.ts exactly once",
+      "the a11y failure report (#1161) announces its own truncation instead of silently dropping subtrees",
+      "the a11y failure report (#1161) collapses whitespace in class names so the report stays strippable",
+      "the a11y failure report (#1161) counts a hidden element that is itself the queryable one",
+      "the a11y failure report (#1161) counts an implicit role as queryable, not as decoration",
+      "the a11y failure report (#1161) does not call an element hidden when it overrides visibility back to visible",
+      "the a11y failure report (#1161) does not stack a second report when the setup module is evaluated again",
+      "the a11y failure report (#1161) does not truncate a message whose own query text contains the marker",
+      "the a11y failure report (#1161) finds a subtree hidden by CSS, which no attribute selector can express",
+      "the a11y failure report (#1161) finds visibility:hidden and the hidden attribute too",
+      "the a11y failure report (#1161) is appended to the real Testing Library error rather than replacing it",
+      "the a11y failure report (#1161) keeps content that merely looks like a report in the middle of a message",
+      "the a11y failure report (#1161) keeps the report last through the findBy timeout re-wrap",
+      "the a11y failure report (#1161) leaves decoration out while still listing a real hidden subtree",
+      "the a11y failure report (#1161) leaves the multiple-matches message whole",
+      "the a11y failure report (#1161) lets waitFor settle when its callback throws a non-Error",
+      "the a11y failure report (#1161) lists body children so an absent portal is distinguishable from a hidden one",
+      "the a11y failure report (#1161) names aria-hidden as the reason a present element is unqueryable",
+      "the a11y failure report (#1161) names body itself when body carries a hiding attribute",
+      "the a11y failure report (#1161) names body itself when the whole page is hidden",
+      "the a11y failure report (#1161) names the documentElement when the hiding attribute is on <html>",
+      "the a11y failure report (#1161) names the outermost hidden ancestor once, not every element under it",
+      "the a11y failure report (#1161) reports inert subtrees even though Testing Library does not treat them as hidden",
+      "the a11y failure report (#1161) returns the original error untouched when its message cannot be written"
     ],
     "selection_paths": [
       "tools/test-tier/checker.test.ts",
-      "tools/test-tier/vitest-projects.test.ts"
+      "tools/test-tier/vitest-projects.test.ts",
+      "tools/vitest/dom-diagnostics.browser.test.ts"
     ],
-    "why_more_than_one": "Dropping the browser-suffix exclude from platform-independent lands both representative browser paths in a second project at once, so the partition case reds twice — once per representative — beside the positive fixture and the layout-engine probe that detect the same overlap independently. Any fifth red is unrelated coupling."
+    "why_more_than_one": "Four entries exist for their own sake: the positive browser fixture, the layout-engine probe, and the representative partition case — which now reds twice, once per representative, because `browser` and `browser-coarse` each have one and dropping the browser-suffix exclude lands both in a second project at once. Those detect the overlap from inside the checker and are what would stay red if every collected browser test happened to survive node. The rest are the overlap being felt: the node project's `tools/**/*.test.ts` include collects browser tests that then run without a `document`. Not every `tools/**` browser test qualifies — `tools/architecture/fixtures/**` stays out under its own exclude, and a `.tsx` browser test never matched the `.ts` include. Three files are collected: `layout.browser.test.ts` and, since #1161, `tools/vitest/dom-diagnostics.browser.test.ts` both reach `document` and so crash, every case for the same single reason, while `tools/test-tier/fixtures/positive/browser.browser.test.ts` is collected too and stays green only because it never touches `document` — not because any exclude keeps it out, which is worth saying so a future edit to that fixture is not mistaken for an unrelated regression. Anything red beyond this set would mean the overlap reached a file that does not need a DOM at all."
   },
   {
     "mutation_id": "test-tier-ignore-migrated",
