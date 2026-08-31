@@ -8,6 +8,7 @@
 //! This file keeps the sqlx-transaction helpers that apply validated
 //! transitions inside audited write transactions.
 
+use crate::db::rows::WAVE_SELECT_COLUMNS;
 use crate::model::{Wave, WaveLifecycle, WavePatch};
 use crate::{error::CalmError, event::Event};
 use sqlx::{Sqlite, Transaction};
@@ -136,10 +137,9 @@ pub(crate) async fn wave_get_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &crate::ids::WaveId,
 ) -> Result<Wave, CalmError> {
-    sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
-           FROM waves WHERE id = ?1"#,
-    )
+    sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+        "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE id = ?1"
+    ))
     .bind(wave_id.as_str())
     .fetch_optional(&mut **tx)
     .await?

@@ -1,3 +1,4 @@
+use crate::db::rows::WAVE_SELECT_COLUMNS;
 use crate::error::{CalmError, Result};
 use crate::event::Event;
 use crate::ids::{CardId, WaveId};
@@ -35,13 +36,11 @@ pub async fn backfill_existing_waves(pool: &SqlitePool) -> Result<usize> {
 }
 
 async fn backfill_existing_waves_tx(tx: &mut Transaction<'_, Sqlite>) -> Result<usize> {
-    let waves: Vec<Wave> = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd,
-                  workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
-           FROM waves
-           WHERE id NOT IN (SELECT wave_id FROM wave_vcs_refs)
-           ORDER BY created_at ASC, id ASC"#,
-    )
+    let waves: Vec<Wave> = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+        "SELECT {WAVE_SELECT_COLUMNS} FROM waves \
+         WHERE id NOT IN (SELECT wave_id FROM wave_vcs_refs) \
+         ORDER BY created_at ASC, id ASC"
+    ))
     .fetch_all(&mut **tx)
     .await?
     .into_iter()
@@ -263,11 +262,9 @@ pub(super) async fn load_wave_optional_tx(
     tx: &mut Transaction<'_, Sqlite>,
     wave_id: &WaveId,
 ) -> Result<Option<Wave>> {
-    let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd,
-                  workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
-           FROM waves WHERE id = ?1"#,
-    )
+    let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+        "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE id = ?1"
+    ))
     .bind(wave_id.as_str())
     .fetch_optional(&mut **tx)
     .await?;

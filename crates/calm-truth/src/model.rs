@@ -27,7 +27,7 @@ pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 pub use calm_types::model::{
     Card, CardRole, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
     CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave, WaveLifecycle,
-    default_deletable,
+    WaveWorkspace, WaveWorkspaceKind, default_deletable,
 };
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the

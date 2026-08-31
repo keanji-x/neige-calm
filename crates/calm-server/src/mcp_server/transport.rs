@@ -955,7 +955,7 @@ async fn resolve_forge_cwd(
             "forge action wave belongs to a different cove",
         ));
     }
-    let wave_cwd = PathBuf::from(&wave.cwd);
+    let wave_cwd = PathBuf::from(&wave.workspace.path);
     if !wave_cwd.is_absolute() {
         return Err(RpcError::invalid_params(
             "forge action requires an absolute wave cwd",

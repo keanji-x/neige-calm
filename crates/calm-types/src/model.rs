@@ -360,6 +360,113 @@ impl TryFrom<String> for WaveLifecycle {
     }
 }
 
+// ---------------- Wave workspace ----------------
+
+/// Issue #1147 S1 (design D1) — what kind of directory a wave's workspace is.
+///
+/// The distinction exists purely for **downstream behavior**, and only one of
+/// those behaviors is destructive: a `Managed` directory is server-created,
+/// server-owned and (from S5 on) server-*recycled*; an `Attached` directory is
+/// a repository the user pointed at and must never be deleted, `git init`-ed
+/// or renamed. Collapsing both into the bare `cwd: String` we have today would
+/// leave the future teardown path unable to tell them apart — that is an
+/// `rm -rf`-grade accident surface, which is why the kind is typed rather
+/// than inferred from a path prefix.
+///
+/// Persisted lowercase in `waves.workspace_kind` (migration 0077), same
+/// `rename_all = "lowercase"` serde/db shape as [`WaveLifecycle`].
+///
+/// `Attached` is the `Default` because that is the only kind S1 can mint:
+/// managed roots do not exist until S2, and every pre-existing wave points at
+/// a directory somebody else created.
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema, TS,
+)]
+#[serde(rename_all = "lowercase")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub enum WaveWorkspaceKind {
+    /// Server-created under the managed root, exclusively owned, recyclable.
+    /// Not mintable until #1147 S2.
+    Managed,
+    /// An existing repository the user pointed at. Never deleted, never
+    /// `git init`-ed by the server.
+    #[default]
+    Attached,
+}
+
+impl WaveWorkspaceKind {
+    /// The stored TEXT shape in `waves.workspace_kind`. Mirrors
+    /// [`WaveLifecycle::as_db_str`] — the DB never sees the Rust variant name.
+    pub fn as_db_str(&self) -> &'static str {
+        match self {
+            WaveWorkspaceKind::Managed => "managed",
+            WaveWorkspaceKind::Attached => "attached",
+        }
+    }
+}
+
+impl TryFrom<String> for WaveWorkspaceKind {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        match value.as_str() {
+            "managed" => Ok(WaveWorkspaceKind::Managed),
+            "attached" => Ok(WaveWorkspaceKind::Attached),
+            other => Err(format!("unknown waves.workspace_kind value `{other}`")),
+        }
+    }
+}
+
+/// Issue #1147 S1 (design D1) — the typed workspace of a wave.
+///
+/// `workspace_path` is the **only** stored copy of the path. `waves.cwd` used
+/// to hold a second copy "so existing readers don't have to change"; migration
+/// 0077 drops that column instead. Two columns holding one fact needs a rule
+/// saying they must agree, and this codebase has no way to enforce such a rule
+/// — writers of `waves` are scattered raw `sqlx` statements, so the only
+/// available policeman is a source-text scanner, and three rounds of
+/// red-teaming walked past three successive scanners. One column cannot
+/// disagree with itself.
+///
+/// `cwd` still exists **on the wire**: see [`Wave::cwd_wire_alias`]. It is
+/// computed from `path`, not stored.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema, TS)]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct WaveWorkspace {
+    pub kind: WaveWorkspaceKind,
+    /// Absolute path. The single stored copy — `waves.workspace_path`.
+    pub path: String,
+    /// One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change
+    /// again.
+    ///
+    /// In S1 every wave **in a user cove** is frozen at creation: it is
+    /// `Attached`, attached workspaces never need re-pointing, and freezing
+    /// them costs nothing while removing the "unfrozen attached row" state in
+    /// which a future PATCH branch that forgot to check `kind` would relocate
+    /// a real user repository (design D9).
+    ///
+    /// **Exception (design D9, r3.3):** the kernel-owned Today/launchpad wave
+    /// in the *system* cove stays `None` forever, because
+    /// `today_launchpad_ensure_tx` re-points it — freezing it would make this
+    /// field's own one-shot-and-monotonic promise false on the next `ensure`.
+    /// `only_system_cove_waves_may_be_unfrozen` bounds that exception to that
+    /// one wave.
+    pub frozen_at: Option<i64>,
+}
+
+impl Default for WaveWorkspace {
+    /// Matches the migration-0077 column defaults, and mirrors the
+    /// `#[serde(default)]` fallback on [`Wave::workspace`]: a pre-#1147
+    /// `wave.updated` replay payload carries no `workspace` key.
+    fn default() -> Self {
+        WaveWorkspace {
+            kind: WaveWorkspaceKind::Attached,
+            path: String::new(),
+            frozen_at: None,
+        }
+    }
+}
+
 // ---------------- Wave ----------------
 
 #[derive(Clone, Debug, Serialize, Deserialize, ToSchema, TS)]
@@ -385,20 +492,27 @@ pub struct Wave {
     /// migration 0012.
     #[serde(default)]
     pub lifecycle: WaveLifecycle,
-    /// Issue #250 PR 2 — the working directory the wave's spec daemon
-    /// runs in. **Required at the route layer**: `POST /api/waves`
-    /// rejects empty / non-absolute paths and refuses to create a wave
-    /// whose cwd isn't claimable by some cove (via
-    /// `cove_folder_resolve`, optionally creating a `cove_folders` row
-    /// when the body sets `attach_folder: true`).
+    /// Wire-compatibility alias of `workspace.path`, serialized as `cwd`.
     ///
-    /// `#[serde(default)]` mirrors the lifecycle precedent: replay of
-    /// a pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)
-    /// hydrates as `""`, matching the DB DEFAULT in migration 0018.
-    /// Production wave-create paths inside this binary always stamp a
-    /// real path — the migration default is the "old data only" fallback.
-    #[serde(default)]
-    pub cwd: String,
+    /// **Do not read this from Rust — read `workspace.path`.** The awkward
+    /// field name is the point: `waves.cwd` was deleted in migration 0077, and
+    /// this field exists only so the JSON wire shape, the OpenAPI spec, the
+    /// ts-rs bindings and the `wave.updated` event goldens are byte-identical
+    /// for clients that predate #1147. It is computed in exactly one place,
+    /// `impl From<WaveRow> for Wave`, from the one stored column.
+    ///
+    /// Renaming it (rather than leaving `cwd`) is what turned "update the four
+    /// readers" from a grep into a compile error — which is how two readers
+    /// nobody had listed (`workspace_lease::{112,551}`) were found.
+    ///
+    /// Issue #250 PR 2 originally introduced `cwd` as the working directory
+    /// the wave's spec daemon runs in; that role now belongs to
+    /// `workspace.path`.
+    ///
+    /// `#[serde(default)]` keeps replay of a pre-#250 event log parsing (no
+    /// `cwd` key), matching the old DB DEFAULT.
+    #[serde(rename = "cwd", default)]
+    pub cwd_wire_alias: String,
     /// `#[serde(default)]` lets pre-#760 slice ④-a wave.updated replays hydrate missing workflow_id as `None`.
     #[serde(default)]
     pub workflow_id: Option<String>,
@@ -440,6 +554,16 @@ pub struct Wave {
     /// is the first defensible point.
     #[serde(default)]
     pub terminal_at: Option<i64>,
+    /// Issue #1147 S1 (design D1) — the typed workspace. `cwd` above is a
+    /// projection of `workspace.path`; see [`WaveWorkspace`] for the
+    /// single-writer invariant that keeps the two from drifting.
+    ///
+    /// `#[serde(default)]` mirrors the `cwd` / `lifecycle` precedent: a
+    /// pre-#1147 `wave.updated` replay fixture has no `workspace` key and
+    /// hydrates as `Attached` / `""` / unfrozen, matching the DB defaults in
+    /// migration 0077 before its backfill runs.
+    #[serde(default)]
+    pub workspace: WaveWorkspace,
     pub created_at: i64,
     pub updated_at: i64,
 }

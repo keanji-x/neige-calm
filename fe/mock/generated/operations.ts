@@ -4851,6 +4851,8 @@ export const schemaWireTypes = {
   "WavePatch": null,
   "WaveReportPayload": "WaveReportPayload",
   "WaveReportReadResponse": null,
+  "WaveWorkspace": "WaveWorkspace",
+  "WaveWorkspaceKind": "WaveWorkspaceKind",
   "WavesWindowQuery": null,
   "WorkerSessionKind": "WorkerSessionKind",
   "WorkerSessionState": "WorkerSessionState"

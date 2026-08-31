@@ -6,6 +6,7 @@ use super::{
     SqlxRepo, derive_session_identity, session_get_by_active_token_hash, session_get_by_id,
 };
 use crate::card_role_cache::CardRoleCache;
+use crate::db::rows::{WAVE_SELECT_COLUMNS, WAVE_SELECT_COLUMNS_W};
 use crate::db::{RepoRead, SessionCardIdentity, SharedCodexDaemonRecord, WorkspaceLease};
 use crate::error::{CalmError, Result};
 use crate::ids::{CardId, CoveId, WaveId};
@@ -118,10 +119,9 @@ impl RepoRead for SqlxRepo {
 
     // ---------------------------------------------------------------- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>> {
-        let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
-               FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"#,
-        )
+        let rows = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE cove_id = ?1 ORDER BY sort ASC"
+        ))
         .bind(cove_id)
         .fetch_all(&self.pool)
         .await?;
@@ -129,10 +129,9 @@ impl RepoRead for SqlxRepo {
     }
 
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
-        let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-            r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
-               FROM waves WHERE id = ?1"#,
-        )
+        let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE id = ?1"
+        ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;
@@ -152,10 +151,7 @@ impl RepoRead for SqlxRepo {
         //   * `cove_id`     : `cove_id = ?`
         //   * `until`       : `created_at <= ?`
         //   * `since`       : `(terminal_at IS NULL OR terminal_at >= ?)`
-        let mut sql = String::from(
-            "SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, \
-             terminal_at, created_at, updated_at FROM waves",
-        );
+        let mut sql = format!("SELECT {WAVE_SELECT_COLUMNS} FROM waves");
         let mut where_clauses: Vec<&str> = Vec::new();
         if cove_id.is_some() {
             where_clauses.push("cove_id = ?");
@@ -301,10 +297,8 @@ impl RepoRead for SqlxRepo {
         // escapes its TEXT arguments and renders a NULL argument as JSON
         // `null`. An empty group yields `[]`, not `null`, because
         // `json_group_array` over zero rows is an empty array.
-        let row = sqlx::query_as::<_, WaveDetailRow>(
-            r#"SELECT w.id, w.cove_id, w.title, w.sort, w.archived_at, w.pinned_at, w.lifecycle,
-                      w.cwd, w.workflow_id, w.plugin_scope, w.purpose, w.workflow_input, w.terminal_at,
-                      w.created_at, w.updated_at,
+        let row = sqlx::query_as::<_, WaveDetailRow>(&format!(
+            r#"SELECT {WAVE_SELECT_COLUMNS_W},
                       (SELECT json_group_array(json_object(
                            'id', c.id, 'wave_id', c.wave_id, 'kind', c.kind,
                            'sort', json(printf('%!.17g', c.sort)),
@@ -322,8 +316,8 @@ impl RepoRead for SqlxRepo {
                               AND o.entity_id IN
                                   (SELECT c2.id FROM cards c2 WHERE c2.wave_id = w.id)))
                           AS overlays_json
-               FROM waves w WHERE w.id = ?1"#,
-        )
+               FROM waves w WHERE w.id = ?1"#
+        ))
         .bind(id)
         .fetch_optional(&self.pool)
         .await?;

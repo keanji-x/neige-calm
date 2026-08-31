@@ -109,7 +109,8 @@ pub(crate) async fn prepare_workspace_lease_target_tx(
 ) -> Result<WorkspaceLeaseTarget> {
     validate_path_segment("wave_id", wave_id)?;
     validate_path_segment("card_id", card_id)?;
-    let cwd: String = sqlx::query_scalar("SELECT cwd FROM waves WHERE id = ?1")
+    // #1147 S1 — `waves.cwd` dropped by migration 0077.
+    let cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id = ?1")
         .bind(wave_id)
         .fetch_optional(&mut **tx)
         .await?
@@ -548,7 +549,8 @@ async fn workspace_wave_sweep_for_wave_tx(
         );
         return None;
     }
-    let row = match sqlx::query("SELECT cwd, cove_id FROM waves WHERE id = ?1")
+    // #1147 S1 — `waves.cwd` dropped by migration 0077.
+    let row = match sqlx::query("SELECT workspace_path, cove_id FROM waves WHERE id = ?1")
         .bind(wave_id)
         .fetch_optional(&mut **tx)
         .await
@@ -564,13 +566,16 @@ async fn workspace_wave_sweep_for_wave_tx(
             return None;
         }
     };
-    let cwd: String = match row.try_get("cwd") {
+    // #1147 S1 — by NAME, so it had to move with the SELECT above. `try_get`
+    // resolves at runtime; a stale name here degrades the sweep to a silent
+    // `None` + warn, which is why it took a test to catch rather than rustc.
+    let cwd: String = match row.try_get("workspace_path") {
         Ok(cwd) => cwd,
         Err(error) => {
             tracing::warn!(
                 wave_id,
                 error = %error,
-                "workspace wave teardown could not read cwd column for preserved worktree sweep"
+                "workspace wave teardown could not read workspace_path for preserved worktree sweep"
             );
             return None;
         }

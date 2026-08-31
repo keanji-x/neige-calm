@@ -16,6 +16,11 @@
       "purpose": null,
       "workflow_input": null,
       "terminal_at": 333,
+      "workspace": {
+        "kind": "managed",
+        "path": "/tmp/golden-wave",
+        "frozen_at": 444
+      },
       "created_at": 1000,
       "updated_at": 2000,
       "agent_message": "spec says hi"

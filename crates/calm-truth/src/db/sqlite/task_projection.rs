@@ -1313,8 +1313,27 @@ mod tests {
         let wave = "wave-projection".to_string();
         sqlx::query("INSERT INTO coves(id,name,color,sort,kind,created_at,updated_at) VALUES('cove-projection','c','#000',0,'user',0,0)")
             .execute(&repo.pool).await.unwrap();
-        sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,cwd,created_at,updated_at,spec_task_ceiling,require_task_gates) VALUES(?1,'cove-projection','w',0,'draft','/',0,0,1,0)")
+        // #1147 S1 — this fixture used to inline `cwd='/'`, which made it a
+        // second writer of a column design D1 reserves for
+        // `wave_workspace_write_tx`. It is converted rather than exempted:
+        // a fixture that bypasses a production invariant is exactly the shape
+        // that lets the invariant rot. The projection assertions never read
+        // the workspace, so the value is the same `/` routed properly.
+        sqlx::query("INSERT INTO waves(id,cove_id,title,sort,lifecycle,created_at,updated_at,spec_task_ceiling,require_task_gates) VALUES(?1,'cove-projection','w',0,'draft',0,0,1,0)")
             .bind(&wave).execute(&repo.pool).await.unwrap();
+        let mut tx = repo.pool.begin().await.unwrap();
+        crate::db::sqlite::wave_workspace::wave_workspace_write_tx(
+            &mut tx,
+            &wave,
+            &crate::model::WaveWorkspace {
+                kind: crate::model::WaveWorkspaceKind::Attached,
+                path: "/".into(),
+                frozen_at: Some(0),
+            },
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
         (repo, wave)
     }
 

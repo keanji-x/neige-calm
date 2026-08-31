@@ -11,6 +11,8 @@ use crate::model::*;
 use crate::wave_cove_cache::WaveCoveCache;
 
 use super::wave_tree::MAX_TREE_TASK_BUDGET;
+use super::wave_workspace::wave_workspace_write_tx;
+use crate::db::rows::WAVE_SELECT_COLUMNS;
 
 pub async fn wave_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
@@ -42,9 +44,14 @@ pub async fn wave_create_tx(
     // future change to the seed value can't be reached by skipping
     // the column from the INSERT list.
     let lifecycle = crate::model::WaveLifecycle::Draft;
-    // Issue #250 PR 2 — `cwd` lands on the row verbatim from `NewWave`.
-    // The route layer (`POST /api/waves`) already validated absolute-
-    // path shape + cove-folder ownership; this writer stays mechanical.
+    // Issue #250 PR 2 — the route layer (`POST /api/waves`) already validated
+    // absolute-path shape + cove-folder ownership; this writer stays
+    // mechanical.
+    //
+    // Issue #1147 S1 — the workspace is not part of this INSERT. It is written
+    // a few lines down by `wave_workspace_write_tx` in this same transaction,
+    // so kind/path/frozen_at are always decided together.
+    //
     // `terminal_at` is `NULL` on every fresh wave (Draft is non-terminal
     // by construction; `WaveLifecycle::is_terminal` returns false for it).
     // Issue #985 slice 6 PR-B — `tree_task_budget` is stamped NULL by every
@@ -57,15 +64,14 @@ pub async fn wave_create_tx(
     // whole-tree bound vacuous.
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, tree_task_budget, created_at, updated_at)
-           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, ?10, NULL, NULL, ?11, ?12)"#,
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, tree_task_budget, created_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)"#,
     )
     .bind(&id)
     .bind(p.cove_id.as_str())
     .bind(&p.title)
     .bind(sort)
     .bind(lifecycle.as_db_str())
-    .bind(&p.cwd)
     .bind(p.workflow_id.as_deref())
     .bind(p.plugin_scope.as_deref())
     .bind(purpose)
@@ -74,6 +80,24 @@ pub async fn wave_create_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    // Issue #1147 S1 — every wave minted through this function is `Attached`
+    // and frozen at creation. (The launchpad wave does not come through here;
+    // it is the documented D9 exception and stays unfrozen — see
+    // `routes/today.rs::launchpad_workspace`.)
+    //   * `Attached` because managed roots do not exist until S2, and the
+    //     requested path is by definition a directory that already exists and
+    //     was not created by the server;
+    //   * frozen because attached workspaces never need re-pointing (D6:
+    //     `attached → *` is not a legal transition), so for a user-cove wave
+    //     the unfrozen state has no legal use — and an unfrozen `attached` row
+    //     is exactly what a future PATCH branch that forgot to check `kind`
+    //     would relocate, i.e. would move a real user repository (D9).
+    let workspace = WaveWorkspace {
+        kind: WaveWorkspaceKind::Attached,
+        path: p.cwd.clone(),
+        frozen_at: Some(now),
+    };
+    wave_workspace_write_tx(tx, &id, &workspace).await?;
     // #234 — write-through into the wave→cove cache. Same semantics as
     // the `card_role_cache` write-through in `card_create_with_id_tx`: a
     // follow-up emit inside the same `write_with_event` closure can
@@ -88,12 +112,13 @@ pub async fn wave_create_tx(
         archived_at: None,
         pinned_at: None,
         lifecycle,
-        cwd: p.cwd,
+        cwd_wire_alias: workspace.path.clone(),
         workflow_id: p.workflow_id,
         plugin_scope: p.plugin_scope,
         purpose: purpose.map(str::to_owned),
         workflow_input: p.workflow_input,
         terminal_at: None,
+        workspace,
         created_at: now,
         updated_at: now,
     })
@@ -104,10 +129,9 @@ pub async fn wave_update_tx(
     id: &str,
     p: WavePatch,
 ) -> Result<Wave> {
-    let mut w = sqlx::query_as::<_, crate::db::rows::WaveRow>(
-        r#"SELECT id, cove_id, title, sort, archived_at, pinned_at, lifecycle, cwd, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, created_at, updated_at
-           FROM waves WHERE id = ?1"#,
-    )
+    let mut w = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+        "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE id = ?1"
+    ))
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?
