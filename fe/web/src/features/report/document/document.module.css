@@ -72,12 +72,29 @@
     min-inline-size: 0;
   }
 
-  /* A block that rendered nothing takes no row. `ProseBlock` returns `null`
-     for a block whose top level sanitizes away — a document carrying its own
-     maintenance contract in a leading HTML comment (#1185) — and React emits
-     no children for `null`, so the slot is literally `:empty`. Without this
-     the empty grid item still claims a row and its `row-gap`. */
-  .block:empty {
+  /*
+   * A block that rendered nothing takes no row — and neither does anything
+   * else on that row. The case is a document carrying its own maintenance
+   * contract in a leading HTML comment (#1185): `rawHtml: 'drop'` removes the
+   * only node the block has, and React emits no children, so the slot is
+   * literally `:empty`.
+   *
+   * **The rule is on the row, not on the block.** `.row` is `display: contents`,
+   * so the block AND its backlink sidenote are both grid items of `.doc`;
+   * hiding only the block leaves the sidenote in column 3, and a cited contract
+   * block renders as nothing at all plus a lone `◂ 3` floating in the gutter.
+   * A contract block is citable — it has a stable id in `cove.outline` — so
+   * that is a reachable state, not a theoretical one.
+   *
+   * This rule is what carries the behaviour; the `return null` in `ProseBlock`
+   * is a no-op on the DOM (an empty fragment produces the same children). It is
+   * covered by `carrier.browser.test.tsx`, in a real browser, because `:empty`,
+   * `display` and `row-gap` are all layout and jsdom computes none of it.
+   *
+   * `:has()` is already load-bearing in this file (see `.doc:has(nav ol:hover)`),
+   * so this adds no new engine requirement.
+   */
+  .row:has(> .block:empty) {
     display: none;
   }
 

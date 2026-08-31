@@ -214,55 +214,44 @@ fn block_heading(block: &calm_types::wave_report::ReportBlock) -> String {
         .get("markdown")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    // An outline summarizes what a reader will see. An HTML comment renders as
-    // nothing on both front ends, so it may not become a block title: a
-    // document that carries its own maintenance contract in a leading comment
-    // (#1185 §0.7) would otherwise echo that contract back into the outline of
-    // every wave, as noise and against the response byte budget. The block
-    // itself stays in the outline with an empty heading — dropping it would
-    // make it undeep-linkable, and this outline is the only source of block
-    // ids.
-    let stripped = strip_html_comments(markdown);
-    let first_non_empty = stripped
+    // An outline summarizes what a reader will see, so the title is taken from
+    // the block's VISIBLE TEXT, not from its source. `scan_links().plain` is
+    // the workspace's one CommonMark projection of that — it drops `Event::Html`
+    // and `Event::InlineHtml` and keeps `Event::Text` / `Event::Code`
+    // (`calm_types::report_links`), and `report_backlinks` already quotes from
+    // the same projection, so an outline title and a backlink quote can never
+    // disagree about what a block says.
+    //
+    // Reusing it, rather than scanning the source for `<!-- … -->`, is the
+    // whole point: a substring scanner does not respect Markdown boundaries,
+    // so a block starting with the inline code `` `<!-- x -->` `` would render
+    // those characters and be titled without them. The case that makes any of
+    // this matter is a document carrying its own maintenance contract in a
+    // leading comment (#1185 §0.7): it renders as nothing, so it may not echo
+    // into the outline of every wave — as noise and against the response byte
+    // budget. The block itself stays, with an empty heading; dropping it would
+    // make it undeep-linkable, and this outline is the only source of block ids.
+    //
+    // No ATX handling here, deliberately: `plain` already emits a heading's
+    // text without its `#` markers. Re-stripping leading `#` would eat the
+    // visible characters of a block whose first line is the *code* `# x`.
+    //
+    // Known divergence, accepted: `plain` drops the alt text of a standalone
+    // image (`report_links.rs`'s `standalone_image_alt_is_not_plain_text`),
+    // while `fe/` renders alt as the `<img>`'s accessible name. So an
+    // image-only prose block gets an empty title. That is the right trade —
+    // the block keeps its id and stays linkable, the outline is a text index
+    // and an alt string is not the image, and the alternative is a second
+    // hand-written projection of Markdown to text, which is exactly the class
+    // of bug this replaced. If image-only blocks ever need titles, teach
+    // `plain` about them once, for both readers.
+    let plain = calm_types::report_links::scan_links(markdown).plain;
+    let heading = plain
         .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("")
-        .trim_end();
-    let hashes = first_non_empty
-        .bytes()
-        .take_while(|byte| *byte == b'#')
-        .count();
-    let heading = if (1..=6).contains(&hashes)
-        && first_non_empty
-            .as_bytes()
-            .get(hashes)
-            .is_none_or(|byte| *byte == b' ')
-    {
-        first_non_empty
-            .trim_start_matches('#')
-            .strip_prefix(' ')
-            .unwrap_or(first_non_empty)
-    } else {
-        first_non_empty.trim()
-    };
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
     truncate_chars(heading, 60)
-}
-
-/// Remove every `<!-- … -->` range. An unterminated `<!--` swallows the rest of
-/// the text, which is what a renderer does with it too.
-fn strip_html_comments(markdown: &str) -> String {
-    let mut out = String::with_capacity(markdown.len());
-    let mut rest = markdown;
-    while let Some(open) = rest.find("<!--") {
-        out.push_str(&rest[..open]);
-        let after = &rest[open + 4..];
-        match after.find("-->") {
-            Some(close) => rest = &after[close + 3..],
-            None => return out,
-        }
-    }
-    out.push_str(rest);
-    out
 }
 
 fn truncate_chars(value: &str, limit: usize) -> String {
@@ -335,11 +324,71 @@ mod tests {
 
     #[test]
     fn an_unterminated_comment_is_stripped_to_the_end() {
-        // A renderer swallows the rest of the document too, so the outline must
-        // not resurrect text nobody can see.
+        // A block-level `<!--` that is never closed runs to the end of the
+        // document in CommonMark, so the renderer shows nothing and the outline
+        // must not resurrect text nobody can see.
         assert_eq!(
             block_heading(&prose("<!-- 报告维护契约\n\n# 概要\n\n本轮结论。\n")),
             ""
         );
+    }
+
+    #[test]
+    fn a_comment_inside_inline_code_is_visible_text_and_keeps_its_characters() {
+        // The regression a source-substring scanner introduced: a renderer
+        // prints these characters, so the outline must title the block with
+        // them. `plain` keeps `Event::Code` and drops only real HTML nodes.
+        assert_eq!(
+            block_heading(&prose("`<!-- x -->` inline code first\n")),
+            "<!-- x --> inline code first"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_comment_inside_a_paragraph_does_not_swallow_the_line() {
+        // Not at the start of a block, so the HTML-block rule does not apply;
+        // and with no `-->` it is not a valid inline HTML comment either, so
+        // CommonMark leaves it as literal TEXT. Both renderers print those
+        // characters, so the outline keeps them. The old source scanner cut
+        // from `<!--` to the end of the block and lost the whole line.
+        assert_eq!(
+            block_heading(&prose("结论 <!-- 内部备注 继续写\n")),
+            "结论 <!-- 内部备注 继续写"
+        );
+    }
+
+    #[test]
+    fn a_fenced_code_block_is_visible_text_even_when_it_contains_a_comment() {
+        assert_eq!(
+            block_heading(&prose("```html\n<!-- 示例 -->\n```\n")),
+            "<!-- 示例 -->"
+        );
+    }
+
+    #[test]
+    fn a_leading_blank_line_does_not_turn_the_heading_into_its_hashes() {
+        // The old scanner took `lines().next()` for the ATX test and the first
+        // non-empty line for the text, so a body starting with a blank line was
+        // titled `# 概要`. `plain` never emits the markers at all.
+        assert_eq!(block_heading(&prose("\n# 概要\n\n本轮结论。\n")), "概要");
+    }
+
+    #[test]
+    fn a_hash_that_is_visible_code_keeps_its_hash() {
+        // The other half of the same fix: nothing re-strips `#` after `plain`,
+        // so a block whose first visible characters are the code `# x` keeps
+        // them.
+        assert_eq!(
+            block_heading(&prose("`# x` not a heading\n")),
+            "# x not a heading"
+        );
+    }
+
+    #[test]
+    fn an_image_only_block_gets_an_empty_heading() {
+        // Documented divergence from the front ends, which render alt text:
+        // `plain` drops a standalone image's alt. The block keeps its id, so it
+        // stays linkable; see the note on `block_heading`.
+        assert_eq!(block_heading(&prose("![一张图](chart.png)\n")), "");
     }
 }

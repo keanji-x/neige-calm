@@ -14,9 +14,15 @@
  *
  * Note for whoever changes `ProseBlock`: returning `null` for an empty AST and
  * returning an empty fragment produce *the same DOM* — React emits no children
- * either way. The load-bearing production change on this front end is the
- * `.block:empty` rule in `document.module.css`, and this is the test that
- * covers it.
+ * either way, so that early return carries nothing and deleting it leaves every
+ * assertion here green. The load-bearing production change on this front end is
+ * the `.row:has(> .block:empty)` rule in `document.module.css`, and this is the
+ * test that covers it.
+ *
+ * The rule is on the ROW because the row is `display: contents`: the block and
+ * its backlink sidenote are siblings in the same grid, so hiding only the block
+ * leaves a lone `◂ N` in the gutter beside nothing. The third case below is
+ * that one.
  */
 import { render } from '@testing-library/react';
 import { page as browserPage } from 'vitest/browser';
@@ -47,7 +53,10 @@ const CONTRACT = [
 
 const SECTION = '# 概要\n\n本轮结论。\n';
 
-function Page({ blocks }: { blocks: ReportBlock[] }) {
+function Page({ blocks, backlinkCounts }: {
+  blocks: ReportBlock[];
+  backlinkCounts?: ReadonlyMap<string, number>;
+}) {
   return (
     <div
       data-testid="frame"
@@ -59,6 +68,7 @@ function Page({ blocks }: { blocks: ReportBlock[] }) {
     >
       <ReportDocument
         report={{ summary: '', body: '', blocks }}
+        backlinkCounts={backlinkCounts}
         empty={<p>Nothing yet.</p>}
       />
     </div>
@@ -77,9 +87,13 @@ describe('a contract block takes no room', () => {
     await browserPage.viewport(1200, 800);
     render(<Page blocks={[prose('b_1', CONTRACT), prose('b_2', SECTION)]} />);
 
-    const block = document.querySelector('#b_1')!;
+    const block = document.querySelector('#b_1') as HTMLElement;
     expect(block.childNodes.length).toBe(0);
-    expect(getComputedStyle(block).display).toBe('none');
+    // The row is what carries `display: none`; the block's own computed
+    // `display` stays `block` inside a hidden subtree, which is why this asks
+    // the row and then asks the engine whether the block renders at all.
+    expect(getComputedStyle(block.parentElement!).display).toBe('none');
+    expect(block.checkVisibility()).toBe(false);
     expect(block.getBoundingClientRect().height).toBe(0);
   });
 
@@ -91,11 +105,37 @@ describe('a contract block takes no room', () => {
     document.body.replaceChildren();
 
     // The control: the same document without the contract. The reader must not
-    // be able to tell the two apart, and before `.block:empty` they differed by
-    // one `row-gap` (`--space-8`).
+    // be able to tell the two apart, and before the `:empty` rule they differed
+    // by one `row-gap` (`--space-8`).
     render(<Page blocks={[prose('b_2', SECTION)]} />);
     const withoutContract = topInFrame(document.querySelector('#b_2')!);
 
     expect(withContract).toBe(withoutContract);
+  });
+
+  it('takes its backlink sidenote with it, and still costs the next section nothing', async () => {
+    /*
+     * The orphan-marker case. A contract block is citable — it keeps a stable
+     * id in `cove.outline` — so another report can link straight at it and the
+     * slot grows a `◂ N` sidenote in column 3. `.row` is `display: contents`,
+     * so that sidenote is a grid item in its own right: a rule that hid only
+     * the block would leave the marker alone on an otherwise blank row.
+     */
+    await browserPage.viewport(1200, 800);
+    const cited = new Map([['b_1', 3]]);
+
+    render(<Page blocks={[prose('b_1', CONTRACT), prose('b_2', SECTION)]} backlinkCounts={cited} />);
+    const sidenote = [...document.querySelectorAll('span')]
+      .find((span) => span.textContent?.includes('◂'));
+    expect(sidenote, 'the sidenote is rendered — this test is about hiding it, not about it being absent').toBeDefined();
+    expect(sidenote!.checkVisibility()).toBe(false);
+    expect(sidenote!.getBoundingClientRect().height).toBe(0);
+    const withContract = topInFrame(document.querySelector('#b_2')!);
+    document.body.replaceChildren();
+
+    // The same control as above: a cited contract block must be as invisible as
+    // an uncited one, including in where it leaves the next section.
+    render(<Page blocks={[prose('b_2', SECTION)]} />);
+    expect(withContract).toBe(topInFrame(document.querySelector('#b_2')!));
   });
 });

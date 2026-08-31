@@ -371,7 +371,7 @@
   why: >
     calm.css 原注释:"One left edge runs the whole page (#960 PR3)… Breakout — not a card border — is what
     marks the figure as a layout event." 这是"用突破而非卡片边框标记 figure"的排版契约。
-  source: web/src/calm.css:1896-1906,2151-2173
+  source: web/src/calm.css:1896-1906,2151-2184
   authoritative_test: NONE
   owner_slice: features/report/layout
   intentional_omission: false
@@ -403,7 +403,7 @@
     深链到达时高亮动画必须先移除再在 requestAnimationFrame 中重新添加 `report-block--highlight`。
   why: >
     连续点击同一目标时不 remove/re-add,CSS animation 不会重放,用户看不到第二次高亮。
-  source: web/src/pages/WaveReportPage.tsx:172-179 + web/src/calm.css:2176-2178
+  source: web/src/pages/WaveReportPage.tsx:172-179 + web/src/calm.css:2187-2189
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:679
   owner_slice: features/report/layout
   intentional_omission: false

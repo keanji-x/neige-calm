@@ -319,21 +319,29 @@ function ProseBlock({ markdown, blockId, onOpenLink }: {
 
   const ast = sanitizeAstPolicy(parsed.value, { rawHtml: 'drop' });
   /*
-   * A prose block whose top level sanitizes to nothing renders nothing — and a
-   * block that renders nothing must not hold a grid row open. The case that
-   * makes this real is a document that carries its own maintenance contract in
-   * a leading HTML comment (#1185): `rawHtml: 'drop'` removes the one node it
-   * has, leaving an empty block and a `row-gap` of blank space at the top of
-   * every report.
+   * **This early return changes no DOM.** Returning `null` and returning an
+   * empty fragment produce the same thing — React emits no children either
+   * way — so nothing downstream can tell them apart, and no test measures the
+   * difference. It is here to say out loud that "sanitized to nothing" is a
+   * state this component expects, for the reader who arrives at the CSS below
+   * wondering how a block ends up `:empty`.
    *
-   * The test is *here*, after the one pipeline, rather than in the block
-   * filter above: judging emptiness up there would parse and sanitize every
+   * What actually keeps an emptied block off the page is
+   * `.row:has(> .block:empty)` in `document.module.css`, and the test that
+   * covers it is `carrier.browser.test.tsx` — a real browser, because `:empty`,
+   * `display` and `row-gap` are layout and jsdom computes no layout. Deleting
+   * this early return leaves every one of those assertions green; deleting the
+   * CSS rule turns them red.
+   *
+   * The case that makes any of it real is a document that carries its own
+   * maintenance contract in a leading HTML comment (#1185): `rawHtml: 'drop'`
+   * removes the one node it has.
+   *
+   * Emptiness is judged *here*, after the one pipeline, rather than in the
+   * block filter above: judging it up there would parse and sanitize every
    * prose block a second time — a second implementation of this pipeline, and
    * one that could not structurally avoid the `failed` branch, so it would
    * hide the screen that shows an agent the source it broke.
-   *
-   * "Top-level nodes are empty" is the whole claim. It does not detect a
-   * nested empty blockquote or an empty list, and it should not try to.
    */
   if (ast.children.length === 0) return null;
   return <>{ast.children.map((block, index) => (

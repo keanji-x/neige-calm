@@ -209,11 +209,26 @@ async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
 }
 
 #[tokio::test]
-async fn outline_stays_within_the_response_byte_cap_with_multi_block_reports() {
-    // The existing wave-cap test seeds 50 *empty* bodies, so it exercises
-    // neither `MAX_BLOCKS_PER_WAVE` nor `MAX_RESPONSE_BYTES` (#1185 §4.4 E).
-    // Five blocks per wave times 50 waves is the shape a document-carried
-    // contract actually produces.
+async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_the_caps() {
+    /*
+     * What this measures, exactly: a cove at the realistic ceiling — 51 waves,
+     * every one carrying the maintenance contract plus four sections — still
+     * fits the outline response comfortably, and the only degradation is the
+     * wave cap, reported.
+     *
+     * What it does NOT measure, so nobody reads it as coverage it lacks: the
+     * `MAX_RESPONSE_BYTES` truncation branch and the `MAX_BLOCKS_PER_WAVE`
+     * branch are both untaken here, and by construction. 51 waves × 5 blocks
+     * serializes to about 17 KB against a 32 KiB cap, and 5 is well under the
+     * 40-block cap. The assertions below therefore say "nothing was dropped",
+     * which is the claim worth pinning for the carrier: adding a contract block
+     * to every report does not cost a cove its outline. A test of the *drop*
+     * paths would need a fixture built to blow the caps, it would be about the
+     * degradation logic rather than about the contract, and it is not this one.
+     *
+     * The existing wave-cap test seeds 50 *empty* bodies, which is why the size
+     * question needed a fixture of its own (#1185 §4.4 E).
+     */
     let boot = boot().await;
     let mut seeded = Vec::new();
     for index in 0..50 {
@@ -232,31 +247,38 @@ async fn outline_stays_within_the_response_byte_cap_with_multi_block_reports() {
         .await
         .unwrap();
     let bytes = serde_json::to_vec(&value).unwrap().len();
-    // Measured at 17029 bytes for these 51 waves — real headroom under the cap,
-    // not an accident of an empty fixture.
+    // Measured at 17029 bytes when this was written. The upper bound is the cap
+    // itself; the lower bound is there so the day someone breaks the fixture
+    // into emptiness this stops passing for the wrong reason.
     assert!(
-        bytes <= 32 * 1024,
-        "cove.outline must honour MAX_RESPONSE_BYTES; got {bytes} bytes"
+        (10 * 1024..=32 * 1024).contains(&bytes),
+        "expected a real, capped payload for 51 contract-bearing waves; got {bytes} bytes"
     );
 
-    // Degradation is reported, never silent.
+    // The wave cap IS taken here — 51 waves against `MAX_WAVES = 50` — and it
+    // is reported rather than silent.
     let waves = value["waves"].as_array().unwrap();
-    let listed_waves = waves.len();
-    let omitted_waves = value["truncated"]["waves"].as_u64().unwrap_or(0) as usize;
-    // 50 siblings + the wave `boot()` itself created.
-    assert_eq!(listed_waves + omitted_waves, 51);
+    assert_eq!(waves.len(), 50);
+    assert_eq!(value["truncated"]["waves"], 1);
+    // Stated rather than implied: the byte-truncation branch did not fire.
+    assert!(value["truncated"]["bytes"].is_null());
 
+    // No block was dropped from any listed wave: neither the block cap nor the
+    // byte cap fired. This is the carrier's actual claim — a contract block in
+    // every report costs the cove nothing in outline coverage.
     for wave in waves {
         let id = wave["id"].as_str().unwrap();
         if !seeded.iter().any(|seed| seed.id.as_str() == id) {
             continue;
         }
-        let listed = wave["blocks"].as_array().unwrap().len();
-        let omitted = value["truncated"]["blocks"][id].as_u64().unwrap_or(0) as usize;
         assert_eq!(
-            listed + omitted,
+            wave["blocks"].as_array().unwrap().len(),
             5,
-            "a seeded wave has five blocks; each is listed or reported truncated ({id})"
+            "every block of a seeded wave is listed ({id})"
+        );
+        assert!(
+            value["truncated"]["blocks"][id].is_null(),
+            "nothing was dropped, so no truncation is reported for {id}"
         );
     }
 }
