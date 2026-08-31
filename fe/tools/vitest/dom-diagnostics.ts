@@ -36,8 +36,9 @@
  *  - the whole suite is green with it installed. (No test count is quoted here
  *    on purpose: the first two drafts of this comment carried totals that were
  *    stale by the time they were read.) Query-failure messages *are* read — by
- *    this file's own tests, unavoidably — but nothing anywhere asserts on their
- *    exact text; and
+ *    this file's own tests, unavoidably, one of which asserts an exact message
+ *    against a producer it installed itself — but nothing outside this file's
+ *    own fixtures does; and
  *  - `getElementError` is called on *every* `waitFor` poll, not just the last
  *    one, so the cost matters. Measured on a 200-node body holding 100
  *    buttons: 5.10ms per call against 4.07ms without, so the report costs
@@ -121,10 +122,19 @@ if (typeof document !== 'undefined') {
     return reasons.join('+');
   };
 
-  const cssHidden = (element: Element): boolean => {
-    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
-    return style?.display === 'none' || style?.visibility === 'hidden';
-  };
+  /*
+   * `display` and `visibility` need opposite treatment, and conflating them was
+   * a bug in both directions.
+   *
+   * `display: none` does **not** reach a descendant's computed value, so it can
+   * only be found by walking ancestors. `visibility: hidden` **does** inherit —
+   * but it is also overridable, and `<div style="visibility:hidden"><button
+   * style="visibility:visible">` is a visible button that an ancestor walk
+   * would have called hidden. So visibility is read off the element itself,
+   * where inheritance and any override are already resolved.
+   */
+  const displayNone = (style: CSSStyleDeclaration | undefined): boolean => style?.display === 'none';
+  const visibilityHidden = (style: CSSStyleDeclaration | undefined): boolean => style?.visibility === 'hidden';
 
   /*
    * The CSS-hidden roots that hold something queryable.
@@ -158,13 +168,10 @@ if (typeof document !== 'undefined') {
   const cssHiddenRoots = (body: HTMLElement): { roots: Map<Element, number>; examined: number; total: number } => {
     const queryable = Array.from(body.querySelectorAll(MEANINGFUL));
     const examined = queryable.slice(0, QUERYABLE_LIMIT);
-    const memo = new Map<Element, boolean>();
-    const isHidden = (element: Element): boolean => {
-      const seen = memo.get(element);
-      if (seen !== undefined) return seen;
-      const value = cssHidden(element);
-      memo.set(element, value);
-      return value;
+    const memo = new Map<Element, CSSStyleDeclaration | undefined>();
+    const styleOf = (element: Element): CSSStyleDeclaration | undefined => {
+      if (!memo.has(element)) memo.set(element, element.ownerDocument.defaultView?.getComputedStyle(element));
+      return memo.get(element);
     };
     const roots = new Map<Element, number>();
     for (const element of examined) {
@@ -173,7 +180,16 @@ if (typeof document !== 'undefined') {
       // as fully visible while the walk stopped one level short of it, which is
       // this file's own misdiagnosis class one level up.
       for (let node: Element | null = element; node !== null; node = node.parentElement) {
-        if (isHidden(node)) root = node;
+        if (displayNone(styleOf(node))) root = node;
+      }
+      // Only if no `display:none` ancestor explains it: the element's own
+      // resolved visibility, then the highest *contiguously* hidden ancestor,
+      // so an override back to `visible` lower down stops the climb.
+      if (root === null && visibilityHidden(styleOf(element))) {
+        root = element;
+        for (let node = element.parentElement; node !== null && visibilityHidden(styleOf(node)); node = node.parentElement) {
+          root = node;
+        }
       }
       if (root === null) continue;
       roots.set(root, (roots.get(root) ?? 0) + 1);
@@ -216,8 +232,12 @@ if (typeof document !== 'undefined') {
 
     // Decoration is `aria-hidden` everywhere in this app (every icon is). Only
     // a subtree that *contains* something queryable can explain a missing role.
-    const byAttribute = Array.from(body.querySelectorAll(HIDING_ATTRIBUTES))
-      .filter((element) => element.querySelector(MEANINGFUL) !== null);
+    // `querySelector` excludes the root, so a hidden element that is itself
+    // the queryable one — `<button aria-hidden="true">` — was reported as
+    // "none": the report denying the very thing it was asked about.
+    const holdsQueryable = (element: Element): boolean =>
+      element.matches(MEANINGFUL) || element.querySelector(MEANINGFUL) !== null;
+    const byAttribute = Array.from(body.querySelectorAll(HIDING_ATTRIBUTES)).filter(holdsQueryable);
     const { roots, examined, total } = cssHiddenRoots(body);
     // A CSS-hidden root that also carries a hiding attribute is one subtree,
     // not two; the attribute list already names it.
@@ -277,30 +297,49 @@ if (typeof document !== 'undefined') {
     };
 
     const withReport = (message: string | null, container: Container) => {
-      const error = inherited(message === null ? message : withoutReport(message), container);
       /*
-       * Testing Library re-wraps messages that already came from here, and the
-       * worst offender is the path #1161 actually takes: on timeout `waitFor`
-       * calls `getElementError(lastError.message, …)`, so the report would be
-       * appended to a message that already ends with one. `getMultipleError`
-       * does it once per match on top of the outer wrap. Re-appending is only
-       * noise, but it is noise in the one artifact this exists to be read from,
-       * and it eats the runner's head+tail truncation budget.
+       * `message === null` is Testing Library rendering *one element* on its way
+       * to a larger error — `query-helpers.js` calls
+       * `getElementError(null, element)` once per match to build the
+       * "Found multiple elements" text. A report there is worse than useless:
+       * it is not the final error, and the reports land *between* the element
+       * dumps, so the strip below then cut the message at the first one and
+       * took the rest with it. Measured on `getByText` with two matches: the
+       * second element's dump and Testing Library's own "If this is
+       * intentional, then use the `*AllBy*` variant" hint both disappeared —
+       * this file making an existing message strictly worse. Declining here
+       * leaves the strip only genuine re-wraps to act on.
        */
+      if (message === null) return inherited(message, container);
+      const error = inherited(withoutReport(message), container);
       /*
        * A diagnostic that throws would replace a real failure with a useless
-       * one, so both halves give up quietly. Note the *second* `append` is why
-       * this is two functions and not a bare try/catch: if the message could
-       * not be written the first time — a frozen or read-only error from some
-       * other `getElementError` — writing the failure notice would throw for
-       * exactly the same reason, and the original error would be lost to a
-       * `TypeError`. When nothing can be written, the error is returned
+       * one, so every step here gives up quietly. Two things are load-bearing:
+       * the *second* `append` is why this is a helper and not a bare try/catch
+       * — if the message could not be written the first time (a frozen or
+       * read-only error from some other `getElementError`) then writing the
+       * failure notice would throw for exactly the same reason, and the
+       * original error would be lost to a `TypeError`. And `String(cause)` is
+       * itself fallible, since a thrown object can carry a `Symbol.toPrimitive`
+       * that throws. When nothing can be written the error is returned
        * untouched, which is the outcome that loses the least.
+       *
+       * That inner guard is the one branch here with **no test behind it**, and
+       * it is deliberate: `report()` only ever throws DOM exceptions and
+       * `TypeError`s, all of which stringify, so nothing reachable through the
+       * public surface can exercise it. It is kept because "the catch must not
+       * throw" is the whole contract of a diagnostic, not because it is proven.
        */
       try {
         append(error, report(container));
       } catch (cause) {
-        append(error, `${MARKER} unavailable: ${String(cause)}`);
+        let described: string;
+        try {
+          described = String(cause);
+        } catch {
+          described = 'a cause that could not be converted to a string';
+        }
+        append(error, `${MARKER} unavailable: ${described}`);
       }
       return error;
     };

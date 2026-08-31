@@ -142,6 +142,51 @@ describe('the a11y failure report (#1161)', () => {
   });
 
   /*
+   * `visibility` is inherited but overridable, so an ancestor walk that trusted
+   * the ancestor rather than the element called this visible button hidden.
+   */
+  it('does not call an element hidden when it overrides visibility back to visible', () => {
+    mount('<div class="veiled" style="visibility: hidden">'
+      + '<button style="visibility: visible">Save</button></div>');
+    const report = reportOf(failureMessage(missing));
+
+    expect(report).not.toContain('class="veiled"');
+  });
+
+  /*
+   * `querySelector` does not match the element it is called on, so a hidden node
+   * that is *itself* the queryable one was filtered out as decoration — the
+   * report denying exactly what it was asked about.
+   */
+  it('counts a hidden element that is itself the queryable one', () => {
+    mount('<button class="hidden-button" aria-hidden="true">Save</button>');
+    const report = reportOf(failureMessage(missing));
+
+    expect(report).toContain('<button class="hidden-button"> — aria-hidden');
+  });
+
+  /*
+   * Testing Library builds "Found multiple elements" by calling
+   * `getElementError(null, element)` once per match. Appending a report to each
+   * of those put reports *between* the element dumps, and the strip then cut the
+   * message at the first one — destroying the second dump and DTL's own
+   * `*AllBy*` hint. Making an existing message worse is the one thing a
+   * diagnostic may never do.
+   */
+  it('leaves the multiple-matches message whole', () => {
+    mount('<p>dupdup</p><p>dupdup</p>');
+    const message = failureMessage(() => screen.getByText('dupdup'));
+
+    expect(message).toContain('If this is intentional');
+    // Three dumps: one per match, built into Testing Library's own text, plus
+    // the container dump its outer wrap adds. The broken version had two — the
+    // number this assertion would have been calibrated to if it had been
+    // written from the output rather than from what the output should be.
+    expect(message.split('Ignored nodes:').length - 1).toBe(3);
+    expect(message.split(`${MARKER} document.body children`).length - 1).toBe(1);
+  });
+
+  /*
    * A page whose own `body` is hidden. The ancestor walk used to stop one level
    * short of `body`, so this reported "none" — the whole page invisible and the
    * report saying nothing is out of the accessibility tree.
@@ -231,6 +276,12 @@ describe('the a11y failure report (#1161)', () => {
     // The counts are the load-bearing half: "one body child" and "two body
     // children, the second one aria-hidden" are different diagnoses.
     const count = (message: string) => /document\.body children \((\d+)\)/.exec(message)?.[1];
+    // Both captures are asserted to exist first. Without this, deleting the
+    // counts from the report entirely makes each side `NaN`, and `toBe` uses
+    // `Object.is`, under which `NaN` equals `NaN` — the comparison below passes
+    // against a report that no longer states any count at all.
+    expect(count(before)).toMatch(/^\d+$/);
+    expect(count(after)).toMatch(/^\d+$/);
     expect(Number(count(before))).toBe(Number(count(after)) + 1);
   });
 
@@ -261,16 +312,27 @@ describe('the a11y failure report (#1161)', () => {
   it('returns the original error untouched when its message cannot be written', async () => {
     const { configure, getConfig } = await import('@testing-library/react');
     const installed = getConfig().getElementError;
-    configure({ getElementError: () => Object.freeze(new Error('frozen baseline')) });
+    /*
+     * One producer serving both halves. Freezing *every* error would let a
+     * wrapper that does nothing at all pass, since the producer already returns
+     * exactly the asserted message; the writable branch is the positive control
+     * that proves the wrapper's body actually runs.
+     */
+    configure({
+      getElementError: (message: string | null) => (message?.includes('FROZEN') === true
+        ? Object.freeze(new Error('frozen baseline'))
+        : new Error(String(message))),
+    });
     try {
-      // A fresh evaluation wraps the frozen-error producer that was just installed.
+      // A fresh evaluation wraps the producer that was just installed.
       // @ts-expect-error -- a Vite cache-busting specifier, not a resolvable path.
       await import('./dom-diagnostics.ts?frozen-probe');
-      // Positive control: without this the test passes even if the fresh
-      // evaluation installed nothing at all, because the frozen producer
-      // already returns exactly this message.
       expect(Symbol.for('nc.a11y-diagnostics.installed') in getConfig().getElementError).toBe(true);
-      expect(failureMessage(missing)).toBe('frozen baseline');
+      // Positive control: the writable error does get a report, so the wrapper
+      // is not merely installed but doing its work.
+      expect(reportOf(failureMessage(() => screen.getByText('writable')))).toContain('document.body children');
+      // And the frozen one comes back exactly as the producer made it.
+      expect(failureMessage(() => screen.getByText('FROZEN'))).toBe('frozen baseline');
     } finally {
       configure({ getElementError: installed });
     }
