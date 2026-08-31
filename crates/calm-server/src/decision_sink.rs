@@ -121,13 +121,18 @@ impl CardDecisionSink {
                     // verdict emissions (`calm.task.verdict`, wave_state.rs)
                     // never run it, so verdicts can never flip rows.
                     let now = crate::model::now_ms();
+                    // #1147 ① — the failure branch keeps the worker's own
+                    // `reason` (it used to be dropped by `..`) so the row
+                    // can carry it beside the `worker-reported` classifier.
                     let flip = match &event {
                         Event::TaskCompleted {
                             idempotency_key, ..
-                        } => Some((idempotency_key.clone(), true)),
+                        } => Some((idempotency_key.clone(), None)),
                         Event::TaskFailed {
-                            idempotency_key, ..
-                        } => Some((idempotency_key.clone(), false)),
+                            idempotency_key,
+                            reason,
+                            ..
+                        } => Some((idempotency_key.clone(), Some(reason.clone()))),
                         _ => None,
                     };
                     // Issue #644 PR-C (§3): the `Working → Reviewing`
@@ -138,7 +143,8 @@ impl CardDecisionSink {
                     // promotes as today (no gate runs on failure), and
                     // legacy keys with no tasks row keep today's behavior.
                     let mut suppress_promotion = false;
-                    if let Some((task_id, success)) = flip {
+                    if let Some((task_id, failure_reason)) = flip {
+                        let success = failure_reason.is_none();
                         // Round-4 review F1 — unstamped-row ownership proof:
                         // the REPORTING card must be the card the task's
                         // worker-spawn operation created (immutable op
@@ -183,7 +189,10 @@ impl CardDecisionSink {
                                 &task_id,
                                 wave_id.as_str(),
                                 reporter,
-                                "worker-reported",
+                                &crate::db::sqlite::status_detail_with_reason(
+                                    "worker-reported",
+                                    failure_reason.as_deref().unwrap_or_default(),
+                                ),
                                 now,
                             )
                             .await?

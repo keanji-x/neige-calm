@@ -941,7 +941,12 @@ async fn dead_worker_never_reporting_reaper_converges_and_parks_reviewing() {
 
     let task_row = repo.task_get(&task_id).await.unwrap().expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Failed);
-    assert_eq!(task_row.status_detail.as_deref(), Some("spawn-failed"));
+    // #1147 ① — classifier + reason tail (the reaper path).
+    let detail = task_row.status_detail.clone().unwrap_or_default();
+    assert_eq!(
+        calm_server::db::sqlite::status_detail_class(&detail),
+        "spawn-failed"
+    );
     let session = repo
         .session_get(&session_id)
         .await

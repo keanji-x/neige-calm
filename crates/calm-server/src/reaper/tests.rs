@@ -10,7 +10,9 @@ use axum::response::IntoResponse;
 use calm_exec::WorkerProvider;
 use calm_truth::db::RepoEventWrite;
 use calm_truth::db::RepoSyncDomainRaw;
-use calm_truth::db::sqlite::{SqlxRepo, begin_immediate_tx, session_insert_tx};
+use calm_truth::db::sqlite::{
+    SqlxRepo, begin_immediate_tx, session_insert_tx, status_detail_class,
+};
 use calm_truth::session_repo::SessionRepo;
 use calm_truth_test_harness::FakeProvider;
 use calm_types::ids::{CardId, WaveId};
@@ -1208,7 +1210,15 @@ async fn sweep_exited_failed_converges_dead_worker_task_and_parks_reviewing() {
         .expect("task get")
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Failed);
-    assert_eq!(task_row.status_detail.as_deref(), Some("spawn-failed"));
+    // #1147 ① — the reaper's interpreted reason reaches the ROW, not just
+    // the event. (The `spawn-failed` classifier is knowingly wrong for a
+    // runtime death; re-classifying it is out of scope for #1147 ①.)
+    let detail = task_row.status_detail.clone().unwrap_or_default();
+    assert_eq!(status_detail_class(&detail), "spawn-failed");
+    assert!(
+        detail.contains("outcome unknown") && detail.contains("supervisor probe"),
+        "status_detail must carry the reaper reason, got {detail:?}"
+    );
 
     let failed = task_failed_events(&repo, &task.id).await;
     assert_eq!(failed.len(), 1);
@@ -1315,7 +1325,17 @@ async fn sweep_resumable_codex_exited_arbiter_dead_converges() {
         .expect("task get")
         .expect("task exists");
     assert_eq!(task_row.status, TaskStatus::Failed);
-    assert_eq!(task_row.status_detail.as_deref(), Some("spawn-failed"));
+    // #1147 ① — same row-level readability for the arbiter-declared death.
+    let detail = task_row.status_detail.clone().unwrap_or_default();
+    assert_eq!(status_detail_class(&detail), "spawn-failed");
+    let event_reason = match &task_failed_events(&repo, &task.id).await[0] {
+        Event::TaskFailed { reason, .. } => reason.clone(),
+        other => panic!("expected task.failed, got {other:?}"),
+    };
+    assert!(
+        detail.ends_with(&event_reason),
+        "row detail {detail:?} must carry the event reason {event_reason:?}"
+    );
 
     let failed = task_failed_events(&repo, &task.id).await;
     assert_eq!(failed.len(), 1);

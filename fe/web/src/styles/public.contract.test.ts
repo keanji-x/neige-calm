@@ -22,7 +22,7 @@ import type { ColorToken, ScalarToken, StyleToken, ZIndexToken } from './public.
 const TOKEN_INVENTORY = [
   '--bg', '--paper', '--hairline', '--hairline-strong', '--text', '--text-2', '--text-3',
   '--text-4', '--accent', '--accent-soft', '--warn', '--warn-soft', '--surface-rail',
-  '--surface-card', '--surface-chip', '--surface-chip-focus', '--surface-panel-head',
+  '--surface-card', '--surface-chip',
   '--surface-terminal', '--surface-code', '--overlay-hover-faint', '--overlay-hover',
   '--overlay-hover-strong', '--overlay-active', '--success', '--error', '--overlay-scrim',
   '--error-text', '--warn-border', '--text-xs', '--text-base', '--text-md',

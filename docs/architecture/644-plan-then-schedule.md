@@ -292,15 +292,39 @@ canceled                          failed                               └─(wo
 | `pending → canceled` | spec via `calm.plan.cancel` | tool tx, guarded `WHERE status='pending'` |
 | `pending → dispatched` | scheduler | claim tx (single-winner `UPDATE ... WHERE status='pending'`) + `task.dispatched` event + lifecycle promotion, §5.4 |
 | `dispatched → running` | scheduler, on worker operation `Succeeded` (it `wait()`s like the dispatcher does today, `dispatcher.rs:1242`) | **guarded** `UPDATE tasks SET status='running', worker_card_id=<op target_id> WHERE id=? AND status='dispatched'` — a fast worker can report before `wait()` returns; the guard makes the late scheduler write a no-op so it can never regress `verifying/done/failed` back to `running` |
-| `dispatched/running → failed` (`status_detail='spawn-failed'`) | scheduler, on operation `Failed/Stuck` | guarded row update (`WHERE status IN ('dispatched','running')`) + kernel `task.failed` event (mirrors `dispatcher.rs:849-873`) |
+| `dispatched/running → failed` (`status_detail='spawn-failed: <reason>'`) | scheduler, on operation `Failed/Stuck` | guarded row update (`WHERE status IN ('dispatched','running')`) + kernel `task.failed` event (mirrors `dispatcher.rs:849-873`) |
 | `running/dispatched → verifying` (gate declared) | kernel, **inside the `calm.task.complete` tx** (`emit.rs:212-243` extended): same write that persists the worker's `task.completed` flips the row, guarded `WHERE status IN ('dispatched','running')` | emit tx |
 | `running/dispatched → done` (no gate) | same place, same guard | emit tx |
-| `running/dispatched → failed` (`status_detail='worker-reported'`) | kernel, inside the `calm.task.fail` tx | emit tx |
+| `running/dispatched → failed` (`status_detail='worker-reported: <reason>'`) | kernel, inside the `calm.task.fail` tx | emit tx |
 | `verifying → done` | gate waiter, on wrapper exit 0 | waiter tx: guarded row update + `task.gate_result` event + lifecycle promotion (§6.2, §6.5) |
 | `verifying → failed` (`status_detail='gate-red'` / `'gate-timeout'` / `'gate-infra'`) | gate waiter (or compensation / sweep, §8) | same tx shape. **No exceptions** — gate red is failed |
 
 Notes:
 
+- **`status_detail` is a CLASSIFIER plus an optional `": <reason>"` tail**
+  (issue #1147 slice ①). The classifier vocabulary is unchanged
+  (`spawn-failed` / `worker-reported` / `worker-timeout` / `gate-*` /
+  `child-wave-incomplete`); what is new is that every kernel-observed
+  failure that *has* an interpreted reason now persists it beside the
+  classifier instead of leaving it in the operation's `phase_detail_json`,
+  where neither the spec nor the frontend reads it. The tail is folded to
+  one line and capped (`STATUS_DETAIL_REASON_MAX`, `db/sqlite/task.rs`).
+
+  Consequences for readers, both load-bearing:
+  - **Never compare `status_detail` as a whole string.** Use
+    `status_detail_class()`. `is_gated_self_report`
+    (`dispatcher/mod.rs`) is the one predicate that dispatches on the
+    vocabulary and it goes through the helper.
+  - `migrations/0041_tasks.sql` is a released migration and its column
+    comment still describes the bare-classifier shape. sqlx checksums the
+    whole file, so it **must not** be edited — this note is the current
+    contract; the comment there is historical.
+
+  Known inconsistency, deliberately NOT resolved in #1147 ①: the reaper's
+  dead-worker path (`reaper/mod.rs`, `converge_dead_worker`) writes the
+  `spawn-failed` classifier for a worker that died at RUNTIME. Only the
+  reason tail was added there; re-classifying it is a separate decision
+  because `is_gated_self_report`'s pre-gate matrix keys off that word.
 - `dispatched → verifying/done/failed` via worker report is allowed (the guard
   includes `'dispatched'`) because a fast worker can report before the
   scheduler's `wait()` returns — the same race the pre-spawn lifecycle
