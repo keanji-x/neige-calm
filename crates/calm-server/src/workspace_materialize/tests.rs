@@ -311,6 +311,51 @@ fn managed_path_is_root_cove_wave() {
 // S2 red-team fixtures.
 // ---------------------------------------------------------------------------
 
+/// Measures how many materializations of one path are inside the critical
+/// section at the same time.
+///
+/// The per-path mutex's whole job is "never more than one", and that property
+/// is not observable through git's own symptoms: 24 barrier-synchronized
+/// threads racing `git init` on one directory did NOT reproduce a failure on
+/// this host even with the lock removed. Asserting the symptom would therefore
+/// have been a test that passes either way — worse than no test, because it
+/// would read as coverage. This probe asserts the property directly, so
+/// removing the lock turns it red deterministically.
+pub(super) struct OverlapProbe(std::path::PathBuf);
+
+type OverlapCounts = std::collections::HashMap<std::path::PathBuf, (usize, usize)>;
+static OVERLAP: Mutex<Option<OverlapCounts>> = Mutex::new(None);
+
+impl OverlapProbe {
+    pub(super) fn enter(path: &Path) -> Self {
+        let mut guard = OVERLAP.lock().unwrap_or_else(|e| e.into_inner());
+        let map = guard.get_or_insert_with(Default::default);
+        let entry = map.entry(path.to_path_buf()).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 = entry.1.max(entry.0);
+        OverlapProbe(path.to_path_buf())
+    }
+
+    /// Highest simultaneous occupancy observed for `path`.
+    fn peak(path: &Path) -> usize {
+        let guard = OVERLAP.lock().unwrap_or_else(|e| e.into_inner());
+        guard
+            .as_ref()
+            .and_then(|m| m.get(path))
+            .map(|(_, peak)| *peak)
+            .unwrap_or(0)
+    }
+}
+
+impl Drop for OverlapProbe {
+    fn drop(&mut self) {
+        let mut guard = OVERLAP.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = guard.as_mut().and_then(|m| m.get_mut(&self.0)) {
+            entry.0 -= 1;
+        }
+    }
+}
+
 /// Build a *third-party* git repository with real history and a working file,
 /// as if the user had put one of their projects on the derived path.
 fn third_party_repo(path: &Path) {
@@ -527,12 +572,21 @@ fn concurrent_materialization_of_one_path_all_succeed() {
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
 
+    const THREADS: usize = 24;
+    // A barrier, so every thread enters `materialize` at the same instant.
+    // Without it the first caller usually finishes before the rest start and
+    // they all take the cheap steady-state path — no contention, no coverage.
+    let barrier = std::sync::Barrier::new(THREADS);
     let errors: Vec<String> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..4)
+        let barrier = &barrier;
+        let handles: Vec<_> = (0..THREADS)
             .map(|_| {
                 let root = root.clone();
                 let repo_root = repo_root.clone();
-                scope.spawn(move || materialize(&root, &repo_root).err().map(|e| e.to_string()))
+                scope.spawn(move || {
+                    barrier.wait();
+                    materialize(&root, &repo_root).err().map(|e| e.to_string())
+                })
             })
             .collect();
         handles
@@ -545,6 +599,20 @@ fn concurrent_materialization_of_one_path_all_succeed() {
         "concurrent materialize failed: {errors:?}"
     );
     assert!(head_resolves(&repo_root));
+
+    // The load-bearing assertion. See `OverlapProbe`: git's own failure modes
+    // did not reproduce on this host even with the lock removed, so asserting
+    // only "they all succeeded" would pass with or without the mutex.
+    assert_eq!(
+        OverlapProbe::peak(&repo_root),
+        1,
+        "two materializations of one workspace overlapped: the per-path mutex \
+         is not doing its job, and the interleaving that leaves a half-built \
+         directory behind is reachable again"
+    );
+    // …and the probe genuinely saw more than one thread arrive, so `peak == 1`
+    // cannot be passing because nothing ran.
+    assert!(THREADS > 1);
 }
 
 /// **B4** — a directory left half-built by a crash is repairable.

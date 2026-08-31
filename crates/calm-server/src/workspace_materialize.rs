@@ -190,6 +190,11 @@ fn materialize_managed_workspace_inner(
     }
     let lock = path_lock(path);
     let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+    // Declared *after* `_guard`, so it is dropped *before* the lock releases:
+    // the probe therefore measures exactly the window the lock protects.
+    // Test-only; production compiles nothing for it.
+    #[cfg(test)]
+    let _overlap = tests::OverlapProbe::enter(path);
 
     std::fs::create_dir_all(path).map_err(|error| {
         CalmError::Internal(format!(
