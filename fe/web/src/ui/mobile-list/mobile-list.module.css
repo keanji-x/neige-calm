@@ -5,7 +5,7 @@
     inline-size: 100%;
     min-block-size: 100%;
     flex-direction: column;
-    gap: var(--space-8);
+    gap: var(--space-4);
     padding:
       env(safe-area-inset-top)
       var(--space-8)
@@ -48,7 +48,7 @@
   .section {
     display: flex;
     flex-direction: column;
-    gap: var(--space-6);
+    gap: var(--space-4);
   }
 
   .section > h3 {
