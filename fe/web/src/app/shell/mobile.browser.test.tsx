@@ -77,7 +77,7 @@ function MobileShellFrame({ children }: { children: (backFromReport: () => void)
               aria-current={mobileSection === item || (item === 'pages' && mobileSection === null) ? 'page' : undefined}
               aria-expanded={item === 'pages' || item === 'coves' ? mobileSection === item : undefined}
               onClick={() => {
-                if (item === 'pages' || item === 'coves') setMobileSection(mobileSection === item ? null : item);
+                if (item === 'pages' || item === 'coves') setMobileSection(item);
               }}
             >
               {contents}
@@ -185,6 +185,8 @@ describe('Wave mobile presentation', () => {
     expect(page.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
     expect(page.getByRole('radiogroup', { name: 'Page group' })).toBeTruthy();
     expect(page.getByRole('radio', { name: 'Pinned' })).toBeTruthy();
+    await page.getByRole('button', { name: 'Pages', exact: true }).click();
+    expect(page.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-pages.png' });
 

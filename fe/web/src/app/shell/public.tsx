@@ -321,7 +321,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           aria-expanded={mobileSection === 'pages'}
           onClick={() => {
             requestMobilePageRoot();
-            setMobileSection(mobileSection === 'pages' ? null : 'pages');
+            setMobileSection('pages');
           }}
         >
           <AstryxIcon icon="viewColumns" size="md" color="inherit" />
@@ -345,7 +345,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           onClick={() => {
             requestMobilePageRoot();
             if (mobileSection !== 'coves') setMobileCoveRestoreId(null);
-            setMobileSection(mobileSection === 'coves' ? null : 'coves');
+            setMobileSection('coves');
           }}
         >
           <AstryxIcon icon="menu" size="md" color="inherit" />
