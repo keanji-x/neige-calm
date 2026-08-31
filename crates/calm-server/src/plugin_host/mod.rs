@@ -341,10 +341,41 @@ const CONNECTOR_BRINGUP_SLACK: Duration = Duration::from_millis(500);
 /// #7 requires materialization to have happened before the boot audit loop
 /// reads `exposes_tools`, so bring-up must remain inline.
 ///
-/// Floor: it must comfortably exceed ONE connector's own cap
-/// (`2 × MCP_HTTP_DEFAULT_TIMEOUT_MS + slack` ≈ 20.5 s), or a single connector
-/// on a default timeout could be cut off by the loop budget.
+/// **Floor is enforced by construction, not by choosing a big number.**
+/// `mcp_http.request_timeout_ms` has no upper bound, so no constant can be
+/// "comfortably larger" than every connector's own cap: a manifest asking for
+/// 15 s per request already wants `2 × 15 s + 500 ms = 30.5 s`. A constant
+/// floor therefore guaranteed that such a connector was cut off by the LOOP
+/// budget at boot — blaming "earlier connectors" that need not exist — while
+/// `POST /enable`, which has no loop budget, brought the same connector up
+/// against its own cap. Boot and enable disagreed about the same manifest.
+/// [`PluginHost::autospawn_enabled_within`] widens this value to
+/// [`connector_bringup_budget`]'s largest value over the enabled connectors
+/// (plus [`CONNECTOR_BRINGUP_SLACK`], so the per-connector bound is always the
+/// one that fires first), which makes "a lone connector always gets its full
+/// cap at boot" true for every manifest rather than for manifests under a
+/// magic threshold.
 pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
+
+/// The wall-clock cap on ONE connector's bring-up — the single source of the
+/// formula.
+///
+/// `spawn_mcp_http` bounds an individual spawn with it and
+/// `autospawn_enabled_within` widens the loop budget by it; if the two computed
+/// it separately they could drift apart, which is exactly the boot-vs-enable
+/// disagreement described on [`CONNECTOR_AUTOSPAWN_BUDGET`].
+///
+/// A connector kind with no network bring-up (there is none in this slice —
+/// `cli-query` has no enable path yet) costs only the slack.
+pub fn connector_bringup_budget(manifest: &Manifest) -> Duration {
+    match manifest.mcp_http.as_ref() {
+        Some(block) => {
+            Duration::from_millis(block.timeout_ms()) * MCP_HTTP_ROUND_TRIPS
+                + CONNECTOR_BRINGUP_SLACK
+        }
+        None => CONNECTOR_BRINGUP_SLACK,
+    }
+}
 
 /// Process-global monotonic tick behind [`ConnectorSpawnOrder`]. A single
 /// counter (rather than per-host) keeps the comparison meaningful even when a
@@ -579,7 +610,30 @@ impl PluginHost {
                 return;
             }
         };
-        let connectors_started = Instant::now();
+        // The budget must never be smaller than a single connector's own cap,
+        // or a lone connector with a large `request_timeout_ms` is cut off by
+        // the LOOP bound at boot and comes up fine through `POST /enable` —
+        // two different answers for one manifest, with a reason that blames
+        // earlier connectors that need not exist. See
+        // [`CONNECTOR_AUTOSPAWN_BUDGET`]. The extra slack keeps the
+        // per-connector bound the one that fires first, so the operator-facing
+        // reason names the connector's own timeout rather than the budget.
+        let widest = rows
+            .iter()
+            .filter(|p| p.enabled)
+            .filter_map(|p| self.registry.get(&p.id))
+            .filter(|m| !m.kind.is_app())
+            .map(|m| connector_bringup_budget(&m))
+            .max()
+            .unwrap_or_default();
+        let connector_budget = connector_budget.max(widest + CONNECTOR_BRINGUP_SLACK);
+
+        // CONNECTOR-only elapsed time. An `Instant` taken before the loop also
+        // charges every `app` plugin's spawn to this budget, so a slow local
+        // child ahead of a connector in `plugins_list_all()` order silently
+        // consumed it — and the refusal then said the budget "was spent by
+        // earlier connectors", which was false.
+        let mut connector_elapsed = Duration::ZERO;
         for plug in rows {
             if !plug.enabled {
                 continue;
@@ -597,7 +651,7 @@ impl PluginHost {
                 continue;
             }
 
-            let remaining = connector_budget.saturating_sub(connectors_started.elapsed());
+            let remaining = connector_budget.saturating_sub(connector_elapsed);
             if remaining.is_zero() {
                 let reason = format!(
                     "connector `{}` was not brought up at boot: the {} ms budget for \
@@ -610,10 +664,15 @@ impl PluginHost {
                 // Terminal + observable, exactly like every other connector
                 // bring-up failure: `status`/`list`/detail must not report this
                 // id as if it had never been enabled.
-                self.publish_unavailable(&plug.id, None, reason).await;
+                // Same reconciliation as the timeout arm below: never regress
+                // an id that is already live and `Running`.
+                let _ = self.publish_unavailable(&plug.id, None, reason).await;
                 continue;
             }
-            match tokio::time::timeout(remaining, self.spawn(&plug.id)).await {
+            let started = Instant::now();
+            let outcome = tokio::time::timeout(remaining, self.spawn(&plug.id)).await;
+            connector_elapsed += started.elapsed();
+            match outcome {
                 Ok(Ok(())) => {}
                 Ok(Err(e)) => {
                     tracing::warn!(plugin_id = %plug.id, error = %e, "plugin autospawn failed");
@@ -623,6 +682,17 @@ impl PluginHost {
                     // reservation via `AdmissionGuard::drop`, but nothing
                     // emitted a terminal state — do it here so the event log
                     // does not sit at `spawning` forever.
+                    //
+                    // **This arm must RECONCILE, not assume failure.** The
+                    // timeout wraps the whole spawn, including
+                    // `spawn_mcp_http`'s live-table insert; elapsing after that
+                    // insert but before the trailing `emit_state(Running)`
+                    // completes would otherwise replace a genuinely healthy
+                    // connector (client live, tools materialized) with
+                    // `Unavailable`, dropping it out of `running_plugin_ids`
+                    // and making every materialized tool invisible.
+                    // `publish_unavailable` refuses to regress a `Running`
+                    // entry and says so by returning `false`.
                     let reason = format!(
                         "connector `{}` did not finish starting within the remaining \
                          {} ms of the {} ms boot budget for all connectors",
@@ -630,8 +700,23 @@ impl PluginHost {
                         remaining.as_millis(),
                         connector_budget.as_millis()
                     );
-                    tracing::warn!(plugin_id = %plug.id, "{reason}");
-                    self.publish_unavailable(&plug.id, None, reason).await;
+                    if self
+                        .publish_unavailable(&plug.id, None, reason.clone())
+                        .await
+                    {
+                        tracing::warn!(plugin_id = %plug.id, "{reason}");
+                    } else {
+                        tracing::info!(
+                            plugin_id = %plug.id,
+                            "connector boot budget elapsed after it had already come up; \
+                             keeping it Running"
+                        );
+                        // The dropped future never reached its own
+                        // `emit_state(Running)`, so the event log would
+                        // otherwise sit at `spawning` for a live connector.
+                        self.emit_state(&plug.id, &PluginRuntimeStatus::Running)
+                            .await;
+                    }
                 }
             }
         }
@@ -992,7 +1077,10 @@ impl PluginHost {
         // `spawn_blocking` queue delay), so it stays a real cap on a black-holed
         // host without redefining what the operator configured.
         let per_request = Duration::from_millis(block.timeout_ms());
-        let budget = per_request * MCP_HTTP_ROUND_TRIPS + CONNECTOR_BRINGUP_SLACK;
+        // One formula, one place: `autospawn_enabled_within` widens the loop
+        // budget by this same value, and the two drifting apart is exactly the
+        // boot-vs-enable disagreement documented on CONNECTOR_AUTOSPAWN_BUDGET.
+        let budget = connector_bringup_budget(manifest);
         let outcome = tokio::time::timeout(
             budget,
             connect_mcp_http(id, block, install_path.to_path_buf()),
@@ -1140,7 +1228,11 @@ impl PluginHost {
         guard: AdmissionGuard,
         reason: String,
     ) -> Result<(), HostError> {
-        self.publish_unavailable(id, Some(guard), reason.clone())
+        // Discarded on purpose: this path runs strictly before the live insert,
+        // so the "already Running" arm is unreachable here (see the callee's
+        // doc). The error below is the caller's answer either way.
+        let _ = self
+            .publish_unavailable(id, Some(guard), reason.clone())
             .await;
         Err(HostError::ConnectorUnavailable {
             plugin_id: id.to_string(),
@@ -1155,12 +1247,31 @@ impl PluginHost {
     /// arm in [`Self::autospawn_enabled`], whose `spawn` future was dropped —
     /// which already released the reservation through `AdmissionGuard::drop`.
     /// It still owes the operator a terminal, observable state.
+    ///
+    /// **It will not regress a live `Running` entry, and returns `false` when
+    /// it declines.** The insert used to be unconditional, which made the
+    /// state machine able to run backwards: `autospawn_enabled_within` wraps
+    /// its `tokio::time::timeout` around the WHOLE spawn, including
+    /// `spawn_mcp_http`'s live insert, so a budget that elapsed after that
+    /// insert (during the trailing `emit_state(Running).await`) landed here
+    /// and overwrote a connector that was genuinely up — `HttpMcpClient` live,
+    /// tools already in the registry — with `Unavailable`. The id then dropped
+    /// out of `running_plugin_ids`, every materialized tool went invisible,
+    /// the `ConnectorClient::Http` was dropped, and a false failure was
+    /// broadcast and persisted. Only the caller can know whether the outcome
+    /// it observed is authoritative, so the check lives here, once, rather
+    /// than at each call site.
+    ///
+    /// No other caller loses anything: every `connector_unavailable` exit runs
+    /// strictly BEFORE the live insert, so a `Running` entry at that point is
+    /// impossible — and if one somehow existed it would belong to a different,
+    /// successful bring-up that this failure has no claim to erase.
     async fn publish_unavailable(
         self: &Arc<Self>,
         id: &str,
         guard: Option<AdmissionGuard>,
         reason: String,
-    ) {
+    ) -> bool {
         {
             // One lock: release the reservation and publish the terminal entry
             // together, so no observer sees the id as neither reserved nor
@@ -1173,6 +1284,12 @@ impl PluginHost {
             table.spawning.remove(id);
             if let Some(guard) = guard {
                 guard.disarm();
+            }
+            if matches!(
+                table.live.get(id).map(|rp| &rp.status),
+                Some(PluginRuntimeStatus::Running)
+            ) {
+                return false;
             }
             table.live.insert(
                 id.to_string(),
@@ -1195,6 +1312,7 @@ impl PluginHost {
         tracing::warn!(plugin_id = %id, reason = %reason, "connector unavailable");
         self.emit_state(id, &PluginRuntimeStatus::Unavailable { reason })
             .await;
+        true
     }
 
     /// Gracefully stop a plugin. Sets `stopping=true` so the supervisor task

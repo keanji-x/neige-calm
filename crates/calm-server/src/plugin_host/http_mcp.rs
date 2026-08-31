@@ -49,8 +49,21 @@
 //! `tracing` line, the persisted+broadcast `Event::PluginState.last_error`, the
 //! `POST /enable` 503 body, and the wave transcript. Three rules, all enforced
 //! by tests: format a `ureq::Error` only via `kind()`; run every outgoing
-//! string — error OR success telemetry — through [`HttpMcpClient::scrub`]; and
-//! **scrub before you truncate**, never after. The last one is not pedantry: an
+//! string — error OR success — through [`HttpMcpClient::scrub`]; and
+//! **scrub before you truncate**, never after.
+//!
+//! The middle rule is enforced at ONE choke point, in
+//! [`HttpMcpClient::request`], on the raw response text before it is parsed.
+//! Scrubbing only the two identity strings `initialize` logs would have left
+//! the success path open: `tools/list` descriptions become `ExposedTool`
+//! entries that agents and operators read, and a `tools/call` result reaches
+//! the wave transcript — both are upstream-authored and both could echo our
+//! query string back. Replacing a key literal with `<redacted>` inside a JSON
+//! document is safe (the marker introduces no quote, backslash or control
+//! character), so the scrub can sit before `serde_json::from_str` and cover
+//! every string the module can hand back, in one pass.
+//!
+//! The scrub-before-truncate rule is not pedantry: an
 //! upstream that echoes the request URL back inside a long error body gets
 //! truncated to 512 chars, and if that boundary falls inside the key the
 //! surviving prefix is no longer a literal member of `secret_forms`, so a
@@ -76,7 +89,10 @@ const MAX_BODY_BYTES: usize = 4 * 1024 * 1024;
 
 /// How much of an upstream error body survives into the operator-facing
 /// message. Applied strictly AFTER [`scrub_with`] — see the module header.
-const MAX_UPSTREAM_DETAIL_CHARS: usize = 512;
+///
+/// `pub` so the end-to-end leak test can position a key across THIS boundary
+/// rather than a copy of the number that could silently stop lining up.
+pub const MAX_UPSTREAM_DETAIL_CHARS: usize = 512;
 
 /// Cap on upstream-authored identity strings we record in a `tracing` line
 /// (`serverInfo.name`, `protocolVersion`). Bounded and scrubbed, because both
@@ -387,6 +403,12 @@ impl HttpMcpClient {
             RpcError::custom(-32002, self.scrub(format!("mcp-http {method_owned}: {e}")))
         })?;
 
+        // THE choke point for the module's "every outgoing string is scrubbed"
+        // rule (see the module header). Everything below — `result`, the
+        // `tools/list` catalog that becomes `ExposedTool` descriptions, a
+        // `tools/call` payload bound for the wave transcript, and the
+        // upstream-authored `error.message` — is derived from this string.
+        let text = self.scrub(text);
         let payload = strip_sse_envelope(&text).ok_or_else(|| {
             RpcError::internal(format!(
                 "mcp-http {method_owned}: response carried no JSON payload"
@@ -675,8 +697,15 @@ mod tests {
     /// later `replace` matches nothing and a partial credential reaches the 503
     /// body, `PluginState.last_error`, and the wave transcript.
     ///
-    /// This drives the exact production expression pair, so reversing the two
-    /// lines in `request`'s blocking closure fails here.
+    /// **Scope, honestly stated.** This is a unit test of the two free
+    /// functions and of the claim that their ORDER matters: the second half
+    /// proves the reversed order demonstrably leaks, so the first half is not
+    /// vacuous. It does NOT reach `request`, so on its own it cannot fail when
+    /// the production lines are swapped. The call-site witness is the
+    /// integration test `a_4xx_body_echoing_the_query_never_leaks_a_partial_key`
+    /// in `tests/cases/connector_host.rs`, which drives a real `spawn` against
+    /// a stub that echoes the query string inside an over-long 4xx body and
+    /// asserts the surviving `last_error` carries no key prefix.
     #[test]
     fn key_straddling_the_truncation_boundary_is_still_redacted() {
         let client = client_with("query:api_key");

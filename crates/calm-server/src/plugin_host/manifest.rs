@@ -930,6 +930,19 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
     }
     let parsed = url::Url::parse(raw)
         .map_err(|e| ManifestError::invalid(field, format!("not a valid absolute URL: {e}")))?;
+    // Scheme FIRST. WHATWG lower-cases the scheme, so `FILE://x/mcp` is
+    // non-canonical *and* unsupported — and reporting "must be written in
+    // canonical form" would send the author off to fix the capitalisation of a
+    // scheme this connector will never accept.
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(ManifestError::invalid(
+            field,
+            format!(
+                "scheme must be `http` or `https`, got `{}`",
+                parsed.scheme()
+            ),
+        ));
+    }
     // The robust form of the same rule: whatever else the parser did to this
     // string, the manifest must have been written in canonical form. Anything
     // that re-serializes differently is a URL whose textual target is not the
@@ -944,15 +957,6 @@ fn validate_mcp_http_url(raw: &str) -> Result<(), ManifestError> {
                  Use the normalized spelling so the URL we contact and the URL \
                  we log are provably the same string.",
                 parsed.as_str()
-            ),
-        ));
-    }
-    if !matches!(parsed.scheme(), "http" | "https") {
-        return Err(ManifestError::invalid(
-            field,
-            format!(
-                "scheme must be `http` or `https`, got `{}`",
-                parsed.scheme()
             ),
         ));
     }
@@ -2365,6 +2369,28 @@ mod connector_kind_tests {
             block["url"] = json!(good);
             Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block })))
                 .unwrap_or_else(|e| panic!("`{good}` must be accepted: {e}"));
+        }
+    }
+
+    /// Round-3 finding: the canonical-form check used to run BEFORE the scheme
+    /// check, so an unsupported scheme spelled in upper case was reported as a
+    /// formatting problem. `FILE://x/mcp` normalizes to `file://x/mcp`, which
+    /// is non-canonical *and* unsupported — the author must be told the scheme
+    /// is wrong, not that they capitalised it wrong.
+    #[test]
+    fn an_unsupported_scheme_is_named_even_when_it_is_also_non_canonical() {
+        for bad in ["FILE://x/mcp", "FTP://mcp.example.com/mcp"] {
+            let mut block = mcp_http_block();
+            block["url"] = json!(bad);
+            let err = expect_reject(
+                Manifest::parse(&base(json!({ "kind": "mcp-http", "mcp_http": block }))),
+                bad,
+            );
+            assert!(err.to_string().contains("scheme must be"), "`{bad}`: {err}");
+            assert!(
+                !err.to_string().contains("canonical"),
+                "`{bad}` must not be reported as a formatting problem: {err}"
+            );
         }
     }
 

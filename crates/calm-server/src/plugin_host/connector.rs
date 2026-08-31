@@ -106,10 +106,28 @@ pub enum SecretsError {
     BadPermissions { path: String, found: u32 },
     /// Not a regular file. A FIFO here would block the reader forever — and
     /// before this slice that reader was an async runtime worker.
+    ///
+    /// Reached from two places, because not every non-regular file survives
+    /// `open(2)` long enough to be classified by `fstat`: a unix-domain socket
+    /// fails the open outright with `ENXIO`. That arm re-stats the path purely
+    /// to produce this error instead of a bare `Io { "No such device or
+    /// address" }`, which named neither the file's kind nor what to do.
     #[error("{path} must be a regular file (found {found})")]
     NotRegularFile { path: String, found: &'static str },
+    /// The `fstat` size was already over the cap. Distinct from
+    /// [`Self::GrewWhileReading`] so each of the two independent size checks
+    /// has an error only IT can produce — deleting either one is then
+    /// observable.
     #[error("{path} is {size} bytes, over the {MAX_SECRETS_BYTES}-byte limit")]
     TooLarge { path: String, size: u64 },
+    /// The `fstat` size was within the cap but the descriptor yielded more
+    /// bytes. This is the check that actually enforces the bound: `fstat` size
+    /// is a snapshot and a file can grow after it.
+    #[error(
+        "{path} exceeded the {MAX_SECRETS_BYTES}-byte limit while being read \
+         (it grew after its size was checked)"
+    )]
+    GrewWhileReading { path: String },
     #[error("{path} is not a JSON object of string values: {reason}")]
     Malformed { path: String, reason: String },
 }
@@ -174,6 +192,21 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
     let file = match opts.open(path) {
         Ok(f) => f,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        // Some non-regular files never reach `fstat`: `open(2)` on a
+        // unix-domain socket fails with ENXIO before we hold a descriptor to
+        // classify. Re-stat the path only to name the kind — the refusal is
+        // already decided, so this stat cannot be a TOCTOU on any check.
+        #[cfg(unix)]
+        Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {
+            return Err(SecretsError::NotRegularFile {
+                path: display,
+                found: match std::fs::metadata(path) {
+                    Ok(m) if m.file_type().is_dir() => "a directory",
+                    Ok(_) => "not a regular file",
+                    Err(_) => "not a regular file",
+                },
+            });
+        }
         Err(e) => {
             return Err(SecretsError::Io {
                 path: display,
@@ -218,23 +251,7 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
         }
     }
 
-    // The `meta.len()` check above is a courtesy that gives the nicer error
-    // early; THIS is the enforcement. `fstat` size is a snapshot and a file can
-    // grow after it, so the cap has to ride on the read itself: `take(MAX + 1)`
-    // makes "one byte over" observable without ever buffering more than that.
-    let mut buf = Vec::with_capacity(meta.len().min(MAX_SECRETS_BYTES) as usize);
-    std::io::Read::take(&file, MAX_SECRETS_BYTES + 1)
-        .read_to_end(&mut buf)
-        .map_err(|e| SecretsError::Io {
-            path: display.clone(),
-            source: e,
-        })?;
-    if buf.len() as u64 > MAX_SECRETS_BYTES {
-        return Err(SecretsError::TooLarge {
-            path: display,
-            size: buf.len() as u64,
-        });
-    }
+    let buf = read_capped(&file, meta.len(), &display)?;
     let text = String::from_utf8(buf).map_err(|e| SecretsError::Malformed {
         path: display.clone(),
         reason: format!("not valid UTF-8: {e}"),
@@ -274,6 +291,40 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
         out.insert(k.clone(), s.to_string());
     }
     Ok(Some(out))
+}
+
+/// The read-side half of the size cap — the one that actually ENFORCES it.
+///
+/// The `fstat` check in [`read_secrets_blocking`] is a courtesy that produces
+/// the nicer error (it can name the real size) and avoids reading a
+/// known-oversized file at all; but `fstat` size is a snapshot, and a file that
+/// grows between the stat and the read would sail past it. `take(MAX + 1)`
+/// makes "one byte over" observable without ever buffering more than that.
+///
+/// Split out as a function over `impl Read` for one reason: a test cannot
+/// interleave a write between production's `fstat` and its read — the two are
+/// adjacent, and a racing writer thread would make the test flaky rather than
+/// decisive. Handing THIS function (the same code production calls, on the
+/// real descriptor) a reader that yields more than `stat_len` claimed is the
+/// deterministic form of exactly that file.
+fn read_capped(
+    mut src: impl std::io::Read,
+    stat_len: u64,
+    display: &str,
+) -> Result<Vec<u8>, SecretsError> {
+    let mut buf = Vec::with_capacity(stat_len.min(MAX_SECRETS_BYTES) as usize);
+    std::io::Read::take(&mut src, MAX_SECRETS_BYTES + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| SecretsError::Io {
+            path: display.to_string(),
+            source: e,
+        })?;
+    if buf.len() as u64 > MAX_SECRETS_BYTES {
+        return Err(SecretsError::GrewWhileReading {
+            path: display.to_string(),
+        });
+    }
+    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -426,8 +477,11 @@ mod tests {
         );
     }
 
+    /// One byte over the cap — the tightest input the stat check must still
+    /// catch on its own. (Which check catches which case is pinned by
+    /// `the_stat_check_…` / `the_read_side_cap_…` below.)
     #[tokio::test]
-    async fn an_oversized_secrets_file_is_refused_without_being_buffered() {
+    async fn a_secrets_file_one_byte_over_the_cap_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join(SECRETS_FILENAME);
         std::fs::write(&path, vec![b'x'; MAX_SECRETS_BYTES as usize + 1]).unwrap();
@@ -463,32 +517,88 @@ mod tests {
         }
     }
 
-    /// The `fstat` size is a snapshot; the read-side `take(MAX + 1)` is the
-    /// actual enforcement. Pin both edges of the boundary so removing the
-    /// read-side cap (leaving only the stat check) still has a witness on the
-    /// exact-cap side and removing the stat check keeps the over-cap refusal.
+    /// Witness for the **stat** check specifically.
+    ///
+    /// Round-3 finding: the previous version of this test asserted only
+    /// "TooLarge or not", which BOTH checks can satisfy — deleting either one
+    /// left it green, while its comment claimed it pinned both. The two now
+    /// have distinct error variants, so this fixture can only be satisfied by
+    /// the stat check: delete it and the same file is refused by the read side
+    /// as `GrewWhileReading`, and the `size` this asserts (the file's real
+    /// length, which the read side never sees) is gone with it.
     #[tokio::test]
-    async fn the_size_cap_boundary_is_exact_in_both_directions() {
-        for len in [MAX_SECRETS_BYTES as usize, MAX_SECRETS_BYTES as usize + 1] {
-            let tmp = tempfile::tempdir().unwrap();
-            let path = tmp.path().join(SECRETS_FILENAME);
-            std::fs::write(&path, vec![b'x'; len]).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            }
-            let err = read_secrets(tmp.path()).await.unwrap_err();
-            // At exactly the cap the bytes are read (and then rejected as
-            // non-JSON); one byte over is refused as TooLarge without the
-            // whole body ever being buffered.
-            let is_too_large = matches!(err, SecretsError::TooLarge { .. });
-            assert_eq!(
-                is_too_large,
-                len > MAX_SECRETS_BYTES as usize,
-                "len {len}: got {err:?}"
-            );
+    async fn the_stat_check_refuses_a_file_that_is_already_over_the_cap() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SECRETS_FILENAME);
+        let len = MAX_SECRETS_BYTES as usize + 4096;
+        std::fs::write(&path, vec![b'x'; len]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
+        let err = read_secrets(tmp.path()).await.unwrap_err();
+        assert!(
+            matches!(err, SecretsError::TooLarge { size, .. } if size == len as u64),
+            "the stat check must refuse this, reporting the real size: {err:?}"
+        );
+    }
+
+    /// Witness for the **read-side** cap specifically: the case it exists for
+    /// is a file that grows after its size was checked.
+    ///
+    /// Driving that through a real file would need a write interleaved between
+    /// production's `fstat` and its read — two adjacent statements, so a
+    /// racing writer makes a flaky test rather than a decisive one. This calls
+    /// the same production function on a reader that yields more than the stat
+    /// claimed, which is that file, deterministically. Delete the
+    /// `buf.len() > MAX` refusal in `read_capped` and this goes green-to-red.
+    #[test]
+    fn the_read_side_cap_refuses_a_file_that_grew_after_its_size_was_checked() {
+        let grown = vec![b'x'; MAX_SECRETS_BYTES as usize + 1];
+        let err = read_capped(&grown[..], 16, "secrets.json").unwrap_err();
+        assert!(
+            matches!(err, SecretsError::GrewWhileReading { .. }),
+            "a descriptor yielding more than `fstat` promised must be refused: {err:?}"
+        );
+        // …and one byte under the cap, with the same lying stat, is fine: the
+        // rule is a size bound, not "distrust short stats".
+        let ok = read_capped(&grown[..MAX_SECRETS_BYTES as usize], 16, "secrets.json").unwrap();
+        assert_eq!(ok.len(), MAX_SECRETS_BYTES as usize);
+    }
+
+    /// Exactly at the cap is accepted by both checks (and then fails as
+    /// non-JSON) — the boundary is `>`, not `>=`.
+    #[tokio::test]
+    async fn a_file_of_exactly_the_cap_is_not_refused_for_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SECRETS_FILENAME);
+        std::fs::write(&path, vec![b'x'; MAX_SECRETS_BYTES as usize]).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let err = read_secrets(tmp.path()).await.unwrap_err();
+        assert!(matches!(err, SecretsError::Malformed { .. }), "{err:?}");
+    }
+
+    /// `open(2)` on a unix-domain socket fails `ENXIO` before `File::metadata`
+    /// can classify it, so the descriptor-based check never runs. It must
+    /// still be refused as "not a regular file" rather than as an opaque
+    /// `Io { "No such device or address" }`.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_unix_socket_at_the_secrets_path_is_refused_as_not_a_regular_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join(SECRETS_FILENAME);
+        let _listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let err = read_secrets(tmp.path()).await.unwrap_err();
+        assert!(
+            matches!(err, SecretsError::NotRegularFile { .. }),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("regular file"), "{err}");
     }
 
     /// The whole reason `read_secrets` moved to `spawn_blocking` + a

@@ -48,6 +48,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
+use calm_server::plugin_host::http_mcp::MAX_UPSTREAM_DETAIL_CHARS;
 use calm_server::plugin_host::{
     ConnectorClient, HostError, PluginHost, PluginRegistry, PluginRuntimeStatus,
 };
@@ -73,6 +74,12 @@ const ALLOWED_TOOL_2: &str = "get_report_detail";
 /// Served upstream but NOT in `tools_allow` — must never materialize.
 const DENIED_TOOL: &str = "admin_purge";
 
+/// How many characters of the API key sit past the truncation boundary in the
+/// `EchoQueryIn4xx` fixture — i.e. exactly how long a prefix the clamp-first
+/// order would leak. Kept well above "a couple of characters" so the assertion
+/// is about a usable credential fragment, not a coincidence.
+const KEY_STRADDLE_TAIL: usize = 16;
+
 // ===========================================================================
 // Stub upstream MCP server
 //
@@ -95,6 +102,12 @@ enum StubMode {
     /// perfectly usable — it must come up Running. It cannot when the outer
     /// bring-up bound equals ONE request's timeout.
     HangInitialize,
+    /// Answer every request with a 4xx whose body **echoes the request's own
+    /// query string**, padded so the API key inside it straddles the kernel's
+    /// `MAX_UPSTREAM_DETAIL_CHARS` truncation boundary. This is the upstream
+    /// behaviour the scrub-before-truncate rule exists for, and the only way
+    /// to reach the production expression pair end-to-end.
+    EchoQueryIn4xx,
 }
 
 struct StubServer {
@@ -166,6 +179,26 @@ impl StubServer {
                         if let Some(rx) = taken {
                             let _ = rx.await;
                         }
+                    }
+
+                    if mode == StubMode::EchoQueryIn4xx {
+                        let query = target.split_once('?').map(|(_, q)| q).unwrap_or("");
+                        // Place the key so it STARTS `KEY_STRADDLE_TAIL` chars
+                        // before the cap and runs past it: clamp-first leaves
+                        // exactly that many characters of a live credential in
+                        // the message, scrub-first leaves none.
+                        let key_at = query.find(SECRET_VALUE).unwrap_or(0);
+                        let pad = MAX_UPSTREAM_DETAIL_CHARS - KEY_STRADDLE_TAIL - key_at;
+                        let body = format!("{}{query} rejected", "x".repeat(pad));
+                        let head = format!(
+                            "HTTP/1.1 400 Bad Request\r\ncontent-type: text/plain\r\n\
+                             content-length: {}\r\nconnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = sock.write_all(head.as_bytes()).await;
+                        let _ = sock.write_all(body.as_bytes()).await;
+                        let _ = sock.flush().await;
+                        return;
                     }
 
                     if mode == StubMode::Hang
@@ -1178,13 +1211,16 @@ async fn hung_upstream_lands_unavailable_without_blocking_boot() {
     let elapsed = started.elapsed();
 
     // 400 ms PER REQUEST × 2 round trips + 500 ms slack = a 1.3 s ceiling on
-    // this connector's bring-up. 2 s allows for the app plugin's own spawn plus
-    // scheduling slack. What this fails on is an UNBOUNDED bring-up: without
-    // the per-request deadlines a hung upstream never returns at all, and
-    // without the outer `tokio::time::timeout` the parts of the round trip that
-    // sit outside ureq's clock are uncapped.
+    // this connector's bring-up. The assertion is 3 s, not 2 s: round 2 raised
+    // the per-connector cap from 400 ms to 1.3 s without moving this number,
+    // which left the co-installed app plugin ~0.7 s of headroom on a loaded
+    // box. What this fails on is an UNBOUNDED bring-up — without the
+    // per-request deadlines a hung upstream never returns at all, and without
+    // the outer `tokio::time::timeout` the parts of the round trip that sit
+    // outside ureq's clock are uncapped — and 3 s still fails loudly for
+    // either, since both are unbounded rather than "a bit slower".
     assert!(
-        elapsed < Duration::from_secs(2),
+        elapsed < Duration::from_secs(3),
         "boot autospawn took {elapsed:?} against a hung upstream with a 400ms \
          per-request budget — the bring-up is not bounded"
     );
@@ -1338,6 +1374,215 @@ async fn many_unreachable_connectors_do_not_scale_boot_latency() {
         "with a {budget:?} budget and {N} hung connectors at least one must be \
          refused BY the budget — otherwise this test never exercised it"
     );
+}
+
+/// Round-3 F1: the loop budget and the per-connector cap were two independent
+/// numbers, and `mcp_http.request_timeout_ms` has no upper bound — so a large
+/// enough timeout made the LOOP bound fire first at boot while `POST /enable`
+/// (which has no loop budget) used the connector's own cap. Two answers for
+/// one manifest, and the boot-side reason blamed "earlier connectors" that do
+/// not exist.
+///
+/// The connector here is the ONLY one installed and its own cap
+/// (2 × 400 ms + 500 ms = 1.3 s) is deliberately larger than the loop budget
+/// it is given. Boot must nonetheless refuse it for its own upstream failure,
+/// with the same reason `/enable` gives. Removing the `max(...)` widening in
+/// `autospawn_enabled_within` makes the two reasons differ and fails here.
+#[tokio::test]
+async fn boot_and_enable_agree_when_one_connector_outlasts_the_loop_budget() {
+    let stub = StubServer::start(StubMode::Hang).await;
+    let b = boot().await;
+    write_connector(&b.plugins_dir, &stub.url(), 400, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    // Smaller than this connector's own 1.3 s cap — the shape that used to
+    // guarantee a loop-budget refusal for a lone connector.
+    tokio::time::timeout(
+        Duration::from_secs(20),
+        host.autospawn_enabled_within(Duration::from_millis(300)),
+    )
+    .await
+    .expect("boot autospawn never returned");
+
+    let boot_status = host.status(CONNECTOR_ID).await.expect("runtime entry");
+    let PluginRuntimeStatus::Unavailable {
+        reason: boot_reason,
+    } = &boot_status.status
+    else {
+        panic!("expected Unavailable, got {:?}", boot_status.status);
+    };
+    assert!(
+        !boot_reason.contains("budget"),
+        "boot must refuse a lone connector for its own upstream failure, not \
+         for a loop budget it is the only claimant on — and the reason may not \
+         blame earlier connectors that do not exist: {boot_reason}"
+    );
+    assert!(
+        boot_reason.contains("tools/list"),
+        "the reason must name what actually failed: {boot_reason}"
+    );
+
+    // The same manifest through the enable path (no loop budget at all).
+    let enable_reason = match host.spawn(CONNECTOR_ID).await {
+        Err(HostError::ConnectorUnavailable { reason, .. }) => reason,
+        other => panic!("expected ConnectorUnavailable, got {other:?}"),
+    };
+    assert_eq!(
+        boot_reason, &enable_reason,
+        "boot and enable must give the same answer for the same manifest"
+    );
+}
+
+/// Round-3 F0: `autospawn_enabled_within` wraps its `tokio::time::timeout`
+/// around the WHOLE spawn — including `spawn_mcp_http`'s live-table insert,
+/// which is what publishes `Running`. A budget elapsing after that insert but
+/// before the trailing `emit_state(Running)` completes used to land in the
+/// timeout arm and unconditionally overwrite the live entry with
+/// `Unavailable`: the connector was genuinely up (client live, tools already
+/// in the registry) yet dropped out of `running_plugin_ids`, every
+/// materialized tool went invisible, and a false failure was broadcast.
+///
+/// Driven deterministically, without racing anything. The stub gates its
+/// `tools/list` reply; the test takes the repo's write transaction before
+/// releasing that gate, so the spawn runs to completion through the live
+/// insert and then parks in `emit_state(Running)`'s `log_pure_event` — the
+/// exact window. The budget is then allowed to elapse inside it.
+#[tokio::test]
+async fn a_connector_that_came_up_is_not_overwritten_by_the_elapsing_boot_budget() {
+    let (release_gate, gate) = oneshot::channel::<()>();
+    let stub = StubServer::start_gated(StubMode::Normal, Some(gate)).await;
+    let b = boot().await;
+    // 1 s per request ⇒ a 2.5 s per-connector cap, which the loop budget below
+    // must exceed: the point of this test is the LOOP bound firing on a
+    // connector that already came up, not the per-connector one.
+    write_connector(&b.plugins_dir, &stub.url(), 1_000, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    // > (2 × 1 s + 500 ms slack) + 500 ms, so `autospawn_enabled_within` uses
+    // it verbatim rather than widening it (see the F1 fix).
+    const BUDGET: Duration = Duration::from_millis(3_500);
+    let loop_host = Arc::clone(&host);
+    let autospawn = tokio::spawn(async move { loop_host.autospawn_enabled_within(BUDGET).await });
+
+    // The connector has reached `tools/list`; its reply is held by the gate.
+    stub.wait_for_tools_list().await;
+
+    // Take the DB writer lock (`write_in_tx` opens BEGIN IMMEDIATE), so the
+    // `emit_state(Running)` that follows the live insert cannot complete.
+    let (held_tx, held_rx) = oneshot::channel::<()>();
+    let (release_db, db_rx) = oneshot::channel::<()>();
+    let repo = b.repo.clone();
+    let holder = tokio::spawn(async move {
+        repo.write_in_tx(Box::new(move |_tx| {
+            Box::pin(async move {
+                let _ = held_tx.send(());
+                let _ = db_rx.await;
+                Ok(())
+            })
+        }))
+        .await
+    });
+    held_rx.await.expect("write tx never opened");
+
+    // Let the spawn finish its network half. It will materialize, publish the
+    // live `Running` entry, and then block on the event write.
+    release_gate.send(()).expect("stub gate receiver gone");
+
+    // Sit past the budget while the spawn is parked in that window.
+    sleep(BUDGET + Duration::from_millis(750)).await;
+
+    // The live entry must still be the successful one.
+    let status = host
+        .status(CONNECTOR_ID)
+        .await
+        .expect("connector must still have a runtime entry");
+    assert!(
+        matches!(status.status, PluginRuntimeStatus::Running),
+        "an elapsed boot budget must not regress a connector that already came \
+         up; got {:?}",
+        status.status
+    );
+    assert!(
+        host.running_plugin_ids().await.contains(CONNECTOR_ID),
+        "a Running connector must stay in the running set — otherwise every \
+         materialized tool silently disappears"
+    );
+    let tools = boot_audit_tool_names(&host).await;
+    assert!(
+        tools.iter().any(|t| t.ends_with(ALLOWED_TOOL)),
+        "its materialized tools must stay visible: {tools:?}"
+    );
+    // The client survived too: `Unavailable` sets `mcp: None`, so this is the
+    // load-bearing half of "the connector is still usable".
+    let client = host
+        .connector_client(CONNECTOR_ID)
+        .await
+        .expect("the live HTTP client must not have been dropped");
+    assert!(matches!(client, ConnectorClient::Http(_)), "{client:?}");
+
+    let _ = release_db.send(());
+    let _ = holder.await;
+    tokio::time::timeout(Duration::from_secs(15), autospawn)
+        .await
+        .expect("autospawn never returned")
+        .expect("autospawn task panicked");
+
+    // Still Running once everything has drained.
+    let status = host.status(CONNECTOR_ID).await.expect("runtime entry");
+    assert!(
+        matches!(status.status, PluginRuntimeStatus::Running),
+        "{:?}",
+        status.status
+    );
+}
+
+/// Round-3 F3: the scrub-before-truncate rule had only a unit test over the
+/// two free functions, so swapping the production lines in `request`'s
+/// blocking closure left the suite green. This drives the real `spawn` against
+/// an upstream that answers 4xx with a body echoing its own query string,
+/// padded so the API key straddles `MAX_UPSTREAM_DETAIL_CHARS`. Clamp-then-
+/// scrub leaves `KEY_STRADDLE_TAIL` characters of a live credential in
+/// `last_error`; scrub-then-clamp leaves none.
+#[tokio::test]
+async fn a_4xx_body_echoing_the_query_never_leaks_a_partial_key() {
+    let stub = StubServer::start(StubMode::EchoQueryIn4xx).await;
+    let b = boot().await;
+    write_connector(&b.plugins_dir, &stub.url(), 2_000, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let reason = match host.spawn(CONNECTOR_ID).await {
+        Err(HostError::ConnectorUnavailable { reason, .. }) => reason,
+        other => panic!("expected ConnectorUnavailable, got {other:?}"),
+    };
+
+    // The upstream really did echo the key back — otherwise this proves nothing.
+    assert!(
+        stub.queries().iter().any(|q| q.contains(SECRET_VALUE)),
+        "the fixture must actually put the key on the wire: {:?}",
+        stub.queries()
+    );
+    // The truncation really happened at the boundary the key straddles.
+    assert!(
+        reason.contains("truncated"),
+        "reason was not clamped: {reason}"
+    );
+
+    let leaked_prefix = &SECRET_VALUE[..KEY_STRADDLE_TAIL];
+    assert!(
+        !reason.contains(leaked_prefix),
+        "a {KEY_STRADDLE_TAIL}-char credential prefix survived into last_error: {reason}"
+    );
+    assert!(!reason.contains(SECRET_VALUE), "{reason}");
+    assert!(reason.contains("<redacted>"), "{reason}");
+
+    // And the same string is what the operator sees over HTTP.
+    let state = b.state(Arc::clone(&host));
+    let (code, body) = get_text(&state, &format!("/api/plugins/{CONNECTOR_ID}")).await;
+    assert_eq!(code, StatusCode::OK);
+    assert!(!body.contains(leaked_prefix), "{body}");
 }
 
 // ===========================================================================
