@@ -49,11 +49,7 @@ export function MobileCoves({ coves, wavesByCove, initialCoveId = null, onOpenWa
   }
 
   return (
-    <MobileListPage
-      title="Coves"
-      motion={motion}
-      note="Coves organize Waves by workspace. Pages will separately collect reports by recency and pin."
-    >
+    <MobileListPage title="Coves" motion={motion}>
       <MobileList>
         {rows.map((cove) => {
           const waves = visibleWaves(wavesByCove.get(cove.id) ?? []);

@@ -14,6 +14,7 @@
 // is no `<a href>` anywhere on this page, and `public.contract.test.tsx` holds
 // that line for the whole subtree.
 
+import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { useEffect, type ReactNode } from 'react';
 
@@ -350,7 +351,6 @@ export function WavePage({
                   setMobileCardMotion('back');
                   setMobileCardId(null);
                 }}
-                note="This is the mobile Card detail. Grid positioning and drag/resize remain desktop-only."
               >
                 <dl className={styles.mobileCardFacts}>
                   <div><dt>Kind</dt><dd>{mobileCard.kind}</dd></div>
@@ -367,7 +367,6 @@ export function WavePage({
                   setMobileCardMotion('none');
                   setMobilePanelOpen(false);
                 }}
-                note="Report sections and attached blocks. Select one to return to that point."
               >
                 <MobileList>
                   {outlineItems.flatMap((item) => [
@@ -406,7 +405,6 @@ export function WavePage({
                   setMobileCardMotion('none');
                   setMobilePanelOpen(false);
                 }}
-                note="Cards use mobile list navigation. The desktop Grid is intentionally unavailable here."
               >
                 <MobileList>
                   {cards.map((card) => {
@@ -436,7 +434,6 @@ export function WavePage({
                   setMobileCardMotion('none');
                   setMobilePanelOpen(false);
                 }}
-                note="Tasks are declarations in this Report. Select one to return to its block."
               >
                 <MobileList>
                   {tasks.map((task) => (
@@ -466,7 +463,6 @@ export function WavePage({
                   setMobileCardMotion('none');
                   setMobilePanelOpen(false);
                 }}
-                note="Past conversations for this Wave."
               >
                 <div className={styles.mobileConversationList}>
                   {conversationList ?? <p>No conversations yet.</p>}
@@ -733,16 +729,15 @@ export function WavePage({
       </div>
 
       {!boardOpen && !mobilePanelOpen && onStartConversation !== undefined && (
-        <button
-          type="button"
+        <AstryxButton
           className={styles.mobileReportChatFab}
           data-nc-mobile-report-chat=""
-          aria-label="New conversation"
+          label="Chat"
+          variant="primary"
+          size="lg"
+          icon={<Icon name="chat" />}
           onClick={onStartConversation}
-        >
-          <Icon name="chat" />
-          <span>Chat</span>
-        </button>
+        />
       )}
 
       <ConfirmDialog

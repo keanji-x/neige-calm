@@ -1,6 +1,8 @@
+import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
+import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
+import { IconButton as AstryxIconButton } from '@astryxdesign/core/IconButton';
 import type { ReactNode } from 'react';
 
-import { Icon } from '../icon/public.tsx';
 import styles from './mobile-header.module.css';
 
 export function MobileHeader({ title, level = 2, backLabel, onBack, actions }: Readonly<{
@@ -10,19 +12,23 @@ export function MobileHeader({ title, level = 2, backLabel, onBack, actions }: R
   onBack?: () => void;
   actions?: ReactNode;
 }>) {
-  const heading = level === 1
-    ? <h1 className={styles.title}>{title}</h1>
-    : <h2 className={styles.title}>{title}</h2>;
   return (
     <header className={styles.header} data-nc-mobile-header="">
       <span className={styles.leading}>
         {onBack !== undefined && (
-          <button type="button" className={styles.back} aria-label={`Back to ${backLabel ?? 'previous page'}`} onClick={onBack}>
-            <Icon name="arrow-left" />
-          </button>
+          <AstryxIconButton
+            className={styles.back}
+            label={`Back to ${backLabel ?? 'previous page'}`}
+            variant="ghost"
+            size="lg"
+            icon={<AstryxIcon icon="chevronLeft" size="md" color="inherit" />}
+            onClick={onBack}
+          />
         )}
       </span>
-      {heading}
+      <AstryxHeading level={level} color="secondary" maxLines={1} className={styles.title}>
+        {title}
+      </AstryxHeading>
       <span className={styles.trailing}>{actions}</span>
     </header>
   );

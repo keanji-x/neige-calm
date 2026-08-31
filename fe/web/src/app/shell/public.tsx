@@ -15,6 +15,7 @@
 // everything the dialog needs. The form is title-only; `cove_id` is the
 // opener's cove (hidden), and the POST omits `cwd` / `attach_folder`.
 
+import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Outlet } from '@tanstack/react-router';
 import { createContext, useContext, useEffect, useRef } from 'react';
 
@@ -323,7 +324,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
             setMobileSection(mobileSection === 'pages' ? null : 'pages');
           }}
         >
-          <span className={styles.mobileDockIcon} data-nc-dock-icon="pages" aria-hidden="true" />
+          <AstryxIcon icon="viewColumns" size="md" color="inherit" />
           <span>Pages</span>
         </button>
         <button
@@ -332,7 +333,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           aria-current={todayDockSelected ? 'page' : undefined}
           onClick={() => { setMobileSection(null); go({ name: 'today' }); }}
         >
-          <span className={styles.mobileDockIcon} data-nc-dock-icon="today" aria-hidden="true" />
+          <AstryxIcon icon="calendar" size="md" color="inherit" />
           <span>Today</span>
         </button>
         <button
@@ -347,7 +348,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
             setMobileSection(mobileSection === 'coves' ? null : 'coves');
           }}
         >
-          <span className={styles.mobileDockIcon} data-nc-dock-icon="coves" aria-hidden="true" />
+          <AstryxIcon icon="menu" size="md" color="inherit" />
           <span>Coves</span>
         </button>
         <button
@@ -356,7 +357,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           aria-current={meDockSelected ? 'page' : undefined}
           onClick={() => { setMobileSection(null); onOpenSettings(); }}
         >
-          <span className={styles.mobileDockIcon} data-nc-dock-icon="me" aria-hidden="true" />
+          <AstryxIcon icon="wrench" size="md" color="inherit" />
           <span>Me</span>
         </button>
       </nav>

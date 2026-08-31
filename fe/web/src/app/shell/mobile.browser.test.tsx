@@ -1,3 +1,4 @@
+import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { render } from '@testing-library/react';
 import { useEffect, type ReactNode } from 'react';
 import { page } from 'vitest/browser';
@@ -63,8 +64,9 @@ function MobileShellFrame({ children }: { children: (backFromReport: () => void)
       </main>
       <nav className={`${shellStyles.mobileDock} ${secondaryOpen ? shellStyles.mobileDockHidden : ''}`} aria-label="Primary">
         {(['pages', 'today', 'coves', 'me'] as const).map((item) => {
+          const icon = item === 'pages' ? 'viewColumns' : item === 'today' ? 'calendar' : item === 'coves' ? 'menu' : 'wrench';
           const contents = <>
-            <span className={shellStyles.mobileDockIcon} data-nc-dock-icon={item} aria-hidden="true" />
+            <AstryxIcon icon={icon} size="md" color="inherit" />
             <span>{item[0]?.toUpperCase()}{item.slice(1)}</span>
           </>;
           return (

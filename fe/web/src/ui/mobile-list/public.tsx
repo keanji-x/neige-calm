@@ -11,18 +11,16 @@ function motionClass(motion: 'none' | 'forward' | 'back'): string {
   return '';
 }
 
-export function MobileListPage({ title, backLabel, onBack, note, motion = 'none', children }: Readonly<{
+export function MobileListPage({ title, backLabel, onBack, motion = 'none', children }: Readonly<{
   title: string;
   backLabel?: string;
   onBack?: () => void;
-  note?: ReactNode;
   motion?: 'none' | 'forward' | 'back';
   children: ReactNode;
 }>) {
   return (
     <div className={`${styles.page} ${motionClass(motion)}`}>
       <MobileHeader title={title} backLabel={backLabel} onBack={onBack} />
-      {note !== undefined && <div className={styles.note}>{note}</div>}
       <div className={styles.content}>{children}</div>
     </div>
   );

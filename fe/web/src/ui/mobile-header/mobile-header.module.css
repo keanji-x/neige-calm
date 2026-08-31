@@ -40,18 +40,10 @@
   }
 
   .back {
-    display: grid;
-    place-items: center;
-    inline-size: var(--rail-w-collapsed);
-    block-size: var(--rail-w-collapsed);
-    border-radius: var(--radius-pill);
-    color: var(--text-2);
-    cursor: pointer;
-  }
-
-  .back:hover,
-  .back:focus-visible {
-    background: var(--overlay-hover);
-    color: var(--text);
+    inline-size: var(--rail-w-collapsed) !important;
+    min-inline-size: var(--rail-w-collapsed) !important;
+    block-size: var(--rail-w-collapsed) !important;
+    min-block-size: var(--rail-w-collapsed) !important;
+    border-radius: var(--radius-pill) !important;
   }
 }

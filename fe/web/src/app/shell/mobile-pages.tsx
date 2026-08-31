@@ -28,7 +28,7 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
   };
 
   return (
-    <MobileListPage title="Pages" note="Pinned Pages first, then the most recently updated reports.">
+    <MobileListPage title="Pages">
       {pinned.length > 0 && (
         <MobileList title="Pinned">
           {pinned.map((wave) => (
