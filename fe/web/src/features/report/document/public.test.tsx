@@ -3,6 +3,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportBlock, WaveReport } from '../../../../../core/domain/report.ts';
+import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
 import { ReportDocument } from './public.tsx';
 
 afterEach(cleanup);
@@ -363,19 +364,25 @@ describe('ReportDocument', () => {
    * this is where the contract leak shows up first, cheaply, in jsdom.
    */
   describe('a document that carries its own maintenance contract (#1185)', () => {
-    const CONTRACT = [
-      '<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）',
-      '',
-      '这份报告自带的结构就是规则：维护它，不要重写它。',
-      '',
-      '写作方式：散文正文控制在 1000 字以内。',
-      '-->',
-      '',
-    ].join('\n');
+    /* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
+       — not a transcription. A hand-written fixture would prove this front end
+       hides *a* comment; only the shipped text proves it hides *the* one every
+       wave is born with. */
+    const [CONTRACT, ...SECTIONS] = splitInitialBody();
+
+    it('the fixture really is the kernel skeleton', () => {
+      // Guards the read itself: a wrong path or a renamed fragment would
+      // otherwise leave every assertion below vacuously green.
+      expect(CONTRACT.startsWith('<!-- 报告维护契约')).toBe(true);
+      expect(CONTRACT.endsWith('-->\n\n')).toBe(true);
+      expect(CONTRACT).toContain('散文正文');
+      expect(SECTIONS.map((s) => s.split('\n')[0]))
+        .toEqual(['# 概要', '# 待你定', '# 已完成', '# 决策']);
+    });
 
     it('renders neither the contract nor a row for its block', () => {
       const { container } = render(<ReportDocument
-        report={blocked(prose('b_1', CONTRACT), prose('b_2', '# 概要\n\n本轮结论。\n'))}
+        report={blocked(prose('b_1', CONTRACT), prose('b_2', `${SECTIONS[0]}本轮结论。\n`))}
         empty={EMPTY}
       />);
       expect(container.textContent).not.toContain('报告维护契约');
@@ -392,16 +399,13 @@ describe('ReportDocument', () => {
 
     it('drops the contract on the v1 flat-body path too', () => {
       // `report.blocks === null` sends the whole body through one ProseBlock.
-      const { container } = render(<ReportDocument
-        report={flat(`${CONTRACT}# 概要\n\n本轮结论。\n\n# 决策\n\n定了的事。\n`)}
-        empty={EMPTY}
-      />);
+      const { container } = render(<ReportDocument report={flat(initialBody())} empty={EMPTY} />);
       expect(container.textContent).not.toContain('报告维护契约');
       expect(container.innerHTML).not.toContain('报告维护契约');
       expect(container.textContent).not.toContain('散文正文');
       expect(container.innerHTML).not.toContain('散文正文');
       expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent))
-        .toEqual(['概要', '决策']);
+        .toEqual(['概要', '待你定', '已完成', '决策']);
     });
   });
 });

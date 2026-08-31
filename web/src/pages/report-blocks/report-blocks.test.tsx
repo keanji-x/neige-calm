@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { splitInitialBody } from './kernel-initial-body.ts';
 import { ReportBlockView } from './index';
 import {
   ReportTaskBlock,
@@ -1015,15 +1016,10 @@ describe('degraded blocks', () => {
  * default — it turns it into *text* — so without `skipHtml` this old front end
  * printed the whole contract, escaped, at the top of every user's report.
  */
-const CONTRACT_FIXTURE = [
-  '<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）',
-  '',
-  '这份报告自带的结构就是规则：维护它，不要重写它。',
-  '',
-  '写作方式：散文正文控制在 1000 字以内。',
-  '-->',
-  '',
-].join('\n');
+/* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
+   — not a transcription. Only the shipped text proves this front end hides
+   *the* contract every wave is born with. */
+const [CONTRACT_FIXTURE, ...SKELETON_SECTIONS] = splitInitialBody();
 
 describe('a prose block that carries a maintenance contract (#1185)', () => {
   const contractBlock = (markdown: string): ReportBlock =>
@@ -1033,6 +1029,16 @@ describe('a prose block that carries a maintenance contract (#1185)', () => {
       rev: 1,
       payload: { markdown },
     }) as ReportBlock;
+
+  it('the fixture really is the kernel skeleton', () => {
+    // Guards the read itself: a wrong path or a renamed fragment would leave
+    // every assertion below vacuously green.
+    expect(CONTRACT_FIXTURE.startsWith('<!-- 报告维护契约')).toBe(true);
+    expect(CONTRACT_FIXTURE.endsWith('-->\n\n')).toBe(true);
+    expect(CONTRACT_FIXTURE).toContain('散文正文');
+    expect(SKELETON_SECTIONS.map((s) => s.split('\n')[0]))
+      .toEqual(['# 概要', '# 待你定', '# 已完成', '# 决策']);
+  });
 
   it('renders nothing for a comment-only block', () => {
     const { container } = render(
@@ -1051,7 +1057,7 @@ describe('a prose block that carries a maintenance contract (#1185)', () => {
   it('keeps the prose that follows the contract in the same block', () => {
     render(
       <ReportBlockView
-        block={contractBlock(`${CONTRACT_FIXTURE}# 概要\n\n本轮结论。\n`)}
+        block={contractBlock(`${CONTRACT_FIXTURE}${SKELETON_SECTIONS[0]}本轮结论。\n`)}
       />,
     );
 
