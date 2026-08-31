@@ -8,7 +8,9 @@
 //!
 //! The three-step execution shape (design §更换与冻结) each has its own test:
 //!
-//! 1. the fence — `the_fence_supersedes_every_active_runtime_before_the_move`
+//! 1. the fence — `the_fence_is_up_before_the_move_not_after_it`. Note the
+//!    name: asserting the END state proves nothing, because the harness
+//!    restart supersedes the old runtime on its own. Measured.
 //! 2. the pre-move re-check — `a_write_between_the_fence_and_the_move_is_refused`
 //!    (the ONE timing predicate in this design; a static state assertion
 //!    cannot stand in for it)
@@ -16,7 +18,9 @@
 //!    `recycle_wave_workspace`, exercised here end to end
 //!
 //! and the four refusals (frozen / attached / system cove / non-empty) each
-//! have one too.
+//! have one too. The freeze latch's system-cove exclusion has
+//! `a_workspace_lease_never_freezes_the_launchpad`; the freeze point S3 does
+//! NOT implement has `a_terminal_card_does_not_freeze_the_workspace_yet_n17`.
 
 #![cfg(unix)]
 
@@ -977,4 +981,72 @@ async fn a_child_wave_is_frozen_at_creation_and_cannot_be_repointed() {
     let (status, body) = repoint(&b, &child).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert!(trash_entries(&b.workspace_root).is_empty());
+}
+
+/// The launchpad must survive its own freeze points.
+///
+/// Every codex task on the Today panel takes a workspace lease, which is freeze
+/// point 1. If that stamped the launchpad, the very next
+/// `POST /api/today/launchpad/ensure` would hit the latch in
+/// `wave_workspace_write_tx` and 500 — a permanently dead Today panel, and the
+/// panel is the one surface a user cannot route around.
+///
+/// The exclusion lives inside `wave_workspace_freeze_tx` as a SQL clause rather
+/// than as an `if` at each freeze point, so this test drives a real freeze point
+/// against the real launchpad and then re-runs `ensure`. Measured: removing the
+/// clause turns this test red and no other.
+#[tokio::test]
+async fn a_workspace_lease_never_freezes_the_launchpad() {
+    let b = boot().await;
+    let (status, body) = request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "launchpad ensure failed: {status} {body}"
+    );
+    let launchpad: Value = serde_json::from_str(&body).unwrap();
+    let wave = launchpad["wave_id"].as_str().unwrap().to_string();
+    let spec_card = launchpad["spec_card_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        workspace_row(&b, &wave).await.2,
+        None,
+        "premise: the launchpad starts unfrozen (design D9 exception)"
+    );
+
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let target = calm_server::test_seams::prepare_workspace_lease_target_for_test(
+        &mut tx,
+        &wave,
+        &spec_card,
+        &b.workspace_root,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    calm_server::test_seams::acquire_workspace_lease_for_test(
+        b.repo.pool(),
+        &spec_card,
+        &wave,
+        "test-owner",
+        &target,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        workspace_row(&b, &wave).await.2,
+        None,
+        "the launchpad's path is kernel-maintained and must stay re-pointable; \
+         a stamp here bricks `today_launchpad_ensure_tx` against the freeze latch"
+    );
+
+    // The consequence, stated as behaviour rather than as a column value.
+    let (status, body) = request(b.app.clone(), "POST", "/api/today/launchpad/ensure", None).await;
+    assert!(
+        status == StatusCode::OK || status == StatusCode::CREATED,
+        "the Today panel must still come up after a lease: {status} {body}"
+    );
+
+    // …and it is still not user-repointable.
+    let (status, body) = repoint(&b, &wave).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
 }
