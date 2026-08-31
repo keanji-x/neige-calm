@@ -769,3 +769,274 @@ async fn a_failed_materialize_during_a_repoint_still_re_anchors_the_harness() {
     .unwrap();
     assert!(reuse_at_new_path > 0, "steady state never resumed");
 }
+
+/// `(wave id, workspace_kind, workspace_path)`.
+type WorkspaceRow = (String, String, String);
+
+/// Every wave row, whatever minted it.
+async fn all_workspace_rows(repo: &SqlxRepo) -> Vec<WorkspaceRow> {
+    sqlx::query_as("SELECT id, workspace_kind, workspace_path FROM waves ORDER BY created_at, id")
+        .fetch_all(repo.pool())
+        .await
+        .unwrap()
+}
+
+/// Managed paths held by more than one wave — the violation set of the property
+/// below. Computed in Rust over whole-table rows rather than as a `GROUP BY`,
+/// so the failure message can name the waves.
+fn shared_managed_paths(rows: &[WorkspaceRow]) -> Vec<(String, Vec<String>)> {
+    let mut by_path: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (id, kind, path) in rows.iter().filter(|r| r.1 == "managed") {
+        let _ = kind;
+        by_path.entry(path.as_str()).or_default().push(id.clone());
+    }
+    by_path
+        .into_iter()
+        .filter(|(_, waves)| waves.len() > 1)
+        .map(|(path, waves)| (path.to_string(), waves))
+        .collect()
+}
+
+/// Same grouping, restricted to `attached` — used only to prove the property
+/// above is scoped on purpose and would notice if the scope were wrong.
+fn shared_attached_paths(rows: &[WorkspaceRow]) -> Vec<(String, Vec<String>)> {
+    let mut by_path: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (id, _, path) in rows.iter().filter(|r| r.1 == "attached") {
+        by_path.entry(path.as_str()).or_default().push(id.clone());
+    }
+    by_path
+        .into_iter()
+        .filter(|(_, waves)| waves.len() > 1)
+        .map(|(path, waves)| (path.to_string(), waves))
+        .collect()
+}
+
+/// Drive the production child-wave creation path (`ChildWaveAdapter`, the
+/// fifth wave-create entry point) against this boot's database and workspace
+/// root. The parent task row is seeded directly because the adapter only reads
+/// the frozen task fields from it; everything that decides a workspace runs in
+/// production code.
+async fn create_child_wave(b: &Boot, parent_wave_id: &str) -> String {
+    use calm_server::operation::child_wave_adapter::{ChildWaveAdapter, ChildWaveOperationPayload};
+    use calm_server::operation::{Operation, Phase, ProviderAdapter};
+
+    let task_id = format!("{parent_wave_id}:child");
+    let now = calm_server::model::now_ms();
+    sqlx::query(
+        "INSERT INTO tasks(id,wave_id,key,kind,goal,context_json,acceptance_criteria,\
+         depends_on_json,priority,status,declared_by,spawn,created_at_ms,updated_at_ms) \
+         VALUES(?1,?2,'child','codex','child goal','{}','done','[]',0,'dispatched',\
+         'spec','sub-wave',?3,?3)",
+    )
+    .bind(&task_id)
+    .bind(parent_wave_id)
+    .bind(now)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+
+    let payload = serde_json::to_value(ChildWaveOperationPayload {
+        task_id: task_id.clone(),
+        parent_wave_id: parent_wave_id.into(),
+        goal: "child goal".into(),
+        acceptance: Some("done".into()),
+        context: serde_json::json!({}),
+        cwd: None,
+    })
+    .unwrap();
+    let operation = Operation {
+        id: "op-child".into(),
+        operation_key: task_id.clone(),
+        kind: "child-wave".into(),
+        idempotency_key: Some(task_id.clone()),
+        payload_hash: "test-hash".into(),
+        target_type: "unknown".into(),
+        target_id: None,
+        target: serde_json::json!({"type": "unknown", "id": null}),
+        payload: payload.clone(),
+        tx_output: None,
+        phase: Phase::Pending,
+        phase_detail: None,
+        attempt: 0,
+        last_error: None,
+        compensation_state: None,
+        lease_owner: None,
+        lease_until_ms: None,
+        spawn_artifacts: None,
+        parked_at_ms: None,
+        parked_deadline_ms: None,
+    };
+    let adapter = ChildWaveAdapter::new(
+        b.repo.card_role_cache().clone(),
+        b.repo.wave_cove_cache().clone(),
+        b.workspace_root.clone(),
+    );
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let output = adapter
+        .prepare_tx(&mut tx, &payload, &operation)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    output.data["child_wave_id"].as_str().unwrap().to_string()
+}
+
+/// #1147 S4 (design D7 as amended) — **no two waves share a `managed`
+/// workspace path**, over the WHOLE table.
+///
+/// This is the invariant that pays for S5 being allowed to `remove_dir_all` a
+/// managed directory: if two rows named one managed directory, deleting either
+/// wave would destroy the other's repository. It is stated here, beside
+/// `every_managed_wave_lives_under_the_workspace_root`, for the same reason
+/// that one is: a future create path that shares a managed directory shows up
+/// whether or not anybody remembered to write a test for it.
+///
+/// The rows come from the real entry points — launchpad `ensure`, `POST
+/// /api/waves` (managed and attached), and the child-wave adapter for both a
+/// managed and an attached parent — not from hand-written rows.
+///
+/// Scoped to `managed` deliberately, with a two-sided guard so the scope cannot
+/// silently become vacuous:
+///
+/// * the managed set must be non-empty and contain more than the launchpad,
+///   otherwise "no duplicates" holds because there is nothing to duplicate;
+/// * an attached path that IS shared must exist, and must NOT be reported.
+///   Attached sharing is legal and pre-existing in production (two waves on one
+///   checkout), so an unscoped version of this property would call a
+///   long-standing correct state a violation.
+#[tokio::test]
+async fn no_two_waves_share_a_managed_workspace_path() {
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let cove = create_cove(&b, "Atlas").await;
+    let attached_dir = TempDir::new().unwrap();
+    let managed_parent = create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "managed parent",
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
+    )
+    .await;
+    let attached_parent = create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "attached parent",
+            "cwd": attached_dir.path().to_string_lossy(),
+            "attach_folder": true,
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
+    )
+    .await;
+
+    // One child under each shape of parent. The attached one is what makes the
+    // "attached sharing exists and is not reported" guard below real rather
+    // than hypothetical: it produces a genuine shared attached path through
+    // production code.
+    let managed_child = create_child_wave(&b, managed_parent["id"].as_str().unwrap()).await;
+    let attached_child = create_child_wave(&b, attached_parent["id"].as_str().unwrap()).await;
+
+    let rows = all_workspace_rows(&b.repo).await;
+    let managed: Vec<_> = rows.iter().filter(|r| r.1 == "managed").collect();
+    assert!(
+        managed.len() >= 3,
+        "the managed set must hold the launchpad, an ordinary wave and a \
+         child, or 'no duplicates' is vacuous: {rows:?}"
+    );
+    assert!(
+        managed.iter().any(|r| r.0 == managed_child),
+        "the managed child must be in the table: {rows:?}"
+    );
+
+    let violations = shared_managed_paths(&rows);
+    assert!(
+        violations.is_empty(),
+        "two waves share a managed workspace path. S5 recycles managed \
+         directories, so deleting either wave destroys the other's \
+         repository: {violations:?}"
+    );
+
+    // The other side of the scope: attached sharing exists here, on purpose,
+    // and is NOT a violation.
+    let attached_sharing = shared_attached_paths(&rows);
+    assert_eq!(
+        attached_sharing.len(),
+        1,
+        "the attached child must share its parent's path, otherwise this test \
+         proves nothing about the scoping: {rows:?}"
+    );
+    let (shared_path, sharers) = &attached_sharing[0];
+    assert_eq!(shared_path, &attached_dir.path().to_string_lossy());
+    assert!(
+        sharers.contains(&attached_child) && sharers.len() == 2,
+        "expected exactly the attached parent and its child on {shared_path}: \
+         {sharers:?}"
+    );
+}
+
+/// Single-violation fixture for the property above: one managed row moved onto
+/// another managed row's path — written through the single workspace writer,
+/// which is exactly the surface S3's workspace PATCH will call.
+///
+/// Without this, "no violations" could be passing because nothing in the tree
+/// can produce one today.
+#[tokio::test]
+async fn shared_managed_path_is_reported_as_a_violation() {
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let cove = create_cove(&b, "Atlas").await;
+    let first = create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "first",
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
+    )
+    .await;
+    let second = create_wave(
+        &b,
+        serde_json::json!({
+            "cove_id": cove["id"],
+            "title": "second",
+            "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+        }),
+    )
+    .await;
+    assert!(shared_managed_paths(&all_workspace_rows(&b.repo).await).is_empty());
+
+    let first_id = first["id"].as_str().unwrap().to_string();
+    let second_id = second["id"].as_str().unwrap().to_string();
+    let first_path: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id=?1")
+        .bind(&first_id)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    calm_server::db::sqlite::wave_workspace_write_tx(
+        &mut tx,
+        &second_id,
+        &calm_server::model::WaveWorkspace {
+            kind: calm_server::model::WaveWorkspaceKind::Managed,
+            path: first_path.clone(),
+            frozen_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let violations = shared_managed_paths(&all_workspace_rows(&b.repo).await);
+    assert_eq!(violations.len(), 1, "{violations:?}");
+    assert_eq!(violations[0].0, first_path);
+    assert!(
+        violations[0].1.contains(&first_id) && violations[0].1.contains(&second_id),
+        "the report must name both waves: {violations:?}"
+    );
+}
