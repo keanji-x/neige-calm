@@ -52,7 +52,12 @@ describe('test-tier-project fixtures', () => {
     ['browser', 'platform-independent', 'probe.test.ts', false],
     ['jsdom', 'platform-independent', 'probe.test.ts', false],
     ['jsdom', 'browser', 'probe.browser.test.ts', true],
+    /* `browser-coarse` is a real page with a different context, so it is at
+       least as capable as `browser` at every tier and never less. */
+    ['browser', 'browser-coarse', 'probe.coarse.browser.test.ts', true],
+    ['jsdom', 'browser-coarse', 'probe.coarse.browser.test.ts', true],
     ['static', 'web-dom', 'probe.test.ts', true],
+    ['static', 'browser-coarse', 'probe.coarse.browser.test.ts', true],
     ['static', 'platform-independent', 'probe.test.ts', true],
   ])('checks whether %s tier has sufficient capability in %s', (tier, projectName, path, accepted) => {
     const isolatedProjects = [{ name: projectName, include: [path], exclude: [] }];

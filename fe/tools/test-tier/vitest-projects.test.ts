@@ -6,8 +6,9 @@ import { playwrightProjectFromConfig, projectNamesFromScript, projectsForPath, t
 describe('vitest project partition', () => {
   const projects = testProjectsFromConfig(vitestConfig);
 
-  it('exports exactly the three named projects', () => {
-    expect(projects.map(({ name }) => name)).toEqual(['platform-independent', 'web-dom', 'browser']);
+  it('exports exactly the four named projects', () => {
+    expect(projects.map(({ name }) => name))
+      .toEqual(['platform-independent', 'web-dom', 'browser', 'browser-coarse']);
   });
 
   it.each([
@@ -18,8 +19,29 @@ describe('vitest project partition', () => {
     ['web/src/ui/probe.test.tsx', ['web-dom']],
     ['tools/probe.browser.test.ts', ['browser']],
     ['web/src/ui/probe.browser.test.tsx', ['browser']],
+    /*
+     * The coarse suffix is a `.browser.test.` too, so `browser`'s own include
+     * collects it and only that project's exclude keeps this a partition —
+     * which is exactly the kind of overlap `projectsForPath` is here to decide
+     * instead of anyone reading two globs side by side.
+     */
+    ['tools/probe.coarse.browser.test.ts', ['browser-coarse']],
+    ['web/src/features/chat/thread/thread.coarse.browser.test.tsx', ['browser-coarse']],
   ])('assigns representative path %s exactly once', (path, expected) => {
     expect(projectsForPath(path, projects)).toEqual(expected);
+  });
+
+  /*
+   * The one representative path that must land in *no* project, which is why it
+   * is not a row above: `tools/architecture/fixtures/**` holds deliberately
+   * broken sources the lint rules are pointed at, and `check-test-tier.mjs`
+   * drops that directory from `trackedTests`. A coarse-suffixed file under it
+   * would therefore be executed for real while being invisible to the partition
+   * check — and `browser-coarse` was the one collecting project whose exclude
+   * did not say so. Nothing asserted that exclude until this row.
+   */
+  it('collects nothing out of the architecture fixture directory', () => {
+    expect(projectsForPath('tools/architecture/fixtures/probe.coarse.browser.test.ts', projects)).toEqual([]);
   });
 
   it('runs every configured project in either test script', () => {

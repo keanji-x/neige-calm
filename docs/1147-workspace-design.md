@@ -1,12 +1,18 @@
 # Wave 工作区
 
-状态：实现中。S0 已合入 #1158；S1 已合入 #1163；S2 实现完成、已过三轮红队，见「已知缺口」。
+状态：实现中。S0 已合入 #1158；S1 已合入 #1163；S2 已合入 #1182；S4 实现完成（子 wave 工作区按父 kind 分情况）。
 
 ## 前提
 
-新 FE 尚未上生产。S2 起不再为旧客户端新增字段别名、缺键默认或其他过渡层；破坏性的 API/DTO 变更可以一步到位。S1 已存在的 wire `cwd` 别名保留。
+两条并列前提，作用范围不同，别混用。
 
-服务端仍必须迁移和回放已经持久化的数据。FE 是否上线不改变这项责任。
+**一、新 FE 尚未上生产。** S2 起不再为旧客户端新增字段别名、缺键默认或其他过渡层；破坏性的 API/DTO 变更可以一步到位。S1 已存在的 wire `cwd` 别名保留。
+
+**二、老数据不迁移、不兼容**（用户 2026-08-31 定调）。范围是**所有现存库，生产库 `:4040` 也不例外**——这版按大版本更新处理，上线时起一个全新的库。所以不存在「dev 可以丢、生产要留」的分级，也不做任何存量行的回填、修复或兼容守卫。
+
+因此本文档不再把「存量行会变成什么样」写成后续切片的约束。S1 的 0077 回填（存量 wave 一律 `attached`、`frozen_at = created_at`）已经合入，**保留为历史记录**：已发布迁移一律不碰，但它的推理不再约束后面的切片。
+
+> ⚠️ 这条**只**豁免「老数据」。**同一次运行内的正确性一条都不打折**：并发、崩溃后重跑、幂等、失败回滚——这些与数据新旧无关，仍然是硬要求。
 
 ## 产品契约
 
@@ -15,7 +21,7 @@
 - 创建 wave 时默认分配工作区，不要求用户先选目录。
 - 工作区在产生工作前可更换；开始工作后永久冻结。
 - 用户仓库可以附加，但 Neige 永不初始化、移动或删除它。
-- 子 wave 必须拥有独立工作区，不能继承父 wave 的路径。
+- 子 wave 的工作区按父 wave 的 `kind` 分情况：父 managed 则独立分配，父 attached 则继承同一路径。两种都在创建时冻结。
 
 ## 数据模型
 
@@ -138,13 +144,28 @@ SQLite 事务不能隔离文件系统写入，因此“事务内检查一次”�
 
 **重指向意图必须可持久推断，不能靠一次内存比较。** 「存储路径 ≠ 期望路径」只在移动路径的那一个事务里为真，而物化在事务提交之后执行：若物化失败，或进程在提交与记录操作之间被杀，意图就丢了。下一次 ensure 看到「已是期望值」判为稳态、不强制新建 thread，于是 spec harness 的 thread 永远停在旧 cwd 而所有 worker 用新 cwd。正确的问法是一个持久事实：**这个路径上有没有成功启动过 harness**——路径摘要已在幂等键里，操作表可以直接回答，且该答案只在启动真正成功后才被写下，因而跨越所有崩溃窗口。
 
+### 子 wave 的工作区（D7，S4 修正）
+
+**这条原先写错了，S4 改正。** 原文是「子 wave 必须拥有独立工作区，不能继承父 wave 的路径」，无条件。它的**依据**只有一个：删除子 wave 会 `rm -rf` 掉父 wave 的仓库。而这个事故**只对 managed 父成立**——回收只碰 `kind = managed`，attached 路径永不创建、移动或删除。结论比前提宽，代价是把功能写坏了：attached wave 的子 wave 会拿到一个空的 managed 仓库，看不见父 wave 的代码，而「把代码 wave 的活拆给子 wave」正是子 wave 的典型用法。
+
+改成按父的 `kind` 分情况：
+
+| 父的 kind | 子的工作区 | 为什么安全 |
+|---|---|---|
+| `managed` | 派生 `<root>/<cove_id>/<child_id>`，`managed`，创建时冻结 | 两行共用一个 managed 目录会让回收删掉父仓库，所以必须分开 |
+| `attached` | 继承父的路径，`attached`，创建时冻结 | 回收只处理 managed；attached 目录服务端永不动。**多个 wave 指向同一个 attached 仓库是合法状态**，与库的新旧无关：同一个 checkout 被几个 wave 打开是常态用法 |
+
+由此，「没有两行 wave 共享同一路径」这条不变量**只约束 managed 路径**。不收窄的话它会把上面那个既有状态判成违规。
+
+两种情况都在创建时冻结：子 wave 是 spec 运行中机器创建的，harness 立刻在这个路径上 bootstrap，没有可以安全重指的窗口。
+
 ## 生命周期
 
 - 删除 wave：只回收 managed 目录，并先验证路径位于 workspace root。
 - 删除 cove：回收其所有 managed wave 目录和空的 cove 目录。
 - attached 路径永不移动、初始化或删除。
 - 归档不回收；长期磁盘回收需要独立策略。
-- 子 wave 创建时分配独立 managed 仓库并立即冻结。
+- 子 wave 创建时冻结工作区：父 managed → 分配独立 managed 仓库；父 attached → 继承父的 attached 路径（见「子 wave 的工作区」）。
 - fork/template 复制报告，不继承源 wave 的工作区。
 
 回收必须通过单一受控入口；任何直接递归删除都不得接受未经类型和根目录校验的路径。
@@ -160,9 +181,9 @@ Managed 仓库默认没有 remote；需要操作真实代码仓库时，用户�
 ## 交付顺序
 
 1. S0：失败原因进入 task 状态与前端。
-2. S1：typed workspace、迁移、唯一存储、wire 类型。
+2. S1：typed workspace、唯一存储、wire 类型（0077 的一次性回填已合入，按前提二保留为历史记录，不再作为后续切片的约束）。
 3. S2：托管根、物化、所有创建入口默认 managed。
-4. S4：子 wave 独立分配并冻结。
+4. S4：子 wave 工作区按父 kind 分情况并冻结。
 5. S5：安全回收和根目录断言。
 6. S3：工作区更换、冻结、harness 重锚定、FE attached 入口。
 7. S6：terminal 默认落在 wave 工作区。
@@ -180,16 +201,29 @@ S2 实测可达、被刻意推迟的缺口。**每条都有一个断言缺口本
 | N7 | 符号链接是「拒绝，但已经写过了」 | 根外留下一个带我们标记的完整仓库，无人回收。先拒后写不可避免：真实位置要 `create_dir_all` 之后才知道 | 回收片 |
 | N9 | 物化互斥是**进程内**的 | 两个 calm-server 实例（升级重叠、admin CLI、健康重启）仍会撞出锁残留。清理逻辑让它可自愈而非永久砖化，但撞击本身还在；真解是文件锁 | 回收片或独立 issue |
 | N10 | 环境隔离只到物化边界 | 紧邻的 `git_repo_root_for_wave_cwd` 与 worktree 相关 spawn 仍是裸 `git` 调用，同一组变量对它们仍然有效 | 独立 issue |
-| N11 | S2 **持久化**了 `kind = managed` 且路径等于父目录的 child 行 | 见下 | **子 wave 片，必须带数据迁移** |
+| ~~N11~~ | S2 的 adapter 会**持久化** `kind = managed` 且路径等于父目录的 child 行 | 见下 | **代码已由 S4 修复；存量行按前提二不迁移** |
 
-**N11 单列强调。** 交付顺序把「子 wave 独立分配」排在回收之前，依据是前者消除共享目录。但子 wave 片若**只改 adapter**，只修好此后新建的子 wave；S2 已经写进库的行仍然指向父仓库，于是回收片一落地，删除子 wave 依旧会 `rm -rf` 掉父 wave 的整个仓库——事故没有被代码修复消灭，而是以**数据**的形式存活了下来。**子 wave 片的验收必须包含存量 child 行的迁移**，不能只有 adapter 改动加一条新建路径的测试。
+**N11：代码在 S4 修好；存量行不迁移。**
+
+这类行只可能由「跑着 S2 代码的实例去派子 wave」产生。按前提二，带着这种行的库不迁移——上线起新库。因此本片不带任何 boot 修复或回填：为老数据在每次启动时扫一遍 `waves` 表并可能改写行，是净增的风险面。
+
+代码侧 S4 从两处消灭它，缺一处都不够：
+
+- **adapter**：父 managed 的子走 `ManagedFrozenUnder`，路径由自己的 id 派生，物化时所有权标记写的是**子 wave 的 id**。同时删掉了 `InheritFrozen` 这个计划变体本身——它复制父的 kind **和** 路径，只要它还在，「两行 wave 共用一个 **managed** 目录」就仍是可构造状态；取而代之的 `InheritAttachedFrozen` 只能产出 `kind = Attached`，够不着回收路径。
+- **operation result**：scheduler 的 child bootstrap 从 **operation 的持久 result** 取 cwd，从不重读 wave 行；只改 adapter 不改 result，子 wave 的 harness 仍然锚在父目录上。
+
+bootstrap 的幂等键带上了路径摘要，理由与 S2 给 launchpad 加摘要的完全一样：载荷含 cwd，运行时对「同键不同载荷哈希」是永久拒绝，而 operation 行从不删除——将来 S3 的工作区 PATCH 重指过的子 wave 否则会在下一次 re-drive 上永久失败。这条属于「同一次运行内的正确性」，不受前提二豁免。
+
+「没有两行 wave 共享同一 **managed** 路径」由 `today_launchpad.rs::no_two_waves_share_a_managed_workspace_path` 全表钉住，由真实创建入口驱动（launchpad ensure、`POST /api/waves` 的 managed 与 attached、child adapter 的两种父），并配一条单违规 fixture。
+
+顺带记一条实测：假如那种行真的存在，它其实**早已是砖**而不只是「将来会被误删」——worker 取 lease 时用该 wave 自己的 id 去物化它的 managed 工作区，落在父目录上时所有权标记不匹配，直接报 `is the managed workspace of wave <parent>, not <child>`，codex worker 根本起不来。
 
 ## 验收重点
 
 - 新 managed wave 能直接创建第一个 worktree。
 - 物化失败时 create 返回非 2xx，且不留下可见 wave。
 - 删除 attached wave 不触碰用户仓库。
-- 子 wave 路径与父 wave 不同；删除子 wave 后父仓库仍可用。
+- 父 managed 时子 wave 路径与父不同，删除子 wave 后父仓库仍可用；父 attached 时子 wave 与父同路径且用户目录零改动。
 - 全局 Git 签名、模板和 hook 配置不会影响物化。
 - 工作区有普通文件、ignored worker 产出、其他分支提交、stash、活 worktree 或 terminal 时，更换均被拒绝。
 - 活跃 turn 与更换并发时不能在 trash 中继续产生产出。
