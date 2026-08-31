@@ -29,7 +29,7 @@ export function MobileList({ title, children }: Readonly<{ title?: string; child
   return (
     <section className={styles.section}>
       {title !== undefined && <h3>{title}</h3>}
-      <AstryxList className={styles.list} density="spacious">{children}</AstryxList>
+      <AstryxList className={styles.list} density="balanced">{children}</AstryxList>
     </section>
   );
 }
