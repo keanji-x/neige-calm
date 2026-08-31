@@ -149,7 +149,6 @@ const WAVE_PERSISTENT_COLUMNS: &[&str] = &[
     "created_at",
     "updated_at",
     "lifecycle",
-    "cwd",
     "terminal_at",
     "pinned_at",
     "task_budget",
@@ -163,6 +162,11 @@ const WAVE_PERSISTENT_COLUMNS: &[&str] = &[
     "parent_wave_id",
     "tree_task_budget",
     "plugin_scope",
+    // #1147 S1 — migration 0077 replaced `cwd` (dropped, see above) with the
+    // typed workspace.
+    "workspace_kind",
+    "workspace_path",
+    "workspace_frozen_at",
 ];
 
 type PersistedWaveEvent = (

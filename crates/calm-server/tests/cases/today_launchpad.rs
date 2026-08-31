@@ -216,3 +216,187 @@ async fn legacy_today_adoption_resets_spec_transcript_and_preserves_terminal() {
     assert_eq!(adopted["terminal_card_id"], original["terminal_card_id"]);
     assert_eq!(adopted["terminal_id"], original["terminal_id"]);
 }
+
+/// #1147 S1 (design D9 + §5 test 8). The launchpad is the wave-create path
+/// that bypasses `wave_create_tx` entirely — a raw `INSERT INTO waves(...)`
+/// plus a raw `UPDATE`, with a hand-written `Wave` literal and two
+/// hand-written SELECT column lists. That combination fails at **runtime**,
+/// not at compile time (`query_as` binds columns by name), so this asserts the
+/// route still answers and that both of its branches leave the workspace and
+/// its `cwd` projection agreeing.
+///
+/// It also pins the launchpad's documented exception: this wave is
+/// **never frozen**. The adopt-legacy branch re-points an existing `Today`
+/// wave at the caller's `cwd`, and `ensure` is idempotent, so a stamp written
+/// on the first call would be overwritten on the second — which is precisely
+/// the "one-shot, monotonic" property D1 gives `frozen_at`. Leaving it NULL is
+/// how re-pointing stays legal without the latch ever being violated.
+#[tokio::test]
+async fn launchpad_wave_carries_an_unfrozen_attached_workspace_on_both_branches() {
+    async fn workspace_row(repo: &SqlxRepo, id: &str) -> (String, String, Option<i64>) {
+        sqlx::query_as(
+            "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE id=?1",
+        )
+        .bind(id)
+        .fetch_one(repo.pool())
+        .await
+        .unwrap()
+    }
+
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave_id = body["wave_id"].as_str().unwrap().to_string();
+
+    // Branch 1 — fresh INSERT.
+    let (kind, path, frozen_at) = workspace_row(&b.repo, &wave_id).await;
+    assert_eq!(kind, "attached");
+    assert!(!path.is_empty(), "launchpad wave got a real path");
+    assert_eq!(
+        frozen_at, None,
+        "the launchpad wave must stay unfrozen so the adopt branch can \
+         re-point it without re-stamping (design D1 monotonicity)"
+    );
+
+    // The read path must survive the new columns (this is where a stale
+    // SELECT column list detonates).
+    let response = b
+        .app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/waves/{wave_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let dto: Value = serde_json::from_slice(&bytes).unwrap();
+    let wave = dto.get("wave").unwrap_or(&dto);
+    assert_eq!(wave["workspace"]["kind"], "attached", "dto={dto}");
+    assert_eq!(wave["workspace"]["path"], wave["cwd"], "dto={dto}");
+    assert!(wave["workspace"]["frozen_at"].is_null(), "dto={dto}");
+
+    // Branch 2 — legacy adoption. Scramble the row so the assertion cannot
+    // pass on leftovers from branch 1: the adoption branch must rewrite both
+    // columns through the single writer.
+    sqlx::query(
+        "UPDATE waves SET purpose=NULL, workspace_path='/also-scrambled', \
+         workspace_kind='managed', workspace_frozen_at=NULL WHERE id=?1",
+    )
+    .bind(&wave_id)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+
+    let (status, adopted) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={adopted}");
+    let (kind, path, frozen_at) = workspace_row(&b.repo, &wave_id).await;
+    assert_eq!(kind, "attached", "adoption re-declares the kind");
+    assert_ne!(
+        path, "/also-scrambled",
+        "adoption actually rewrote the path"
+    );
+    assert_eq!(
+        frozen_at, None,
+        "adoption re-points, and re-pointing must never stamp frozen_at"
+    );
+}
+
+/// #1147 S1 — the bound on the launchpad exception (design D9, r3.2 amendment).
+///
+/// `frozen_at IS NULL` means "this workspace may still be re-pointed". S1
+/// creates exactly one such wave, the kernel-owned launchpad, and it lives in
+/// the **system** cove. Every user-reachable wave is frozen at creation, which
+/// is what keeps a future PATCH branch that forgets to check `kind` from
+/// relocating a real user repository.
+///
+/// Stated as a property over the whole table rather than about the one wave we
+/// happen to know about: any future create path that forgets to freeze shows
+/// up here, whether or not anybody remembered to write a test for it.
+#[tokio::test]
+async fn only_system_cove_waves_may_be_unfrozen() {
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    // A second, ordinary wave in a *user* cove, minted through the production
+    // route — otherwise the property below is only tested against the one row
+    // that motivated it.
+    let cove: Value = {
+        let response = b
+            .app
+            .clone()
+            .oneshot(
+                Request::post("/api/coves")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"name": "Atlas", "color": "#abc"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    };
+    let tmp = TempDir::new().unwrap();
+    let cwd = tmp.path().to_string_lossy().into_owned();
+    let response = b
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/api/waves")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "cove_id": cove["id"],
+                        "title": "user wave",
+                        "cwd": cwd,
+                        "attach_folder": true,
+                        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "body={}",
+        String::from_utf8_lossy(&bytes)
+    );
+
+    let unfrozen: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT w.id, w.purpose, c.kind FROM waves w JOIN coves c ON c.id = w.cove_id \
+         WHERE w.workspace_frozen_at IS NULL",
+    )
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap();
+
+    assert!(
+        !unfrozen.is_empty(),
+        "the launchpad wave should be here; an empty set would make this \
+         property vacuous"
+    );
+    for (id, purpose, cove_kind) in &unfrozen {
+        assert_eq!(
+            cove_kind, "system",
+            "wave {id} (purpose={purpose}) is unfrozen but lives in a `{cove_kind}` cove. \
+             `frozen_at IS NULL` means re-pointable; outside the kernel-owned system \
+             cove that is a user repository waiting to be moved (design D9)."
+        );
+        assert_eq!(
+            purpose, "launchpad",
+            "wave {id} is an unfrozen system-cove wave that is not the launchpad; \
+             the exception is scoped to that one wave"
+        );
+    }
+}

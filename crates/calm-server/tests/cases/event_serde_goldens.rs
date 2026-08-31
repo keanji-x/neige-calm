@@ -29,7 +29,10 @@
 use calm_server::event::{ArtifactRef, EditAuthor, Event, ForgeMergeSubject, WaveUpdatedPayload};
 use calm_server::harness::snapshot::HarnessPhaseTag;
 use calm_server::ids::{CardId, CoveId, WaveId};
-use calm_server::model::{Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle};
+use calm_server::model::{
+    Card, CardRuntimeView, Cove, CoveKind, Overlay, Wave, WaveLifecycle, WaveWorkspace,
+    WaveWorkspaceKind,
+};
 use calm_server::session_projection_repo::{AgentProvider, WorkerSessionKind, WorkerSessionState};
 use calm_types::event::{
     ChannelVerdict, ChannelVerdictKind, RatifyDecision, ReviewSubject, TaskContextRef,
@@ -119,12 +122,13 @@ fn wave_min() -> Wave {
         archived_at: None,
         pinned_at: None,
         lifecycle: WaveLifecycle::Draft,
-        cwd: String::new(),
+        cwd_wire_alias: String::new(),
         workflow_id: None,
         plugin_scope: None,
         purpose: None,
         workflow_input: None,
         terminal_at: None,
+        workspace: WaveWorkspace::default(),
         created_at: 1000,
         updated_at: 2000,
     }
@@ -193,8 +197,13 @@ golden_test!(
             archived_at: Some(111),
             pinned_at: Some(222),
             lifecycle: WaveLifecycle::Working,
-            cwd: "/tmp/golden-wave".into(),
+            cwd_wire_alias: "/tmp/golden-wave".into(),
             terminal_at: Some(333),
+            workspace: WaveWorkspace {
+                kind: WaveWorkspaceKind::Managed,
+                path: "/tmp/golden-wave".into(),
+                frozen_at: Some(444),
+            },
             ..wave_min()
         },
         Some("spec says hi".into()),

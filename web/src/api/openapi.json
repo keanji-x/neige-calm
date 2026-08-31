@@ -6470,7 +6470,7 @@
           },
           "cwd": {
             "type": "string",
-            "description": "Issue #250 PR 2 — the working directory the wave's spec daemon\nruns in. **Required at the route layer**: `POST /api/waves`\nrejects empty / non-absolute paths and refuses to create a wave\nwhose cwd isn't claimable by some cove (via\n`cove_folder_resolve`, optionally creating a `cove_folders` row\nwhen the body sets `attach_folder: true`).\n\n`#[serde(default)]` mirrors the lifecycle precedent: replay of\na pre-#250 event log fixture (no `cwd` key on `WaveUpdated`)\nhydrates as `\"\"`, matching the DB DEFAULT in migration 0018.\nProduction wave-create paths inside this binary always stamp a\nreal path — the migration default is the \"old data only\" fallback."
+            "description": "Wire-compatibility alias of `workspace.path`, serialized as `cwd`.\n\n**Do not read this from Rust — read `workspace.path`.** The awkward\nfield name is the point: `waves.cwd` was deleted in migration 0077, and\nthis field exists only so the JSON wire shape, the OpenAPI spec, the\nts-rs bindings and the `wave.updated` event goldens are byte-identical\nfor clients that predate #1147. It is computed in exactly one place,\n`impl From<WaveRow> for Wave`, from the one stored column.\n\nRenaming it (rather than leaving `cwd`) is what turned \"update the four\nreaders\" from a grep into a compile error — which is how two readers\nnobody had listed (`workspace_lease::{112,551}`) were found.\n\nIssue #250 PR 2 originally introduced `cwd` as the working directory\nthe wave's spec daemon runs in; that role now belongs to\n`workspace.path`.\n\n`#[serde(default)]` keeps replay of a pre-#250 event log parsing (no\n`cwd` key), matching the old DB DEFAULT."
           },
           "id": {
             "type": "string"
@@ -6532,6 +6532,10 @@
               "null"
             ],
             "description": "Issue #891 / #1110 S2 — input JSON for the bound workflow, validated\nagainst the owning plugin Manifest's `input_schema` at create time and\npersisted verbatim; the kernel never interprets it. `#[serde(default)]`\nhydrates pre-#891 `wave.updated` replays as `None` (same pattern as\n`workflow_id`). Explicit `unknown` override — see `Card.payload` for\nthe rationale."
+          },
+          "workspace": {
+            "$ref": "#/components/schemas/WaveWorkspace",
+            "description": "Issue #1147 S1 (design D1) — the typed workspace. `cwd` above is a\nprojection of `workspace.path`; see [`WaveWorkspace`] for the\nsingle-writer invariant that keeps the two from drifting.\n\n`#[serde(default)]` mirrors the `cwd` / `lifecycle` precedent: a\npre-#1147 `wave.updated` replay fixture has no `workspace` key and\nhydrates as `Attached` / `\"\"` / unfrozen, matching the DB defaults in\nmigration 0077 before its backfill runs."
           }
         }
       },
@@ -7173,6 +7177,39 @@
             }
           }
         }
+      },
+      "WaveWorkspace": {
+        "type": "object",
+        "description": "Issue #1147 S1 (design D1) — the typed workspace of a wave.\n\n`workspace_path` is the **only** stored copy of the path. `waves.cwd` used\nto hold a second copy \"so existing readers don't have to change\"; migration\n0077 drops that column instead. Two columns holding one fact needs a rule\nsaying they must agree, and this codebase has no way to enforce such a rule\n— writers of `waves` are scattered raw `sqlx` statements, so the only\navailable policeman is a source-text scanner, and three rounds of\nred-teaming walked past three successive scanners. One column cannot\ndisagree with itself.\n\n`cwd` still exists **on the wire**: see [`Wave::cwd_wire_alias`]. It is\ncomputed from `path`, not stored.",
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "frozen_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "One-shot, monotonic. `Some` ⇒ neither `path` nor `kind` may change\nagain.\n\nIn S1 every wave **in a user cove** is frozen at creation: it is\n`Attached`, attached workspaces never need re-pointing, and freezing\nthem costs nothing while removing the \"unfrozen attached row\" state in\nwhich a future PATCH branch that forgot to check `kind` would relocate\na real user repository (design D9).\n\n**Exception (design D9, r3.3):** the kernel-owned Today/launchpad wave\nin the *system* cove stays `None` forever, because\n`today_launchpad_ensure_tx` re-points it — freezing it would make this\nfield's own one-shot-and-monotonic promise false on the next `ensure`.\n`only_system_cove_waves_may_be_unfrozen` bounds that exception to that\none wave."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WaveWorkspaceKind"
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path. The single stored copy — `waves.workspace_path`."
+          }
+        }
+      },
+      "WaveWorkspaceKind": {
+        "type": "string",
+        "description": "Issue #1147 S1 (design D1) — what kind of directory a wave's workspace is.\n\nThe distinction exists purely for **downstream behavior**, and only one of\nthose behaviors is destructive: a `Managed` directory is server-created,\nserver-owned and (from S5 on) server-*recycled*; an `Attached` directory is\na repository the user pointed at and must never be deleted, `git init`-ed\nor renamed. Collapsing both into the bare `cwd: String` we have today would\nleave the future teardown path unable to tell them apart — that is an\n`rm -rf`-grade accident surface, which is why the kind is typed rather\nthan inferred from a path prefix.\n\nPersisted lowercase in `waves.workspace_kind` (migration 0077), same\n`rename_all = \"lowercase\"` serde/db shape as [`WaveLifecycle`].\n\n`Attached` is the `Default` because that is the only kind S1 can mint:\nmanaged roots do not exist until S2, and every pre-existing wave points at\na directory somebody else created.",
+        "enum": [
+          "managed",
+          "attached"
+        ]
       },
       "WavesWindowQuery": {
         "type": "object",

@@ -147,6 +147,33 @@ export const waveSchema = z.object({
    * (no key on the event) parse without churn.
    */
   terminal_at: z.number().nullable().default(null),
+  /**
+   * #1147 S1 (design D1) — the typed workspace. `cwd` above is a projection
+   * of `workspace.path`; the kernel writes both from one value.
+   *
+   * Defaulted at the schema layer for symmetry with `#[serde(default)]` on
+   * `Wave.workspace`: pre-#1147 `wave.updated` replay payloads carry no
+   * `workspace` key. NOTE the zod trap this repo has hit before — an
+   * undeclared field is silently *stripped*, so the server having the field
+   * proves nothing about the client seeing it; it has to be declared here.
+   */
+  workspace: z
+    .object({
+      // No per-field defaults, deliberately. The default belongs on the
+      // *object*: a missing `workspace` key is a pre-#1147 replay payload and
+      // must parse, but a `workspace` that is present and incomplete is a
+      // server regression or a half-finished deploy, and filling it in with
+      // `attached` / `''` would hide exactly that. This matches serde, which
+      // rejects `{"workspace": {}}` because none of the three fields carries
+      // `#[serde(default)]`. (OpenAPI lists only `kind` and `path` as
+      // required — that is utoipa's blanket "Option ⇒ not required" rule for
+      // `frozen_at`, the same as `Wave.archived_at`; serde is the stricter and
+      // truer contract, so the client follows serde.)
+      kind: z.enum(['managed', 'attached']),
+      path: z.string(),
+      frozen_at: z.number().nullable(),
+    })
+    .default({ kind: 'attached', path: '', frozen_at: null }),
   created_at: z.number(),
   updated_at: z.number(),
 });

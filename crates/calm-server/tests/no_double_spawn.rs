@@ -2847,12 +2847,22 @@ async fn init_git_repo_for_wave(boot: &Boot, name: &str) -> PathBuf {
     std::fs::write(repo_path.join("README.md"), "initial\n").expect("write readme");
     run_git(&repo_path, ["add", "README.md"]);
     run_git(&repo_path, ["commit", "-m", "initial"]);
-    sqlx::query("UPDATE waves SET cwd = ?1 WHERE id = ?2")
-        .bind(repo_path.to_string_lossy().as_ref())
-        .bind(&boot.wave_id)
-        .execute(boot.repo.pool())
-        .await
-        .unwrap();
+    // #1147 S1 — same reason as `scheduler.rs`: go through the production
+    // single writer so `cwd` and `workspace_path` cannot drift apart in a
+    // fixture-only state.
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    calm_server::db::sqlite::wave_workspace_write_tx(
+        &mut tx,
+        &boot.wave_id,
+        &calm_server::model::WaveWorkspace {
+            kind: calm_server::model::WaveWorkspaceKind::Attached,
+            path: repo_path.to_string_lossy().into_owned(),
+            frozen_at: Some(1),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
     repo_path
 }
 

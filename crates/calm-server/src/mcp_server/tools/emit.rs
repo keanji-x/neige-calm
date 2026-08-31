@@ -214,7 +214,8 @@ async fn submit_worker_success_commit(
     }
 
     let card_id = identity.card_id.clone();
-    let Some(cwd_lease) = codex_git_worktree_lease_for_completion(identity, &wave_id, &wave.cwd)?
+    let Some(cwd_lease) =
+        codex_git_worktree_lease_for_completion(identity, &wave_id, &wave.workspace.path)?
     else {
         return Ok(());
     };

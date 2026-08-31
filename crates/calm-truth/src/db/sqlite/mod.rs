@@ -58,6 +58,7 @@ mod task;
 mod task_projection;
 mod wave;
 mod wave_tree;
+mod wave_workspace;
 
 pub use card::{
     card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
@@ -124,6 +125,7 @@ pub use wave_tree::{
     deterministic_share, wave_tree_budget, wave_tree_member_count, wave_tree_spec_inventory,
     wave_tree_spec_inventory_by_member, wave_tree_term,
 };
+pub use wave_workspace::wave_workspace_write_tx;
 
 use infra::check_no_unknown_future_migrations;
 
@@ -517,6 +519,9 @@ mod wave_workflow_input_tests;
 
 #[cfg(test)]
 mod wave_plugin_scope_migration_tests;
+
+#[cfg(test)]
+mod wave_workspace_migration_tests;
 
 #[cfg(test)]
 mod pool_tx_repair_tests;

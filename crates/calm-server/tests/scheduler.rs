@@ -1801,12 +1801,22 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
     // A real, absolute, definitely-not-a-git-repo cwd.
     let non_git = tempfile::tempdir().expect("tempdir");
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    sqlx::query("UPDATE waves SET cwd = ?1 WHERE id = ?2")
-        .bind(non_git.path().to_str().unwrap())
-        .bind(boot.wave_id.as_str())
-        .execute(&pool)
-        .await
-        .expect("set wave cwd");
+    // #1147 S1 — re-point through the production single writer rather than a
+    // raw `UPDATE ... SET cwd`, so the fixture leaves `cwd` and
+    // `workspace_path` agreeing the way every production path does.
+    let mut tx = pool.begin().await.expect("begin");
+    calm_server::db::sqlite::wave_workspace_write_tx(
+        &mut tx,
+        boot.wave_id.as_str(),
+        &calm_server::model::WaveWorkspace {
+            kind: calm_server::model::WaveWorkspaceKind::Attached,
+            path: non_git.path().to_str().unwrap().to_string(),
+            frozen_at: Some(1),
+        },
+    )
+    .await
+    .expect("set wave workspace");
+    tx.commit().await.expect("commit");
 
     let task = plan_task(&boot.wave_id, "nogit", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
@@ -8132,8 +8142,14 @@ async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snaps
 
         if label == "deleted" {
             sqlx::query(
-                "INSERT INTO waves(id,cove_id,title,sort,cwd,created_at,updated_at) \
-                 SELECT ?1,cove_id,'replacement child',sort+0.25,cwd,?2,?2 \
+                // #1147 S1 — this clones a wave row, so it must clone the
+                // whole workspace, not just its `cwd` projection. Copying
+                // `cwd` alone left `workspace_path=''` beside a non-empty
+                // `cwd`: a state design D1's single writer cannot produce, and
+                // one S2/S5 would later read to decide materialization and
+                // recycling.
+                "INSERT INTO waves(id,cove_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
+                 SELECT ?1,cove_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
                    FROM waves WHERE id=?3",
             )
             .bind(&child)

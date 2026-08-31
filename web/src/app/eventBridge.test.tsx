@@ -332,6 +332,7 @@ describe('EventBridge', () => {
         title: 'Hello',
         sort: 0,
         archived_at: null,
+        workspace: { kind: 'attached' as const, path: '/repo', frozen_at: 1 },
         // Issue #145 — `lifecycle` is now part of the wave wire shape.
         lifecycle: 'draft',
         // Issue #250 PR 2 — cwd + terminal_at are part of the Wave

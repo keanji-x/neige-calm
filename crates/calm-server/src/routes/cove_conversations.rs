@@ -251,7 +251,7 @@ pub(crate) async fn create_cove_conversation(
         spec_card_id: derived.card_id.clone().into(),
         report_card_id: None,
         sort: None,
-        cwd: wave.cwd.clone(),
+        cwd: wave.workspace.path.clone(),
         // A plain chat has no wave goal: seeding one would put an
         // `Observation::WaveGoal` in the queue and the harness would start
         // talking before the user did.
