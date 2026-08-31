@@ -12,7 +12,9 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: [
+      '@astryxdesign/core/Button',
       '@astryxdesign/core/Calendar',
+      '@astryxdesign/core/Heading',
       '@astryxdesign/core/Icon',
       '@astryxdesign/core/IconButton',
       '@astryxdesign/core/List',
