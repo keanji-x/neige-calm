@@ -181,21 +181,96 @@ function centre(index: number): number {
 type LiftSite = { media: readonly string[]; where: string };
 
 /**
- * Whether the cascade can reach this page through `site`.
+ * Whether `site` names a fine pointer as a *requirement* — the text half of the
+ * verdict below.
  *
- * A nested rule applies only if **every** enclosing condition matches, so one
- * false condition is enough to put it out of reach. The engine is asked, rather
- * than the text being pattern-matched: the case this backs runs *inside* a
- * coarse context, so "does this condition hold here" is a question the page can
- * answer directly, and a substring test for `pointer: fine` cannot. Measured on
- * this context, all three of the conditions a text test waves through are true:
- * `not (pointer: fine)`, `(pointer: fine), (pointer: coarse)`, and — the outer
- * half of a nested pair — `(any-pointer: fine)` is false while the
- * `(pointer: coarse)` inside it is true, which is why the two are evaluated
- * separately and not conjoined into one string.
+ * Only a plain conjunction counts. `not`, `,` and `or` each turn the named
+ * feature from something the device must have into something it may lack, and
+ * all three were measured to matter: `not (pointer: fine)` and the list
+ * `(pointer: fine), (pointer: coarse)` both hold on this context, and
+ * `((pointer: fine) or (orientation: landscape))` does *not* hold here yet
+ * applies to the same phone turned on its side. `any-pointer` counts alongside
+ * `pointer`: a device with no fine pointer at all can satisfy neither, in any
+ * orientation, which is exactly the claim being made.
+ */
+function narrowsToFine(condition: string): boolean {
+  const text = condition.toLowerCase();
+  if (/,|(?:^|[\s(])(?:not|or)(?:[\s(]|$)/.test(text)) return false;
+  return /\((?:any-)?pointer:\s*fine\)/.test(text);
+}
+
+/**
+ * Whether `site` still has to be reported — which is **not** "does the cascade
+ * reach this page right now", and the gap between the two is one rotation.
+ *
+ * Two half-checks, and a site is let go only when **both** clear it, because
+ * each closes precisely the class the other is blind to:
+ *
+ * - **The engine half** — every enclosing condition put to `matchMedia`, since
+ *   nesting is a conjunction — closes negations and lists, which no substring
+ *   test survives. Measured on this context, all three of the forms a text test
+ *   waves through are true: `not (pointer: fine)`, the list
+ *   `(pointer: fine), (pointer: coarse)`, and the inner `(pointer: coarse)` of
+ *   a pair whose outer text carries the needle. The list, swapped in for the
+ *   stylesheet's one real fine block, left this case green with the rail fully
+ *   magnified under a finger.
+ * - **The text half** closes every device state that is not *this* one. A
+ *   `matches` reading is a snapshot of one 420 × 900 portrait phone, and
+ *   `@media (pointer: coarse) and (orientation: landscape)` is false on it
+ *   while being a rule the same finger gets the instant the phone is turned.
+ *   The invariant is "a finger can never reach it", not "a finger does not
+ *   reach it from here", so a non-match is evidence only when what fails is the
+ *   device's *pointer* rather than some state it can be put into.
+ *
+ * The two halves are **not** symmetric, and the asymmetry is worth writing down
+ * rather than rounding off to "each closes the other's hole". The engine half
+ * alone is fail-**open**, measured: returning `matchesHere` on its own reds the
+ * landscape fixture and leaves the other nineteen cases green. The text half
+ * alone is not the mirror of that — `narrowsToFine` refuses `not`, `,` and `or`
+ * itself, so returning `!site.media.some(narrowsToFine)` on its own leaves all
+ * twenty green here. What the three forms below kill is the bare substring test
+ * this replaced, and that is gone; **nothing in this file kills the
+ * `matchesHere` term.**
+ *
+ * It is kept regardless, and that is a decision and not an oversight. On this
+ * context the term is provably vacuous: a plain conjunction holds only when
+ * every conjunct does, and the first case measures both `(pointer: fine)` and
+ * `(any-pointer: fine)` false here, so no condition `narrowsToFine` accepts can
+ * match. What it buys is a verdict that does not rest on a parser once that
+ * argument stops holding. A hybrid laptop — the device the case two above
+ * exists for — reports a fine pointer while a finger is on the glass, and there
+ * `@media (any-pointer: fine) and (pointer: coarse)` reads as narrowing to the
+ * text and genuinely applies under that finger. The engine half reports it;
+ * `narrowsToFine` waves it through. Requiring both therefore leaves a site out
+ * of reach only when it fails here *and* the reason it fails is a pointer the
+ * device does not have.
+ *
+ * `some`, not `every`: one fine condition anywhere in the chain already puts
+ * the rule beyond a fingers-only device, and demanding it of every enclosing
+ * `@media` would false-red the ordinary `@media (pointer: fine) { @media … }`.
  */
 function reachesHere(site: LiftSite): boolean {
-  return site.media.every((condition) => matchMedia(condition).matches);
+  const matchesHere = site.media.every((condition) => matchMedia(condition).matches);
+  return matchesHere || !site.media.some(narrowsToFine);
+}
+
+/**
+ * `text` with CSS escapes resolved, because the CSSOM does not resolve them for
+ * you. `var(--nc-dot-l\69 ft)` is the same custom property as
+ * `var(--nc-dot-lift)` and computes identically — measured, in an ungated rule
+ * and in a keyframe, both leaving the sweep and its count assertions green —
+ * but Chromium keeps the escape verbatim in `cssText`, so a raw `includes` is
+ * false on a live consumer. The serialisation is the whole of what the walk has
+ * to go on, so it is decoded before it is matched: a hex escape (up to six
+ * digits, one optional trailing space swallowed) becomes its code point, any
+ * other backslash pair becomes the character behind it.
+ */
+function decoded(text: string): string {
+  return text.replace(
+    /\\(?:([0-9a-fA-F]{1,6})[ \t\r\n\f]?|([\s\S]))/g,
+    (_all, hex: string | undefined, literal: string | undefined) =>
+      (hex === undefined ? literal! : String.fromCodePoint(Number.parseInt(hex, 16))),
+  );
 }
 
 /**
@@ -238,6 +313,10 @@ function reachesHere(site: LiftSite): boolean {
  */
 function liftSites(needle: string): LiftSite[] {
   const found: LiftSite[] = [];
+  /* Every match in this walk goes through the decoder, both the declaration
+     block above and the whole-rule fallback below: an escape hides the needle
+     from either one equally. */
+  const carries = (text: string) => decoded(text).includes(needle);
 
   function walk(rules: CSSRuleList, media: readonly string[], trail: readonly string[]) {
     for (const rule of [...rules]) {
@@ -245,7 +324,7 @@ function liftSites(needle: string): LiftSite[] {
       /* Style rules carry declarations *and*, since nesting, child rules. */
       if (rule instanceof CSSStyleRule) {
         const at = label(rule.selectorText);
-        if (rule.style.cssText.includes(needle)) found.push({ media: [...media], where: at.join(' › ') });
+        if (carries(rule.style.cssText)) found.push({ media: [...media], where: at.join(' › ') });
         walk(rule.cssRules, media, at);
         continue;
       }
@@ -260,15 +339,24 @@ function liftSites(needle: string): LiftSite[] {
         continue;
       }
       if (rule instanceof CSSImportRule) {
-        const at = label(`@import ${rule.href}`);
+        /* `@import url(…) (pointer: fine)` narrows everything in the sheet it
+           pulls in, and the condition lives on the *rule*: Chromium reports it
+           on `rule.media.mediaText` while the imported sheet's own
+           `media.mediaText` is the empty string. Descending without carrying it
+           handed every consumer inside a gated import an empty condition list
+           and reported it — a false red, not a fail-open, and one nothing bound
+           because the fixture below imported unconditionally. */
+        const own = rule.media.mediaText;
+        const at = label(own === '' ? `@import ${rule.href}` : `@import ${rule.href} ${own}`);
+        const inside = own === '' ? media : [...media, own];
         const inner = rule.styleSheet;
         /* A sheet that has not arrived is a sheet whose contents are unknown,
            which is the same standing as one that cannot be read. */
-        if (inner === null) { found.push({ media: [...media], where: `${at.join(' › ')} <not loaded>` }); continue; }
-        walkSheet(inner, media, at);
+        if (inner === null) { found.push({ media: [...inside], where: `${at.join(' › ')} <not loaded>` }); continue; }
+        walkSheet(inner, inside, at);
         continue;
       }
-      if (rule.cssText.includes(needle)) {
+      if (carries(rule.cssText)) {
         found.push({ media: [...media], where: label(`${rule.constructor.name}`).join(' › ') });
       }
     }
@@ -507,20 +595,14 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * every loaded stylesheet: no site that can hand the property to a page may
    * be reachable from *this* page.
    *
-   * **The question is put to the engine, not to the condition's text**, and
-   * that is the whole difference between this case and the three rounds of it
-   * that came before. Asserting `toContain('pointer: fine')` over a condition
-   * string was walked past three separate ways, each demonstrated rather than
-   * imagined: `@media not (pointer: fine)` contains the needle and matches
-   * here; the media list `@media (pointer: fine), (pointer: coarse)` contains
-   * it and matches here — swapping the stylesheet's one real fine block for
-   * that list left this case green with the rail fully magnified under a
-   * finger; and conjoining nested conditions into one string let any outer text
-   * carrying the needle shield a coarse inner one, so
-   * `@media not (pointer: fine) { @media (pointer: coarse) { … } }` reads as
-   * fine while applying here in full. This case runs *inside* a coarse context,
-   * so none of that has to be parsed: every condition is asked of `matchMedia`
-   * and the nesting is conjoined over the answers.
+   * **The question is put to the engine *and* to the condition's text**, and
+   * the reason both are asked is written on `reachesHere`: a bare substring
+   * test for `pointer: fine` lets `not (pointer: fine)` and the list
+   * `(pointer: fine), (pointer: coarse)` through, and asking only the engine
+   * lets through everything that is false on this one device but true on the
+   * same device rotated. Each fixture below is one of those escapes, and each
+   * is a form that was measured to walk past the check it was aimed at rather
+   * than one imagined for symmetry.
    *
    * The count is asserted first because the sweep's own failure mode is
    * finding nothing: three consumers live in `thread.module.css` today.
@@ -543,11 +625,14 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    *
    * The list is the history of the misses, not a survey of CSS. Descending
    * only into `@media` and `@layer` hid `@supports` and `@container`;
-   * descending into every grouping rule still hid `@keyframes` and `@property`,
-   * which are not grouping rules; and reading condition text instead of asking
-   * the engine let the three media forms below through. `@supports
-   * (color: red)` and `@container (min-width: 1px)` are written to genuinely
-   * match — a block the engine drops is not a test of anything.
+   * descending into every grouping rule still hid `@keyframes` and `@property`;
+   * reading condition text instead of asking the engine let the three media
+   * forms below through; asking only the engine let the landscape form through,
+   * because it is the one that is false on this phone and true on the same
+   * phone turned; and matching `cssText` raw let the escaped spelling through,
+   * which is the same property under a name the serialisation keeps verbatim.
+   * `@supports (color: red)` and `@container (min-width: 1px)` are written to
+   * genuinely match — a block the engine drops is not a test of anything.
    */
   it.each([
     ['@supports (color: red) { .railDot::before { --nc-dot-lift: 1; } }', 'CSSSupportsRule (color: red)'],
@@ -558,6 +643,14 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     ['@media not (pointer: fine) { .railDot::before { --nc-dot-lift: 1; } }', '@media not (pointer: fine)'],
     ['@media (pointer: fine), (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } }', '@media (pointer: fine), (pointer: coarse)'],
     ['@media not (pointer: fine) { @media (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } } }', '@media not (pointer: fine) › @media (pointer: coarse)'],
+    /* False on this portrait context and true the moment it is rotated: the
+       engine's answer here is not the invariant, and nothing in this condition
+       names a pointer the device lacks. */
+    ['@media (pointer: coarse) and (orientation: landscape) { .railDot::before { --nc-dot-lift: 1; } }', '@media (pointer: coarse) and (orientation: landscape)'],
+    /* `--nc-dot-l\69 ft` *is* `--nc-dot-lift`, and Chromium serialises the
+       escape back out unchanged. Ungated, so what is being tested is the
+       matching and not the verdict. */
+    ['.railDot::before { translate: 0 var(--nc-dot-l\\69 ft); }', '.railDot::before'],
   ])('reports the single lift consumer hidden in %s', (css, trail) => {
     const style = document.createElement('style');
     style.textContent = css;
@@ -631,6 +724,47 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
       expect(reached).toHaveLength(1);
       expect(reached[0].where).toContain('@import');
       expect(reached[0].where).toContain('.railDot::before');
+    } finally {
+      style.remove();
+      URL.revokeObjectURL(url);
+    }
+  });
+
+  /*
+   * ── And an import's own condition, which is not the imported sheet's ──────
+   *
+   * `@import url(…) (pointer: fine)` is the ordinary way to gate a whole sheet,
+   * and it is the one condition that sits on a rule the walk does not stop at:
+   * Chromium reports it on `CSSImportRule.media`, while the sheet handed back
+   * by `rule.styleSheet` reports the empty string for its own `media`. Dropped,
+   * every consumer inside such an import arrives with an empty condition list
+   * and is reported — a **false red** on a rule a finger cannot reach, which is
+   * the opposite failure to everything above it and would have fired on the
+   * first real gated import anyone wrote. The fixture above imports
+   * unconditionally, so nothing bound it.
+   *
+   * The site is asserted *found* before it is asserted out of reach, because a
+   * walk that had simply stopped descending into imports would pass the second
+   * half on its own.
+   */
+  it('carries an @import’s own condition into the sheet it pulls in', async () => {
+    const url = URL.createObjectURL(new Blob(['.railDot::before { --nc-dot-lift: 1; }'], { type: 'text/css' }));
+    const style = document.createElement('style');
+    style.textContent = `@import url("${url}") (pointer: fine);`;
+    document.head.append(style);
+    try {
+      const imported = style.sheet!.cssRules[0] as CSSImportRule;
+      for (let attempt = 0; attempt < 200 && imported.styleSheet === null; attempt += 1) await pause(10);
+      expect(imported.styleSheet).not.toBeNull();
+      /* Where the condition is, and where it is not. */
+      expect(imported.media.mediaText).toBe('(pointer: fine)');
+      expect(imported.styleSheet!.media.mediaText).toBe('');
+
+      const site = liftSites('--nc-dot-lift').find(({ where }) => where.includes(url));
+      expect(site).toBeDefined();
+      expect(site!.where).toContain('.railDot::before');
+      expect(site!.media).toContain('(pointer: fine)');
+      expect(reachesHere(site!)).toBe(false);
     } finally {
       style.remove();
       URL.revokeObjectURL(url);
