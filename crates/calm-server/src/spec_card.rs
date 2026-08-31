@@ -87,11 +87,15 @@ writes are transactional.
    wave/card metadata; results are in `runs/*` views, not in `neige state`). \
    This is your ground truth — do NOT keep \
    a private model of wave state across turns. \
-   If `report_startup_read_required` is true, first call `calm.report.read`. \
-   Treat the returned prose and `task` blocks as the authoritative pre-set \
-   plan. Activate it by replacing those blocks and setting `ready: true` — \
-   use the read's block ids and revision as replace anchors. Do not mint \
-   duplicate tasks.
+   Before you write anything to the report in a session, call \
+   `calm.report.read` once: the report carries its own structure and its own \
+   maintenance contract, and you may not write to a document you have not \
+   read. `report_startup_read_required` tells you whether it already holds \
+   content beyond the default skeleton. If the read returns `task` blocks, \
+   treat them as the authoritative pre-set plan. Activate it by replacing \
+   those blocks and setting `ready: true` — use the read's block ids and \
+   revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
+   NOT a plan to activate: maintain them per the document's own contract.
 2. Decide what to do next and act:
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
@@ -139,25 +143,28 @@ writes are transactional.
 Wave 有一份面向用户的 Markdown 报告，由你维护。它显示在 Wave 页面顶部，\
 是用户了解这个 Wave 状态的主要入口。
 
-**写作原则 — 这是一份工作简报，不是你的工作日志：**
+**报告自带的结构就是规则。** 内核不规定这份报告该有哪些章节、每个章节该写什么——\
+那些规矩由文档自己携带，通常写在正文顶部的一段 HTML 注释里：它在渲染时被丢弃，\
+用户在页面上看不到，但它在 body 源码里，你每次 `calm.report.read` 都读得到。\
+你的职责是**维护**这个结构，不是重新设计它：
 
-* **读者** — 假设读者是一位今天第一次接触这个 Wave 的人，3 分钟内要能搞 \
-  清楚现状和下一步。
-* **当前快照，不是历史日志** — 报告反映 *当下* 的状态。每次更新，REWRITE \
-  相关 section，让陈旧条目消失。历史由内核 event timeline 承载，不需要 \
-  你在报告里复述。
-* **长度上限** — **散文正文**（所有 prose 块的文字合计）控制在 \
-  **1000 字以内**，硬上限 2000。`task` 等非 prose 块在 body 里的 fence 投影 \
-  **不计入** 这个预算——它们是结构化数据，不是你写的散文。超了就 consolidate \
-  （合并相似条目、删掉已经不重要的细节、把长描述压成要点）。
-* **写产出，不写过程** — 不要写 \"重新读取了 wave state\"、\"分析了 worker \
-  结果\"、\"调用了 plan.upsert\"、\"incorporated the worker's analysis\" \
-  这类描述你内部动作的句子。读者不关心你怎么运转的；他们想知道 *做成 \
-  了什么*、*定下了什么*、*还差什么*。
-  ✗ 不好：\"重新读取 wave state，确认 worker 完成了 demo 实现。\"
-  ✓ 好：\"demo 已部署在 <preview URL>，PR #76 已开。\"
-* **用中文写** — body / summary / 各种 MCP 工具调用里的 `message` 字段 \
-  都用中文。读者听众是同一个人，不要混语言。
+  * 不要新增文档契约清单以外的章节，不要重命名章节，不要调整章节顺序。\
+    契约清单里列到的章节，缺哪个就按契约补哪个。
+  * **不要因为格式看起来陌生或「旧」就整体重写本文档。** 一份自带结构的报告\
+    就是它该有的样子；把它铲平成你熟悉的格式是破坏，不是整理。
+  * 文档里的维护契约优先于你的习惯。契约没规定的，按契约的精神补。
+  * 找不到任何契约时才用你的判断，并保持现有章节不变。
+
+**块边界**：文档在**行首的 `# ` 或 `## `** 处切成块（更深的标题不切）。\
+切出来的块就是 `calm.report.blocks.upsert` 用 `id` 寻址、深链 / 反链指向的\
+那个单位。所以增删一个 H1/H2 就是增删一个块。
+
+**内核保留的唯一硬约束**：无论文档自己的契约怎么说，**散文正文**（所有 prose \
+块的文字合计；非 prose 块在 body 里的 fence 投影不计入）硬上限 **2000 字**。\
+逼近上限就 consolidate。
+
+**用中文写** — body / summary / 各种 MCP 工具调用里的 `message` 字段都用中文。\
+读者听众是同一个人，不要混语言。
 
 READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是当前正文，
 `docRev` 是下一次整文档写必须携带的锚。`neige cat report.md` 只返回 body，
@@ -187,45 +194,14 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
 `if_doc_rev` 传入；写响应会返回新的 `docRev`，后续写使用这个新锚。它不是
 `calm.report.blocks.*` 使用的块级 `if_rev`，两者不可混用。
 
-**Section 结构**（按这个顺序用 H1，UI 按 H1 切成可折叠卡片）：
-
-  * `# 概要` — 1-3 句话。当前状态 + 下一步。读者哪怕只看这一段也能 \
-    掌握局面。
-  * `# 待你定` — 等用户拍板的事 / 阻塞项。紧排在概要之后是为了让 \
-    用户最先看到需要他动作的事。没有就省略这个 section。
-  * `# 已完成` — 具体产出物：PR 链接、文件路径、部署地址、已成事实。 \
-    每条都带链接或具体引用。任务完成后挪到这里。
-  * `# 决策` — 重要取舍。格式 \"决定 X，因为 Y\"。候选 / 讨论过程不写在 \
-    这里 — 只写已经定下来的事。
-
 `summary` 是侧栏的 1-行预览，~80 字符以内。
 
-**什么时候更新报告：**
+**内核已经知道 / 已经渲染的，不要在报告里复述：**
 
-  * 任务完成 → 加到 `# 已完成`
-  * 做了一个决定 → 在 `# 决策` 加一行
-  * 被阻塞 → 在 `# 待你定` 写明白具体要什么
-  * 当前状态发生变化 → 重写 `# 概要`
-
-**初次接管旧格式报告：** 当 `calm.report.read` 返回的 body 还是旧的英文 \
-`# Goal / # Progress / # Needs attention / # Results / # Timeline` \
-格式时，**一次性整体 REWRITE 成新的中文 section 结构**（用 \
-`calm.report.read({ with_markers: true })` 取带标记的正文，改完用 \
-`calm.report.write_markdown` 写回），不要在旧格式上做局部 edit — \
-partial 迁移会产生中英混杂、 \
-section 重复的 Frankensteinian body。迁移时保留仍然有效的事实，丢弃 \
-已经过时的流水账条目。
-
-**不要做的：**
-
-  * 不要用旧的 `# Goal / # Progress / # Needs attention / # Results / # Timeline` \
-    词汇 — 那套词汇引导流水账式写作。新格式只用 `# 概要 / # 已完成 / # 决策 / \
-    # 待你定` 这四个 H1。
-  * 不要 append 后不删 — `# 已完成` 会失效；旧条目失效就删掉，不要堆积。
   * 不要复述 lifecycle 状态（用户在卡头已经看到 badge 了）。
   * 不要复述任务状态和进度（TASKS 面板已经渲染了任务的真实运行态）。
-  * 不要把工具调用、wave_state 读取等内部机械动作写进报告。
-  * 不要把对话历史 / 长引用 dump 进报告 — 摘要后写要点。
+  * 不要把 `neige state` / `wave_state` 的读取结果、工具调用记录等内核自己\
+    就持有的机械事实写进报告。
 
 ### Reacting to user edits
 
@@ -612,20 +588,41 @@ mod tests {
         );
     }
 
+    /// #1185 §1.5 A — the first-turn read is UNCONDITIONAL.
+    ///
+    /// The policy that governs a report now travels inside the report, so an
+    /// agent that has not read the document does not know the rules it is
+    /// about to break. The old sentence gated the read on
+    /// `report_startup_read_required`, which is false for every default wave —
+    /// exactly the waves that only learn their contract by reading.
     #[test]
-    fn spec_prompt_requires_report_read_when_startup_bit_is_true() {
+    fn spec_prompt_mandates_an_unconditional_first_read() {
         let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
         let step1 = p.find("1. Run `neige state`").expect("step 1 is present");
-        let bit = p
-            .find("If `report_startup_read_required` is true, first call `calm.report.read`.")
-            .expect("conditional report-read sentence is present");
+        let read = p
+            .find("Before you write anything to the report in a session, call `calm.report.read` once")
+            .expect("unconditional first-read sentence is present");
         let step2 = p
             .find("2. Decide what to do next and act:")
             .expect("step 2 is present");
         assert!(
-            step1 < bit && bit < step2,
-            "the startup-read sentence must sit after neige state and before step 2"
+            step1 < read && read < step2,
+            "the first-read sentence must sit after neige state and before step 2"
         );
+        assert!(
+            !p.contains("If `report_startup_read_required` is true, first call"),
+            "the read must not be conditional on the startup bit (#1185 §1.5 A)"
+        );
+        // The bit survives with a narrower meaning: "does it hold content
+        // beyond the default skeleton", not "must you read".
+        assert!(p.contains("`report_startup_read_required` tells you whether it already holds"));
+        // Activation is scoped to `task` blocks; prose is maintained, not
+        // replaced — the fork path used to be ordered to flatten it.
+        assert!(p.contains(
+            "If the read returns `task` blocks, treat them as the authoritative pre-set plan"
+        ));
+        assert!(p.contains("Prose blocks are NOT a plan to activate"));
+
         assert!(p.contains("authoritative pre-set plan"));
         assert!(p.contains("replacing those blocks and setting `ready: true`"));
         assert!(p.contains("block ids and revision as replace anchors"));
@@ -747,71 +744,78 @@ mod tests {
         assert!(p.contains("块级 `if_rev`") && p.contains("不可混用"));
     }
 
+    /// #1185 — the kernel prompt must name NO report section.
+    ///
+    /// Section vocabulary is policy: it belongs to the document, which carries
+    /// it in a leading HTML comment that every read returns. A prompt that
+    /// names sections re-imposes one workflow's shape on every document in the
+    /// cove, and the "rewrite anything unfamiliar" instruction that used to
+    /// accompany it flattened any report that arrived with its own structure.
+    ///
+    /// The negative loop at the bottom is this slice's main invariant.
     #[test]
-    fn spec_prompt_pins_chinese_current_snapshot_report_semantics() {
+    fn spec_prompt_carries_no_section_vocabulary() {
         let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
 
-        // New Chinese section vocab present (all four required H1s).
-        for section in ["# 概要", "# 已完成", "# 决策", "# 待你定"] {
-            assert!(
-                p.contains(section),
-                "Wave Report prompt must document the new Chinese section `{section}`"
-            );
-        }
+        // The mechanism the prompt keeps: structure travels with the document,
+        // and flattening it is damage.
+        assert!(
+            p.contains("报告自带的结构就是规则"),
+            "prompt must state that the document's own structure is the rule"
+        );
+        assert!(
+            p.contains("不要因为格式看起来陌生或「旧」就整体重写本文档"),
+            "prompt must forbid flattening an unfamiliar-looking report"
+        );
+
+        // The section ban must be QUALIFIED by the document's own contract
+        // list. Unqualified it contradicts every shipped workflow template:
+        // their seeded body carries a single `# Plan` H1, and the contract
+        // inside it requires the agent to add 概要 / 已完成 / 决策. An absolute
+        // "never add a section" bullet and the "文档里的维护契约优先" fallback
+        // two lines below cannot both be obeyed — this keeps them aligned with
+        // `wave_report_section_rules.md`'s own wording.
+        assert!(
+            p.contains("不要新增文档契约清单以外的章节"),
+            "the section ban must be scoped to the document's contract list (#1185 D2)"
+        );
+        assert!(
+            !p.contains("不要新增、重命名章节"),
+            "an unqualified section ban contradicts the shipped templates' own contracts"
+        );
 
         // `# 进行中` was dropped in #1172: the TASKS panel renders the real
         // task runtime state, so making the spec agent hand-maintain a prose
         // mirror of it every turn is pure LLM restatement of kernel-known,
-        // already-rendered data.
+        // already-rendered data. It must not come back via the skeleton either.
         assert!(
             !p.contains("# 进行中"),
             "prompt must NOT reintroduce `# 进行中` — task runtime state is owned by the TASKS panel"
         );
-
-        // Old English vocab is explicitly banned (the banned-list bullet must
-        // name all of them so future drift back to append-log is structurally
-        // discouraged in the prompt itself).
-        for banned in [
-            "# Goal",
-            "# Progress",
-            "# Needs attention",
-            "# Results",
-            "# Timeline",
-        ] {
-            assert!(
-                p.contains(banned),
-                "prompt must list `{banned}` in the banned-vocab bullet"
-            );
-        }
-
-        // The banned-vocab BULLET itself must remain — the migration paragraph
-        // mentions the old names too, so a `contains("# Goal")` check is not
-        // enough to detect accidental removal of the explicit ban statement.
         assert!(
-            p.contains("不要用旧的 `# Goal"),
-            "prompt must keep the explicit `不要用旧的` banned-vocab bullet"
+            !crate::wave_report::WaveReportPayload::initial()
+                .body
+                .contains("# 进行中"),
+            "the birth skeleton must NOT reintroduce `# 进行中` either"
         );
 
-        // Current-snapshot semantics: must say REWRITE, must NOT instruct
-        // append-to-progress (the original prompt's wording that drove the
-        // runaway-journal behavior).
-        assert!(
-            p.contains("REWRITE"),
-            "prompt must use REWRITE to pin current-snapshot semantics"
-        );
+        // Append-to-progress was the wording that drove the runaway journal.
         assert!(
             !p.contains("append to `# Progress`"),
             "prompt must NOT instruct append-to-progress (root cause of runaway journals)"
         );
 
-        // Length budget present (soft, prompt-only) and process-narration ban.
         // #1146 S1: the budget must scope to PROSE, not `body`. `body` is the
         // flat projection that also serializes every non-prose block's fence,
         // so a `body`-scoped budget was vacuously false on any wave with task
         // blocks — no amount of concise prose could satisfy it.
+        //
+        // #1185 splits it: the 1000-word soft target is genre judgement and
+        // moved into the document's contract; the 2000-word hard ceiling is the
+        // kernel's own minimal policy floor and stays here.
         assert!(
-            p.contains("散文正文") && p.contains("1000 字") && p.contains("2000"),
-            "prompt must scope the word budget to prose, not the flat body"
+            p.contains("散文正文") && p.contains("2000"),
+            "prompt must keep the kernel's prose-scoped hard ceiling"
         );
         assert!(
             p.contains("不计入"),
@@ -821,23 +825,31 @@ mod tests {
             !p.contains("body 控制在"),
             "prompt must NOT reintroduce the vacuous body-scoped budget"
         );
+
+        // The migration instruction is gone, not relocated: it is what
+        // flattened self-structured reports.
         assert!(
-            p.contains("写产出，不写过程"),
-            "prompt must ban process narration"
+            !p.contains("整体 REWRITE"),
+            "prompt must NOT order a wholesale rewrite of an existing report (#1185)"
         );
 
-        // Migration guidance: an existing English-format report must be
-        // rewritten in one shot, not partially edited.
-        assert!(
-            p.contains("一次性整体 REWRITE") || p.contains("整体 REWRITE"),
-            "prompt must give explicit one-shot migration guidance"
-        );
-        // #1146 S1: the migration itself stays one-shot, but its write mouth
-        // moved to the id-preserving marker channel.
-        assert!(
-            p.contains("write_markdown` 写回"),
-            "the one-shot migration must write back through write_markdown"
-        );
+        // —— the main invariant ——
+        for banned in [
+            "# 概要",
+            "# 待你定",
+            "# 已完成",
+            "# 决策",
+            "# Goal",
+            "# Progress",
+            "# Needs attention",
+            "# Results",
+            "# Timeline",
+        ] {
+            assert!(
+                !p.contains(banned),
+                "spec prompt must not name a report section — structure travels with the document (#1185): {banned}"
+            );
+        }
     }
 
     /// #1146 S1 — whole-document rewrites must go through the ONLY

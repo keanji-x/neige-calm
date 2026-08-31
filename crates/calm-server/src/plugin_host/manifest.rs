@@ -1528,6 +1528,18 @@ mod tests {
                 Some(&workflow_input),
             );
 
+        if std::env::var_os("REGEN_SPEC_PROMPT_GOLDEN").is_some() {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/goldens/issue_development_spec_prompt.txt");
+            // Write back `rendered + "\n"`: the assertion side does
+            // `strip_suffix('\n')`, so omitting it panics on the very next run.
+            std::fs::write(&path, format!("{rendered}\n")).expect("write regenerated golden");
+            panic!(
+                "issue_development_spec_prompt.txt regenerated from the current prompt; \
+                 hand-verify the diff, commit, and re-run without REGEN_SPEC_PROMPT_GOLDEN"
+            );
+        }
+
         let expected = ISSUE_DEVELOPMENT_RENDERED_PROMPT_GOLDEN
             .strip_suffix('\n')
             .expect("text fixture has its repository newline");
