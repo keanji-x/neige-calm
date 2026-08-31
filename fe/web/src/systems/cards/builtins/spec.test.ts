@@ -48,18 +48,22 @@ describe('spec card entry', () => {
   });
 
   it('[INV-CARD-181] takes no claim, so it stays on the insertion-ordered fallback scan', () => {
-    // An exact claim on `'codex'` would let spec pre-empt the codex entry that
-    // lands in S4a; the shared kernel kind is resolved by scan order instead.
+    // An exact claim on `'codex'` would let spec pre-empt `CODEX_CARD_ENTRY`,
+    // which is registered first; the shared kernel kind is resolved by scan
+    // order instead.
     // Read through the interface: the entry literal is checked with `satisfies`
     // so registration can require `headless`, which means the constant's own
     // type only lists the members it declares.
     expect((SPEC_CARD_ENTRY as CardEntry<SpecCard>).claim).toBeUndefined();
   });
 
-  it('resolves a spec harness through a really booted registry', () => {
+  it('resolves a spec harness through a really booted registry, and only a harness', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     expect(registry.resolve({ id: 'c1', kind: 'codex', payload: { spec_harness: true } })?.type).toBe('spec');
-    expect(registry.resolve({ id: 'c2', kind: 'codex', payload: {} })).toBeNull();
+    // Now that `CODEX_CARD_ENTRY` has landed (#1150) the counter-example is
+    // sharper than "nothing resolves": an ordinary codex payload must reach the
+    // codex adapter registered ahead of spec, never this one.
+    expect(registry.resolve({ id: 'c2', kind: 'codex', payload: {} })?.type).toBe('codex');
   });
 });

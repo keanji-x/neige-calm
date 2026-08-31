@@ -30,9 +30,11 @@ export function isSpecHarnessPayload(payload: unknown): boolean {
 /**
  * `INV-CARD-181` — headless: no component, 1x1, kernel-minted only.
  *
- * Deliberately carries no `claim`: the kernel kind `'codex'` is shared with the
- * (not yet landed) codex entry, so spec must stay on the registry's
- * insertion-ordered full scan rather than take an exact claim on the kind.
+ * Deliberately carries no `claim`: the kernel kind `'codex'` is shared with
+ * `CODEX_CARD_ENTRY`, so spec must stay on the registry's insertion-ordered
+ * full scan rather than take an exact claim on the kind. Codex registers first
+ * and refuses `spec_harness` payloads (with `isSpecHarnessPayload` below), so
+ * they reach this entry.
  */
 export const SPEC_CARD_ENTRY = Object.freeze({
   type: 'spec',

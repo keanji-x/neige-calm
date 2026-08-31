@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { CardEntry, KernelCardInput } from '../registry.js';
+import type { KernelCardInput } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
 import { CLAUDE_CARD_ENTRY } from './claude.ts';
+import { CODEX_CARD_ENTRY } from './codex.ts';
 import { partitionWaveCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
@@ -12,12 +13,11 @@ import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
 
 declare module '../registry.js' {
   interface CardDataMap {
-    bootCodexFixture: { readonly type: 'boot-codex'; readonly id: string };
     declaredHeadlessFixture: { readonly type: 'declared-headless-fixture'; readonly id: string };
   }
 }
 
-const LANDED = ['terminal', 'spec', 'claude', 'wave-report'] as const;
+const LANDED = ['terminal', 'codex', 'spec', 'claude', 'wave-report'] as const;
 
 describe('builtin card composition contract', () => {
   it('[INV-CARD-225] pins the eight-item order tuple', () => {
@@ -31,7 +31,7 @@ describe('builtin card composition contract', () => {
     expect(new Set(BUILTIN_CARD_ORDER).size).toBe(8);
   });
 
-  it('registers only the entries that exist, with no placeholders for the four that do not', () => {
+  it('registers only the entries that exist, with no placeholders for the three that do not', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     expect(registry.entries().map((entry) => entry.type)).toEqual([...LANDED]);
@@ -42,6 +42,7 @@ describe('builtin card composition contract', () => {
       else expect(registry.get(type), `${type} must be absent, not a placeholder`).toBeUndefined();
     }
     expect(registry.get('terminal')).toBe(TERMINAL_CARD_ENTRY);
+    expect(registry.get('codex')).toBe(CODEX_CARD_ENTRY);
     expect(registry.get('spec')).toBe(SPEC_CARD_ENTRY);
     expect(registry.get('claude')).toBe(CLAUDE_CARD_ENTRY);
     expect(registry.get('wave-report')).toBe(WAVE_REPORT_CARD_ENTRY);
@@ -54,30 +55,29 @@ describe('builtin card composition contract', () => {
     const tupleIndexes = registered.map((type) => BUILTIN_CARD_ORDER.indexOf(type as never));
     expect(tupleIndexes).not.toContain(-1);
     expect([...tupleIndexes]).toEqual([...tupleIndexes].sort((left, right) => left - right));
-    // terminal (index 0) and spec (index 2) are separated by `codex`, which is
-    // skipped: the relative order must survive the hole.
-    expect(tupleIndexes).toEqual([0, 2, 3, 4]);
+    // With codex landed the first five slots are contiguous; the hole that is
+    // still real is the tail — file-viewer (5), iframe (6) and plugin-iframe
+    // (7) are unregistered, so `wave-report` at index 4 is the last entry.
+    // Asserted as *tuple* indexes rather than 0..n, so a later slice that lands
+    // one of those three out of tuple position turns this red.
+    expect(tupleIndexes).toEqual([0, 1, 2, 3, 4]);
+    // The hole is a suffix, and the assertion above only pins that while the
+    // unlanded set really is the tail. Pin the other side too, from the tuple
+    // itself: every skipped type sits after every registered one.
+    const skipped = BUILTIN_CARD_ORDER
+      .map((type, index) => ({ type, index }))
+      .filter(({ type }) => !(registered as readonly string[]).includes(type));
+    expect(skipped.map(({ type }) => type)).toEqual(['file-viewer', 'iframe', 'plugin-iframe']);
+    expect(Math.min(...skipped.map(({ index }) => index))).toBeGreaterThan(Math.max(...tupleIndexes));
   });
 
-  it('[INV-CARD-180] leaves the shared codex kind to a codex adapter first, then falls back to spec', () => {
-    // S1 has no production codex entry (that is S4a), so the refusing half is a
-    // fixture. What is real here is SPEC_CARD_ENTRY and the registry's
-    // insertion-ordered fallback scan.
+  it('[INV-CARD-180] leaves the shared codex kind to the codex adapter first, then falls back to spec', () => {
+    // Both halves are the real production entries now, registered in
+    // `BUILTIN_CARD_ORDER`'s relative order (codex before spec). Neither
+    // carries a `claim`, so what is under test is the registry's
+    // insertion-ordered fallback scan plus codex's refusal of `spec_harness`.
     const registry = createCardRegistry();
-    const codexFixture: CardEntry<{ readonly type: 'boot-codex'; readonly id: string }> = {
-      type: 'boot-codex',
-      component: () => null,
-      defaultSize: { w: 4, h: 6, minW: 3, minH: 3 },
-      title: () => 'codex fixture',
-      accessibleName: () => 'codex fixture',
-      create: { mode: 'kernel-minted-only' },
-      fromKernel: (raw) => (raw.kind === 'codex'
-        && !(typeof raw.payload === 'object' && raw.payload !== null
-          && (raw.payload as { spec_harness?: unknown }).spec_harness === true)
-        ? { type: 'boot-codex', id: raw.id }
-        : null),
-    };
-    registry.register(codexFixture);
+    registry.register(CODEX_CARD_ENTRY);
     registry.register(SPEC_CARD_ENTRY);
 
     expect(
@@ -87,7 +87,7 @@ describe('builtin card composition contract', () => {
     expect(
       registry.resolve({ id: 'codex', kind: 'codex', payload: {} })?.type,
       'ordinary codex payload must resolve through codex before the shared-kind spec fallback',
-    ).toBe('boot-codex');
+    ).toBe('codex');
   });
 
   /*
@@ -190,6 +190,7 @@ describe('builtin card composition contract', () => {
     // hand it a probe rather than quietly leave it unasserted.
     const PROBE_BY_TYPE: Readonly<Record<(typeof LANDED)[number], KernelCardInput>> = Object.freeze({
       terminal: { id: 'probe-term', kind: 'terminal', payload: { terminal_id: 't1' } },
+      codex: { id: 'probe-codex', kind: 'codex', payload: { terminal_id: 't3' } },
       spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
       claude: { id: 'probe-claude', kind: 'claude', payload: { terminal_id: 't2' } },
       'wave-report': { id: 'probe-report', kind: 'wave-report', payload: null },
