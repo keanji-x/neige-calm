@@ -781,6 +781,54 @@ describe('deriveReportTasks', () => {
     ]);
   });
 
+  /*
+   * **The price of counting tombstones, pinned so nobody "fixes" it.**
+   *
+   * This is the same rule as above at its most expensive: `alpha` has exactly
+   * ONE live declaration (`b-new`), and the cached verdict is the kernel's
+   * synthesised one for the deleted declaration — `blockId: ''`, so the key is
+   * the only way it could arrive. Because the tombstone `b-old` still counts as
+   * a row claiming `alpha`, the fallback is suppressed and `b-new` renders
+   * blank even though it is the unambiguous live owner.
+   *
+   * **Blank is the expected value here, not a bug to be repaired by filtering
+   * tombstones out of `keysDeclaredByMoreThanOneRow`.** Two reasons, both in
+   * that function's comment and in `verdictFor`'s:
+   *
+   * 1. An id-less verdict says exactly *"when the kernel looked, no live
+   *    declaration owned this key"*. A live block present in the document now
+   *    is not evidence that the old run was **its** run; handing it over is a
+   *    guess, and #1160's position throughout is that an unattributable run is
+   *    reported to nobody.
+   * 2. Maintainability, which is the stronger reason. The counting rule is
+   *    deliberately *syntactic* — `isTaskBlock` + `declaredTaskKey`, nothing
+   *    about liveness or ownership — so it cannot disagree with the kernel.
+   *    Adding a tombstone filter re-imports the live/tombstone decision into
+   *    this module, which is the shape of the `contestedLiveKeys` pre-pass this
+   *    PR deleted, and that decision is fiddly here (`tombstoned_by` is the
+   *    discriminant; a live block may carry `tombstone: null`). A second copy
+   *    would not fail loudly when the kernel changes representation.
+   *
+   * So: if you make this test green by skipping tombstones, you have not fixed
+   * a defect, you have taken the trade the other way. Read the two comments
+   * first.
+   */
+  it('leaves the sole live claimant blank by design when a tombstone shares its key', () => {
+    expect(tasksOf(
+      [
+        task('b-old', { key: 'alpha', declared_by: 'spec', tombstoned_by: 'user', tombstone: {} }),
+        task('b-new', live('alpha', true)),
+      ],
+      // The kernel's verdict for the declaration it no longer sees: id-less,
+      // reachable only by key, and still reporting a run.
+      [verdict({ blockId: '', key: 'alpha', status: 'running', workerCardId: 'card-1' })],
+    ).map((row) => [row.blockId, row.status, row.workerCardId])).toEqual([
+      ['b-old', null, null],
+      // Blank on purpose. Not `['b-new', 'running', 'card-1']`.
+      ['b-new', null, null],
+    ]);
+  });
+
   /* And the narrowing is scoped: one row on the key still takes the fallback,
      which is the case the fallback exists for — the kernel's synthesised
      verdict for a deleted declaration carries `blockId: ''` and has nothing but
@@ -925,6 +973,46 @@ describe('deriveReportTasks', () => {
       [task('b-1', live('alpha', true))],
       [verdict({ blockId: 'b-1', key: 'beta', status: 'running', workerCardId: 'card-9' })],
     )).toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
+  });
+
+  /*
+   * **A contradicting block-id hit ends the lookup on purpose — it does not
+   * fall through to the key index.** The test above cannot tell the two apart,
+   * because its key index is empty either way; this one puts a perfectly good
+   * `alpha` entry there and still demands a blank row.
+   *
+   * The setup needs a block id to be reused, which is a real property, not a
+   * hypothetical: `report_blocks/align.rs` mints ids by FNV-1a with linear
+   * probing and re-inherits them heuristically, so a hard-deleted block's id
+   * can be handed to a different declaration. Here the stale verdict for the
+   * *old* `b-1` (key `beta`) is still cached while the new `b-1` declares
+   * `alpha`; the kernel's id-less `alpha` verdict is also in hand and would
+   * have reached this row by key had the id lookup simply missed.
+   *
+   * **The blank is expected, and it is the fail-closed direction.** A hit that
+   * names this block while naming another key is not evidence about this row —
+   * it says the cached card and the projection are describing different
+   * documents — and "the id index contradicted itself" is not a reason to go
+   * trust the key index instead. Making this row show `running` again means
+   * deciding that a self-contradicting hit may be discarded silently, which is
+   * the guess this module refuses everywhere else.
+   */
+  it('stops at a contradicting block-id hit by design and never retries through the key index', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [
+        // The reused id: this verdict is about the block `b-1` used to be.
+        verdict({ blockId: 'b-1', key: 'beta', status: 'done', workerCardId: 'card-8' }),
+        // Reachable only by key, and it IS in the key index — exactly one row
+        // claims `alpha`, so nothing else suppresses it.
+        verdict({ blockId: '', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+      ],
+    )).toEqual([{
+      // Neither `done`/`card-8` (the contradicting hit) nor `running`/`card-9`
+      // (the fallback this must not reach).
+      blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null,
+      status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+    }]);
   });
 
   /* `''` is not a card id. The wire types `workerCardId` as an optional string,

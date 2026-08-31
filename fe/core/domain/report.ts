@@ -804,9 +804,43 @@ function indexVerdicts(
  * The block-id hit wins, but only if it does not contradict the declared key;
  * the key index is consulted only when no verdict names this block id, which is
  * what keeps a redeclared key from reporting the withdrawn block's run (and
- * vice versa) on both rows. A miss here is a real answer — the key index has
- * already dropped every key that more than one row claims, so an ambiguous
- * fallback returns nothing rather than a guess.
+ * vice versa) on both rows.
+ *
+ * **A miss here is a real answer, and both ways of missing are deliberate. The
+ * row renders blank, and blank is the expected value** — this whole module's
+ * position is that when it cannot tell which row a verdict is about, it says
+ * nothing.
+ *
+ * *Missing through the key index.* `keysDeclaredByMoreThanOneRow` counts
+ * tombstoned declarations too, so a withdrawn `alpha` beside its single live
+ * re-declaration already puts `alpha` out of the index — and the kernel's
+ * synthesised `{blockId: '', key: 'alpha'}` verdict then reaches neither row,
+ * including the live one that is the key's only live claimant. That cost is
+ * accepted twice over. An id-less verdict means precisely *"when the kernel
+ * looked, no live declaration owned this key"*; a live row appearing in the
+ * document afterwards is not evidence that the old run was that row's, so
+ * handing it over would be a guess. And the rule is kept **purely syntactic on
+ * purpose**: it asks only how many rows of *this* render declared the key
+ * (`isTaskBlock` + `declaredTaskKey`) and knows nothing of live/tombstoned or
+ * of ownership, so it cannot drift from the kernel. Teaching it to skip
+ * tombstones would drag the live/tombstone decision back into this file — the
+ * exact shape of the `contestedLiveKeys` pre-pass #1160 removed — and that
+ * decision is subtle here (`taskRowState` below: `tombstoned_by` is the
+ * discriminant, a live block may carry `tombstone: null`), so a second copy of
+ * it would not fail loudly when the kernel changes its representation. It would
+ * quietly answer differently.
+ *
+ * *Missing through a contradicting block-id hit.* When a verdict names this
+ * block id but carries another key, this returns nothing and does **not** fall
+ * back to the key index — even when the key index holds an entry for the
+ * declared key. Block ids are re-issued (`report_blocks/align.rs` mints by
+ * FNV-1a with linear probing, so a hard-deleted block's id can land on a new
+ * declaration), so a stale verdict about the *old* block can occupy the new
+ * block's id and shadow the verdict that would have arrived by key. The row
+ * goes blank. That is the fail-closed direction and it is a consequence of a
+ * fact that predates this fix: a hit that contradicts itself is not evidence
+ * about this row, and consulting the key index *after* seeing one would mean
+ * treating a self-contradicting index as a reason to trust a second index.
  */
 function verdictFor(
   blockId: string, declaredKey: string,
@@ -864,10 +898,18 @@ function declaredTaskKey(block: ReportBlock): string {
  * re-declaration is two rows on one key, and an id-less verdict on that key is
  * as unattributable there as it is between two live blocks — the kernel emits
  * one verdict per declaration, so it has already said the key alone does not
- * pick a row out. `''` is skipped because `verdictFor` refuses to look an
- * undeclared key up in the first place (the display name falls back to the
- * block id, and matching *that* against the key index is its own defect), so
- * counting it would decide nothing.
+ * pick a row out. **Not filtering tombstones out is the deliberate half**, and
+ * it does cost something: a tombstone plus the key's *only* live declaration
+ * still suppresses the fallback, so the kernel's `{blockId: ''}` verdict paints
+ * neither row and the live one renders blank. Blank is the expected value —
+ * see `verdictFor` for why that is not a guess worth making, and for why this
+ * rule is kept purely syntactic (`isTaskBlock` + `declaredTaskKey`, no
+ * live/tombstoned judgement) so it cannot drift from the kernel.
+ *
+ * `''` is skipped because `verdictFor` refuses to look an undeclared key up in
+ * the first place (the display name falls back to the block id, and matching
+ * *that* against the key index is its own defect), so counting it would decide
+ * nothing.
  */
 function keysDeclaredByMoreThanOneRow(blocks: readonly ReportBlock[]): ReadonlySet<string> {
   const seen = new Set<string>();
