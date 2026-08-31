@@ -12,7 +12,7 @@
  * tree are not the platform's.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 
 /** Marks every node this file adds, so cleanup cannot strand page chrome. */
 const FIXTURE_CLASS = 'nc-a11y-fixture';
@@ -146,10 +146,14 @@ describe('the a11y failure report (#1161)', () => {
    * the ancestor rather than the element called this visible button hidden.
    */
   it('does not call an element hidden when it overrides visibility back to visible', () => {
+    // The genuinely hidden sibling is the positive control: without it a scan
+    // that found *nothing at all* would satisfy the absence assertion below.
     mount('<div class="veiled" style="visibility: hidden">'
-      + '<button style="visibility: visible">Save</button></div>');
+      + '<button style="visibility: visible">Save</button></div>'
+      + '<div class="really-veiled" style="visibility: hidden"><button>Nope</button></div>');
     const report = reportOf(failureMessage(missing));
 
+    expect(report).toContain('<div class="really-veiled"> — visibility:hidden');
     expect(report).not.toContain('class="veiled"');
   });
 
@@ -184,6 +188,68 @@ describe('the a11y failure report (#1161)', () => {
     // written from the output rather than from what the output should be.
     expect(message.split('Ignored nodes:').length - 1).toBe(3);
     expect(message.split(`${MARKER} document.body children`).length - 1).toBe(1);
+  });
+
+  /*
+   * The worst failure this file ever had, and the reason the guard tests for a
+   * string rather than for `null`.
+   *
+   * `wait-for.js` calls `getElementError(error.message, …)` with whatever the
+   * callback threw. A `waitFor` whose callback throws a non-`Error` arrives with
+   * `message === undefined`; `undefined.indexOf` then threw out of `onTimeout`,
+   * which runs inside a `setTimeout`, so the promise never settled and the test
+   * **hung** instead of failing. The race below is the assertion: a hang cannot
+   * be caught by `expect`, so it has to be turned into a value.
+   */
+  it('lets waitFor settle when its callback throws a non-Error', async () => {
+    const outcome = await Promise.race([
+      // Throwing a non-Error is the entire subject of this test: it is what
+      // leaves `error.message` undefined on Testing Library's timeout path.
+      // eslint-disable-next-line @typescript-eslint/only-throw-error -- see above
+      waitFor(() => { throw { code: 1 }; }, { timeout: 50, interval: 10 })
+        .then(() => 'resolved', () => 'rejected'),
+      new Promise((resolve) => { setTimeout(() => resolve('never settled'), 1_500); }),
+    ]);
+
+    expect(outcome).toBe('rejected');
+  });
+
+  /*
+   * `querySelectorAll` cannot return the element it is called on, so an
+   * `aria-hidden` body was invisible to the attribute scan — the same gap as a
+   * `display:none` body was to the CSS scan, discovered one round later on the
+   * other half.
+   */
+  it('names body itself when body carries a hiding attribute', () => {
+    mount('<button>Save</button>');
+    document.body.setAttribute('aria-hidden', 'true');
+    try {
+      expect(reportOf(failureMessage(missing))).toContain('<body> — aria-hidden');
+    } finally {
+      document.body.removeAttribute('aria-hidden');
+    }
+  });
+
+  /*
+   * A message may legitimately *contain* the report's opening text, because a
+   * query's own search string is printed back in `Unable to find an element
+   * with the text: …`. Cutting at the first occurrence deleted everything after
+   * it, including Testing Library's own trailing sentence. The strip is
+   * end-anchored so only a real trailing report matches.
+   */
+  it('keeps content that merely looks like a report in the middle of a message', () => {
+    mount('<button>Save</button>');
+    const decoy = `\n\n${MARKER} document.body children (5):\nTAIL-MUST-SURVIVE`;
+    const message = failureMessage(() => screen.getByText(decoy));
+
+    /*
+     * Asserting on `TAIL-MUST-SURVIVE` would prove nothing: Testing Library
+     * prints the *normalized* text first and the raw one after it, so the tail
+     * appears earlier in the message and survives even when the strip has eaten
+     * the raw copy. The load-bearing assertion is DTL's own closing sentence,
+     * which really is last and really did disappear.
+     */
+    expect(message).toContain('This could be because the text is broken up by multiple elements');
   });
 
   /*

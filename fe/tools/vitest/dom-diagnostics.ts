@@ -237,7 +237,12 @@ if (typeof document !== 'undefined') {
     // "none": the report denying the very thing it was asked about.
     const holdsQueryable = (element: Element): boolean =>
       element.matches(MEANINGFUL) || element.querySelector(MEANINGFUL) !== null;
-    const byAttribute = Array.from(body.querySelectorAll(HIDING_ATTRIBUTES)).filter(holdsQueryable);
+    // `querySelectorAll` cannot return the element it is called on, so an
+    // `aria-hidden` or `inert` **body** was invisible to this scan exactly as a
+    // `display:none` body was invisible to the CSS one. Same gap, other half.
+    const attributeRoots = Array.from(body.querySelectorAll(HIDING_ATTRIBUTES));
+    if (body.matches(HIDING_ATTRIBUTES)) attributeRoots.unshift(body);
+    const byAttribute = attributeRoots.filter(holdsQueryable);
     const { roots, examined, total } = cssHiddenRoots(body);
     // A CSS-hidden root that also carries a hiding attribute is one subtree,
     // not two; the attribute list already names it.
@@ -290,11 +295,36 @@ if (typeof document !== 'undefined') {
      * contains the marker — `getByText('[nc-a11y] not present')` — is not
      * mistaken for a re-wrap and still gets its report.
      */
-    const REPORT_PREFIX = `\n\n${MARKER} document.body children (`;
-    const withoutReport = (text: string): string => {
-      const at = text.indexOf(REPORT_PREFIX);
-      return at === -1 ? text : text.slice(0, at);
-    };
+    /*
+     * Matched by SHAPE, to the end of the string.
+     *
+     * The first version cut at the first occurrence of the prefix anywhere in
+     * the message, which quietly deleted everything after it — and a message
+     * may legitimately *contain* that text, because a query's own search string
+     * ends up in `Unable to find an element with the text: …`. Testing
+     * Library's trailing sentence then vanished.
+     *
+     * Anchoring to `$` was not enough either, and the test above caught it: a
+     * greedy `[\s\S]*$` still matches starting from a mid-string occurrence. So
+     * the whole tail has to look like the report — header line, indented body,
+     * second header, indented body, end — which a decoy followed by ordinary
+     * prose cannot satisfy.
+     *
+     * A message deliberately ending in a byte-identical report block would
+     * still be stripped. That is accepted rather than defended: there is no
+     * marker in a string that a string cannot also contain, and the error
+     * object itself cannot be tracked because `waitFor` re-wraps by passing
+     * `error.message`, not the error.
+     */
+    const escaped = MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    /** The report's own body lines: two-space indented, nothing else. */
+    const INDENTED = '(?:\\n {2}[^\\n]*)*';
+    const REPORT_TAIL = new RegExp(
+      `\\n\\n(?:${escaped} document\\.body children \\(\\d+\\):${INDENTED}`
+      + `\\n${escaped} subtrees out of the accessibility tree[^\\n]*:${INDENTED}`
+      + `|${escaped} unavailable: [^\\n]*)$`,
+    );
+    const withoutReport = (text: string): string => text.replace(REPORT_TAIL, '');
 
     const withReport = (message: string | null, container: Container) => {
       /*
@@ -309,8 +339,18 @@ if (typeof document !== 'undefined') {
        * intentional, then use the `*AllBy*` variant" hint both disappeared —
        * this file making an existing message strictly worse. Declining here
        * leaves the strip only genuine re-wraps to act on.
+       *
+       * The test is `typeof message !== 'string'` and not `=== null` because
+       * `undefined` reaches here too, and that path was far worse than a missing
+       * report. `wait-for.js` calls `getElementError(error.message, …)` with
+       * whatever the callback threw, so a `waitFor` whose callback throws a
+       * non-Error — `throw { code: 1 }` — arrives with `message === undefined`.
+       * `undefined.indexOf` then threw out of `onTimeout`, which runs inside a
+       * `setTimeout`, so the `waitFor` promise **never settled** and the test
+       * hung rather than failing. Testing Library's own implementation survives
+       * it because `[message, dump].filter(Boolean)` simply drops `undefined`.
        */
-      if (message === null) return inherited(message, container);
+      if (typeof message !== 'string') return inherited(message, container);
       const error = inherited(withoutReport(message), container);
       /*
        * A diagnostic that throws would replace a real failure with a useless
