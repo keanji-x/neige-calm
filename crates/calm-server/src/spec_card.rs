@@ -179,15 +179,12 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
     每条都带链接或具体引用。任务完成后挪到这里。
   * `# 决策` — 重要取舍。格式 \"决定 X，因为 Y\"。候选 / 讨论过程不写在 \
     这里 — 只写已经定下来的事。
-  * `# 进行中` — 当前活跃的任务（worker 在跑 / gate 在等结果）。完成 \
-    后从这里移除，挪到 `# 已完成`。没有就写 \"目前空闲，等待你的下一 \
-    步指令\"。
 
 `summary` 是侧栏的 1-行预览，~80 字符以内。
 
 **什么时候更新报告：**
 
-  * 任务完成 → 从 `# 进行中` 移除 + 加到 `# 已完成`
+  * 任务完成 → 加到 `# 已完成`
   * 做了一个决定 → 在 `# 决策` 加一行
   * 被阻塞 → 在 `# 待你定` 写明白具体要什么
   * 当前状态发生变化 → 重写 `# 概要`
@@ -203,10 +200,10 @@ section 重复的 Frankensteinian body。迁移时保留仍然有效的事实，
 
   * 不要用旧的 `# Goal / # Progress / # Needs attention / # Results / # Timeline` \
     词汇 — 那套词汇引导流水账式写作。新格式只用 `# 概要 / # 已完成 / # 决策 / \
-    # 待你定 / # 进行中` 这五个 H1。
-  * 不要 append 后不删 — `# 已完成` 和 `# 进行中` 都会失效；旧条目失效 \
-    就删掉，不要堆积。
+    # 待你定` 这四个 H1。
+  * 不要 append 后不删 — `# 已完成` 会失效；旧条目失效就删掉，不要堆积。
   * 不要复述 lifecycle 状态（用户在卡头已经看到 badge 了）。
+  * 不要复述任务状态和进度（TASKS 面板已经渲染了任务的真实运行态）。
   * 不要把工具调用、wave_state 读取等内部机械动作写进报告。
   * 不要把对话历史 / 长引用 dump 进报告 — 摘要后写要点。
 
@@ -730,13 +727,22 @@ mod tests {
     fn spec_prompt_pins_chinese_current_snapshot_report_semantics() {
         let p = SPEC_SYSTEM_PROMPT_TEMPLATE;
 
-        // New Chinese section vocab present (all five required H1s).
-        for section in ["# 概要", "# 已完成", "# 决策", "# 待你定", "# 进行中"] {
+        // New Chinese section vocab present (all four required H1s).
+        for section in ["# 概要", "# 已完成", "# 决策", "# 待你定"] {
             assert!(
                 p.contains(section),
                 "Wave Report prompt must document the new Chinese section `{section}`"
             );
         }
+
+        // `# 进行中` was dropped in #1172: the TASKS panel renders the real
+        // task runtime state, so making the spec agent hand-maintain a prose
+        // mirror of it every turn is pure LLM restatement of kernel-known,
+        // already-rendered data.
+        assert!(
+            !p.contains("# 进行中"),
+            "prompt must NOT reintroduce `# 进行中` — task runtime state is owned by the TASKS panel"
+        );
 
         // Old English vocab is explicitly banned (the banned-list bullet must
         // name all of them so future drift back to append-log is structurally
