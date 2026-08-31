@@ -1452,3 +1452,138 @@ async fn write_markdown_refuses_worker() {
     .expect_err("worker must be denied");
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
 }
+
+// ---------------------------------------------------------------------------
+// #1179 — task deletion must go through the block-level DELETE path for
+// *every* author, not just the user. `write_markdown` is a whole-document
+// write: a body that simply omits a task fence used to drop the block (and
+// with it the projected `tasks` row) silently.
+// ---------------------------------------------------------------------------
+
+/// A schedulable spec task declaration: the full shape the projection
+/// materializes into a `tasks` row.
+fn spec_task_payload(key: &str, goal: &str) -> Value {
+    json!({
+        "key": key, "kind": "codex", "goal": goal,
+        "acceptance": format!("accept {key}"), "context": {"key": key},
+        "cwd": format!("/{key}"), "depends_on": [], "priority": 3,
+        "gate": {"steps": [{"name": "accept", "cmd": "true"}]},
+        "declared_by": "spec", "ready": true
+    })
+}
+
+/// Spec-declared live task, plus the `tasks` row key set it projects.
+async fn seed_spec_task(boot: &Boot, key: &str) -> (String, u64) {
+    let doc_rev = current_payload(boot).await.doc_rev;
+    let out = call_tool(
+        boot,
+        TOOL_REPORT_BLOCKS_UPSERT,
+        spec_identity(boot),
+        json!({
+            "kind": "task",
+            "payload": spec_task_payload(key, "build it"),
+            "if_doc_rev": doc_rev
+        }),
+    )
+    .await
+    .expect("spec declares a task block");
+    (
+        out["id"].as_str().expect("block id").to_string(),
+        out["rev"].as_u64().expect("block rev"),
+    )
+}
+
+async fn task_keys(boot: &Boot) -> Vec<String> {
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    sqlx::query_scalar::<_, String>("SELECT key FROM tasks WHERE wave_id = ?1 ORDER BY key")
+        .bind(boot.wave_id.as_str())
+        .fetch_all(&pool)
+        .await
+        .expect("read task keys")
+}
+
+#[tokio::test]
+async fn write_markdown_cannot_silently_drop_a_spec_task_block() {
+    let boot = boot().await;
+    seed_spec_task(&boot, "build").await;
+    let before = current_payload(&boot).await;
+    assert!(
+        before.body.contains("neige-block task"),
+        "seeded body carries the task fence: {:?}",
+        before.body
+    );
+    assert_eq!(task_keys(&boot).await, ["build"], "task row is projected");
+
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": SEED_BODY, "if_doc_rev": before.doc_rev }),
+    )
+    .await
+    .expect_err("a body that drops the task fence must be rejected");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert!(
+        err.message.contains("block-level DELETE"),
+        "the error must point at the delete endpoint: {err:?}"
+    );
+    assert_eq!(
+        current_payload(&boot).await,
+        before,
+        "the rejected write lands nothing"
+    );
+    assert_eq!(
+        task_keys(&boot).await,
+        ["build"],
+        "the scheduling projection keeps the task"
+    );
+}
+
+#[tokio::test]
+async fn write_markdown_may_still_edit_a_task_fence_in_place() {
+    let boot = boot().await;
+    let (id, rev) = seed_spec_task(&boot, "build").await;
+    let before = current_payload(&boot).await;
+    let edited = calm_types::report_blocks::render_fence(
+        "task",
+        &spec_task_payload("build", "build it better"),
+    );
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": format!("{SEED_BODY}{edited}"), "if_doc_rev": before.doc_rev }),
+    )
+    .await
+    .expect("editing the fence body in place stays legal");
+
+    let blocks = current_payload(&boot).await.blocks.expect("blocks cache");
+    let task = blocks.iter().find(|b| b.id == id).expect("task survives");
+    assert_eq!(u64::from(task.rev), rev + 1, "edited fence: rev+1");
+    assert_eq!(task.payload["goal"], "build it better");
+    assert_eq!(task_keys(&boot).await, ["build"]);
+}
+
+#[tokio::test]
+async fn spec_block_level_delete_of_its_own_task_still_succeeds() {
+    let boot = boot().await;
+    let (id, rev) = seed_spec_task(&boot, "build").await;
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_BLOCKS_DELETE,
+        spec_identity(&boot),
+        json!({ "id": id, "if_rev": rev }),
+    )
+    .await
+    .expect("spec may delete its own task through the block-level endpoint");
+
+    let payload = current_payload(&boot).await;
+    assert!(
+        !payload.body.contains("neige-block task"),
+        "body drops the fence: {:?}",
+        payload.body
+    );
+    assert!(task_keys(&boot).await.is_empty(), "task row is withdrawn");
+}
