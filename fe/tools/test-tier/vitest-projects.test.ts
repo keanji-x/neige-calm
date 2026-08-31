@@ -6,8 +6,9 @@ import { playwrightProjectFromConfig, projectNamesFromScript, projectsForPath, t
 describe('vitest project partition', () => {
   const projects = testProjectsFromConfig(vitestConfig);
 
-  it('exports exactly the three named projects', () => {
-    expect(projects.map(({ name }) => name)).toEqual(['platform-independent', 'web-dom', 'browser']);
+  it('exports exactly the four named projects', () => {
+    expect(projects.map(({ name }) => name))
+      .toEqual(['platform-independent', 'web-dom', 'browser', 'browser-coarse']);
   });
 
   it.each([
@@ -18,6 +19,14 @@ describe('vitest project partition', () => {
     ['web/src/ui/probe.test.tsx', ['web-dom']],
     ['tools/probe.browser.test.ts', ['browser']],
     ['web/src/ui/probe.browser.test.tsx', ['browser']],
+    /*
+     * The coarse suffix is a `.browser.test.` too, so `browser`'s own include
+     * collects it and only that project's exclude keeps this a partition —
+     * which is exactly the kind of overlap `projectsForPath` is here to decide
+     * instead of anyone reading two globs side by side.
+     */
+    ['tools/probe.coarse.browser.test.ts', ['browser-coarse']],
+    ['web/src/features/chat/thread/thread.coarse.browser.test.tsx', ['browser-coarse']],
   ])('assigns representative path %s exactly once', (path, expected) => {
     expect(projectsForPath(path, projects)).toEqual(expected);
   });

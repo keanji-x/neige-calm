@@ -696,25 +696,6 @@ async function pointRailAt(clientY: number) {
   await pause(150);
 }
 
-/** Every media condition under which some rule declares `needle`, walking
- *  layers and nested conditions. `''` for a rule at the top level. */
-function mediaConditionsDeclaring(needle: string): string[] {
-  const found: string[] = [];
-  const walk = (rules: CSSRuleList, condition: string) => {
-    for (const rule of [...rules]) {
-      if (rule instanceof CSSMediaRule) { walk(rule.cssRules, rule.conditionText); continue; }
-      if (rule instanceof CSSLayerBlockRule) { walk(rule.cssRules, condition); continue; }
-      if (rule instanceof CSSStyleRule && rule.style.cssText.includes(needle)) found.push(condition);
-    }
-  };
-  for (const sheet of [...document.styleSheets]) {
-    let rules: CSSRuleList;
-    try { rules = sheet.cssRules; } catch { continue; }
-    walk(rules, '');
-  }
-  return found;
-}
-
 /**
  * One rule written against one of `element`'s own classes: the rule itself, the
  * media conditions it sits under, the pseudo-element it targets, and **where it
@@ -740,16 +721,20 @@ type RailRule = Readonly<{
  * a stylesheet is exactly the shape that rule exists to stop. Nothing here is
  * located by it; the element came from a data hook.
  *
- * **`at` is the reason this returns more than the rules.** Two of the
- * stylesheet's conditional blocks — `(pointer: coarse)` and
- * `(prefers-reduced-motion: reduce)` — write the *same* declarations at the
- * *same* specificity as the unconditional rule above them, so the only thing
- * that makes them win is that they come later. That is invisible to a
- * declaration-level read: the whole `@media (pointer: coarse)` block was moved
- * to sit above the base rule, which hands every coarse device the fine
- * geometry, and this file stayed green at 35/35. `at` counts every style rule
- * the walk passes, in sheet order, so "later than the base rule" is a number
- * two assertions can compare.
+ * **`at` is the reason this returns more than the rules.**
+ * `@media (prefers-reduced-motion: reduce)` writes the *same* declaration at
+ * the *same* specificity as the `@media (pointer: fine)` block above it, so the
+ * only thing that makes it win is that it comes later — which is invisible to a
+ * declaration-level read. `at` counts every style rule the walk passes, in
+ * sheet order, so "later than the fine block" is a number two assertions can
+ * compare.
+ *
+ * `@media (pointer: coarse)` used to be read the same way here and no longer
+ * is: `thread.coarse.browser.test.tsx` runs in a browser context that reports
+ * a coarse pointer and measures the rendered row, which can only come out at
+ * 28px if that block won on source order. Reduced motion has no such context
+ * yet — emulating the feature on this shared page poisons every file after it
+ * — so this stays the ordinal read for that one condition.
  *
  * A selector's trailing pseudo-element is split off rather than ignored, so
  * `.railDot` and `.railDot::before` are told apart, and `.railDot:hover::before`
@@ -784,12 +769,6 @@ function ruleLedgerFor(element: Element): RailRule[] {
 /** The subset of a ledger sitting under a condition naming `needle`. */
 function under(ledger: readonly RailRule[], needle: string): RailRule[] {
   return ledger.filter((entry) => entry.conditions.some((text) => text.includes(needle)));
-}
-
-/** The subset sitting under no condition at all — the unconditional rules the
- *  conditional ones have to out-order. */
-function unconditional(ledger: readonly RailRule[]): RailRule[] {
-  return ledger.filter((entry) => entry.conditions.length === 0);
 }
 
 describe('the exchange rail, as the engine lays it out', () => {
@@ -1856,112 +1835,6 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 
   /*
-   * ── The coarse branch, and the source order it stands on ──────────────────
-   *
-   * A finger gets a wider gutter, a wider pitch and a resting dot it can see,
-   * and the magnification is not offered there at all — there is no hover to
-   * drive it, so what a finger would get is a swell latched under the last
-   * place it touched.
-   *
-   * **Read off the loaded stylesheet rather than off a coarse render, and the
-   * reason is a measurement.** Chromium can be put into `pointer: coarse` over
-   * CDP (`Emulation.setTouchEmulationEnabled`), and it is a one-way door:
-   * disabling it again leaves the page at `pointer: none`, where *neither*
-   * branch matches — measured, and measured to survive across test files,
-   * because vitest's browser mode reuses one page. A case that poisons every
-   * case after it is worse than a case that reads the rule.
-   *
-   * **Reading the declaration is not enough on its own, and that is the hole
-   * this case had.** The coarse block and the base rule name the same custom
-   * properties at the same specificity, so nothing but source order decides
-   * which one a coarse device gets. Executed: the whole `@media (pointer:
-   * coarse)` block moved to sit *above* `.rail` — every coarse
-   * device now laid out at the fine geometry, which is the one outcome the
-   * branch exists to prevent — and this file stayed green at 35/35. So the
-   * ordinal is asserted as well as the values.
-   *
-   * What is still not read is a coarse *render*; that is what the one-way door
-   * above costs, and the fine branch's own case covers the declaration →
-   * layout step by measuring the dot's box against `--nc-rail-pitch`.
-   */
-  it('keeps the coarse geometry, after the base rule rather than before it', async () => {
-    await page.viewport(1400, 900);
-    render(<RailPane turns={promptTurns()} />);
-    await frame();
-    /* `.rail` itself now, one level up from the track: the geometry moved off
-       the transcript frame when the rail left the transcript, so this is the
-       element the pointer split switches. */
-    const railed = railTrack().parentElement!;
-
-    const ledger = ruleLedgerFor(railed);
-    const coarse = under(ledger, 'pointer: coarse');
-    const base = unconditional(ledger);
-    expect(coarse).toHaveLength(1);
-    expect(base.length).toBeGreaterThan(0);
-
-    /* **The cascade, as a number.** Equal specificity, so the later rule wins;
-       every unconditional rule on this element has to come first or the coarse
-       device silently gets the dense geometry. */
-    expect(coarse[0].at).toBeGreaterThan(Math.max(...base.map((entry) => entry.at)));
-
-    const probe = document.createElement('div');
-    document.body.append(probe);
-    probe.style.cssText = coarse[0].rule.style.cssText;
-    probe.style.blockSize = 'var(--nc-rail-pitch)';
-    /* The width is the seam's, not a rail variable: both pointer branches are
-       the same 24px wide, because the seam is one number. `--nc-rail-gutter` is
-       gone with the transcript channel it used to cut. */
-    probe.style.inlineSize = 'var(--space-10)';
-    const box = probe.getBoundingClientRect();
-    /* The dot sizes are declared in the same block and were the untested half
-       of it: both were cut to `1px` and this file stayed green. They are read
-       through a child so that the sizes measured are the ones a dot would
-       inherit, not the block's own box. */
-    const ink = document.createElement('div');
-    ink.style.blockSize = 'var(--nc-rail-dot)';
-    ink.style.inlineSize = 'var(--nc-rail-dot-current)';
-    probe.append(ink);
-    const inkBox = ink.getBoundingClientRect();
-    probe.remove();
-
-    /* **Both dimensions clear 24 on this branch too, and that is the change.**
-       The rail used to be 10px wide on the fine branch and 14 here, so neither
-       enclosed a 24px square and 2.5.8 was being met — where it was met at all
-       — through the spacing exception. In the seam the width is 24 on both
-       branches and the coarse row is 28 tall, so the criterion is satisfied by
-       target *size*, with the coarse branch a step above the floor because a
-       finger is blunter than a cursor rather than because it is carrying a
-       compliance argument for the other branch. 28 is asserted outright so
-       that quietly cutting it to the floor has to come back and read this. */
-    expect(box.height).toBeGreaterThanOrEqual(24);
-    expect(box.width).toBeGreaterThanOrEqual(24);
-    expect(box.height).toBe(28);
-    expect(box.width).toBe(24);
-    expect(inkBox.height).toBe(6);
-    expect(inkBox.width).toBe(8);
-
-    /* And the magnification is not on offer there: every rule that reads the
-       component's published lift is inside a fine-pointer block. */
-    const conditions = mediaConditionsDeclaring('--nc-dot-lift');
-    expect(conditions.length).toBeGreaterThan(0);
-    for (const condition of conditions) expect(condition).toContain('pointer: fine');
-
-    /* Nor is the preview: it is a hover affordance, and the only thing it could
-       do under a finger is appear over the dot that has already been pressed.
-       Bound here rather than left to the component's own touch guard, which is
-       a separate mechanism with a separate case. */
-    await userEvent.hover(dots()[3]);
-    await pause(600);
-    const preview = railPreview()!;
-    expect(preview).not.toBeNull();
-    const hidden = under(ruleLedgerFor(preview), 'pointer: coarse');
-    expect(hidden).toHaveLength(1);
-    expect(hidden[0].rule.style.display).toBe('none');
-    await userEvent.hover(replies()[0]);
-    await pause(150);
-  });
-
-  /*
    * ── Reduced motion drops the transition and keeps the sizes ───────────────
    *
    * The envelope is the aiming aid a 4px dot is bought with, so switching it
@@ -1969,11 +1842,15 @@ describe('the exchange rail, as the engine lays it out', () => {
    * failure. What goes is the part that keeps moving after the input has
    * stopped: the transition.
    *
-   * Asserted the same way as the coarse branch and for the same reason —
-   * `prefers-reduced-motion` cannot be emulated here without poisoning the
-   * shared page, the declaration alone is not the behaviour, and the block wins
-   * only by sitting after `@media (pointer: fine)`. Executed: `transition:
-   * none` replaced with `inline-size 3s linear`, 35/35 green.
+   * Asserted at the declaration and at its ordinal, which is now the *only*
+   * case in this file that has to be — the coarse branch it used to share the
+   * technique with is rendered in `thread.coarse.browser.test.tsx`, in a
+   * browser context of its own. `prefers-reduced-motion` has no such context
+   * yet: emulating the feature on this shared page poisons every file after it,
+   * and the same `contextOptions` lever that solved the pointer split would
+   * solve this one. Until then the declaration alone is not the behaviour, and
+   * the block wins only by sitting after `@media (pointer: fine)`. Executed:
+   * `transition: none` replaced with `inline-size 3s linear`, 35/35 green.
    */
   it('drops the dot transition under reduced motion, after the fine block', async () => {
     await page.viewport(1400, 900);
