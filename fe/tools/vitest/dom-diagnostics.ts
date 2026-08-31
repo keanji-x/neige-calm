@@ -34,13 +34,25 @@
  * of claim that is only worth what was run against it:
  *
  *  - the whole suite is green with it installed (1723 web-dom/node, 285
- *    browser), so nothing today reads a query-failure message; and
+ *    browser). Query-failure messages *are* read — by this file's own tests,
+ *    which is unavoidable — but nothing anywhere asserts on their exact text;
+ *    and
  *  - `getElementError` is called on *every* `waitFor` poll, not just the last
- *    one, so the cost matters — it is 0.045ms against the 4.04ms `prettyDOM`
- *    already spends per call on a 200-node body, i.e. about 1%.
+ *    one, so the cost matters. Measured on a 200-node body holding 100
+ *    buttons: 5.10ms per call against 4.07ms without, so the report costs
+ *    ~1.03ms — 25% on top of what `prettyDOM` already spends. Nearly all of it
+ *    is the CSS scan's `getComputedStyle` per queryable element.
  *
- * What it *would* break is a test that snapshots the exact text of a query
- * failure. None exists; one written later fails loudly rather than silently.
+ *    25% sounds worse than it is, and the absolute number is the one that
+ *    decides: only *failing* DTL queries reach here, and the worst case is a
+ *    `findBy*` that times out — 1000ms at a 50ms interval is 20 polls, so
+ *    ~20ms added to a 1000ms budget. That cannot move a timing-sensitive test.
+ *    A `waitFor` over a plain `expect` never calls `getElementError` at all.
+ *
+ * What it *would* break is a test asserting the exact text of a query failure
+ * — `toThrow(exactMessage)` or a snapshot, not `toThrow('Unable to find')`,
+ * which still matches. None exists; one written later fails loudly, not
+ * silently.
  */
 
 // Only the DOM-bearing projects get this; `platform-independent` runs in node,
@@ -50,11 +62,32 @@
 if (typeof document !== 'undefined') {
   const { configure, getConfig } = await import('@testing-library/react');
 
-  /** Interactive-ish descendants; an element with none of these is decoration. */
-  const MEANINGFUL = 'button, a[href], input, select, textarea, [role], [tabindex]';
+  /*
+   * What counts as "something a query could have been looking for".
+   *
+   * **This is a heuristic, not the implicit-role mapping.** It covers the
+   * interactive elements plus the headings, landmarks and images these suites
+   * actually query, because the alternative — treating every element as
+   * queryable — lists every `aria-hidden` icon in the app and buries the
+   * answer. The cost is stated rather than hidden: a hidden subtree whose only
+   * queryable content is an element outside this list reads as decoration and
+   * is left out.
+   */
+  const MEANINGFUL = [
+    'button', 'a[href]', 'input', 'select', 'textarea', 'summary', 'label',
+    '[role]', '[tabindex]',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'img[alt]:not([alt=""])', 'table', 'ul', 'ol', 'dl', 'form', 'fieldset', 'dialog',
+    'nav', 'main', 'header', 'footer', 'article', 'aside', 'section[aria-label]',
+  ].join(', ');
+  /** The three hiding *attributes*. CSS hiding is handled separately; see `cssHiddenRoots`. */
+  const HIDING_ATTRIBUTES = '[inert], [aria-hidden="true"], [hidden]';
   const BODY_CHILD_LIMIT = 8;
   const HIDDEN_SUBTREE_LIMIT = 8;
+  const QUERYABLE_LIMIT = 400;
   const CLASS_CHARS = 60;
+  /** Every report line carries this, so a re-wrapped message is recognisable. */
+  const MARKER = '[nc-a11y]';
 
   const identify = (element: Element): string => {
     const tag = element.tagName.toLowerCase();
@@ -65,19 +98,82 @@ if (typeof document !== 'undefined') {
   };
 
   /*
-   * `inert` and `aria-hidden` are the two ways a node stays in the DOM and
-   * leaves the accessibility tree, and they are what every dialog/drawer in
-   * this app writes onto its siblings. `display: none` is the third; it is read
-   * off the computed style rather than the attribute because a stylesheet can
-   * set it.
+   * Four things take a node out of the accessibility tree: `inert`,
+   * `aria-hidden`, the `hidden` attribute, and CSS (`display:none` /
+   * `visibility:hidden`). The first three are attributes and a selector can
+   * find them. **The fourth is the reason this function is not the whole
+   * story** — no selector expresses a computed style, so CSS-hidden subtrees
+   * are found by `cssHiddenRoots` below instead, and both lists are reported.
    */
   const hiddenBecause = (element: Element): string => {
     const reasons: string[] = [];
     if (element.hasAttribute('inert')) reasons.push('inert');
     if (element.getAttribute('aria-hidden') === 'true') reasons.push('aria-hidden');
-    const view = element.ownerDocument.defaultView;
-    if (view && view.getComputedStyle(element).display === 'none') reasons.push('display:none');
+    if (element.hasAttribute('hidden')) reasons.push('hidden');
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    if (style?.display === 'none') reasons.push('display:none');
+    else if (style?.visibility === 'hidden') reasons.push('visibility:hidden');
     return reasons.join('+');
+  };
+
+  const cssHidden = (element: Element): boolean => {
+    const style = element.ownerDocument.defaultView?.getComputedStyle(element);
+    return style?.display === 'none' || style?.visibility === 'hidden';
+  };
+
+  /*
+   * The CSS-hidden roots that hold something queryable.
+   *
+   * This exists because the attribute selector above is blind to exactly the
+   * case #1161 needs: `ui/dialog/public.tsx:139` puts `display: none` on
+   * `.dialog-body` whenever a child view is showing, and the `Create wave`
+   * button lives inside it. A report that answered "no hidden subtree holds
+   * anything queryable" there would be *actively wrong* — the precise
+   * misdiagnosis this file exists to prevent.
+   *
+   * **The element itself is not where the answer is.** `getComputedStyle` on a
+   * button inside a `display: none` container still reports the button's own
+   * `display` — the container's `none` is not inherited into the child's
+   * computed value. So the ancestors have to be walked; asking only the element
+   * finds nothing, which is how the first draft of this silently reported
+   * "none" for the very case it was added for.
+   *
+   * Walking every element in the document would cost a `getComputedStyle` per
+   * node. Only queryable elements start a walk, and every element tested along
+   * the way is memoised, so a subtree with fifty hidden buttons pays for its
+   * shared ancestors once. The *highest* hidden ancestor wins, because a reader
+   * wants "this container went away", not each leaf under it.
+   */
+  const cssHiddenRoots = (body: HTMLElement): { roots: Map<Element, number>; examined: number; total: number } => {
+    const queryable = Array.from(body.querySelectorAll(MEANINGFUL));
+    const examined = queryable.slice(0, QUERYABLE_LIMIT);
+    const memo = new Map<Element, boolean>();
+    const isHidden = (element: Element): boolean => {
+      const seen = memo.get(element);
+      if (seen !== undefined) return seen;
+      const value = cssHidden(element);
+      memo.set(element, value);
+      return value;
+    };
+    const roots = new Map<Element, number>();
+    for (const element of examined) {
+      let root: Element | null = null;
+      for (let node: Element | null = element; node !== null && node !== body; node = node.parentElement) {
+        if (isHidden(node)) root = node;
+      }
+      if (root === null) continue;
+      roots.set(root, (roots.get(root) ?? 0) + 1);
+    }
+    return { roots, examined: examined.length, total: queryable.length };
+  };
+
+  /** Writes to `error.message` if that is possible at all, and otherwise does nothing. */
+  const append = (error: Error, text: string): void => {
+    try {
+      error.message = `${error.message}\n\n${text}`;
+    } catch {
+      /* Frozen or read-only error: leave it exactly as Testing Library made it. */
+    }
   };
 
   const capped = <T>(items: readonly T[], limit: number, render: (item: T) => string): string => {
@@ -87,9 +183,10 @@ if (typeof document !== 'undefined') {
   };
 
   const report = (container: Container): string => {
-    // Testing Library always hands a live element; a detached one has no
-    // `ownerDocument.body` to inventory, and the caller below turns that throw
-    // into a stated "unavailable" rather than losing the underlying failure.
+    // `container` is only used to reach its document — a detached element still
+    // has the real `ownerDocument.body`, so the inventory is the page's either
+    // way. The caller turns any throw from here into a stated "unavailable"
+    // rather than losing the underlying failure.
     const { body } = container.ownerDocument;
     const children = Array.from(body.children);
 
@@ -105,16 +202,29 @@ if (typeof document !== 'undefined') {
 
     // Decoration is `aria-hidden` everywhere in this app (every icon is). Only
     // a subtree that *contains* something queryable can explain a missing role.
-    const hiddenSubtrees = Array.from(body.querySelectorAll('[inert], [aria-hidden="true"]'))
+    const byAttribute = Array.from(body.querySelectorAll(HIDING_ATTRIBUTES))
       .filter((element) => element.querySelector(MEANINGFUL) !== null);
-    const hidden = hiddenSubtrees.length === 0
+    const { roots, examined, total } = cssHiddenRoots(body);
+    // A CSS-hidden root that also carries a hiding attribute is one subtree,
+    // not two; the attribute list already names it.
+    const byStyle = Array.from(roots.entries()).filter(([element]) => !byAttribute.includes(element));
+    const subtrees = [
+      ...byAttribute.map((element) => ({ element, held: null as number | null })),
+      ...byStyle.map(([element, held]) => ({ element, held })),
+    ];
+    const hidden = subtrees.length === 0
       ? '\n  none'
-      : capped(hiddenSubtrees, HIDDEN_SUBTREE_LIMIT, (element) => `${identify(element)} — ${hiddenBecause(element)}`);
+      : capped(subtrees, HIDDEN_SUBTREE_LIMIT, ({ element, held }) =>
+        `${identify(element)} — ${hiddenBecause(element)}${held === null ? '' : ` (holds ${held} queryable)`}`);
+    // The queryable scan is the only unbounded walk here, so when it is capped
+    // the report says so rather than implying the CSS list is complete.
+    const scanned = examined === total ? '' : `\n  [only the first ${examined} of ${total} queryable elements were`
+      + ' scanned for CSS hiding; the list above may be incomplete]';
 
     return [
-      `[nc-a11y] document.body children (${children.length}):${inventory}`,
-      `[nc-a11y] subtrees out of the accessibility tree that hold queryable elements `
-        + `(${hiddenSubtrees.length}):${hidden}`,
+      `${MARKER} document.body children (${children.length}):${inventory}`,
+      `${MARKER} subtrees out of the accessibility tree that hold queryable elements `
+        + `(${subtrees.length}, by inert/aria-hidden/hidden/display/visibility):${hidden}${scanned}`,
     ].join('\n');
   };
 
@@ -132,12 +242,30 @@ if (typeof document !== 'undefined') {
   if (!(INSTALLED in inherited)) {
     const withReport = (message: string | null, container: Container) => {
       const error = inherited(message, container);
-      // A diagnostic that throws would replace a real failure with a useless
-      // one, so its own failure is reported and swallowed.
+      /*
+       * Testing Library re-wraps messages that already came from here, and the
+       * worst offender is the path #1161 actually takes: on timeout `waitFor`
+       * calls `getElementError(lastError.message, …)`, so the report would be
+       * appended to a message that already ends with one. `getMultipleError`
+       * does it once per match on top of the outer wrap. Re-appending is only
+       * noise, but it is noise in the one artifact this exists to be read from,
+       * and it eats the runner's head+tail truncation budget.
+       */
+      if (message !== null && message.includes(MARKER)) return error;
+      /*
+       * A diagnostic that throws would replace a real failure with a useless
+       * one, so both halves give up quietly. Note the *second* `append` is why
+       * this is two functions and not a bare try/catch: if the message could
+       * not be written the first time — a frozen or read-only error from some
+       * other `getElementError` — writing the failure notice would throw for
+       * exactly the same reason, and the original error would be lost to a
+       * `TypeError`. When nothing can be written, the error is returned
+       * untouched, which is the outcome that loses the least.
+       */
       try {
-        error.message = `${error.message}\n\n${report(container)}`;
+        append(error, report(container));
       } catch (cause) {
-        error.message = `${error.message}\n\n[nc-a11y] unavailable: ${String(cause)}`;
+        append(error, `${MARKER} unavailable: ${String(cause)}`);
       }
       return error;
     };

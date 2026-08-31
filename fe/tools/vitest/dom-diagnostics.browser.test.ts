@@ -16,6 +16,8 @@ import { screen } from '@testing-library/react';
 
 /** Marks every node this file adds, so cleanup cannot strand page chrome. */
 const FIXTURE_CLASS = 'nc-a11y-fixture';
+/** Must match `MARKER` in dom-diagnostics.ts. */
+const MARKER = '[nc-a11y]';
 
 const mount = (html: string): HTMLElement => {
   const host = document.createElement('div');
@@ -95,12 +97,84 @@ describe('the a11y failure report (#1161)', () => {
     expect(reportOf(failureMessage(missing))).toContain('<div class="inert-wrapper"> — inert');
   });
 
-  it('leaves decoration out: a hidden subtree with nothing queryable in it', () => {
-    mount('<div class="decorative-wrapper" aria-hidden="true"><svg></svg></div>');
-    const message = failureMessage(missing);
+  /*
+   * The case the attribute selector is blind to, and the reason the CSS scan
+   * exists. `ui/dialog/public.tsx:139` puts `display: none` on `.dialog-body`
+   * whenever a child view is showing, and #1161's missing `Create wave` button
+   * lives inside it — so a report that said "no hidden subtree holds anything
+   * queryable" here would be actively wrong about the one thing it is for.
+   */
+  it('finds a subtree hidden by CSS, which no attribute selector can express', () => {
+    mount('<div class="css-hidden-wrapper" style="display: none"><button>Save</button></div>');
+    const report = reportOf(failureMessage(missing));
 
-    expect(reportOf(message)).toContain('subtrees out of the accessibility tree');
-    expect(reportOf(message)).not.toContain('decorative-wrapper');
+    expect(report).toContain('<div class="css-hidden-wrapper"> — display:none (holds 1 queryable)');
+  });
+
+  it('finds visibility:hidden and the hidden attribute too', () => {
+    mount('<div class="invisible-wrapper" style="visibility: hidden"><button>A</button></div>'
+      + '<div class="hidden-attr-wrapper" hidden><button>B</button></div>');
+    const report = reportOf(failureMessage(missing));
+
+    expect(report).toContain('<div class="invisible-wrapper"> — visibility:hidden');
+    expect(report).toContain('<div class="hidden-attr-wrapper"> — hidden');
+  });
+
+  /*
+   * The walk must name the subtree root, not each hidden button: a reader wants
+   * "this container went away", not fifty lines of its contents.
+   */
+  it('names the outermost hidden ancestor once, not every element under it', () => {
+    mount('<div class="outer-hidden" style="display: none"><div class="inner"><button>A</button>'
+      + '<button>B</button><button>C</button></div></div>');
+    const report = reportOf(failureMessage(missing));
+
+    expect(report).toContain('<div class="outer-hidden"> — display:none (holds 3 queryable)');
+    expect(report).not.toContain('class="inner"');
+  });
+
+  /*
+   * `waitFor` calls `getElementError(lastError.message, …)` on timeout, so the
+   * message it re-wraps already ends with a report. That is the #1161 path
+   * exactly, and the synchronous cases above cannot catch it.
+   */
+  it('appends once, not twice, through the findBy timeout path', async () => {
+    mount('<div aria-hidden="true"><button>Save</button></div>');
+    let message = '';
+    try {
+      await screen.findByRole('button', { name: 'Save' }, { timeout: 60, interval: 20 });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toContain(MARKER);
+    expect(message.split(`${MARKER} document.body children`).length - 1).toBe(1);
+  });
+
+  /*
+   * Both halves in one fixture on purpose. Asserting only that decoration is
+   * absent passes just as well against a list that is *always* empty — which is
+   * exactly what a gutted implementation produces. The queryable sibling is the
+   * positive control that makes the absence mean something.
+   */
+  it('leaves decoration out while still listing a real hidden subtree', () => {
+    mount('<div class="decorative-wrapper" aria-hidden="true"><svg></svg></div>'
+      + '<div class="substantive-wrapper" aria-hidden="true"><button>Save</button></div>');
+    const report = reportOf(failureMessage(missing));
+
+    expect(report).toContain('<div class="substantive-wrapper"> — aria-hidden');
+    expect(report).not.toContain('decorative-wrapper');
+  });
+
+  /*
+   * Headings have an implicit role and no `role` attribute, so an earlier
+   * version of `MEANINGFUL` called this subtree decoration and omitted it.
+   */
+  it('counts an implicit role as queryable, not as decoration', () => {
+    mount('<div class="heading-wrapper" aria-hidden="true"><h1>Title</h1></div>');
+    const report = reportOf(failureMessage(missing));
+
+    expect(report).toContain('<div class="heading-wrapper"> — aria-hidden');
   });
 
   it('lists body children so an absent portal is distinguishable from a hidden one', () => {
@@ -134,6 +208,27 @@ describe('the a11y failure report (#1161)', () => {
     expect(message.split('[nc-a11y] document.body children').length - 1).toBe(1);
   });
 
+  /*
+   * If the message cannot be written, the *failure notice* cannot be written
+   * either — it is the same assignment to the same frozen object. A bare
+   * try/catch that reports the problem by appending would therefore throw out
+   * of the catch and replace a real query failure with a `TypeError`. The
+   * original error, unchanged, is the outcome that loses the least.
+   */
+  it('returns the original error untouched when its message cannot be written', async () => {
+    const { configure, getConfig } = await import('@testing-library/react');
+    const installed = getConfig().getElementError;
+    configure({ getElementError: () => Object.freeze(new Error('frozen baseline')) });
+    try {
+      // A fresh evaluation wraps the frozen-error producer that was just installed.
+      // @ts-expect-error -- a Vite cache-busting specifier, not a resolvable path.
+      await import('./dom-diagnostics.ts?frozen-probe');
+      expect(failureMessage(missing)).toBe('frozen baseline');
+    } finally {
+      configure({ getElementError: installed });
+    }
+  });
+
   it('announces its own truncation instead of silently dropping subtrees', () => {
     // Nine hidden subtrees against a limit of eight: the smallest input that
     // can overflow, so the message cannot be produced by an off-by-one.
@@ -141,7 +236,7 @@ describe('the a11y failure report (#1161)', () => {
       `<div class="overflow-${index}" aria-hidden="true"><button>b${index}</button></div>`).join(''));
     const report = reportOf(failureMessage(missing));
 
-    expect(report).toContain('(9):');
+    expect(report).toContain('(9, by inert/');
     expect(report).toContain('… and 1 more, not shown');
   });
 });
