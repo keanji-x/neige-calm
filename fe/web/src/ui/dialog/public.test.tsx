@@ -37,6 +37,50 @@ describe('Dialog behavior', () => {
     background.remove();
   });
 
+  /*
+   * #1161. The rest of this file stubs `requestAnimationFrame` to run its
+   * callback *synchronously*, which collapses the window this pair is about:
+   * in a browser the open-focus effect lands a frame later, and a reader who
+   * clicks into a field before it does had focus taken away from them. The
+   * frame is held here instead of run, so the ordering is chosen rather than
+   * raced.
+   */
+  const heldFrames = (): FrameRequestCallback[] => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    return frames;
+  };
+
+  it('focuses the first focusable when the frame lands and focus is still outside', () => {
+    const frames = heldFrames();
+    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+
+    // Positive control for the guard below: without this the guard could be
+    // "never focus anything" and the pair would still pass.
+    frames.forEach((frame) => { frame(0); });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+  });
+
+  it('does not take focus away from a field the reader already clicked into', () => {
+    const frames = heldFrames();
+    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+    const field = screen.getByLabelText('Task');
+    field.focus();
+
+    frames.forEach((frame) => { frame(0); });
+
+    /*
+     * The concrete harm when this fails: `focusables(panel)[0]` is the header's
+     * Close button, so every keystroke goes to a button, and the first space
+     * activates it and throws the half-typed dialog away. That is #1161's
+     * flake, and it is what a reader typing quickly gets in a real browser.
+     */
+    expect(document.activeElement).toBe(field);
+  });
+
   it('re-queries focusables after dynamically inserting an item', () => {
     render(<Dialog open title="Test" onClose={vi.fn()}><button>First</button></Dialog>);
     const panel = screen.getByRole('dialog');

@@ -99,6 +99,23 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     const frame = requestAnimationFrame(() => {
       const panel = panelRef.current;
       if (!panel) return;
+      /*
+       * #1161 — the reader gets there first, and wins.
+       *
+       * This runs a frame after the panel mounts, and a reader who clicks into
+       * a field inside that frame had focus taken off them and put on
+       * `focusables(panel)[0]`, which is the header's Close button. Their
+       * keystrokes then went to a button, and the first **space** activated it
+       * and discarded the half-filled dialog. That was #1161: it read as a
+       * flaky test because the frame usually lands before the click, and every
+       * test in `ui/dialog` stubbed `requestAnimationFrame` to run
+       * synchronously, which removes the window entirely.
+       *
+       * Opening focus is a courtesy for a reader who has not acted yet, so it
+       * yields to one who has. `contains` and not `===` because by then focus
+       * may be on any descendant.
+       */
+      if (panel.contains(document.activeElement)) return;
       (initialFocusRef?.current ?? focusables(panel)[0] ?? panel).focus();
     });
     return () => {

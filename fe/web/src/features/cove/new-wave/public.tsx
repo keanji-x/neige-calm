@@ -6,7 +6,7 @@
 // the request. Binding a folder is out of scope: the kernel defaults omitted
 // `cwd` to `$HOME` and does not claim it.
 
-import { useId } from 'react';
+import { useId, type RefObject } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
 import styles from './new-wave.module.css';
@@ -18,12 +18,19 @@ export type NewWaveDraft = Readonly<{
 export type NewWaveFormProps = Readonly<{
   submitting: boolean;
   error: string | null;
+  /*
+   * The dialog's opening focus target. Without one the dialog falls back to its
+   * first focusable, which is the header's Close button — so a reader who
+   * opened this and started typing put nothing in the field and closed the
+   * dialog on the first space. See #1161.
+   */
+  titleRef?: RefObject<HTMLInputElement | null>;
   onCancel: () => void;
   onSubmit: (draft: NewWaveDraft) => void;
 }>;
 
 export function NewWaveForm({
-  submitting, error, onCancel, onSubmit,
+  submitting, error, titleRef, onCancel, onSubmit,
 }: NewWaveFormProps) {
   const fieldId = useId();
   const [title, setTitle] = useState('');
@@ -55,6 +62,7 @@ export function NewWaveForm({
             only when it holds a prompt or a path, and a wave title is neither.
             It inherits the form's sans. */}
         <input
+          ref={titleRef}
           id={titleId}
           className={styles.input}
           type="text"
