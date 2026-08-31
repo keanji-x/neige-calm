@@ -13,7 +13,6 @@
     border-radius: var(--radius-lg);
     background: color-mix(in oklab, var(--paper) 88%, transparent);
     backdrop-filter: blur(18px) saturate(1.12);
-    box-shadow: var(--shadow-float);
   }
 
   .leading,
