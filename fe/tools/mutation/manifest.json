@@ -1034,8 +1034,7 @@
       "light theme contrast matrix --warn on --bg clears the non-text floor",
       "light theme contrast matrix --warn-text on --bg clears the AA body floor",
       "light theme contrast matrix ground and card stay in one hue family (|ΔC| ≤ 0.005)",
-      "light theme contrast matrix the ladder runs the same direction in both themes",
-      "the exchange rail, as the engine lays it out paints the resting dot between 3:1 and the text ladder, against the page"
+      "light theme contrast matrix the ladder runs the same direction in both themes"
     ],
     "selection_paths": [
       "tools/styles/styles.test.ts",
