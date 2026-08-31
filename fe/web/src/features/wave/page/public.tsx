@@ -384,7 +384,6 @@ export function WavePage({
                       <MobileListItem
                         key={child.blockId}
                         title={child.label}
-                        description={`Under ${item.label}`}
                         nested
                         onSelect={() => {
                           setMobileCardMotion('none');
@@ -413,8 +412,7 @@ export function WavePage({
                       <MobileListItem
                         key={card.id}
                         title={label}
-                        description={card.kind}
-                        meta={card.deletable ? undefined : 'Kernel-owned'}
+                        meta={card.kind}
                         onSelect={() => {
                           setMobileCardMotion('forward');
                           setMobileCardId(card.id);
@@ -440,7 +438,7 @@ export function WavePage({
                     <MobileListItem
                       key={task.blockId}
                       title={task.key}
-                      description={task.state === 'ready' ? 'Ready'
+                      meta={task.state === 'ready' ? 'Ready'
                         : task.state === 'withdrawn' ? 'Withdrawn'
                           : task.state === 'unreadable' ? 'Unreadable' : 'Not ready'}
                       onSelect={() => {

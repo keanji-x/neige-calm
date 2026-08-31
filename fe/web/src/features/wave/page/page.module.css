@@ -883,12 +883,7 @@
     }
 
     .mobileWaveHeader {
-      position: sticky;
-      inset-block-start: 0;
-      z-index: var(--z-sticky);
-      display: block;
-      flex: none;
-      background: var(--bg);
+      display: contents;
     }
 
     .titleHeading {

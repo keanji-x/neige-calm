@@ -340,7 +340,7 @@ describe('WavePage card inventory', () => {
     await userEvent.click(screen.getByRole('menuitem', { name: 'Tasks' }));
     expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
     expect(screen.queryByRole('heading', { name: 'Cards' })).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: /mobile-layout.*Ready/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'mobile-layout' }));
     expect(onOpenTask).toHaveBeenCalledWith('task-1');
   });
 
@@ -356,7 +356,7 @@ describe('WavePage card inventory', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Outline' }));
     expect(screen.getByRole('heading', { name: 'Outline' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: /Read path benchmark.*Under What changed/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Read path benchmark' }));
     expect(onOpenOutline).toHaveBeenCalledWith('benchmark');
     expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
@@ -441,7 +441,7 @@ describe('WavePage card inventory', () => {
     const onOpenCard = vi.fn();
     renderPage({ cards: [card({ id: 'k1', title: 'Build log' })], onOpenCard });
     await openCards();
-    const cardRow = screen.getByRole('button', { name: /Build log.*terminal/ });
+    const cardRow = screen.getByRole('button', { name: 'Build log' });
     await userEvent.click(cardRow);
     expect(onOpenCard).not.toHaveBeenCalled();
     expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');

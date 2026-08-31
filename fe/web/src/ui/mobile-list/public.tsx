@@ -1,4 +1,3 @@
-import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
 import type { ReactNode } from 'react';
 
@@ -39,28 +38,22 @@ export function MobileListEmpty({ children }: Readonly<{ children: ReactNode }>)
   return <li><p className={styles.empty}>{children}</p></li>;
 }
 
-export function MobileListItem({ title, description, meta, ariaLabel, nested = false, onSelect }: Readonly<{
+export function MobileListItem({ title, meta, ariaLabel, nested = false, onSelect }: Readonly<{
   title: string;
-  description?: ReactNode;
   meta?: ReactNode;
   ariaLabel?: string;
   /** Visually nests a second-level row while keeping one flat, touch-friendly list. */
   nested?: boolean;
   onSelect: () => void;
 }>) {
+  const metaLabel = typeof meta === 'string' || typeof meta === 'number' ? String(meta) : null;
   return (
     <AstryxListItem
       className={`${styles.item} ${nested ? styles.itemNested : ''}`}
       label={title}
-      description={description}
       onClick={() => onSelect()}
-      aria-label={ariaLabel}
-      endContent={(
-        <span className={styles.endContent}>
-          {meta !== undefined && <span className={styles.meta}>{meta}</span>}
-          <AstryxIcon icon="chevronRight" size="sm" color="secondary" />
-        </span>
-      )}
+      aria-label={ariaLabel ?? (metaLabel === null ? undefined : `${title}, ${metaLabel}`)}
+      endContent={meta === undefined ? undefined : <span className={styles.meta}>{meta}</span>}
     />
   );
 }

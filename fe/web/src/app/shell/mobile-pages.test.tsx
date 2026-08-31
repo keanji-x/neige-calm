@@ -33,7 +33,7 @@ describe('MobilePages', () => {
 
     expect(screen.getByRole('heading', { name: 'Pinned' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Recently updated' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: /Pinned report.*Product/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Pinned report' }));
     expect(onOpenWave).toHaveBeenCalledWith('pinned');
   });
 });

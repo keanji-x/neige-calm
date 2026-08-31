@@ -160,7 +160,7 @@
     .shell,
     .shellCollapsed,
     .shellExpanded {
-      --mobile-dock-h: calc(var(--rail-w-collapsed) + var(--space-8) * 2);
+      --mobile-dock-h: calc(var(--rail-w-collapsed) + var(--space-6) * 2);
       grid-template-columns: minmax(0, 1fr);
     }
 
@@ -170,7 +170,7 @@
 
     .navigation {
       position: fixed;
-      inset: 0 0 calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
+      inset: 0;
       z-index: var(--z-modal);
       display: grid;
       grid-template-columns: minmax(0, 1fr);
@@ -189,11 +189,17 @@
       grid-row: 1;
       display: flex;
       min-block-size: 0;
+      box-sizing: border-box;
+      padding-block-end: calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
       background: var(--bg);
     }
 
     .main {
       --panel-span: 100cqi;
+    }
+
+    .main[aria-hidden='true'] [data-nc-mobile-report-chat] {
+      display: none !important;
     }
 
     .stage {
@@ -203,18 +209,20 @@
 
     .mobileDock {
       position: fixed;
-      inset-inline: var(--space-8);
+      inset-inline-start: 50%;
       inset-block-end: calc(env(safe-area-inset-bottom) + var(--space-4));
       z-index: var(--z-toast);
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
+      inline-size: min(calc(100% - var(--space-10) * 2), 17.5rem);
       block-size: calc(var(--mobile-dock-h) - var(--space-4));
-      padding: var(--space-2) var(--space-4);
+      padding: var(--space-1) var(--space-3);
       border: 1px solid var(--hairline);
       border-radius: var(--radius-lg);
       background: var(--paper);
       box-shadow: var(--shadow-float);
       isolation: isolate;
+      translate: -50% 0;
       transform: translateZ(0);
     }
 
@@ -231,7 +239,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      gap: var(--space-1);
+      gap: var(--space-0);
       border-radius: var(--radius-md);
       font-size: var(--text-xs);
       line-height: var(--leading-none);

@@ -422,7 +422,7 @@
       flex: none;
       padding-block-start: env(safe-area-inset-top);
       padding-inline: var(--space-8);
-      background: var(--bg);
+      background: transparent;
     }
 
     .bodyInner {

@@ -1,16 +1,19 @@
 @layer ui {
   .header {
     position: sticky;
-    inset-block-start: 0;
+    inset-block-start: var(--space-4);
     z-index: var(--z-sticky);
     display: grid;
     grid-template-columns: minmax(var(--rail-w-collapsed), 1fr) minmax(0, auto) minmax(var(--rail-w-collapsed), 1fr);
     align-items: center;
     block-size: var(--rail-w-collapsed);
     min-block-size: var(--rail-w-collapsed);
+    margin-block-start: var(--space-4);
     padding-block: 0;
-    border-block-end: 1px solid var(--hairline);
-    background: var(--bg);
+    border-radius: var(--radius-md);
+    background: color-mix(in oklab, var(--surface-rail) 86%, transparent);
+    backdrop-filter: blur(18px) saturate(1.12);
+    box-shadow: var(--shadow-float);
   }
 
   .leading,

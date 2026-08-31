@@ -1,6 +1,6 @@
 import { coveOf, visibleCoves, type Cove } from '../../../../core/domain/cove.ts';
 import {
-  lifecycleLabel, visibleWaves, waveDisplayTitle, type Wave,
+  visibleWaves, waveDisplayTitle, type Wave,
 } from '../../../../core/domain/wave.ts';
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
@@ -24,7 +24,7 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
     .slice(0, RECENT_PAGE_LIMIT);
   const descriptionOf = (wave: Wave) => {
     const cove = coveOf(wave.coveId, shownCoves);
-    return `${cove?.name ?? 'Unknown cove'} · ${lifecycleLabel(wave.lifecycle)}`;
+    return cove?.name ?? 'Unknown cove';
   };
 
   return (
@@ -35,7 +35,7 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
             <MobileListItem
               key={wave.id}
               title={waveDisplayTitle(wave.title)}
-              description={descriptionOf(wave)}
+              meta={descriptionOf(wave)}
               onSelect={() => onOpenWave(wave.id)}
             />
           ))}
@@ -46,7 +46,7 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
           <MobileListItem
             key={wave.id}
             title={waveDisplayTitle(wave.title)}
-            description={descriptionOf(wave)}
+            meta={descriptionOf(wave)}
             onSelect={() => onOpenWave(wave.id)}
           />
         ))}

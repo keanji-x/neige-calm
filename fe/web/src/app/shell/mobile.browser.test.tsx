@@ -56,7 +56,7 @@ function MobileShellFrame({ children }: { children: (backFromReport: () => void)
             /> : null}
         </div>
       </div>
-      <main className={shellStyles.main} inert={navigationOpen}>
+      <main className={shellStyles.main} inert={navigationOpen} aria-hidden={navigationOpen ? true : undefined}>
         <div className={shellStyles.stage}>{children(() => {
           setSecondaryOpen(false);
           setMobileSection('pages');
@@ -166,6 +166,8 @@ describe('Wave mobile presentation', () => {
     await page.screenshot({ path: '../../../../test-results/mobile-report.png' });
 
     const mobileHeader = document.querySelector<HTMLElement>('[data-nc-mobile-header]')!;
+    expect(getComputedStyle(mobileHeader).backdropFilter).toContain('blur');
+    expect(getComputedStyle(mobileHeader).borderBlockEndWidth).toBe('0px');
     const reportArticle = document.querySelector<HTMLElement>('[data-testid="report-preview"]')!;
     reportArticle.style.minHeight = '1200px';
     const headerTop = mobileHeader.getBoundingClientRect().top;
@@ -189,20 +191,24 @@ describe('Wave mobile presentation', () => {
     await Promise.all(navigation.getAnimations().map((animation) => animation.finished));
     expect(page.getByRole('dialog', { name: 'Coves' })).toBeTruthy();
     const dockItems = document.querySelectorAll<HTMLElement>('nav[aria-label="Primary"] > *');
+    const dock = document.querySelector<HTMLElement>('nav[aria-label="Primary"]')!;
+    expect(dock.getBoundingClientRect().width).toBeLessThanOrEqual(280);
+    expect(dock.getBoundingClientRect().height).toBeLessThanOrEqual(60);
     expect(dockItems).toHaveLength(4);
     for (const item of dockItems) {
       expect(getComputedStyle(item).visibility).toBe('visible');
       expect(item.getBoundingClientRect().width).toBeGreaterThan(0);
     }
+    expect(document.querySelector<HTMLElement>('[data-nc-mobile-report-chat]')?.getBoundingClientRect().width ?? 0).toBe(0);
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-navigation.png' });
-    await page.getByRole('button', { name: /Product.*2 waves/ }).click();
+    await page.getByRole('button', { name: 'Product' }).click();
     expect(page.getByRole('heading', { name: 'Product' })).toBeTruthy();
     expect(document.querySelector('nav[aria-label="Primary"]')?.getBoundingClientRect().height).toBe(0);
     await Promise.all(document.getAnimations().map((animation) => animation.finished));
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-waves.png' });
-    await page.getByRole('button', { name: /Responsive mobile UI.*Working/ }).click();
+    await page.getByRole('button', { name: 'Responsive mobile UI' }).click();
     expect(document.querySelector('nav[aria-label="Primary"]')?.getBoundingClientRect().height).toBe(0);
 
     await opener.click();
@@ -216,7 +222,7 @@ describe('Wave mobile presentation', () => {
     await page.getByRole('menuitem', { name: 'Outline' }).click();
     await Promise.all(panel.getAnimations().map((animation) => animation.finished));
     expect(page.getByRole('heading', { name: 'Outline' })).toBeTruthy();
-    expect(page.getByRole('button', { name: /Current task.*Under Why this shape/ })).toBeTruthy();
+    expect(page.getByRole('button', { name: 'Current task' })).toBeTruthy();
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-outline.png' });
     await page.getByRole('button', { name: 'Back to Report' }).click();
@@ -229,7 +235,7 @@ describe('Wave mobile presentation', () => {
     expect(panelBox.width).toBe(window.innerWidth);
     expect(document.querySelector('nav[aria-label="Primary"]')?.getBoundingClientRect().height).toBe(0);
     expect(page.getByRole('heading', { name: 'Cards' })).toBeTruthy();
-    const cardLink = page.getByRole('button', { name: /Implementation terminal.*terminal/ });
+    const cardLink = page.getByRole('button', { name: 'Implementation terminal' });
     expect((await page.getByRole('button', { name: 'Back to Report' }).findElement()).getBoundingClientRect().height)
       .toBeGreaterThanOrEqual(44);
     await settlePaint();

@@ -37,8 +37,7 @@ export function MobileCoves({ coves, wavesByCove, initialCoveId = null, onOpenWa
             <MobileListItem
               key={wave.id}
               title={waveDisplayTitle(wave.title)}
-              description={lifecycleLabel(wave.lifecycle)}
-              meta={wave.pinnedAt === null ? undefined : 'Pinned'}
+              meta={lifecycleLabel(wave.lifecycle)}
               onSelect={() => onOpenWave(wave.id)}
             />
           ))}
@@ -57,7 +56,7 @@ export function MobileCoves({ coves, wavesByCove, initialCoveId = null, onOpenWa
             <MobileListItem
               key={cove.id}
               title={cove.name}
-              description={`${waves.length} ${waves.length === 1 ? 'wave' : 'waves'}`}
+              meta={`${waves.length} ${waves.length === 1 ? 'wave' : 'waves'}`}
               onSelect={() => {
                 setMotion('forward');
                 setSelectedCoveId(cove.id);
