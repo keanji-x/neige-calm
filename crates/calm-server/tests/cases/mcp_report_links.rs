@@ -155,23 +155,14 @@ async fn outline_wave_cap_is_reported_and_exact() {
     assert_eq!(value["truncated"]["waves"], 1);
 }
 
-/// A report that carries its own maintenance contract: one leading HTML
-/// comment block (multi-line, spanning blank lines — a CommonMark HTML block of
-/// type 2 does not end at one) plus four H1 sections. Built by hand on purpose:
-/// in this slice `WaveReportPayload::initial()` is still the one-line
-/// placeholder, so depending on it would measure nothing (#1185 S1).
-const CONTRACT: &str = "<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）\n\
-    \n\
-    这份报告自带的结构就是规则：维护它，不要重写它。\n\
-    \n\
-    写作方式：散文正文控制在 1000 字以内，写产出，不写过程。\n\
-    -->\n\n";
-
+/// The real skeleton every wave is born with — the kernel's own bytes, not a
+/// transcription (#1185 §4.4 E). Since S2 that is one leading HTML comment
+/// block (multi-line, spanning blank lines — a CommonMark HTML block of type 2
+/// does not end at one) plus the four H1 sections the comment declares, so
+/// depending on it measures exactly what ships. A hand-written stand-in would
+/// only prove the outline can handle *a* contract-bearing report.
 fn contract_body() -> String {
-    format!(
-        "{CONTRACT}# 概要\n\n本轮结论。\n\n# 待你定\n\n等你拍板的事。\n\n\
-         # 已完成\n\n已成事实。\n\n# 决策\n\n定了的事。\n"
-    )
+    WaveReportPayload::initial().body
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ReportBlock, WaveReport } from '../../../../../core/domain/report.ts';
 import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
@@ -367,8 +367,17 @@ describe('ReportDocument', () => {
     /* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
        — not a transcription. A hand-written fixture would prove this front end
        hides *a* comment; only the shipped text proves it hides *the* one every
-       wave is born with. */
-    const [CONTRACT, ...SECTIONS] = splitInitialBody();
+       wave is born with.
+
+       Read in `beforeAll`, not at module scope: `kernel-initial-body.ts`
+       promises it never touches the filesystem at import time, and a
+       module-scope destructure here would break that promise for every test
+       in the file (#1185 D5). */
+    let CONTRACT: string;
+    let SECTIONS: string[];
+    beforeAll(() => {
+      [CONTRACT, ...SECTIONS] = splitInitialBody();
+    });
 
     it('the fixture really is the kernel skeleton', () => {
       // Guards the read itself: a wrong path or a renamed fragment would

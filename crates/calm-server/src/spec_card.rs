@@ -148,7 +148,8 @@ Wave 有一份面向用户的 Markdown 报告，由你维护。它显示在 Wave
 用户在页面上看不到，但它在 body 源码里，你每次 `calm.report.read` 都读得到。\
 你的职责是**维护**这个结构，不是重新设计它：
 
-  * 不要新增、重命名章节，不要调整章节顺序。
+  * 不要新增文档契约清单以外的章节，不要重命名章节，不要调整章节顺序。\
+    契约清单里列到的章节，缺哪个就按契约补哪个。
   * **不要因为格式看起来陌生或「旧」就整体重写本文档。** 一份自带结构的报告\
     就是它该有的样子；把它铲平成你熟悉的格式是破坏，不是整理。
   * 文档里的维护契约优先于你的习惯。契约没规定的，按契约的精神补。
@@ -765,6 +766,22 @@ mod tests {
         assert!(
             p.contains("不要因为格式看起来陌生或「旧」就整体重写本文档"),
             "prompt must forbid flattening an unfamiliar-looking report"
+        );
+
+        // The section ban must be QUALIFIED by the document's own contract
+        // list. Unqualified it contradicts every shipped workflow template:
+        // their seeded body carries a single `# Plan` H1, and the contract
+        // inside it requires the agent to add 概要 / 已完成 / 决策. An absolute
+        // "never add a section" bullet and the "文档里的维护契约优先" fallback
+        // two lines below cannot both be obeyed — this keeps them aligned with
+        // `wave_report_section_rules.md`'s own wording.
+        assert!(
+            p.contains("不要新增文档契约清单以外的章节"),
+            "the section ban must be scoped to the document's contract list (#1185 D2)"
+        );
+        assert!(
+            !p.contains("不要新增、重命名章节"),
+            "an unqualified section ban contradicts the shipped templates' own contracts"
         );
 
         // `# 进行中` was dropped in #1172: the TASKS panel renders the real

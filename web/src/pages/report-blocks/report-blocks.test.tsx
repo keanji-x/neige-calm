@@ -1,8 +1,8 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode } from 'react';
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { splitInitialBody } from './kernel-initial-body.ts';
 import { ReportBlockView } from './index';
 import {
@@ -140,6 +140,20 @@ function candleSeriesRecords() {
   );
 }
 
+/**
+ * Waits for the passive effect that actually builds the chart.
+ *
+ * `findBy*` resolves on the DOM mutation of the commit that paints the chart
+ * header — but `createChart` runs in a passive effect React flushes *after*
+ * that commit, so asserting on `lw.*` straight after a `findBy*` races it.
+ * The race is old and load-dependent: 0/44 on Node 22 here, ~1-in-10 on the
+ * Node 20 CI runners uses (#1185 D1). Every assertion about what the chart
+ * library was handed goes through this wait first.
+ */
+async function chartsBuilt(expected: number) {
+  await waitFor(() => expect(lw.charts).toBe(expected));
+}
+
 beforeEach(() => {
   lw.reset();
 });
@@ -181,7 +195,7 @@ describe('chart.candles block', () => {
     );
 
     expect(await screen.findByText('0700.HK')).toBeInTheDocument();
-    expect(lw.charts).toBe(1);
+    await chartsBuilt(1);
 
     const [candles] = candleSeriesRecords();
     expect(candles).toBeDefined();
@@ -221,6 +235,7 @@ describe('chart.candles block', () => {
       />,
     );
     await screen.findByText('0700.HK');
+    await chartsBuilt(1);
     // Default 1Y window over 400 daily candles → 366 bars (365 days + the
     // cutoff bar itself).
     expect(candleSeriesRecords().at(-1)?.data).toHaveLength(366);
@@ -248,6 +263,7 @@ describe('chart.candles block', () => {
       />,
     );
     await screen.findByText('9988.HK');
+    await chartsBuilt(1);
 
     const line = lw.series.find(
       (s) => (s.type as { name?: string }).name === 'Line',
@@ -276,6 +292,7 @@ describe('chart.candles block', () => {
       />,
     );
     await screen.findByText('DUP');
+    await chartsBuilt(1);
 
     const candles = candleSeriesRecords().at(-1);
     expect(candles?.data).toHaveLength(2);
@@ -296,6 +313,7 @@ describe('chart.candles block', () => {
       />,
     );
     await screen.findByText('GAP');
+    await chartsBuilt(1);
 
     await userEvent.click(screen.getByRole('button', { name: '1M' }));
     // Only the last candle sits inside 1M — the chart keeps all bars.
@@ -336,7 +354,7 @@ describe('chart.candles block', () => {
     // New candle data clears the failure latch and rebuilds successfully.
     expect(await screen.findByTestId('rb-fig-last')).toHaveTextContent('106.00');
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
-    expect(lw.charts).toBe(1);
+    await chartsBuilt(1);
   });
 
   it('adds a volume histogram only when candles carry volume', async () => {
@@ -346,6 +364,7 @@ describe('chart.candles block', () => {
       />,
     );
     await screen.findByText('VOL');
+    await chartsBuilt(1);
     const histogram = lw.series.find(
       (s) => (s.type as { name?: string }).name === 'Histogram',
     );
@@ -1016,12 +1035,21 @@ describe('degraded blocks', () => {
  * default — it turns it into *text* — so without `skipHtml` this old front end
  * printed the whole contract, escaped, at the top of every user's report.
  */
-/* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
-   — not a transcription. Only the shipped text proves this front end hides
-   *the* contract every wave is born with. */
-const [CONTRACT_FIXTURE, ...SKELETON_SECTIONS] = splitInitialBody();
-
 describe('a prose block that carries a maintenance contract (#1185)', () => {
+  /* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
+     — not a transcription. Only the shipped text proves this front end hides
+     *the* contract every wave is born with.
+
+     Read in `beforeAll`, not at module scope: `kernel-initial-body.ts`
+     promises it never touches the filesystem at import time, and a
+     module-scope destructure here would break that promise for every test in
+     the file (#1185 D5). */
+  let CONTRACT_FIXTURE: string;
+  let SKELETON_SECTIONS: string[];
+  beforeAll(() => {
+    [CONTRACT_FIXTURE, ...SKELETON_SECTIONS] = splitInitialBody();
+  });
+
   const contractBlock = (markdown: string): ReportBlock =>
     ({
       id: 'b_contract',
