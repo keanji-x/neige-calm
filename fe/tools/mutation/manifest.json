@@ -105,15 +105,16 @@
       "oracle:INV-OVERLAY-006"
     ],
     "target": "tools/test-tier/checker.ts",
-    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -15,6 +15,6 @@ const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'playwright']),\n-  jsdom: Object.freeze(['web-dom', 'browser']),\n+  jsdom: Object.freeze(['web-dom']),\n   static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),\n   none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),\n } as const);\n",
+    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -23,7 +23,7 @@ const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n  */\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'browser-coarse', 'playwright']),\n-  jsdom: Object.freeze(['web-dom', 'browser', 'browser-coarse']),\n+  jsdom: Object.freeze(['web-dom']),\n   static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n   none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n } as const);\n",
     "expected_red": [
-      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser"
+      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser",
+      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser-coarse"
     ],
     "selection_paths": [
       "tools/test-tier/checker.ts",
       "tools/test-tier/checker.test.ts"
     ],
-    "why_more_than_one": "Only the explicit higher-capability jsdom-to-browser case should turn red; any additional red indicates unrelated tier behavior changed."
+    "why_more_than_one": "The edit strips the jsdom row's browser escape hatch, and there are now two browser projects in it, so both higher-capability jsdom-to-browser cases turn red — dropping only one of them would leave a jsdom-tier oracle landing in browser-coarse still accepted, which is the acceptance this mutation exists to remove. Any third red indicates unrelated tier behavior changed."
   },
   {
     "mutation_id": "test-tier-allow-browser-overlap",
@@ -125,13 +126,14 @@
     "expected_red": [
       "test-tier-project fixtures accepts the positive directory",
       "uses a layout engine for rendered element geometry",
-      "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once"
+      "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once",
+      "vitest project partition assigns representative path tools/probe.coarse.browser.test.ts exactly once"
     ],
     "selection_paths": [
       "tools/test-tier/checker.test.ts",
       "tools/test-tier/vitest-projects.test.ts"
     ],
-    "why_more_than_one": "The positive browser fixture and representative partition case independently detect the same browser overlap; any third red is unrelated coupling."
+    "why_more_than_one": "Dropping the browser-suffix exclude from platform-independent lands both representative browser paths in a second project at once, so the partition case reds twice — once per representative — beside the positive fixture and the layout-engine probe that detect the same overlap independently. Any fifth red is unrelated coupling."
   },
   {
     "mutation_id": "test-tier-ignore-migrated",
@@ -1037,9 +1039,10 @@
     "selection_paths": [
       "tools/styles/styles.test.ts",
       "web/src/app/theme/theme.browser.test.tsx",
-      "web/src/styles/contrast-matrix.browser.test.ts"
+      "web/src/styles/contrast-matrix.browser.test.ts",
+      "web/src/features/chat/thread/thread.browser.test.tsx"
     ],
-    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 25 that follow are the matrix noticing the same edit from inside each theme; anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
+    "why_more_than_one": "Swapping the two grounds is a cross-theme edit, and every per-theme floor is tuned against its own ground: light's foregrounds land on dark's 24.5% ground and dark's land on light's 96%, so the AA body / non-text floors, both 3.0-L rungs that straddle `--bg`, the ground-vs-card chroma gap and the shared ladder direction all fail by construction — there is no ground inversion that leaves the contrast matrix green. The two entries listed first are the ones this mutation exists for: they are the only assertions that read the two grounds *against each other*, and they are what would stay red if every contrast floor were relaxed. The 26 that follow are the same edit noticed from inside each theme: 25 in the contrast matrix, plus the rail dot, whose resting ink is a per-theme colour measured against the rendered page ground and therefore fails on an inverted ground for exactly the reason every matrix rung does. Anything red beyond this set would mean the ground direction leaked somewhere that does not model a ground at all."
   },
   {
     "mutation_id": "events-harness-item-plan-becomes-empty",

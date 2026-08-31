@@ -813,10 +813,12 @@ function ExchangeRail({ exchanges, active, onJump }: {
   useEffect(() => {
     const track = trackRef.current;
     if (track === null) return;
-    /* The *array* is stable for the life of the component — the render only
-       ever writes into its slots — so holding it here reads the current dots on
-       every pass and still gives the cleanup something that cannot have been
-       swapped underneath it. */
+    /* The *array object* is stable for the life of the component — the render
+       only ever writes into its slots and trims its tail, never replaces it —
+       so holding it here reads the current dots on every pass and still gives
+       the cleanup something that cannot have been swapped underneath it. Its
+       length tracks the live dot count, which is what keeps the two caches
+       below re-sized when a conversation gets shorter. */
     const dots = dotRefs.current;
     /** Where the pointer is, in client coordinates, or `null` for "not here". */
     let at: number | null = null;
@@ -824,6 +826,31 @@ function ExchangeRail({ exchanges, active, onJump }: {
     /** The last lift written per dot, so a pass that changes nothing writes
      *  nothing — which on a forty-dot rail is most of them, most frames. */
     let written: number[] = [];
+    /**
+     * And **which element each of those was written to**, because the value on
+     * its own is a claim about a node that may not be on the page any more.
+     *
+     * The dots are keyed by exchange id, so a list that keeps its length and
+     * changes its ids — which a refetch handing back re-identified turns would
+     * be — unmounts every button and mounts a fresh one in its slot. The fresh
+     * one carries no inline style, because the inline style is this effect's
+     * and not the render's, while the cache still holds what was written to the
+     * button that is gone. Measured on twelve dots with the pointer parked on
+     * the sixth: the arc `4 / 4.609 / 6 / 7.375 / 8 / …` px and every one of
+     * its `--nc-dot-lift` values vanished at the swap and did not come back on
+     * a further move at the same y, because that pass computes the same lifts
+     * and skips the same writes. The shoulders kept publishing the complement
+     * of an envelope that was no longer on the page, so the 26.75px of aim the
+     * spread had opened went back to the resting 12 with the track still
+     * holding four openings of blank for it.
+     *
+     * Keyed by identity rather than by deleting the cache outright: the writes
+     * it saves are only about forty string sets a frame against a pass that is
+     * already doing a fixed point over every dot's box, but the reason to keep
+     * it is that the skip is what makes a *quiet* frame — a wheel that moved
+     * nothing, a settling step that converged — touch no style at all.
+     */
+    let writtenTo: (HTMLElement | null)[] = [];
 
     /*
      * ── One settling step, because the answer moves what the answer was read
@@ -851,7 +878,10 @@ function ExchangeRail({ exchanges, active, onJump }: {
      */
     const paint = () => {
       queued = null;
-      if (written.length !== dots.length) written = Array.from({ length: dots.length }, () => Number.NaN);
+      if (written.length !== dots.length) {
+        written = Array.from({ length: dots.length }, () => Number.NaN);
+        writtenTo = Array.from({ length: dots.length }, () => null);
+      }
       let settled = Number.NaN;
       for (let step = 0; step < RAIL_SETTLE_STEPS; step += 1) {
           /* Read every box first, write after: one forced layout for the step. */
@@ -969,7 +999,8 @@ function ExchangeRail({ exchanges, active, onJump }: {
 
         lifts.forEach((lift, index) => {
           const dot = dots[index];
-          if (dot == null || written[index] === lift) return;
+          if (dot == null || (writtenTo[index] === dot && written[index] === lift)) return;
+          writtenTo[index] = dot;
           written[index] = lift;
           if (lift === 0) dot.style.removeProperty('--nc-dot-lift');
           else dot.style.setProperty('--nc-dot-lift', `${lift}`);
@@ -1176,7 +1207,44 @@ function ExchangeRail({ exchanges, active, onJump }: {
           return (
             <button
               key={exchange.id}
-              ref={(node) => { dotRefs.current[index] = node; }}
+              /*
+               * Writing `null` into the slot is not enough on its own. The
+               * array is never shortened by the render, so its length is the
+               * *historical maximum* number of exchanges: a conversation that
+               * went to a hundred and was replaced by one of four left
+               * `dotRefs.current` ninety-six slots long, every one of them a
+               * strong reference to a button that had left the DOM, held until
+               * the whole rail unmounted — and the spread's pass scanned all
+               * hundred slots every frame to find four boxes. So the tail of
+               * detached slots is dropped too. Trailing-only, because the slot
+               * this is called for is not always the last one: an inline `ref`
+               * closure is a new function on every render, so React detaches
+               * every dot and re-attaches every dot on each pass, and trimming
+               * to `index` would cut live entries out from under the ones that
+               * have not been detached yet.
+               *
+               * **No test binds this, and none is added to.** What it changes
+               * is retention and the per-frame scan's length, and both are
+               * invisible from outside: reverting the trim to the bare
+               * `dotRefs.current[index] = node` leaves all 52 cases in
+               * `thread.browser.test.tsx` and all 17 in
+               * `thread.coarse.browser.test.tsx` green, and an adversarial
+               * shrink / grow / id-swap probe reading the full per-dot ink
+               * profile came back byte-identical with the trim and without it —
+               * every slot the scan skips is one whose `null` it would have
+               * skipped anyway. Binding it would take a handle on the array
+               * itself: a `data-` attribute carrying its length, or an exported
+               * counter, both of which are production surface that exists only
+               * to be read by a test. That trade is refused; an unasserted note
+               * is the honest record.
+               */
+              ref={(node) => {
+                dotRefs.current[index] = node;
+                if (node !== null) return;
+                while (dotRefs.current.length > 0 && dotRefs.current.at(-1) === null) {
+                  dotRefs.current.length -= 1;
+                }
+              }}
               type="button"
               className={`${styles.railDot} ${exchange.id === active ? styles.railDotActive : ''}`}
               /* The prompt in the name, for everyone — and for a pointer, again

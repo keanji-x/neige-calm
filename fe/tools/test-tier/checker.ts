@@ -12,11 +12,20 @@ export interface TierGateInput {
 }
 
 const LOCATION = /^([^\s:]+):(\d+)(?:-(\d+))?$/;
+/*
+ * A tier states the *minimum* capability a test needs, so a project may only
+ * appear here if it provides at least that much. `browser-coarse` is a real
+ * Chromium page — everything `browser` can do — differing only in the media
+ * features its context reports, so it is listed everywhere `browser` is. It is
+ * deliberately not the *preferred* home for anything: a test lands there
+ * because it needs `pointer: coarse`, and the tier vocabulary has no word for
+ * that, which is why no tier requires it.
+ */
 const EXPECTED_PROJECTS = Object.freeze({
-  browser: Object.freeze(['browser', 'playwright']),
-  jsdom: Object.freeze(['web-dom', 'browser']),
-  static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),
-  none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'playwright']),
+  browser: Object.freeze(['browser', 'browser-coarse', 'playwright']),
+  jsdom: Object.freeze(['web-dom', 'browser', 'browser-coarse']),
+  static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),
+  none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),
 } as const);
 const MIGRATIONS = new Set(['pending', 'skipped', 'migrated']);
 const TEST_TIERS = new Set(['browser', 'jsdom', 'static', 'none']);
