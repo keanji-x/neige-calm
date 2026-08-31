@@ -1,7 +1,8 @@
 // The spec harness card (`INV-CARD-181`, `INV-CARD-182`).
 //
-// The kernel mints spec cards under kind `'codex'`; the *only* thing that tells
-// a spec harness apart from an ordinary codex agent is the `spec_harness`
+// The kernel mints spec cards under kind `'codex'` — one of three card shapes
+// that share it (see `codex.ts`'s header for all three); the *only* thing that
+// tells a spec harness apart from an ordinary codex agent is the `spec_harness`
 // discriminator on the payload. Widening this predicate to `kind === 'codex'`
 // would swallow every ordinary codex card into a headless card that renders
 // nothing and is filtered out of the wave's CARDS list — the card would simply
@@ -30,9 +31,12 @@ export function isSpecHarnessPayload(payload: unknown): boolean {
 /**
  * `INV-CARD-181` — headless: no component, 1x1, kernel-minted only.
  *
- * Deliberately carries no `claim`: the kernel kind `'codex'` is shared with the
- * (not yet landed) codex entry, so spec must stay on the registry's
- * insertion-ordered full scan rather than take an exact claim on the kind.
+ * Deliberately carries no `claim`: the kernel kind `'codex'` is shared with
+ * `CODEX_CARD_ENTRY`, so spec stays on the registry's insertion-ordered full
+ * scan rather than take an exact claim on the kind. What actually delivers
+ * harness payloads here is codex's refusal of them (with `isSpecHarnessPayload`
+ * below) — `resolve` falls through any entry returning `null`, by claim or by
+ * scan — so the absent claim and codex registering first are belt-and-braces.
  */
 export const SPEC_CARD_ENTRY = Object.freeze({
   type: 'spec',

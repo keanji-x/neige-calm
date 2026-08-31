@@ -17,8 +17,10 @@ export type TerminalCard = Readonly<{
 }>;
 
 /**
- * Shared with `claude.ts`: both kinds get `terminal_id` projected into the
- * payload by the same kernel read path, so both must read it the same way.
+ * Shared with `claude.ts` and `codex.ts`: all three kinds get `terminal_id`
+ * projected into the payload by the same kind-agnostic kernel read path
+ * (`session_projection_lookup.rs::project_runtime_fields`), so all three must
+ * read it the same way.
  */
 export function terminalIdFromPayload(payload: unknown): string | null {
   if (typeof payload !== 'object' || payload === null) return null;

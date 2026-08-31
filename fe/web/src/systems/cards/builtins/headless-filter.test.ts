@@ -58,18 +58,22 @@ describe('headless card filtering', () => {
     expect(unknown[0]?.originalIndex).toBe(1);
   });
 
-  it('[INV-CARD-226] keeps an ordinary codex card in the unknown branch until a codex adapter lands', () => {
+  it('[INV-CARD-226] keeps ordinary codex cards visible, never headless', () => {
     // The counter-example that guards the spec predicate end to end: if spec
-    // matched on `kind === 'codex'` alone this card would be resolved headless
-    // and vanish from the wave entirely.
+    // matched on `kind === 'codex'` alone these cards would resolve headless
+    // and vanish from the wave entirely. Before #1150 they merely landed in
+    // `unknown` (no adapter); now the codex entry is registered ahead of spec,
+    // so the same three payloads must come out of the *visible* branch — which
+    // is also the bug #1150 fixed, checked at the partition boundary.
     const { visible, unknown } = partitionWaveCards(bootedRegistry(), [
       wire({ id: 'codex-1', kind: 'codex', payload: {} }),
       wire({ id: 'codex-2', kind: 'codex', payload: null }),
       wire({ id: 'codex-3', kind: 'codex', payload: { spec_harness: false } }),
     ]);
-    expect(visible).toEqual([]);
-    expect(unknown.map((slot) => slot.wire.id)).toEqual(['codex-1', 'codex-2', 'codex-3']);
-    expect(unknown.map((slot) => slot.originalIndex)).toEqual([0, 1, 2]);
+    expect(visible.map((slot) => slot.wire.id)).toEqual(['codex-1', 'codex-2', 'codex-3']);
+    expect(visible.map((slot) => slot.card.type)).toEqual(['codex', 'codex', 'codex']);
+    expect(visible.map((slot) => slot.originalIndex)).toEqual([0, 1, 2]);
+    expect(unknown).toEqual([]);
   });
 
   it('[INV-CARD-226] accepts the known gap: a payload-less spec card cannot be recognised as headless', () => {

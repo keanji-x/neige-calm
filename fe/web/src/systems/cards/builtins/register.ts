@@ -1,9 +1,18 @@
 // Built-in card composition (`INV-CARD-225`).
 //
-// `BUILTIN_CARD_ORDER` is the single authority on registration order. The
+// `BUILTIN_CARD_ORDER` is the single authority on registration order: the
 // registry's kernel resolution falls back to a full scan in insertion order, so
-// the order is business semantics (codex must get first refusal on kind
-// `'codex'` before spec picks the card up), not an incidental detail.
+// for kinds that two entries both answer to, this tuple decides who is asked
+// first.
+//
+// Be honest about how much that carries today. Kind `'codex'` is shared by
+// `CODEX_CARD_ENTRY` and `SPEC_CARD_ENTRY`, and what separates them is codex's
+// *refusal* of `spec_harness` payloads, not this order — `resolve` continues
+// past an entry that returns `null` whether it was reached by claim or by scan,
+// so registering spec first would produce the same answer for every payload.
+// The convention (codex gets first refusal, then spec) is kept because it makes
+// the file read the way resolution runs, but no test can make it fail; see
+// `codex.ts`'s header for the full statement.
 //
 // Entries that have not landed yet are simply **absent** from the registrar
 // map and skipped. There are no placeholder, no-op or "unknown" entries: a card
@@ -13,6 +22,7 @@
 
 import type { CardEntry, CardRegistry, RegisteredCard } from '../registry.js';
 import { CLAUDE_CARD_ENTRY } from './claude.js';
+import { CODEX_CARD_ENTRY } from './codex.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
 import { TERMINAL_CARD_ENTRY } from './terminal.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
@@ -171,6 +181,7 @@ export function registerAvailableBuiltinCards(registry: CardRegistry): void {
   // comment for what that forces and for the escapes it does not close.
   const registrars: BuiltinRegistrarMap = {
     terminal: BuiltinRegistrar.of(TERMINAL_CARD_ENTRY),
+    codex: BuiltinRegistrar.of(CODEX_CARD_ENTRY),
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
     claude: BuiltinRegistrar.of(CLAUDE_CARD_ENTRY),
     'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
