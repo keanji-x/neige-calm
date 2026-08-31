@@ -48,9 +48,11 @@ describe('spec card entry', () => {
   });
 
   it('[INV-CARD-181] takes no claim, so it stays on the insertion-ordered fallback scan', () => {
-    // An exact claim on `'codex'` would let spec pre-empt `CODEX_CARD_ENTRY`,
-    // which is registered first; the shared kernel kind is resolved by scan
-    // order instead.
+    // An exact claim on `'codex'` would ask spec about the shared kernel kind
+    // before `CODEX_CARD_ENTRY`, which is registered first. It would not change
+    // any answer — `resolve` falls through an entry returning `null` — but the
+    // no-claim rule is the stated contract for both sides of this kind, so it
+    // is pinned here rather than left to be true by accident.
     // Read through the interface: the entry literal is checked with `satisfies`
     // so registration can require `headless`, which means the constant's own
     // type only lists the members it declares.

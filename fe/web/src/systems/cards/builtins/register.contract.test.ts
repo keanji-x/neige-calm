@@ -72,10 +72,16 @@ describe('builtin card composition contract', () => {
   });
 
   it('[INV-CARD-180] leaves the shared codex kind to the codex adapter first, then falls back to spec', () => {
-    // Both halves are the real production entries now, registered in
-    // `BUILTIN_CARD_ORDER`'s relative order (codex before spec). Neither
-    // carries a `claim`, so what is under test is the registry's
-    // insertion-ordered fallback scan plus codex's refusal of `spec_harness`.
+    // Both halves are the real production entries, registered in
+    // `BUILTIN_CARD_ORDER`'s relative order (codex before spec).
+    //
+    // What can actually fail here is codex's *refusal* of `spec_harness`: drop
+    // it and the first assertion goes red. The order and the absent `claim` are
+    // belt-and-braces given `resolve`'s fall-through — it continues past any
+    // entry returning `null` — so swapping the two registrations below leaves
+    // both assertions green. Do not read this test as proving the order; the
+    // no-claim rule is pinned directly, by assertion, in `codex.test.ts` and
+    // `spec.test.ts`.
     const registry = createCardRegistry();
     registry.register(CODEX_CARD_ENTRY);
     registry.register(SPEC_CARD_ENTRY);

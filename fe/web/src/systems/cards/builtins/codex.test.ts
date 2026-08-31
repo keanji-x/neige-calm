@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import type { CardEntry } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
-import { CODEX_CARD_ENTRY } from './codex.ts';
+import type { CodexCard } from './codex.ts';
+import { CODEX_CARD_ENTRY, isPlainChatPayload } from './codex.ts';
 import { partitionWaveCards } from './headless-filter.js';
 import { registerAvailableBuiltinCards } from './register.js';
 
@@ -31,11 +33,13 @@ describe('CODEX_CARD_ENTRY', () => {
   });
 
   /*
-   * `INV-CARD-180`. Kind `'codex'` mints two different cards; the payload's
-   * `spec_harness` bit is the only discriminator. Codex is registered *before*
-   * spec and takes no `claim`, so if it stopped refusing harness payloads it
-   * would swallow every spec card into a surface-owning card — spec cards are
-   * headless by `INV-CARD-181` and must not appear in the CARDS list at all.
+   * `INV-CARD-180`. Kind `'codex'` mints three different cards; the payload's
+   * `spec_harness` bit is the only thing separating a harness from an ordinary
+   * worker. If codex stopped refusing harness payloads it would swallow every
+   * spec card into a surface-owning card — spec cards are headless by
+   * `INV-CARD-181` and must not appear in the CARDS list at all. (The refusal
+   * is the mechanism; codex being registered before spec and carrying no
+   * `claim` is not — `resolve`'s exact-claim path falls through on `null`.)
    */
   it('[INV-CARD-180] refuses spec harness payloads so they fall through to spec', () => {
     expect(CODEX_CARD_ENTRY.fromKernel?.({
@@ -61,6 +65,66 @@ describe('CODEX_CARD_ENTRY', () => {
     for (const payload of [{ spec_harness: false }, { spec_harness: 'true' }, { spec_harness: 1 }, null, 'x']) {
       expect(CODEX_CARD_ENTRY.fromKernel?.({ id: 'p', kind: 'codex', payload })?.type).toBe('codex');
     }
+  });
+
+  /*
+   * `INV-CHAT-016` — the *third* shape under kind `'codex'`. A cove plain-chat
+   * conversation card carries `harness_profile: "plain_chat"` and deliberately
+   * no `spec_harness` key, and has no PTY at all: the adapter writes
+   * `terminal_run_id: None`, so `terminal_id` is never projected for it.
+   * Claiming it would give every conversation a real grid slot rendering
+   * `TerminalCardView` with a null terminal — "Starting codex…" forever.
+   *
+   * Refusing it is behaviour-preserving: it resolves to nothing and lands in
+   * the `unknown` branch, exactly where it sat before this adapter existed.
+   */
+  it('[INV-CHAT-016] refuses cove plain-chat cards, which have no PTY to render', () => {
+    expect(CODEX_CARD_ENTRY.fromKernel?.({
+      id: 'chat1', kind: 'codex', payload: { schemaVersion: 1, harness_profile: 'plain_chat' },
+    })).toBeNull();
+    // Asserted through the really-booted production registry and the real
+    // partition helper: nothing else in the registry may claim it either, and
+    // it must reach `unknown`, not `visible`.
+    const registry = createCardRegistry();
+    registerAvailableBuiltinCards(registry);
+    expect(registry.resolve({
+      id: 'chat1', kind: 'codex', payload: { schemaVersion: 1, harness_profile: 'plain_chat' },
+    })).toBeNull();
+    const { visible, unknown } = partitionWaveCards(registry, [
+      wire('chat1', 'codex', { schemaVersion: 1, harness_profile: 'plain_chat' }),
+      wire('k-codex', 'codex', { terminal_id: 't1' }),
+    ]);
+    expect(visible.map((slot) => slot.wire.id)).toEqual(['k-codex']);
+    expect(unknown.map((slot) => slot.wire.id)).toEqual(['chat1']);
+  });
+
+  it('[INV-CHAT-016] reads only the exact plain-chat marker', () => {
+    // Mirrors the kernel's `payload.get("harness_profile").and_then(as_str)
+    // == Some("plain_chat")`. Everything else is an ordinary codex card.
+    expect(isPlainChatPayload({ harness_profile: 'plain_chat' })).toBe(true);
+    for (const payload of [
+      {}, { harness_profile: 'other_profile' }, { harness_profile: true },
+      { harness_profile: 1 }, { harness_profile: null }, { harness_profile: {} },
+      null, 'x', 7, undefined,
+    ]) {
+      expect(isPlainChatPayload(payload), `${JSON.stringify(payload)} is not the marker`).toBe(false);
+      expect(CODEX_CARD_ENTRY.fromKernel?.({ id: 'p', kind: 'codex', payload })?.type).toBe('codex');
+    }
+  });
+
+  /*
+   * The no-claim rule, pinned the way `spec.test.ts` pins spec's.
+   *
+   * It is *not* the mechanism that separates the shared kind — `resolve` runs
+   * the exact-claim entry's `fromKernel` and, on `null`, continues to the
+   * insertion-order scan, so an exact claim here would resolve harnesses as
+   * `spec` all the same and `validateEntry` would not object. Without this
+   * assertion, adding the claim is a green mutation. Read through the
+   * interface: the entry literal is checked with `satisfies`, so the constant's
+   * own type only lists the members it declares.
+   */
+  it('[INV-CARD-180] takes no claim on the shared kernel kind', () => {
+    expect((CODEX_CARD_ENTRY as CardEntry<CodexCard>).claim).toBeUndefined();
   });
 
   it('is kernel-minted-only — worker cards come from a task row, not a gesture', () => {
