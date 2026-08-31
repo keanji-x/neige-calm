@@ -777,6 +777,7 @@ async fn conversation_md_paging_renders_full_transcript_over_500_items() {
             theme: RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

@@ -317,6 +317,37 @@ pub(crate) async fn ensure_today_launchpad(
         }
         Err(e) => return Err(e),
     };
+    // #1147 S2 (design D3) — the launchpad is the fifth wave-create entry
+    // point and it does **not** go through `create_wave_structure`, so it
+    // carries its own materialize call. Skipping it would leave every codex
+    // task on the Today panel dying with `spawn-failed`
+    // (`git rev-parse --show-toplevel` on a non-repository), which is the
+    // exact defect #1147 opened on.
+    //
+    // Two deliberate departures from the managed path, both from design D9:
+    //   * the workspace stays `Attached` at the kernel-owned
+    //     `<data_dir>/../launchpad` directory rather than moving under the
+    //     workspace root — re-pointing a live wave's cwd is a data migration
+    //     this slice does not need, and existing installs (whose launchpad row
+    //     already exists and is returned unchanged by the first branch above)
+    //     would otherwise never be materialized at all;
+    //   * it therefore materializes an `Attached` path, which no other caller
+    //     may do. The rule "attached is never created or `git init`-ed" exists
+    //     to protect *user* repositories; this directory is minted by
+    //     `ensure_today_launchpad` a few lines up and is owned by the kernel.
+    crate::workspace_materialize::materialize_managed_workspace(std::path::Path::new(
+        &out.wave.workspace.path,
+    ))
+    .map_err(|error| {
+        tracing::error!(
+            wave_id = %out.dto.wave_id,
+            path = %out.wave.workspace.path,
+            error = %error,
+            "today launchpad: workspace materialization failed"
+        );
+        error
+    })?;
+
     let req = SpecHarnessStartOperationPayload {
         actor: ActorId::Kernel,
         wave_id: out.dto.wave_id.clone(),

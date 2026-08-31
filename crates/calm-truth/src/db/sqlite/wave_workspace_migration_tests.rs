@@ -172,6 +172,7 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
             theme: crate::model::RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await
@@ -275,6 +276,7 @@ async fn wave_update_tx_leaves_the_workspace_alone() {
             theme: crate::model::RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await
@@ -346,6 +348,7 @@ async fn every_path_reader_resolves_to_the_one_stored_column() {
             theme: crate::model::RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

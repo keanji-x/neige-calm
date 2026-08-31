@@ -4,12 +4,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_create_with_id_tx, overlay_upsert_tx, wave_create_tx,
+    WaveWorkspacePlan, append_decision_event_in_tx, card_create_with_id_tx, overlay_upsert_tx,
+    wave_create_tx,
 };
 use crate::error::{CalmError, Result};
 use crate::event::{BroadcastEnvelope, Event, EventScope, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId};
-use crate::model::{CardRole, NewCard, NewOverlay, NewWave, RequestTheme, new_id, now_ms};
+use crate::model::{
+    CardRole, NewCard, NewOverlay, NewWave, RequestTheme, WaveWorkspace, WaveWorkspaceKind, new_id,
+    now_ms,
+};
 use crate::routes::waves::{spec_harness_card_payload, spec_harness_layout_payload};
 use crate::wave_report::{WaveReportPayload, tasks_rebuild_tree_tx};
 
@@ -173,16 +177,31 @@ impl ProviderAdapter for ChildWaveAdapter {
             )));
         }
 
-        let parent: Option<(String, String, Option<String>)> =
+        let parent: Option<(String, String, String, Option<String>)> =
             // #1147 S1 — `waves.cwd` dropped by migration 0077; the child
             // still inherits the parent's path here (S4 gives it its own).
-            sqlx::query_as("SELECT cove_id, workspace_path, plugin_scope FROM waves WHERE id=?1")
+            // S2 also inherits the parent's *kind*: the directory really is
+            // server-managed when the parent's is, and labelling it `attached`
+            // would mean the child's row lies about what its path is.
+            sqlx::query_as(
+                "SELECT cove_id, workspace_kind, workspace_path, plugin_scope FROM waves WHERE id=?1",
+            )
                 .bind(&payload.parent_wave_id)
                 .fetch_optional(&mut **tx)
                 .await?;
-        let (cove_id, parent_cwd, parent_plugin_scope) = parent.ok_or_else(|| {
-            CalmError::Conflict(format!("parent wave {} is missing", payload.parent_wave_id))
-        })?;
+        let (cove_id, parent_workspace_kind, parent_cwd, parent_plugin_scope) =
+            parent.ok_or_else(|| {
+                CalmError::Conflict(format!("parent wave {} is missing", payload.parent_wave_id))
+            })?;
+        let parent_workspace = WaveWorkspace {
+            kind: WaveWorkspaceKind::try_from(parent_workspace_kind)
+                .map_err(CalmError::Internal)?,
+            path: parent_cwd.clone(),
+            // Overwritten by `InheritFrozen` with the child's own creation
+            // time; a child wave is machine-created and the user has no reason
+            // to re-point it (design D4's freeze table).
+            frozen_at: None,
+        };
         let seed = render_child_seed(&payload);
         let child = wave_create_tx(
             tx,
@@ -198,9 +217,17 @@ impl ProviderAdapter for ChildWaveAdapter {
                 theme: RequestTheme::default_dark(),
             },
             None,
+            &WaveWorkspacePlan::InheritFrozen(parent_workspace),
             &self.wave_cove_cache,
         )
         .await?;
+        // #1147 S2 — the fifth wave-create entry point. The path is the
+        // parent's, which the parent's own create already materialized, so in
+        // practice this is an idempotent no-op; it is here so the invariant is
+        // "every wave-create path materializes", not "four of the five do".
+        // S4 replaces the inherited path with an independent allocation and
+        // this call starts doing real work.
+        crate::workspace_materialize::materialize_workspace(&child.workspace)?;
         // The child must inherit its parent's cove. A cross-cove parent edge
         // makes cove deletion fail its NO ACTION self-FK (tripwire test #21c).
         sqlx::query("UPDATE waves SET parent_wave_id=?1 WHERE id=?2")
@@ -474,6 +501,7 @@ mod tests {
                 theme: RequestTheme::default_dark(),
             },
             None,
+            &WaveWorkspacePlan::AttachedFromCwd,
             repo.wave_cove_cache(),
         )
         .await
@@ -680,6 +708,99 @@ mod tests {
             context: serde_json::from_str(&task.context_json).unwrap(),
             cwd: task.cwd.clone(),
         }
+    }
+
+    /// #1147 S2 — the child-wave adapter is the fifth wave-create entry point
+    /// and does not go through `create_wave_structure`, so it carries its own
+    /// materialize call.
+    ///
+    /// Two things are asserted: the child's row does not *lie* about its
+    /// directory (a managed parent's directory is managed, whoever points at
+    /// it), and the directory the child hands to its first codex worker is a
+    /// real repository with a resolvable `HEAD`. S4 replaces the inherited
+    /// path with an independent allocation; until then this shares the
+    /// parent's, which is exactly why design D7 orders S4 before S5.
+    #[tokio::test]
+    async fn child_inherits_a_materialized_managed_workspace() {
+        let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let workspace_root = tmp.path().join("workspaces");
+
+        let mut tx = repo.pool().begin().await.unwrap();
+        let cove = cove_create_tx(
+            &mut tx,
+            NewCove {
+                name: "c".into(),
+                color: "#000".into(),
+                sort: None,
+            },
+        )
+        .await
+        .unwrap();
+        let parent = wave_create_tx(
+            &mut tx,
+            NewWave {
+                cove_id: cove.id,
+                title: "parent".into(),
+                sort: None,
+                cwd: "/ignored-by-managed".into(),
+                workflow_id: None,
+                plugin_scope: None,
+                workflow_input: None,
+                attach_folder: false,
+                theme: RequestTheme::default_dark(),
+            },
+            None,
+            &WaveWorkspacePlan::ManagedUnder(workspace_root.clone()),
+            repo.wave_cove_cache(),
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(parent.workspace.kind, WaveWorkspaceKind::Managed);
+        // The parent was minted through the DB writer directly, so nothing has
+        // materialized it yet — that is what the route does. Do it here so the
+        // child's own call is exercised against the real steady state.
+        crate::workspace_materialize::materialize_workspace(&parent.workspace).unwrap();
+
+        let task = seed_task(&repo, parent.id.as_str(), false).await;
+        let input = serde_json::to_value(payload(&task)).unwrap();
+        let adapter = ChildWaveAdapter::new(
+            repo.card_role_cache().clone(),
+            repo.wave_cove_cache().clone(),
+        );
+        let mut tx = repo.pool().begin().await.unwrap();
+        let output = adapter
+            .prepare_tx(&mut tx, &input, &operation(input.clone()))
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        let child_id = output.data["child_wave_id"].as_str().unwrap().to_string();
+
+        let (kind, path): (String, String) =
+            sqlx::query_as("SELECT workspace_kind, workspace_path FROM waves WHERE id=?1")
+                .bind(&child_id)
+                .fetch_one(repo.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            kind, "managed",
+            "the child points at a server-managed directory; labelling it \
+             `attached` would make the row lie about who owns it"
+        );
+        assert_eq!(path, parent.workspace.path);
+        assert!(
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&path)
+                .args(["rev-parse", "--verify", "HEAD"])
+                .output()
+                .unwrap()
+                .status
+                .success(),
+            "the child's workspace has no init commit; its first codex worker \
+             would die in `git worktree add`"
+        );
     }
 
     /// Both fragments this adapter runs keep their only cycle-termination

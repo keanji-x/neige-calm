@@ -56,6 +56,7 @@ async fn seed_session_with_thread(
             theme: RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

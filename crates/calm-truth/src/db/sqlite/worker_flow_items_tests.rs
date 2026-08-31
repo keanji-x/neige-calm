@@ -42,6 +42,7 @@ async fn seed_card_and_session(repo: &SqlxRepo, session_id: &str) -> (String, St
             theme: RequestTheme::default_dark(),
         },
         None,
+        &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
         repo.wave_cove_cache(),
     )
     .await

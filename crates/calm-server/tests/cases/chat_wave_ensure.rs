@@ -25,6 +25,7 @@ struct Boot {
     app: axum::Router,
     cove_id: String,
     repo: Arc<SqlxRepo>,
+    workspace_root: PathBuf,
     _tmp: TempDir,
 }
 
@@ -63,7 +64,11 @@ async fn boot() -> Boot {
         Arc::new(CodexClient::new_stub()),
         Some(roles),
         Some(waves),
-    );
+    )
+    // #1147 S2 — D10's no-claim branch now allocates a managed workspace and
+    // `git init`s it. Pin the root inside this test's TempDir so the
+    // repositories land in the sandbox and vanish with it.
+    .with_workspace_root(tmp.path().join("workspaces"));
     let app = routes::router()
         .layer(Extension(Principal {
             user_id: "owner".into(),
@@ -79,6 +84,7 @@ async fn boot() -> Boot {
         app,
         cove_id: cove.id.to_string(),
         repo,
+        workspace_root: tmp.path().join("workspaces"),
         _tmp: tmp,
     }
 }
@@ -293,8 +299,16 @@ async fn ensure_unknown_cove_returns_not_found() {
     assert!(body.to_string().contains("cove unknown"), "{body}");
 }
 
+/// #1147 D10 — a cove with no `cove_folders` claim used to 409 here.
+///
+/// Since #1109 made coves pure namespaces, "no claim" is the normal state of
+/// every new cove, so that 409 meant `POST /api/coves/{id}/conversations`
+/// (which calls this unconditionally) failed by definition for every new cove.
+/// The branch now allocates a managed workspace instead, and materializes it —
+/// otherwise the conversation's first codex task dies with `spawn-failed`,
+/// which is #1147 itself.
 #[tokio::test]
-async fn ensure_without_claimed_folder_is_actionable_and_creates_nothing() {
+async fn ensure_without_claimed_folder_allocates_a_managed_workspace() {
     let b = boot().await;
     let (status, body) = post(
         b.app,
@@ -302,14 +316,79 @@ async fn ensure_without_claimed_folder_is_actionable_and_creates_nothing() {
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body.to_string().contains("claim a folder"), "{body}");
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE cove_id=?1")
-        .bind(&b.cove_id)
-        .fetch_one(b.repo.pool())
-        .await
-        .unwrap();
-    assert_eq!(count, 0);
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let (kind, path, frozen): (String, String, Option<i64>) = sqlx::query_as(
+        "SELECT workspace_kind, workspace_path, workspace_frozen_at FROM waves WHERE cove_id=?1",
+    )
+    .bind(&b.cove_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(kind, "managed");
+    assert_eq!(
+        path,
+        b.workspace_root
+            .join(&b.cove_id)
+            .join(body["id"].as_str().unwrap())
+            .to_string_lossy()
+    );
+    assert!(
+        frozen.is_none(),
+        "a freshly minted managed workspace must stay re-pointable until work happens (design D4)"
+    );
+    assert!(
+        std::path::Path::new(&path).join(".git").is_dir(),
+        "workspace {path} was not materialized"
+    );
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(&path)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "materialized workspace has no init commit; `git worktree add` would fail"
+    );
+}
+
+/// A cove that *does* have a claim keeps attached semantics: the user pointed
+/// at that directory, so the server uses it and never `git init`s it.
+#[tokio::test]
+async fn ensure_with_a_claimed_folder_stays_attached() {
+    let b = boot().await;
+    let claimed = b._tmp.path().join("claimed");
+    std::fs::create_dir_all(&claimed).unwrap();
+    let claimed = claimed.to_string_lossy().into_owned();
+    let (status, _) = post(
+        b.app.clone(),
+        format!("/api/coves/{}/folders", b.cove_id),
+        json!({"path": claimed}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = post(
+        b.app,
+        format!("/api/coves/{}/chat-wave/ensure", b.cove_id),
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let (kind, path): (String, String) =
+        sqlx::query_as("SELECT workspace_kind, workspace_path FROM waves WHERE cove_id=?1")
+            .bind(&b.cove_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(kind, "attached");
+    assert_eq!(path, claimed);
+    assert!(
+        !std::path::Path::new(&claimed).join(".git").exists(),
+        "the server `git init`-ed a directory the user pointed at"
+    );
 }
 
 /// PATCH guard is paired: a chat lifecycle transition is forbidden before

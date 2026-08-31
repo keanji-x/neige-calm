@@ -14,10 +14,41 @@ use super::wave_tree::MAX_TREE_TASK_BUDGET;
 use super::wave_workspace::wave_workspace_write_tx;
 use crate::db::rows::WAVE_SELECT_COLUMNS;
 
+/// Issue #1147 S2 — how a freshly minted wave gets its workspace.
+///
+/// The `NewWave.cwd` field can only ever describe an *attached* workspace: it
+/// is a path the caller already knows, i.e. a directory somebody else created.
+/// A managed workspace's path is derived from the wave id, which does not
+/// exist until this function mints it, so the caller hands in the root and
+/// the derivation happens here — there is no point at which both the id and
+/// the caller are in scope outside this function.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WaveWorkspacePlan {
+    /// Use `NewWave.cwd` verbatim, `kind = Attached`, frozen at creation.
+    ///
+    /// Frozen because `attached → *` is not a legal transition (design D6), so
+    /// an unfrozen attached row has no legal use — and it is exactly the row a
+    /// future PATCH branch that forgot to check `kind` would relocate, i.e.
+    /// would move a real user repository (D9).
+    AttachedFromCwd,
+    /// Derive `<root>/<cove_id>/<wave_id>`, `kind = Managed`, **not** frozen.
+    ///
+    /// Unfrozen is the point: design §2.3 makes the workspace a *default* —
+    /// re-assignable until work actually happens (S3's PATCH). `NewWave.cwd`
+    /// is ignored on this branch.
+    ManagedUnder(std::path::PathBuf),
+    /// Copy an existing workspace verbatim (kind and path), frozen at
+    /// creation. Used by the child-wave adapter, which today hands the child
+    /// its parent's directory; S4 replaces this with an independent
+    /// allocation (design D7).
+    InheritFrozen(WaveWorkspace),
+}
+
 pub async fn wave_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewWave,
     purpose: Option<&str>,
+    workspace_plan: &WaveWorkspacePlan,
     wave_cove_cache: &WaveCoveCache,
 ) -> Result<Wave> {
     let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM coves WHERE id = ?1")
@@ -80,22 +111,31 @@ pub async fn wave_create_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
-    // Issue #1147 S1 — every wave minted through this function is `Attached`
-    // and frozen at creation. (The launchpad wave does not come through here;
-    // it is the documented D9 exception and stays unfrozen — see
-    // `routes/today.rs::launchpad_workspace`.)
-    //   * `Attached` because managed roots do not exist until S2, and the
-    //     requested path is by definition a directory that already exists and
-    //     was not created by the server;
-    //   * frozen because attached workspaces never need re-pointing (D6:
-    //     `attached → *` is not a legal transition), so for a user-cove wave
-    //     the unfrozen state has no legal use — and an unfrozen `attached` row
-    //     is exactly what a future PATCH branch that forgot to check `kind`
-    //     would relocate, i.e. would move a real user repository (D9).
-    let workspace = WaveWorkspace {
-        kind: WaveWorkspaceKind::Attached,
-        path: p.cwd.clone(),
-        frozen_at: Some(now),
+    // Issue #1147 S2 — the caller declares the workspace shape; the derivation
+    // of a managed path needs the wave id, which only exists here. See
+    // [`WaveWorkspacePlan`] for why each variant freezes (or does not).
+    // The launchpad wave does not come through this function at all; it is the
+    // documented D9 exception — see `routes/today.rs::launchpad_workspace`.
+    let workspace = match workspace_plan {
+        WaveWorkspacePlan::AttachedFromCwd => WaveWorkspace {
+            kind: WaveWorkspaceKind::Attached,
+            path: p.cwd.clone(),
+            frozen_at: Some(now),
+        },
+        WaveWorkspacePlan::ManagedUnder(root) => WaveWorkspace {
+            kind: WaveWorkspaceKind::Managed,
+            path: root
+                .join(p.cove_id.as_str())
+                .join(&id)
+                .to_string_lossy()
+                .into_owned(),
+            frozen_at: None,
+        },
+        WaveWorkspacePlan::InheritFrozen(parent) => WaveWorkspace {
+            kind: parent.kind,
+            path: parent.path.clone(),
+            frozen_at: Some(now),
+        },
     };
     wave_workspace_write_tx(tx, &id, &workspace).await?;
     // #234 — write-through into the wave→cove cache. Same semantics as

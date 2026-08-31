@@ -93,6 +93,11 @@ pub use calm_truth::state::WriteContext;
 #[derive(Clone)]
 pub struct RouteState {
     pub repo: Arc<dyn RouteRepo>,
+    /// #1147 D2 — root for server-managed wave workspaces
+    /// (`<root>/<cove_id>/<wave_id>`). Resolved once at boot from
+    /// `--workspace-root` / `CALM_WORKSPACE_ROOT`; never read from env at
+    /// request time.
+    pub workspace_root: PathBuf,
     pub events: EventBus,
     pub plugin: Arc<PluginHost>,
     pub db_instance_id: Arc<String>,
@@ -186,6 +191,8 @@ pub struct CodexShellState {
 /// Constructors build this only after resolving all boot handles.
 pub struct BootState {
     pub repo: Arc<dyn Repo>,
+    /// #1147 D2 — see [`RouteState::workspace_root`].
+    pub workspace_root: PathBuf,
     pub events: EventBus,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
@@ -217,6 +224,7 @@ impl BootState {
         )));
         let route = RouteState {
             repo: route_repo.clone(),
+            workspace_root: self.workspace_root.clone(),
             events: self.events.clone(),
             plugin: self.plugin.clone(),
             db_instance_id: self.db_instance_id.clone(),
@@ -536,6 +544,16 @@ impl AppState {
         self
     }
 
+    /// #1147 S2 test seam — pin the managed workspace root. `from_parts`
+    /// defaults to a per-`AppState` directory under the system temp dir so no
+    /// test can silently materialize repositories into the developer's real
+    /// `$HOME/neige-workspaces`; a test that wants to *inspect* the tree
+    /// points this at its own `TempDir` instead.
+    pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
+        self.route.workspace_root = root;
+        self
+    }
+
     pub async fn recover_harnesses_on_boot(&self) -> crate::error::Result<usize> {
         crate::harness::recover_harnesses_on_boot(
             self.raw.clone(),
@@ -728,6 +746,12 @@ impl AppState {
         );
         BootState {
             repo,
+            // #1147 S2 — `from_parts` is the test / replay hatch. A unique
+            // per-instance temp root keeps managed materialization inside the
+            // test sandbox; see `AppState::with_workspace_root`.
+            workspace_root: std::env::temp_dir()
+                .join("neige-calm-test-workspaces")
+                .join(uuid::Uuid::new_v4().to_string()),
             events,
             daemon,
             terminal_renderer,
@@ -868,6 +892,18 @@ impl AppState {
             skipped = report.skipped.len(),
             "plugin registry loaded"
         );
+
+        // #1147 D2 — the managed workspace root. Created at boot for the same
+        // reason the plugin dirs are: the first wave create should not be the
+        // thing that discovers the parent is unwritable.
+        let workspace_root = cfg.workspace_root_resolved();
+        if !workspace_root.exists() {
+            tracing::info!(
+                workspace_root = %workspace_root.display(),
+                "creating managed workspace root"
+            );
+            std::fs::create_dir_all(&workspace_root)?;
+        }
 
         // Same treatment for the data dir — Slice B/C will write into per-plugin
         // subdirs of this, so make sure the root exists at boot.
@@ -1140,6 +1176,7 @@ impl AppState {
         );
         let state = BootState {
             repo,
+            workspace_root,
             events,
             daemon,
             terminal_renderer,

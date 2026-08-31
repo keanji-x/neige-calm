@@ -150,6 +150,7 @@ async fn seed_wave_with_card(repo: &Arc<SqlxRepo>, bus: &EventBus) -> String {
                         theme: calm_server::routes::theme::RequestTheme::default_dark(),
                     },
                     None,
+                    &calm_server::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
                     &wave_cove_cache,
                 )
                 .await?;

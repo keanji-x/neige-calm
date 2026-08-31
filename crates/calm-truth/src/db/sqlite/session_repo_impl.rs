@@ -316,7 +316,14 @@ impl RepoSyncDomainRaw for SqlxRepo {
     // ---------------------------------------------------------------- waves
     async fn wave_create(&self, p: NewWave) -> Result<Wave> {
         let mut tx = begin_immediate_tx(&self.pool).await?;
-        let out = wave_create_tx(&mut tx, p, None, &self.wave_cove_cache).await?;
+        let out = wave_create_tx(
+            &mut tx,
+            p,
+            None,
+            &crate::db::sqlite::WaveWorkspacePlan::AttachedFromCwd,
+            &self.wave_cove_cache,
+        )
+        .await?;
         tx.commit().await?;
         Ok(out)
     }

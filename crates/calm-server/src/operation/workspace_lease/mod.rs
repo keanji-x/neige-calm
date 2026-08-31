@@ -1252,7 +1252,7 @@ pub(crate) fn remove_workspace_worktree(target: &WorkspaceLeaseTarget) -> Result
     Ok(registered || path_existed || branch_existed || dir_removed)
 }
 
-fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
+pub(crate) fn ensure_workspace_worktree_root_excluded(repo_root: &Path) -> Result<()> {
     const WORKTREE_EXCLUDE: &str = ".claude/worktrees/";
     let exclude_path = git_exclude_path(repo_root)?;
     let existing = match std::fs::read_to_string(&exclude_path) {

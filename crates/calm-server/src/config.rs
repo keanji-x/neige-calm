@@ -25,6 +25,18 @@ pub struct Config {
     #[arg(long, env = "CALM_DATA_DIR")]
     pub data_dir: Option<PathBuf>,
 
+    /// #1147 D2 — root under which server-managed wave workspaces live, one
+    /// git repository per wave at `<root>/<cove_id>/<wave_id>`.
+    /// Defaults to `$HOME/neige-workspaces`.
+    ///
+    /// Deliberately NOT `CALM_DATA_DIR`: that path is defined as runtime state
+    /// (sockets, db, scratch) and is a legitimate reset target. A wave
+    /// workspace is a user-visible product — opened in an editor, backed up —
+    /// and must survive a state reset. The default name avoids `~/neige`,
+    /// `~/neige-calm` and `~/neige-calm-wt`, which are already taken.
+    #[arg(long, env = "CALM_WORKSPACE_ROOT")]
+    pub workspace_root: Option<PathBuf>,
+
     /// Unix socket used to ask calm-proc-supervisor to fork session daemons.
     /// Defaults to `<CALM_DATA_DIR>/proc-supervisor.sock`.
     #[arg(long, env = "CALM_PROC_SUPERVISOR_SOCK")]
@@ -204,6 +216,18 @@ impl Config {
                 .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
                 .unwrap_or_else(|| PathBuf::from("."));
             base.join("neige-calm")
+        })
+    }
+
+    /// #1147 D2 — `$HOME/neige-workspaces` unless overridden. Falls back to
+    /// `./neige-workspaces` only when `HOME` is unset, mirroring
+    /// `data_dir_resolved`'s last-resort `.`.
+    pub fn workspace_root_resolved(&self) -> PathBuf {
+        self.workspace_root.clone().unwrap_or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("neige-workspaces")
         })
     }
 

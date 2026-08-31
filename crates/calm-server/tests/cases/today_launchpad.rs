@@ -60,7 +60,9 @@ async fn boot() -> Boot {
     .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
         repo.clone(),
         None,
-    ));
+    ))
+    // #1147 S2 — keep any managed workspace this test mints inside the sandbox.
+    .with_workspace_root(tmp.path().join("workspaces"));
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -373,9 +375,58 @@ async fn only_system_cove_waves_may_be_unfrozen() {
         String::from_utf8_lossy(&bytes)
     );
 
+    // #1147 S2 narrows the property to its actual content. S1 could say "no
+    // wave is unfrozen outside the launchpad" only because every wave it could
+    // mint was `attached`; S2 mints `managed` workspaces, and *unfrozen
+    // managed* is the intended steady state — that is what makes S3's
+    // "re-point before any work happened" reachable at all. What must stay
+    // impossible is an unfrozen **attached** row: that is a user repository
+    // sitting in the state a PATCH branch that forgot to check `kind` would
+    // relocate (design D9). The launchpad is the one documented exception.
+    // …and a managed one (title-only create, the #1131 / S2 default shape), so
+    // the narrowed predicate below is not satisfied merely because nothing
+    // unfrozen-managed exists.
+    let response = b
+        .app
+        .clone()
+        .oneshot(
+            Request::post("/api/waves")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "cove_id": cove["id"],
+                        "title": "managed wave",
+                        "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "body={}",
+        String::from_utf8_lossy(&bytes)
+    );
+    let unfrozen_managed: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM waves WHERE workspace_frozen_at IS NULL AND workspace_kind='managed'",
+    )
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        unfrozen_managed > 0,
+        "no unfrozen managed wave exists, so the `kind='attached'` filter below \
+         would pass for the wrong reason"
+    );
+
     let unfrozen: Vec<(String, String, String)> = sqlx::query_as(
         "SELECT w.id, w.purpose, c.kind FROM waves w JOIN coves c ON c.id = w.cove_id \
-         WHERE w.workspace_frozen_at IS NULL",
+         WHERE w.workspace_frozen_at IS NULL AND w.workspace_kind = 'attached'",
     )
     .fetch_all(b.repo.pool())
     .await
@@ -399,4 +450,46 @@ async fn only_system_cove_waves_may_be_unfrozen() {
              the exception is scoped to that one wave"
         );
     }
+}
+
+/// #1147 S2 (design D3) — the launchpad is the fifth wave-create entry point
+/// and bypasses `create_wave_structure` entirely (raw `INSERT INTO waves`).
+/// Without its own materialize call every codex task on the Today panel keeps
+/// dying with `spawn-failed`, which is the defect #1147 was opened on.
+#[tokio::test]
+async fn launchpad_workspace_is_materialized() {
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let path: String =
+        sqlx::query_scalar("SELECT workspace_path FROM waves WHERE purpose='launchpad'")
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let path = std::path::Path::new(&path);
+    assert!(path.join(".git").is_dir(), "no repository at {path:?}");
+    assert!(
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(["rev-parse", "--verify", "HEAD"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "the launchpad workspace has no init commit; `git worktree add` fails \
+         and every Today codex task stays `spawn-failed`"
+    );
+    let exclude = std::fs::read_to_string(path.join(".git/info/exclude")).unwrap();
+    assert!(
+        exclude
+            .lines()
+            .any(|line| line.trim() == ".claude/worktrees/")
+    );
+    assert!(!path.join(".gitignore").exists());
+
+    // `ensure` is idempotent, and so is materialize.
+    let (status, body) = ensure(b.app).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
 }
