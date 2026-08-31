@@ -420,7 +420,7 @@
   why: >
     【已知缺口】注释写明"今天以警告呈现；若 CI 噪音里出现漂移可以后续提升为硬失败"。
     掩码算法把 :root / dark 块换成等行数空行，保证 warn 里的行号仍对得上原文件。#150 slice 1。
-  source: web/src/calm-tokens.test.ts:878-901
+  source: web/src/calm-tokens.test.ts:860-876,878-901
   authoritative_test: web/src/calm-tokens.test.ts:878-901
   owner_slice: styles/tokens
   intentional_omission: true

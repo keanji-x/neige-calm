@@ -3571,7 +3571,7 @@
   why: >
     源码注释:"kernel doesn't apply defaults (design F6), so the form always sends the value" +
     "#891 signoff r3 — kills the last OS dropdown popup"(用原生 checkbox 而非 select)。
-  source: web/src/shared/components/NewTaskForm.tsx:374-382,633-659
+  source: web/src/shared/components/NewTaskForm.tsx:169,374-382,633-659
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:112,207
   owner_slice: features/wave/create
   intentional_omission: true
