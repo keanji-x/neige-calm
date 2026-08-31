@@ -819,6 +819,75 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
     }
 }
 
+/// `cli-query` parses and installs in this slice but has no execution runtime
+/// yet. That is a "not implemented" condition, not a kernel fault: it must
+/// report through the same channel as every other connector bring-up failure
+/// (503 + an observable `Unavailable`), not as a 500. `HostError::BadState`
+/// has no arm in `spawn_error_to_calm`, so routing it through `BadState` gave
+/// an operator a kernel-fault-shaped 500.
+#[tokio::test]
+async fn cli_query_enable_is_a_503_not_a_kernel_fault_500() {
+    let b = boot().await;
+    let id = "cli-longbridge";
+    let dir = b.plugins_dir.join(id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        json!({
+            "manifest_version": 1,
+            "kind": "cli-query",
+            "id": id,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Longbridge",
+            "cli_query": {
+                "command": "longbridge",
+                "tools": [{
+                    "name": "quote",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": { "symbol": { "type": "string" } },
+                        "required": ["symbol"],
+                        "additionalProperties": false
+                    },
+                    "args": ["quote", "{{symbol}}"]
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let state = b.state(b.host());
+    let (status, body) = post_json(
+        &state,
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": dir.display().to_string() } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "install failed: {body}");
+
+    let (status, body) = post_json(&state, &format!("/api/plugins/{id}/enable"), json!({})).await;
+    assert_eq!(
+        status,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "cli-query enable must be a 503, got {status}: {body}"
+    );
+    assert!(
+        body.to_string().contains("not implemented"),
+        "the reason must be actionable: {body}"
+    );
+
+    // And it is observable, like every other failed connector.
+    let st = state.plugin.status(id).await.expect("observable status");
+    assert!(
+        matches!(st.status, PluginRuntimeStatus::Unavailable { .. }),
+        "got {:?}",
+        st.status
+    );
+    assert!(!state.plugin.running_plugin_ids().await.contains(id));
+}
+
 /// §2.4 — a wrongly-permissioned secrets file refuses the enable outright.
 #[tokio::test]
 async fn world_readable_secrets_file_refuses_enable() {
