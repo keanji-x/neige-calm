@@ -113,7 +113,8 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
        *
        * Opening focus is a courtesy for a reader who has not acted yet, so it
        * yields to one who has — but only to a real landing place. The test is
-       * membership of `focusables(panel)`, not `panel.contains(…)`, and the
+       * membership of `focusables(panel)` and nothing else, not
+       * `panel.contains(…)`, and the
        * difference is two ways the looser test yields to nothing:
        *
        *  - the panel carries `tabIndex={-1}`, so a mousedown on chrome (the
@@ -133,7 +134,11 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
        */
       const reachable = focusables(panel);
       const active = document.activeElement;
-      if (active instanceof HTMLElement && reachable.includes(active)) return;
+      // Compared as `Element`, not `HTMLElement`: `focusables` matches `a[href]`,
+      // which an SVG anchor satisfies while being an `SVGElement`. Narrowing to
+      // `HTMLElement` here would have let the guard fall through for exactly the
+      // reader it exists to protect.
+      if (active !== null && (reachable as readonly Element[]).includes(active)) return;
       /*
        * The named target is checked against the same list rather than trusted.
        * `.focus()` on a `disabled` or hidden element is a silent no-op, and the

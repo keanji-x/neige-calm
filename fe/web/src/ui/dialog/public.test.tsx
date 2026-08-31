@@ -158,9 +158,14 @@ describe('Dialog behavior', () => {
     outside.focus();
     render(<DisabledTargetDialog />);
 
-    const panel = screen.getByRole('dialog');
-    expect(panel.contains(document.activeElement)).toBe(true);
-    expect(document.activeElement).not.toBe(outside);
+    /*
+     * The *specific* landing place, not merely "somewhere inside". Asserting
+     * containment alone is satisfied by the verify-after-focus fallback on its
+     * own, so it does not discriminate the membership check that is supposed to
+     * reject the disabled target and pick the first reachable control — Close,
+     * here, since this dialog keeps its header.
+     */
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
     outside.remove();
   });
 
@@ -171,6 +176,28 @@ describe('Dialog behavior', () => {
 
     expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
     outside.remove();
+  });
+
+  /*
+   * An SVG anchor is focusable and matches `a[href]`, but it is an
+   * `SVGElement`, not an `HTMLElement`. Narrowing the guard to `HTMLElement`
+   * made it fall through for precisely the reader it exists to protect.
+   */
+  it('yields to a focused SVG anchor, which is an Element but not an HTMLElement', () => {
+    const frames = heldFrames();
+    render(
+      <Dialog open title="Test" onClose={vi.fn()}>
+        <svg><a href="#test" tabIndex={0} aria-label="Chart link"><text>Link</text></a></svg>
+        <input aria-label="Task" />
+      </Dialog>,
+    );
+    const anchor = screen.getByLabelText('Chart link');
+    anchor.focus();
+    expect(document.activeElement).toBe(anchor);
+
+    frames.forEach((frame) => { frame(0); });
+
+    expect(document.activeElement).toBe(anchor);
   });
 
   it('re-queries focusables after dynamically inserting an item', () => {
