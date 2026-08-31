@@ -192,6 +192,13 @@ type LiftSite = { media: readonly string[]; where: string };
  * applies to the same phone turned on its side. `any-pointer` counts alongside
  * `pointer`: a device with no fine pointer at all can satisfy neither, in any
  * orientation, which is exactly the claim being made.
+ * The rejection is coarser than the grammar, deliberately, and the cost is
+ * written down rather than left to be discovered: a condition that *is*
+ * fine-only but says so with a disjunction — `(pointer: fine) and
+ * ((orientation: portrait) or (orientation: landscape))` — is refused here and
+ * its site reported. That is the safe direction for a universal negative, and
+ * the remedy is to rewrite it as a plain conjunction, not to grow a
+ * media-query parser inside a test.
  */
 function narrowsToFine(condition: string): boolean {
   const text = condition.toLowerCase();
@@ -255,23 +262,32 @@ function reachesHere(site: LiftSite): boolean {
 }
 
 /**
- * `text` with CSS escapes resolved, because the CSSOM does not resolve them for
- * you. `var(--nc-dot-l\69 ft)` is the same custom property as
- * `var(--nc-dot-lift)` and computes identically — measured, in an ungated rule
- * and in a keyframe, both leaving the sweep and its count assertions green —
- * but Chromium keeps the escape verbatim in `cssText`, so a raw `includes` is
- * false on a live consumer. The serialisation is the whole of what the walk has
- * to go on, so it is decoded before it is matched: a hex escape (up to six
- * digits, one optional trailing space swallowed) becomes its code point, any
- * other backslash pair becomes the character behind it.
+ * A serialisation this sweep **cannot decide**: a backslash escape inside a
+ * custom-property name. `var(--nc-dot-l\69 ft)` names the same property as
+ * `var(--nc-dot-lift)` and computes identically — measured, ungated and in a
+ * keyframe — but Chromium keeps the escape verbatim in `cssText`, so the needle
+ * is not there to be found.
+ *
+ * The round before this decoded it, and the decoder cost three defects for the
+ * one hole it closed. `String.fromCodePoint` throws `RangeError: Invalid code
+ * point 1114112` on `\110000` — which CSS itself merely replaces with U+FFFD —
+ * so one unrelated declaration in any sheet killed the whole sweep. CRLF is
+ * preprocessed to a single newline while the escape's trailing-whitespace rule
+ * swallows one character, so `--nc-dot-l\69\r\nft` decoded to `--nc-dot-li\nft`
+ * and was missed. And `--x: "\2d\2d nc-dot-lift"`, a string literal that reads
+ * no property at all, decoded *into* the needle and came back as a live
+ * consumer at `<inline> › .railDot::before`.
+ *
+ * So nothing is decoded. An undecidable serialisation is *reported*, on the
+ * same footing as an unreadable sheet: nobody escapes a custom-property name on
+ * purpose, so the price is a loud red naming the construct rather than a silent
+ * miss or a thrown sweep. Only the name position is matched — `--`, name
+ * characters, backslash — which is why a value's string literal is not one and
+ * neither is `--x: \110000`. The residue is a name whose leading `--` is itself
+ * an escape (`\2d\2dnc-dot-lift`): all that separates it from that string
+ * literal is the parse this deliberately does not do.
  */
-function decoded(text: string): string {
-  return text.replace(
-    /\\(?:([0-9a-fA-F]{1,6})[ \t\r\n\f]?|([\s\S]))/g,
-    (_all, hex: string | undefined, literal: string | undefined) =>
-      (hex === undefined ? literal! : String.fromCodePoint(Number.parseInt(hex, 16))),
-  );
-}
+const ESCAPED_NAME = /--[\w-]*\\/;
 
 /**
  * Every place a loaded stylesheet could hand `needle` to this page.
@@ -313,10 +329,7 @@ function decoded(text: string): string {
  */
 function liftSites(needle: string): LiftSite[] {
   const found: LiftSite[] = [];
-  /* Every match in this walk goes through the decoder, both the declaration
-     block above and the whole-rule fallback below: an escape hides the needle
-     from either one equally. */
-  const carries = (text: string) => decoded(text).includes(needle);
+  const carries = (text: string) => text.includes(needle) || ESCAPED_NAME.test(text);
 
   function walk(rules: CSSRuleList, media: readonly string[], trail: readonly string[]) {
     for (const rule of [...rules]) {
@@ -630,7 +643,8 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * forms below through; asking only the engine let the landscape form through,
    * because it is the one that is false on this phone and true on the same
    * phone turned; and matching `cssText` raw let the escaped spelling through,
-   * which is the same property under a name the serialisation keeps verbatim.
+   * which is the same property under a name the serialisation keeps verbatim
+   * and which is now reported as undecidable rather than decoded.
    * `@supports (color: red)` and `@container (min-width: 1px)` are written to
    * genuinely match — a block the engine drops is not a test of anything.
    */
@@ -648,8 +662,9 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
        names a pointer the device lacks. */
     ['@media (pointer: coarse) and (orientation: landscape) { .railDot::before { --nc-dot-lift: 1; } }', '@media (pointer: coarse) and (orientation: landscape)'],
     /* `--nc-dot-l\69 ft` *is* `--nc-dot-lift`, and Chromium serialises the
-       escape back out unchanged. Ungated, so what is being tested is the
-       matching and not the verdict. */
+       escape back out unchanged, so the needle is absent and the site is
+       reported for being undecidable instead. Ungated, so what is being tested
+       is the matching and not the verdict. */
     ['.railDot::before { translate: 0 var(--nc-dot-l\\69 ft); }', '.railDot::before'],
   ])('reports the single lift consumer hidden in %s', (css, trail) => {
     const style = document.createElement('style');
@@ -684,6 +699,28 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
       const sites = liftSites('--nc-dot-lift');
       expect(sites.filter(({ where }) => where.includes('any-pointer'))).toHaveLength(1);
       expect(sites.filter(reachesHere)).toEqual([]);
+    } finally {
+      style.remove();
+    }
+  });
+
+  /*
+   * ── The other direction of the escape rule ────────────────────────────────
+   *
+   * Both declarations are backslashes naming no property, so neither is a
+   * violation and one sheet carries them together. Measured against the decoder
+   * this round removed: the string literal alone reds this case at
+   * `<inline> › .railDot::before`, and `\110000` alone reds it with
+   * `RangeError: Invalid code point 1114112` — a false site and a thrown sweep,
+   * the two failure modes a decoding rule cannot avoid and this one has no way
+   * to reach.
+   */
+  it('reports nothing for backslashes that name no property, and does not throw', () => {
+    const style = document.createElement('style');
+    style.textContent = '.railDot::before { --x: "\\2d\\2d nc-dot-lift"; --y: \\110000; }';
+    document.head.append(style);
+    try {
+      expect(liftSites('--nc-dot-lift').filter(reachesHere)).toEqual([]);
     } finally {
       style.remove();
     }
