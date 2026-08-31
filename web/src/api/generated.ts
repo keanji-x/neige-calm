@@ -1050,6 +1050,14 @@ export interface components {
             key: string;
             schedulable: boolean;
             status?: string | null;
+            /**
+             * @description Issue #1147 slice ① / #1149 — the failure classifier plus its
+             *     human reason tail (`"spawn-failed: wave … is not a git
+             *     repository"`). Without it a failed task reads as a bare
+             *     classifier on every surface and the real diagnosis stays buried
+             *     in the operation's `phase_detail_json`.
+             */
+            statusDetail?: string | null;
             workerCardId?: string | null;
         };
         Card: {

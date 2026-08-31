@@ -4372,6 +4372,13 @@
               "null"
             ]
           },
+          "statusDetail": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Issue #1147 slice ① / #1149 — the failure classifier plus its\nhuman reason tail (`\"spawn-failed: wave … is not a git\nrepository\"`). Without it a failed task reads as a bare\nclassifier on every surface and the real diagnosis stays buried\nin the operation's `phase_detail_json`."
+          },
           "workerCardId": {
             "type": [
               "string",

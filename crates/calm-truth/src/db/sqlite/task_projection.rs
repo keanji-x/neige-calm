@@ -117,6 +117,13 @@ pub struct BlockVerdict {
     pub schedulable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
+    /// Issue #1147 slice ① / #1149 — the failure classifier plus its
+    /// human reason tail (`"spawn-failed: wave … is not a git
+    /// repository"`). Without it a failed task reads as a bare
+    /// classifier on every surface and the real diagnosis stays buried
+    /// in the operation's `phase_detail_json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gate_result: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -136,6 +143,7 @@ pub struct BlockVerdict {
 struct TaskReadState {
     key: String,
     status: String,
+    status_detail: Option<String>,
     gate_result_json: Option<String>,
     worker_card_id: Option<String>,
     child_wave_id: Option<String>,
@@ -155,6 +163,7 @@ fn attach_task_read_state(rows: &[TaskReadState], wave_id: &str, verdicts: &mut 
             continue;
         };
         verdict.status = Some(row.status.clone());
+        verdict.status_detail = row.status_detail.clone();
         verdict.gate_result = row
             .gate_result_json
             .as_deref()
@@ -416,6 +425,7 @@ async fn wave_projection_state(
                        AND t.status IN ('dispatched','running','verifying')) AS inflight_json,
                    (SELECT json_group_array(json_object(
                        'key', t.key, 'status', t.status,
+                       'status_detail', t.status_detail,
                        'gate_result_json', t.gate_result_json,
                        'worker_card_id', t.worker_card_id,
                        'child_wave_id', t.child_wave_id,
@@ -725,6 +735,7 @@ async fn evaluate_schedulability_with_tree_term(
             key: declaration.key.clone(),
             schedulable: declaration.ready && !declaration.tombstone && diagnostics.is_empty(),
             status: None,
+            status_detail: None,
             gate_result: None,
             worker_card_id: None,
             child_wave_id: None,
@@ -830,6 +841,7 @@ async fn evaluate_schedulability_with_tree_term(
                 key: row.key.clone(),
                 schedulable: false,
                 status: Some(row.status.clone()),
+                status_detail: None,
                 gate_result: None,
                 worker_card_id: None,
                 child_wave_id: None,
@@ -1163,6 +1175,7 @@ async fn project_tasks_from_verdicts_tx(
                         diagnostics: vec![diagnostic],
                         schedulable: false,
                         status: Some(status.clone()),
+                        status_detail: None,
                         gate_result: None,
                         worker_card_id: None,
                         child_wave_id: None,

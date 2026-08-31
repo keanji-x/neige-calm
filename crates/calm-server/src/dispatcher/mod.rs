@@ -188,9 +188,13 @@ pub(crate) async fn is_gated_self_report(repo: &dyn crate::db::Repo, event: &Eve
             if !is_failure {
                 return true;
             }
+            // #1147 ① — `status_detail` may carry a `": <reason>"` tail
+            // now; the vocabulary lives in the classifier prefix.
             let failure_landed_pre_gate = task.status == crate::model::TaskStatus::Failed
                 && matches!(
-                    task.status_detail.as_deref(),
+                    task.status_detail
+                        .as_deref()
+                        .map(crate::db::sqlite::status_detail_class),
                     Some("worker-reported") | Some("spawn-failed") | Some("worker-timeout")
                 );
             !failure_landed_pre_gate

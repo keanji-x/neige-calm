@@ -30,6 +30,12 @@ export const taskBlockVerdictSchema = z.object({
   diagnostics: z.array(taskDiagnosticSchema),
   schedulable: z.boolean(),
   status: z.string().nullable().optional(),
+  // Issue #1147 ① / #1149 — the failure classifier plus its human reason
+  // tail ("spawn-failed: wave … is not a git repository"). Zod's default
+  // object mode STRIPS unknown keys, so omitting this field here silently
+  // deletes it from every verdict the UI sees, however correct the server
+  // and the generated types are.
+  statusDetail: z.string().nullable().optional(),
   gateResult: z.unknown().nullable().optional(),
   workerCardId: z.string().nullable().optional(),
   childWaveId: z.string().nullable().optional(),

@@ -38,6 +38,51 @@ describe('waveReportQueryOptions', () => {
     await expect(waveReportQueryOptions('wave_1').queryFn()).rejects.toThrow();
   });
 
+  // Issue #1147 ① — the reason text has to SURVIVE this boundary, not just
+  // exist on the server. `taskBlockVerdictSchema.parse` runs in Zod's
+  // default strip mode, so a field missing from the schema is deleted here
+  // even though the server sent it and `generated.ts` types it.
+  it('preserves statusDetail across the HTTP + Zod boundary', async () => {
+    const statusDetail =
+      'spawn-failed: wave w_1 cwd /home/kenji is not a git repository: '
+      + 'fatal: not a git repository';
+    vi.mocked(api.getWaveReport).mockResolvedValue({
+      docRev: 1,
+      summary: '',
+      body: '',
+      blocks: [],
+      taskDiagnostics: [{
+        blockId: 'b_task',
+        key: 'nogit',
+        diagnostics: [],
+        schedulable: false,
+        status: 'failed',
+        statusDetail,
+      }],
+    } as unknown as api.WaveReportRead);
+
+    const report = await waveReportQueryOptions('wave_1').queryFn();
+
+    expect(report.taskDiagnostics[0].statusDetail).toBe(statusDetail);
+  });
+
+  it('leaves statusDetail absent when the server omits it', async () => {
+    vi.mocked(api.getWaveReport).mockResolvedValue({
+      docRev: 1,
+      summary: '',
+      body: '',
+      blocks: [],
+      taskDiagnostics: [{
+        blockId: 'b_task', key: 'ok', diagnostics: [], schedulable: true,
+        status: 'pending',
+      }],
+    } as unknown as api.WaveReportRead);
+
+    const report = await waveReportQueryOptions('wave_1').queryFn();
+
+    expect(report.taskDiagnostics[0].statusDetail).toBeUndefined();
+  });
+
   it.each([1, 0])(
     'the production hook rejects a malformed verdict at index %i',
     async (malformedIndex) => {
