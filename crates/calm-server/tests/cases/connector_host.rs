@@ -2238,6 +2238,22 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
         .expect("the fixture manifest the loop will read must parse"),
     );
     let ceiling = connector_phase_ceiling(widened_connector_budget(BUDGET, widest));
+    // Both assertions are needed, and neither substitutes for the other. The
+    // computed `ceiling` tracks whatever the loop really does, so the timing
+    // assertion below cannot go stale — but a formula-following test cannot
+    // detect a formula that DRIFTS: if `widened_connector_budget` quietly grew
+    // another 500 ms, runtime and expectation would move together and the
+    // timing assertion would still pass. So the composed number is also pinned
+    // as a literal here: any change to the formula has to be acknowledged by
+    // editing this line, rather than being silently absorbed.
+    assert_eq!(
+        ceiling,
+        Duration::from_millis(1_900),
+        "the connector-phase ceiling for this fixture (1 s budget, 200 ms \
+         per-request bring-up) is (2 × 200 ms + 500 ms slack) + 500 ms widening \
+         slack + 500 ms reconcile tail = 1.9 s; if production's formula moved, \
+         change it here deliberately"
+    );
     let started = Instant::now();
     tokio::time::timeout(DB_HELD * 2, host.autospawn_enabled_within(BUDGET))
         .await
@@ -2297,7 +2313,11 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
 /// computed something else, because the prose was a second arithmetic.
 ///
 /// This pins the composed number, so any change to a constant that feeds it has
-/// to be an explicit decision here rather than a silent drift.
+/// to be an explicit decision here rather than a silent drift. Since
+/// `MAX_CONNECTOR_AUTOSPAWN_WALL` is now literally
+/// `connector_phase_ceiling(widened_connector_budget(...))`, the 31.5 s literal
+/// below also pins `widened_connector_budget` itself — previously the constant
+/// inlined its own copy of that `max` and nothing pinned the helper.
 #[test]
 fn the_connector_phase_ceiling_is_the_documented_one() {
     use calm_server::plugin_host::{

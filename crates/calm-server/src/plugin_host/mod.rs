@@ -437,8 +437,22 @@ pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
 /// second arithmetic is exactly how `a_slow_event_store_cannot_hold_boot_past_
 /// the_phase_ceiling` came to assert a 1.5 s ceiling against a loop that was
 /// really running to 1.9 s.
-pub fn widened_connector_budget(supplied: Duration, widest_bringup: Duration) -> Duration {
-    supplied.max(widest_bringup + CONNECTOR_BRINGUP_SLACK)
+///
+/// `const` so that [`MAX_CONNECTOR_AUTOSPAWN_WALL`] can be *this* function
+/// applied to the widest loadable inputs rather than a second copy of the same
+/// `max` inlined in a const block — which is what it used to be, leaving the
+/// helper unpinned by that constant's test.
+pub const fn widened_connector_budget(supplied: Duration, widest_bringup: Duration) -> Duration {
+    let widened = Duration::from_millis(
+        widest_bringup.as_millis() as u64 + CONNECTOR_BRINGUP_SLACK.as_millis() as u64,
+    );
+    // `Ord::max` is not const; compare the raw nanos and return the *original*
+    // `supplied` so no precision is lost on the floor side.
+    if widened.as_nanos() > supplied.as_nanos() {
+        widened
+    } else {
+        supplied
+    }
 }
 
 /// Wall-clock allowed for everything the connector phase does **besides**
@@ -479,13 +493,9 @@ pub const fn connector_phase_ceiling(loop_budget: Duration) -> Duration {
 /// constants: `(2 × 15 s + 500 ms) + 500 ms` of widened loop budget, `+ 500 ms`
 /// of reconcile tail = **31.5 s** — computed here, never retyped, and asserted
 /// against the real loop by `the_connector_phase_ceiling_is_the_documented_one`.
-pub const MAX_CONNECTOR_AUTOSPAWN_WALL: Duration =
-    connector_phase_ceiling(Duration::from_millis({
-        let widened = MAX_CONNECTOR_BRINGUP_BUDGET.as_millis() as u64
-            + CONNECTOR_BRINGUP_SLACK.as_millis() as u64;
-        let floor = CONNECTOR_AUTOSPAWN_BUDGET.as_millis() as u64;
-        if widened > floor { widened } else { floor }
-    }));
+pub const MAX_CONNECTOR_AUTOSPAWN_WALL: Duration = connector_phase_ceiling(
+    widened_connector_budget(CONNECTOR_AUTOSPAWN_BUDGET, MAX_CONNECTOR_BRINGUP_BUDGET),
+);
 
 /// The largest value [`connector_bringup_budget`] can return for any manifest
 /// that passes `Manifest::validate`.
