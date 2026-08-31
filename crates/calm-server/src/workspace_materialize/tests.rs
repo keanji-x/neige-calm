@@ -107,6 +107,39 @@ fn head_resolves(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// `(major, minor)` of the `git` on PATH.
+///
+/// Behaviour under test differs across Git versions (see
+/// `worktree_add_without_a_baseline_commit_is_version_dependent`), and the
+/// version must be *parsed*, not inferred from an error string: the message
+/// differs between bare and non-bare repositories and is localized (this host
+/// prints `致命错误：不是一个有效的对象名`).
+fn git_version() -> (u32, u32) {
+    let out = Command::new("git").arg("--version").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let nums = text
+        .split_whitespace()
+        .find(|t| t.chars().next().is_some_and(|c| c.is_ascii_digit()))
+        .unwrap_or_else(|| panic!("cannot parse `git --version` output: {text}"));
+    let mut parts = nums.split('.');
+    let major = parts.next().unwrap().parse().unwrap();
+    let minor = parts.next().unwrap_or("0").parse().unwrap();
+    (major, minor)
+}
+
+/// `git rev-list --count --all` — the number design D4 compares against 1 when
+/// deciding whether a workspace is still untouched.
+fn count_all_commits(path: &Path) -> u32 {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-list", "--count", "--all"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git rev-list failed in {path:?}");
+    String::from_utf8_lossy(&out.stdout).trim().parse().unwrap()
+}
+
 fn lease_target(repo_root: &Path) -> WorkspaceLeaseTarget {
     let wave_id = "wave0000000000000000000000000001";
     let card_id = "card0000000000000000000000000001";
@@ -130,6 +163,14 @@ fn materialized_workspace_hosts_a_worker_worktree() {
     let (root, repo_root) = sandbox(&tmp);
     materialize(&root, &repo_root).unwrap();
 
+    assert!(head_resolves(&repo_root));
+    assert_eq!(
+        count_all_commits(&repo_root),
+        1,
+        "design D4 compares `rev-list --count --all` against exactly 1; the \
+         empty init commit is that baseline"
+    );
+
     let target = lease_target(&repo_root);
     provision_workspace_worktree(&target).expect("worktree add on a materialized workspace");
     assert!(
@@ -140,37 +181,107 @@ fn materialized_workspace_hosts_a_worker_worktree() {
 }
 
 /// §5 test 1 (single-violation fixture): run the *production* materialize path
-/// with step 3 (the empty initial commit) removed. `git worktree add` must
-/// die with `not a valid object name`.
+/// with step 3 (the empty initial commit) removed.
+///
+/// The assertion is **version-independent on purpose**: what step 3 guarantees
+/// is that the workspace has exactly one commit, which is the baseline design
+/// D4 compares against when it asks "has anything happened here yet"
+/// (`git rev-list --count --all == 1`). Without the step there is no baseline
+/// at all.
+///
+/// It deliberately does NOT assert that `git worktree add` fails — that is a
+/// Git-version-dependent side effect, pinned separately in
+/// `worktree_add_without_a_baseline_commit_is_version_dependent`.
 #[test]
-fn without_the_init_commit_the_worker_worktree_cannot_be_created() {
+fn without_the_init_commit_there_is_no_baseline_commit() {
     let _env = GitEnv::c_locale();
     let tmp = tempfile::TempDir::new().unwrap();
     let (root, repo_root) = sandbox(&tmp);
     materialize_managed_workspace_inner(&root, &repo_root, WAVE, InitCommit::Skip).unwrap();
 
-    // Prove the mutation actually applied: the whole point of step 3 is that
-    // HEAD resolves afterwards.
+    // Prove the mutation actually applied.
     assert!(
         !head_resolves(&repo_root),
-        "mutation did not apply — HEAD still resolves, so the assertion below \
+        "mutation did not apply — HEAD still resolves, so the assertions below \
          would pass for the wrong reason"
     );
-
-    let target = lease_target(&repo_root);
-    let error = provision_workspace_worktree(&target)
-        .expect_err("worktree add must fail without an initial commit");
-    let message = error.to_string();
-    assert!(
-        message.contains("not a valid object name"),
-        "expected the empty-HEAD failure, got: {message}"
+    assert_eq!(
+        count_all_commits(&repo_root),
+        0,
+        "without step 3 the workspace has no commit, so design D4's \
+         `rev-list --count --all == 1` baseline does not exist"
     );
 
-    // …and the unmutated path succeeds on the same directory, so the failure
-    // above is attributable to the missing commit and nothing else.
+    // …and the unmutated path establishes it, so the gap above is attributable
+    // to the missing commit and nothing else.
     materialize(&root, &repo_root).unwrap();
     assert!(head_resolves(&repo_root));
+    assert_eq!(count_all_commits(&repo_root), 1);
+    let target = lease_target(&repo_root);
     provision_workspace_worktree(&target).expect("worktree add after the commit is restored");
+}
+
+/// Pins the Git-version-dependent behaviour that the original rationale for
+/// step 3 got wrong.
+///
+/// The design used to justify the empty initial commit with "otherwise
+/// `git worktree add` fails and the first worker cannot start". That is true
+/// only on Git **< 2.42.0**. Git 2.42.0 (commit `128e5496b`, "worktree add:
+/// extend DWIM to infer `--orphan`", Jacob Abel) made `worktree add` in a
+/// repository with an unborn HEAD *succeed*: it infers `--orphan`, prints
+/// `No possible source branch, inferring '--orphan'` to stderr, and points the
+/// new worktree's HEAD at an unborn branch. No commit is created.
+/// `git-worktree` documents it as "as if `--orphan` was passed".
+///
+/// So on modern Git the missing baseline is **silent**, which is worse than the
+/// old hard error: the lease worktree exists, has no history, and each one is
+/// an unrelated orphan. The commit is still required — for the D4 baseline —
+/// but not for the reason originally written down.
+///
+/// Version is parsed, not string-matched: the old error text differs between
+/// bare (`invalid reference: HEAD`) and non-bare (`not a valid object name`)
+/// repositories and is localized.
+#[test]
+fn worktree_add_without_a_baseline_commit_is_version_dependent() {
+    let _env = GitEnv::c_locale();
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (root, repo_root) = sandbox(&tmp);
+    materialize_managed_workspace_inner(&root, &repo_root, WAVE, InitCommit::Skip).unwrap();
+    assert_eq!(count_all_commits(&repo_root), 0);
+
+    let version = git_version();
+    let target = lease_target(&repo_root);
+    let result = provision_workspace_worktree(&target);
+
+    if version < (2, 42) {
+        let error = result.expect_err(&format!(
+            "git {}.{} predates 2.42.0, where `worktree add` on an unborn HEAD \
+             fails outright",
+            version.0, version.1
+        ));
+        assert!(
+            error.to_string().contains("not a valid object name"),
+            "git {}.{}: expected the unborn-HEAD failure, got: {error}",
+            version.0,
+            version.1
+        );
+    } else {
+        result.unwrap_or_else(|error| {
+            panic!(
+                "git {}.{} is >= 2.42.0, where `worktree add` DWIMs `--orphan` \
+                 on an unborn HEAD and succeeds; got: {error}",
+                version.0, version.1
+            )
+        });
+        assert_eq!(
+            count_all_commits(&repo_root),
+            0,
+            "git {}.{}: the inferred `--orphan` worktree must still create no \
+             commit — that is exactly why the baseline has to come from step 3",
+            version.0,
+            version.1
+        );
+    }
 }
 
 /// §5 test 7: a global `commit.gpgsign=true` makes `git commit --allow-empty`

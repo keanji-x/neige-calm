@@ -84,7 +84,11 @@ Attached 创建只做校验：绝对路径、目录存在、是 Git 仓库，并
 
 第二条不是让步，是必需品。互斥 + 标记 + **清理自有半成品**三者配套，缺第三条仍然砖化：实测标记存在 + `.git/config.lock` 残留（init 中途被 SIGKILL）会让之后**每一次**物化都报 `could not lock config file`，无限重复；落在 Today/launchpad 上就是面板永久死亡。清理的安全性来自两个前提同时成立——标记证明目录是我们的，`HEAD` 不可解析证明没有值得保留的仓库状态、也没有可能持有这些锁的活 worker。
 
-**空初始提交不可省。** 没有它 `git worktree add` 直接失败（`不是一个有效的对象名：'HEAD'`），托管 wave 的第一个 worker 起不来——省掉这步等于整条物化白做。
+**空初始提交不可省——但理由不是「否则 worker 起不开」。** 它的作用是给「盘上是空的」判据提供**基线**：该判据要求 `git rev-list --count --all == 1`，没有这个提交就没有 1 可比，工作区从第 0 秒起就无法判定是否动过。这条与 Git 版本无关。
+
+⚠️ 此处早先写的实测结论「没有它 `git worktree add` 直接失败（`不是一个有效的对象名：'HEAD'`）」**只对 Git < 2.42.0 成立**，本文档曾据此论证过三轮，现更正。Git 2.42.0（commit `128e5496b`，*worktree add: extend DWIM to infer `--orphan`*）改为：在 HEAD 未出生的仓库里 `git worktree add` **成功**，自动推断 `--orphan`，向 stderr 打印 `No possible source branch, inferring '--orphan'`，把新工作树的 HEAD 指向一个未出生的分支，**不创建任何提交**；`git-worktree` 文档的措辞是「as if `--orphan` was passed」。已在 git 2.54.0 上实测复现：`worktree add` 退出码 0，`rev-list --count --all` 仍为 0，新工作树 HEAD 为 `refs/heads/<branch>`。
+
+也就是说在新版 Git 上，缺少基线提交是**静默**的，比旧版的硬失败更糟：租约工作树建得出来、没有历史、彼此还是互不相关的孤儿分支。测试因此按版本分支断言，并且用**解析出的版本号**判断而非匹配错误文本——该文本在裸/非裸仓库间不同，且会被本地化。
 
 **排除写 `.git/info/exclude`，不写 `.gitignore`。** 未提交的 `.gitignore` 会让 `status --porcelain` 恒有 `?? .gitignore`，于是「盘上是空的」判据从第 0 秒起永假，工作区在 UI 上永远不可更换。
 

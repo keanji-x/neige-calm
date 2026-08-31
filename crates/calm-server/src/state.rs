@@ -392,6 +392,19 @@ pub struct AppState {
     #[allow(dead_code)]
     raw: Arc<dyn Repo>,
     /// #1147 S2 — see [`BootState::workspace_root_guard`].
+    ///
+    /// `allow(dead_code)` because this is an **RAII guard**: its value is never
+    /// read, only dropped, and the drop is the entire point (it removes the
+    /// per-`AppState` sandbox). The one place that touches it afterwards —
+    /// `with_workspace_root`, which releases it — is `fixtures`-gated, so under
+    /// default features nothing mentions the field at all.
+    ///
+    /// Not `expect(dead_code)`: whether the lint fires depends on the feature
+    /// set (under `fixtures` the write in `with_workspace_root` counts as a
+    /// use), and an unfulfilled `expect` is itself a warning — which, under
+    /// this workspace's `RUSTFLAGS=-D warnings`, would just move the build
+    /// failure to the other feature combination.
+    #[allow(dead_code)]
     workspace_root_guard: Option<Arc<tempfile::TempDir>>,
     route: RouteState,
     worker: WorkerState,

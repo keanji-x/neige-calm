@@ -23,7 +23,9 @@ ITEMS = {
     "ownership marker is the test": ["neige-workspace", "第三方仓库", "误删用户仓库"],
     "marker written before git init": ["git init", "之前"],
     "non-empty: refuse vs repair": ["硬失败，绝不复用", "自己的半成品", "*.lock"],
-    "empty init commit": ["不是一个有效的对象名"],
+    # Version-independent rationale: the baseline for D4's emptiness predicate.
+    # NOT the old "worktree add fails" claim, which only holds on git < 2.42.0.
+    "empty init commit is the D4 baseline": ["rev-list --count --all == 1", "基线", "2.42.0"],
     "exclude not gitignore": [".git/info/exclude", ".gitignore", "永假"],
     "git env isolation": ["GIT_TEMPLATE_DIR", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "hooks/"],
     "mutex + canonical prefix": ["per-path 互斥", "canonicalize", "符号链接", "starts_with"],
