@@ -57,6 +57,12 @@ export type WaveFilesDerivedKind =
   | 'codex.worker_requested' | 'terminal.worker_requested'
   | 'task.completed' | 'task.failed' | 'task.dispatched' | 'task.gate_result';
 
+/**
+ * Every kind that can change what a wave's workspace looks like.
+ *
+ * NOT the same set as the task-verdict one below — see
+ * `taskVerdictInvalidatingKinds`, which is this list minus the two hooks.
+ */
 export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
   'runtime.started', 'runtime.status_changed', 'runtime.superseded',
   'terminal.deleted', 'codex.hook', 'claude.hook',
@@ -91,6 +97,38 @@ function derivedWaveId(data: unknown, context: InvalidationContext): string | nu
     return context.findWaveOwningCard(value.card_id);
   }
   return null;
+}
+
+/**
+ * The kinds that invalidate a wave's task verdicts (`['wave-report', …]`).
+ *
+ * A function, not a frozen const, only because `no-module-runtime-state` will
+ * not accept a module-level binding whose initializer is a call.
+ *
+ * Derived from `WAVE_FILES_DERIVED_KINDS` rather than typed out again, minus
+ * the two hooks — and the difference is the whole point. `codex.hook` fires per
+ * CLI hook, roughly twice per tool call per running worker, and it writes no
+ * `tasks` row: a hook is the agent telling the kernel what it just did, not the
+ * scheduler moving a task. It does change the workspace, so it keeps its
+ * `wave-files` key.
+ *
+ * Invalidation is not free here. `['wave-report', …]` resolves to a live query
+ * on `GET /api/waves/{id}/report`, which loads the wave's CRDT, projects the
+ * whole document and runs `task_diagnostics` — a predicate that issues a
+ * data-dependent lookup per reference per declaration (see its comment in
+ * `read.rs`). The frontend then throws away everything but `taskDiagnostics`.
+ * Paying that twice per tool call, per worker, for a value that provably cannot
+ * have changed, is the cost this exclusion removes.
+ *
+ * `staleTime` is deliberately NOT the fix and is not set on that query:
+ * `invalidateQueries` refetches an active observer whatever its staleTime, so a
+ * stale window would have suppressed nothing here.
+ */
+export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
+  return [
+    ...WAVE_FILES_DERIVED_KINDS.filter((kind) => kind !== 'codex.hook' && kind !== 'claude.hook'),
+    'wave.report_edited',
+  ];
 }
 
 export function defineInvalidationPolicies<T extends PolicyMap>(value: T): T {
@@ -172,8 +210,10 @@ function policies(): PolicyMap {
   'terminal.deleted': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'plugin.state': noop('No plugin list query exists.'),
   'plugin.tool.registered': noop('No plugin-tool catalog query exists.'),
-  'codex.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
-  'claude.hook': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
+  /* Workspace only — a hook writes no `tasks` row, and it fires per tool call.
+     See `taskVerdictInvalidatingKinds` for what that key would have cost. */
+  'codex.hook': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
+  'claude.hook': plan((event, context) => result([waveFiles(derivedWaveId(event.data, context))])),
   'codex.worker_requested': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'terminal.worker_requested': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),
   'task.completed': plan((event, context) => result(waveFilesDerived(derivedWaveId(event.data, context)))),

@@ -2,8 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import type { CardWire } from './wave.js';
 import {
-  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, groupBacklinks, parseReportLink,
-  readWaveReport, WAVE_REPORT_CARD_KIND, type WaveBacklink,
+  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, groupBacklinks, hasLiveTaskRun,
+  parseReportLink, readWaveReport, TASK_STATUS_DETAIL_LIMIT, WAVE_REPORT_CARD_KIND, waveTaskVerdictsOperation,
+  type TaskVerdict, type WaveBacklink,
 } from './report.js';
 
 function card(overrides: Partial<CardWire> = {}): CardWire {
@@ -143,8 +144,11 @@ describe('readWaveReport', () => {
 });
 
 describe('deriveReportTasks', () => {
-  function tasksOf(blocks: unknown[]) {
-    return deriveReportTasks(readWaveReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null);
+  function tasksOf(blocks: unknown[], verdicts?: readonly TaskVerdict[]) {
+    return deriveReportTasks(
+      readWaveReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null,
+      verdicts,
+    );
   }
 
   function task(id: string, payload: Record<string, unknown>) {
@@ -154,6 +158,20 @@ describe('deriveReportTasks', () => {
   const live = (key: string, ready: boolean) =>
     ({ key, kind: 'codex', declared_by: 'spec', ready, goal: 'g' });
 
+  function verdict(overrides: Partial<TaskVerdict> & Pick<TaskVerdict, 'blockId' | 'key'>): TaskVerdict {
+    return { schedulable: true, status: null, statusDetail: null, workerCardId: null, ...overrides };
+  }
+
+  /*
+   * CHANGED SHAPE — there were two helpers here, `declaration(text)` and
+   * `runtime(text)`, because a row carried one `note` and the helpers said
+   * which half of the join had written it. A row now carries `declaration`,
+   * `status` and `kind` as three fields, so the rows below are written out
+   * whole: the assertions that matter are which of the three are populated
+   * together, and a helper that assembled them would be the production
+   * function's own precedence rules copied into the test.
+   */
+
   it('lists every task in document order and nothing else', () => {
     expect(tasksOf([
       prose('b-1', '# One\n'),
@@ -161,8 +179,8 @@ describe('deriveReportTasks', () => {
       { id: 'b-3', kind: 'table', rev: 1, payload: { caption: 'c', columns: [], rows: [] } },
       task('b-4', live('beta', false)),
     ])).toEqual([
-      { blockId: 'b-2', key: 'alpha', state: 'ready' },
-      { blockId: 'b-4', key: 'beta', state: 'not-ready' },
+      { blockId: 'b-2', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+      { blockId: 'b-4', key: 'beta', state: 'not-ready', declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null },
     ]);
   });
 
@@ -172,7 +190,7 @@ describe('deriveReportTasks', () => {
      running. */
   it('reads a task carrying an explicit null tombstone as live, not withdrawn', () => {
     expect(tasksOf([task('b-1', { ...live('alpha', true), tombstone: null })]))
-      .toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready' }]);
+      .toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
   });
 
   /* Kept for the same reason the block keeps it: the task existed, other
@@ -181,7 +199,10 @@ describe('deriveReportTasks', () => {
   it('keeps a withdrawn task', () => {
     expect(tasksOf([task('b-1', {
       key: 'gone', declared_by: 'spec', tombstoned_by: 'user', tombstone: { reason: 'r' },
-    })])).toEqual([{ blockId: 'b-1', key: 'gone', state: 'withdrawn' }]);
+    })])).toEqual([{
+      blockId: 'b-1', key: 'gone', state: 'withdrawn',
+      declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null,
+    }]);
   });
 
   /*
@@ -196,8 +217,32 @@ describe('deriveReportTasks', () => {
    * literal other reports cite it by, which is the one thing still true.
    */
   it('keeps a task block whose payload does not parse, named by its id', () => {
-    expect(tasksOf([task('b-1', { key: 'broken' })]))
-      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'unreadable' }]);
+    expect(tasksOf([task('b-1', { key: 'broken' })])).toEqual([{
+      blockId: 'b-1', key: 'b-1', state: 'unreadable',
+      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null,
+    }]);
+  });
+
+  /*
+   * The two rows that must never carry a `kind`, asserted for what the panel
+   * does with it rather than for the field: the kind is the *only* control that
+   * opens a worker card (#1149), so `kind: null` is how a withdrawn or
+   * unreadable row is guaranteed to offer no card affordance at all. It is a
+   * second lock on the same rule `workerCardId: null` already states — and the
+   * one that survives even if a future verdict ever reached these rows, because
+   * a tombstone payload has no `kind` field to read and an unreadable payload
+   * has nothing readable in it.
+   */
+  it.each([
+    ['withdrawn', { key: 'gone', declared_by: 'spec', tombstoned_by: 'user', tombstone: {} }],
+    ['unreadable', { key: 'broken' }],
+  ])('gives a %s row no worker kind, so it can offer no card', (_label, payload) => {
+    const row = tasksOf(
+      [task('b-1', payload)],
+      [verdict({ blockId: 'b-1', key: 'gone', status: 'running', workerCardId: 'card-9' })],
+    )[0];
+    expect(row?.kind).toBeNull();
+    expect(row?.workerCardId).toBeNull();
   });
 
   /* `key` is `z.string()` on the wire, so an empty one is legal and reaches the
@@ -206,7 +251,7 @@ describe('deriveReportTasks', () => {
      unreadable task. */
   it('falls back to the block id when the task declared an empty key', () => {
     expect(tasksOf([task('b-1', live('', true))]))
-      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'ready' }]);
+      .toEqual([{ blockId: 'b-1', key: 'b-1', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
   });
 
   /* And only a block that declared itself a task: an `unsupported` block of
@@ -218,6 +263,774 @@ describe('deriveReportTasks', () => {
 
   it('has no rows for a report with no blocks', () => {
     expect(deriveReportTasks(null)).toEqual([]);
+  });
+
+  /* ── The runtime join ───────────────────────────────────────────────── */
+
+  /* The panel's whole complaint: a user who dispatched four tasks could not
+     tell which was running or which worker card had it. Both facts now come off
+     one verdict, and the kind comes off the declaration — the verdict does not
+     carry one. */
+  it('reads a dispatched task as its status and its kind, and carries the worker card', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'alpha', state: 'ready',
+      declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9',
+    }]);
+  });
+
+  /*
+   * CHANGED EXPECTATION — these three cases used to assert one formatted string
+   * each (`verifying · claude`, `done · terminal`, `canceled · codex`). The
+   * separator was the join's typography, and the panel now draws the two halves
+   * as different things: the status is a dot with a label, the kind is the
+   * control that opens the worker card. So the assertion is that both facts
+   * arrive, unedited and apart — a row that concatenated them again would fail
+   * here, which is the point.
+   */
+  it.each([
+    ['claude', 'verifying'],
+    ['terminal', 'done'],
+    ['codex', 'canceled'],
+  ])('carries a %s worker\'s %s status and its kind as two facts', (kind, status) => {
+    expect(tasksOf(
+      [task('b-1', { ...live('alpha', true), kind })],
+      [verdict({ blockId: 'b-1', key: 'alpha', status, workerCardId: 'card-9' })],
+    )[0]).toMatchObject({ status, kind, workerCardId: 'card-9', declaration: null });
+  });
+
+  /*
+   * CHANGED EXPECTATION — `failed` used to be printed *alone*, dropping the
+   * worker kind, so that a reader scanning for the broken row did not have to
+   * read past a worker name. That was a rule about one shared word slot. The
+   * kind is now the row's card control and `failed` is a red dot at the row's
+   * trailing edge, so suppressing the kind would take the click-through away
+   * from the one row a reader most wants to open. Both are carried.
+   */
+  it('carries failed and the kind together, and keeps the worker card', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'failed', workerCardId: 'card-9' })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'alpha', state: 'ready',
+      declaration: null, status: 'failed', statusDetail: null, kind: 'codex', workerCardId: 'card-9',
+    }]);
+  });
+
+  /* ── The kernel's reason (#1147 `status_detail` / #1149 acceptance) ─────
+     `failed` is a word the reader can already see. Why it failed is the thing
+     they were about to go looking for, and the kernel now says it. */
+
+  it('carries the kernel\'s reason for a status alongside the status word', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({
+        blockId: 'b-1', key: 'alpha', status: 'failed',
+        statusDetail: 'wave 9a4c is not a git repository', workerCardId: 'card-9',
+      })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: 'failed',
+      statusDetail: 'wave 9a4c is not a git repository', kind: 'codex', workerCardId: 'card-9',
+    }]);
+  });
+
+  /* The reason qualifies the status word and has nowhere to attach without
+     one: a verdict for a task with no `tasks` row can still carry prose (the
+     projection writes a diagnostic before anything is dispatched), and printing
+     it would decorate a row this build has just decided reports no run. */
+  it('drops the reason when the verdict carries no status to qualify', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: null, statusDetail: 'never dispatched' })],
+    )[0]).toMatchObject({ status: null, statusDetail: null, declaration: null });
+  });
+
+  /* Withdrawn and unreadable rows take no runtime state *at all*, and the
+     reason is runtime state. A withdrawn task's `tasks` row outlives the
+     withdrawal, so its verdict keeps carrying both — and the struck row must
+     keep saying `Withdrawn` and nothing else. */
+  it.each([
+    ['withdrawn', { key: 'gone', declared_by: 'spec', tombstoned_by: 'user', tombstone: {} }],
+    ['unreadable', { key: 'broken' }],
+  ])('gives a %s row no reason either, not just no status', (_label, payload) => {
+    const row = tasksOf(
+      [task('b-1', payload)],
+      [verdict({
+        blockId: 'b-1', key: 'gone', status: 'failed',
+        statusDetail: 'wave 9a4c is not a git repository', workerCardId: 'card-9',
+      })],
+    )[0];
+    expect(row?.status).toBeNull();
+    expect(row?.statusDetail).toBeNull();
+  });
+
+  /* Same rule, and the one that is easy to lose: neither of two rows claiming
+     one key may report the run, so neither may report its reason. */
+  it('gives neither contested row a reason when two live blocks claim one key', () => {
+    const rows = tasksOf(
+      [task('b-one', live('alpha', true)), task('b-two', live('alpha', true))],
+      [verdict({ blockId: 'b-one', key: 'alpha', status: 'failed', statusDetail: 'boom' })],
+    );
+    expect(rows.map((row) => row.statusDetail)).toEqual([null, null]);
+  });
+
+  /* A blank reason is not a reason. `''` would render as a dangling separator
+     — `failed — ` — which says the kernel spoke when it did not. */
+  it.each([['empty', ''], ['whitespace only', '   \n  ']])('reads a %s reason as none', (_label, detail) => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'failed', statusDetail: detail })],
+    )[0]?.statusDetail).toBeNull();
+  });
+
+  /* The reason's only destination is an accessible name and a `title`, neither
+     of which a stylesheet can truncate: a screen reader reads the whole
+     `aria-label` and a tooltip is not styleable at all. A kernel message with a
+     newline in it would also print the newline literally in the tooltip. So the
+     row carries one bounded line, decided here rather than at the renderer. */
+  it('collapses a multi-line reason onto one line', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({
+        blockId: 'b-1', key: 'alpha', status: 'failed',
+        statusDetail: '  spawn failed:\n  fatal: not a git repository\n',
+      })],
+    )[0]?.statusDetail).toBe('spawn failed: fatal: not a git repository');
+  });
+
+  it('bounds a reason longer than the limit and marks the elision', () => {
+    const detail = tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'failed', statusDetail: 'x'.repeat(400) })],
+    )[0]?.statusDetail;
+    expect(detail).toHaveLength(TASK_STATUS_DETAIL_LIMIT);
+    expect(detail?.endsWith('…')).toBe(true);
+  });
+
+  /*
+   * The bound counts UTF-16 code units and the cut must not land inside a
+   * character. `😀` is a surrogate pair, and placed so it straddles the cut it
+   * used to be sliced in half: the row carried a lone high surrogate, which is
+   * `�` in the tooltip and a replacement character in the accessible name — a
+   * kernel reason ending in a glyph the kernel never wrote.
+   *
+   * Asserted on the code points rather than on a rendered string, because a
+   * lone surrogate compares equal to nothing useful and `toBe` on a literal
+   * would be a test nobody can read. The bound itself still has to hold.
+   */
+  it('never cuts a reason in the middle of an astral character', () => {
+    const detail = tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({
+        blockId: 'b-1', key: 'alpha', status: 'failed',
+        statusDetail: `${'x'.repeat(TASK_STATUS_DETAIL_LIMIT - 2)}😀…`,
+      })],
+    )[0]?.statusDetail ?? '';
+    /* Premise: this reason is over the limit, so the cut really happens. */
+    expect(`${'x'.repeat(TASK_STATUS_DETAIL_LIMIT - 2)}😀…`.length)
+      .toBeGreaterThan(TASK_STATUS_DETAIL_LIMIT);
+    expect([...detail].some((point) => {
+      const code = point.codePointAt(0) ?? 0;
+      return code >= 0xd800 && code <= 0xdfff;
+    })).toBe(false);
+    expect(detail.length).toBeLessThanOrEqual(TASK_STATUS_DETAIL_LIMIT);
+    expect(detail.endsWith('…')).toBe(true);
+  });
+
+  /* And the boundary itself is not truncated: a reason exactly at the limit is
+     whole, so the ellipsis only ever means "there was more". */
+  it('leaves a reason exactly at the limit untouched', () => {
+    const whole = 'y'.repeat(TASK_STATUS_DETAIL_LIMIT);
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'failed', statusDetail: whole })],
+    )[0]?.statusDetail).toBe(whole);
+  });
+
+  /*
+   * `schedulable` does NOT mean "not waiting on a dependency", and an earlier
+   * cut of this join read it that way: `pending && !schedulable` printed
+   * `blocked`. The kernel clears the flag for every candidate past the spec
+   * ceiling or the wave-tree budget (`task_projection.rs`, the
+   * `verdicts[index].schedulable = false` after the `spec_task_ceiling`
+   * diagnostic), so an ordinary queue behind capacity rendered as `blocked` and
+   * a healthy wave looked stuck. Task-budget reasoning is out of this slice, so
+   * both rows get the one word the kernel actually gave them.
+   */
+  it('prints pending for an unassigned pending task whether or not it is schedulable', () => {
+    const rows = tasksOf(
+      [task('b-1', live('alpha', true)), task('b-2', live('beta', true))],
+      [
+        verdict({ blockId: 'b-1', key: 'alpha', status: 'pending', schedulable: true }),
+        verdict({ blockId: 'b-2', key: 'beta', status: 'pending', schedulable: false }),
+      ],
+    );
+    expect(rows.map((row) => row.status)).toEqual(['pending', 'pending']);
+    expect(rows.every((row) => row.workerCardId === null)).toBe(true);
+  });
+
+  /* An unassigned non-pending status is printed as it stands rather than being
+     forced into one of the four words: the kernel owns this vocabulary and a
+     status this build has not heard of is more useful shown than hidden. */
+  it('prints an unassigned status that is neither pending nor failed as it stands', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'done' })],
+    )[0]?.status).toBe('done');
+  });
+
+  /*
+   * A verdict with no `status` is a *declaration* verdict: the projection ran,
+   * but the `tasks` table has no row for this key, which is exactly "declared
+   * and never dispatched". `schedulable` is still true here, and reading it as
+   * a run would invent a state the kernel never reported.
+   */
+  it('keeps the declaration word for a verdict that carries no status at all', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', false))],
+      [verdict({ blockId: 'b-1', key: 'alpha', schedulable: false })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'alpha', state: 'not-ready',
+      declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+    }]);
+  });
+
+  /*
+   * The other side of that: once there IS a status, the readiness word stands
+   * down. This is the one precedence rule the single `note` field encoded that
+   * is about meaning rather than about layout — `Not ready` describes a
+   * declaration the kernel has since dispatched anyway, and a row printing both
+   * would be arguing with itself. Carrying the two fields separately makes it
+   * possible to state both at once, which is why it is pinned here rather than
+   * left to fall out of a formatter.
+   */
+  it('drops the readiness word once the kernel reports a run', () => {
+    const row = tasksOf(
+      [task('b-1', live('alpha', false))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
+    )[0];
+    expect(row?.declaration).toBeNull();
+    expect(row?.state).toBe('not-ready');
+    expect(row?.status).toBe('running');
+  });
+
+  /* And a ready task with no verdict at all stays silent — the first render,
+     before the verdict read lands, must look like the list this panel shipped
+     with rather than a hole. */
+  it('renders the declaration-only list when no verdicts have arrived', () => {
+    const row = tasksOf([task('b-1', live('alpha', true))])[0];
+    expect(row?.status).toBeNull();
+    expect(row?.declaration).toBeNull();
+    /* The kind is a declaration fact and does not wait for a verdict: it is
+       what the row shows before anything has run. */
+    expect(row?.kind).toBe('codex');
+  });
+
+  /* A verdict naming a task no block declares is dropped: it would be a row
+     with nothing in the document behind it, which is the one thing this list
+     promised never to be. */
+  it('drops a verdict whose key and block id match nothing in the report', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-99', key: 'ghost', status: 'running', workerCardId: 'card-9' })],
+    )).toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
+  });
+
+  /* The other direction: a declared task with no verdict keeps its declaration
+     word while its neighbour reports a run. */
+  it('leaves a task with no verdict alone while its neighbour runs', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true)), task('b-2', live('beta', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
+    ).map((row) => [row.status, row.kind])).toEqual([['running', 'codex'], [null, 'codex']]);
+  });
+
+  /* `blockId` is the identity join and wins. The fallback matters when the
+     cached report card and the projection disagree about block ids — the two
+     are written by different paths and a stale card is the ordinary state
+     between an edit and its refetch. */
+  it('joins by block id first and falls back to the key', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-other', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
+    )[0]?.status).toBe('running');
+  });
+
+  /*
+   * The trap in that fallback: an unreadable task's `key` is its *block id*, so
+   * matching that literal against the key index would report one task's run on
+   * another task's row. Only a key the block actually declared may be looked
+   * up. (An unreadable row takes no runtime word at all now — see below — so
+   * this is belt and braces, and it is the belt that is load-bearing if the
+   * unreadable rule is ever relaxed.)
+   */
+  it('never matches an unreadable task through the block id standing in for its key', () => {
+    expect(tasksOf(
+      [task('b-1', { key: 'broken' })],
+      [verdict({ blockId: 'b-other', key: 'b-1', status: 'running', workerCardId: 'card-9' })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'b-1', state: 'unreadable',
+      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null,
+    }]);
+  });
+
+  /* Not even through its own block id. This build could not read the block's
+     key, so it cannot vouch that a verdict naming that key is about this task;
+     `Unreadable` is the one thing it can still say truthfully. */
+  it('keeps Unreadable even when a verdict names the very block, and offers no card', () => {
+    expect(tasksOf(
+      [task('b-1', { key: 'broken' })],
+      [verdict({ blockId: 'b-1', key: 'broken', status: 'running', workerCardId: 'card-9' })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'b-1', state: 'unreadable',
+      declaration: 'Unreadable', status: null, statusDetail: null, kind: null, workerCardId: null,
+    }]);
+  });
+
+  /*
+   * A withdrawn declaration keeps saying it was withdrawn.
+   *
+   * CHANGED EXPECTATION — this test used to assert the opposite ("reports a run
+   * on a withdrawn task rather than its declaration word"), on the theory that
+   * a task withdrawn mid-flight still has a live worker worth reporting. What
+   * that produced in the panel was worse than the state it described:
+   * withdrawing an already-dispatched task leaves its `tasks` row alive, so the
+   * verdict keeps carrying `status` — commonly `done` — and the row rendered an
+   * un-struck `done` with the word `Withdrawn` gone entirely, while the click
+   * flipped to the worker card so the withdrawn block could no longer be
+   * revealed from the panel at all. The panel's job here is to say the task
+   * existed and was withdrawn; the worker card is reachable from CARDS.
+   *
+   * It also settles the duplicate below: a key that is withdrawn and then
+   * redeclared has two blocks, and the kernel stamps the live run onto the
+   * verdicts of both.
+   */
+  it('keeps the declaration word and no card for a withdrawn task that had already run', () => {
+    expect(tasksOf(
+      [task('b-1', { key: 'gone', declared_by: 'spec', tombstoned_by: 'user', tombstone: {} })],
+      [verdict({ blockId: 'b-1', key: 'gone', status: 'done', workerCardId: 'card-9', schedulable: false })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'gone', state: 'withdrawn',
+      declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null,
+    }]);
+  });
+
+  /*
+   * Two rows, one run — the duplication the kernel can genuinely produce.
+   *
+   * `attach_task_read_state` indexes the `tasks` table by key alone and stamps
+   * `status` / `workerCardId` onto EVERY verdict carrying that key, and the
+   * projection emits a verdict for a tombstoned declaration as well as for the
+   * live one. Withdraw `alpha`, redeclare `alpha` as a new block, and
+   * `taskDiagnostics` contains two verdicts both reporting the live run. Only
+   * the live block may print it.
+   */
+  it('reports a redeclared key on the live block only, never on the withdrawn one', () => {
+    expect(tasksOf(
+      [
+        task('b-old', { key: 'alpha', declared_by: 'spec', tombstoned_by: 'user', tombstone: {} }),
+        task('b-new', live('alpha', true)),
+      ],
+      [
+        verdict({ blockId: 'b-old', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-new', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+      ],
+    )).toEqual([
+      { blockId: 'b-old', key: 'alpha', state: 'withdrawn', declaration: 'Withdrawn', status: null, statusDetail: null, kind: null, workerCardId: null },
+      { blockId: 'b-new', key: 'alpha', state: 'ready', declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9' },
+    ]);
+  });
+
+  /*
+   * The other duplicate, and the one the redeclare rule above does NOT settle:
+   * two blocks declaring the same key while BOTH are live.
+   *
+   * Reachable, not hypothetical. `tasks` is `UNIQUE (wave_id, key)` (migration
+   * 0058) so only one run can exist, and `plan.upsert` rejects duplicates only
+   * *within one batch* (`plan.rs` `validate_new_batch`); the projection accepts
+   * the document and merely flags each block with a `duplicate_key` diagnostic
+   * (`calm-types/src/report_blocks/tasks.rs`), after which
+   * `attach_task_read_state` stamps the single `tasks` row onto both verdicts.
+   * The frontend therefore receives two verdicts, each correctly naming its own
+   * block, each carrying the same `status` and the same `workerCardId` — and
+   * rendered naively that is one run shown as two, both rows clicking through
+   * to the same worker card.
+   *
+   * There is no owner to pick: the kernel itself calls this document invalid.
+   * So both rows take the withdrawn treatment — declaration word, no card.
+   */
+  it('reports no run on either row when two live blocks claim the same key', () => {
+    expect(tasksOf(
+      [task('b-one', live('alpha', true)), task('b-two', live('alpha', false))],
+      [
+        verdict({ blockId: 'b-one', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-two', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+      ],
+    )).toEqual([
+      { blockId: 'b-one', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+      {
+        blockId: 'b-two', key: 'alpha', state: 'not-ready',
+        declaration: 'Not ready', status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+      },
+    ]);
+  });
+
+  /* And it is scoped to the contested key: the honest row beside it still
+     reports its own run. A rule that quieted the whole panel because one key
+     was declared twice would cost more than the defect it fixes. */
+  it('still reports the run of an uncontested key beside a contested one', () => {
+    expect(tasksOf(
+      [
+        task('b-one', live('alpha', true)),
+        task('b-two', live('alpha', true)),
+        task('b-solo', live('beta', true)),
+      ],
+      [
+        verdict({ blockId: 'b-one', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-two', key: 'alpha', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-solo', key: 'beta', status: 'running', workerCardId: 'card-7' }),
+      ],
+    ).map((row) => [row.status, row.workerCardId])).toEqual([
+      [null, null],
+      [null, null],
+      ['running', 'card-7'],
+    ]);
+  });
+
+  /*
+   * ── CHANGED EXPECTATION ──────────────────────────────────────────────────
+   *
+   * This test used to assert the opposite — that two blocks declaring NO key
+   * each keep their own run, on the argument that "the empty string is not an
+   * identifier". The `tasks` table disagrees: it is `UNIQUE (wave_id, key)`
+   * with `key` a plain string, so `''` is one row like any other, and
+   * `attach_task_read_state` stamps that single row onto *both* verdicts by
+   * key. The old expectation only looked coherent because its fixture gave the
+   * two verdicts different worker cards (`card-9` / `card-7`), which is a shape
+   * the kernel cannot produce for one key.
+   *
+   * With the reachable fixture — one run, stamped twice — the old rule printed
+   * one run as two, both rows clicking through to the same worker card, under
+   * two names that look distinct because the display name falls back to the
+   * block id. That is precisely the state `contestedLiveKeys` exists to refuse,
+   * so the empty key is now counted like every other key.
+   *
+   * The rows still exist and still carry their fallback names; what they lose
+   * is the run neither of them can be shown to own.
+   */
+  it('treats a key two live blocks both leave empty as contested, like any other shared key', () => {
+    expect(tasksOf(
+      [task('b-one', live('', true)), task('b-two', live('', true))],
+      [
+        verdict({ blockId: 'b-one', key: '', status: 'running', workerCardId: 'card-9' }),
+        verdict({ blockId: 'b-two', key: '', status: 'running', workerCardId: 'card-9' }),
+      ],
+    ).map((row) => [row.key, row.status, row.workerCardId])).toEqual([
+      ['b-one', null, null],
+      ['b-two', null, null],
+    ]);
+  });
+
+  /* And one live block with no declared key is not contested with itself: the
+     single-empty-key row keeps its run, which is what stops the rule above from
+     being a blanket refusal to report unnamed tasks. */
+  it('still reports the run of a lone block that declared no key', () => {
+    expect(tasksOf(
+      [task('b-one', live('', true))],
+      [verdict({ blockId: 'b-one', key: '', status: 'running', workerCardId: 'card-9' })],
+    ).map((row) => [row.key, row.status, row.workerCardId])).toEqual([
+      ['b-one', 'running', 'card-9'],
+    ]);
+  });
+
+  /*
+   * `''` is not a status either, and it is the one empty string that would have
+   * got through: it is not `null`, so it silences the declaration word, opens
+   * the `statusDetail` gate, and renders as `data-nc-task-status=""` — a dot
+   * matching no form, and an accessible name reading `Status:  — boom`, a
+   * kernel reason with no state attached. Today's `TaskStatus` serialises to a
+   * fixed lowercase word, so this hardens the wire type (`z.string().nullish()`)
+   * rather than a writer, on the same line of reasoning as the empty
+   * `workerCardId` and the empty `key` above.
+   */
+  it('treats an empty status as no run at all, reason and declaration word included', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', false))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: '', statusDetail: 'boom', workerCardId: 'card-9' })],
+    )).toEqual([{
+      blockId: 'b-1', key: 'alpha', state: 'not-ready', declaration: 'Not ready',
+      status: null, statusDetail: null, kind: 'codex', workerCardId: 'card-9',
+    }]);
+  });
+
+  /*
+   * The key fallback is for a verdict that names no block this report has —
+   * never a licence to accept a block-id hit that contradicts the key. Both
+   * identifiers are present on both sides here and they disagree, which means
+   * the cached card and the projection are describing different documents; the
+   * one thing that cannot be right is reporting `beta`'s run on `alpha`'s row.
+   */
+  /*
+   * The same rule from the other side, and the one a single-row report cannot
+   * catch: the verdict names a block that EXISTS, just not this one.
+   *
+   * `b-alpha` finds nothing at its own id, so it reaches the key index — and
+   * before the fix that index held `b-beta`'s verdict, because it carries the
+   * key `alpha`. The row then printed `b-beta`'s run and, worse, offered
+   * `b-beta`'s worker card as `b-alpha`'s. A verdict that named a block said
+   * which row it is about; it may decorate that row or none.
+   *
+   * `b-beta`'s own row keeps its block-id hit and refuses it on the key
+   * contradiction, which is the rule above — so the correct answer is that this
+   * verdict decorates nothing at all.
+   */
+  it('never lets a verdict naming another report block reach a row through the key index', () => {
+    expect(tasksOf(
+      [task('b-alpha', live('alpha', true)), task('b-beta', live('beta', true))],
+      [verdict({ blockId: 'b-beta', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
+    )).toEqual([
+      { blockId: 'b-alpha', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+      { blockId: 'b-beta', key: 'beta', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+    ]);
+  });
+
+  /* The fallback the rule above must not have cost: a verdict whose block id
+     names NO row still reaches its row by key. This is the ordinary state
+     between a report edit and the projection catching up, and it is the only
+     way a run is reported at all when the two block-id spaces have drifted. */
+  it('still reaches a row by key when the verdict names a block this report does not have', () => {
+    expect(tasksOf(
+      [task('b-alpha', live('alpha', true)), task('b-beta', live('beta', true))],
+      [verdict({ blockId: 'b-stale', key: 'alpha', status: 'running', workerCardId: 'card-9' })],
+    )).toEqual([
+      { blockId: 'b-alpha', key: 'alpha', state: 'ready', declaration: null, status: 'running', statusDetail: null, kind: 'codex', workerCardId: 'card-9' },
+      { blockId: 'b-beta', key: 'beta', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null },
+    ]);
+  });
+
+  it('ignores a block-id hit whose key contradicts the block declaration', () => {
+    expect(tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'beta', status: 'running', workerCardId: 'card-9' })],
+    )).toEqual([{ blockId: 'b-1', key: 'alpha', state: 'ready', declaration: null, status: null, statusDetail: null, kind: 'codex', workerCardId: null }]);
+  });
+
+  /* `''` is not a card id. The wire types `workerCardId` as an optional string,
+     and an empty one would route the panel's click at a card that cannot
+     exist — the row must fall back to revealing its block. */
+  it('treats an empty worker card id as no card at all', () => {
+    const row = tasksOf(
+      [task('b-1', live('alpha', true))],
+      [verdict({ blockId: 'b-1', key: 'alpha', status: 'pending', workerCardId: '' })],
+    )[0];
+    expect(row?.workerCardId).toBeNull();
+    expect(row?.status).toBe('pending');
+  });
+});
+
+/*
+ * The predicate that decides whether the panel's refresh timer runs at all.
+ *
+ * It is NOT the kernel's `TaskStatus::is_terminal` read from the other side,
+ * and an earlier cut that made it one is the defect these tests pin. The timer
+ * exists for one write — `scheduler::mark_running`, which flips
+ * `dispatched → running` and stamps `worker_card_id` while emitting nothing —
+ * so the only statuses that may keep it alive are the ones inside that
+ * eventless window. Every other status, terminal or not, is bracketed by events
+ * that already invalidate this query, and polling it would be an unbounded cost
+ * for no convergence: nothing bounds how long a row may sit in one status.
+ *
+ * The failure modes are asymmetric, which is why the unknown case is pinned
+ * here — a word this build has not heard of must NOT keep the timer alive, or
+ * the day the kernel adds a terminal status every settled wave in every open
+ * tab polls forever.
+ */
+describe('hasLiveTaskRun', () => {
+  /*
+   * **Rows, and produced by the real join.** The predicate used to read the raw
+   * verdicts, and reading them is what made its own comment false: the kernel
+   * emits a verdict for a *deleted* declaration and `deriveReportTasks` refuses
+   * to decorate a contested key, so an in-flight status can exist with no row
+   * anywhere on screen for the poll to converge to. Hand-written rows would let
+   * that class of defect back in silently — a fixture can make any row it
+   * likes — so every row below comes out of `deriveReportTasks` against real
+   * declarations, which is the function the panel calls.
+   */
+  const blocksOf = (blocks: unknown[]) =>
+    readWaveReport([card({ payload: { body: 'x', blocks } })])?.blocks ?? null;
+  const declared = (id: string, key: string) =>
+    ({ id, kind: 'task', rev: 1, payload: { key, kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' } });
+  const rowsFor = (verdicts: TaskVerdict[], blocks: unknown[] = [declared('b-1', 'k')]) =>
+    deriveReportTasks(blocksOf(blocks), verdicts);
+  const at = (status: string | null) => rowsFor([{
+    blockId: 'b-1', key: 'k', schedulable: true, status, workerCardId: null,
+  }]);
+
+  /* Premise: the join really produced a decorated row, or every assertion below
+     is true for the wrong reason. */
+  it('decorates the row it is asked about', () => {
+    expect(at('running').map((row) => row.status)).toEqual(['running']);
+  });
+
+  /* `dispatched` is where the eventless window opens (`task.dispatched` fired
+     with `worker_card_id` still NULL) and `running` is what the silent write
+     produces. Nothing else will say so. */
+  it('is true inside the eventless mark_running window', () => {
+    for (const status of ['dispatched', 'running']) {
+      expect(hasLiveTaskRun(at(status))).toBe(true);
+    }
+  });
+
+  it('is false for every terminal status', () => {
+    for (const status of ['done', 'failed', 'canceled']) {
+      expect(hasLiveTaskRun(at(status))).toBe(false);
+    }
+  });
+
+  /*
+   * **`pending` does not poll**, and this is the whole point of the narrowing.
+   *
+   * A pending row's only exit is the claim tx, which emits
+   * `Event::TaskDispatched` — and `task.dispatched` is in
+   * `taskVerdictInvalidatingKinds`, so the panel is told. The timer would buy
+   * nothing and cost without limit: a task behind a zero task budget, behind a
+   * dependency that failed, or left pending by a canceled wave stays pending
+   * for the life of the wave, and every open tab on that wave would refetch the
+   * whole document projection every 3 seconds for as long as it stayed focused.
+   */
+  it('is false for a wave holding nothing but pending rows, so a stuck wave does not poll', () => {
+    expect(hasLiveTaskRun(at('pending'))).toBe(false);
+    expect(hasLiveTaskRun(rowsFor([
+      { blockId: 'b-1', key: 'a', schedulable: false, status: 'pending', workerCardId: null },
+      { blockId: 'b-2', key: 'b', schedulable: true, status: 'pending', workerCardId: null },
+      { blockId: 'b-3', key: 'c', schedulable: false, status: 'canceled', workerCardId: null },
+    ], [declared('b-1', 'a'), declared('b-2', 'b'), declared('b-3', 'c')]))).toBe(false);
+  });
+
+  /*
+   * `verifying` does not poll either, for the same reason from both sides. It
+   * is only ever entered by `task_report_success_from_worker_tx`, whose two
+   * call sites emit `Event::TaskCompleted` in the same tx, and only left
+   * through `reconcile_gate_outcome`'s `task.gate_result` / `task.completed` /
+   * `task.failed` — all four invalidate this query. Its `worker_card_id` was
+   * stamped long before and arrived with that entry event, so there is nothing
+   * for a poll to find, and a parked gate can sit for hours.
+   */
+  it('is false while a gate verifies, which is evented on both sides', () => {
+    expect(hasLiveTaskRun(at('verifying'))).toBe(false);
+  });
+
+  /* A declared task with no `tasks` row has not run. The write that creates
+     that row emits `task.dispatched`, which invalidates this query — so there
+     is nothing here for a timer to converge. */
+  it('is false when a task has no status at all', () => {
+    expect(hasLiveTaskRun(at(null))).toBe(false);
+    expect(hasLiveTaskRun([])).toBe(false);
+    expect(hasLiveTaskRun(undefined)).toBe(false);
+  });
+
+  it('is false for a status this build does not know, so an unknown word cannot poll forever', () => {
+    expect(hasLiveTaskRun(at('quiescent'))).toBe(false);
+  });
+
+  /* One live row among settled ones is the ordinary mid-wave state. */
+  it('is true when any one row is live', () => {
+    expect(hasLiveTaskRun(rowsFor([
+      { blockId: 'b-1', key: 'a', schedulable: true, status: 'done', workerCardId: 'c1' },
+      { blockId: 'b-2', key: 'b', schedulable: true, status: 'running', workerCardId: 'c2' },
+    ], [declared('b-1', 'a'), declared('b-2', 'b')]))).toBe(true);
+  });
+
+  /*
+   * ── A run with no row on screen is not something a timer can converge ────
+   *
+   * The kernel synthesises a verdict for a declaration that has been *deleted*
+   * from the document: `blockId: ''`, a key no block here declares. It names no
+   * row, `deriveReportTasks` builds none for it, and nothing in the panel will
+   * ever change when it settles — so a 3 s refetch on its account is a cost
+   * with no observable, which is exactly what the predicate's own comment says
+   * it does not do.
+   */
+  it('is false for a live verdict whose declaration was deleted from the report', () => {
+    const verdicts: TaskVerdict[] = [{
+      blockId: '', key: 'deleted-task', schedulable: true, status: 'running', workerCardId: 'c-9',
+    }];
+    const rows = rowsFor(verdicts);
+    expect(rows.map((row) => [row.key, row.status])).toEqual([['k', null]]);
+    expect(hasLiveTaskRun(rows)).toBe(false);
+  });
+
+  /*
+   * And the other rowless in-flight run: a key two live blocks both claim. The
+   * `tasks` row is stamped onto both verdicts, `contestedLiveKeys` refuses to
+   * decorate either, and the panel shows two undecorated rows however long the
+   * run takes.
+   */
+  it('is false for a live run on a key two live declarations both claim', () => {
+    const rows = rowsFor([
+      { blockId: 'b-1', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
+      { blockId: 'b-2', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
+    ], [declared('b-1', 'dup'), declared('b-2', 'dup')]);
+    expect(rows.map((row) => row.status)).toEqual([null, null]);
+    expect(hasLiveTaskRun(rows)).toBe(false);
+  });
+});
+
+describe('waveTaskVerdictsOperation', () => {
+  it('GETs the wave report route with the id escaped', () => {
+    const operation = waveTaskVerdictsOperation('w/1');
+    expect(operation.method).toBe('GET');
+    expect(operation.path).toBe('/api/waves/w%2F1/report');
+  });
+
+  /* Only `taskDiagnostics` is read. The rest of the response repeats the report
+     card this page already holds, and decoding it here would give the document
+     two sources that can disagree. */
+  it('reads only the task diagnostics out of the response', () => {
+    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({
+      schemaVersion: 3, docRev: 9, summary: 's', body: 'b', blocks: [{ id: 'b-1' }],
+      taskDiagnostics: [{
+        blockId: 'b-1', key: 'alpha', schedulable: true, status: 'running',
+        workerCardId: 'card-9', gateResult: null, diagnostics: [],
+      }],
+    })).toEqual([{
+      blockId: 'b-1', key: 'alpha', schedulable: true, status: 'running', workerCardId: 'card-9',
+    }]);
+  });
+
+  /* `statusDetail` is the kernel's own reason for the status (#1147). It is
+     read off the same verdict rather than fetched separately, which is the only
+     way the two can never disagree — and it must survive the decode, or the row
+     model above has nothing to carry. */
+  it('reads the kernel\'s status detail off the verdict', () => {
+    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({
+      taskDiagnostics: [{
+        blockId: 'b-1', key: 'alpha', schedulable: true, status: 'failed',
+        statusDetail: 'wave 9a4c is not a git repository', diagnostics: [],
+      }],
+    })).toEqual([{
+      blockId: 'b-1', key: 'alpha', schedulable: true, status: 'failed',
+      statusDetail: 'wave 9a4c is not a git repository',
+    }]);
+  });
+
+  /* Fail-soft, exactly as one malformed block costs only that block: one
+     unreadable verdict costs that row's runtime word and nothing else. */
+  it('drops a malformed verdict and keeps the rest', () => {
+    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({
+      taskDiagnostics: [
+        { blockId: 'b-1', key: 'alpha', schedulable: 'yes' },
+        { blockId: 'b-2', key: 'beta', schedulable: false },
+      ],
+    })).toEqual([{ blockId: 'b-2', key: 'beta', schedulable: false }]);
+  });
+
+  /* A response with no diagnostics field at all is "no verdicts", not a decode
+     failure — the panel must degrade to the declaration-only list. */
+  it('reads an absent taskDiagnostics as no verdicts', () => {
+    expect(waveTaskVerdictsOperation('w1').responseSchema.parse({ summary: 's' })).toEqual([]);
   });
 });
 

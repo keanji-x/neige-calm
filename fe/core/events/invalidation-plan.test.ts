@@ -79,12 +79,30 @@ describe('invalidation plan behavior', () => {
 
   it('uses wave_id, then card ownership, then the broad wave-files prefix', () => {
     const context = { findWaveOwningCard: (cardId: string) => cardId === 'card-1' ? 'wave-1' : null };
-    expect(invalidationPlanFor(event({ ev: 'codex.hook', data: { wave_id: 'direct' } }), context).invalidate)
+    const ev = 'codex.worker_requested';
+    expect(invalidationPlanFor(event({ ev, data: { wave_id: 'direct' } }), context).invalidate)
       .toEqual([['wave-files', 'direct'], ['wave-report', 'direct']]);
-    expect(invalidationPlanFor(event({ ev: 'codex.hook', data: { card_id: 'card-1' } }), context).invalidate)
+    expect(invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } }), context).invalidate)
       .toEqual([['wave-files', 'wave-1'], ['wave-report', 'wave-1']]);
-    expect(invalidationPlanFor(event({ ev: 'codex.hook', data: {} }), context).invalidate)
+    expect(invalidationPlanFor(event({ ev, data: {} }), context).invalidate)
       .toEqual([['wave-files'], ['wave-report']]);
+  });
+
+  /*
+   * A hook resolves the same wave the same way — it just stops at the
+   * workspace. It fires roughly twice per tool call per running worker and
+   * writes no `tasks` row, so paying a whole-document report projection for it
+   * bought a value that could not have changed. The ladder is asserted again
+   * here so "no report key" cannot be confused with "no wave resolution".
+   */
+  it.each(['codex.hook', 'claude.hook'] as const)('resolves a wave for %s but stops at wave-files', (ev) => {
+    const context = { findWaveOwningCard: (cardId: string) => cardId === 'card-1' ? 'wave-1' : null };
+    expect(invalidationPlanFor(event({ ev, data: { wave_id: 'direct' } }), context).invalidate)
+      .toEqual([['wave-files', 'direct']]);
+    expect(invalidationPlanFor(event({ ev, data: { card_id: 'card-1' } }), context).invalidate)
+      .toEqual([['wave-files', 'wave-1']]);
+    expect(invalidationPlanFor(event({ ev, data: {} }), context).invalidate)
+      .toEqual([['wave-files']]);
   });
 
   it('invalidates terminal runtime projection through card ownership', () => {

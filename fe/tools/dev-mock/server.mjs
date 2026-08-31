@@ -214,6 +214,23 @@ const w1Report = {
         tombstone: { reason: 'A fallback that never runs is a fallback nobody notices has broken.' },
       },
     },
+    // Two more declarations so the TASKS panel can show all four runtime
+    // states at once — see `taskDiagnostics` below, which is the half of this
+    // the document itself cannot carry.
+    {
+      id: 'b-task-bench', kind: 'task', rev: 1,
+      payload: {
+        key: 'bench-harness', kind: 'terminal', declared_by: 'spec', ready: true,
+        goal: 'Stand the 4k-card fixture up as a repeatable benchmark instead of a one-off run.',
+      },
+    },
+    {
+      id: 'b-task-docs', kind: 'task', rev: 1,
+      payload: {
+        key: 'index-invariants', kind: 'codex', declared_by: 'spec', ready: true,
+        goal: 'Write the frozen-index invariants down beside the projection that maintains them.',
+      },
+    },
     {
       id: 'b-app', kind: 'app', rev: 1,
       payload: { src: '/dev-mock/app.html', title: 'Index rebuild timeline', height: 168 },
@@ -279,6 +296,18 @@ export const devMockCards = {
   'w-1': [
     { id: 'c-1', wave_id: 'w-1', kind: 'wave-report', sort: 0, payload: w1Report, deletable: false },
     { id: 'c-2', wave_id: 'w-1', kind: 'codex', title: 'agent', sort: 1, payload: {}, deletable: true },
+    // A worker card as #1149 mints them: titled after the task key it is
+    // running. The CARDS row shows the name and the kind, and the TASKS row for
+    // `bench-harness` clicks through to this card.
+    { id: 'c-4', wave_id: 'w-1', kind: 'terminal', title: 'bench-harness', sort: 2, payload: {}, deletable: true },
+    // The worker card behind `index-invariants`, and the only card here whose
+    // kind no registry entry claims — what a kernel newer than this bundle
+    // stamps. It is what keeps the TASKS panel's not-clickable branch in the
+    // preview now that `codex` has an adapter, and it shows the CARDS panel's
+    // "an unlisted card is worse than an unrecognised one" rule at the same
+    // time. The kind is deliberately outside `BUILTIN_CARD_ORDER`, so no future
+    // adapter can quietly take this branch away again.
+    { id: 'c-5', wave_id: 'w-1', kind: 'future-worker', title: 'index-invariants', sort: 3, payload: {}, deletable: true },
   ],
   'w-2': [{ id: 'c-3', wave_id: 'w-2', kind: 'wave-report', sort: 0, payload: w2Report, deletable: false }],
 };
@@ -337,6 +366,50 @@ const backlinks = {
 
 const EMPTY_BACKLINKS = { backlinks: [], truncated: false, skipped_sources: 0 };
 
+// The kernel's `BlockVerdict[]`, the runtime half of the TASKS panel: one entry
+// per declared task, joined to the report's own `task` blocks by block id.
+//
+// Every state the panel can draw is here, because the states worth being able
+// to look at are the ones the panel legislates and a fixture that only shows
+// the happy one is a fixture nobody can sign a design off against:
+//   * `bench-harness`  — dispatched onto a worker card that exists and whose
+//                        kind the registry can draw, so its `terminal` reads as
+//                        a control and opens the card;
+//   * `ingest-resolver`— declared and admitted, waiting: `pending`, no card;
+//   * `index-invariants` — `failed`, and dispatched onto `c-5`, a worker card
+//                        whose kind no registry entry claims. It is the case the
+//                        preview was missing: a task that has a worker card the
+//                        registry cannot draw, so `app/router` clears the id and
+//                        the row's `codex` must render as plain text that routes
+//                        nowhere. It pointed at the **codex** card until
+//                        `CODEX_CARD_ENTRY` landed and made that card drawable,
+//                        which turned this row into a second copy of
+//                        `bench-harness`; a kind no entry claims is the version
+//                        of the branch no adapter can take away. It is
+//                        also the only row carrying a `statusDetail`, so the
+//                        preview shows both hovers: a bare `running` on
+//                        `bench-harness` and `failed — …` here;
+//   * `walk-fallback`  — withdrawn. Its `tasks` row outlived the withdrawal
+//                        (that is what the kernel does), so the verdict still
+//                        carries `status: 'done'` — and the row must still say
+//                        `Withdrawn` and still reveal the block. If a preview
+//                        of this ever shows `done`, the join has regressed.
+const taskDiagnostics = {
+  'w-1': [
+    { blockId: 'b-task-bench', key: 'bench-harness', schedulable: true, diagnostics: [], status: 'running', workerCardId: 'c-4' },
+    { blockId: 'b-task-ingest', key: 'ingest-resolver', schedulable: true, diagnostics: [], status: 'pending' },
+    {
+      blockId: 'b-task-docs', key: 'index-invariants', schedulable: true, diagnostics: [], status: 'failed',
+      // A real kernel `status_detail` (#1147): a spawn that never got as far as
+      // the worker. Hover the red dot and the row says why, instead of leaving
+      // `failed` as the whole story.
+      statusDetail: 'spawn failed: wave 9a4c1f2e-77b0-4d61-9d3a-2f5c8e0b1a63 is not a git repository',
+      workerCardId: 'c-5',
+    },
+    { blockId: 'b-task-dropped', key: 'walk-fallback', schedulable: false, diagnostics: [], status: 'done', workerCardId: 'c-2' },
+  ],
+};
+
 // A same-origin page for the `app` block to embed. It is served by this
 // middleware rather than dropped into `web/public` so the demo adds no tracked
 // asset to the app itself.
@@ -390,7 +463,7 @@ export const DEV_MOCK_ROUTES = Object.freeze([
   ['GET', '/api/coves/{cove_id}/folders'],
   ['PATCH', '/api/coves/{id}'], ['DELETE', '/api/coves/{id}'],
   ['GET', '/api/waves'], ['POST', '/api/waves'], ['GET', '/api/waves/{id}'], ['PATCH', '/api/waves/{id}'], ['DELETE', '/api/waves/{id}'],
-  ['GET', '/api/waves/{id}/backlinks'],
+  ['GET', '/api/waves/{id}/backlinks'], ['GET', '/api/waves/{id}/report'],
 ].map((route) => Object.freeze(route)));
 
 function send(res, status, body) {
@@ -558,6 +631,25 @@ export async function handleDevMockRequest(req, res, next) {
         if (waveBacklinks && method === 'GET') {
           const id = decodeURIComponent(waveBacklinks[1]);
           return send(res, 200, backlinks[id] ?? EMPTY_BACKLINKS);
+        }
+        // The whole `WaveReportReadResponse`, not just the half the TASKS panel
+        // reads: the report is served from the wave's own report card so the
+        // route and the card cannot disagree, which is the property the real
+        // kernel has and a fixture that answered with `taskDiagnostics` alone
+        // would have quietly dropped.
+        const waveReport = /^\/api\/waves\/([^/]+)\/report$/.exec(path);
+        if (waveReport && method === 'GET') {
+          const id = decodeURIComponent(waveReport[1]);
+          if (!waves.some((wave) => wave.id === id)) return send(res, 404, { message: 'no such wave' });
+          const report = (cards[id] ?? []).find((entry) => entry.kind === 'wave-report')?.payload;
+          return send(res, 200, {
+            schemaVersion: report?.schemaVersion ?? 3,
+            docRev: report?.docRev ?? 0,
+            summary: report?.summary ?? '',
+            body: report?.body ?? '',
+            blocks: report?.blocks ?? [],
+            taskDiagnostics: taskDiagnostics[id] ?? [],
+          });
         }
         const waveId = /^\/api\/waves\/([^/]+)$/.exec(path);
         if (waveId && (method === 'GET' || method === 'PATCH' || method === 'DELETE')) {

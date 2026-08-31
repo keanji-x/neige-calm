@@ -38,6 +38,20 @@ export default defineConfig({
             headless: true,
             provider: defineBrowserProvider(playwright()),
             instances: [{ browser: 'chromium' }],
+            /*
+             * `prefers-reduced-motion` is a *media feature*, and nothing inside
+             * the page can set one — which is how a reduced-motion rule shipped
+             * that never matched anything: the test that guarded it read the
+             * rule's own text out of the stylesheet instead of asking the
+             * engine what it computed. Only the driver can emulate the feature,
+             * so it is exposed here as a command and the assertion moves to the
+             * effective `animation-name` on the painted element.
+             */
+            commands: {
+              emulateReducedMotion: async ({ page }, reduce: boolean) => {
+                await page.emulateMedia({ reducedMotion: reduce ? 'reduce' : 'no-preference' });
+              },
+            },
           },
         },
       },

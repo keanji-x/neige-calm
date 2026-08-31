@@ -8,10 +8,13 @@ import { z } from 'zod';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import {
+  readWaveReport, WAVE_REPORT_CARD_KIND, type TaskVerdict,
+} from '../../../../core/domain/report.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
 import {
-  ApiError, coveListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, useCoveMutations, useWaveMutations,
-  useWorkspace, wavesInCoveQueryOptions,
+  ApiError, coveListQueryOptions, harnessItemsQueryOptions, queryKeys, runOperation, taskVerdictsRefetchInterval,
+  useCoveMutations, useWaveMutations, useWorkspace, wavesInCoveQueryOptions,
 } from './queries.ts';
 
 function recordingTransport(reply: (request: ApiRequest) => ApiTransportResponse) {
@@ -200,5 +203,109 @@ describe('spec history pagination', () => {
     expect(cursor).toBe(701);
     await options.queryFn({ pageParam: cursor ?? 0 });
     expect(paths[1]).toContain('after_id=701');
+  });
+});
+
+/*
+ * The wave page's task-verdict timer, at the two states the query can be in.
+ *
+ * This is the whole convergence story for `worker_card_id`: the kernel's
+ * `mark_running` stamps it without emitting anything, so if this callback
+ * returns `false` at the wrong moment the panel's click-through to the worker
+ * card is simply dead until the tab is reloaded.
+ */
+describe('task-verdict poll interval', () => {
+  /*
+   * The declarations are part of the input now, and that is the fix this
+   * describe grew: the live branch asks whether the *panel* has a live row, not
+   * whether the wire has a live verdict. The two differ for a verdict that
+   * produces no row — see the last two cases.
+   */
+  const declaration = (id: string, key: string) => ({
+    id, kind: 'task', rev: 1, payload: { key, kind: 'codex', declared_by: 'spec', ready: true, goal: 'g' },
+  });
+  const blocks = (declarations = [declaration('b-1', 'k')]) => readWaveReport([{
+    id: 'c1', wave_id: 'w1', kind: WAVE_REPORT_CARD_KIND, title: null, sort: 0,
+    payload: { body: 'x', blocks: declarations }, deletable: false, created_at: 0, updated_at: 0,
+  }])?.blocks ?? null;
+  const interval = taskVerdictsRefetchInterval(blocks());
+  const state = (over: Partial<{ data: TaskVerdict[]; errorUpdateCount: number }>) =>
+    ({ state: { errorUpdateCount: 0, ...over } });
+  const at = (status: string): TaskVerdict[] =>
+    [{ blockId: 'b-1', key: 'k', schedulable: true, status, workerCardId: null }];
+
+  it('polls while a run sits inside the eventless window', () => {
+    expect(interval(state({ data: at('running') }))).toBe(3000);
+  });
+
+  it('stops once the read shows nothing left for a timer to find', () => {
+    expect(interval(state({ data: at('done') }))).toBe(false);
+    expect(interval(state({ data: [] }))).toBe(false);
+  });
+
+  /* A failed *refetch* keeps react-query's last good data, so this branch is
+     unchanged by an error: a live run stays live and the timer that will fetch
+     it again keeps running. */
+  it('keeps polling a live run through a failed refetch, on the retained data', () => {
+    expect(interval(state({ data: at('running'), errorUpdateCount: 3 })))
+      .toBe(3000);
+  });
+
+  /*
+   * The defect: when the FIRST load fails there is no data at all, so
+   * `hasLiveTaskRun` is vacuously false and the timer never starts. Once
+   * react-query has exhausted its retries nothing in the page ever asks again,
+   * and a wave that was mid-dispatch shows declaration words with no
+   * click-through for as long as the tab stays open.
+   */
+  it('still schedules a retry when the initial load failed and there is no data', () => {
+    expect(interval(state({ errorUpdateCount: 1 }))).toBe(15_000);
+  });
+
+  /* Bounded, because `GET /api/waves/{id}/report` also fails *permanently*: a
+     deleted wave 404s and a wave missing its `wave-report` card 500s
+     (`resolve_report_for_wave`). An unconditional poll on "no data" would leave
+     a stale tab hitting a dead route every few seconds forever. */
+  it('gives up after a bounded number of failed loads rather than hammering a dead route', () => {
+    expect(interval(state({ errorUpdateCount: 4 }))).toBe(15_000);
+    expect(interval(state({ errorUpdateCount: 5 }))).toBe(false);
+    expect(interval(state({ errorUpdateCount: 99 }))).toBe(false);
+  });
+
+  /* And no timer while the very first fetch is still on the wire — there is
+     already a request in flight to wait for. */
+  it('does not schedule anything before the first fetch has resolved', () => {
+    expect(interval(state({}))).toBe(false);
+  });
+
+  /*
+   * ── A live verdict that produces no row must not start the timer ─────────
+   *
+   * The kernel synthesises a verdict for a declaration that has been deleted
+   * from the document — `blockId: ''`, naming no block this report has. No row
+   * is built for it, so nothing on screen can converge, and a 3 s refetch on
+   * its account is the unbounded cost this callback's comment says it does not
+   * pay. Same for a key two live declarations both claim: one `tasks` row,
+   * stamped onto both verdicts, and `deriveReportTasks` decorates neither.
+   */
+  it('does not poll for an in-flight run the report has no row for', () => {
+    expect(interval(state({
+      data: [{ blockId: '', key: 'deleted', schedulable: true, status: 'running', workerCardId: 'c-9' }],
+    }))).toBe(false);
+    expect(taskVerdictsRefetchInterval(blocks([declaration('b-1', 'dup'), declaration('b-2', 'dup')]))(state({
+      data: [
+        { blockId: 'b-1', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
+        { blockId: 'b-2', key: 'dup', schedulable: true, status: 'running', workerCardId: 'c-9' },
+      ],
+    }))).toBe(false);
+  });
+
+  /* Premise for both of the above: the identical verdict on a declaration this
+     report DOES have still polls, so the two are refusals and not a timer that
+     stopped working. */
+  it('still polls a live run whose declaration is in the document', () => {
+    expect(taskVerdictsRefetchInterval(blocks([declaration('b-1', 'deleted')]))(state({
+      data: [{ blockId: '', key: 'deleted', schedulable: true, status: 'running', workerCardId: 'c-9' }],
+    }))).toBe(3000);
   });
 });
