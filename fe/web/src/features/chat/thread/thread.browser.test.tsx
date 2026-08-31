@@ -1819,7 +1819,14 @@ describe('the exchange rail, as the engine lays it out', () => {
        departed elements cannot satisfy — it leaves twelve dots at their rest
        and no maximum anywhere. */
     const inks = dots().map((_dot, index) => dotInk(index));
-    expect(dotInk(5)).toBe(Math.max(...inks));
+    /* Strictly above every *other* dot, not merely equal to the maximum of all
+       of them. Under the defect this case is pointed at every dot is left at
+       its rest, and the resting maximum is the lit dot's 6px — so `equal to the
+       max` would have been satisfied by nothing more than the pointer happening
+       to be parked on the lit row, and the case would have passed with the
+       envelope gone. Measured with the cache working: dot 5 at 8, the next
+       highest 7.375. */
+    expect(dotInk(5)).toBeGreaterThan(Math.max(...inks.filter((_ink, index) => index !== 5)));
     expect(dotInk(5)).toBeCloseTo(8, 1);
     expect(dotInk(6)).toBeGreaterThan(dotInk(7));
     expect(dotInk(7)).toBeGreaterThan(dotInk(8));

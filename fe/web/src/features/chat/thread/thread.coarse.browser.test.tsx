@@ -161,24 +161,56 @@ function centre(index: number): number {
 }
 
 /**
+ * The conditions a grouping rule adds to everything inside it.
+ *
+ * `@layer` adds nothing — it orders the cascade and constrains nothing about
+ * when a rule applies. `@media` contributes its own text, *conjoined* with
+ * whatever it is already nested in rather than replacing it, so a fine block
+ * inside an outer query still reads as fine.
+ *
+ * **Everything else is a failure written into the condition string.** This
+ * walk backs a universal negative — "no rule anywhere reads `--nc-dot-lift`
+ * outside a fine-pointer condition" — and a grouping rule the walk does not
+ * recognise is precisely the case where it does not know what it is looking
+ * at. Skipping one silently, which is what descending only into `@media` and
+ * `@layer` did, let a `@supports` or `@container` block hold a lift consumer
+ * with the whole file green. Naming the type in the string means the caller's
+ * `toContain('pointer: fine')` fails on it and the failure message says which
+ * construct arrived.
+ */
+function conditionsUnder(rule: CSSGroupingRule, outer: readonly string[]): string[] {
+  if (rule instanceof CSSLayerBlockRule) return [...outer];
+  if (rule instanceof CSSMediaRule) return [...outer, rule.conditionText];
+  const text = 'conditionText' in rule ? String(rule.conditionText) : '';
+  return [...outer, `<unhandled grouping rule ${rule.constructor.name}: ${text}>`];
+}
+
+/**
  * Every media condition under which some rule declares `needle`, walking layers
  * and nested conditions. `''` for a rule at the top level. Copied from
  * `thread.browser.test.tsx`, where it is about to have no callers left: the
  * claim it serves is the one this file's renders cannot make.
+ *
+ * Exported to the two cases below rather than inlined, because one of them
+ * feeds it a stylesheet built to be the thing it must not miss.
  */
 function mediaConditionsDeclaring(needle: string): string[] {
   const found: string[] = [];
-  const walk = (rules: CSSRuleList, condition: string) => {
+  const walk = (rules: CSSRuleList, conditions: readonly string[]) => {
     for (const rule of [...rules]) {
-      if (rule instanceof CSSMediaRule) { walk(rule.cssRules, rule.conditionText); continue; }
-      if (rule instanceof CSSLayerBlockRule) { walk(rule.cssRules, condition); continue; }
-      if (rule instanceof CSSStyleRule && rule.style.cssText.includes(needle)) found.push(condition);
+      if (rule instanceof CSSGroupingRule) { walk(rule.cssRules, conditionsUnder(rule, conditions)); continue; }
+      /* Nested style rules carry their declarations in child rules of their own,
+         so the recursion is not only over grouping rules. */
+      if (rule instanceof CSSStyleRule) {
+        if (rule.style.cssText.includes(needle)) found.push(conditions.join(' and '));
+        walk(rule.cssRules, conditions);
+      }
     }
   };
   for (const sheet of [...document.styleSheets]) {
     let rules: CSSRuleList;
     try { rules = sheet.cssRules; } catch { continue; }
-    walk(rules, '');
+    walk(rules, []);
   }
   return found;
 }
@@ -203,10 +235,23 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * viewport: `isMobile` on a desktop-sized page is a handset claim with no
    * screen behind it, and the 320px cap two cases below is a block-axis fact
    * that only means anything against a real one. It is `screen`, not
-   * `innerWidth`: the runner puts every suite in a 414px iframe whatever the
-   * context says, so `innerWidth` reads 414 in *both* projects and would be
-   * green on a desktop context. Measured — this project 420 × 900 with
-   * `maxTouchPoints` 1, the plain `browser` project 1280 × 720 with 0.
+   * `innerWidth`: the runner puts every suite in a 414 × 896 iframe whatever
+   * the context says, so the inner box reads the same in *both* projects and
+   * would be green on a desktop context. Measured — this project 420 × 900
+   * with `maxTouchPoints` 1, the plain `browser` project 1280 × 720 with 0.
+   *
+   * **Both screen axes, and `isMobile` itself, because the name of this case
+   * promises all three.** The height is the one the cap is read against, and
+   * it was unasserted: a context dropped to 300 tall left this green. And
+   * `isMobile` is a separate switch from `hasTouch` — deleting it leaves
+   * `pointer: coarse`, `hover: none` and `maxTouchPoints` all exactly as they
+   * are, so nothing above notices. What it does change is that Chromium stops
+   * running the page in mobile emulation, and the two things that says so are
+   * measured here: legacy `window.orientation` exists only under it (present
+   * and 0 with `isMobile`, absent without), and `screen.orientation` reports
+   * the orientation the 420 × 900 box actually has rather than the host's —
+   * `portrait-primary` with it, and `landscape-primary` on the identical
+   * viewport without it.
    */
   it('runs in a context that reports a coarse pointer and nothing else', () => {
     expect(matchMedia('(pointer: coarse)').matches).toBe(true);
@@ -214,7 +259,10 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(matchMedia('(pointer: none)').matches).toBe(false);
     expect(matchMedia('(any-pointer: coarse)').matches).toBe(true);
     expect(screen.width).toBe(420);
+    expect(screen.height).toBe(900);
     expect(navigator.maxTouchPoints).toBeGreaterThan(0);
+    expect('orientation' in window).toBe(true);
+    expect(screen.orientation.type).toBe('portrait-primary');
   });
 
   /*
@@ -237,10 +285,23 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    *
    * **The shoulders are asserted at zero, which is a claim about what a finger
    * does *not* pay for.** The fine branch spends two openings of blank at each
-   * end of the column — 32px measured — so that a spread cannot slide the rail
-   * out from under the pointer. There is no spread here, so that 64px would buy
-   * nothing and is not spent; the rules that write it live inside
-   * `@media (pointer: fine)`, and this is the measurement that says so.
+   * end of the column so that a spread cannot slide the rail out from under
+   * the pointer. There is no spread here, so that blank would buy nothing and
+   * is not spent; the rules that write it live inside `@media (pointer: fine)`.
+   *
+   * **A bare `0px` does not say that, and for one round it was what was
+   * written here.** The shoulder is
+   * `(--nc-rail-pitch-open − --nc-rail-pitch) × lead`, and this branch sets
+   * `--nc-rail-pitch` to `--control-h` while leaving `--nc-rail-pitch-open` at
+   * the 28px it always was — so the expression is `0px` gated or not, and
+   * copying both shoulder rules verbatim out of the fine block left the file
+   * green at 6/6. The measurement below is taken at a pitch where the two
+   * numbers differ instead: `--nc-rail-pitch` is forced to the fine branch's
+   * own 12px inline on the rail's element, where it outranks the coarse
+   * block's declaration, and the rows are read back at 12 so the override is
+   * known to have landed rather than assumed. The shoulder the fine rules
+   * would write there is `(28 − 12) × 2 = 32px` at each end — measured, with
+   * the two rules lifted out of the media block, exactly 32. Gated, 0.
    */
   it('lays out a 24 by 28 target at a flat 28px pitch, with no shoulders', async () => {
     render(<RailPane turns={railTurns(8)} />);
@@ -271,11 +332,23 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     expect(dotInk(resting)).toBe(6);
     expect(dotInk(lit)).toBe(8);
 
-    /* And the fine branch's shoulders are simply absent. */
-    const first = getComputedStyle(dots()[0]);
-    const last = getComputedStyle(dots()[dots().length - 1]);
-    expect(first.marginBlockStart).toBe('0px');
-    expect(last.marginBlockEnd).toBe('0px');
+    /* The shoulder rules are `:first-child` / `:last-child` on the track, so
+       what they land on is the track's end *children* — which are the end dots
+       only for as long as nothing else is rendered in there. Anchored, because
+       otherwise a sibling slipped in ahead of the dots would give the reading
+       below a third, unrelated reason to be zero. */
+    expect(railTrack().firstElementChild).toBe(dots()[0]);
+    expect(railTrack().lastElementChild).toBe(dots().at(-1));
+
+    /* And now the fine branch's shoulders are absent at a pitch that would
+       show them: 12px, inline on the rail's own element. */
+    const rail = railTrack().parentElement!;
+    rail.style.setProperty('--nc-rail-pitch', '12px');
+    await frame();
+    expect(dots()[resting].getBoundingClientRect().height).toBe(12);
+    expect(getComputedStyle(dots()[0]).marginBlockStart).toBe('0px');
+    expect(getComputedStyle(dots().at(-1)!).marginBlockEnd).toBe('0px');
+    rail.style.removeProperty('--nc-rail-pitch');
   });
 
   /*
@@ -370,6 +443,38 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
   });
 
   /*
+   * ── And the sweep above is only worth its name if it cannot be walked past ─
+   *
+   * A universal negative asserted by a walk is only as strong as the walk's
+   * coverage, and the first version of it descended into exactly two rule
+   * types: `@media` and `@layer`. Every other grouping rule — `@supports`,
+   * `@container`, `@scope`, `@starting-style` — was skipped whole, so a
+   * consumer of `--nc-dot-lift` placed inside one was invisible to the case
+   * above and the file stayed green with a coarse rail free to be magnified.
+   *
+   * So the single-violation fixture is here rather than in a reviewer's head:
+   * one `@supports` block, declaring the property on the same pseudo-element
+   * the real rules use, installed into this page's own stylesheet list. The
+   * sweep has to come back with a condition for it, and that condition has to
+   * be one the case above rejects. `@supports (color: red)` because it must
+   * genuinely match — a block the engine drops is not a test of anything.
+   */
+  it('fails closed on a lift consumer inside a grouping rule it does not know', () => {
+    const style = document.createElement('style');
+    style.textContent = '@supports (color: red) { .railDot::before { --nc-dot-lift: 1; } }';
+    document.head.append(style);
+    try {
+      const conditions = mediaConditionsDeclaring('--nc-dot-lift');
+      const escaped = conditions.filter((condition) => !condition.includes('pointer: fine'));
+      expect(escaped).toHaveLength(1);
+      expect(escaped[0]).toContain('CSSSupportsRule');
+      expect(escaped[0]).toContain('(color: red)');
+    } finally {
+      style.remove();
+    }
+  });
+
+  /*
    * ── The floating prompt never appears ─────────────────────────────────────
    *
    * The preview is a hover affordance. A touchscreen's first pointer event on a
@@ -440,8 +545,14 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
     const cap = Number.parseFloat(getComputedStyle(railTrack()).maxBlockSize);
     expect(cap).toBe(320);
     expect(railTrack().clientHeight).toBe(cap);
-    /* Eleven rows of 28 is 308, which is inside the cap: no second scroll. */
-    expect(railTrack().scrollHeight).toBe(cap);
+    /* Eleven rows of 28 is 308, which is inside the cap: no second scroll.
+       Read off the column rather than off `scrollHeight`, which cannot say it:
+       `scrollHeight` is floored at `clientHeight`, so at eleven rows it is 320
+       for the same reason it would be at one row, and asserting it against the
+       cap pins nothing. The dots' own extent is the number that moves. */
+    const column = dots().at(-1)!.getBoundingClientRect().bottom - dots()[0].getBoundingClientRect().top;
+    expect(column).toBe(308);
+    expect(railTrack().scrollHeight).toBe(railTrack().clientHeight);
 
     document.body.replaceChildren();
     render(<RailPane turns={railTurns(12)} paneHeight={700} />);

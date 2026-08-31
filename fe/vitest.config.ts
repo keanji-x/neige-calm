@@ -90,6 +90,16 @@ export default defineConfig({
         test: {
           name: 'browser-coarse',
           include: ['**/*.coarse.browser.test.{ts,tsx}'],
+          /*
+           * The same exclude the other two collecting projects carry, for the
+           * same reason and one more. `tools/architecture/fixtures/**` holds
+           * deliberately-broken sources the lint rules are pointed at, so
+           * running them is meaningless; and `check-test-tier.mjs` drops that
+           * directory from `trackedTests`, so a coarse-suffixed file under it
+           * would be executed for real while being invisible to the partition
+           * check that would otherwise have caught it.
+           */
+          exclude: ['tools/architecture/fixtures/**'],
           setupFiles,
           browser: {
             enabled: true,
