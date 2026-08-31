@@ -2154,14 +2154,19 @@ async fn neige_callbacks_are_refused_for_connectors() {
 ///
 /// Driven deterministically: a foreign `BEGIN IMMEDIATE` holds the DB writer
 /// for far longer than the ceiling, so EVERY emission the loop attempts parks.
-/// Boot must still return inside `connector_phase_ceiling(budget)`.
+/// Boot must still return inside the ceiling the loop computes for itself —
+/// `connector_phase_ceiling(widened_connector_budget(budget, widest))`, which
+/// for this fixture is 1.9 s, not the 1.5 s an earlier version of this comment
+/// claimed by forgetting the widening.
 ///
 /// Mutation witness: fence only `self.spawn(...)` again (i.e. drop the
 /// `timeout_at(phase_deadline, …)` wrapper) and this returns after the DB
 /// holder releases, ~8 s, not ~2 s.
 #[tokio::test]
 async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
-    use calm_server::plugin_host::connector_phase_ceiling;
+    use calm_server::plugin_host::{
+        Manifest, connector_bringup_budget, connector_phase_ceiling, widened_connector_budget,
+    };
 
     let stub = StubServer::start(StubMode::Hang).await;
     let b = boot().await;
@@ -2208,10 +2213,31 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
     });
     held_rx.await.expect("write tx never opened");
 
-    // Per-connector cap is 2 × 200 ms + 500 ms = 900 ms, so this budget is used
-    // as given (it exceeds `widest + slack`).
+    // The ceiling asserted below is COMPUTED from the two production
+    // expressions the loop itself evaluates — `widened_connector_budget`, then
+    // `connector_phase_ceiling` — and never restated as a number here.
+    //
+    // Restating it was the defect: this test used to comment that a 1 s budget
+    // "is used as given", derive a 1.5 s ceiling from that, and then allow 3 s.
+    // The loop really adopts `widest per-connector cap + slack` = (2 × 200 ms +
+    // 500 ms) + 500 ms = 1.4 s and fences the phase at 1.9 s, so a run that took
+    // 2.04 s passed a test whose comment claimed it pinned 1.5 s. A second
+    // arithmetic beside production's is how that happens; there is now one.
     const BUDGET: Duration = Duration::from_millis(1_000);
-    let ceiling = connector_phase_ceiling(BUDGET);
+    let widest = connector_bringup_budget(
+        &Manifest::parse(
+            &connector_manifest_json(
+                &stub.url(),
+                Budgets {
+                    call_ms: 10_000,
+                    bringup_ms: Some(200),
+                },
+            )
+            .to_string(),
+        )
+        .expect("the fixture manifest the loop will read must parse"),
+    );
+    let ceiling = connector_phase_ceiling(widened_connector_budget(BUDGET, widest));
     let started = Instant::now();
     tokio::time::timeout(DB_HELD * 2, host.autospawn_enabled_within(BUDGET))
         .await
@@ -2224,10 +2250,26 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
         "boot took {elapsed:?}, i.e. it waited for the event store to free up — \
          the bound covers the spawn step only, not the emissions after it"
     );
-    // …and the real bound, with headroom for scheduling on a loaded box only.
+    // The loop must actually have run out its budget: with four hanging
+    // connectors and a DB writer nobody can take, a run materially faster than
+    // the budget means the fixture stopped exercising the fence, and the upper
+    // bound below would then be satisfied by a loop that did nothing.
     assert!(
-        elapsed < ceiling + Duration::from_millis(1_500),
-        "boot took {elapsed:?} against a {ceiling:?} connector-phase ceiling"
+        elapsed >= BUDGET,
+        "boot returned in {elapsed:?}, faster than the {BUDGET:?} budget it was \
+         given — the hang fixture is no longer in force"
+    );
+    // …and the real bound, tightly. The tolerance covers scheduling jitter
+    // around the fence and nothing else: measured overshoot on this box is
+    // ~4 ms (1.9039 s against the 1.9 s ceiling), and the old 1.5 s allowance
+    // is what let a 2.04 s run pass a test claiming a 1.5 s bound. Anything
+    // that widens the phase by a whole step — a re-widened budget, an emission
+    // escaping the fence — moves elapsed by hundreds of ms and fails here.
+    const JITTER: Duration = Duration::from_millis(250);
+    assert!(
+        elapsed < ceiling + JITTER,
+        "boot took {elapsed:?} against a {ceiling:?} connector-phase ceiling \
+         (+{JITTER:?} jitter allowance)"
     );
 
     // Observability is NOT what was given up: every connector still has a
@@ -2385,50 +2427,57 @@ async fn two_emitters_for_one_connector_never_interleave() {
 }
 
 // ===========================================================================
-// Round-5 finding 3 — an all-digit credential is refused at the source
+// Round-5 finding 3 — a number-shaped credential is refused at the source
 // ===========================================================================
 
 /// `scrub_value` deliberately does not descend into JSON numbers, so an
-/// upstream that echoes an all-digit credential back as `{"k": 12345678}` in
+/// upstream that echoes a number-shaped credential back as `{"k": 12345678}` in
 /// `structuredContent` would put it in the tool result and the wave transcript
 /// with nothing to redact. Round 4 classified that as an accepted residual;
 /// it is a disclosure. The credential is refused instead.
 ///
-/// This drives the real `spawn` (and therefore the real `connect_mcp_http` →
-/// `HttpCredential::parse` boundary), not the validator in isolation.
+/// The rule is the JSON number **grammar**, not the lexical shape "all digits"
+/// it was first written as: `-1234567` is just as unscrubbable and used to be
+/// accepted here. Both spellings are driven through the real `spawn` (and
+/// therefore the real `connect_mcp_http` → `HttpCredential::parse` boundary),
+/// not through the validator in isolation.
 ///
-/// Mutation witness: delete the all-digit arm of `HttpCredential::parse` and
-/// this connector comes up `Running`.
+/// Mutation witness: narrow `is_number_shaped` back to
+/// `raw.chars().all(char::is_ascii_digit)` and the `-1234567` case comes up
+/// `Running` with the credential on the wire.
 #[tokio::test]
-async fn an_all_digit_credential_never_reaches_the_wire() {
-    let stub = StubServer::start(StubMode::Normal).await;
-    let b = boot().await;
-    let dir = write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
-    const ALL_DIGITS: &str = "12345678";
-    let secrets = dir.join("secrets.json");
-    std::fs::write(&secrets, json!({ SECRET_NAME: ALL_DIGITS }).to_string()).unwrap();
-    std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
-    let host = b.host();
-    seed_row(&b, CONNECTOR_ID).await;
+async fn a_number_shaped_credential_never_reaches_the_wire() {
+    for numeric in ["12345678", "-1234567"] {
+        let stub = StubServer::start(StubMode::Normal).await;
+        let b = boot().await;
+        let dir = write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+        let secrets = dir.join("secrets.json");
+        std::fs::write(&secrets, json!({ SECRET_NAME: numeric }).to_string()).unwrap();
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let host = b.host();
+        seed_row(&b, CONNECTOR_ID).await;
 
-    let err = match host.spawn(CONNECTOR_ID).await {
-        Err(HostError::ConnectorUnavailable { reason, .. }) => reason,
-        other => panic!("an all-digit credential must not bring a connector up: {other:?}"),
-    };
-    assert!(
-        err.contains("digits"),
-        "the refusal must say what is wrong: {err}"
-    );
-    // The refusal itself must not quote the credential — it is persisted and
-    // broadcast as `PluginState.last_error`.
-    assert!(!err.contains(ALL_DIGITS), "{err}");
-    // Nothing was sent: the client is never constructed.
-    assert!(
-        stub.queries().is_empty(),
-        "the credential reached the wire: {:?}",
-        stub.queries()
-    );
-    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+        let err = match host.spawn(CONNECTOR_ID).await {
+            Err(HostError::ConnectorUnavailable { reason, .. }) => reason,
+            other => {
+                panic!("{numeric:?} must not bring a connector up: {other:?}")
+            }
+        };
+        assert!(
+            err.contains("parses as a JSON number"),
+            "{numeric:?}: the refusal must say what is wrong: {err}"
+        );
+        // The refusal itself must not quote the credential — it is persisted
+        // and broadcast as `PluginState.last_error`.
+        assert!(!err.contains(numeric), "{numeric:?}: {err}");
+        // Nothing was sent: the client is never constructed.
+        assert!(
+            stub.queries().is_empty(),
+            "{numeric:?} reached the wire: {:?}",
+            stub.queries()
+        );
+        assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -97,10 +97,13 @@
 //! `pub` and used to accept any `&str`, so the constraint could be bypassed by
 //! constructing a client in-process; and a `cli-query` secret is not on the
 //! HTTP-redaction path at all and has no business obeying HTTP-redaction rules.
-//! A credential that is entirely digits is refused there too — `scrub_value`
-//! deliberately does not touch JSON numbers (coercing them would corrupt the
-//! payload), so an upstream echoing an all-digit key back as a number in
+//! A credential that JSON would parse as a *number* is refused there too —
+//! `scrub_value` deliberately does not touch JSON numbers (coercing them would
+//! corrupt the payload), so an upstream echoing such a key back as a number in
 //! `structuredContent` would put it in the tool result and the wave transcript.
+//! That rule is the number **grammar** (`-1234567`, `1.234567`, `1E5`,
+//! `1234e567` are all of them), delegated to serde_json rather than re-derived
+//! from characters — see [`is_number_shaped`].
 //! Constraining the credential removes the case; there is nothing left to
 //! classify as residual.
 //!
@@ -195,13 +198,13 @@ impl HttpCredential {
     ///   the raw-text matcher used on the non-2xx arm never finds it; quote and
     ///   backslash are the two characters that collide with JSON syntax there.
     ///   None of them appear in any real API key;
-    /// * **at least [`MIN_CREDENTIAL_LEN`] characters** — see that constant;
-    /// * **at least one non-digit** — [`scrub_value`] does not descend into JSON
-    ///   numbers, so an all-digit credential echoed back as `{"key": 12345678}`
-    ///   in `structuredContent` reaches the tool result and the wave transcript
-    ///   unredacted. Making numbers scrubbable is not an option (it would
-    ///   rewrite unrelated values and change the payload's type); making the
-    ///   credential un-number-like is.
+    /// * **not something JSON would parse as a number** — [`scrub_value`] does
+    ///   not descend into JSON numbers, so a number-shaped credential echoed
+    ///   back as `{"key": 12345678}` in `structuredContent` reaches the tool
+    ///   result and the wave transcript unredacted. Making numbers scrubbable is
+    ///   not an option (it would rewrite unrelated values and change the
+    ///   payload's type); making the credential un-number-like is;
+    /// * **at least [`MIN_CREDENTIAL_LEN`] characters** — see that constant.
     ///
     /// The error text never quotes the credential — only the single offending
     /// character class — because this string is operator-facing and lands in
@@ -228,20 +231,20 @@ impl HttpCredential {
                  backslashes"
             ));
         }
+        if is_number_shaped(raw) {
+            return Err(
+                "parses as a JSON number: an upstream is free to echo such a value back \
+                 as a JSON *number*, which carries no string to redact, so it would reach \
+                 tool results and wave transcripts in the clear. Add a non-numeric \
+                 character to the credential."
+                    .to_string(),
+            );
+        }
         if raw.len() < MIN_CREDENTIAL_LEN {
             return Err(format!(
                 "is shorter than {MIN_CREDENTIAL_LEN} characters, which would make \
                  redaction match unrelated upstream text"
             ));
-        }
-        if raw.chars().all(|c| c.is_ascii_digit()) {
-            return Err(
-                "is entirely digits: an upstream is free to echo such a value back as \
-                 a JSON *number*, which carries no string to redact, so it would reach \
-                 tool results and wave transcripts in the clear. Add a non-digit \
-                 character to the credential."
-                    .to_string(),
-            );
         }
         Ok(Self(raw.to_string()))
     }
@@ -249,6 +252,39 @@ impl HttpCredential {
     fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// Is `raw` a value an upstream could echo back as a bare JSON **number**?
+///
+/// The rule this answers is a *grammar*, not a lexical shape, and the first
+/// version of it got that wrong: it asked "are all the characters digits?",
+/// which leaves `-1234567`, `1.234567`, `-1.2e-7` and `1E5` accepted — every one
+/// of them a JSON number that [`scrub_value`] (which deliberately never descends
+/// into `Value::Number`) would hand back in the clear. So do not re-derive the
+/// grammar here; ask serde_json, the same parser the response path uses.
+///
+/// The obvious spelling — `matches!(from_str::<Value>(raw), Ok(Value::Number(_)))`
+/// — is *not* the grammar, and the gap is not hypothetical: `1234e567` is a
+/// perfectly legal JSON number token that `Value` refuses with `number out of
+/// range`, because building a `Value` also performs the f64 conversion. Such a
+/// credential would sail through and could still be echoed back numerically.
+/// `IgnoredAny` runs serde_json's *scanner* with no conversion behind it, so it
+/// answers the syntactic question the `Value` constructor cannot.
+///
+/// `IgnoredAny` also accepts the other bare literals (`true`, `null`, `[1,2]`).
+/// Given the charset already enforced above — printable ASCII, no space, no
+/// quote, no backslash — "is a standalone JSON document" is a superset of "is a
+/// JSON number" whose extra members are not credentials either, so refusing them
+/// costs nothing and keeps this a single delegated call.
+///
+/// The explicit digits-only arm covers what serde_json's grammar *rejects*:
+/// `00000000000000000000` is not a legal JSON number (leading zeros), so the
+/// scanner does not flag it. It is retained exactly as it shipped — a
+/// digits-only value is number-shaped to every human and every non-strict
+/// producer, and no real credential lives in that class.
+fn is_number_shaped(raw: &str) -> bool {
+    raw.chars().all(|c| c.is_ascii_digit())
+        || serde_json::from_str::<serde::de::IgnoredAny>(raw).is_ok()
 }
 
 /// Redacting, so a credential cannot reach a log line through a `{:?}` on a
@@ -711,9 +747,10 @@ fn scrub_value(forms: &[String], v: &mut Value) {
                 scrub_value(forms, child);
             }
         }
-        // Numbers, booleans and null carry no string to redact. An all-digit
+        // Numbers, booleans and null carry no string to redact. A number-shaped
         // credential — the one value an upstream could echo back HERE, as a
-        // JSON number — cannot exist: `HttpCredential::parse` refuses it.
+        // JSON number — cannot exist: `HttpCredential::parse` refuses anything
+        // serde_json's scanner accepts as a bare literal (`is_number_shaped`).
         _ => {}
     }
 }
@@ -854,8 +891,8 @@ mod tests {
     /// the redaction layer cannot handle is refused before a client exists.
     ///
     /// Each case is a concrete failure of the scrubber, not a style rule — see
-    /// [`HttpCredential::parse`]. The all-digit case is round-5 finding 3: the
-    /// tree scrub does not descend into JSON numbers, so an upstream echoing
+    /// [`HttpCredential::parse`]. The number-shaped cases are round-5 finding 3:
+    /// the tree scrub does not descend into JSON numbers, so an upstream echoing
     /// such a value back as a number leaks it in full.
     #[test]
     fn a_credential_the_scrubber_cannot_handle_is_refused() {
@@ -880,6 +917,11 @@ mod tests {
                 "all digits — echoed back as a JSON number, unscrubbable",
             ),
             ("00000000000000000000", "all digits, long"),
+            // The number rule is a grammar, not "all digits"; the table in
+            // `a_number_shaped_credential_is_refused_whatever_its_spelling`
+            // is the witness for the rest of that grammar.
+            ("-1234567", "negative integer"),
+            ("1.234567", "decimal fraction"),
         ];
         for (bad, why) in cases {
             let err = HttpCredential::parse(bad)
@@ -894,15 +936,74 @@ mod tests {
         }
     }
 
-    /// Stated positively, so the test above cannot pass by refusing
+    /// The number rule is the JSON number **grammar**, not the single lexical
+    /// shape "every character is a digit" it was first written as.
+    ///
+    /// Every value below is a valid JSON number that the all-digit check
+    /// accepted; `scrub_value` never descends into `Value::Number`, so any of
+    /// them echoed back numerically by an upstream reaches the tool result and
+    /// the wave transcript in the clear — the exact leak the rule exists to
+    /// close. Restore `raw.chars().all(char::is_ascii_digit)` as the whole rule
+    /// and every case here except the two all-digit ones fails.
+    ///
+    /// Each case asserts the *number* refusal specifically, not merely "some
+    /// error": the length floor would otherwise satisfy the short spellings
+    /// (`1E5`, `-1.2e-7`) without the number rule existing at all.
+    #[test]
+    fn a_number_shaped_credential_is_refused_whatever_its_spelling() {
+        let mut leaks: Vec<String> = Vec::new();
+        for (bad, why) in [
+            ("12345678", "all digits — where the rule started"),
+            ("00000000000000000000", "digits with leading zeros"),
+            ("-1234567", "a leading minus is part of the number grammar"),
+            ("1.234567", "a fraction"),
+            (
+                "1234e567",
+                "exponent past f64: still a number token on the wire, and \
+                 `from_str::<Value>` alone would MISS it",
+            ),
+            ("-1.2e-70", "sign, fraction and negative exponent together"),
+            ("-1.2e-7", "the same, one character under the length floor"),
+            ("1E5", "capital exponent marker"),
+        ] {
+            // Collected rather than asserted case by case, so a regression
+            // reports the whole surface it reopened instead of the first
+            // spelling in the table.
+            let outcome = match HttpCredential::parse(bad) {
+                Ok(_) => Some("ACCEPTED".to_string()),
+                Err(e) if !e.contains("parses as a JSON number") => {
+                    Some(format!("refused by another rule: {e}"))
+                }
+                Err(e) => {
+                    assert!(!e.contains(bad), "{why}: the refusal quotes it: {e}");
+                    None
+                }
+            };
+            if let Some(what) = outcome {
+                leaks.push(format!("{bad:?} ({why}): {what}"));
+            }
+        }
+        assert!(
+            leaks.is_empty(),
+            "these JSON numbers are not refused by the number rule, so an \
+             upstream echoing one back numerically leaks it:\n  {}",
+            leaks.join("\n  ")
+        );
+    }
+
+    /// Stated positively, so the tests above cannot pass by refusing
     /// everything — including the boundary of each numeric rule.
     #[test]
     fn a_well_formed_credential_is_accepted() {
         for good in [
             "a".repeat(MIN_CREDENTIAL_LEN),     // exactly the floor: `<`, not `<=`
             "sk-super-secret-8213".to_string(), // the real shape
+            "sk-abc12345".to_string(),          // a real key with digits in it
+            "ghp_xxxxxxxx".to_string(),         // the other real shape
             "1234567a".to_string(),             // digits are fine WITH a non-digit
             "a/b+c=d&e".to_string(),            // punctuation an API key really uses
+            "1234e567a".to_string(),            // number-ish, but not a number
+            "-1.2e-7-".to_string(),             // ditto: the grammar, not a vibe
         ] {
             assert!(
                 HttpCredential::parse(&good).is_ok(),

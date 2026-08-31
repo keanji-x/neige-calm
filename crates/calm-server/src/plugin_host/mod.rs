@@ -437,6 +437,23 @@ const CONNECTOR_BRINGUP_SLACK: Duration = Duration::from_millis(500);
 /// `max(30 s, MAX_CONNECTOR_BRINGUP_BUDGET + slack)`.
 pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
 
+/// The loop budget [`PluginHost::autospawn_enabled_within`] actually adopts,
+/// given the one it was handed and the widest per-connector bring-up cap among
+/// the connectors it is about to iterate.
+///
+/// A supplied budget is a *floor*, never a ceiling: see
+/// [`CONNECTOR_AUTOSPAWN_BUDGET`] for why the widening exists. This is a
+/// function rather than an inline `max` in the loop because the widening is half
+/// of the boot bound and a test that wants to state the bound must be able to
+/// compute it from the same expression production evaluates — restating
+/// `max(supplied, widest + slack)` in a test is a second arithmetic, and a
+/// second arithmetic is exactly how `a_slow_event_store_cannot_hold_boot_past_
+/// the_phase_ceiling` came to assert a 1.5 s ceiling against a loop that was
+/// really running to 1.9 s.
+pub fn widened_connector_budget(supplied: Duration, widest_bringup: Duration) -> Duration {
+    supplied.max(widest_bringup + CONNECTOR_BRINGUP_SLACK)
+}
+
 /// Wall-clock allowed for everything the connector phase does **besides**
 /// bringing connectors up: the terminal `Unavailable` emission for connectors
 /// that never got their turn, and the reconcile emission for one that came up
@@ -794,7 +811,7 @@ impl PluginHost {
             .map(|m| connector_bringup_budget(&m))
             .max()
             .unwrap_or_default();
-        let connector_budget = connector_budget.max(widest + CONNECTOR_BRINGUP_SLACK);
+        let connector_budget = widened_connector_budget(connector_budget, widest);
 
         // CONNECTOR-only elapsed time. An `Instant` taken before the loop also
         // charges every `app` plugin's spawn to this budget, so a slow local
