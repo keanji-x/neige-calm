@@ -5,6 +5,7 @@ import {
   defineInvalidationPolicies,
   invalidationPlanFor,
   noop,
+  taskVerdictInvalidatingKinds,
   WAVE_FILES_DERIVED_KINDS,
   type EventKind,
   type InvalidationPolicy,
@@ -37,9 +38,28 @@ describe('invalidation plan contract', () => {
     const actual = new Set(allEventKinds.filter((kind) => invalidationPlanFor(
       { ev: kind, data: {} } as WireEvent,
     ).invalidate.some((key) => key[0] === 'wave-report')));
-    expect(actual).toEqual(new Set([...WAVE_FILES_DERIVED_KINDS, 'wave.report_edited']));
+    expect(actual).toEqual(new Set(taskVerdictInvalidatingKinds()));
     expectTypeOf<typeof WAVE_FILES_DERIVED_KINDS[number]>().toEqualTypeOf<WaveFilesDerivedKind>();
   });
+
+  /*
+   * The exclusion, asserted from both sides so neither can drift silently.
+   *
+   * A hook fires roughly twice per tool call per running worker and writes no
+   * `tasks` row; `['wave-report', …]` is a live query on the whole-document
+   * report projection. It must keep its workspace key (the files really did
+   * change) and must not have the verdict one.
+   */
+  it.each(['codex.hook', 'claude.hook'] as const)(
+    'invalidates the workspace but never the task verdicts for %s',
+    (ev) => {
+      const plan = invalidationPlanFor(
+        { ev, data: { wave_id: 'wave-7' } } as unknown as WireEvent,
+      );
+      expect(plan.invalidate).toEqual([['wave-files', 'wave-7']]);
+      expect(taskVerdictInvalidatingKinds()).not.toContain(ev);
+    },
+  );
 
   it('[type-only] rejects a policy map missing any wire event kind', () => {
     const compileOnly = false as boolean;

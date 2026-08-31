@@ -70,6 +70,8 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['harness-items', cardId]` | `queryKeys.harnessItems(cardId)` | fe conversation history is query-backed |
 | `['spec-run', cardId]` | `queryKeys.specRun(cardId)` | fe current harness phase is query-backed |
 | `['wave-files', …]` | — | **no-op**: no wave-files query is built yet (stub) |
+| `['wave-report', id]` | `queryKeys.waveReport(id)` | the wave's task verdicts (TASKS panel) |
+| `['wave-report']` | `queryKeys.waveReportPrefix()` | prefix; the four `task.*` events carry no wave-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
 | `['waves-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
 | `['wave-backlinks']` | — | **no-op**: no backlinks query is built yet (stub) |
 
@@ -83,10 +85,11 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `wave.lifecycle_changed` | same as `wave.updated` | |
 | `wave.deleted` | invalidate cove's wave list + wave overlays; **remove** wave detail | the detail can never resolve again |
 | `card.added` / `card.updated` / `card.deleted` | invalidate wave detail | |
-| `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus wave detail when the built-in cache lookup resolves | `wave-files` / `wave-report` remain adapter stubs |
+| `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus wave detail when the built-in cache lookup resolves; plus the wave's task verdicts | `wave-files` remains an adapter stub |
 | `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning wave detail | |
-| `wave.report_edited` | **no-op here** | its plan is `wave-files` + `wave-report` + `wave-backlinks`, all stubs |
-| `terminal.deleted`, `codex.hook`, `claude.hook`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | **no-op here** | each plans `wave-files` + `wave-report`, both stub queries |
+| `wave.report_edited` | invalidate that wave's task verdicts | `wave-files` and `wave-backlinks` are still stubs |
+| `codex.hook`, `claude.hook` | invalidate `wave-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `wave-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
+| `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by wave id when the event resolves one, by prefix otherwise | `wave-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedWaveId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
 | `harness.item.added` / `harness.phase.changed` | invalidate harness items / spec run respectively | fe has live query consumers and no card-topic consumer |
 | `harness.transcript.cleared` / `harness.user_message.enqueued` | invalidate harness items + spec run | reset and enqueue cross the transcript/run boundary |
 | `plugin.*`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
@@ -108,6 +111,20 @@ reconnect.
 
 The legacy app maps 40+ kinds. This slice covers only the kinds that keep the
 built surfaces live — coves, waves in a cove, wave detail, wave overlays.
-Everything routed to `wave-files`, `wave-report`, `waves-range` or `wave-backlinks` is a stub
+Everything routed to `wave-files`, `waves-range` or `wave-backlinks` is a stub
 here and becomes real the moment those queries exist: the mapping is one entry
-in `mapPlannedQueryKey`, and the pure plan already emits the key.
+in `mapPlannedQueryKey`, and the pure plan already emits the key. `wave-report`
+was such a stub and is now real — `waveTaskVerdictsQueryOptions` in
+`app/providers/queries.ts` claims exactly the key the plan already emitted, so
+the TASKS panel went live without a line of new invalidation policy.
+
+**Events are not sufficient for that panel, and the gap is on the kernel side.**
+`scheduler::mark_running` stamps `worker_card_id` with no event at all —
+`task.dispatched` fired before the spawn (column still NULL) and every
+`runtime.*` a worker adapter emits is emitted during the spawn, also before the
+stamp. Between spawn and completion a terminal worker therefore emits nothing
+that reaches this key, and an agent worker emits only hooks, which are excluded
+above for cost. The panel closes that window with a bounded refresh timer on the
+query itself, not with a new event or a re-included hook; see `hasLiveTaskRun`
+in `core/domain/report.ts` for the accounting and `waveTaskVerdictsQueryOptions`
+for the measured interval.

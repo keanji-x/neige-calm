@@ -21,7 +21,8 @@ import {
   type Cove, type CovePatchBody, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
 import {
-  waveBacklinksOperation, type WaveBacklinks,
+  deriveReportTasks, hasLiveTaskRun, waveBacklinksOperation, waveTaskVerdictsOperation,
+  type ReportBlock, type TaskVerdict, type WaveBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
@@ -69,6 +70,33 @@ export const queryKeys = Object.freeze({
   wavesInCove: (coveId: string) => ['waves', coveId] as const,
   waveDetail: (waveId: string) => ['wave', waveId] as const,
   waveBacklinks: (waveId: string) => ['wave-backlinks', waveId] as const,
+  /* Exactly the shape `core/events/invalidation-plan` already plans for
+     `wave.report_edited` and every `task.*` event, so naming it this way is
+     what makes the TASKS panel live — see `waveReportPrefix` for the half of
+     that the plan cannot key by wave. */
+  waveReport: (waveId: string) => ['wave-report', waveId] as const,
+  /**
+   * The prefix `waveReport` extends, for the events the plan cannot key by
+   * wave.
+   *
+   * `task.dispatched` / `task.completed` / `task.failed` / `task.gate_result`
+   * carry no `wave_id` and no `card_id` **field**, so `derivedWaveId` — which
+   * reads named fields and nothing else — returns null and the plan emits the
+   * bare key. The wave id is not absent from those events: `idempotency_key`
+   * *is* the task id, and a task id is `"{wave_id}:{key}"`
+   * (`task_projection.rs`'s `format!("{wave_id}:{}", declaration.key)`, echoed
+   * by all four kinds in `calm-types/src/event.rs`). The plan deliberately does
+   * not take it apart — `WaveId` is an opaque newtype with no format contract,
+   * so parsing an id in the pure planning layer would be a guess dressed as a
+   * fact, and a wrong split yields a key matching no cached query, i.e. a panel
+   * that silently stops refreshing.
+   *
+   * Dropping the bare key instead would leave the four events that matter most
+   * to this panel as the four that do not refresh it. A prefix invalidation
+   * reaches whichever wave report is cached — at most the open wave's — and
+   * costs nothing when none is.
+   */
+  waveReportPrefix: () => ['wave-report'] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
@@ -230,6 +258,119 @@ export function waveBacklinksQueryOptions(transport: ApiTransportPort, waveId: s
   return {
     queryKey: queryKeys.waveBacklinks(waveId),
     queryFn: (): Promise<WaveBacklinks> => runOperation(transport, waveBacklinksOperation(waveId), unauthorized),
+  };
+}
+
+/**
+ * The wave's task verdicts (§8.3) — what the kernel's task projection says
+ * about each declared task: schedulable, status, and the worker card it was
+ * dispatched onto.
+ *
+ * Its own cache entry rather than a field on the detail for the same reason
+ * the backlinks are: the wave detail is a card read, and these change on every
+ * dispatch and every gate result without any card being written. It is also
+ * the key the event plan already names, which is what makes the panel live.
+ *
+ * **Events alone do not keep it live, and the timer below is why.** The write
+ * that stamps `worker_card_id` — `scheduler::mark_running` — emits nothing at
+ * all, and it lands *after* `task.dispatched` and after every `runtime.*` a
+ * worker adapter emits during its spawn. See `hasLiveTaskRun` for the full
+ * accounting per worker kind, and for why this is a poll and not a new event.
+ */
+export function waveTaskVerdictsQueryOptions(
+  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+  /* The declarations this report actually has, because the timer below is
+     about the *rows* the panel draws and a verdict is not a row — see
+     `taskVerdictsRefetchInterval`. They arrive with the wave detail, which is
+     already in hand when this query is created. */
+  blocks: readonly ReportBlock[] | null,
+) {
+  return {
+    queryKey: queryKeys.waveReport(waveId),
+    queryFn: (): Promise<TaskVerdict[]> => runOperation(transport, waveTaskVerdictsOperation(waveId), unauthorized),
+    /*
+     * See `taskVerdictsRefetchInterval` for when the timer runs at all.
+     *
+     * 3 seconds is priced off the endpoint, not chosen for roundness. Measured
+     * on `GET /api/waves/{id}/report` (debug build, in-memory SQLite, this
+     * box): a 3-task / 2-prose report answers in p50 14.8 ms, a 24-task /
+     * 12-prose one in p50 104 ms — the cost is dominated by the per-declaration
+     * projection, as `taskVerdictInvalidatingKinds` describes. At the measured
+     * worst case that is ~3.5% of one core, for one open wave, only while
+     * something is running; and it is O(1) in the number of workers, which is
+     * the property the rejected fix (letting `codex.hook` invalidate this key)
+     * did not have — hooks arrive about twice per tool call *per worker*.
+     * Against a run measured in tens of seconds at least, 3 s of staleness on
+     * "which card is this task on" is below the threshold at which a reader
+     * would reach for the refresh button.
+     */
+    refetchInterval: taskVerdictsRefetchInterval(blocks),
+  };
+}
+
+/** The live poll, once the read has landed at least once. */
+const TASK_VERDICT_POLL_MS = 3000;
+/** The recovery poll, while the read has never landed at all. Deliberately far
+ *  slower than the live one: nothing is being *tracked* here, the only job is
+ *  to notice that the endpoint came back. */
+const TASK_VERDICT_RECOVERY_POLL_MS = 15_000;
+/**
+ * How many failed loads the recovery poll will sit through before giving up —
+ * about a minute at the interval above, and then silence.
+ *
+ * Bounded because the two things that make this read fail are not alike. A
+ * restarting or briefly unreachable server is transient and a minute of retries
+ * clears it. But `GET /api/waves/{id}/report` also fails *permanently* for a
+ * wave that no longer exists (`resolve_report_for_wave` → `NotFound`) and for a
+ * wave whose `wave-report` card is missing (the same function's invariant
+ * violation → 500, `wave_report.rs`), and neither of those is going to get
+ * better by being asked again. An unconditional poll on "no data" would leave a
+ * stale or deleted tab hitting a dead route every few seconds for as long as it
+ * stayed open.
+ */
+const TASK_VERDICT_RECOVERY_ATTEMPTS = 4;
+
+/**
+ * The timer, over both of the states this query can be in.
+ *
+ * **Data in hand** — poll only while the wave holds a task inside the eventless
+ * window, and stop the moment none does (`false` is react-query's "no timer").
+ * A settled wave, a wave that never dispatched anything, and a wave whose page
+ * is closed all cost exactly nothing. This branch also covers a *failed
+ * refetch*: react-query keeps the last good data, so a live run stays live
+ * across a blip and the timer that will re-fetch it keeps running.
+ *
+ * **No data at all** — the initial load failed and react-query exhausted its
+ * retries, so `data` is `undefined`, `hasLiveTaskRun` is vacuously false, and
+ * the query would sit there with no timer forever: nothing in the page ever
+ * asks again, and a wave that was mid-dispatch when the load failed would show
+ * declaration words and no click-through until the tab was reloaded. A bounded
+ * recovery poll converges without turning a permanently dead route into a
+ * permanent load — see `TASK_VERDICT_RECOVERY_ATTEMPTS`. `errorUpdateCount` is
+ * the counter to read rather than `failureCount`, which counts *retries within*
+ * one attempt and is reset on success; `errorUpdateCount` counts errors
+ * observed and so ticks once per exhausted attempt. It is `0` while the very
+ * first fetch is still in flight, which is why that case takes no timer either:
+ * a request is already on the wire.
+ *
+ * **Curried on the declarations** because the live branch is a question about
+ * the panel's rows, not about the wire. The kernel emits a verdict for a
+ * declaration that has been *deleted* (`blockId: ''`, naming no block here) and
+ * `deriveReportTasks` refuses to decorate a key two live blocks both claim; in
+ * either case an in-flight status produces no row, so a timer keyed on the raw
+ * verdicts would keep refetching every 3 s with nothing on screen that could
+ * ever change. Joining first costs one pass over the declarations per interval
+ * decision and makes "costs nothing outside that window" true as written.
+ */
+export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | null) {
+  return (query: { state: { data?: TaskVerdict[]; errorUpdateCount: number } }): number | false => {
+    const { data, errorUpdateCount } = query.state;
+    if (data !== undefined) {
+      return hasLiveTaskRun(deriveReportTasks(blocks, data)) ? TASK_VERDICT_POLL_MS : false;
+    }
+    return errorUpdateCount > 0 && errorUpdateCount <= TASK_VERDICT_RECOVERY_ATTEMPTS
+      ? TASK_VERDICT_RECOVERY_POLL_MS
+      : false;
   };
 }
 

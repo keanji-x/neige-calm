@@ -722,3 +722,21 @@ async fn claude_worker_fast_exit_preservation_returns_noop_and_marks_runtime_run
     assert_ne!(runtime.status, WorkerSessionState::Starting);
     assert_eq!(runtime.status, WorkerSessionState::Running);
 }
+
+/// #1149 — the claude worker card is titled after its task's plan key.
+#[tokio::test]
+async fn claude_worker_prepare_titles_card_with_task_key() {
+    let harness = claude_worker_harness().await;
+    let (output, _events, _op_id) = prepare_claude_worker(&harness, "slice-c").await;
+    let card_id = output.output_string("card_id", "test").unwrap();
+
+    let stored: Option<String> = sqlx::query_scalar("SELECT title FROM cards WHERE id = ?1")
+        .bind(&card_id)
+        .fetch_one(harness.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(stored, Some("slice-c".to_string()));
+
+    let wire: crate::model::Card = serde_json::from_value(output.result.clone()).unwrap();
+    assert_eq!(wire.title, Some("slice-c".to_string()));
+}

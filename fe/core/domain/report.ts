@@ -352,14 +352,18 @@ export function deriveReportOutline(blocks: readonly ReportBlock[] | null): Repo
    derives the first from the second — no new endpoint, no second source of
    truth, and nothing that can disagree with what the document says.
 
-   **What it cannot say, stated plainly: whether a task has run.** A block is a
+   **What a block alone cannot say: whether a task has run.** A block is a
    *declaration* — `ready` means the agent has finished writing it, not that the
    kernel has scheduled it, and there is no field here for pending / running /
-   done / failed. The kernel does project that (`task_projection`), and
-   `calm.plan.list` exposes it to MCP, but no HTTP route does. A status column
-   is therefore a backend slice and not a display change; until it exists this
-   list answers "what work has been declared", which is a different and smaller
-   question than "how is it going". */
+   done / failed. That was once the end of the story, and this list answered
+   "what work has been declared", which is a different and smaller question than
+   "how is it going": a user who dispatched four tasks could not tell which were
+   running or which worker was on which.
+
+   It is no longer. The kernel projects the run (`task_projection`) and `GET
+   /api/waves/{id}/report` exposes it as `taskDiagnostics`, so the second half
+   arrives as a *decoration* on this list rather than as a second list — see
+   `deriveReportTasks` below, which stays a pure join over the two. */
 
 /**
  * A `task` block, **including one this build could not read**.
@@ -386,22 +390,508 @@ export function isTaskBlock(block: ReportBlock): boolean {
  *  `isTaskBlock`. It has no key and no readiness, only an id. */
 export type ReportTaskState = 'ready' | 'not-ready' | 'withdrawn' | 'unreadable';
 
+/* ── The runtime half ───────────────────────────────────────────────────
+
+   The paragraph above says a block cannot say whether a task has run, and that
+   a status column would be a backend slice. That slice exists: `GET
+   /api/waves/{id}/report` answers with `taskDiagnostics`, the kernel's own
+   `BlockVerdict[]` — one entry per declared task, carrying `schedulable` from
+   the projection and, when the `tasks` table has a row for that key, its
+   `status` and the `workerCardId` the work was dispatched onto.
+
+   Two sources, still one list: the declarations stay the spine (they are what
+   the document draws and what the panel indexes), and a verdict only decorates
+   a row that already exists. A verdict for a key no block declares is dropped
+   — it would be a row nothing in the document backs. */
+
+export const taskVerdictSchema = z.object({
+  /** The declaring block. The strongest join there is: it is the same literal
+   *  the report card's own `blocks[]` carries. */
+  blockId: z.string(),
+  key: z.string(),
+  /** The projection's verdict on the *declaration*: ready, not withdrawn, and
+   *  no blocking diagnostic. It is a fact even before anything runs. */
+  schedulable: z.boolean(),
+  /**
+   * The `tasks` row's status — `pending` / `running` / `verifying` / `done` /
+   * `failed` / `canceled`. Absent (`skip_serializing_if`) when the task has no
+   * row at all, which is exactly "declared but never dispatched", and is why
+   * this is read as `string | null` rather than an enum: a status this build
+   * has not heard of is printed as-is, which is more useful than hiding it.
+   */
+  status: z.string().nullish(),
+  /**
+   * Why the row is in that status, in the kernel's own words — the dispatch or
+   * run failure that produced `failed` (#1147: `tasks.status_detail`, surfaced
+   * on `BlockVerdict`). Absent whenever the kernel has nothing to add, which is
+   * every ordinary status, so this is `nullish` for the same reason `status` is
+   * and not because a missing one is a defect.
+   *
+   * Free-form prose, not an enum: it is the kernel's message verbatim (`wave …
+   * is not a git repository`), which is the entire value — `spawn-failed` was
+   * already knowable from `failed`.
+   */
+  statusDetail: z.string().nullish(),
+  /** The worker card the task was dispatched onto; absent until claim. */
+  workerCardId: z.string().nullish(),
+});
+
+export type TaskVerdict = z.infer<typeof taskVerdictSchema>;
+
+/** Only `taskDiagnostics` is read. The rest of the response duplicates the
+ *  report card this page already holds, and reading it twice would give the
+ *  document two sources that can disagree. */
+const waveReportReadSchema = z.object({ taskDiagnostics: z.array(z.unknown()).default([]) })
+  .transform((response) => response.taskDiagnostics.flatMap((candidate) => {
+    // One malformed verdict costs only that row's runtime word, exactly as one
+    // malformed block costs only that block.
+    const parsed = taskVerdictSchema.safeParse(candidate);
+    return parsed.success ? [parsed.data] : [];
+  }));
+
+/**
+ * The `tasks` statuses that sit inside the **eventless window** — the only
+ * thing a timer is here to close.
+ *
+ * `TaskStatus` (`calm-truth/src/model.rs`) has seven words: `Pending`,
+ * `Dispatched`, `Running`, `Verifying`, `Done`, `Failed`, `Canceled`. This is
+ * deliberately *not* "the four non-terminal ones". Being non-terminal is not
+ * the question; being unobservable is. A status belongs here only if the write
+ * that moves the row out of it emits no event this query listens to, because a
+ * status whose every exit is evented already converges without a timer, and
+ * polling it is pure cost — unbounded cost, since nothing bounds how long a row
+ * may sit in one status.
+ *
+ * The window opens at `mark_running` (`scheduler/mod.rs`), the one write the
+ * panel needs and the one write that is silent: it flips `dispatched → running`
+ * and stamps `worker_card_id` in a plain guarded UPDATE with no event riding
+ * along (its own comment says the dispatch record already landed in the claim
+ * tx). So:
+ *
+ *  - **`dispatched`** — the window's open edge. `task.dispatched` fired in the
+ *    claim tx with `worker_card_id` still NULL, and the next write is the
+ *    silent one. The sweep's `resume_dispatched` arm re-drives a stale
+ *    `dispatched` row into the same silent stamp. Nothing else will say so.
+ *  - **`running`** — what that silent write produces. A row observed as
+ *    `dispatched` must keep looking until it turns up, and a page opened
+ *    mid-spawn may never have seen `dispatched` at all.
+ *
+ * And the two words that are **not** here, each for its own reason:
+ *
+ *  - **`pending`** is excluded because its only exit is evented: the claim tx
+ *    emits `Event::TaskDispatched`, and `task.dispatched` is in
+ *    `taskVerdictInvalidatingKinds` (`core/events/invalidation-plan`). A timer
+ *    buys nothing there — and it costs without limit, because nothing moves a
+ *    pending row on a schedule. A task behind a zero task budget, behind a
+ *    dependency that failed, or left pending by a canceled wave stays pending
+ *    for as long as the wave exists, and the wave page would refetch the whole
+ *    document projection every 3 s for as long as it is open.
+ *  - **`verifying`** is excluded because it is evented on both sides. It is
+ *    only ever *entered* by `task_report_success_from_worker_tx`, whose two
+ *    call sites (`decision_sink.rs`, `scheduler/mod.rs`) both emit
+ *    `Event::TaskCompleted` in the same tx; and it is only left through
+ *    `reconcile_gate_outcome`'s `task.gate_result` / `task.completed` /
+ *    `task.failed`. All four kinds invalidate this query. By the time a row
+ *    reads `verifying` its `worker_card_id` is long since stamped and was
+ *    delivered by that entry event — there is nothing left for a poll to find,
+ *    and a gate can sit parked for hours.
+ *
+ * Written as an **allowlist**, not as "anything that is not done/failed/
+ * canceled", and the difference is the failure mode. A status this build has
+ * not heard of is either a new in-flight word or a new terminal one; under a
+ * denylist a new terminal word would leave every finished wave refreshing
+ * forever, while under this allowlist a new in-flight word only costs the
+ * liveness this build already lacked. The unknown case must degrade toward
+ * silence, because the caller is a timer.
+ */
+function eventlessWindowTaskStatuses(): ReadonlySet<string> {
+  return new Set(['dispatched', 'running']);
+}
+
+/**
+ * Does any **row this panel actually draws** describe a run that is still in
+ * flight?
+ *
+ * This exists because **the kernel emits no event for the one write the panel
+ * most needs**. `scheduler::mark_running` flips `dispatched → running` and
+ * stamps `worker_card_id` in a plain guarded UPDATE with no event riding along
+ * (its own comment says so: the dispatch record already landed in the claim
+ * tx). `task.dispatched` fires *before* the spawn, when `worker_card_id` is
+ * still NULL, and every `runtime.*` event a worker adapter emits is emitted
+ * during the spawn — also before that stamp. So from spawn until the task
+ * reaches `task.completed` / `task.failed` there is no event at all for a
+ * terminal worker, and only `codex.hook` / `claude.hook` for the agent ones —
+ * which this frontend deliberately does not let invalidate the report query
+ * (see `core/events/invalidation-plan`'s `taskVerdictInvalidatingKinds`: a hook
+ * fires about twice per tool call per worker and provably cannot change a
+ * `tasks` row). The result without a timer is that the click-through to the
+ * worker card is dead for exactly the window a reader wants it.
+ *
+ * The answer is a bounded poll rather than a new kernel event: `mark_running`'s
+ * silence is a considered decision, `worker_card_id` is exposed under the #1030
+ * read-state exception (`task_projection.rs`) rather than pushed, and adding an
+ * `Event` kind here would move the kernel's event surface — schema, policies,
+ * goldens — to converge a cosmetic column. A poll converges identically for all
+ * three worker kinds and costs nothing outside that window, which is what this
+ * predicate decides. A verdict with no status at all is *not* live: "declared,
+ * never dispatched" leaves the `tasks` row absent, and the write that creates
+ * it (`task.dispatched`) is evented.
+ *
+ * "Outside that window" is narrower than "terminal" — see
+ * `eventlessWindowTaskStatuses` for why `pending` and `verifying` are not live
+ * for this purpose even though the kernel can still move them. Both can sit
+ * unmoved indefinitely, and both are bracketed by events, so counting them
+ * would turn a bounded poll into an unbounded one.
+ *
+ * **It reads rows, not verdicts, and that is the whole of its correctness.**
+ * "Costs nothing outside that window" is a claim about a timer whose only
+ * purpose is to make something on screen converge, so the thing it asks about
+ * must be something on screen. A verdict is not: the kernel synthesises one for
+ * a *deleted* declaration (`blockId: ''`, matching no block in this report, and
+ * no row is built for it), and `deriveReportTasks` refuses to decorate a key
+ * two live blocks claim, so an in-flight status on either would have kept the
+ * 3 s refetch running against a panel that will never show a difference. Rows
+ * are what the reader is waiting on, so rows are what the timer waits for.
+ */
+export function hasLiveTaskRun(rows: readonly ReportTaskRow[] | undefined): boolean {
+  if (rows === undefined) return false;
+  const live = eventlessWindowTaskStatuses();
+  return rows.some((row) => row.status !== null && live.has(row.status));
+}
+
+/** The wave's task verdicts. Named for what it reads, not for the route: the
+ *  route also answers with the report, which this deliberately discards. */
+export function waveTaskVerdictsOperation(waveId: string): ApiOperation<TaskVerdict[]> {
+  return {
+    method: 'GET',
+    path: `/api/waves/${encodeURIComponent(waveId)}/report`,
+    responseSchema: waveReportReadSchema,
+  };
+}
+
+/** The three worker kinds a live task declaration can name. Mirrors
+ *  `liveTaskBlockPayloadSchema`'s `kind`, which is where the value comes from —
+ *  a verdict does not carry one. */
+export type TaskWorkerKind = 'codex' | 'claude' | 'terminal';
+
+/**
+ * One row of the panel's task inventory.
+ *
+ * **The three facts travel separately, because they are read separately.**
+ * This used to be one `note` string that the join formatted — `Withdrawn`, or
+ * `running · codex`, or `failed` — and one string was the right shape only
+ * while the whole column was one word in one rank. It is not any more (#1149):
+ * the status is a shaped, coloured dot at the row's trailing edge, the worker kind
+ * is the *only* control that opens the worker card, and the declaration word is
+ * neither of those. A renderer handed `'running · codex'` would have to split
+ * that string back apart to give its two halves different behaviour, which is
+ * the join's knowledge leaking into presentation through a format.
+ *
+ * So the module keeps deciding *which* facts a row may carry — that is the
+ * whole point of the withdrawn / unreadable / contested rules below — and stops
+ * deciding how they are spelled next to each other.
+ */
 export type ReportTaskRow = Readonly<{
   /** The block to reveal in the document — the detail lives there, not here. */
   blockId: string;
   key: string;
   state: ReportTaskState;
+  /**
+   * The word the *declaration* carries: `Not ready`, `Withdrawn`, `Unreadable`.
+   * Never a runtime word, and `null` both for the ordinary case (declared,
+   * ready) and for a row that has a `status` — a run supersedes the readiness
+   * word exactly as it did when the two shared one slot.
+   */
+  declaration: string | null;
+  /**
+   * The kernel's `tasks` row status — `pending` / `running` / `done` / … — or
+   * `null` when there is no run this row may report (never dispatched,
+   * withdrawn, unreadable, or a key two live rows claim). Printed as it stands:
+   * a status this build has not heard of is more useful shown than hidden.
+   */
+  status: string | null;
+  /**
+   * The kernel's reason for that status, or `null`. Only ever set alongside a
+   * `status`: it *qualifies* the status word (`failed — wave … is not a git
+   * repository`), and a reason with no state to attach it to would be a claim
+   * about a run this row is not allowed to report at all.
+   *
+   * Already collapsed to one line and bounded to
+   * `TASK_STATUS_DETAIL_LIMIT` here rather than at the renderer — see
+   * `boundedStatusDetail`.
+   */
+  statusDetail: string | null;
+  /**
+   * The worker kind, off the *declaration* — a withdrawn or unreadable block
+   * has none. It is a fact about the task whether or not anything has run,
+   * which is why it does not wait for a verdict.
+   */
+  kind: TaskWorkerKind | null;
+  /** The worker card this task is running on, or `null`. It is what makes the
+   *  row's kind a control rather than a label, because "which card is doing
+   *  this" is the question a running task raises and the document cannot
+   *  answer. */
+  workerCardId: string | null;
 }>;
 
 /**
- * Every `task` block, in document order, as one row each.
+ * How much of the kernel's reason a row may carry.
+ *
+ * The bound is not cosmetic and is therefore not left to CSS. The detail's only
+ * destination is the status dot's accessible name and its `title`, and neither
+ * can be truncated by a stylesheet: a screen reader reads the whole `aria-label`
+ * however long it is, and a browser tooltip is not styleable at all. An
+ * unbounded kernel message — these are full sentences, and a spawn failure can
+ * quote a whole command line — would turn a one-word status into a paragraph
+ * announced on every row visit, which is worse than not carrying it.
+ *
+ * 160 is a sentence: long enough for every message the kernel writes today
+ * (`wave <uuid> is not a git repository` is 45), short enough that the tail is
+ * still a tooltip. The report block is where an untruncated reason belongs, and
+ * the row already reveals it on click.
+ */
+export const TASK_STATUS_DETAIL_LIMIT = 160;
+
+/**
+ * The kernel's reason, as one bounded line — or `null` when there is nothing to
+ * say.
+ *
+ * Whitespace is collapsed before the bound, not after: a message with a newline
+ * in it (a quoted stderr line) would otherwise spend its budget on layout that
+ * an accessible name cannot render anyway, and a `title` prints the newline
+ * literally. Empty-after-trim is `null` and not `''` for the same reason the
+ * empty `workerCardId` is: a blank reason renders as a dangling separator that
+ * says the kernel spoke when it did not.
+ */
+function boundedStatusDetail(raw: string | null | undefined): string | null {
+  if (typeof raw !== 'string') return null;
+  const collapsed = raw.replace(/\s+/g, ' ').trim();
+  if (collapsed === '') return null;
+  if (collapsed.length <= TASK_STATUS_DETAIL_LIMIT) return collapsed;
+  /*
+   * The bound counts UTF-16 code units, because that is what `length` counts
+   * and what the limit above was priced in. Slicing on one, though, can land
+   * *inside* an astral character: a reason whose emoji straddles offset 159
+   * would be cut between its surrogates, and a lone surrogate is not a
+   * character — it renders as `�` in the tooltip and is announced as one in the
+   * accessible name. So a trailing high surrogate with nothing to pair with is
+   * dropped before the ellipsis is appended; the result is one code unit
+   * shorter, never longer, so the bound still holds.
+   */
+  const cut = collapsed.slice(0, TASK_STATUS_DETAIL_LIMIT - 1);
+  const head = /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
+  return `${head.trimEnd()}…`;
+}
+
+/**
+ * The word, from the declaration alone. `ready` is silent on purpose: a column
+ * in which every row carries a word is a column nobody reads.
+ */
+function declarationWord(state: ReportTaskState): string | null {
+  if (state === 'ready') return null;
+  if (state === 'withdrawn') return 'Withdrawn';
+  if (state === 'unreadable') return 'Unreadable';
+  return 'Not ready';
+}
+
+/*
+ * **There was a `runtimeNote` here, and it is gone.**
+ *
+ * It formatted the status and the worker kind into one string —
+ * `` `${status} · ${kind}` `` when the task had a card, the bare status
+ * otherwise, and `failed` alone because a failure outranked the card it failed
+ * on. Every one of those rules was a *typographic* decision about how two facts
+ * share one slot, made in the module that is not allowed to know there is a
+ * slot. They stop being decidable here the moment the two facts render as
+ * different things (a dot and a control), so they are not restated in some
+ * other form: both facts are simply carried, and the panel says where each one
+ * goes. `failed` no longer needs to outrank anything — it is a red dot at the
+ * row's edge, which is louder than any word ever was.
+ *
+ * **What survives is not typography and is still here**, in `deriveReportTasks`
+ * below: an unadmitted task gets no second word invented for it. An earlier cut
+ * split `pending` on `verdict.schedulable`, printing `blocked` when it was
+ * false and reserving that word for "waiting on a dependency". `schedulable`
+ * does not mean that — `evaluate_schedulability_with_tree_term` clears the flag
+ * for *every* candidate past the spec ceiling or the wave-tree budget
+ * (`task_projection.rs`, the `verdicts[index].schedulable = false` that follows
+ * the `spec_task_ceiling` diagnostic) — so an ordinary queue behind capacity
+ * rendered as `blocked` and made a healthy wave look stuck. The status the
+ * kernel gave is the status the row carries, unedited.
+ */
+
+/**
+ * Index the verdicts twice, and look up by block id first.
+ *
+ * `blockId` is an identity join — the verdict names the very block the row was
+ * derived from. `key` is the fallback, for the case where the report card's
+ * blocks and the projection's block ids have drifted (the card payload and the
+ * projection are written by different paths, and a stale card is the ordinary
+ * state between an edit and its refetch), and for a verdict the kernel
+ * synthesised for a *deleted* declaration, which carries `blockId: ''`.
+ *
+ * **Both must agree when both are present.** The kernel stamps run state onto
+ * verdicts by key alone (`attach_task_read_state` builds a `BTreeMap<key,
+ * row>`), and it emits a verdict for a tombstoned declaration as well as for a
+ * live one, so `taskDiagnostics` can legitimately contain two verdicts naming
+ * the same key with different block ids, both carrying the same live run. A
+ * block-id hit whose key contradicts the block's own declared key is therefore
+ * not evidence about this row, and the key index is used *only* for a verdict
+ * whose block id matches no block at all.
+ *
+ * **That last sentence is enforced here, at indexing time, not at lookup.** A
+ * verdict naming a block this report *does* have has already said which row it
+ * is about; letting it also sit in the key index would let it decorate a
+ * *different* row through the fallback whenever its own row happens not to
+ * consult the index. Two rows `b-alpha`/`alpha` and `b-beta`/`beta` plus one
+ * verdict `{blockId: 'b-beta', key: 'alpha'}` is the whole trigger: `b-alpha`
+ * finds no verdict at its own id, falls back on its key, and reports a run the
+ * verdict itself says belongs to `b-beta` — including routing the click at
+ * `b-beta`'s worker card. So `rowBlockIds` gates the key index: only a verdict
+ * whose block id names no row at all (the kernel's synthesised `blockId: ''`
+ * among them) may ever be reached by key.
+ */
+function indexVerdicts(verdicts: readonly TaskVerdict[], rowBlockIds: ReadonlySet<string>) {
+  const byBlockId = new Map<string, TaskVerdict>();
+  const byKey = new Map<string, TaskVerdict>();
+  for (const verdict of verdicts) {
+    if (verdict.blockId !== '' && !byBlockId.has(verdict.blockId)) byBlockId.set(verdict.blockId, verdict);
+    const namesARow = verdict.blockId !== '' && rowBlockIds.has(verdict.blockId);
+    if (verdict.key !== '' && !namesARow && !byKey.has(verdict.key)) byKey.set(verdict.key, verdict);
+  }
+  return { byBlockId, byKey };
+}
+
+/**
+ * The verdict that is about *this* block, or none.
+ *
+ * The block-id hit wins, but only if it does not contradict the declared key;
+ * the key index is consulted only when no verdict names this block id, which is
+ * what keeps a redeclared key from reporting the withdrawn block's run (and
+ * vice versa) on both rows.
+ */
+function verdictFor(
+  blockId: string, declaredKey: string,
+  index: ReturnType<typeof indexVerdicts>,
+): TaskVerdict | undefined {
+  const byId = index.byBlockId.get(blockId);
+  if (byId !== undefined) {
+    return declaredKey === '' || byId.key === '' || byId.key === declaredKey ? byId : undefined;
+  }
+  return declaredKey === '' ? undefined : index.byKey.get(declaredKey);
+}
+
+/**
+ * The row's state, from the declaration alone.
+ *
+ * `tombstoned_by` is the discriminant, not `tombstone`: a live task may carry
+ * an explicit `tombstone: null`, so the key's presence proves nothing. Same
+ * test as `features/report/task`.
+ *
+ * Extracted because two passes need it and they must not be able to disagree:
+ * `contestedLiveKeys` decides which keys are contested *before* any row is
+ * built, and the row loop decides each row's own word. A copy of this ladder in
+ * each place would let a future edit make a block live for one pass and
+ * withdrawn for the other, which is exactly the state the contested rule exists
+ * to rule out.
+ */
+function taskRowState(block: ReportBlock): ReportTaskState {
+  if (block.kind !== 'task') return 'unreadable';
+  if ('tombstoned_by' in block.payload) return 'withdrawn';
+  return block.payload.ready ? 'ready' : 'not-ready';
+}
+
+/** The key the block itself declared, or `''` for one this build cannot read.
+ *  Only a declared key may look a verdict up: the row's *display* name falls
+ *  back to the block id, and matching **that** against the key index would let
+ *  one task's run be reported on another task's row. */
+function declaredTaskKey(block: ReportBlock): string {
+  return block.kind === 'task' ? block.payload.key : '';
+}
+
+/**
+ * The keys more than one *live* row in this document claims.
+ *
+ * The `tasks` table is `UNIQUE (wave_id, key)` (migration 0058), so at most one
+ * run can ever exist per key — but the *document* is not held to that. A report
+ * may declare the same key on two live blocks, and the kernel does not reject
+ * it: the projection flags each of them with a `duplicate_key` diagnostic
+ * (`calm-types/src/report_blocks/tasks.rs`) and carries on, while
+ * `attach_task_read_state` (`task_projection.rs`) joins run state onto verdicts
+ * **by key alone**. The single `tasks` row is therefore stamped onto *both*
+ * verdicts, each naming its own block, each carrying the same `status` and the
+ * same `workerCardId`. Rendered, that is one run shown as two — with two rows
+ * offering a click-through to the same worker card, as if two things were
+ * running.
+ *
+ * There is no fix that picks a winner, because there is no owner to pick: the
+ * kernel itself treats this document as invalid, and nothing in it says which
+ * of the two blocks the run belongs to. Inventing an order (document position,
+ * verdict order) would print a confident answer the data does not support, and
+ * it would flip whenever the report was reordered.
+ *
+ * So these rows take the same treatment a withdrawn row takes: they keep their
+ * declaration word and take **no runtime note and no click-through**. The rows
+ * still exist — the blocks are declared and the document draws them — and the
+ * `duplicate_key` diagnostic on each block is where the reader is told why,
+ * which is the block's own business and not this column's.
+ *
+ * Withdrawn and unreadable rows are excluded from the count for the reason they
+ * are excluded from decoration at all: a withdrawn key that was redeclared is
+ * one live claim, not two, and that case is already handled (and tested)
+ * downstream.
+ *
+ * **The empty key is counted like any other**, and it is the one case that is
+ * easy to argue out of. `key` is `z.string()` and the kernel does not require
+ * it to be non-empty (see `deriveReportTasks`'s name fallback), so two live
+ * blocks may both declare `''` — and `UNIQUE (wave_id, key)` means those two
+ * declarations still share exactly *one* `tasks` row, which is the whole
+ * premise of this function. Skipping `''` here left both rows decorated: each
+ * found a verdict at its own block id, and both printed the same `running` and
+ * the same click-through to the same worker card. The row's *display* name
+ * falls back to the block id, which made the two look like two different
+ * tasks. An empty key is a bad name; it is not a second run.
+ */
+function contestedLiveKeys(blocks: readonly ReportBlock[]): ReadonlySet<string> {
+  const claimed = new Set<string>();
+  const contested = new Set<string>();
+  for (const block of blocks) {
+    if (!isTaskBlock(block)) continue;
+    const state = taskRowState(block);
+    if (state === 'withdrawn' || state === 'unreadable') continue;
+    const key = declaredTaskKey(block);
+    if (claimed.has(key)) contested.add(key);
+    else claimed.add(key);
+  }
+  return contested;
+}
+
+/**
+ * Every `task` block, in document order, as one row each, decorated with
+ * whatever the kernel's task projection says about it.
  *
  * Withdrawn tasks are kept, for the same reason the block itself keeps them:
  * the task existed, other reports may cite its block id, and a list that
  * silently dropped it would disagree with the document it is derived from.
+ *
+ * `verdicts` is optional and defaults to none: the report card is in hand on
+ * the first render and the verdict read lands later, so "no verdicts yet" must
+ * render the same list the declarations alone produced rather than a hole.
  */
-export function deriveReportTasks(blocks: readonly ReportBlock[] | null): ReportTaskRow[] {
+export function deriveReportTasks(
+  blocks: readonly ReportBlock[] | null,
+  verdicts: readonly TaskVerdict[] = [],
+): ReportTaskRow[] {
   if (blocks === null) return [];
+  /* Every block that will become a row, before any of them is looked up: the
+     key index is only for verdicts about blocks this report does not have, and
+     that predicate is not decidable one block at a time. */
+  const rowBlockIds = new Set(blocks.filter(isTaskBlock).map((block) => block.id));
+  const index = indexVerdicts(verdicts, rowBlockIds);
+  /* Which keys two live rows both claim — also not decidable one block at a
+     time, and for the same reason: the second claimant is what makes the first
+     one contested, and it may come later in the document. */
+  const contested = contestedLiveKeys(blocks);
   const rows: ReportTaskRow[] = [];
   for (const block of blocks) {
     if (!isTaskBlock(block)) continue;
@@ -413,17 +903,18 @@ export function deriveReportTasks(blocks: readonly ReportBlock[] | null): Report
      * it *is* the literal other reports cite this block by, which is the one
      * thing still true about it.
      */
-    if (block.kind !== 'task') {
-      rows.push({ blockId: block.id, key: block.id, state: 'unreadable' });
-      continue;
-    }
-    const payload = block.payload;
-    /* `tombstoned_by` is the discriminant, not `tombstone`: a live task may
-       carry an explicit `tombstone: null`, so the key's presence proves
-       nothing. Same test as `features/report/task`. */
-    const state: ReportTaskState = 'tombstoned_by' in payload
-      ? 'withdrawn'
-      : payload.ready ? 'ready' : 'not-ready';
+    const isReadable = block.kind === 'task';
+    const state = taskRowState(block);
+    /* The declared key, before the id fallback below. */
+    const declaredKey = declaredTaskKey(block);
+    /* `kind` lives on the live declaration, not on the verdict — the same
+       field `features/report/task` prints. A withdrawn or unreadable task has
+       none, and its row is the one that offers no worker card either: the two
+       are the same fact, which is why the panel can hang the card control off
+       the kind and be sure it never appears on a struck row. */
+    const kind: TaskWorkerKind | null = isReadable && !('tombstoned_by' in block.payload)
+      ? block.payload.kind
+      : null;
     /*
      * A row always has a name. `key` is `z.string()` — the kernel does not
      * require it to be non-empty — and an empty one reaches the panel as a
@@ -433,7 +924,73 @@ export function deriveReportTasks(blocks: readonly ReportBlock[] | null): Report
      * for the same reason: the block id is the literal other reports cite this
      * block by, which is the one name it always has.
      */
-    rows.push({ blockId: block.id, key: payload.key === '' ? block.id : payload.key, state });
+    const key = declaredKey === '' ? block.id : declaredKey;
+    /*
+     * A withdrawn or unreadable declaration takes no runtime decoration at all.
+     *
+     * Withdrawal does not delete the `tasks` row of a task that was already
+     * dispatched, so its verdict keeps reporting `status: 'done'` (or
+     * `running`) long after the block was struck. Letting that word win made
+     * the panel print an unstruck `done` and lose the word `Withdrawn`
+     * entirely — the one fact this row exists to carry — and flipped the click
+     * to the worker card, so the withdrawn block could no longer be revealed
+     * from the panel at all. `unreadable` is the same class: this build cannot
+     * read the block's key, so it cannot vouch that a verdict is about it.
+     *
+     * The task existed and was withdrawn; that is what the panel owes the
+     * reader. It also removes the withdrawn row from contention when a key is
+     * withdrawn and then redeclared, which is one half of why two rows could
+     * print one run.
+     *
+     * A key two live rows both claim is the other half, and it is refused here
+     * for a different reason: not that this row cannot be vouched for, but that
+     * *neither* row can — see `contestedLiveKeys`. One `tasks` row stamped onto
+     * two verdicts is one run, and printing it twice (twice clickable, at the
+     * same card) states something the document does not know.
+     */
+    const decorated = state !== 'withdrawn' && state !== 'unreadable'
+      && !contested.has(declaredKey);
+    const verdict = decorated ? verdictFor(block.id, declaredKey, index) : undefined;
+    /*
+     * `''` is not a status, for the same reason `''` is not a card id two
+     * fields below. The wire types it as an optional string, so an empty one is
+     * not `null` and would pass every gate written against `null`: it would
+     * silence the declaration word (`Withdrawn` is lost, and the row says
+     * nothing at all), let a `statusDetail` through with no state to qualify —
+     * `Status:  — boom`, which both `taskStatusPhrase` and `ReportTaskRow`
+     * document as the one shape they may not produce — and render as
+     * `data-nc-task-status=""`, which matches no dot form and so paints the
+     * neutral ring while claiming a run exists. Today's kernel serialises
+     * `TaskStatus` to a fixed lowercase word and cannot emit this; the wire
+     * type is what is being hardened against, not the current writer.
+     */
+    const status = verdict?.status === undefined || verdict.status === null || verdict.status === ''
+      ? null
+      : verdict.status;
+    rows.push({
+      blockId: block.id,
+      key,
+      state,
+      /* No `tasks` row means nothing has run, and inventing a word for that is
+         exactly the thing this list was criticised for not being able to do
+         honestly. The declaration word stands — and it stands *down* once there
+         is a status, which is the one precedence rule the old single `note`
+         encoded that is still a fact about meaning rather than about layout:
+         `Not ready` describes a declaration the kernel has since dispatched
+         anyway, and printing both would show the row arguing with itself. */
+      declaration: status === null ? declarationWord(state) : null,
+      status,
+      /* Gated on `status`, not on the verdict: the detail is a qualifier on the
+         status word and has nowhere to attach without one. That also makes it
+         inherit every rule above for free — a withdrawn, unreadable or
+         contested row has no `status`, so it cannot leak a reason either. */
+      statusDetail: status === null ? null : boundedStatusDetail(verdict?.statusDetail),
+      kind,
+      /* `''` is not a card id. The wire types it as an optional string and an
+         empty one would route a click at a card that cannot exist. */
+      workerCardId: verdict?.workerCardId === undefined || verdict.workerCardId === null
+        || verdict.workerCardId === '' ? null : verdict.workerCardId,
+    });
   }
   return rows;
 }

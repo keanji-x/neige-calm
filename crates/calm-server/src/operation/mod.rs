@@ -97,6 +97,49 @@ pub async fn refuse_if_context_stale(tx: &mut Tx<'_>, task_id: Option<&str>) -> 
     Ok(())
 }
 
+/// Issue #1149 — the plan `key` of the task a worker operation is bound
+/// to, read inside the spawning transaction so a worker card can be
+/// titled after its task.
+///
+/// The key is DERIVED here rather than carried on the worker operation
+/// payload on purpose: worker payloads feed `stable_payload_hash`
+/// (see `scheduler::build_worker_payload`), so adding a field would make
+/// in-flight tasks minted by older builds collide on payload hash after
+/// an upgrade.
+///
+/// **Infallible on purpose — the return type has no error arm.** A card
+/// title is cosmetic; a dispatch is not. `tasks` is not a STRICT table, so
+/// `key` can hold a value that does not decode as TEXT, and every other
+/// failure mode a `SELECT` has (a closed connection, a schema the running
+/// binary did not expect) is equally not a reason to refuse a worker spawn
+/// that would otherwise have succeeded. So an absent `tasks` row (legacy
+/// `calm.task.dispatch` idempotency keys), an empty key argument, a blank
+/// stored key, *and any sqlx error at all* collapse to the same answer:
+/// `None`, i.e. "leave the card untitled". Errors are logged, never
+/// propagated — returning `Result` here would put a caller one `?` away
+/// from making a title outage a dispatch outage.
+pub async fn task_key_for_card_title(tx: &mut Tx<'_>, task_id: &str) -> Option<String> {
+    if task_id.trim().is_empty() {
+        return None;
+    }
+    let key: Option<String> = match sqlx::query_scalar("SELECT key FROM tasks WHERE id = ?1")
+        .bind(task_id)
+        .fetch_optional(&mut **tx)
+        .await
+    {
+        Ok(key) => key,
+        Err(error) => {
+            tracing::warn!(
+                task_id,
+                %error,
+                "worker card title lookup failed; spawning the card untitled"
+            );
+            None
+        }
+    };
+    key.filter(|k| !k.trim().is_empty())
+}
+
 #[derive(Clone, Copy)]
 enum ParkedClaimMode {
     SteadyState,

@@ -581,6 +581,11 @@ impl ProviderAdapter for TerminalWorkerAdapter {
     ) -> Result<TxOutput> {
         let payload: TerminalWorkerOperationPayload = serde_json::from_value(input.clone())?;
         super::refuse_if_context_stale(tx, Some(&payload.idempotency_key)).await?;
+        // #1149 — title the worker card after its task key. Derived from
+        // the `tasks` row inside this tx (never carried on the payload,
+        // which would move `stable_payload_hash`), and fail-soft: `None`
+        // just leaves the card untitled.
+        let card_title = super::task_key_for_card_title(tx, &payload.idempotency_key).await;
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());
@@ -623,7 +628,7 @@ impl ProviderAdapter for TerminalWorkerAdapter {
                 tx,
                 card.id.as_ref(),
                 crate::model::CardPatch {
-                    title: None,
+                    title: card_title,
                     kind: None,
                     sort: None,
                     payload: Some(Value::Object(merged)),
@@ -969,3 +974,6 @@ fn default_cwd() -> String {
         .to_string_lossy()
         .to_string()
 }
+
+#[cfg(test)]
+mod tests;
