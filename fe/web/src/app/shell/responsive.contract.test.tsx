@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from './public.tsx';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { setMobileSecondaryOpen } from '../../ui/mobile-page/public.ts';
 
 vi.mock('@tanstack/react-router', () => ({ Outlet: () => <div>route</div> }));
 vi.mock('../providers/queries.ts', () => ({
@@ -23,8 +24,8 @@ vi.mock('./sidebar.tsx', () => ({ Sidebar: ({ collapsed, onToggleCollapsed }: {
 
 afterEach(() => vi.unstubAllGlobals());
 
-describe('narrow rail interaction contracts', () => {
-  it('follows matchMedia until a narrow-screen Expand explicitly wins', () => {
+describe('compact navigation interaction contracts', () => {
+  it('opens the workspace as a modal side page and Escape returns to content', () => {
     const listeners = new Set<() => void>();
     vi.stubGlobal('matchMedia', vi.fn(() => ({
       matches: true, media: '', onchange: null,
@@ -33,12 +34,33 @@ describe('narrow rail interaction contracts', () => {
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
     })));
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-    const { container } = render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onSignOut={vi.fn()} />);
-    const toggle = screen.getByRole('button', { name: 'Expand' });
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(container.firstElementChild?.className).toContain('shellCollapsed');
-    fireEvent.click(toggle);
-    expect(screen.getByRole('button', { name: 'Collapse' }).getAttribute('aria-expanded')).toBe('true');
-    expect(container.firstElementChild?.className).toContain('shellExpanded');
+    render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onSignOut={vi.fn()} />);
+    const pages = screen.getByRole('button', { name: 'Pages' });
+    expect(pages.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(pages);
+    expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
+    expect(pages.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(pages);
+    expect(screen.queryByRole('dialog', { name: 'Pages' })).toBeNull();
+
+    const opener = screen.getByRole('button', { name: 'Coves' });
+    expect(opener.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByRole('dialog', { name: 'Coves' })).toBeNull();
+
+    fireEvent.click(opener);
+    expect(screen.getByRole('dialog', { name: 'Coves' })).toBeTruthy();
+    expect(opener.getAttribute('aria-expanded')).toBe('true');
+    expect(document.querySelector('main')?.hasAttribute('inert')).toBe(true);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Coves' })).toBeNull();
+    expect(opener.getAttribute('aria-expanded')).toBe('false');
+
+    const dock = document.querySelector('nav[aria-label="Primary"]');
+    act(() => setMobileSecondaryOpen(true));
+    expect(dock?.getAttribute('aria-hidden')).toBe('true');
+    expect(dock?.hasAttribute('inert')).toBe(true);
+    act(() => setMobileSecondaryOpen(false));
+    expect(dock?.getAttribute('aria-hidden')).toBeNull();
   });
 });

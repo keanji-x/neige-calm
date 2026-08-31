@@ -393,6 +393,55 @@
     pointer-events: none;
   }
 
+  /* A side conversation on desktop becomes a pushed page on compact/mobile.
+     It keeps the same conversation state and focus lifecycle; only geometry
+     and motion change. */
+  @media (width < 60rem) {
+    .drawer {
+      --nc-card-inset: var(--space-8);
+      --nc-card-radius: 0px;
+      position: fixed;
+      inset: 0 0 calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
+      inline-size: 100%;
+      block-size: calc(100dvh - var(--mobile-dock-h) - env(safe-area-inset-bottom));
+      max-inline-size: none;
+      border-radius: 0;
+      background: var(--bg);
+      box-shadow: none;
+      animation: mobile-drawer-in var(--motion-medium) ease-out;
+    }
+
+    /* The desktop exchange rail mounts in the page seam beside the card. A
+       full-width mobile page has no such seam; conversation history remains
+       available from the Report's Conversations list. */
+    .seam {
+      display: none;
+    }
+
+    .mobileHeader {
+      flex: none;
+      padding-block-start: env(safe-area-inset-top);
+      padding-inline: var(--space-8);
+      background: var(--bg);
+    }
+
+    .bodyInner {
+      padding: var(--space-8);
+    }
+
+    .drawerClosing {
+      animation: mobile-drawer-out var(--motion-medium) ease-in forwards;
+    }
+
+    @keyframes mobile-drawer-in {
+      from { translate: 100% 0; }
+    }
+
+    @keyframes mobile-drawer-out {
+      to { translate: 100% 0; }
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .drawer,
     .seam {

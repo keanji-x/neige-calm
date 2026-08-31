@@ -11,9 +11,26 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 
+import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
 import { Icon } from '../icon/public.tsx';
+import { MobileHeader } from '../mobile-header/public.tsx';
 import { useState } from '../state/public.ts';
 import styles from './drawer.module.css';
+
+function useCompactViewport(): boolean {
+  const [compact, setCompact] = useState(
+    () => globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY).matches ?? false,
+  );
+  useEffect(() => {
+    const media = globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY);
+    if (media === undefined) return;
+    const sync = () => setCompact(media.matches);
+    sync();
+    media.addEventListener?.('change', sync);
+    return () => media.removeEventListener?.('change', sync);
+  }, []);
+  return compact;
+}
 
 /**
  * The marker on the drawer's seam — the strip of page between the card's
@@ -108,19 +125,19 @@ function focusTook(element: HTMLElement): boolean {
   return document.activeElement === element;
 }
 
-export function Drawer({ open, title, onClose, children, footer }: {
+export function Drawer({ open, title, mobileBackLabel, onClose, children, footer }: {
   open: boolean;
   /**
-   * The drawer's **accessible name**, and nothing that is painted.
+   * The drawer's accessible name. Compact/mobile also paints it in the shared
+   * Header; desktop keeps the title unpainted to preserve the side-card shape.
    *
    * It used to be printed as an `<h2>` in a head band. The band is gone (see
-   * the `.controls` note in the stylesheet), so this string now reaches the
-   * reader only through `aria-label` on the container — which is where the
-   * whole of its remaining value was anyway: a sighted reader clicked a named
-   * conversation row to get here, a screen-reader user did not necessarily
-   * land here from that row and still needs the region named.
+   * the `.controls` note in the stylesheet); mobile's page Header is a separate
+   * responsive presentation, not a restoration of that desktop band.
    */
   title: string;
+  /** Accessible destination announced by the compact header's back control. */
+  mobileBackLabel?: string;
   onClose: () => void;
   children: ReactNode;
   /**
@@ -131,6 +148,7 @@ export function Drawer({ open, title, onClose, children, footer }: {
    */
   footer?: ReactNode;
 }) {
+  const compact = useCompactViewport();
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [closing, setClosing] = useState(false);
   const wasOpen = useRef(open);
@@ -147,11 +165,13 @@ export function Drawer({ open, title, onClose, children, footer }: {
    * snapshot of the last frame that had content, and it must never cause a
    * render of its own.
    */
-  const lastFrame = useRef<{ title: string; children: ReactNode; footer?: ReactNode }>(
-    { title, children, footer },
+  const lastFrame = useRef<{
+    title: string; mobileBackLabel?: string; children: ReactNode; footer?: ReactNode;
+  }>(
+    { title, mobileBackLabel, children, footer },
   );
-  if (open) lastFrame.current = { title, children, footer };
-  const frame = open ? { title, children, footer } : lastFrame.current;
+  if (open) lastFrame.current = { title, mobileBackLabel, children, footer };
+  const frame = open ? { title, mobileBackLabel, children, footer } : lastFrame.current;
 
   /*
    * The retraction starts **during render**, not in an effect, and that is the
@@ -322,19 +342,29 @@ export function Drawer({ open, title, onClose, children, footer }: {
         * space two things is not kept for one. The floating geometry moved
         * onto `.close` itself; nothing about where the chevron lands changed.
         */}
-      <button
-        type="button"
-        data-nc-role="icon"
-        className={styles.close}
-        aria-label="Close conversation"
-        title="Close"
-        onClick={onClose}
-      >
-        {/* A right chevron, not an X — see the `.close` note in the stylesheet
-            for why the shape may not be shared with the page header's
-            delete. */}
-        <Icon name="chevron-right" />
-      </button>
+      {compact ? (
+        <div className={styles.mobileHeader}>
+          <MobileHeader
+            title={frame.title}
+            backLabel={frame.mobileBackLabel}
+            onBack={onClose}
+          />
+        </div>
+      ) : (
+        <button
+          type="button"
+          data-nc-role="icon"
+          className={styles.close}
+          aria-label="Close conversation"
+          title="Close"
+          onClick={onClose}
+        >
+          {/* A right chevron, not an X — see the `.close` note in the stylesheet
+              for why the shape may not be shared with the page header's
+              delete. */}
+          <Icon name="chevron-right" />
+        </button>
+      )}
       <div className={styles.scroll} data-nc-drawer-scroll="">
         <div className={styles.bodyInner}>
           {frame.children}

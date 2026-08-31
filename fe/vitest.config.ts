@@ -7,6 +7,18 @@ import { playwright } from '@vitest/browser-playwright';
 const setupFiles = ['./tools/vitest/build-constants.ts'];
 
 export default defineConfig({
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    include: [
+      '@astryxdesign/core/Calendar',
+      '@astryxdesign/core/Icon',
+      '@astryxdesign/core/IconButton',
+      '@astryxdesign/core/List',
+      '@astryxdesign/core/MoreMenu',
+    ],
+  },
   test: {
     projects: [
       {

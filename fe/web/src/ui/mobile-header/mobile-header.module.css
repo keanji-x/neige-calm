@@ -1,0 +1,57 @@
+@layer ui {
+  .header {
+    position: sticky;
+    inset-block-start: 0;
+    z-index: var(--z-sticky);
+    display: grid;
+    grid-template-columns: minmax(var(--rail-w-collapsed), 1fr) minmax(0, auto) minmax(var(--rail-w-collapsed), 1fr);
+    align-items: center;
+    block-size: var(--rail-w-collapsed);
+    min-block-size: var(--rail-w-collapsed);
+    padding-block: 0;
+    border-block-end: 1px solid var(--hairline);
+    background: var(--bg);
+  }
+
+  .leading,
+  .trailing {
+    display: flex;
+    min-inline-size: var(--rail-w-collapsed);
+    align-items: center;
+  }
+
+  .leading {
+    justify-content: flex-start;
+  }
+
+  .trailing {
+    justify-content: flex-end;
+  }
+
+  .title {
+    overflow: hidden;
+    font-size: var(--text-base);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+    white-space: nowrap;
+    text-align: center;
+    text-overflow: ellipsis;
+  }
+
+  .back {
+    display: grid;
+    place-items: center;
+    inline-size: var(--rail-w-collapsed);
+    block-size: var(--rail-w-collapsed);
+    border-radius: var(--radius-pill);
+    color: var(--text-2);
+    cursor: pointer;
+  }
+
+  .back:hover,
+  .back:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+}

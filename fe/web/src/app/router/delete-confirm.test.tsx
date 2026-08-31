@@ -97,8 +97,7 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
   await userEvent.click(screen.getByRole('button', { name: 'Account menu for You' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
   resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
-  await screen.findByRole('heading', { name: 'Settings' });
-  expect(router.state.location.pathname).toBe('/settings');
+  await waitFor(() => expect(router.state.location.pathname).toBe('/settings'));
 });
 
 it('does not navigate on a cove delete success that arrives after cancellation', async () => {

@@ -7,6 +7,7 @@ import { useEffect } from 'react';
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
 import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './settings.module.css';
 
@@ -98,6 +99,7 @@ export function SettingsPage({
         breadcrumb={<Breadcrumb ancestor="Today" onNavigate={onOpenToday} />}
         title={<PageTitle>Settings</PageTitle>}
       />
+      <div className={styles.mobileHeader}><MobileHeader title="Settings" level={1} /></div>
 
       <div className={styles.form}>
         {/* Section labels take the place of card boxes. Per the boundary

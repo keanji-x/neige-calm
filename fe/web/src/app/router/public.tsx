@@ -62,7 +62,7 @@ import {
   useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
-import { AppShell, useRequestNewWave } from '../shell/public.tsx';
+import { AppShell, useMobileReportNavigation, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { useGo, useRouteCardId, useRouteHash, useRouteParam } from './navigation.ts';
@@ -980,13 +980,15 @@ function useConversationPanel(
        CARDS modules already use, which is why this needed no new mechanism. */
     action: source.kind === 'elsewhere'
       ? undefined
-      : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
+      : <PanelAction label="New conversation" onClick={start}><Icon name="chat" size="sm" /></PanelAction>,
+    startConversation: source.kind === 'elsewhere' ? undefined : start,
     drawer: (
       <Drawer
         open={open !== null || draftOpen}
         /* A draft has no name yet, and naming it after the words being typed
            would rename the drawer on every keystroke. */
-        title={open !== null ? conversationName(open) : draftOpen ? 'New conversation' : ''}
+        title={open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
+        mobileBackLabel={source.kind === 'card' ? 'Report' : 'Conversations'}
         onClose={closeDrawer}
         footer={draftOpen ? (
           <>
@@ -1362,6 +1364,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   cardRuntime: CardRuntime;
 }) {
   const waveMutations = useWaveMutations(transport, unauthorized);
+  const mobileReportNavigation = useMobileReportNavigation();
   const go = useGo();
   const requestedCardId = useRouteCardId();
   const cardRegistry = cardRuntime.registry;
@@ -1488,6 +1491,11 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
   };
 
+  const openReportAnchor = (blockId: string) => {
+    revealReportAnchor(blockId);
+    go({ name: 'wave', waveId: wave.id, blockId });
+  };
+
   return (
     <>
     <WaveStage>
@@ -1497,13 +1505,11 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */
       tasks={tasks}
-      onOpenTask={(blockId) => {
-        /* The same landing the outline and every backlink use: scroll to the
-           block and flash it. The URL carries the anchor too, so the reader can
-           hand the link to somebody else. */
-        revealReportAnchor(blockId);
-        go({ name: 'wave', waveId: wave.id, blockId });
-      }}
+      outlineItems={outline}
+      /* Tasks and the mobile Outline share one anchor landing. The URL carries
+         it too, so the reader can hand the destination to somebody else. */
+      onOpenTask={openReportAnchor}
+      onOpenOutline={openReportAnchor}
       cardsAction={
         <PanelAction
           label="New terminal"
@@ -1531,6 +1537,8 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       onCloseBoard={knownCard
         ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
         : undefined}
+      mobileBackLabel={mobileReportNavigation.backLabel}
+      onMobileBack={mobileReportNavigation.backFromReport}
       report={<ReportDocument
         report={report}
         rail={<ReportOutline items={outline} />}
@@ -1556,6 +1564,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
         : undefined}
       conversationList={chat.list}
       conversationAction={chat.action}
+      onStartConversation={chat.startConversation}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
       onDeleteWave={(signal) => waveMutations.remove(wave.id, wave.coveId, signal).then(() => {
         if (signal.aborted) return;

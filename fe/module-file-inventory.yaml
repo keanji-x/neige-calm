@@ -107,6 +107,9 @@
 - { path: fe/web/src/ui/error-box, type: directory, owner: ui/error-box, readonly: false, basis: "shared non-blocking and blocking read failure surface" }
 - { path: fe/web/src/ui/operation-feedback, type: directory, owner: ui/operation-feedback, readonly: false, basis: "shared asynchronous mutation feedback surface" }
 - { path: fe/web/src/ui/page-header, type: directory, owner: ui/page-header, readonly: false, basis: "design §6.4/§6.14" }
+- { path: fe/web/src/ui/mobile-header, type: directory, owner: ui/mobile-header, readonly: false, basis: "shared compact/mobile page header with source-aware back navigation" }
+- { path: fe/web/src/ui/mobile-list, type: directory, owner: ui/mobile-list, readonly: false, basis: "shared compact/mobile list and list-detail navigation surface" }
+- { path: fe/web/src/ui/mobile-page, type: directory, owner: ui/mobile-page, readonly: false, basis: "shared compact/mobile root and secondary-page coordination" }
 - { path: fe/web/src/ui/typed-confirm, type: directory, owner: ui/typed-confirm, readonly: false, basis: "design §6.13" }
 - { path: fe/web/src/ui/panel-card, type: directory, owner: ui/panel-card, readonly: false, basis: "design §6.5；每条路由面板列唯一的圆角卡片与它的模块 (#997)" }
 - { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }

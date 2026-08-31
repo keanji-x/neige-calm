@@ -1,4 +1,8 @@
 @layer features {
+  .mobileHeader {
+    display: none;
+  }
+
   .page {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -166,6 +170,33 @@
 
   .aboutValue {
     font-family: var(--font-mono);
+  }
+
+  @media (width < 60rem) {
+    .page {
+      gap: var(--space-6);
+      max-inline-size: none;
+      padding-inline: var(--space-8);
+    }
+
+    .page > :first-child {
+      display: none;
+    }
+
+    .mobileHeader {
+      display: block;
+    }
+
+    .form {
+      inline-size: 100%;
+      max-inline-size: none;
+    }
+
+    .input,
+    .segment,
+    .actions > button {
+      min-block-size: var(--rail-w-collapsed);
+    }
   }
 
   @media (prefers-reduced-motion: reduce) {

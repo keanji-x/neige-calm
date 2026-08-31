@@ -1,0 +1,116 @@
+@layer ui {
+  .page {
+    display: flex;
+    flex: 1 1 auto;
+    inline-size: 100%;
+    min-block-size: 100%;
+    flex-direction: column;
+    gap: var(--space-8);
+    padding:
+      env(safe-area-inset-top)
+      var(--space-8)
+      var(--space-8);
+    overflow: auto;
+    overscroll-behavior: contain;
+    background: var(--bg);
+  }
+
+  .pageForward {
+    animation: mobile-list-forward var(--motion-medium) ease-out;
+  }
+
+  .pageBack {
+    animation: mobile-list-back var(--motion-medium) ease-out;
+  }
+
+  @keyframes mobile-list-forward {
+    from {
+      opacity: 0;
+      translate: 100% 0;
+    }
+  }
+
+  @keyframes mobile-list-back {
+    from {
+      opacity: 0;
+      translate: -100% 0;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pageForward,
+    .pageBack {
+      animation: none;
+    }
+  }
+
+  .note {
+    padding-inline: var(--space-2);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+
+  .content,
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .section > h3 {
+    padding-inline: var(--space-4);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    line-height: var(--leading-none);
+    letter-spacing: var(--tracking-wider);
+    color: var(--text-3);
+    text-transform: uppercase;
+  }
+
+  .list {
+    padding: 0;
+    background: transparent;
+  }
+
+  .item {
+    inline-size: 100%;
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-4));
+    border-radius: var(--radius-sm);
+    background: transparent;
+  }
+
+  .item:hover,
+  .item:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  .itemNested {
+    padding-inline-start: var(--space-10);
+  }
+
+  .endContent {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .meta {
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    font-size: var(--text-xs);
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+  }
+
+  .empty {
+    display: flex;
+    min-block-size: calc(var(--rail-w-collapsed) + var(--space-4));
+    align-items: center;
+    padding-inline: var(--space-7);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
+  }
+}

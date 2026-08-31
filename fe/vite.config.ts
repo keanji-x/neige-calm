@@ -26,6 +26,18 @@ export default defineConfig({
   root: 'web',
   base: '/next/',
   plugins: [react()],
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    include: [
+      '@astryxdesign/core/Calendar',
+      '@astryxdesign/core/Icon',
+      '@astryxdesign/core/IconButton',
+      '@astryxdesign/core/List',
+      '@astryxdesign/core/MoreMenu',
+    ],
+  },
   define: {
     __NC_VERSION__: JSON.stringify(version),
     __NC_BUILD__: JSON.stringify(build),
