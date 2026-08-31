@@ -615,6 +615,8 @@ pub mod validation;
 pub mod wave_cove_cache;
 // #1147 S2 — managed workspace root derivation + materialization (D2/D3).
 pub mod workspace_materialize;
+// #1147 S5 — safe recycling of managed wave workspaces (design §生命周期).
+pub mod workspace_recycle;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
 pub mod report_backlinks;

@@ -4891,6 +4891,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Wave belongs to the system cove and cannot be deleted via REST */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Wave not found */
             404: {
                 headers: {

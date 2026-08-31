@@ -63,3 +63,5 @@ mod version;
 mod wave_projection_policy_patch;
 #[path = "cases/wave_workspace_materialize.rs"]
 mod wave_workspace_materialize;
+#[path = "cases/wave_workspace_recycle.rs"]
+mod wave_workspace_recycle;
