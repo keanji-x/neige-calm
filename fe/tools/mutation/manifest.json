@@ -125,13 +125,21 @@
     "expected_red": [
       "test-tier-project fixtures accepts the positive directory",
       "uses a layout engine for rendered element geometry",
-      "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once"
+      "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once",
+      "the a11y failure report (#1161) announces its own truncation instead of silently dropping subtrees",
+      "the a11y failure report (#1161) does not stack a second report when the setup module is evaluated again",
+      "the a11y failure report (#1161) is appended to the real Testing Library error rather than replacing it",
+      "the a11y failure report (#1161) leaves decoration out: a hidden subtree with nothing queryable in it",
+      "the a11y failure report (#1161) lists body children so an absent portal is distinguishable from a hidden one",
+      "the a11y failure report (#1161) names aria-hidden as the reason a present element is unqueryable",
+      "the a11y failure report (#1161) reports inert subtrees even though Testing Library does not treat them as hidden"
     ],
     "selection_paths": [
       "tools/test-tier/checker.test.ts",
-      "tools/test-tier/vitest-projects.test.ts"
+      "tools/test-tier/vitest-projects.test.ts",
+      "tools/vitest/dom-diagnostics.browser.test.ts"
     ],
-    "why_more_than_one": "The positive browser fixture and representative partition case independently detect the same browser overlap; any third red is unrelated coupling."
+    "why_more_than_one": "The two entries this mutation exists for are the positive browser fixture and the representative partition case: they independently detect the browser overlap from inside the checker, and they are what would stay red if every collected browser test happened to survive node. The rest are the overlap itself being felt — dropping the `**/*.browser.test.{ts,tsx}` exclude collects every `tools/**` browser test into the node project, where `document` does not exist. `uses a layout engine for rendered element geometry` was the only such file until #1161 added `tools/vitest/dom-diagnostics.browser.test.ts`, whose seven cases all touch `document` and so all crash for the same single reason. Anything red beyond this set would mean the overlap reached a file that does not need a DOM at all."
   },
   {
     "mutation_id": "test-tier-ignore-migrated",
