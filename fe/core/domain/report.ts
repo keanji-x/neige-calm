@@ -547,11 +547,11 @@ function eventlessWindowTaskStatuses(): ReadonlySet<string> {
  * "Costs nothing outside that window" is a claim about a timer whose only
  * purpose is to make something on screen converge, so the thing it asks about
  * must be something on screen. A verdict is not: the kernel synthesises one for
- * a *deleted* declaration (`blockId: ''`, matching no block in this report, and
- * no row is built for it), and `deriveReportTasks` refuses to decorate a key
- * two live blocks claim, so an in-flight status on either would have kept the
- * 3 s refetch running against a panel that will never show a difference. Rows
- * are what the reader is waiting on, so rows are what the timer waits for.
+ * a *deleted* declaration whose row is still in flight (`blockId: ''`, matching
+ * no block in this report, and no row is built for it), so an in-flight status
+ * on it would have kept the 3 s refetch running against a panel that will never
+ * show a difference. Rows are what the reader is waiting on, so rows are what
+ * the timer waits for.
  */
 export function hasLiveTaskRun(rows: readonly ReportTaskRow[] | undefined): boolean {
   if (rows === undefined) return false;
@@ -588,7 +588,7 @@ export type TaskWorkerKind = 'codex' | 'claude' | 'terminal';
  * the join's knowledge leaking into presentation through a format.
  *
  * So the module keeps deciding *which* facts a row may carry — that is the
- * whole point of the withdrawn / unreadable / contested rules below — and stops
+ * whole point of the withdrawn / unreadable rules below — and stops
  * deciding how they are spelled next to each other.
  */
 export type ReportTaskRow = Readonly<{
@@ -730,34 +730,70 @@ function declarationWord(state: ReportTaskState): string | null {
  * state between an edit and its refetch), and for a verdict the kernel
  * synthesised for a *deleted* declaration, which carries `blockId: ''`.
  *
- * **Both must agree when both are present.** The kernel stamps run state onto
- * verdicts by key alone (`attach_task_read_state` builds a `BTreeMap<key,
- * row>`), and it emits a verdict for a tombstoned declaration as well as for a
- * live one, so `taskDiagnostics` can legitimately contain two verdicts naming
- * the same key with different block ids, both carrying the same live run. A
+ * **Both must agree when both are present.** The kernel no longer stamps run
+ * state by key alone — since #1160 `attach_task_read_state` attaches it to the
+ * *one* block the declarations name as the key's owner, and abstains
+ * (`status: null`) when several live blocks claim the key. What survives is
+ * the reason the rule was needed in the first place: **one key still yields
+ * several verdicts.** The projection emits one per declaration, so a tombstone
+ * and its live re-declaration both arrive carrying the same key, and only one
+ * of them carries the run. On top of that, the two halves of this join are two
+ * different reads of two different snapshots — the blocks come with the wave
+ * detail, the verdicts from `['wave-report', waveId]` — and `block_id` is not
+ * a durable identity: it is minted by FNV-1a with linear probing and
+ * re-inherited heuristically on a rewrite (`report_blocks/align.rs`), so a
+ * hard-deleted block's id can be re-issued to a different declaration. A
  * block-id hit whose key contradicts the block's own declared key is therefore
  * not evidence about this row, and the key index is used *only* for a verdict
  * whose block id matches no block at all.
  *
- * **That last sentence is enforced here, at indexing time, not at lookup.** A
- * verdict naming a block this report *does* have has already said which row it
- * is about; letting it also sit in the key index would let it decorate a
- * *different* row through the fallback whenever its own row happens not to
- * consult the index. Two rows `b-alpha`/`alpha` and `b-beta`/`beta` plus one
- * verdict `{blockId: 'b-beta', key: 'alpha'}` is the whole trigger: `b-alpha`
- * finds no verdict at its own id, falls back on its key, and reports a run the
- * verdict itself says belongs to `b-beta` — including routing the click at
- * `b-beta`'s worker card. So `rowBlockIds` gates the key index: only a verdict
- * whose block id names no row at all (the kernel's synthesised `blockId: ''`
- * among them) may ever be reached by key.
+ * **The key index is gated from both ends, and it takes both.**
+ *
+ * *Verdict side.* A verdict naming a block this report *does* have has already
+ * said which row it is about; letting it also sit in the key index would let it
+ * decorate a *different* row through the fallback whenever its own row happens
+ * not to consult the index. Two rows `b-alpha`/`alpha` and `b-beta`/`beta` plus
+ * one verdict `{blockId: 'b-beta', key: 'alpha'}` is the whole trigger:
+ * `b-alpha` finds no verdict at its own id, falls back on its key, and reports
+ * a run the verdict itself says belongs to `b-beta` — including routing the
+ * click at `b-beta`'s worker card. So `rowBlockIds` keeps such a verdict out.
+ *
+ * *Row side.* That half is **not** sufficient, and an earlier cut of this
+ * comment claimed it was ("only a verdict whose block id names no row at all
+ * may ever be reached by key" — true, and beside the point). It only bites
+ * while the block the verdict names is still in the document. Hard-delete that
+ * block and paste **two** new ones on its key in the same edit, and the verdict
+ * about the deleted block names no row any more: it enters the key index, and
+ * *both* new rows — neither of which has a verdict at its own id — fall back
+ * onto it, so one dead task's terminal status and worker card get painted onto
+ * two rows at once. A terminal status is outside `eventlessWindowTaskStatuses`,
+ * so nothing restarts the poll that would clear it either.
+ *
+ * Hence `keysClaimedByManyRows`: **a key more than one row in this render
+ * claims is not a usable fallback for any of them.** That is a question about
+ * the rows on screen — how many of them would consult this entry — and it is
+ * answered by counting them, which is why it can live here. It is *not* the
+ * removed `contestedLiveKeys` pre-pass in another spelling: that one re-read
+ * the blocks to decide who *owns* a key and then overrode the kernel's own
+ * answer, a second authority on ownership. This one never contradicts a
+ * verdict; it declines to guess which of several rows an id-less verdict was
+ * about, and the identity join is untouched — a row whose own block id is named
+ * still shows its run, contested key or not.
  */
-function indexVerdicts(verdicts: readonly TaskVerdict[], rowBlockIds: ReadonlySet<string>) {
+function indexVerdicts(
+  verdicts: readonly TaskVerdict[],
+  rowBlockIds: ReadonlySet<string>,
+  keysClaimedByManyRows: ReadonlySet<string>,
+) {
   const byBlockId = new Map<string, TaskVerdict>();
   const byKey = new Map<string, TaskVerdict>();
   for (const verdict of verdicts) {
     if (verdict.blockId !== '' && !byBlockId.has(verdict.blockId)) byBlockId.set(verdict.blockId, verdict);
     const namesARow = verdict.blockId !== '' && rowBlockIds.has(verdict.blockId);
-    if (verdict.key !== '' && !namesARow && !byKey.has(verdict.key)) byKey.set(verdict.key, verdict);
+    const ambiguousRow = keysClaimedByManyRows.has(verdict.key);
+    if (verdict.key !== '' && !namesARow && !ambiguousRow && !byKey.has(verdict.key)) {
+      byKey.set(verdict.key, verdict);
+    }
   }
   return { byBlockId, byKey };
 }
@@ -769,6 +805,42 @@ function indexVerdicts(verdicts: readonly TaskVerdict[], rowBlockIds: ReadonlySe
  * the key index is consulted only when no verdict names this block id, which is
  * what keeps a redeclared key from reporting the withdrawn block's run (and
  * vice versa) on both rows.
+ *
+ * **A miss here is a real answer, and both ways of missing are deliberate. The
+ * row renders blank, and blank is the expected value** — this whole module's
+ * position is that when it cannot tell which row a verdict is about, it says
+ * nothing.
+ *
+ * *Missing through the key index.* `keysDeclaredByMoreThanOneRow` counts
+ * tombstoned declarations too, so a withdrawn `alpha` beside its single live
+ * re-declaration already puts `alpha` out of the index — and the kernel's
+ * synthesised `{blockId: '', key: 'alpha'}` verdict then reaches neither row,
+ * including the live one that is the key's only live claimant. That cost is
+ * accepted twice over. An id-less verdict means precisely *"when the kernel
+ * looked, no live declaration owned this key"*; a live row appearing in the
+ * document afterwards is not evidence that the old run was that row's, so
+ * handing it over would be a guess. And the rule is kept **purely syntactic on
+ * purpose**: it asks only how many rows of *this* render declared the key
+ * (`isTaskBlock` + `declaredTaskKey`) and knows nothing of live/tombstoned or
+ * of ownership, so it cannot drift from the kernel. Teaching it to skip
+ * tombstones would drag the live/tombstone decision back into this file — the
+ * exact shape of the `contestedLiveKeys` pre-pass #1160 removed — and that
+ * decision is subtle here (`taskRowState` below: `tombstoned_by` is the
+ * discriminant, a live block may carry `tombstone: null`), so a second copy of
+ * it would not fail loudly when the kernel changes its representation. It would
+ * quietly answer differently.
+ *
+ * *Missing through a contradicting block-id hit.* When a verdict names this
+ * block id but carries another key, this returns nothing and does **not** fall
+ * back to the key index — even when the key index holds an entry for the
+ * declared key. Block ids are re-issued (`report_blocks/align.rs` mints by
+ * FNV-1a with linear probing, so a hard-deleted block's id can land on a new
+ * declaration), so a stale verdict about the *old* block can occupy the new
+ * block's id and shadow the verdict that would have arrived by key. The row
+ * goes blank. That is the fail-closed direction and it is a consequence of a
+ * fact that predates this fix: a hit that contradicts itself is not evidence
+ * about this row, and consulting the key index *after* seeing one would mean
+ * treating a self-contradicting index as a reason to trust a second index.
  */
 function verdictFor(
   blockId: string, declaredKey: string,
@@ -788,12 +860,22 @@ function verdictFor(
  * an explicit `tombstone: null`, so the key's presence proves nothing. Same
  * test as `features/report/task`.
  *
- * Extracted because two passes need it and they must not be able to disagree:
- * `contestedLiveKeys` decides which keys are contested *before* any row is
- * built, and the row loop decides each row's own word. A copy of this ladder in
- * each place would let a future edit make a block live for one pass and
- * withdrawn for the other, which is exactly the state the contested rule exists
- * to rule out.
+ * The row loop below is the only caller left. It used to be two — a
+ * pre-pass also counted live claims per key, so that a key two live blocks
+ * both declared could be refused decoration here (#1159). The kernel now
+ * answers that itself: `attach_task_read_state` attaches run state only to the
+ * *single* live declaration of a key, so a contested key arrives as
+ * `status: null` on the wire and there is nothing left for this module to
+ * second-guess (#1160).
+ *
+ * The pre-pass read the *blocks*, which are a different snapshot from the
+ * verdicts, so dropping it does widen one window: a cached run can outlive the
+ * moment a second live block appeared on its key. That is staleness of a
+ * block-id-joined fact about the very row that shows it, never a run borrowed
+ * from a neighbour — see `report.test.ts`'s "keeps a run on the block the
+ * kernel gave it to when the verdicts lag the blocks" for the sequence and for
+ * why re-deriving contention here would only re-introduce a second authority
+ * on ownership.
  */
 function taskRowState(block: ReportBlock): ReportTaskState {
   if (block.kind !== 'task') return 'unreadable';
@@ -810,60 +892,36 @@ function declaredTaskKey(block: ReportBlock): string {
 }
 
 /**
- * The keys more than one *live* row in this document claims.
+ * The keys two or more rows of this render declare.
  *
- * The `tasks` table is `UNIQUE (wave_id, key)` (migration 0058), so at most one
- * run can ever exist per key — but the *document* is not held to that. A report
- * may declare the same key on two live blocks, and the kernel does not reject
- * it: the projection flags each of them with a `duplicate_key` diagnostic
- * (`calm-types/src/report_blocks/tasks.rs`) and carries on, while
- * `attach_task_read_state` (`task_projection.rs`) joins run state onto verdicts
- * **by key alone**. The single `tasks` row is therefore stamped onto *both*
- * verdicts, each naming its own block, each carrying the same `status` and the
- * same `workerCardId`. Rendered, that is one run shown as two — with two rows
- * offering a click-through to the same worker card, as if two things were
- * running.
+ * Every task block counts, withdrawn ones included: a tombstone beside its live
+ * re-declaration is two rows on one key, and an id-less verdict on that key is
+ * as unattributable there as it is between two live blocks — the kernel emits
+ * one verdict per declaration, so it has already said the key alone does not
+ * pick a row out. **Not filtering tombstones out is the deliberate half**, and
+ * it does cost something: a tombstone plus the key's *only* live declaration
+ * still suppresses the fallback, so the kernel's `{blockId: ''}` verdict paints
+ * neither row and the live one renders blank. Blank is the expected value —
+ * see `verdictFor` for why that is not a guess worth making, and for why this
+ * rule is kept purely syntactic (`isTaskBlock` + `declaredTaskKey`, no
+ * live/tombstoned judgement) so it cannot drift from the kernel.
  *
- * There is no fix that picks a winner, because there is no owner to pick: the
- * kernel itself treats this document as invalid, and nothing in it says which
- * of the two blocks the run belongs to. Inventing an order (document position,
- * verdict order) would print a confident answer the data does not support, and
- * it would flip whenever the report was reordered.
- *
- * So these rows take the same treatment a withdrawn row takes: they keep their
- * declaration word and take **no runtime note and no click-through**. The rows
- * still exist — the blocks are declared and the document draws them — and the
- * `duplicate_key` diagnostic on each block is where the reader is told why,
- * which is the block's own business and not this column's.
- *
- * Withdrawn and unreadable rows are excluded from the count for the reason they
- * are excluded from decoration at all: a withdrawn key that was redeclared is
- * one live claim, not two, and that case is already handled (and tested)
- * downstream.
- *
- * **The empty key is counted like any other**, and it is the one case that is
- * easy to argue out of. `key` is `z.string()` and the kernel does not require
- * it to be non-empty (see `deriveReportTasks`'s name fallback), so two live
- * blocks may both declare `''` — and `UNIQUE (wave_id, key)` means those two
- * declarations still share exactly *one* `tasks` row, which is the whole
- * premise of this function. Skipping `''` here left both rows decorated: each
- * found a verdict at its own block id, and both printed the same `running` and
- * the same click-through to the same worker card. The row's *display* name
- * falls back to the block id, which made the two look like two different
- * tasks. An empty key is a bad name; it is not a second run.
+ * `''` is skipped because `verdictFor` refuses to look an undeclared key up in
+ * the first place (the display name falls back to the block id, and matching
+ * *that* against the key index is its own defect), so counting it would decide
+ * nothing.
  */
-function contestedLiveKeys(blocks: readonly ReportBlock[]): ReadonlySet<string> {
-  const claimed = new Set<string>();
-  const contested = new Set<string>();
+function keysDeclaredByMoreThanOneRow(blocks: readonly ReportBlock[]): ReadonlySet<string> {
+  const seen = new Set<string>();
+  const many = new Set<string>();
   for (const block of blocks) {
     if (!isTaskBlock(block)) continue;
-    const state = taskRowState(block);
-    if (state === 'withdrawn' || state === 'unreadable') continue;
     const key = declaredTaskKey(block);
-    if (claimed.has(key)) contested.add(key);
-    else claimed.add(key);
+    if (key === '') continue;
+    if (seen.has(key)) many.add(key);
+    else seen.add(key);
   }
-  return contested;
+  return many;
 }
 
 /**
@@ -887,11 +945,11 @@ export function deriveReportTasks(
      key index is only for verdicts about blocks this report does not have, and
      that predicate is not decidable one block at a time. */
   const rowBlockIds = new Set(blocks.filter(isTaskBlock).map((block) => block.id));
-  const index = indexVerdicts(verdicts, rowBlockIds);
-  /* Which keys two live rows both claim — also not decidable one block at a
-     time, and for the same reason: the second claimant is what makes the first
-     one contested, and it may come later in the document. */
-  const contested = contestedLiveKeys(blocks);
+  /* And every key more than one of those rows declares: the fallback cannot
+     say which of them an id-less verdict was about, so it answers none of
+     them. Also not decidable one block at a time. */
+  const keysClaimedByManyRows = keysDeclaredByMoreThanOneRow(blocks);
+  const index = indexVerdicts(verdicts, rowBlockIds, keysClaimedByManyRows);
   const rows: ReportTaskRow[] = [];
   for (const block of blocks) {
     if (!isTaskBlock(block)) continue;
@@ -938,18 +996,16 @@ export function deriveReportTasks(
      * read the block's key, so it cannot vouch that a verdict is about it.
      *
      * The task existed and was withdrawn; that is what the panel owes the
-     * reader. It also removes the withdrawn row from contention when a key is
-     * withdrawn and then redeclared, which is one half of why two rows could
-     * print one run.
+     * reader.
      *
-     * A key two live rows both claim is the other half, and it is refused here
-     * for a different reason: not that this row cannot be vouched for, but that
-     * *neither* row can — see `contestedLiveKeys`. One `tasks` row stamped onto
-     * two verdicts is one run, and printing it twice (twice clickable, at the
-     * same card) states something the document does not know.
+     * A key two live blocks both claim used to be refused here as well, for a
+     * different reason: not that this row cannot be vouched for, but that
+     * *neither* row can. That rule now lives in the kernel — one `tasks` row
+     * has at most one live declaration that may carry it, and an ambiguous key
+     * is answered `status: null` for every block that names it (#1160) — so
+     * this build no longer re-derives it from the document.
      */
-    const decorated = state !== 'withdrawn' && state !== 'unreadable'
-      && !contested.has(declaredKey);
+    const decorated = state !== 'withdrawn' && state !== 'unreadable';
     const verdict = decorated ? verdictFor(block.id, declaredKey, index) : undefined;
     /*
      * `''` is not a status, for the same reason `''` is not a card id two
@@ -982,8 +1038,8 @@ export function deriveReportTasks(
       status,
       /* Gated on `status`, not on the verdict: the detail is a qualifier on the
          status word and has nowhere to attach without one. That also makes it
-         inherit every rule above for free — a withdrawn, unreadable or
-         contested row has no `status`, so it cannot leak a reason either. */
+         inherit every rule above for free — a withdrawn or unreadable row
+         has no `status`, so it cannot leak a reason either. */
       statusDetail: status === null ? null : boundedStatusDetail(verdict?.statusDetail),
       kind,
       /* `''` is not a card id. The wire types it as an optional string and an
