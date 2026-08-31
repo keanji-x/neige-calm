@@ -27,8 +27,31 @@
     /* Leftover in the document track, not (1180 − 280) / 2. 100cqi is `.main`. */
     --document-start: max(0px, calc((100cqi - var(--space-10) * 3 - var(--panel-span) - var(--document-measure)) / 2));
 
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    /*
+     * A **flex column, not a two-row grid**, and the difference is the whole
+     * reason the panel card stays put.
+     *
+     * It was `grid-template-rows: auto minmax(0, 1fr)`. A `1fr` row in a grid
+     * whose own height is definite gets exactly the leftover and never one
+     * pixel more: the row's box stayed one viewport tall while the report grew
+     * to three, and the document simply overflowed it. Nothing looked wrong,
+     * because overflow paints — but `.panel` is `position: sticky`, and sticky
+     * may only move inside *its containing block*. That block was `.content`,
+     * inside the 1fr row, so the card had ~700px of travel in a 3200px scroll
+     * and then slid off the top like ordinary content. Measured on a real wave:
+     * at scrollTop 400 the card was still at y=68, at 900 it was at −280, and
+     * by 2000 it was 1380px above the window.
+     *
+     * A flex column is what lets the two halves be said separately, and they
+     * had to be: *fill* the leftover when the document is short (the reason the
+     * `1fr` was there — an empty document centres in the space it owns) and
+     * *grow past it* when the document is long, which is what gives sticky its
+     * travel. The first cut said both on `.workspace` with `flex: 1 0 auto` and
+     * broke the card board, whose containing block that box is; see the note
+     * there for where the two now live.
+     */
+    display: flex;
+    flex-direction: column;
     gap: var(--space-8);
     /* Same as Today: fill `.main` so the panel sits on the trailing page pad
        (24px), not 24px plus leftover from a 1180px page cap. */
@@ -79,12 +102,54 @@
     background: var(--overlay-hover);
   }
 
-  .workspace {
+  /*
+   * The header keeps its own height. Without this it is an ordinary flex item
+   * (`flex: 0 1 auto`), and once the row below grows past the page the free
+   * space goes negative and the *header* is what gives way.
+   *
+   * Positional, because `ui/page-header` renders its own element and this file
+   * cannot name it. That makes it (0,1,1) — higher than a bare `.workspace` —
+   * so the row below is written as `.page > .workspace` (0,2,0) rather than
+   * left to win on order: insert anything into `.page` ahead of the header and
+   * this rule would otherwise land on the workspace and silently undo the
+   * sticky fix.
+   */
+  .page > :first-child {
+    flex: none;
+  }
+
+  /*
+   * **This box stays one viewport. Its row does not.**
+   *
+   * `.workspace` is `position: relative` and the card board
+   * (`features/wave/grid`) is `position: absolute; inset: 0` inside it, so this
+   * element's height *is* the board's height. The first cut of the sticky fix
+   * gave it `flex: 1 0 auto` — content-sized, never shrinking — and on a 4000px
+   * report the board became a 4000px overlay inside a `.page` that
+   * `.pageBoard` gives `overflow: hidden`: the top screenful visible and the
+   * rest unreachable. Not only a layout bug — `BoardHost` measures its
+   * container to choose terminal rows and resizes the PTY to match, so the
+   * number reaches a real process.
+   *
+   * The travel `.panel` needs was never this box's to give. Sticky moves inside
+   * *its own* containing block, which is `.content` one level down, and
+   * `.content` may overflow this box freely: nothing here clips, so its
+   * overflow still reaches `.page`'s scrollport and the page still scrolls the
+   * full document.
+   *
+   * So the two are separated: `flex: 1 1 auto` keeps the box itself at the
+   * viewport (it grows into the leftover on a short page and shrinks back on a
+   * long one), and `minmax(max-content, 1fr)` on the row is what actually
+   * carries the document's height — at least its content, and the leftover when
+   * there is less content than that.
+   */
+  .page > .workspace {
     position: relative;
     display: grid;
-    grid-template-rows: minmax(0, 1fr);
+    grid-template-rows: minmax(max-content, 1fr);
     min-block-size: 0;
     min-inline-size: 0;
+    flex: 1 1 auto;
   }
 
   /* `any_card_needs_input` is a field the kernel really writes, so it can carry
@@ -245,18 +310,97 @@
     text-overflow: ellipsis;
   }
 
-  /* The wave's folder: one line, mono, ellipsis at the end. The full path is
-     the row's tooltip — `direction: rtl` would keep the informative tail but
-     reorders the punctuation of an LTR path, which is worse than truncating. */
-  .cwd {
-    overflow: hidden;
+  /*
+   * ── A module's list scrolls before it evicts its neighbours ──────────────
+   *
+   * `.panel` already caps at the viewport and scrolls, but that scrolls the
+   * *card*: a wave with thirty cards pushed TASKS and CONVERSATIONS below the
+   * fold, and the panel's whole point is that those modules are readable at
+   * once without leaving the document.
+   *
+   * CONVERSATIONS is not listed here because it already does this —
+   * `features/chat/list`'s `.list` carries the identical cap, and its note
+   * ("one busy cove pushed the conversation module below the fold") is this
+   * same defect found from the other end. CARDS was the module that never got
+   * the treatment; TASKS is new and would have repeated the omission.
+   *
+   * Eight rows, the same count and the same arithmetic as that list rather than
+   * a second invented number: eight `--row-h-sm` rows plus the seven
+   * `--space-1` gaps between them, so the cap lands exactly on a row boundary
+   * and a ninth row is visibly cut rather than ambiguously clipped. A list
+   * shorter than that is untouched — `max-block-size`, not `block-size`, so
+   * nothing reserves space it is not using.
+   *
+   * `overscroll-behavior: contain` so reaching the end of a module's list does
+   * not then scroll the panel, and then the page, under the reader's pointer.
+   */
+  .cards,
+  .tasks {
+    max-block-size: calc(var(--row-h-sm) * 8 + var(--space-1) * 7);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  /*
+   * A task row: the key, and a word only when the state is not the ordinary
+   * one. Same skeleton as `.cardRow` — same height, same bleed, same hover —
+   * because they are the same kind of row in the same card, and two shapes for
+   * one thing is how a panel starts looking assembled out of whatever was to
+   * hand.
+   */
+  .tasks {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin-inline: calc(var(--space-2) * -1);
+  }
+
+  .taskRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
     padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    color: inherit;
+    cursor: pointer;
+    text-align: start;
+  }
+
+  .taskRow:hover,
+  .taskRow:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  /* Mono, because the key is the literal the kernel and other reports address
+     this task by (§2.2) — the same font the block itself gives it. */
+  .taskKey {
+    min-inline-size: 0;
+    overflow: hidden;
     font-family: var(--font-mono);
     font-size: var(--text-xs);
-    line-height: var(--row-h-sm);
-    color: var(--text-3);
-    text-overflow: ellipsis;
+    line-height: var(--leading-tight);
+    color: var(--text);
     white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* Both are the quiet rank: this column says "not the ordinary case", and the
+     panel is greyscale. `Ready` prints nothing at all, so there is no pair of
+     words here competing to be read. */
+  .taskNotReady,
+  .taskWithdrawn {
+    flex: none;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+
+  .taskWithdrawn {
+    text-decoration: line-through;
   }
 
   .kernelOwned {

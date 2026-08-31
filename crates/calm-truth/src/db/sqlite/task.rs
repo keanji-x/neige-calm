@@ -576,6 +576,104 @@ pub async fn task_apply_gate_result_tx(
     Ok(res.rows_affected())
 }
 
+/// Longest `status_detail` reason tail persisted beside a classifier.
+/// Operation `last_error` texts are unbounded (they can carry a whole
+/// git stderr); the task row only needs the readable head.
+const STATUS_DETAIL_REASON_MAX: usize = 480;
+
+/// Issue #1147 slice ① — `status_detail` is a CLASSIFIER followed by an
+/// optional `": "` + human reason tail. Everything that dispatches on
+/// the vocabulary (`worker-reported` / `spawn-failed` / `worker-timeout`
+/// / `gate-*`) must compare against this, never against the whole
+/// string: before #1147 the spawn-failure reason stopped in the
+/// operation's `phase_detail_json` and the row read a bare
+/// `spawn-failed`, so neither the spec nor the FE could say WHY.
+pub fn status_detail_class(detail: &str) -> &str {
+    detail.split_once(": ").map_or(detail, |(class, _)| class)
+}
+
+/// Build `"<class>: <reason>"`. An empty or whitespace-only reason
+/// degrades to the bare classifier, so the vocabulary is never widened
+/// by an empty tail. The tail is folded to a single line and is at most
+/// [`STATUS_DETAIL_REASON_MAX`] chars INCLUDING the ellipsis.
+pub fn status_detail_with_reason(class: &str, reason: &str) -> String {
+    // Fail-closed: a classifier containing the separator would make
+    // `status_detail_class` parse a prefix of itself, silently dropping
+    // the row out of the failure vocabulary.
+    debug_assert!(
+        !class.contains(": "),
+        "status_detail classifier must not contain the \": \" separator: {class:?}"
+    );
+    let tail = fold_reason_tail(reason.chars());
+    if tail.is_empty() {
+        return class.to_string();
+    }
+    format!("{class}: {tail}")
+}
+
+/// Fold a reason into the single-line, budget-bounded tail used by
+/// [`status_detail_with_reason`]. Returns an empty string for an empty
+/// or whitespace-only reason.
+///
+/// Takes an ITERATOR rather than a `&str` on purpose: the load-bearing
+/// property here is not the output but how much input is consumed to
+/// produce it, and that is only assertable if a test can count what the
+/// fold pulls. See `stops_pulling_once_the_budget_is_met`.
+///
+/// One streaming pass, no intermediate `Vec<&str>`: `last_error` is
+/// unbounded (a whole git stderr, or worse), and an error path must not
+/// materialize megabytes just to discard them a line later. Once the
+/// budget is met the fold pulls AT MOST ONE more char before stopping.
+fn fold_reason_tail(reason: impl Iterator<Item = char>) -> String {
+    let mut tail = String::new();
+    let mut len = 0usize;
+    let mut pending_space = false;
+    let mut truncated = false;
+    for ch in reason {
+        if ch.is_whitespace() {
+            if len >= STATUS_DETAIL_REASON_MAX {
+                // Budget already full: nothing further can be appended,
+                // so walking the rest of the run would be pure scanning.
+                // Bailing here is what bounds the work — without it,
+                // `"x" * MAX + " " * 50_000_000 + "y"` costs a full 50M
+                // pass to produce the very same output.
+                //
+                // Conservative by construction: a reason ending in
+                // nothing but whitespace is marked truncated even though
+                // only whitespace was dropped. Deliberate — the
+                // alternative is an unbounded look-ahead to prove a
+                // negative, and trailing whitespace carries no meaning a
+                // reader can lose.
+                truncated = true;
+                break;
+            }
+            pending_space = len > 0;
+            continue;
+        }
+        if len + usize::from(pending_space) + 1 > STATUS_DETAIL_REASON_MAX {
+            truncated = true;
+            break;
+        }
+        if pending_space {
+            tail.push(' ');
+            len += 1;
+            pending_space = false;
+        }
+        tail.push(ch);
+        len += 1;
+    }
+    if truncated && !tail.is_empty() {
+        // Make room so the ellipsis fits INSIDE the budget rather than
+        // pushing the tail one char past it.
+        while len >= STATUS_DETAIL_REASON_MAX {
+            tail.pop();
+            len -= 1;
+        }
+        tail.push('…');
+    }
+    tail
+}
+
 /// Issue #644 PR-B — worker-reported / kernel-observed failure flip
 /// (`dispatched/running → failed`, design §3). Same guards as the
 /// success flip except the gate condition: a worker failure never runs
@@ -618,4 +716,172 @@ pub async fn task_fail_from_worker_tx(
     .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected())
+}
+
+#[cfg(test)]
+mod status_detail_tests {
+    use super::{
+        STATUS_DETAIL_REASON_MAX, fold_reason_tail, status_detail_class, status_detail_with_reason,
+    };
+
+    #[test]
+    fn class_is_the_head_and_survives_a_reason_tail() {
+        assert_eq!(status_detail_class("spawn-failed"), "spawn-failed");
+        assert_eq!(
+            status_detail_class("spawn-failed: wave w1 cwd /home/kenji is not a git repository: x"),
+            "spawn-failed"
+        );
+        // A bare colon (no space) is not a separator — gate details and
+        // any future single-token vocabulary stay intact.
+        assert_eq!(status_detail_class("gate-red"), "gate-red");
+        assert_eq!(status_detail_class("weird:thing"), "weird:thing");
+    }
+
+    #[test]
+    fn empty_reason_degrades_to_the_bare_classifier() {
+        assert_eq!(
+            status_detail_with_reason("spawn-failed", ""),
+            "spawn-failed"
+        );
+        assert_eq!(
+            status_detail_with_reason("spawn-failed", "  \n "),
+            "spawn-failed"
+        );
+    }
+
+    #[test]
+    fn reason_is_single_line_bounded_and_round_trips_through_the_class() {
+        let detail = status_detail_with_reason("spawn-failed", " not a\n  git repo ");
+        assert_eq!(detail, "spawn-failed: not a git repo");
+        assert_eq!(status_detail_class(&detail), "spawn-failed");
+
+        // Multi-byte input must not panic and must stay bounded. The
+        // ellipsis lives INSIDE the budget — the cap is the cap.
+        let long = "错误".repeat(4000);
+        let detail = status_detail_with_reason("spawn-failed", &long);
+        assert_eq!(status_detail_class(&detail), "spawn-failed");
+        let tail = detail.strip_prefix("spawn-failed: ").expect("tail");
+        assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
+        assert!(tail.ends_with('…'));
+
+        // Same for a whitespace-heavy tail, where folding decides where
+        // the budget runs out.
+        let spaced = "错误 ".repeat(4000);
+        let tail = status_detail_with_reason("spawn-failed", &spaced)
+            .strip_prefix("spawn-failed: ")
+            .expect("tail")
+            .to_string();
+        assert!(tail.chars().count() <= STATUS_DETAIL_REASON_MAX);
+        assert!(tail.ends_with('…'));
+        assert!(!tail.contains("  "), "runs of whitespace must fold");
+    }
+
+    /// A reason that exactly fills the budget must NOT gain an ellipsis
+    /// — the truncation marker has to mean "there was more".
+    #[test]
+    fn exactly_full_reason_is_not_marked_truncated() {
+        let exact = "x".repeat(STATUS_DETAIL_REASON_MAX);
+        let detail = status_detail_with_reason("spawn-failed", &exact);
+        let tail = detail.strip_prefix("spawn-failed: ").expect("tail");
+        assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
+        assert!(!tail.ends_with('…'), "nothing was dropped, got {tail:?}");
+
+        let one_more = "x".repeat(STATUS_DETAIL_REASON_MAX + 1);
+        let detail = status_detail_with_reason("spawn-failed", &one_more);
+        let tail = detail.strip_prefix("spawn-failed: ").expect("tail");
+        assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
+        assert!(tail.ends_with('…'));
+    }
+
+    /// Item 3 — the fold must stop pulling input once the output budget
+    /// is met, however much input remains.
+    ///
+    /// Deliberately NOT a wall-clock test. A timing bound is a weak
+    /// oracle here: the unbounded version folds 50M chars in ~1.7s in an
+    /// unoptimized test build, so any threshold loose enough to be
+    /// non-flaky under parallel test load is also loose enough to let the
+    /// regression through (verified — a 2s bound did exactly that). The
+    /// counting iterator asserts the actual invariant instead, and is
+    /// deterministic.
+    #[test]
+    fn stops_pulling_once_the_budget_is_met() {
+        // The input shape is load-bearing. `"x ".repeat(n)` does NOT
+        // probe this: once the budget is met the very next char is a
+        // non-space, so even an unbounded implementation exits at once.
+        // The long WHITESPACE run is what separates "stops at the
+        // budget" from "keeps scanning past it"; the trailing `y` proves
+        // the run was skipped rather than the input merely having ended.
+        let pathological = format!(
+            "{}{}y",
+            "x".repeat(STATUS_DETAIL_REASON_MAX),
+            " ".repeat(50_000_000),
+        );
+        let pulled = std::cell::Cell::new(0usize);
+        let tail = fold_reason_tail(pathological.chars().inspect(|_| {
+            pulled.set(pulled.get() + 1);
+        }));
+        assert!(
+            pulled.get() <= STATUS_DETAIL_REASON_MAX + 1,
+            "fold pulled {} chars for a {}-char budget; it must stop at the \
+             budget instead of walking the whitespace run",
+            pulled.get(),
+            STATUS_DETAIL_REASON_MAX,
+        );
+        assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
+        assert!(tail.ends_with('…'), "the `y` was dropped, so say so");
+
+        // A pure whitespace tail takes the same bounded path. Marking it
+        // truncated is the documented conservative choice (proving the
+        // negative would need the unbounded scan this test forbids).
+        let trailing_only = format!(
+            "{}{}",
+            "x".repeat(STATUS_DETAIL_REASON_MAX),
+            " ".repeat(50_000_000),
+        );
+        let pulled = std::cell::Cell::new(0usize);
+        let tail = fold_reason_tail(trailing_only.chars().inspect(|_| {
+            pulled.set(pulled.get() + 1);
+        }));
+        assert!(
+            pulled.get() <= STATUS_DETAIL_REASON_MAX + 1,
+            "a whitespace-only tail must not be walked either, pulled {}",
+            pulled.get(),
+        );
+        assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
+    }
+
+    /// The public entry point must inherit the same bound end-to-end,
+    /// so the guarantee is not an artifact of testing the inner fold.
+    #[test]
+    fn pathological_reason_stays_bounded_end_to_end() {
+        let pathological = format!(
+            "{}{}y",
+            "x".repeat(STATUS_DETAIL_REASON_MAX),
+            " ".repeat(50_000_000),
+        );
+        let started = std::time::Instant::now();
+        let detail = status_detail_with_reason("spawn-failed", &pathological);
+        let elapsed = started.elapsed();
+        let tail = detail.strip_prefix("spawn-failed: ").expect("tail");
+        assert_eq!(tail.chars().count(), STATUS_DETAIL_REASON_MAX);
+        // Smoke only — `stops_pulling_once_the_budget_is_met` owns the
+        // real oracle; this just catches a wildly pathological rebuild.
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "took {elapsed:?}"
+        );
+    }
+
+    // `debug_assert!` compiles away in release, where the call returns
+    // normally and `should_panic` would fail. The repo does not enable
+    // `debug-assertions` for release profiles, so gate on the same cfg
+    // the assertion itself is gated on.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "must not contain")]
+    fn classifier_carrying_the_separator_is_rejected_in_debug() {
+        // Fail-closed guard: such a class would parse back as a prefix
+        // of itself and fall out of the failure vocabulary.
+        let _ = status_detail_with_reason("spawn-failed: oops", "boom");
+    }
 }

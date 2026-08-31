@@ -50,10 +50,11 @@ use serde_json::{Value, json};
 use tokio::sync::{Notify, Semaphore};
 
 use crate::db::sqlite::{
-    SuccessReportFlip, TaskReporter, begin_immediate_tx, task_claim_pending_tx,
-    task_fail_from_worker_tx, task_get_tx, task_mark_running_tx, task_mark_sub_wave_running_tx,
-    task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx, tasks_by_wave_tx,
-    wave_has_template_overlay_tx, wave_lifecycle_and_budget_tx,
+    SuccessReportFlip, TaskReporter, begin_immediate_tx, status_detail_with_reason,
+    task_claim_pending_tx, task_fail_from_worker_tx, task_get_tx, task_mark_running_tx,
+    task_mark_sub_wave_running_tx, task_report_success_from_worker_tx,
+    task_stamp_missing_running_deadline_tx, tasks_by_wave_tx, wave_has_template_overlay_tx,
+    wave_lifecycle_and_budget_tx,
 };
 use crate::db::{Repo, write_with_actor_events_typed};
 use crate::error::{CalmError, Result};
@@ -1755,6 +1756,14 @@ impl Scheduler {
     /// gets pushed, + the same `Working → Reviewing` promotion the
     /// legacy spawn-failure path performs. 0-row flip → the row already
     /// moved on; no event is emitted.
+    ///
+    /// Issue #1147 slice ① — the operation's `last_error`/`Stuck` reason
+    /// rides along into `status_detail` as `"spawn-failed: <reason>"`.
+    /// The bare classifier left the only readable diagnosis (e.g. "wave
+    /// … cwd … is not a git repository") stranded in the operation's
+    /// `phase_detail_json`, which neither the spec nor the FE reads.
+    /// The `spawn-failed` CLASSIFIER stays the prefix — everything that
+    /// dispatches on the vocabulary goes through `status_detail_class`.
     async fn fail_spawn(&self, task: &Task, wave: &Wave, reason: &str) -> Result<()> {
         let scope = EventScope::Wave {
             wave: wave.id.clone(),
@@ -1762,6 +1771,7 @@ impl Scheduler {
         };
         let task_id = task.id.clone();
         let wave_id = wave.id.clone();
+        let status_detail = status_detail_with_reason("spawn-failed", reason);
         let reason = format!("worker spawn failed: {reason}");
         let result = write_with_actor_events_typed::<(), _>(
             self.repo.as_ref(),
@@ -1775,7 +1785,7 @@ impl Scheduler {
                         &task_id,
                         wave_id.as_str(),
                         TaskReporter::Kernel,
-                        "spawn-failed",
+                        &status_detail,
                         now_ms(),
                     )
                     .await?;
@@ -2799,12 +2809,15 @@ pub async fn complete_terminal_task(
                     }
                 };
                 (
+                    // #1147 ① — the same interpreted reason the event
+                    // carries lands on the row, so a worker that died
+                    // after starting is as readable as a spawn failure.
                     task_fail_from_worker_tx(
                         tx,
                         &task_id,
                         &wave_id_str,
                         reporter,
-                        "worker-reported",
+                        &status_detail_with_reason("worker-reported", &reason),
                         now,
                     )
                     .await?,

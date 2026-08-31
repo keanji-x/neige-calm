@@ -440,7 +440,7 @@ async fn post_api_waves_persists_wave_cwd_and_attach_folder() {
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1);
     let wave = waves.into_iter().next().unwrap();
-    assert_eq!(wave.cwd, cwd);
+    assert_eq!(wave.workspace.path, cwd);
 
     // Folder claim landed inside the same tx (attach_folder = true).
     let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();

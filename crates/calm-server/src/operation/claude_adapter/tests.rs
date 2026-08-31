@@ -180,7 +180,7 @@ async fn claude_worker_prepare_acquires_held_workspace_lease_and_spawn_op() {
     let lease_id = output.output_string("lease_id", "test").unwrap();
     let cwd = output.output_string("cwd", "test").unwrap();
 
-    let wave_cwd: String = sqlx::query_scalar("SELECT cwd FROM waves WHERE id = ?1")
+    let wave_cwd: String = sqlx::query_scalar("SELECT workspace_path FROM waves WHERE id = ?1")
         .bind(&harness.wave_id)
         .fetch_one(harness.repo.pool())
         .await

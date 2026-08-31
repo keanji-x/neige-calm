@@ -32,7 +32,9 @@ use std::time::Duration;
 use async_trait::async_trait;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx};
+use calm_server::db::sqlite::{
+    SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, status_detail_class,
+};
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
 use calm_server::event::{EditAuthor, Event, EventBus};
@@ -1749,7 +1751,14 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
 
     let row = task_row(&boot, "doomed").await;
     assert_eq!(row.status, TaskStatus::Failed);
-    assert_eq!(row.status_detail.as_deref(), Some("spawn-failed"));
+    // #1147 ① — the classifier stays the prefix, the operation's
+    // `last_error` rides along as the reason tail.
+    let detail = row.status_detail.clone().unwrap_or_default();
+    assert_eq!(status_detail_class(&detail), "spawn-failed");
+    assert!(
+        detail.contains("forced spawn failure"),
+        "status_detail must carry the operation reason, got {detail:?}"
+    );
     assert!(row.finished_at_ms.is_some());
 
     let failed = event_rows(&boot, "task.failed").await;
@@ -1774,6 +1783,103 @@ async fn spawn_failure_marks_failed_and_emits_kernel_task_failed() {
         .unwrap()
         .unwrap();
     assert_eq!(wave.lifecycle, WaveLifecycle::Reviewing);
+}
+
+/// Issue #1147 slice ① — the real spawn-failure text must reach
+/// `tasks.status_detail`, not stop at the operation's `last_error`.
+///
+/// Drives the REAL `CodexWorkerAdapter` against a wave whose `cwd` is an
+/// absolute non-git directory: `prepare_workspace_lease_target_tx` →
+/// `git_repo_root_for_wave_cwd` fails with "is not a git repository", the
+/// operation goes `Failed`, and the scheduler flips the row. Before this
+/// slice the row read exactly `spawn-failed` and the reason was
+/// unreachable from the task table.
+#[tokio::test]
+async fn spawn_failure_status_detail_carries_the_real_reason() {
+    let boot = boot().await;
+    set_lifecycle(&boot, WaveLifecycle::Working).await;
+    // A real, absolute, definitely-not-a-git-repo cwd.
+    let non_git = tempfile::tempdir().expect("tempdir");
+    let pool = boot.repo.sqlite_pool().expect("sqlite pool");
+    // #1147 S1 — re-point through the production single writer rather than a
+    // raw `UPDATE ... SET cwd`, so the fixture leaves `cwd` and
+    // `workspace_path` agreeing the way every production path does.
+    let mut tx = pool.begin().await.expect("begin");
+    calm_server::db::sqlite::wave_workspace_write_tx(
+        &mut tx,
+        boot.wave_id.as_str(),
+        &calm_server::model::WaveWorkspace {
+            kind: calm_server::model::WaveWorkspaceKind::Attached,
+            path: non_git.path().to_str().unwrap().to_string(),
+            frozen_at: Some(1),
+        },
+    )
+    .await
+    .expect("set wave workspace");
+    tx.commit().await.expect("commit");
+
+    let task = plan_task(&boot.wave_id, "nogit", TaskKind::Codex, &[]);
+    let task_id = task.id.clone();
+    seed_projected_task(&boot, task).await;
+
+    let route_repo: Arc<dyn calm_server::db::RouteRepo> = boot.repo.clone();
+    let codex: Arc<dyn ProviderAdapter> = Arc::new(CodexWorkerAdapter::new(
+        route_repo,
+        Arc::new(CodexClient::new_stub()),
+        boot.shared_codex_appserver.clone(),
+        None,
+        boot.card_role_cache.clone(),
+        boot.wave_cove_cache.clone(),
+    ));
+    let (runtime, scheduler) = build_scheduler(&boot, vec![codex]);
+
+    scheduler.schedule_wave(boot.wave_id.clone()).await;
+
+    // The operation already knows the truth today.
+    let op = runtime
+        .find_by_kind_and_idempotency("codex-worker", &task_id)
+        .await
+        .unwrap()
+        .expect("codex worker op");
+    assert_eq!(op.phase.tag(), PhaseTag::Failed);
+    let last_error = op.last_error.clone().unwrap_or_default();
+    assert!(
+        last_error.contains("is not a git repository"),
+        "operation last_error should carry the git diagnosis, got {last_error:?}"
+    );
+
+    // #1147 ①: so must the task row the spec and the FE read.
+    let row = task_row(&boot, "nogit").await;
+    assert_eq!(row.status, TaskStatus::Failed);
+    let detail = row.status_detail.clone().unwrap_or_default();
+    assert!(
+        detail.starts_with("spawn-failed"),
+        "the spawn-failed classifier must stay the prefix, got {detail:?}"
+    );
+    assert!(
+        detail.contains("is not a git repository"),
+        "status_detail must carry the real reason, got {detail:?}"
+    );
+
+    // #1149 dependency: and it must reach the wire type both the spec
+    // (`calm.report.read` → `taskDiagnostics`) and the FE (`GET
+    // /api/waves/:id`, same `BlockVerdict`) read.
+    let report = call_tool(&boot, TOOL_REPORT_READ, spec_identity(&boot), json!({}))
+        .await
+        .expect("report read");
+    let verdict = report["taskDiagnostics"]
+        .as_array()
+        .expect("taskDiagnostics array")
+        .iter()
+        .find(|v| v["key"] == json!("nogit"))
+        .expect("verdict for the failed task")
+        .clone();
+    assert_eq!(verdict["status"], json!("failed"));
+    let wire_detail = verdict["statusDetail"].as_str().unwrap_or_default();
+    assert!(
+        wire_detail.contains("is not a git repository"),
+        "BlockVerdict.statusDetail must carry the reason, got {verdict}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1811,7 +1917,14 @@ async fn worker_report_flips_row_inside_emit_tx() {
 
     let row = task_row(&boot, "r").await;
     assert_eq!(row.status, TaskStatus::Failed);
-    assert_eq!(row.status_detail.as_deref(), Some("worker-reported"));
+    // #1147 ① — the worker's own reason reaches the row (decision_sink
+    // used to drop it with `..` and write a bare classifier).
+    let detail = row.status_detail.clone().unwrap_or_default();
+    assert_eq!(status_detail_class(&detail), "worker-reported");
+    assert!(
+        detail.contains("could not finish"),
+        "status_detail must carry the worker reason, got {detail:?}"
+    );
     assert_eq!(
         row.worker_card_id.as_deref(),
         Some(boot.worker_card_id.as_str()),
@@ -2165,7 +2278,13 @@ async fn terminal_hook_nonzero_exit_fails_task() {
 
     let row = task_row(&boot, "term-fail").await;
     assert_eq!(row.status, TaskStatus::Failed);
-    assert_eq!(row.status_detail.as_deref(), Some("worker-reported"));
+    // #1147 ① — the interpreted terminal-exit reason reaches the row.
+    let detail = row.status_detail.clone().unwrap_or_default();
+    assert_eq!(status_detail_class(&detail), "worker-reported");
+    assert!(
+        detail.contains("exited with code 2"),
+        "status_detail must carry the exit reason, got {detail:?}"
+    );
     let failed = event_rows(&boot, "task.failed").await;
     assert_eq!(failed.len(), 1);
     assert!(failed[0].0.contains("KernelDispatcher"));
@@ -2209,7 +2328,13 @@ async fn sweep_reconciles_running_terminal_with_recorded_exit() {
         TaskStatus::Failed,
         "synthetic -1 = outcome unknown = failed"
     );
-    assert_eq!(row.status_detail.as_deref(), Some("worker-reported"));
+    let detail = row.status_detail.clone().unwrap_or_default();
+    assert_eq!(status_detail_class(&detail), "worker-reported");
+    assert!(
+        detail.contains("outcome unknown"),
+        "#1147 ①: the -1 sentinel's interpreted reason must reach the row, \
+         got {detail:?}"
+    );
     let failed = event_rows(&boot, "task.failed").await;
     assert_eq!(failed.len(), 1);
     assert!(failed[0].0.contains("KernelDispatcher"));
@@ -6486,7 +6611,12 @@ async fn boot_sweep_resolves_dispatched_terminal_with_recorded_exit_in_one_pass(
         TaskStatus::Failed,
         "a single boot sweep must reach the terminal state"
     );
-    assert_eq!(row.status_detail.as_deref(), Some("worker-reported"));
+    let detail = row.status_detail.clone().unwrap_or_default();
+    assert_eq!(status_detail_class(&detail), "worker-reported");
+    assert!(
+        detail.contains("outcome unknown"),
+        "#1147 ①: the sweep's interpreted reason must reach the row, got {detail:?}"
+    );
     assert_eq!(event_rows(&boot, "task.failed").await.len(), 1);
 }
 
@@ -6687,7 +6817,10 @@ async fn sweep_fails_task_when_preexisting_op_failed() {
 
     let row = task_row(&boot, "wedged").await;
     assert_eq!(row.status, TaskStatus::Failed);
-    assert_eq!(row.status_detail.as_deref(), Some("spawn-failed"));
+    assert_eq!(
+        status_detail_class(row.status_detail.as_deref().unwrap_or_default()),
+        "spawn-failed"
+    );
     let failed = event_rows(&boot, "task.failed").await;
     assert_eq!(failed.len(), 1);
     assert!(failed[0].0.contains("KernelDispatcher"));
@@ -7306,7 +7439,10 @@ async fn foreign_idempotency_conflict_fails_task_and_frees_budget() {
         TaskStatus::Failed,
         "idempotency payload conflict must terminalize the row"
     );
-    assert_eq!(row.status_detail.as_deref(), Some("spawn-failed"));
+    assert_eq!(
+        status_detail_class(row.status_detail.as_deref().unwrap_or_default()),
+        "spawn-failed"
+    );
     assert!(row.finished_at_ms.is_some());
     let failed = event_rows(&boot, "task.failed").await;
     assert_eq!(failed.len(), 1, "kernel task.failed pushed for the spec");
@@ -8006,8 +8142,14 @@ async fn acceptance_18_terminal_flip_rechecks_all_three_outcomes_after_its_snaps
 
         if label == "deleted" {
             sqlx::query(
-                "INSERT INTO waves(id,cove_id,title,sort,cwd,created_at,updated_at) \
-                 SELECT ?1,cove_id,'replacement child',sort+0.25,cwd,?2,?2 \
+                // #1147 S1 — this clones a wave row, so it must clone the
+                // whole workspace, not just its `cwd` projection. Copying
+                // `cwd` alone left `workspace_path=''` beside a non-empty
+                // `cwd`: a state design D1's single writer cannot produce, and
+                // one S2/S5 would later read to decide materialization and
+                // recycling.
+                "INSERT INTO waves(id,cove_id,title,sort,workspace_kind,workspace_path,workspace_frozen_at,created_at,updated_at) \
+                 SELECT ?1,cove_id,'replacement child',sort+0.25,workspace_kind,workspace_path,workspace_frozen_at,?2,?2 \
                    FROM waves WHERE id=?3",
             )
             .bind(&child)

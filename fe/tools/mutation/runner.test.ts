@@ -3,11 +3,16 @@ import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
 import {
+  boundedInfrastructureDiagnostics, boundedTestIdList, boundedVerdict,
   byteSequencesEqual, declaredFixtureDirectories, entriesPerShard, entryIdsDriftedFromBase,
-  evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, judgeMutation,
+  evidenceInvalidatingInfraChanged, evidenceInvalidatingRepoPathChanged, failureDetailMessageChars,
+  failureDetailMessageHeadFraction,
+  failureDetailMessagesPerTest, failureDetailOmittedIdLimit, failureDetailTestIdChars,
+  failureDetailTestLimit, infrastructureDiagnosticBytes, judgeMutation,
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
-  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, selectedEntries, shardEntries,
-  shardPlan, trackedFixtureSetMatches, validateManifest,
+  parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, reportTestIdLimit,
+  selectedEntries, shardEntries,
+  shardPlan, trackedFixtureSetMatches, truncateFailureMessage, unexpectedFailureDetails, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
 
@@ -423,7 +428,427 @@ describe('report infrastructure classification', () => {
     const messageOnly = { name: 'hook.test.ts', status: 'passed', message: 'hook failed',
       assertionResults: [{ status: 'passed', fullName: 'a' }] };
     expect(parseVitestReport(JSON.stringify({ testResults: [statusOnly, messageOnly] })))
-      .toEqual({ failedTestIds: [], infrastructureErrors: ['hook.test.ts', 'status.test.ts'] });
+      .toEqual({ failedTestIds: [], infrastructureErrors: ['hook.test.ts', 'status.test.ts'], failureMessagesByTestId: {} });
+  });
+});
+
+describe('over-red failure detail evidence', () => {
+  const reportOf = (assertionResults: unknown[]): string => JSON.stringify({
+    testResults: [{ name: 'flake.test.ts', status: 'failed', message: '', assertionResults }],
+  });
+  const failing = (fullName: string, failureMessages: unknown) => ({ status: 'failed', fullName, failureMessages });
+
+  it('keeps failureMessages from the authentic vitest reporter sample alongside the ids', () => {
+    const sample = readFileSync(resolve(fixtureRoot, 'vitest-report.json'), 'utf8');
+    expect(parseVitestReport(sample).failureMessagesByTestId).toEqual({
+      'source remains guarded': [
+        "AssertionError: expected 'export const guarded = false;' to contain 'export const guarded = true;'",
+      ],
+    });
+  });
+  it('collects nothing for passing tests and tolerates a missing failureMessages array', () => {
+    const parsed = parseVitestReport(reportOf([
+      { status: 'passed', fullName: 'green', failureMessages: ['ignored'] },
+      { status: 'failed', fullName: 'bare' },
+    ]));
+    expect(parsed.failedTestIds).toEqual(['bare']);
+    expect(parsed.failureMessagesByTestId).toEqual({ bare: [] });
+  });
+  // judgeMutation has a `duplicate-actual-red` code precisely because fullName is not unique across
+  // files: overwriting would throw away the only copy of one of the two errors.
+  it('accumulates messages for colliding test ids instead of overwriting', () => {
+    expect(parseVitestReport(reportOf([failing('same', ['first']), failing('same', ['second'])])).failureMessagesByTestId)
+      .toEqual({ same: ['first', 'second'] });
+  });
+
+  const messageHeadChars = Math.floor(failureDetailMessageChars * failureDetailMessageHeadFraction);
+  const messageTailChars = failureDetailMessageChars - messageHeadChars;
+
+  const messages = { expected: ['expected boom'], surprise: ['surprise boom'], other: ['other boom'] };
+  it('reports only the unexpected reds, sorted, and never the expected ones', () => {
+    expect(unexpectedFailureDetails(['surprise', 'expected', 'other'], ['expected'], messages)).toEqual({
+      tests: [{ test_id: 'other', messages: ['other boom'] }, { test_id: 'surprise', messages: ['surprise boom'] }],
+      omitted_test_ids: [], note: null,
+    });
+  });
+  it('says so in the value when a test has no messages in the report', () => {
+    expect(unexpectedFailureDetails(['ghost'], [], {}).tests)
+      .toEqual([{ test_id: 'ghost', messages: ['[no failureMessages for this test in the vitest JSON report]'] }]);
+  });
+  // A vitest/TestingLibrary failure message is "verdict line, giant dump, stack": head-only
+  // truncation kept 2000 characters of sidebar boilerplate on the real captured flake (#1152,
+  // public.test.tsx:85) and threw away the part that would have closed the diagnosis. So both ends
+  // are kept, out of the SAME budget, with the cut announced at the seam.
+  it('keeps a head AND a tail, and announces both halves at the seam', () => {
+    const long = `${'h'.repeat(messageHeadChars)}${'z'.repeat(37)}${'t'.repeat(messageTailChars)}`;
+    const [only] = unexpectedFailureDetails(['big'], [], { big: [long] }).tests;
+    expect(only.messages[0]).toBe(
+      `${'h'.repeat(messageHeadChars)}`
+      + `\n[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail of ${long.length} characters]\n`
+      + `${'t'.repeat(messageTailChars)}`,
+    );
+    // Same budget as head-only truncation spent: the kept CONTENT is exactly `messageChars` (the
+    // exact-string assertion above is what pins that), and the only thing on top is the one-line
+    // notice.
+    expect(only.messages[0].length - failureDetailMessageChars).toBeLessThan(80);
+  });
+  // The property the head+tail split exists for, on a realistically SHAPED message rather than a run
+  // of 'x': a short verdict line, a very long middle, and the discriminating detail at the very end.
+  // A test that only checked lengths would have passed on the head-only version that lost it.
+  it('keeps both the verdict line and the end of a TestingLibrary-shaped roles dump', () => {
+    const verdict = 'TestingLibraryElementError: Unable to find an accessible element with the '
+      + 'role "button" and name "Create wave"';
+    const endMarker = 'dialog:\n  Name "Create wave": <div role="dialog" aria-label="Create wave" />';
+    const boilerplate = Array.from({ length: 400 },
+      (_v, index) => `  Name "sidebar item ${index}": <button />`).join('\n');
+    const message = `${verdict}\n\nHere are the accessible roles:\n\n  button:\n${boilerplate}\n\n${endMarker}`;
+    expect(message.length).toBeGreaterThan(failureDetailMessageChars * 5);
+    const [emitted] = unexpectedFailureDetails(['flake'], [], { flake: [message] }).tests[0].messages;
+    expect(emitted.startsWith(verdict), emitted.slice(0, 200)).toBe(true);
+    expect(emitted.endsWith(endMarker), emitted.slice(-200)).toBe(true);
+    expect(emitted).toContain(`[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail `
+      + `of ${message.length} characters]`);
+    expect(emitted.length).toBeLessThan(failureDetailMessageChars + 100);
+  });
+  // A per-MESSAGE bound bounds nothing on its own: parseVitestReport accumulates messages across
+  // colliding fullNames, so N x the char cap is unbounded in N. Measured before the per-test cap
+  // existed: one test id with 200 messages of 5000 chars emitted 409,274 bytes with `note: null`.
+  // So assert the bound that actually holds — on the WHOLE emitted block, not one message.
+  it('bounds the whole emitted block no matter how many huge messages one test collected', () => {
+    const huge = 'x'.repeat(failureDetailMessageChars * 50);
+    const details = unexpectedFailureDetails(['big'], [], { big: Array.from({ length: 200 }, () => huge) });
+    const emitted = JSON.stringify(details);
+    expect(emitted.length)
+      .toBeLessThan((failureDetailMessageChars + 200) * failureDetailMessagesPerTest + 500);
+    // And it is FLAT in the message count: 6 vs 200 differ only by the digits in the notice.
+    const fewer = JSON.stringify(unexpectedFailureDetails(['big'], [], { big: Array.from({ length: 6 }, () => huge) }));
+    expect(emitted.length - fewer.length).toBeLessThan(10);
+  });
+  it('announces the dropped messages inline and in the note', () => {
+    const details = unexpectedFailureDetails(['big'], [], { big: Array.from({ length: 200 }, (_v, i) => `boom ${i}`) });
+    expect(details.tests[0].messages).toEqual([
+      ...Array.from({ length: failureDetailMessagesPerTest }, (_v, i) => `boom ${i}`),
+      `[capped: kept ${failureDetailMessagesPerTest} of 200 failure messages for this test]`,
+    ]);
+    expect(details.note)
+      .toBe(`capped the failure messages of 1 of 1 reported test(s) at ${failureDetailMessagesPerTest} each`);
+  });
+  it('leaves a message exactly at the cap untouched', () => {
+    const exact = 'x'.repeat(failureDetailMessageChars);
+    expect(unexpectedFailureDetails(['fits'], [], { fits: [exact] }).tests[0].messages).toEqual([exact]);
+  });
+  it('truncates at the very first character over the cap', () => {
+    const over = `${'h'.repeat(messageHeadChars)}z${'t'.repeat(messageTailChars)}`;
+    expect(over.length).toBe(failureDetailMessageChars + 1);
+    expect(unexpectedFailureDetails(['edge'], [], { edge: [over] }).tests[0].messages[0]).toBe(
+      `${'h'.repeat(messageHeadChars)}`
+      + `\n[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail of ${over.length} characters]\n`
+      + `${'t'.repeat(messageTailChars)}`,
+    );
+  });
+  // The `-0` guard in truncateFailureMessage, pinned. `slice(-tail)` is the natural spelling and is
+  // what any cleanup pass would reach for, but at tail === 0 the negative form is `-0` and
+  // `slice(-0) === slice(0)`, which appends the WHOLE message to a zero budget. Verified by mutation:
+  // restoring `slice(-tail)` reds the limit === 0 row of this table and nothing else in the suite.
+  // tail === 0 needs limit === 0, reachable only through an explicit `limits` budget and never from
+  // the production defaults — the invariant is what is pinned here, not a production path. The
+  // neighbouring small budgets are in the table so an off-by-one in EITHER slice reds too, and the
+  // head/tail strings are spelled out rather than recomputed from the fraction so that the expected
+  // values do not silently follow the code they are checking.
+  it('emits no message content on a zero budget, and exactly the split content just above it', () => {
+    const message = 'ABCDEFGHIJ';
+    const notice = (head: number, tail: number): string =>
+      `\n[truncated: kept ${head} head + ${tail} tail of ${message.length} characters]\n`;
+    // limit 0 (and any negative, which `Math.max(0, limit)` clamps to it) is fraction-independent:
+    // floor(0 * anything) === 0, so head and tail are both empty whatever the split is.
+    expect(truncateFailureMessage(message, 0)).toBe(notice(0, 0));
+    expect(truncateFailureMessage(message, -7)).toBe(notice(0, 0));
+    // The rest of the table is written for the 1/4 : 3/4 split; re-aiming the split re-measures it.
+    expect(failureDetailMessageHeadFraction).toBe(0.25);
+    const table: Array<[limit: number, head: string, tail: string]> = [
+      [1, '', 'J'], [2, '', 'IJ'], [3, '', 'HIJ'],
+      [4, 'A', 'HIJ'], [5, 'A', 'GHIJ'], [8, 'AB', 'EFGHIJ'],
+    ];
+    for (const [limit, head, tail] of table) {
+      expect(truncateFailureMessage(message, limit), `limit ${limit}`)
+        .toBe(`${head}${notice(head.length, tail.length)}${tail}`);
+    }
+  });
+  // omitted_test_ids is the OVERFLOW list, so it grows exactly when the block is already at its
+  // worst; and a vitest fullName is an unbounded concatenation of describe titles.
+  it('caps the omitted id list itself and announces that second cap too', () => {
+    const ids = Array.from({ length: failureDetailTestLimit + failureDetailOmittedIdLimit + 40 },
+      (_v, index) => `t${String(index).padStart(4, '0')}`);
+    const details = unexpectedFailureDetails(ids, [], {});
+    const omittedCount = ids.length - failureDetailTestLimit;
+    expect(details.omitted_test_ids).toHaveLength(failureDetailOmittedIdLimit);
+    expect(details.omitted_test_ids)
+      .toEqual(ids.slice(failureDetailTestLimit, failureDetailTestLimit + failureDetailOmittedIdLimit));
+    expect(details.note).toBe(
+      `capped at ${failureDetailTestLimit} of ${ids.length} unexpected-red tests; ${omittedCount} omitted (ids in omitted_test_ids). `
+      + `omitted_test_ids itself capped at ${failureDetailOmittedIdLimit} of ${omittedCount} ids`,
+    );
+  });
+  it('bounds an unbounded test name in both the reported and the omitted list', () => {
+    const long = 'n'.repeat(failureDetailTestIdChars + 11);
+    const capped = `${'n'.repeat(failureDetailTestIdChars)}[truncated: kept ${failureDetailTestIdChars} of ${long.length} characters]`;
+    expect(unexpectedFailureDetails([long], [], { [long]: ['boom'] }).tests[0].test_id).toBe(capped);
+    const ids = [...Array.from({ length: failureDetailTestLimit }, (_v, index) => `a${index}`), long];
+    expect(unexpectedFailureDetails(ids, [], {}).omitted_test_ids).toEqual([capped]);
+  });
+  it('caps the test count, lists the omitted ids, and notes the cap', () => {
+    const ids = ['t1', 't2', 't3', 't4', 't5', 't6', 't7'];
+    const details = unexpectedFailureDetails(ids, [], Object.fromEntries(ids.map((id) => [id, [`${id} boom`]])));
+    expect(details.tests.map(({ test_id }) => test_id)).toEqual(ids.slice(0, failureDetailTestLimit));
+    expect(details.omitted_test_ids).toEqual(ids.slice(failureDetailTestLimit));
+    expect(details.note).toBe(`capped at ${failureDetailTestLimit} of ${ids.length} unexpected-red tests; `
+      + `${ids.length - failureDetailTestLimit} omitted (ids in omitted_test_ids)`);
+  });
+  it('emits an empty block when every red was expected', () => {
+    expect(unexpectedFailureDetails(['expected'], ['expected'], messages))
+      .toEqual({ tests: [], omitted_test_ids: [], note: null });
+  });
+});
+
+// Capping `failure_details` alone did not bound the REPORT: run.mjs re-emits the same ids in
+// `actual_red` and in `verdict.errors[].test_ids`, both uncapped, and both an order of magnitude
+// bigger than the block that was capped when a mutation reds the whole suite (#1152).
+describe('every id list in a report record is bounded', () => {
+  const longId = (prefix: string, index: number): string =>
+    `${prefix}${String(index).padStart(6, '0')}${'z'.repeat(failureDetailTestIdChars * 4)}`;
+  const baseResult: MutationRunResult = {
+    failed_test_ids: [], apply_check_exit_code: 0, apply_exit_code: 0, reverse_exit_code: 0,
+    target_changed_after_apply: true, target_restored_after_revert: true,
+    test_run_exit_code: 1, test_infrastructure_errors: [],
+  };
+
+  it('caps actual_red and announces the drop inside the emitted list', () => {
+    const ids = Array.from({ length: reportTestIdLimit + 17 }, (_v, index) => `t${String(index).padStart(4, '0')}`);
+    expect(boundedTestIdList(ids)).toEqual([
+      ...ids.slice(0, reportTestIdLimit),
+      `[capped: kept ${reportTestIdLimit} of ${ids.length} test ids]`,
+    ]);
+    // No notice at all when nothing was dropped — a notice on a complete list would be a lie.
+    expect(boundedTestIdList(ids.slice(0, reportTestIdLimit))).toEqual(ids.slice(0, reportTestIdLimit));
+  });
+
+  it('truncates each surviving id, because a vitest fullName is itself unbounded', () => {
+    const long = longId('red', 0);
+    expect(boundedTestIdList([long])).toEqual([
+      `${long.slice(0, failureDetailTestIdChars)}[truncated: kept ${failureDetailTestIdChars} of ${long.length} characters]`,
+    ]);
+  });
+
+  // Through judgeMutation, not a hand-built verdict: the over-red / under-red / duplicate-* lists
+  // are produced there, and capping must not disturb what the exit code is computed from.
+  it('caps the verdict error id lists while leaving ok and the codes untouched', () => {
+    const reds = Array.from({ length: reportTestIdLimit + 200 }, (_v, index) => `red${index}`);
+    const verdict = judgeMutation({ ...baseEntry, expected_red: ['gone', 'gone'] }, {
+      ...baseResult, failed_test_ids: [...reds, ...reds], test_run_exit_code: 1,
+    });
+    const bounded = boundedVerdict(verdict);
+    expect(bounded.ok).toBe(verdict.ok);
+    expect(bounded.errors.map(({ code }) => code)).toEqual(verdict.errors.map(({ code }) => code));
+    expect(mutationRunExitCode([bounded])).toBe(mutationRunExitCode([verdict]));
+    for (const { code, test_ids } of bounded.errors) {
+      expect(test_ids.length, code).toBeLessThanOrEqual(reportTestIdLimit + 1);
+      const original = verdict.errors.find((error) => error.code === code)!.test_ids;
+      if (original.length > reportTestIdLimit) {
+        expect(test_ids.at(-1)).toBe(`[capped: kept ${reportTestIdLimit} of ${original.length} test ids]`);
+      }
+    }
+  });
+
+  // The bound that actually matters, and the one every OTHER size assertion in this file misses:
+  // each of those is written in terms of the constant it guards, so `failureDetailMessageChars` and
+  // friends could all be raised to 10^6 with the suite green. This one is a HARD-CODED number over a
+  // worst-case record assembled exactly the way run.mjs:141 assembles the real one.
+  //
+  // Where the number comes from: the worst case built below measures 111,844 bytes today
+  // (failure_details ~45 KB + verdict ~32 KB + expected_red ~21 KB + actual_red ~12 KB). The budget
+  // has to sit under the CHEAPEST single doubling, or that axis is unguarded. Measured, one at a
+  // time, against this exact record:
+  //
+  //   baseline                                111,844
+  //   failureDetailOmittedIdLimit  50 -> 100  124,295   <- the cheapest doubling
+  //   failureDetailOmittedIdLimit  50 -> 150  136,745
+  //   failureDetailMessageChars  2000 -> 4000 141,859
+  //   failureDetailMessagesPerTest    3 -> 6  142,984
+  //   failureDetailTestLimit          5 -> 10 144,877
+  //   reportTestIdLimit            50 -> 100  149,497
+  //   failureDetailTestIdChars    200 -> 400  179,075
+  //
+  // 118_000 is therefore the budget: every doubling above reds it. The earlier 131_072 did NOT —
+  // `failureDetailOmittedIdLimit` could be doubled with this test still green, so the comment that
+  // claimed "red if any single cap is doubled" was over-claiming on that axis. The price of the
+  // tighter number is honest and stated here: ~6.2 KB of headroom (5.2%) for the wording of the
+  // truncation notices, which move the total by tens of bytes, not kilobytes. A change that needs
+  // more than that is a change to how much this record emits, and should re-measure the table.
+  //
+  // `failureDetailMessageHeadFraction` is a WEAK axis of this table, not a free one, and the earlier
+  // "not an axis" claim over-stated it. What is true by construction is head + tail === messageChars,
+  // i.e. the kept CONTENT is the same COUNT the head-only version kept — but that count is in UTF-16
+  // code units, not bytes, and this budget is in bytes. Head-only truncation had the same property, so
+  // the gap is pre-existing and not what this PR introduced: 2000 kept code units of ASCII head plus
+  // CJK tail is ~5000 bytes, and the whole table above is measured against the ASCII fixtures built
+  // below, where a code unit is a byte. Within those fixtures the fraction still moves the record
+  // slightly, because the notice embeds the DECIMAL DIGITS of `head` and `tail`: measured, 0.25 ->
+  // 111,844, 0.5 -> 111,859, 0.999 -> 111,814. That is tens of bytes, the same order as the
+  // notice-wording caveat above, and it is why the headroom is stated rather than spent. Splitting
+  // the budget at all moved the baseline by exactly the extra wording: 111,574 -> 111,844, i.e.
+  // +18 bytes on each of the 5 tests x 3 messages the record truncates.
+  //
+  // Nothing clamps the fraction to [0, 1], and out of range it does buy characters rather than re-aim
+  // them: measured, 1.5 -> 126,874 and -0.5 -> 411,874. So this hard-coded byte budget is the only
+  // thing that reds an out-of-range split — the code that computes head/tail does not check, and every
+  // other size assertion in this file is written in terms of the constants. Load-bearing for more than
+  // the doubling table it was written for.
+  //
+  // `expected_red` is the one axis NOT capped: it is manifest data, authored by hand and gated by
+  // validateManifest (today at most 13 ids of at most 124 characters, ~1.7 KB). The worst case below
+  // still feeds it 26 ids of 800 characters, an order of magnitude over the real manifest, so the
+  // bound holds even if that axis grows a lot.
+  //
+  // `infrastructureDiagnosticBytes` is invisible to THIS record on purpose: judgeMutation suppresses
+  // over-red / under-red once `test-infrastructure-failed` is present, so the two record shapes are
+  // mutually exclusive. That axis gets its own budgeted worst case in the next test.
+  it('keeps a worst-case report record under a hard-coded byte budget', () => {
+    const reds = Array.from({ length: 2000 }, (_v, index) => longId('red', index));
+    const failed = [...reds, ...reds.slice(0, 500)];
+    const expectedRed = Array.from({ length: 13 }, (_v, index) => longId('exp', index));
+    const declared = [...expectedRed, ...expectedRed];
+    const huge = 'm'.repeat(failureDetailMessageChars * 10);
+    const failureMessages = Object.fromEntries(reds.slice(0, 60)
+      .map((id) => [id, Array.from({ length: 200 }, () => huge)]));
+    const verdict = judgeMutation({ ...baseEntry, expected_red: declared }, {
+      ...baseResult, failed_test_ids: failed, test_run_exit_code: 1,
+    });
+    // Every error code that carries a non-empty id list is present, so nothing is under-counted.
+    expect(verdict.errors.map(({ code }) => code))
+      .toEqual(['duplicate-expected-red', 'duplicate-actual-red', 'under-red', 'over-red']);
+    const record = {
+      mutation_id: baseEntry.mutation_id,
+      expected_red: declared,
+      actual_red: boundedTestIdList(failed),
+      verdict: boundedVerdict(verdict),
+      failure_details: unexpectedFailureDetails(failed, declared, failureMessages),
+    };
+    expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(118_000);
+  });
+
+  // `test-infrastructure-failed` is the one code whose `test_ids` are NOT test ids — judgeMutation
+  // puts `test_infrastructure_errors` there. Two things have to hold at once, and they pull against
+  // each other, so both are pinned.
+  it('leaves an infrastructure diagnostic uncapped and unmangled', () => {
+    // The real shape from run.mjs:118. It is one message, not a list of ids: capping it at
+    // `failureDetailTestIdChars` (200) and labelling the cut "kept N of M test ids" destroyed the
+    // exact evidence this record exists to carry.
+    const parseError = `report-parse-failed: Unexpected token '<', "${'x'.repeat(400)}"... is not valid JSON`;
+    expect(parseError.length).toBeGreaterThan(failureDetailTestIdChars);
+    const verdict = judgeMutation(baseEntry, { ...baseResult, test_infrastructure_errors: [
+      'global-unhandled-error', 'src/app/shell/drawer-seam.browser.test.tsx', parseError] });
+    const bounded = boundedVerdict(verdict);
+    const infrastructure = bounded.errors.find(({ code }) => code === 'test-infrastructure-failed')!;
+    expect(infrastructure.test_ids).toEqual([
+      'global-unhandled-error', 'src/app/shell/drawer-seam.browser.test.tsx', parseError]);
+    // Not just "the prefix is there": nothing was appended either, so no `[capped: ...]` /
+    // `[truncated: ...]` notice claims a cut that did not happen.
+    expect(infrastructure.test_ids.join('')).not.toContain('test ids');
+    expect(infrastructure.test_ids.join('')).not.toContain('truncated');
+  });
+
+  // Both notices `boundedInfrastructureDiagnostics` can emit are pinned here, for the reason
+  // `boundedTestIdList` pins its own: deleting BOTH notice branches left the whole suite green while
+  // 272 of 403 diagnostics vanished silently, which is precisely what the contract above forbids.
+  it('announces a truncated diagnostic in characters, and keeps the head that survived', () => {
+    const huge = `report-parse-failed: ${'p'.repeat(infrastructureDiagnosticBytes * 3)}`;
+    const bounded = boundedInfrastructureDiagnostics([huge]);
+    expect(bounded).toHaveLength(1);
+    const [only] = bounded;
+    const announcement = /\n\[truncated: kept (\d+) of (\d+) characters\]$/.exec(only);
+    expect(announcement, only.slice(0, 120)).not.toBeNull();
+    const [notice, keptChars, totalChars] = announcement!;
+    expect(Number(totalChars)).toBe(huge.length);
+    // The number in the notice is the number of characters actually emitted — not a round constant
+    // that happens to look plausible — and what precedes it is that exact prefix, byte for byte.
+    expect(only).toBe(`${huge.slice(0, Number(keptChars))}${notice}`);
+    expect(Number(keptChars)).toBeGreaterThan('report-parse-failed: '.length);
+    expect(Number(keptChars)).toBeLessThan(huge.length);
+    // ...and the announced entry itself is what the budget was spent on, quotes and escapes included.
+    expect(Buffer.byteLength(JSON.stringify(only))).toBeLessThanOrEqual(infrastructureDiagnosticBytes);
+  });
+
+  it('announces how many diagnostics the byte budget dropped', () => {
+    // The many-SHORT-entries worst case. Charging only `diagnostic.length` made the quotes, the
+    // comma and six spaces of indentation free, so all 900 of these were admitted on an 8000-char
+    // budget while costing ~18 KB on the wire.
+    const diagnostics = Array.from({ length: 900 }, (_v, index) => `${index}.test.ts`);
+    const bounded = boundedInfrastructureDiagnostics(diagnostics);
+    const keptCount = bounded.length - 1;
+    expect(keptCount).toBeLessThan(diagnostics.length);
+    expect(bounded.slice(0, keptCount)).toEqual(diagnostics.slice(0, keptCount));
+    expect(bounded.at(-1)).toBe(`[capped: kept ${keptCount} of ${diagnostics.length} infrastructure `
+      + `diagnostics; the ${infrastructureDiagnosticBytes}-byte budget ran out]`);
+  });
+
+  // An empty diagnostic used to cost nothing, so the contract admitted an unbounded list of them.
+  // judgeMutation dedupes, so production never had more than one — charging the per-element JSON
+  // overhead closes it anyway, and closes it by the same rule as everything else.
+  it('charges an empty diagnostic the per-element cost instead of nothing', () => {
+    const bounded = boundedInfrastructureDiagnostics(Array.from({ length: 5000 }, () => ''));
+    expect(bounded.length - 1).toBeLessThanOrEqual(infrastructureDiagnosticBytes / 10);
+    expect(bounded.at(-1)).toContain('infrastructure diagnostics');
+  });
+
+  // Two diagnostic fixtures, one budget: ONE long parse error (what actually happens) and many short
+  // legitimate filenames (what the char-only accounting let through). The second is the fixture that
+  // was missing — the first one's 400 entries of ~80 chars exhaust the budget after ~100 of them, so
+  // the per-element structural cost never mattered to it.
+  it.each<[string, string[]]>([
+    ['one huge parse error', ['global-unhandled-error', 'global-reporter-error',
+      ...Array.from({ length: 400 }, (_v, index) =>
+        `src/app/some/deeply/nested/module-${String(index).padStart(4, '0')}/feature.browser.test.ts`),
+      `report-parse-failed: ${'p'.repeat(50_000)}`]],
+    ['800 short filenames', Array.from({ length: 800 }, (_v, index) => `${index}.test.ts`)],
+  ])('keeps an infrastructure-shaped record (%s) under its own hard-coded byte budget', (_label, diagnostics) => {
+    // The other shape run.mjs can emit: no over-red / under-red (judgeMutation suppresses them), but
+    // one diagnostic per broken test FILE plus a parse error that could itself be huge.
+    const reds = Array.from({ length: 2000 }, (_v, index) => longId('red', index));
+    const failed = [...reds, ...reds.slice(0, 500)];
+    const expectedRed = Array.from({ length: 13 }, (_v, index) => longId('exp', index));
+    const declared = [...expectedRed, ...expectedRed];
+    const huge = 'm'.repeat(failureDetailMessageChars * 10);
+    const failureMessages = Object.fromEntries(reds.slice(0, 60)
+      .map((id) => [id, Array.from({ length: 200 }, () => huge)]));
+    const verdict = judgeMutation({ ...baseEntry, expected_red: declared }, {
+      ...baseResult, failed_test_ids: failed, test_infrastructure_errors: diagnostics });
+    expect(verdict.errors.map(({ code }) => code))
+      .toEqual(['duplicate-expected-red', 'duplicate-actual-red', 'test-infrastructure-failed']);
+    const record = {
+      mutation_id: baseEntry.mutation_id,
+      expected_red: declared,
+      actual_red: boundedTestIdList(failed),
+      verdict: boundedVerdict(verdict),
+      failure_details: unexpectedFailureDetails(failed, declared, failureMessages),
+    };
+    // Same discipline as the test above, re-measured over BOTH fixtures (parse-error / filenames):
+    //
+    //   baseline                                 104,325 / 105,434
+    //   infrastructureDiagnosticBytes 8k -> 16k  112,762 / 114,960   <- the cheapest doubling
+    //   failureDetailOmittedIdLimit    50 -> 100 116,776 / 117,885
+    //   failureDetailMessageChars    2000 -> 4000 134,340 / 135,449
+    //   failureDetailMessagesPerTest      3 -> 6  135,465 / 136,574
+    //   failureDetailTestLimit            5 -> 10 137,358 / 138,467
+    //   reportTestIdLimit              50 -> 100 129,327 / 130,436
+    //   failureDetailTestIdChars      200 -> 400 158,893 / 160,002
+    //
+    // 110_000 sits above the worse baseline (105,434) and below the cheaper of the two cheapest
+    // doublings (112,762), so every axis reds it on both fixtures. Same ~4% wording headroom caveat
+    // as the test above (the head+tail split spent 270 bytes of it: 104,055 -> 104,325). Mutation-
+    // verified: revert `boundedInfrastructureDiagnostics` to charging `diagnostic.length` and the
+    // filenames fixture measures 114,209 — OVER this budget — because all 800 entries are admitted
+    // for 8000 raw characters while costing ~18 KB on the wire.
+    expect(Buffer.byteLength(JSON.stringify(record, null, 2))).toBeLessThan(110_000);
   });
 });
 

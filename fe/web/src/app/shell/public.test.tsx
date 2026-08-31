@@ -71,24 +71,35 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     // The rail's `+`, on a cove the user is not currently inside: the whole
     // point of the row control is starting a wave without navigating first.
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    // #1161 — every role query below depends on the dialog's *open
+    // accessibility state*, which no click can promise synchronously. Wait for
+    // it; do not assume the click already published it.
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
+    await userEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
 
     // The cove page's WAVES module head opens *the same* dialog — one title,
     // one Task field, one set of strings.
-    await userEvent.click(screen.getByRole('button', { name: 'New wave' }));
+    // Closing puts the rail and the page back in the accessibility tree by
+    // effect cleanup, i.e. not necessarily by the time the click above
+    // resolves — so this opener is a `findBy` too.
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
-    expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
   });
 
   it('posts the opener\'s cove_id and omits cwd / attach_folder', async () => {
     const { sent } = harness();
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    // #1161 — establish the dialog is open *and exposed* first. The two
+    // `queryByLabelText` absence checks below would pass vacuously against a
+    // dialog that never opened, and `getByLabelText` does no accessibility
+    // filtering, so neither of them can stand in for this wait.
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
     expect(screen.queryByLabelText('Cove')).toBeNull();
     expect(screen.queryByLabelText('Folder')).toBeNull();
     await userEvent.type(screen.getByLabelText('Task'), 'Read it');
-    await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
     expect(body).toMatchObject({ cove_id: 'c2', title: 'Read it' });

@@ -1491,7 +1491,7 @@ async fn start_spec_harness(
         spec_card_id: CardId::from(spec_card_id.clone()),
         report_card_id: Some(report_card_id),
         sort: None,
-        cwd: wave.cwd.clone(),
+        cwd: wave.workspace.path.clone(),
         goal: (!goal.is_empty()).then_some(goal),
         reset_harness_items: false,
         force_new_thread: false,

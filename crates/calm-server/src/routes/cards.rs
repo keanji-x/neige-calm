@@ -1317,7 +1317,7 @@ async fn reset_spec_harness_card(
         spec_card_id: card.id.clone(),
         report_card_id: None,
         sort: None,
-        cwd: wave.cwd.clone(),
+        cwd: wave.workspace.path.clone(),
         goal: goal.filter(|goal| !goal.is_empty()),
         reset_harness_items: true,
         force_new_thread: true,

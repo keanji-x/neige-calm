@@ -7,7 +7,7 @@ use calm_types::worker::{
 };
 
 use crate::db::prelude::*;
-use crate::db::sqlite::{TaskReporter, task_fail_from_worker_tx};
+use crate::db::sqlite::{TaskReporter, status_detail_with_reason, task_fail_from_worker_tx};
 use crate::db::write_with_actor_events_typed;
 use crate::error::Result;
 use crate::event::{Event, EventBus, EventScope};
@@ -556,12 +556,21 @@ pub(crate) async fn converge_dead_worker(
     let reason = reason.to_string();
     let result = write_with_actor_events_typed::<(), _>(repo, None, events, write, move |tx| {
         Box::pin(async move {
+            // #1147 ① — the provider's interpreted reason lands on the
+            // row too, not just on the event. NOTE: the `spawn-failed`
+            // CLASSIFIER is knowingly wrong here (a reaped worker died
+            // at RUNTIME, it did not fail to spawn) — see
+            // docs/architecture/773-*.md §"reaper". Correcting the
+            // vocabulary is a separate decision with its own consumers
+            // (`is_gated_self_report`), deliberately not made in this
+            // slice; the reason tail at least stops the row from lying
+            // silently.
             let rows = task_fail_from_worker_tx(
                 tx,
                 &task_id,
                 wave_id.as_str(),
                 TaskReporter::Kernel,
-                "spawn-failed",
+                &status_detail_with_reason("spawn-failed", &reason),
                 now_ms(),
             )
             .await?;

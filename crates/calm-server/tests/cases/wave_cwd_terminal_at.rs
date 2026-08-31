@@ -216,7 +216,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "exactly one wave created");
-    assert_eq!(waves[0].cwd, "/workspace/sub/dir");
+    assert_eq!(waves[0].workspace.path, "/workspace/sub/dir");
     assert_eq!(waves[0].terminal_at, None);
     assert_eq!(waves[0].lifecycle, WaveLifecycle::Draft);
 
@@ -255,7 +255,7 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
     // Wave row carries the same path.
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1);
-    assert_eq!(waves[0].cwd, "/srv/projects/alpha");
+    assert_eq!(waves[0].workspace.path, "/srv/projects/alpha");
 }
 
 /// Issue #275 — the cove already claims *exactly* this cwd and the caller
@@ -326,7 +326,7 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed");
-    assert_eq!(waves[0].cwd, "/workspace");
+    assert_eq!(waves[0].workspace.path, "/workspace");
 }
 
 /// Issue #275 — the cove claims `/a` and the caller posts `cwd: "/a/b"`
@@ -385,7 +385,7 @@ async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed");
-    assert_eq!(waves[0].cwd, "/a/b");
+    assert_eq!(waves[0].workspace.path, "/a/b");
 }
 
 /// `attach_folder = false` with an unclaimed cwd is refused (409) —
@@ -635,7 +635,7 @@ async fn post_api_waves_omitted_cwd_defaults_to_home_and_skips_cove_folders() {
     let expected_cwd = expected_default_cwd();
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "exactly one wave created");
-    assert_eq!(waves[0].cwd, expected_cwd);
+    assert_eq!(waves[0].workspace.path, expected_cwd);
     assert_eq!(waves[0].title, "w-title-only");
 
     let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
@@ -662,7 +662,7 @@ async fn post_api_waves_omitted_cwd_defaults_to_home_and_skips_cove_folders() {
     );
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 2, "null cwd must also mint a wave");
-    assert!(waves.iter().all(|w| w.cwd == expected_cwd));
+    assert!(waves.iter().all(|w| w.workspace.path == expected_cwd));
     assert!(
         boot.repo
             .cove_folders_by_cove(&boot.cove_id)
@@ -771,7 +771,7 @@ async fn post_api_waves_omitted_cwd_ignores_attach_folder_true() {
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "wave must land");
-    assert_eq!(waves[0].cwd, expected_default_cwd());
+    assert_eq!(waves[0].workspace.path, expected_default_cwd());
     assert!(
         boot.repo
             .cove_folders_by_cove(&boot.cove_id)
@@ -1258,7 +1258,7 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
     );
     let waves = boot.repo.waves_by_cove(&resolved_cove).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed under that cove");
-    assert_eq!(waves[0].cwd, "/a/b/c");
+    assert_eq!(waves[0].workspace.path, "/a/b/c");
 
     // ...and the cove the resolver did NOT name must still be refused,
     // so "they agree" is not vacuously true by accepting everything.

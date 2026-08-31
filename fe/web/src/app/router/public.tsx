@@ -41,7 +41,7 @@ import { ReportEmpty } from '../../features/report/empty/public.tsx';
 import { ReportOutline } from '../../features/report/outline/public.tsx';
 import { revealReportAnchor } from '../../features/report/anchor/public.ts';
 import {
-  backlinkCountsByBlock, deriveReportOutline, readWaveReport, type ReportLinkTarget,
+  backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, readWaveReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
   buildTranscript, conversationName, conversationNameFrom, coveConversationCardId,
@@ -1386,11 +1386,12 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       },
     { showWave: false },
   );
-  const { report, outline } = useMemo(() => {
+  const { report, outline, tasks } = useMemo(() => {
     const nextReport = readWaveReport(cards);
     return {
       report: nextReport,
       outline: deriveReportOutline(nextReport?.blocks ?? null),
+      tasks: deriveReportTasks(nextReport?.blocks ?? null),
     };
   }, [cards]);
   /*
@@ -1453,6 +1454,16 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     <WavePage
       wave={wave}
       cards={panelCards}
+      /* Derived from the report's own blocks, so the panel and the document
+         cannot disagree about what tasks exist. */
+      tasks={tasks}
+      onOpenTask={(blockId) => {
+        /* The same landing the outline and every backlink use: scroll to the
+           block and flash it. The URL carries the anchor too, so the reader can
+           hand the link to somebody else. */
+        revealReportAnchor(blockId);
+        go({ name: 'wave', waveId: wave.id, blockId });
+      }}
       cardsAction={
         <PanelAction
           label="New terminal"

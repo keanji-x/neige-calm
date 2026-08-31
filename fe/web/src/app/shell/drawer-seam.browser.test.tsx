@@ -112,6 +112,53 @@ async function untilGone() {
   throw new Error('the drawer never left');
 }
 
+/** Enough of an element to tell the three outcomes below apart in a failure
+ *  message: the opener, the page title, and `<body>`. */
+function describeFocus(element: Element | null): string {
+  if (element === null) return 'null';
+  const testid = element.getAttribute('data-testid');
+  const text = (element.textContent ?? '').trim().slice(0, 40);
+  return `<${element.tagName.toLowerCase()}`
+    + (testid === null ? '' : ` data-testid="${testid}"`)
+    + `>${text}`;
+}
+
+/**
+ * Wait until `document.activeElement` is what `target` names.
+ *
+ * **`untilGone()` is not this, and the difference is a real CI failure**
+ * (#1157). The drawer leaving and focus coming back are two events, in that
+ * order: the restore is armed through `closing` and runs in the effect the
+ * unmounting commit schedules, which React flushes in a task of its own — so
+ * the first frame on which `[data-nc-drawer]` is gone is a frame on which
+ * `activeElement` is legitimately still `<body>`, the drawer having taken its
+ * focus down with it. `untilGone()` returns on exactly that frame, and a
+ * synchronous `expect(document.activeElement)` on the next line read the seam
+ * between the two events. It passed locally, and on a loaded CI shard it did
+ * not.
+ *
+ * So this polls the **condition** rather than trusting a tick. It is not a
+ * weaker assertion than the one it replaces: it ends green only when focus is
+ * on the element named and nowhere else, so landing on the page title or on
+ * `<body>` still fails — with `describeFocus` saying which, because in this
+ * file those two are different diagnoses (a restore that gave up too early
+ * versus one that never fired at all).
+ */
+async function untilFocused(target: () => Element | null, expected: string) {
+  for (let i = 0; i < 200; i += 1) {
+    // `!== null` first: if the element the assertion names is not in the DOM, `target()` is null,
+    // and `activeElement === null` (a detached / not-yet-rendered document) would make the whole
+    // wait vacuously true. Same hole the `expect(activeElement).toBe(querySelector(...))` form had.
+    const element = target();
+    if (element !== null && document.activeElement === element) return;
+    await new Promise((resolve) => { requestAnimationFrame(() => { resolve(null); }); });
+  }
+  throw new Error(
+    `focus never reached ${expected}; document.activeElement is `
+    + describeFocus(document.activeElement),
+  );
+}
+
 /**
  * A page shaped like the real ones: `.main` with a trailing `[data-nc-panel]`
  * column, a `+` and a conversation row on that column, a page title to fall
@@ -199,8 +246,10 @@ describe('the drawer against a real rendering engine', () => {
     await untilGone();
 
     expect(getComputedStyle(plus()).visibility).toBe('visible');
-    expect(document.activeElement).toBe(opener());
-    expect(document.activeElement).not.toBe(document.body);
+    /* The `<body>` half of this test's own title is not a second assertion:
+       `untilFocused` is green for the opener and for nothing else, so a
+       document left on `<body>` fails here by timing out — and says so. */
+    await untilFocused(opener, 'the opener');
   });
 
   /* And the fallback still applies for real: an opener that left the document
@@ -217,7 +266,10 @@ describe('the drawer against a real rendering engine', () => {
     await click(drawer.querySelector<HTMLElement>('button[aria-label="Close conversation"]')!);
     await untilGone();
 
-    expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
+    await untilFocused(
+      () => document.querySelector('[data-nc-page-title]'),
+      'the page title',
+    );
   });
 
   /*
@@ -306,11 +358,14 @@ describe('the drawer against a real rendering engine', () => {
     await untilGone();
 
     /* And the wait paid for itself: the host is back, so the reader lands on
-       the control they left from rather than on the consolation prize. */
+       the control they left from rather than on the consolation prize. The two
+       outcomes this discriminates against are still discriminated against —
+       `untilFocused` ends green on `hiddenOpener` alone, so the page title and
+       `<body>` both fail it — and the old implementation's *early* fallback is
+       caught by the mid-retraction line above, which is the half of this test
+       a terminal read can never do. */
     expect(getComputedStyle(host).display).not.toBe('none');
-    expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement).not.toBe(pageTitle);
-    expect(document.activeElement).toBe(hiddenOpener);
+    await untilFocused(() => hiddenOpener, 'the display-hidden opener');
 
     sheet.remove();
     host.remove();

@@ -174,7 +174,9 @@ impl ProviderAdapter for ChildWaveAdapter {
         }
 
         let parent: Option<(String, String, Option<String>)> =
-            sqlx::query_as("SELECT cove_id, cwd, plugin_scope FROM waves WHERE id=?1")
+            // #1147 S1 — `waves.cwd` dropped by migration 0077; the child
+            // still inherits the parent's path here (S4 gives it its own).
+            sqlx::query_as("SELECT cove_id, workspace_path, plugin_scope FROM waves WHERE id=?1")
                 .bind(&payload.parent_wave_id)
                 .fetch_optional(&mut **tx)
                 .await?;
@@ -346,7 +348,7 @@ impl ProviderAdapter for ChildWaveAdapter {
             "spec_card_id": CardId::from(spec_card_id),
             "report_card_id": CardId::from(report_card_id),
             "seed": seed,
-            "cwd": child.cwd,
+            "cwd": child.workspace.path,
         });
         let mut output = TxOutput::new("wave", Some(child.id.to_string()), result.clone());
         output.data = result;
@@ -776,7 +778,7 @@ mod tests {
             Option<i64>,
         );
         let inherited: InheritedChildFields = sqlx::query_as(
-            "SELECT cwd,workflow_id,plugin_scope,workflow_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
+            "SELECT workspace_path,workflow_id,plugin_scope,workflow_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
              FROM waves WHERE id=?1",
         )
         .bind(child_id)

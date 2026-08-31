@@ -44,7 +44,17 @@ const UNKNOWN_TERMINAL = card({ id: 'card-term', kind: 'terminal', title: 'Termi
 const REPORT_CARD = card({ id: 'card-report', kind: 'wave-report', title: 'Report card', sort: 3, payload: { body: '' } });
 const VISIBLE_CARD = card({ id: 'card-surface', kind: 'panel-surface', title: 'Surface', sort: 4 });
 const ORDINARY_CODEX = card({ id: 'card-codex', kind: 'codex', title: 'Codex chat', sort: 5, payload: {} });
-const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_CODEX];
+/*
+ * The subject of the "unclaimed cards stay listed" assertion below. Every other
+ * fixture here now resolves — terminal, codex, spec, wave-report and the
+ * surface stub — so without this the assertion has nothing to be about.
+ *
+ * The kind is deliberately not a member of `BUILTIN_CARD_ORDER`: naming it e.g.
+ * `file-viewer` would make the test quietly stop testing the unknown branch the
+ * day that entry lands, with no signal.
+ */
+const UNCLAIMED_CARD = card({ id: 'card-unclaimed', kind: 'panel-unclaimed', title: 'Unclaimed thing', sort: 6 });
+const CARDS = [SPEC_CARD, UNKNOWN_TERMINAL, REPORT_CARD, VISIBLE_CARD, ORDINARY_CODEX, UNCLAIMED_CARD];
 
 /*
  * Terminal now owns a surface; this extra fixture still covers the unknown
@@ -142,15 +152,17 @@ describe('wave route CARDS panel', () => {
   it('[INV-CARD-226] keeps unclaimed cards, because an unlisted card is worse than an unrecognised one', async () => {
     setup();
     const labels = await inventoryLabels();
-    // Ordinary codex still has no adapter. Terminal now owns a surface, so it
-    // stays listed as a real card rather than an unknown diagnostic.
+    // `panel-unclaimed` is the subject: no registered entry claims that kind,
+    // so it resolves to nothing and must still be listed. Terminal and codex
+    // both own surfaces now, so they are listed as real cards instead.
+    expect(labels.some((label) => label.includes('Unclaimed thing'))).toBe(true);
     expect(labels.some((label) => label.includes('Codex chat'))).toBe(true);
     expect(labels.some((label) => label.includes('Terminal one'))).toBe(true);
   });
 
   it('[INV-CARD-226] renders exactly the surviving cards in the kernel wire order', async () => {
     setup();
-    expect(await inventoryLabels()).toEqual(['Terminal one', 'Surface', 'Codex chat']);
+    expect(await inventoryLabels()).toEqual(['Terminal one', 'Surface', 'Codex chat', 'Unclaimed thing']);
   });
 
   it('opens the card grid on the clicked terminal and can return', async () => {

@@ -82,12 +82,25 @@ export function parsePatchTarget(patch: string): string {
   return oldHeader;
 }
 
-export function parseVitestReport(json: string): { failedTestIds: string[]; infrastructureErrors: string[] } {
+export interface VitestReportSummary {
+  failedTestIds: string[];
+  infrastructureErrors: string[];
+  /**
+   * `assertionResults[].failureMessages` keyed by the same `fullName` used as the test id.
+   * Ids are not guaranteed unique across files (judgeMutation has a `duplicate-actual-red` code for
+   * exactly that), so colliding ids accumulate rather than overwrite — dropping one would hide the
+   * only copy of an error we went to the trouble of collecting.
+   */
+  failureMessagesByTestId: Record<string, string[]>;
+}
+
+export function parseVitestReport(json: string): VitestReportSummary {
   const report: unknown = JSON.parse(json);
   if (typeof report !== 'object' || report === null || !Array.isArray((report as { testResults?: unknown }).testResults)) {
     throw new Error('vitest JSON report has no testResults array');
   }
   const infrastructureErrors: string[] = [];
+  const failureMessagesByTestId: Record<string, string[]> = {};
   const reportFields = report as { unhandledErrors?: unknown; error?: unknown };
   if (Array.isArray(reportFields.unhandledErrors) && reportFields.unhandledErrors.length > 0) infrastructureErrors.push('global-unhandled-error');
   if (reportFields.error !== undefined && reportFields.error !== null) infrastructureErrors.push('global-reporter-error');
@@ -98,9 +111,14 @@ export function parseVitestReport(json: string): { failedTestIds: string[]; infr
     const typedFile = file as { assertionResults: unknown[]; status?: unknown; message?: unknown; name?: unknown };
     const failed = typedFile.assertionResults.flatMap((test) => {
       if (typeof test !== 'object' || test === null) throw new Error('vitest JSON assertion is not an object');
-      const { status, fullName } = test as { status?: unknown; fullName?: unknown };
+      const { status, fullName, failureMessages } = test as { status?: unknown; fullName?: unknown; failureMessages?: unknown };
       if (typeof status !== 'string' || typeof fullName !== 'string') throw new Error('vitest JSON assertion lacks status/fullName');
-      return status === 'failed' ? [fullName] : [];
+      if (status !== 'failed') return [];
+      const messages = Array.isArray(failureMessages)
+        ? failureMessages.map((message) => (typeof message === 'string' ? message : JSON.stringify(message) ?? String(message)))
+        : [];
+      (failureMessagesByTestId[fullName] ??= []).push(...messages);
+      return [fullName];
     });
     if (typedFile.status === 'failed' && failed.length === 0) {
       infrastructureErrors.push(typeof typedFile.name === 'string' ? typedFile.name : `testResults[${index}]`);
@@ -110,11 +128,311 @@ export function parseVitestReport(json: string): { failedTestIds: string[]; infr
     }
     return failed;
   }).sort();
-  return { failedTestIds, infrastructureErrors: [...new Set(infrastructureErrors)].sort() };
+  return { failedTestIds, infrastructureErrors: [...new Set(infrastructureErrors)].sort(), failureMessagesByTestId };
 }
 
 export function parseFailedTestIds(json: string): string[] {
   return parseVitestReport(json).failedTestIds;
+}
+
+/**
+ * Caps for the `failure_details` block run.mjs writes into the mutation report. That report is
+ * echoed to the CI log AND uploaded as an artifact, so an unbounded dump of every red test's stack
+ * is a real cost. EVERY cap is announced in the emitted value rather than applied silently: a
+ * quietly truncated error reads as the whole error, which is exactly the misdiagnosis this
+ * evidence exists to prevent (#1152).
+ *
+ * Five independent axes can each blow the block up on their own, so each gets its own bound:
+ *
+ *  - `MessageChars` — one stack/diff can be megabytes on a deep-equality assertion.
+ *  - `TestLimit` — a mutation that reds the whole suite has hundreds of unexpected ids.
+ *  - `MessagesPerTest` — `parseVitestReport` deliberately ACCUMULATES messages across colliding
+ *    `fullName`s (see VitestReportSummary), and a single test may also emit many on its own. Without
+ *    this cap the per-message char bound bounds nothing: N messages x the char cap is unbounded in N.
+ *    Measured before this cap existed: one test with 200 messages emitted 409 KB with `note: null`.
+ *  - `OmittedIdLimit` / `TestIdChars` — `omitted_test_ids` is the OVERFLOW list, so it grows exactly
+ *    when the block is already at its worst, and a vitest `fullName` is an unbounded concatenation
+ *    of describe titles.
+ */
+export const failureDetailMessageChars = 2000;
+export const failureDetailTestLimit = 5;
+export const failureDetailMessagesPerTest = 3;
+export const failureDetailOmittedIdLimit = 50;
+export const failureDetailTestIdChars = 200;
+
+export interface FailureDetailLimits {
+  tests: number;
+  messageChars: number;
+  messagesPerTest: number;
+  omittedIds: number;
+  testIdChars: number;
+}
+
+export const failureDetailLimits: Readonly<FailureDetailLimits> = Object.freeze({
+  tests: failureDetailTestLimit,
+  messageChars: failureDetailMessageChars,
+  messagesPerTest: failureDetailMessagesPerTest,
+  omittedIds: failureDetailOmittedIdLimit,
+  testIdChars: failureDetailTestIdChars,
+});
+
+/**
+ * The share of `messageChars` spent on the HEAD of a truncated message; the rest goes to the TAIL.
+ *
+ * Head-only truncation kept the wrong 2000 characters the first time this instrumentation caught the
+ * real flake (#1152, `public.test.tsx:85`). A vitest/TestingLibrary failure message is shaped
+ * "one line of verdict, then a giant dump, then the stack": the head is the verdict plus the first
+ * few boilerplate lines of the dump, and the discriminating detail — the END of the accessible-roles
+ * list, the stack frame that fired, the tail of a deep-equality diff — is at the far end. The
+ * captured 14,344-character message was cut to its first 2000 characters, all of which were sidebar
+ * roles, and the diagnosis could not be closed.
+ *
+ * 1/4 head : 3/4 tail. The head only has to carry the verdict line and enough of the opening to say
+ * WHICH assertion this is — ~110 characters for the TestingLibrary verdict, so 500 is already 4x
+ * what that costs and covers a multi-line `expected/received` preamble too. Everything else is more
+ * useful at the tail, where a dump's discriminating end and the stack live. A 50/50 split would
+ * spend 500 characters of budget on sidebar boilerplate to buy nothing.
+ *
+ * Total emitted size is unchanged: head + tail === limit, exactly the character count head-only
+ * truncation emitted, plus the (slightly longer) one-line notice. Same announce-the-cut discipline
+ * as everywhere else in this file — the notice sits BETWEEN the two halves so it is impossible to
+ * read the seam as contiguous text, and it names both halves and the original length.
+ *
+ * Known and accepted: the cut is in UTF-16 units, so a message of astral characters is up to 4x
+ * this many UTF-8 bytes and an odd cut leaves a lone surrogate (now possibly two, one per seam).
+ * `JSON.stringify` escapes that to `\udXXX` and it round-trips, so this is a size-honesty limit, not
+ * a correctness one — and vitest failure messages are assertion text and stack frames, which are
+ * ASCII in practice.
+ */
+export const failureDetailMessageHeadFraction = 0.25;
+
+export function truncateFailureMessage(message: string, limit: number = failureDetailMessageChars): string {
+  if (message.length <= limit) return message;
+  const budget = Math.max(0, limit);
+  const head = Math.floor(budget * failureDetailMessageHeadFraction);
+  const tail = budget - head;
+  // `message.length - tail` rather than `slice(-tail)`: at tail === 0 the negative form is `-0`,
+  // which slices from index 0 and would emit the WHOLE message on a zero budget. Pinned by
+  // runner.test.ts, 'emits no message content on a zero budget'.
+  // Not guarded, and unreachable today: a NaN `limit` would fall through the `<=` check, keep no head
+  // (`slice(0, NaN)` is '') and the WHOLE message as tail (`slice(NaN)` is `slice(0)`). The only
+  // caller merges over frozen defaults and run.mjs passes three arguments, so no NaN can arrive here.
+  return `${message.slice(0, head)}`
+    + `\n[truncated: kept ${head} head + ${tail} tail of ${message.length} characters]\n`
+    + `${message.slice(message.length - tail)}`;
+}
+
+/** Same announce-the-cut discipline as truncateFailureMessage, on one line because an id is one line. */
+export function truncateTestId(testId: string, limit: number = failureDetailTestIdChars): string {
+  if (testId.length <= limit) return testId;
+  return `${testId.slice(0, limit)}[truncated: kept ${limit} of ${testId.length} characters]`;
+}
+
+export interface FailureDetails {
+  tests: Array<{ test_id: string; messages: string[] }>;
+  omitted_test_ids: string[];
+  note: string | null;
+}
+
+/**
+ * Failure messages for the tests that went red WITHOUT being declared in `expected_red` — the
+ * over-red set. Expected reds are the mutation working as designed; their messages are noise that
+ * would bury the one unexplained failure. Ids are sorted so the block is stable across runs.
+ *
+ * The emitted block is bounded on every axis: at most `tests` entries, each with at most
+ * `messagesPerTest` messages of at most `messageChars` characters, plus at most `omittedIds` ids of
+ * at most `testIdChars` characters. Every cut that actually fired says so — inline for the message
+ * list, in `note` for the rest.
+ */
+export function unexpectedFailureDetails(
+  failedTestIds: readonly string[],
+  expectedRed: readonly string[],
+  failureMessagesByTestId: Readonly<Record<string, string[]>>,
+  limits: Partial<FailureDetailLimits> = {},
+): FailureDetails {
+  const bounds: FailureDetailLimits = { ...failureDetailLimits, ...limits };
+  const expected = new Set(expectedRed);
+  const unexpected = [...new Set(failedTestIds)].filter((testId) => !expected.has(testId)).sort();
+  const kept = unexpected.slice(0, Math.max(0, bounds.tests));
+  const omitted = unexpected.slice(kept.length);
+  let testsWithCappedMessages = 0;
+  const tests = kept.map((testId) => {
+    const messages = failureMessagesByTestId[testId] ?? [];
+    if (messages.length === 0) {
+      return { test_id: truncateTestId(testId, bounds.testIdChars), messages: ['[no failureMessages for this test in the vitest JSON report]'] };
+    }
+    const keptMessages = messages.slice(0, Math.max(0, bounds.messagesPerTest));
+    const rendered = keptMessages.map((message) => truncateFailureMessage(message, bounds.messageChars));
+    if (keptMessages.length < messages.length) {
+      testsWithCappedMessages += 1;
+      rendered.push(`[capped: kept ${keptMessages.length} of ${messages.length} failure messages for this test]`);
+    }
+    return { test_id: truncateTestId(testId, bounds.testIdChars), messages: rendered };
+  });
+  const keptOmittedIds = omitted.slice(0, Math.max(0, bounds.omittedIds));
+  const clauses: string[] = [];
+  if (omitted.length > 0) {
+    clauses.push(`capped at ${kept.length} of ${unexpected.length} unexpected-red tests; ${omitted.length} omitted (ids in omitted_test_ids)`);
+  }
+  if (keptOmittedIds.length < omitted.length) {
+    clauses.push(`omitted_test_ids itself capped at ${keptOmittedIds.length} of ${omitted.length} ids`);
+  }
+  if (testsWithCappedMessages > 0) {
+    clauses.push(`capped the failure messages of ${testsWithCappedMessages} of ${kept.length} reported test(s) at ${Math.max(0, bounds.messagesPerTest)} each`);
+  }
+  return {
+    tests,
+    omitted_test_ids: keptOmittedIds.map((testId) => truncateTestId(testId, bounds.testIdChars)),
+    note: clauses.length === 0 ? null : clauses.join('. '),
+  };
+}
+
+/**
+ * `failure_details` is NOT the only place a report record re-emits test ids, so capping it alone
+ * left the record as a whole unbounded — the exact goal the caps exist for (#1152):
+ *
+ *  - `actual_red` (run.mjs) is the raw `failedTestIds` list at full `fullName` length. A mutation
+ *    that reds the whole suite emits every one of them, and run.mjs both writes that JSON to the
+ *    artifact AND `console.log`s it into the CI log. At ~1000 reds x ~300-char names it is ~300 KB,
+ *    an order of magnitude more than the `failure_details` block.
+ *  - `verdict.errors[].test_ids` (judgeMutation) carries the `over-red` / `under-red` /
+ *    `duplicate-*` / `test-infrastructure-failed` sets, i.e. the same ids a second time.
+ *
+ * Nothing parses these lists: CI only uploads `mutation-report-<shard>.json` as an artifact and
+ * gates on job results (`.github/workflows/ci.yml` fe-mutation), and `mutationRunExitCode` reads
+ * only `verdict.ok`. They are read by humans, so the same rule as everywhere else applies: the cut
+ * is announced INSIDE the emitted list, because a silently truncated red set reads as the whole
+ * red set and misdiagnoses the run.
+ */
+export const reportTestIdLimit = 50;
+
+export function boundedTestIdList(
+  testIds: readonly string[],
+  limit: number = reportTestIdLimit,
+  idChars: number = failureDetailTestIdChars,
+): string[] {
+  const kept = testIds.slice(0, Math.max(0, limit)).map((testId) => truncateTestId(testId, idChars));
+  if (kept.length === testIds.length) return kept;
+  return [...kept, `[capped: kept ${kept.length} of ${testIds.length} test ids]`];
+}
+
+/**
+ * `test-infrastructure-failed` is the ONE code whose `test_ids` field does not hold test ids.
+ * `judgeMutation` puts `result.test_infrastructure_errors` there, i.e. diagnostic strings —
+ * `global-unhandled-error`, a failing test FILE's name, or `report-parse-failed: <the JSON parse
+ * error>` from run.mjs. Running those through `boundedTestIdList` cut them at 200 characters (an
+ * id budget, far too small for a parse error) and labelled the cut `kept N of M test ids`, which is
+ * simply false — on the exact diagnostic this evidence exists to preserve.
+ *
+ * So they get their own budget, spent across the WHOLE list rather than per entry: the list is one
+ * `global-*` marker plus one entry per broken test file, so the interesting case is "one long
+ * message", not "many long messages". A real `report-parse-failed` is a couple of hundred
+ * characters and therefore survives byte-for-byte, which is the point; the budget only exists so
+ * this axis cannot be the one that blows the record up, and it announces itself honestly when it
+ * bites.
+ *
+ * The budget is spent in BYTES OF EMITTED JSON, not in raw characters. Charging `diagnostic.length`
+ * was not a bound at all: each diagnostic is its own element of a pretty-printed array, so quotes,
+ * the comma, six spaces of indentation and every escape expansion were free. ~800 legitimate short
+ * filenames cost only ~8000 raw characters but 12,851 bytes on the wire, and a diagnostic made of
+ * control characters expands up to 6x under `JSON.stringify`. Charging the encoded size plus the
+ * fixed per-element overhead closes all three at once, and it also gives an EMPTY diagnostic a
+ * non-zero price (10 bytes), so a list of empty strings is bounded too rather than free forever.
+ */
+export const infrastructureDiagnosticBytes = 8000;
+
+/**
+ * `verdict.errors[].test_ids[i]` sits six levels deep in `JSON.stringify(record, null, 2)`: six
+ * spaces of indentation, then the quoted string, then a comma and a newline. `JSON.stringify` of the
+ * string itself covers the quotes and the escaping, so this is everything else.
+ */
+const diagnosticEntryOverhead = 8;
+
+const diagnosticEntryBytes = (diagnostic: string): number =>
+  Buffer.byteLength(JSON.stringify(diagnostic)) + diagnosticEntryOverhead;
+
+/**
+ * The longest head of `diagnostic` whose announced-and-encoded entry still fits in `room` bytes, or
+ * `null` when not even the announcement fits. The cost is monotone in the kept character count (a
+ * longer head never encodes smaller, and the count in the notice only gains digits), so a binary
+ * search finds the exact boundary instead of guessing at the escape expansion.
+ */
+function truncatedDiagnosticWithinBudget(diagnostic: string, room: number): string | null {
+  const render = (chars: number): string =>
+    `${diagnostic.slice(0, chars)}\n[truncated: kept ${chars} of ${diagnostic.length} characters]`;
+  let low = 0;
+  let high = diagnostic.length;
+  let best = -1;
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    if (diagnosticEntryBytes(render(middle)) <= room) {
+      best = middle;
+      low = middle + 1;
+    } else {
+      high = middle - 1;
+    }
+  }
+  return best < 0 ? null : render(best);
+}
+
+export function boundedInfrastructureDiagnostics(
+  diagnostics: readonly string[],
+  budget: number = infrastructureDiagnosticBytes,
+): string[] {
+  const kept: string[] = [];
+  let spent = 0;
+  let reached = 0;
+  for (const diagnostic of diagnostics) {
+    const room = Math.max(0, budget) - spent;
+    const cost = diagnosticEntryBytes(diagnostic);
+    if (cost <= room) {
+      kept.push(diagnostic);
+      spent += cost;
+      reached += 1;
+      continue;
+    }
+    // A single diagnostic bigger than the whole budget still gets its head emitted, announced with
+    // a CHARACTER count — the honest unit for a message — instead of an id count.
+    const head = truncatedDiagnosticWithinBudget(diagnostic, room);
+    if (head !== null) {
+      kept.push(head);
+      reached += 1;
+    }
+    break;
+  }
+  if (reached < diagnostics.length) {
+    // Deliberately unbudgeted, exactly like `boundedTestIdList`'s trailing element: announcing the
+    // cut is worth its ~80 constant bytes, and a cut that hides itself is the bug this file forbids.
+    kept.push(`[capped: kept ${reached} of ${diagnostics.length} infrastructure diagnostics; `
+      + `the ${Math.max(0, budget)}-byte budget ran out]`);
+  }
+  return kept;
+}
+
+/**
+ * `ok` and the error CODES are untouched: they are what `verdictExitCode` / `mutationRunExitCode`
+ * judge on, so capping can never change whether a run passes — only how much of the evidence prints.
+ *
+ * `limit` and `idChars` are DELIBERATELY not forwarded to the `test-infrastructure-failed` branch.
+ * They are an id-count and an id-length in a list that holds no ids, which is the exact category
+ * error this split was made to end; that branch is budgeted in bytes by
+ * `infrastructureDiagnosticBytes` instead. The two parameters exist only so tests can shrink the id
+ * caps, and no caller passes them in production, so there is nothing to thread through.
+ */
+export function boundedVerdict(
+  verdict: MutationVerdict,
+  limit: number = reportTestIdLimit,
+  idChars: number = failureDetailTestIdChars,
+): MutationVerdict {
+  return {
+    ok: verdict.ok,
+    errors: verdict.errors.map(({ code, test_ids }) => ({
+      code,
+      test_ids: code === 'test-infrastructure-failed'
+        ? boundedInfrastructureDiagnostics(test_ids)
+        : boundedTestIdList(test_ids, limit, idChars),
+    })),
+  };
 }
 
 /**

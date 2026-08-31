@@ -699,6 +699,81 @@ describe('entity sub-schemas', () => {
     expect(waveSchema.parse(w).lifecycle).toBe('draft');
   });
 
+  it('waveSchema hydrates + preserves `workspace` (#1147 S1)', () => {
+    // Two halves, and the second is the one that has burned this repo before:
+    // an undeclared field is *stripped* by zod, so a server that sends
+    // `workspace` and a client that never declared it look identical to a
+    // pre-#1147 replay payload. The "missing key" case pins the default; the
+    // "present key" case pins that the field actually survives parsing.
+    const base = {
+      id: 'w1',
+      cove_id: 'c1',
+      title: 't',
+      sort: 0,
+      archived_at: null,
+      created_at: 1,
+      updated_at: 2,
+    };
+    expect(waveSchema.parse(base).workspace).toEqual({
+      kind: 'attached',
+      path: '',
+      frozen_at: null,
+    });
+    const live = waveSchema.parse({
+      ...base,
+      cwd: '/srv/neige-workspaces/c1/w1',
+      workspace: {
+        kind: 'managed',
+        path: '/srv/neige-workspaces/c1/w1',
+        frozen_at: 4242,
+      },
+    });
+    expect(live.workspace).toEqual({
+      kind: 'managed',
+      path: '/srv/neige-workspaces/c1/w1',
+      frozen_at: 4242,
+    });
+    // NB: there is deliberately no `live.workspace.path === live.cwd`
+    // assertion here. Both values come from this fixture's own literal and
+    // zod has no cross-field constraint, so it would be true no matter what
+    // the schema said. The projection invariant is a *server* property and is
+    // asserted where it can fail — `wave_workspace_migration_tests` in
+    // calm-truth, against a real row.
+  });
+
+  it('waveSchema rejects a present-but-incomplete `workspace` (#1147 S1)', () => {
+    // Absent key ⇒ default (old payloads keep working). Present key ⇒ every
+    // field required, because a partial object means the server is wrong and
+    // silently defaulting it would hide a regression or a half-rolled deploy.
+    // Mirrors serde: none of the three fields has `#[serde(default)]`.
+    const base = {
+      id: 'w1',
+      cove_id: 'c1',
+      title: 't',
+      sort: 0,
+      archived_at: null,
+      created_at: 1,
+      updated_at: 2,
+    };
+    for (const bad of [
+      {},
+      { kind: 'managed' },
+      { path: '/p', frozen_at: null },
+      { kind: 'managed', path: '/p' },
+      { kind: 'bogus', path: '/p', frozen_at: null },
+    ]) {
+      expect(waveSchema.safeParse({ ...base, workspace: bad }).success).toBe(
+        false,
+      );
+    }
+    expect(
+      waveSchema.safeParse({
+        ...base,
+        workspace: { kind: 'managed', path: '/p', frozen_at: null },
+      }).success,
+    ).toBe(true);
+  });
+
   it('waveSchema round-trips every lifecycle name', () => {
     const all = [
       'draft',

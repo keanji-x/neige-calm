@@ -665,9 +665,12 @@ impl ProviderAdapter for TaskVerifyAdapter {
         let gate: GateSpec = serde_json::from_str(gate_json)
             .map_err(|e| CalmError::Internal(format!("task {} gate_json: {e}", task.id)))?;
 
-        // §6.4 cwd chain: gate.cwd → task.cwd → waves.cwd.
+        // §6.4 cwd chain: gate.cwd → task.cwd → the wave's workspace path.
+        // #1147 S1 — reads `workspace_path`; `waves.cwd` was dropped by
+        // migration 0077 (this is a raw SELECT, so it would have failed at
+        // RUNTIME, not compile time, had it been missed).
         let wave: Option<(String, String)> =
-            sqlx::query_as("SELECT cwd, cove_id FROM waves WHERE id = ?1")
+            sqlx::query_as("SELECT workspace_path, cove_id FROM waves WHERE id = ?1")
                 .bind(&task.wave_id)
                 .fetch_optional(&mut **tx)
                 .await?;

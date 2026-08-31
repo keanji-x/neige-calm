@@ -300,12 +300,13 @@ fn dispatcher_filter_matches_push_kinds() {
                 archived_at: None,
                 pinned_at: None,
                 lifecycle: crate::model::WaveLifecycle::Working,
-                cwd: String::new(),
+                cwd_wire_alias: String::new(),
                 workflow_id: None,
                 plugin_scope: None,
                 purpose: None,
                 workflow_input: None,
                 terminal_at: None,
+                workspace: Default::default(),
                 created_at: 1,
                 updated_at: 1,
             },
@@ -392,6 +393,22 @@ async fn gated_self_report_predicate() {
     let mut gated_spawn_failed = mk_task("gated-spawn-failed", gate_json());
     gated_spawn_failed.status = crate::model::TaskStatus::Failed;
     gated_spawn_failed.status_detail = Some("spawn-failed".into());
+    // #1147 ① — production now writes the classifier PLUS a reason
+    // tail; the pre-gate classification must survive it.
+    let mut gated_spawn_failed_reason = mk_task("gated-spawn-failed-reason", gate_json());
+    gated_spawn_failed_reason.status = crate::model::TaskStatus::Failed;
+    gated_spawn_failed_reason.status_detail = Some(crate::db::sqlite::status_detail_with_reason(
+        "spawn-failed",
+        "wave w cwd /home/kenji is not a git repository: fatal: not a git repository",
+    ));
+    // ...and a gate detail carrying a reason tail stays suppressed:
+    // the vocabulary lives in the class, not anywhere in the string.
+    let mut gated_gate_failed_reason = mk_task("gated-gate-failed-reason", gate_json());
+    gated_gate_failed_reason.status = crate::model::TaskStatus::Failed;
+    gated_gate_failed_reason.status_detail = Some(crate::db::sqlite::status_detail_with_reason(
+        "gate-red",
+        "step `worker-reported` exited 1",
+    ));
     let mut gated_worker_timeout = mk_task("gated-worker-timeout", gate_json());
     gated_worker_timeout.status = crate::model::TaskStatus::Failed;
     gated_worker_timeout.status_detail = Some("worker-timeout".into());
@@ -414,6 +431,8 @@ async fn gated_self_report_predicate() {
                 &ungated,
                 &gated_worker_failed,
                 &gated_spawn_failed,
+                &gated_spawn_failed_reason,
+                &gated_gate_failed_reason,
                 &gated_worker_timeout,
                 &gated_gate_failed,
                 &gated_done,
@@ -464,6 +483,15 @@ async fn gated_self_report_predicate() {
     assert!(
         !is_gated_self_report(&repo, &failed("gated-spawn-failed")).await,
         "a spawn failure pushes as today (no gate runs on failure)"
+    );
+    assert!(
+        !is_gated_self_report(&repo, &failed("gated-spawn-failed-reason")).await,
+        "#1147 ①: the reason tail must not hide the `spawn-failed` classifier"
+    );
+    assert!(
+        is_gated_self_report(&repo, &failed("gated-gate-failed-reason")).await,
+        "#1147 ①: a pre-gate word inside a `gate-*` reason tail must not \
+         reclassify the row as a pre-gate failure"
     );
     assert!(
         !is_gated_self_report(&repo, &failed("gated-worker-timeout")).await,
@@ -1689,12 +1717,13 @@ fn spec_push_predicate_and_observation_mapping_agree() {
                     archived_at: None,
                     pinned_at: None,
                     lifecycle: crate::model::WaveLifecycle::Working,
-                    cwd: String::new(),
+                    cwd_wire_alias: String::new(),
                     workflow_id: None,
                     plugin_scope: None,
                     purpose: None,
                     workflow_input: None,
                     terminal_at: None,
+                    workspace: Default::default(),
                     created_at: 1,
                     updated_at: 1,
                 },

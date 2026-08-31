@@ -24,7 +24,46 @@
 // and a document that silently dropped it would be lying about its own past.
 
 import type { TaskBlockPayload } from '../../../../../core/domain/report.ts';
+import { Icon } from '../../../ui/icon/public.tsx';
 import styles from './task.module.css';
+
+/*
+ * ── The block folds ───────────────────────────────────────────────────────
+ *
+ * A report that declares a dozen tasks spends most of its length on them, and
+ * a reader scanning for the prose between them has to scroll past every
+ * `Done when` and every gate command to find it. So the block is a disclosure:
+ * the head — `Task`, the key, the kind, and whether it is ready — is the part
+ * that answers "which task is this and does it need me", and it is the part
+ * that stays.
+ *
+ * `<details>`/`<summary>`, not a `useState` and a button. The element already
+ * is this control: it opens on Enter *and* Space, exposes `aria-expanded` off
+ * its own open state with no attribute to keep in sync, is findable by the
+ * browser's own in-page search (Chromium expands a closed `<details>` to reveal
+ * a match, which a `hidden` div would not), and prints expanded. Every one of
+ * those is a thing a hand-rolled version has to remember and this one cannot
+ * forget.
+ *
+ * **Closed by default — and this reversed once, deliberately.** The first
+ * round of this shipped `open`, on the argument that a report is an account and
+ * that defaulting to folded would hide, from a reader who never asked, content
+ * the document chose to state. That argument was right for the shape it was
+ * written against: each task was a fold sitting *in the middle of the prose*,
+ * so a closed one was a hole in the document's own argument.
+ *
+ * The shape changed. `features/report/document` now lifts every task out of the
+ * flow into one collapsed `Reference` section at the end, so what a closed row
+ * hides is no longer part of the argument — it is the machinery behind it, and
+ * the reader who opened the appendix asked for a list, not for eight worker
+ * prompts. Left open, opening `Reference` would have dumped the ~7400
+ * characters this whole change exists to get out of the reading column.
+ *
+ * So the row is the one-line reference and the block is what it points at.
+ * State is per-block and lives in the DOM — nothing is persisted, so a reload
+ * is a fresh read of the document rather than a replay of how somebody last
+ * folded it.
+ */
 
 const DECLARED_BY: Readonly<Record<'spec' | 'user', string>> =
   Object.freeze({ spec: 'Spec agent', user: 'You' });
@@ -38,17 +77,30 @@ function isWithdrawn(payload: TaskBlockPayload): payload is WithdrawnTask {
   return 'tombstoned_by' in payload;
 }
 
-export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
+/*
+ * `blockId` is the name of last resort. `key` is `z.string()` on the wire and
+ * the kernel does not require it to be non-empty, so an empty one leaves this
+ * row reading `Task` and nothing else — and the panel's TASKS inventory, which
+ * applies the same fallback, would then send a reader looking for `b_bf88` to a
+ * row that does not say `b_bf88` anywhere. One block, two names, is the defect
+ * this whole change has now produced twice; the fallback belongs wherever the
+ * name is printed.
+ */
+export function ReportTaskBlock({ payload, blockId }: {
+  payload: TaskBlockPayload;
+  blockId: string;
+}) {
   if (isWithdrawn(payload)) {
     const reason = payload.tombstone.reason;
     return (
-      <div className={styles.task} data-nc-task-state="withdrawn">
-        <div className={styles.head}>
+      <details className={styles.task} data-nc-task-state="withdrawn">
+        <summary className={styles.head}>
+          <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
           <span className={styles.kindLabel}>Task</span>
-          <span className={styles.key}>{payload.key}</span>
+          <span className={styles.key}>{payload.key === '' ? blockId : payload.key}</span>
           <span className={styles.spacer} />
           <span className={styles.withdrawn}>Withdrawn</span>
-        </div>
+        </summary>
         {reason !== null && reason !== undefined && reason !== '' && (
           <p className={styles.goal}>{reason}</p>
         )}
@@ -58,21 +110,27 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
           <dt className={styles.label}>Withdrawn by</dt>
           <dd className={styles.value}>{DECLARED_BY[payload.tombstoned_by]}</dd>
         </dl>
-      </div>
+      </details>
     );
   }
 
   const live: LiveTask = payload;
   return (
-    <div className={styles.task} data-nc-task-state={live.ready ? 'ready' : 'not-ready'}>
-      <div className={styles.head}>
+    <details className={styles.task} data-nc-task-state={live.ready ? 'ready' : 'not-ready'}>
+      <summary className={styles.head}>
+        {/* The disclosure's own glyph. `<summary>` draws a marker only while it
+            is `display: list-item`, and this row is a flex box, so the platform
+            triangle is gone and this is what replaces it — the rail's chevron,
+            rotated by the same rule, because a disclosure is a disclosure
+            wherever it appears. */}
+        <span className={styles.marker}><Icon name="chevron-right" size="sm" /></span>
         {/* The block says what it is. Every other kind announces itself by its
             own shape — a table is a table — but a task is a paragraph of
             structured text, and without the word it reads as prose that has
             gone strange. In sentence case: the uppercase version of this label
             was the chrome vocabulary leaking into the document. */}
         <span className={styles.kindLabel}>Task</span>
-        <span className={styles.key}>{live.key}</span>
+        <span className={styles.key}>{live.key === '' ? blockId : live.key}</span>
         <span className={styles.spacer} />
         <span className={styles.kind}>
           {live.kind}{live.spawn === 'sub-wave' ? ' · sub-wave' : ''}
@@ -83,7 +141,7 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
         <span className={live.ready ? styles.ready : styles.notReady}>
           {live.ready ? 'Ready' : 'Not ready'}
         </span>
-      </div>
+      </summary>
 
       <p className={styles.goal}>{live.goal}</p>
 
@@ -118,6 +176,6 @@ export function ReportTaskBlock({ payload }: { payload: TaskBlockPayload }) {
         <dt className={styles.label}>Declared by</dt>
         <dd className={styles.value}>{DECLARED_BY[live.declared_by]}</dd>
       </dl>
-    </div>
+    </details>
   );
 }

@@ -58,6 +58,7 @@ mod task;
 mod task_projection;
 mod wave;
 mod wave_tree;
+mod wave_workspace;
 
 pub use card::{
     card_body_crdt_get_tx, card_create_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
@@ -103,12 +104,13 @@ pub use session_row::{
     session_state_transition_tx, worker_session_status_transition_allowed,
 };
 pub use task::{
-    SuccessReportFlip, TaskReporter, require_wave_exists_tx, task_apply_gate_result_tx,
-    task_cancel_tx, task_claim_pending_tx, task_complete_from_worker_tx, task_fail_from_worker_tx,
-    task_gate_attempt_bump_tx, task_get_tx, task_mark_running_tx, task_mark_sub_wave_running_tx,
-    task_report_success_from_worker_tx, task_stamp_missing_running_deadline_tx,
-    task_start_verifying_from_worker_tx, task_update_pending_tx, tasks_by_wave_tx,
-    wave_lifecycle_and_budget_tx, wave_require_task_gates_tx, worker_op_targets_card_tx,
+    SuccessReportFlip, TaskReporter, require_wave_exists_tx, status_detail_class,
+    status_detail_with_reason, task_apply_gate_result_tx, task_cancel_tx, task_claim_pending_tx,
+    task_complete_from_worker_tx, task_fail_from_worker_tx, task_gate_attempt_bump_tx, task_get_tx,
+    task_mark_running_tx, task_mark_sub_wave_running_tx, task_report_success_from_worker_tx,
+    task_stamp_missing_running_deadline_tx, task_start_verifying_from_worker_tx,
+    task_update_pending_tx, tasks_by_wave_tx, wave_lifecycle_and_budget_tx,
+    wave_require_task_gates_tx, worker_op_targets_card_tx,
 };
 pub use task_projection::{
     BlockVerdict, PROJECTION_DRIFT_TASK_FIELDS, TaskProjectionOutcome, WithdrawalEdge,
@@ -123,6 +125,7 @@ pub use wave_tree::{
     deterministic_share, wave_tree_budget, wave_tree_member_count, wave_tree_spec_inventory,
     wave_tree_spec_inventory_by_member, wave_tree_term,
 };
+pub use wave_workspace::wave_workspace_write_tx;
 
 use infra::check_no_unknown_future_migrations;
 
@@ -516,6 +519,9 @@ mod wave_workflow_input_tests;
 
 #[cfg(test)]
 mod wave_plugin_scope_migration_tests;
+
+#[cfg(test)]
+mod wave_workspace_migration_tests;
 
 #[cfg(test)]
 mod pool_tx_repair_tests;

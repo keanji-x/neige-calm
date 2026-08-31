@@ -56,9 +56,15 @@ async fn plugin_scope_backfill_skips_malformed_workflows_and_fail_closes_orphans
         ("w-orphan", Some("no-such-workflow")),
         ("w-unbound", None),
     ] {
+        // #1147 S1 — `cwd` dropped from the column list (migration-0018
+        // `DEFAULT ''` covers it). This fixture runs against a schema stopped
+        // at 0075, i.e. before the workspace columns exist, so it cannot go
+        // through `wave_workspace_write_tx`; not naming `cwd` at all keeps it
+        // consistent-by-construction instead of exempt. The plugin_scope
+        // backfill under test never reads the workspace.
         sqlx::query(
-            "INSERT INTO waves (id, cove_id, title, sort, lifecycle, cwd, workflow_id, created_at, updated_at)
-             VALUES (?1, 'cove-1', 't', 0, 'draft', '/', ?2, 1, 1)",
+            "INSERT INTO waves (id, cove_id, title, sort, lifecycle, workflow_id, created_at, updated_at)
+             VALUES (?1, 'cove-1', 't', 0, 'draft', ?2, 1, 1)",
         )
         .bind(id)
         .bind(workflow_id)

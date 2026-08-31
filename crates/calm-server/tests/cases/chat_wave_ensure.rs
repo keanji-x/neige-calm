@@ -229,7 +229,12 @@ async fn chat_wave_unique_index_and_error_matcher_are_pinned() {
     let b = boot().await;
     let insert = |id: &'static str| {
         sqlx::query(
-            "INSERT INTO waves (id, cove_id, title, sort, lifecycle, cwd, purpose, created_at, updated_at) VALUES (?1, ?2, 'chat', 1, 'draft', '/tmp', 'cove-chat', 1, 1)",
+            // #1147 S1 — `cwd` dropped from the column list. Seeding it here
+            // without the matching `workspace_path` produced a row production
+            // cannot produce (design D1 writes both from one value); this test
+            // is about the `purpose='cove-chat'` unique index and never reads
+            // either column, so the honest fix is to name neither.
+            "INSERT INTO waves (id, cove_id, title, sort, lifecycle, purpose, created_at, updated_at) VALUES (?1, ?2, 'chat', 1, 'draft', 'cove-chat', 1, 1)",
         )
         .bind(id)
         .bind(&b.cove_id)

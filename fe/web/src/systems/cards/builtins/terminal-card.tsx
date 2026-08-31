@@ -12,9 +12,10 @@ export function TerminalCardView({ card, host, fallbackTitle = 'terminal' }: {
   card: { readonly id: string; readonly title: string | null; readonly terminalId: string | null };
   host: CardHostCapabilities;
   /**
-   * Head label when the kernel row carries no title. Claude worker cards share
-   * this renderer (they are a PTY too) and must not announce themselves as
-   * "terminal"; `LetterAvatar` also colours the avatar off this string.
+   * Head label when the kernel row carries no title. Claude and codex worker
+   * cards share this renderer (they are PTYs too) and must not announce
+   * themselves as "terminal"; `LetterAvatar` also colours the avatar off this
+   * string.
    */
   fallbackTitle?: string;
 }) {

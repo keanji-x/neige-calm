@@ -122,6 +122,19 @@ export const waveFsCardsIndexSchema = z.array(waveFsCardMetaSchema);
 export const waveFsHookEventsSchema = z.array(waveFsHookEventSchema);
 export const waveFsRunsIndexSchema = z.array(waveFsRunIndexEntrySchema);
 export const cardRuntimeSchema = z.union([cardRuntimeViewSchema, z.null()]);
+/**
+ * #1147 S1 — `Wave.workspace`. The `wave.json` snapshot schema is `.strict()`,
+ * so an undeclared key here does not get stripped, it throws: the viewer would
+ * stop rendering every wave snapshot written after the field landed.
+ */
+export const waveFsWaveWorkspaceSchema = z
+  .object({
+    kind: z.enum(['managed', 'attached']),
+    path: z.string(),
+    frozen_at: z.number().nullable(),
+  })
+  .strict();
+
 export const waveFsWaveSchema = z.object({
   id: z.string(),
   cove_id: z.string(),
@@ -141,6 +154,16 @@ export const waveFsWaveSchema = z.object({
    */
   workflow_input: z.unknown().default(null),
   terminal_at: z.number().nullable(),
+  /**
+   * Defaulted so `wave.json` snapshots written before #1147 keep parsing —
+   * mirrors `#[serde(default)]` on `Wave.workspace` and the DB defaults in
+   * migration 0077.
+   */
+  workspace: waveFsWaveWorkspaceSchema.default({
+    kind: 'attached',
+    path: '',
+    frozen_at: null,
+  }),
   created_at: z.number(),
   updated_at: z.number(),
 }).strict();
