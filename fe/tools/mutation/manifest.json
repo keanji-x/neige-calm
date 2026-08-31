@@ -127,6 +127,7 @@
       "uses a layout engine for rendered element geometry",
       "vitest project partition assigns representative path tools/probe.browser.test.ts exactly once",
       "the a11y failure report (#1161) announces its own truncation instead of silently dropping subtrees",
+      "the a11y failure report (#1161) collapses whitespace in class names so the report stays strippable",
       "the a11y failure report (#1161) counts a hidden element that is itself the queryable one",
       "the a11y failure report (#1161) counts an implicit role as queryable, not as decoration",
       "the a11y failure report (#1161) does not call an element hidden when it overrides visibility back to visible",
@@ -144,6 +145,7 @@
       "the a11y failure report (#1161) names aria-hidden as the reason a present element is unqueryable",
       "the a11y failure report (#1161) names body itself when body carries a hiding attribute",
       "the a11y failure report (#1161) names body itself when the whole page is hidden",
+      "the a11y failure report (#1161) names the documentElement when the hiding attribute is on <html>",
       "the a11y failure report (#1161) names the outermost hidden ancestor once, not every element under it",
       "the a11y failure report (#1161) reports inert subtrees even though Testing Library does not treat them as hidden",
       "the a11y failure report (#1161) returns the original error untouched when its message cannot be written"

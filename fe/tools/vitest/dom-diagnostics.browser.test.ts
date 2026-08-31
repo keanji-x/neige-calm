@@ -231,6 +231,43 @@ describe('the a11y failure report (#1161)', () => {
   });
 
   /*
+   * `<html>`, the third and last root to be found missing. The scan is rooted at
+   * the document precisely so this needed no third special case — if it had
+   * been patched like the previous two, the next ancestor would have been a
+   * fourth bug.
+   */
+  it('names the documentElement when the hiding attribute is on <html>', () => {
+    mount('<button>Save</button>');
+    document.documentElement.setAttribute('aria-hidden', 'true');
+    try {
+      expect(reportOf(failureMessage(missing))).toContain('<html> — aria-hidden');
+    } finally {
+      document.documentElement.removeAttribute('aria-hidden');
+    }
+  });
+
+  /*
+   * A class value may legally contain a newline. The report's own lines have to
+   * stay single-line, because `REPORT_TAIL` recognises a previous report by its
+   * indented shape — one stray newline made it unmatchable, so the timeout
+   * re-wrap appended a second report and stranded the first mid-message.
+   */
+  it('collapses whitespace in class names so the report stays strippable', async () => {
+    const host = mount('<div><button>Save</button></div>');
+    host.firstElementChild?.setAttribute('aria-hidden', 'true');
+    host.firstElementChild?.setAttribute('class', 'a\nb');
+    let message = '';
+    try {
+      await screen.findByRole('button', { name: 'Save' }, { timeout: 60, interval: 20 });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(message).toContain('<div class="a b"> — aria-hidden');
+    expect(message.split(`${MARKER} document.body children`).length - 1).toBe(1);
+  });
+
+  /*
    * A message may legitimately *contain* the report's opening text, because a
    * query's own search string is printed back in `Unable to find an element
    * with the text: …`. Cutting at the first occurrence deleted everything after

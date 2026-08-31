@@ -97,7 +97,11 @@ if (typeof document !== 'undefined') {
 
   const identify = (element: Element): string => {
     const tag = element.tagName.toLowerCase();
-    const raw = element.getAttribute('class') ?? '';
+    // Collapsed, because a class value may legally contain a newline and the
+    // report's lines must stay single-line: `REPORT_TAIL` recognises a previous
+    // report by its indented shape, and one stray newline made it unmatchable,
+    // so a re-wrap appended a second report and stranded the first mid-message.
+    const raw = (element.getAttribute('class') ?? '').replace(/\s+/g, ' ').trim();
     if (raw === '') return `<${tag}>`;
     const shown = raw.length > CLASS_CHARS ? `${raw.slice(0, CLASS_CHARS)}…(+${raw.length - CLASS_CHARS} chars)` : raw;
     return `<${tag} class="${shown}">`;
@@ -217,7 +221,8 @@ if (typeof document !== 'undefined') {
     // has the real `ownerDocument.body`, so the inventory is the page's either
     // way. The caller turns any throw from here into a stated "unavailable"
     // rather than losing the underlying failure.
-    const { body } = container.ownerDocument;
+    const ownerDocument = container.ownerDocument;
+    const { body } = ownerDocument;
     const children = Array.from(body.children);
 
     /*
@@ -237,12 +242,19 @@ if (typeof document !== 'undefined') {
     // "none": the report denying the very thing it was asked about.
     const holdsQueryable = (element: Element): boolean =>
       element.matches(MEANINGFUL) || element.querySelector(MEANINGFUL) !== null;
-    // `querySelectorAll` cannot return the element it is called on, so an
-    // `aria-hidden` or `inert` **body** was invisible to this scan exactly as a
-    // `display:none` body was invisible to the CSS one. Same gap, other half.
-    const attributeRoots = Array.from(body.querySelectorAll(HIDING_ATTRIBUTES));
-    if (body.matches(HIDING_ATTRIBUTES)) attributeRoots.unshift(body);
-    const byAttribute = attributeRoots.filter(holdsQueryable);
+    /*
+     * Scanned from the **document**, not from `body`.
+     *
+     * `querySelectorAll` never returns the node it is called on, so scanning
+     * `body` silently excluded every ancestor of the content. That was found
+     * three times as three separate bugs — a `display:none` body, then an
+     * `aria-hidden` body, then an `aria-hidden` `<html>` — and patched twice as
+     * special cases before the shape of it was clear. Rooting the query at the
+     * document covers `<html>`, `<body>` and everything below in one selector
+     * and needs no special case at all, which is why the previous
+     * `body.matches(…)` line is gone rather than joined by a sibling.
+     */
+    const byAttribute = Array.from(ownerDocument.querySelectorAll(HIDING_ATTRIBUTES)).filter(holdsQueryable);
     const { roots, examined, total } = cssHiddenRoots(body);
     // A CSS-hidden root that also carries a hiding attribute is one subtree,
     // not two; the attribute list already names it.
@@ -379,7 +391,8 @@ if (typeof document !== 'undefined') {
         } catch {
           described = 'a cause that could not be converted to a string';
         }
-        append(error, `${MARKER} unavailable: ${described}`);
+        // Single-line for the same reason `identify` collapses whitespace.
+        append(error, `${MARKER} unavailable: ${described.replace(/\s+/g, ' ')}`);
       }
       return error;
     };
