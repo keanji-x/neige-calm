@@ -155,6 +155,162 @@ async fn outline_wave_cap_is_reported_and_exact() {
     assert_eq!(value["truncated"]["waves"], 1);
 }
 
+/// A report that carries its own maintenance contract: one leading HTML
+/// comment block (multi-line, spanning blank lines — a CommonMark HTML block of
+/// type 2 does not end at one) plus four H1 sections. Built by hand on purpose:
+/// in this slice `WaveReportPayload::initial()` is still the one-line
+/// placeholder, so depending on it would measure nothing (#1185 S1).
+const CONTRACT: &str = "<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）\n\
+    \n\
+    这份报告自带的结构就是规则：维护它，不要重写它。\n\
+    \n\
+    写作方式：散文正文控制在 1000 字以内，写产出，不写过程。\n\
+    -->\n\n";
+
+fn contract_body() -> String {
+    format!(
+        "{CONTRACT}# 概要\n\n本轮结论。\n\n# 待你定\n\n等你拍板的事。\n\n\
+         # 已完成\n\n已成事实。\n\n# 决策\n\n定了的事。\n"
+    )
+}
+
+#[tokio::test]
+async fn outline_gives_a_contract_block_an_empty_heading_but_keeps_its_id() {
+    // #1185 §5.8 — the contract renders as nothing, so it may not become a
+    // block title; but the entry stays, because this outline is the only
+    // source of block ids for deep links.
+    let boot = boot().await;
+    let wave = add_wave(&boot, boot.cove_id.as_str(), "Carrier", contract_body()).await;
+
+    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let entry = value["waves"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|candidate| candidate["id"] == wave.id.as_str())
+        .unwrap();
+    let blocks = entry["blocks"].as_array().unwrap();
+    assert_eq!(
+        blocks.len(),
+        5,
+        "contract block + four sections: {blocks:#?}"
+    );
+    assert_eq!(blocks[0]["heading"], "");
+    assert!(blocks[0]["id"].as_str().unwrap().starts_with("b_"));
+    assert_eq!(blocks[0]["kind"], "prose");
+    assert_eq!(blocks[1]["heading"], "概要");
+    assert_eq!(blocks[4]["heading"], "决策");
+    // Nothing of the contract survives anywhere in the response.
+    let serialized = serde_json::to_string(&value).unwrap();
+    assert!(!serialized.contains("报告维护契约"));
+    assert!(!serialized.contains("散文正文"));
+}
+
+#[tokio::test]
+async fn outline_of_a_cove_full_of_contract_bearing_reports_has_headroom_under_the_caps() {
+    /*
+     * What this measures, exactly: a cove at the realistic ceiling — 51 waves,
+     * every one carrying the maintenance contract plus four sections — still
+     * fits the outline response comfortably, and the only degradation is the
+     * wave cap, reported.
+     *
+     * What it does NOT measure, so nobody reads it as coverage it lacks: the
+     * `MAX_RESPONSE_BYTES` truncation branch and the `MAX_BLOCKS_PER_WAVE`
+     * branch are both untaken here, and by construction. 51 waves × 5 blocks
+     * serializes to about 17 KB against a 32 KiB cap, and 5 is well under the
+     * 40-block cap. The assertions below therefore say "nothing was dropped",
+     * which is the claim worth pinning for the carrier: adding a contract block
+     * to every report does not cost a cove its outline. A test of the *drop*
+     * paths would need a fixture built to blow the caps, it would be about the
+     * degradation logic rather than about the contract, and it is not this one.
+     *
+     * The existing wave-cap test seeds 50 *empty* bodies, which is why the size
+     * question needed a fixture of its own (#1185 §4.4 E).
+     */
+    let boot = boot().await;
+    let mut seeded = Vec::new();
+    for index in 0..50 {
+        seeded.push(
+            add_wave(
+                &boot,
+                boot.cove_id.as_str(),
+                &format!("Sibling {index}"),
+                contract_body(),
+            )
+            .await,
+        );
+    }
+
+    let value = call_tool(&boot, TOOL_COVE_OUTLINE, spec_identity(&boot), json!({}))
+        .await
+        .unwrap();
+    let bytes = serde_json::to_vec(&value).unwrap().len();
+    // Measured at 17029 bytes when this was written. The upper bound is the cap
+    // itself; the lower bound is there so the day someone breaks the fixture
+    // into emptiness this stops passing for the wrong reason.
+    assert!(
+        (10 * 1024..=32 * 1024).contains(&bytes),
+        "expected a real, capped payload for 51 contract-bearing waves; got {bytes} bytes"
+    );
+
+    // The wave cap IS taken here — 51 waves against `MAX_WAVES = 50` — and it
+    // is reported rather than silent.
+    let waves = value["waves"].as_array().unwrap();
+    assert_eq!(waves.len(), 50);
+    assert_eq!(value["truncated"]["waves"], 1);
+    // Stated rather than implied: the byte-truncation branch did not fire.
+    assert!(value["truncated"]["bytes"].is_null());
+
+    // No block was dropped from ANY wave — not just from the ones this loop
+    // happens to recognise. `truncated.blocks` is omitted entirely when the map
+    // is empty, so asserting the whole key absent also rules out truncation
+    // metadata parked under some other wave id.
+    assert!(
+        value["truncated"]["blocks"].is_null(),
+        "nothing was dropped, so `truncated.blocks` must be absent entirely; got {}",
+        value["truncated"]["blocks"]
+    );
+
+    // Every block of every seeded wave is listed. This is the carrier's actual
+    // claim — a contract block in every report costs the cove nothing in
+    // outline coverage — so the loop must also prove it actually looked at the
+    // seeded waves: a fixture whose ids stopped matching would otherwise skip
+    // every iteration and still pass.
+    let mut verified = 0usize;
+    let mut foreign = Vec::new();
+    for wave in waves {
+        let id = wave["id"].as_str().unwrap();
+        if !seeded.iter().any(|seed| seed.id.as_str() == id) {
+            foreign.push(id.to_string());
+            continue;
+        }
+        verified += 1;
+        assert_eq!(
+            wave["blocks"].as_array().unwrap().len(),
+            5,
+            "every block of a seeded wave is listed ({id})"
+        );
+    }
+    // The cove holds 51 waves — 50 seeded plus the boot wave — and `MAX_WAVES`
+    // lists the 50 lowest ids, so exactly one falls off, and which one depends
+    // on where the random ids sort. Hence: nothing but the boot wave may show
+    // up unrecognised, and at most one seeded wave may be missing.
+    assert!(
+        (seeded.len() - 1..=seeded.len()).contains(&verified),
+        "expected to have checked all {} seeded waves (at most one displaced by the wave cap); \
+         checked {verified}",
+        seeded.len()
+    );
+    assert!(
+        foreign
+            .iter()
+            .all(|id| id.as_str() == boot.wave_id.as_str()),
+        "the only listable wave this test did not seed is the boot wave; got {foreign:?}"
+    );
+}
+
 #[tokio::test]
 async fn backlinks_returns_linking_wave_for_callers_wave() {
     let boot = boot().await;

@@ -427,7 +427,12 @@ const MemoizedMarkdownBody = memo(function MemoizedMarkdownBody({
 }) {
   return (
     <div className="report-block report-prose calm-prose">
+      {/* `skipHtml`: the v1 flat-body path renders the whole report source in
+          one pass, so it is the other surface where a document's own
+          maintenance contract (a leading HTML comment) would be printed as
+          escaped text (#1185 §0.6). Same trade as the block path. */}
       <ReactMarkdown
+        skipHtml
         remarkPlugins={[remarkGfm]}
         urlTransform={reportUrlTransform}
         components={{ a: ReportLink }}
