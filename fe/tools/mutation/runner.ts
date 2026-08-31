@@ -212,7 +212,11 @@ export function truncateFailureMessage(message: string, limit: number = failureD
   const head = Math.floor(budget * failureDetailMessageHeadFraction);
   const tail = budget - head;
   // `message.length - tail` rather than `slice(-tail)`: at tail === 0 the negative form is `-0`,
-  // which slices from index 0 and would emit the WHOLE message on a zero budget.
+  // which slices from index 0 and would emit the WHOLE message on a zero budget. Pinned by
+  // runner.test.ts, 'emits no message content on a zero budget'.
+  // Not guarded, and unreachable today: a NaN `limit` would fall through the `<=` check, keep no head
+  // (`slice(0, NaN)` is '') and the WHOLE message as tail (`slice(NaN)` is `slice(0)`). The only
+  // caller merges over frozen defaults and run.mjs passes three arguments, so no NaN can arrive here.
   return `${message.slice(0, head)}`
     + `\n[truncated: kept ${head} head + ${tail} tail of ${message.length} characters]\n`
     + `${message.slice(message.length - tail)}`;

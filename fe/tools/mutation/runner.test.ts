@@ -12,7 +12,7 @@ import {
   manifestRelativePath, maxShards, mutationIdPattern, mutationRunExitCode, oracleIdsFromDocuments,
   parseFailedTestIds, parsePatchTarget, parseShard, parseVitestReport, reportTestIdLimit,
   selectedEntries, shardEntries,
-  shardPlan, trackedFixtureSetMatches, unexpectedFailureDetails, validateManifest,
+  shardPlan, trackedFixtureSetMatches, truncateFailureMessage, unexpectedFailureDetails, validateManifest,
   type MutationEntry, type MutationRunResult,
 } from './runner';
 
@@ -487,9 +487,9 @@ describe('over-red failure detail evidence', () => {
       + `\n[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail of ${long.length} characters]\n`
       + `${'t'.repeat(messageTailChars)}`,
     );
-    // Same budget as head-only truncation spent: the kept CONTENT is exactly `messageChars`, and the
-    // only thing on top is the one-line notice.
-    expect(messageHeadChars + messageTailChars).toBe(failureDetailMessageChars);
+    // Same budget as head-only truncation spent: the kept CONTENT is exactly `messageChars` (the
+    // exact-string assertion above is what pins that), and the only thing on top is the one-line
+    // notice.
     expect(only.messages[0].length - failureDetailMessageChars).toBeLessThan(80);
   });
   // The property the head+tail split exists for, on a realistically SHAPED message rather than a run
@@ -545,6 +545,34 @@ describe('over-red failure detail evidence', () => {
       + `\n[truncated: kept ${messageHeadChars} head + ${messageTailChars} tail of ${over.length} characters]\n`
       + `${'t'.repeat(messageTailChars)}`,
     );
+  });
+  // The `-0` guard in truncateFailureMessage, pinned. `slice(-tail)` is the natural spelling and is
+  // what any cleanup pass would reach for, but at tail === 0 the negative form is `-0` and
+  // `slice(-0) === slice(0)`, which appends the WHOLE message to a zero budget. Verified by mutation:
+  // restoring `slice(-tail)` reds the limit === 0 row of this table and nothing else in the suite.
+  // tail === 0 needs limit === 0, reachable only through an explicit `limits` budget and never from
+  // the production defaults — the invariant is what is pinned here, not a production path. The
+  // neighbouring small budgets are in the table so an off-by-one in EITHER slice reds too, and the
+  // head/tail strings are spelled out rather than recomputed from the fraction so that the expected
+  // values do not silently follow the code they are checking.
+  it('emits no message content on a zero budget, and exactly the split content just above it', () => {
+    const message = 'ABCDEFGHIJ';
+    const notice = (head: number, tail: number): string =>
+      `\n[truncated: kept ${head} head + ${tail} tail of ${message.length} characters]\n`;
+    // limit 0 (and any negative, which `Math.max(0, limit)` clamps to it) is fraction-independent:
+    // floor(0 * anything) === 0, so head and tail are both empty whatever the split is.
+    expect(truncateFailureMessage(message, 0)).toBe(notice(0, 0));
+    expect(truncateFailureMessage(message, -7)).toBe(notice(0, 0));
+    // The rest of the table is written for the 1/4 : 3/4 split; re-aiming the split re-measures it.
+    expect(failureDetailMessageHeadFraction).toBe(0.25);
+    const table: Array<[limit: number, head: string, tail: string]> = [
+      [1, '', 'J'], [2, '', 'IJ'], [3, '', 'HIJ'],
+      [4, 'A', 'HIJ'], [5, 'A', 'GHIJ'], [8, 'AB', 'EFGHIJ'],
+    ];
+    for (const [limit, head, tail] of table) {
+      expect(truncateFailureMessage(message, limit), `limit ${limit}`)
+        .toBe(`${head}${notice(head.length, tail.length)}${tail}`);
+    }
   });
   // omitted_test_ids is the OVERFLOW list, so it grows exactly when the block is already at its
   // worst; and a vitest fullName is an unbounded concatenation of describe titles.
@@ -657,10 +685,24 @@ describe('every id list in a report record is bounded', () => {
   // truncation notices, which move the total by tens of bytes, not kilobytes. A change that needs
   // more than that is a change to how much this record emits, and should re-measure the table.
   //
-  // `failureDetailMessageHeadFraction` is NOT an axis of this table: head + tail === messageChars by
-  // construction, so moving the split re-aims the kept characters without buying any. Splitting the
-  // budget did move the baseline, by exactly the extra wording: 111,574 -> 111,844, i.e. +18 bytes on
-  // each of the 5 tests x 3 messages the record truncates.
+  // `failureDetailMessageHeadFraction` is a WEAK axis of this table, not a free one, and the earlier
+  // "not an axis" claim over-stated it. What is true by construction is head + tail === messageChars,
+  // i.e. the kept CONTENT is the same COUNT the head-only version kept — but that count is in UTF-16
+  // code units, not bytes, and this budget is in bytes. Head-only truncation had the same property, so
+  // the gap is pre-existing and not what this PR introduced: 2000 kept code units of ASCII head plus
+  // CJK tail is ~5000 bytes, and the whole table above is measured against the ASCII fixtures built
+  // below, where a code unit is a byte. Within those fixtures the fraction still moves the record
+  // slightly, because the notice embeds the DECIMAL DIGITS of `head` and `tail`: measured, 0.25 ->
+  // 111,844, 0.5 -> 111,859, 0.999 -> 111,814. That is tens of bytes, the same order as the
+  // notice-wording caveat above, and it is why the headroom is stated rather than spent. Splitting
+  // the budget at all moved the baseline by exactly the extra wording: 111,574 -> 111,844, i.e.
+  // +18 bytes on each of the 5 tests x 3 messages the record truncates.
+  //
+  // Nothing clamps the fraction to [0, 1], and out of range it does buy characters rather than re-aim
+  // them: measured, 1.5 -> 126,874 and -0.5 -> 411,874. So this hard-coded byte budget is the only
+  // thing that reds an out-of-range split — the code that computes head/tail does not check, and every
+  // other size assertion in this file is written in terms of the constants. Load-bearing for more than
+  // the doubling table it was written for.
   //
   // `expected_red` is the one axis NOT capped: it is manifest data, authored by hand and gated by
   // validateManifest (today at most 13 ids of at most 124 characters, ~1.7 KB). The worst case below
