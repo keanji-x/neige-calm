@@ -3036,6 +3036,16 @@
           "204": {
             "description": "Wave deleted"
           },
+          "403": {
+            "description": "Wave belongs to the system cove and cannot be deleted via REST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Wave not found",
             "content": {

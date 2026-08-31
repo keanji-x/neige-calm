@@ -34,6 +34,7 @@ use crate::operation::workspace_lease::{
 };
 use crate::state::{AppState, RouteState, WorkerState};
 use crate::terminal_sweeper::reap_terminal_artifacts_with_renderer;
+use crate::workspace_recycle;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -306,9 +307,11 @@ pub(crate) async fn delete_cove(
     //     "no row affected because kind='system'" into a 403 rather than
     //     the txn's natural 404 — same code-shape, same trip to the DB,
     //     and the handler check fails fast without opening a write txn.
-    if let Some(target) = s.repo.cove_get(&id).await?
-        && target.kind == CoveKind::System
-    {
+    // #1147 S5 — also the input to recycle guard 4. `None` (no such cove)
+    // stays `None` and makes every recycle below refuse; the row delete still
+    // runs and 404s naturally in `cove_delete_tx`.
+    let cove_kind = s.repo.cove_get(&id).await?.map(|cove| cove.kind);
+    if cove_kind == Some(CoveKind::System) {
         return Err(CalmError::Forbidden(format!(
             "cove {id} is system-owned and cannot be deleted via the public API"
         )));
@@ -349,6 +352,28 @@ pub(crate) async fn delete_cove(
             }
         }
     }
+
+    // #1147 S5 — reclaim every managed workspace under this cove, plus the
+    // `<root>/<cove_id>/` layer, before the rows go away.
+    //
+    // Until this slice, deleting a cove released leases and swept worktrees but
+    // left every managed repository on disk with no database row pointing at
+    // it: an orphan tree that nothing could ever find again, let alone reclaim.
+    //
+    // Same ordering rationale as `delete_wave`: terminals are already reaped,
+    // and a failure here aborts the DELETE with rows and directories both
+    // intact. Per-wave refusals are not failures — they leave that one
+    // directory (and therefore the cove directory) in place, visibly.
+    let now = crate::model::now_ms();
+    let targets: Vec<workspace_recycle::RecycleTarget<'_>> = waves
+        .iter()
+        .map(|wave| workspace_recycle::RecycleTarget {
+            wave_id: wave.id.as_str(),
+            workspace: &wave.workspace,
+        })
+        .collect();
+    workspace_recycle::recycle_cove_workspaces(&s.workspace_root, &id, cove_kind, &targets, now)?;
+    workspace_recycle::gc_trash_best_effort(&s.workspace_root, now);
 
     let scope = EventScope::Cove {
         cove: id.clone().into(),
