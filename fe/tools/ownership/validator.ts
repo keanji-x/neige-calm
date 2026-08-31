@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { posix } from 'node:path';
+import { existsSync } from 'node:fs';
+import { posix, resolve } from 'node:path';
 
 export interface OwnershipEntry {
   path: string;
@@ -99,12 +100,13 @@ export function validateOwnership(
 }
 
 export function repositoryFiles(repoRoot: string, trackedFiles?: readonly string[]): string[] {
-  const roots = ['fe/core', 'fe/mock', 'fe/web', 'fe/tools'];
+  const roots = ['fe/core', 'fe/web', 'fe/tools'];
   const controls: readonly string[] = OWNERSHIP_CONTROL_FILES;
   const files = trackedFiles ?? execFileSync('git', ['ls-files', '--', ...roots, ...controls], {
     cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
   }).split(/\r?\n/).filter(Boolean);
   return files.map((path) => posix.normalize(clean(path)))
+    .filter((path) => trackedFiles !== undefined || existsSync(resolve(repoRoot, path)))
     .filter((path) => controls.includes(path)
       || roots.some((directory) => path === directory || path.startsWith(`${directory}/`)))
     .sort();

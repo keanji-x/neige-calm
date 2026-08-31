@@ -1052,47 +1052,6 @@
 # 六、no-raw-primitive-role（原语层边界）
 # ===========================================================================
 
-- id: GATE-ROLE-001
-  kind: gate
-  family: lint-role
-  statement: >
-    `web/src/ui/` 之外的 JSX 禁止出现 `role="dialog"` / `role="menu"` /
-    `role="menuitem"` 字符串字面量；`role={"dialog"}` 花括号包裹形式同样拦截
-  why: >
-    应用代码必须组合 Neige 原语（<Dialog>/<Menu>/<ConfirmDialog>），它们持有 role、
-    焦点陷阱、Escape、焦点还原等契约；手搓 role 会把这些契约丢掉。规则是
-    web/src/ui/README.md 在 #60 slice 1 里承诺的（"应用代码不用裸 role= 查询原语"）。
-    花括号形式必须拦，否则是一个平凡旁路。规则**不可自动修复**：正确修法是换成原语组件，
-    props/children/焦点接线全都不同，不是安全的机械变换。
-  source: web/eslint-rules/no-raw-primitive-role.cjs:1-60,104-146
-  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts:62-100
-  owner_slice: none/lint/custom-rules
-  intentional_omission: false
-  runtime_layer: none
-  verification_owner: lint
-  test_tier: static
-  migration: pending
-
-- id: GATE-ROLE-002
-  kind: gate
-  family: lint-role
-  statement: >
-    动态形式 `role={expr}` 一律**不**检查 —— 这是刻意留下的缺口
-  why: >
-    【已知缺口】注释原话："linter 无法在没有类型信息的情况下证明它的值，动态值上的误报
-    比偶尔漏一个更糟。" fixture 里 `OkDynamicRole({ kind }: { kind: 'dialog' | 'region' })`
-    被显式标注为"允许"。新架构要决定：是接入 type-checker 把字面量联合类型也判掉，
-    还是继续接受这个洞。
-  source: web/eslint-rules/no-raw-primitive-role.cjs:25-31,115-136 ;
-    web/eslint-rules/__fixtures__/raw-primitive-role.tsx:45-49
-  authoritative_test: web/eslint-rules/no-raw-primitive-role.test.ts:80-91
-  owner_slice: none/lint/custom-rules
-  intentional_omission: true
-  runtime_layer: none
-  verification_owner: lint
-  test_tier: static
-  migration: pending
-
 - id: GATE-ROLE-003
   kind: gate
   family: lint-role
