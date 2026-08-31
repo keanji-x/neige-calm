@@ -52,14 +52,17 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
             <MobileListItem
               key={wave.id}
               title={waveDisplayTitle(wave.title)}
+              titleVariant="document"
               meta={cove?.name ?? 'Unknown cove'}
               startContent={(
                 <span
-                  className={styles.coveDot}
+                  className={styles.coveInitial}
                   data-nc-page-cove=""
-                  style={cove === undefined ? undefined : { backgroundColor: cove.color }}
+                  style={cove === undefined ? undefined : { borderColor: cove.color, color: cove.color }}
                   aria-hidden="true"
-                />
+                >
+                  {cove?.name.trim().charAt(0).toLocaleUpperCase() || '?'}
+                </span>
               )}
               onSelect={() => onOpenWave(wave.id)}
             />

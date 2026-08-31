@@ -95,6 +95,13 @@
     text-overflow: ellipsis;
   }
 
+  .itemTitleDocument {
+    font-family: var(--font-serif);
+    font-size: var(--text-md);
+    font-weight: var(--weight-normal);
+    letter-spacing: var(--tracking-tight);
+  }
+
   .meta {
     max-inline-size: 35vi;
     overflow: hidden;

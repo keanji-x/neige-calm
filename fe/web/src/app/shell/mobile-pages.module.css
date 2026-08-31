@@ -11,11 +11,17 @@
     font-size: var(--text-xs) !important;
   }
 
-  .coveDot {
-    display: block;
-    inline-size: var(--dot-sm);
-    block-size: var(--dot-sm);
+  .coveInitial {
+    display: grid;
+    place-items: center;
+    inline-size: var(--row-h-sm);
+    block-size: var(--row-h-sm);
+    border: 1px solid var(--hairline-strong);
     border-radius: var(--radius-pill);
-    background: var(--hairline-strong);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-3);
   }
 }

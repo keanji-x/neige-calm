@@ -38,20 +38,28 @@ export function MobileListEmpty({ children }: Readonly<{ children: ReactNode }>)
   return <li><p className={styles.empty}>{children}</p></li>;
 }
 
-export function MobileListItem({ title, meta, startContent, ariaLabel, nested = false, onSelect }: Readonly<{
+export function MobileListItem({
+  title, meta, startContent, ariaLabel, nested = false, titleVariant = 'interface', onSelect,
+}: Readonly<{
   title: string;
   meta?: ReactNode;
   startContent?: ReactNode;
   ariaLabel?: string;
   /** Visually nests a second-level row while keeping one flat, touch-friendly list. */
   nested?: boolean;
+  /** Document titles use the report's editorial typography; utility rows stay sans. */
+  titleVariant?: 'interface' | 'document';
   onSelect: () => void;
 }>) {
   const metaLabel = typeof meta === 'string' || typeof meta === 'number' ? String(meta) : null;
   return (
     <AstryxListItem
       className={`${styles.item} ${nested ? styles.itemNested : ''}`}
-      label={<span className={styles.itemTitle}>{title}</span>}
+      label={(
+        <span className={`${styles.itemTitle} ${titleVariant === 'document' ? styles.itemTitleDocument : ''}`}>
+          {title}
+        </span>
+      )}
       startContent={startContent}
       onClick={() => onSelect()}
       aria-label={ariaLabel ?? (metaLabel === null ? undefined : `${title}, ${metaLabel}`)}
