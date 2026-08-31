@@ -23,8 +23,12 @@ export type NewWaveFormProps = Readonly<{
    * first focusable, which is the header's Close button — so a reader who
    * opened this and started typing put nothing in the field and closed the
    * dialog on the first space. See #1161.
+   *
+   * Required rather than optional: the defect was a call site that simply did
+   * not think about opening focus, and an optional prop lets the next one make
+   * the same omission silently.
    */
-  titleRef?: RefObject<HTMLInputElement | null>;
+  titleRef: RefObject<HTMLInputElement | null>;
   onCancel: () => void;
   onSubmit: (draft: NewWaveDraft) => void;
 }>;

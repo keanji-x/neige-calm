@@ -81,6 +81,46 @@ describe('Dialog behavior', () => {
     expect(document.activeElement).toBe(field);
   });
 
+  /*
+   * The panel itself is focusable (`tabIndex={-1}`), so a mousedown on chrome —
+   * the title, the padding — makes it the active element inside the opening
+   * frame. Yielding to that would leave the reader with no field focused and
+   * nothing to type into, which is the original complaint in a quieter form.
+   */
+  it('still honours the named target when focus landed on the panel chrome', () => {
+    const frames = heldFrames();
+    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+    screen.getByRole('dialog').focus();
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+
+    frames.forEach((frame) => { frame(0); });
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+  });
+
+  /*
+   * A base-view element stays mounted under `display: none` once a child view
+   * is pushed, so `panel.contains(activeElement)` keeps saying yes about
+   * something nobody can see or reach. Reproduced here by hiding the container
+   * after focusing it, which is the same DOM state the pushed view produces.
+   */
+  it('does not yield to focus stranded on content that has been hidden', () => {
+    const frames = heldFrames();
+    render(
+      <Dialog open title="Test" onClose={vi.fn()}>
+        <div data-testid="region"><button type="button">Stranded</button></div>
+      </Dialog>,
+    );
+    const stranded = screen.getByRole('button', { name: 'Stranded' });
+    stranded.focus();
+    screen.getByTestId('region').style.display = 'none';
+
+    frames.forEach((frame) => { frame(0); });
+
+    expect(document.activeElement).not.toBe(stranded);
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+  });
+
   it('re-queries focusables after dynamically inserting an item', () => {
     render(<Dialog open title="Test" onClose={vi.fn()}><button>First</button></Dialog>);
     const panel = screen.getByRole('dialog');

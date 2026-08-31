@@ -112,10 +112,24 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
        * synchronously, which removes the window entirely.
        *
        * Opening focus is a courtesy for a reader who has not acted yet, so it
-       * yields to one who has. `contains` and not `===` because by then focus
-       * may be on any descendant.
+       * yields to one who has — but only to a real landing place. The test is
+       * membership of `focusables(panel)`, not `panel.contains(…)`, and the
+       * difference is two ways the looser test yields to nothing:
+       *
+       *  - the panel carries `tabIndex={-1}`, so a mousedown on chrome (the
+       *    title, the padding) makes the *panel* the active element. That is
+       *    not the reader choosing a field, and `initialFocusRef` should still
+       *    win; and
+       *  - a base-view element stays mounted under `display: none` once a child
+       *    view is pushed, so `contains` keeps saying yes about content nobody
+       *    can see or reach.
+       *
+       * `focusables` already excludes the panel itself and filters `disabled`,
+       * `inert` and anything not visible within the panel, so it is exactly the
+       * question worth asking here.
        */
-      if (panel.contains(document.activeElement)) return;
+      const active = document.activeElement;
+      if (active instanceof HTMLElement && focusables(panel).includes(active)) return;
       (initialFocusRef?.current ?? focusables(panel)[0] ?? panel).focus();
     });
     return () => {
