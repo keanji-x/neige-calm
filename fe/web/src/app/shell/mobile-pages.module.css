@@ -5,7 +5,17 @@
   }
 
   .groups [role='radio'] {
-    min-block-size: var(--control-h-lg);
+    min-block-size: var(--control-h);
+    padding-inline: var(--space-4) !important;
     border-radius: var(--radius-pill) !important;
+    font-size: var(--text-xs) !important;
+  }
+
+  .coveDot {
+    display: block;
+    inline-size: var(--dot-sm);
+    block-size: var(--dot-sm);
+    border-radius: var(--radius-pill);
+    background: var(--hairline-strong);
   }
 }

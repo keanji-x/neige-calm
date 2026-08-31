@@ -31,10 +31,7 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
     .slice(0, RECENT_PAGE_LIMIT);
   const [group, setGroup] = useState<'pinned' | 'recent'>(() => (pinned.length > 0 ? 'pinned' : 'recent'));
   const shown = group === 'pinned' ? pinned : recent;
-  const descriptionOf = (wave: Wave) => {
-    const cove = coveOf(wave.coveId, shownCoves);
-    return cove?.name ?? 'Unknown cove';
-  };
+  const coveFor = (wave: Wave) => coveOf(wave.coveId, shownCoves);
 
   return (
     <MobileListPage title="Pages">
@@ -49,14 +46,25 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
         <AstryxSegmentedControlItem value="recent" label="Recent" />
       </AstryxSegmentedControl>
       <MobileList>
-        {shown.map((wave) => (
-          <MobileListItem
-            key={wave.id}
-            title={waveDisplayTitle(wave.title)}
-            meta={descriptionOf(wave)}
-            onSelect={() => onOpenWave(wave.id)}
-          />
-        ))}
+        {shown.map((wave) => {
+          const cove = coveFor(wave);
+          return (
+            <MobileListItem
+              key={wave.id}
+              title={waveDisplayTitle(wave.title)}
+              meta={cove?.name ?? 'Unknown cove'}
+              startContent={(
+                <span
+                  className={styles.coveDot}
+                  data-nc-page-cove=""
+                  style={cove === undefined ? undefined : { backgroundColor: cove.color }}
+                  aria-hidden="true"
+                />
+              )}
+              onSelect={() => onOpenWave(wave.id)}
+            />
+          );
+        })}
         {shown.length === 0 && (
           <MobileListEmpty>{group === 'pinned' ? 'No pinned Pages.' : 'No recent Pages.'}</MobileListEmpty>
         )}
