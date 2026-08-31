@@ -246,13 +246,17 @@ if (typeof document !== 'undefined') {
      * Scanned from the **document**, not from `body`.
      *
      * `querySelectorAll` never returns the node it is called on, so scanning
-     * `body` silently excluded every ancestor of the content. That was found
-     * three times as three separate bugs — a `display:none` body, then an
-     * `aria-hidden` body, then an `aria-hidden` `<html>` — and patched twice as
-     * special cases before the shape of it was clear. Rooting the query at the
-     * document covers `<html>`, `<body>` and everything below in one selector
-     * and needs no special case at all, which is why the previous
-     * `body.matches(…)` line is gone rather than joined by a sibling.
+     * `body` silently excluded `<body>` itself and `<html>` above it. Rooting
+     * the query at the document covers both plus every descendant in one
+     * selector, which is why the `body.matches(…)` special case that used to
+     * sit here is gone rather than joined by a sibling for `<html>`.
+     *
+     * The related bug in `cssHiddenRoots` — a `display:none` body reported as
+     * nothing hidden — was *not* this: that scan is still rooted at `body`
+     * below, and its blind spot was the ancestor walk stopping one level short,
+     * fixed there by letting the walk run to `null`. Two different causes with
+     * the same symptom, which is why the first was patched as a special case
+     * and the shape only became clear at the third sighting.
      */
     const byAttribute = Array.from(ownerDocument.querySelectorAll(HIDING_ATTRIBUTES)).filter(holdsQueryable);
     const { roots, examined, total } = cssHiddenRoots(body);
