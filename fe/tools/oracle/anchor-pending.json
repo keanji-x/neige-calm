@@ -1,0 +1,230 @@
+[
+  {
+    "id": "CAP-NEWTASK-029",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-ADDPANEL-005",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-ADDPANEL-007",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-AXE-008",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-CWD-005",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-DELETE-001",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-DELETE-003",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-DELETE-020",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-LIST-018",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-MODAL-012",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-RENAME-011",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-RENAME-015",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-RENAME-016",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-SYNC-009",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-TERMINAL-009",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-CAP-VIEWMODE-021",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-003",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-007",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-014",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-CAP-WAVECREATE-020",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-ADDPANEL-009",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-DELETE-002",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-DELETE-005",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-INFRA-038",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-INV-LIFECYCLE-012",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-INV-REPORT-008",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-SPECCHAT-008",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "E2E-INV-SPECCHAT-011",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-TERMINAL-005",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-TERMINAL-010",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "statement asserts an absence, so no identifier can ever anchor it; needs an explicit non-anchorable category"
+  },
+  {
+    "id": "E2E-INV-TERMTHEME-003",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-TERMTHEME-007",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-WAVECREATE-006",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-WAVECREATE-011",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-WHEEL-002",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+  },
+  {
+    "id": "E2E-INV-WHEEL-003",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  },
+  {
+    "id": "INV-CARD-128",
+    "subtype": "not-in-file",
+    "issue": "#1170",
+    "note": "statement asserts an absence, so no identifier can ever anchor it; needs an explicit non-anchorable category"
+  },
+  {
+    "id": "INV-SPECCONVO-004",
+    "subtype": "range-miss",
+    "issue": "#1170",
+    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+  }
+]

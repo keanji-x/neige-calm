@@ -17,6 +17,9 @@ export interface ValidateOptions {
   ownerAliasesPath: string;
   anchorNonePath?: string;
   anchorBaselinePath?: string;
+  anchorPendingPath?: string;
+  /** Overrides ANCHOR_PENDING_MAXIMUM; fixtures only, so the shrink-only rule is testable. */
+  anchorPendingMaximum?: number;
   anchorUnsupportedPath?: string;
   today?: string;
 }
@@ -299,6 +302,19 @@ function parseStructuredList(path: string | undefined): unknown[] {
 const ANCHOR_BASELINE_MAXIMUM = 218;
 const ANCHOR_EXPIRY_CEILING = '2026-12-31';
 
+// `anchor-pending.json` is NOT a second baseline. It holds the anchors the #1148 scanner fix exposed as
+// never having anchored anything; each row is a defect awaiting a decision in #1170, and the list exists
+// to be emptied — after which both the file and this code are deleted. Rules, all pinned by fixtures:
+//   1. exact match, no wildcards — an actual failure that is in neither account is `unbaselined`, and a row
+//      whose entry no longer fails (or fails differently) is `stale pending`. Missing and extra both fail.
+//   2. shrink-only — the row count may never exceed ANCHOR_PENDING_MAXIMUM, so admitting a 39th entry costs
+//      an edit to this source file, not just to the data file. Swapping one id for another keeps the count
+//      but is a visible line in the JSON diff, the same discipline anchor-baseline.json already carries.
+//   3. no double accounting — an id present in both accounts is an error, never a silent exemption.
+const ANCHOR_PENDING_MAXIMUM = 38;
+const PENDING_NOTE = 'anchor-pending.json is not a baseline: these anchors are known to anchor nothing, '
+  + 'are tracked in #1170, and the list exists to be emptied';
+
 export function validateOracle(options: ValidateOptions): Violation[] {
   const today = options.today ?? new Date().toISOString().slice(0, 10);
   const owners = canonicalOwners(options.ownerAliasesPath);
@@ -313,14 +329,29 @@ export function validateOracle(options: ValidateOptions): Violation[] {
   }
   const baselineRows = parseStructuredList(options.anchorBaselinePath);
   const baseline = new Map<string, AnchorSubtype>();
+  const baselineRowIds = new Set<string>();
   for (const raw of baselineRows) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const entry = raw as Record<string, unknown>;
+    if (typeof entry.id === 'string') baselineRowIds.add(entry.id);
     if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss')
       && typeof entry.reason === 'string' && entry.reason.trim() !== ''
       && typeof entry.expiry === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(entry.expiry)
       && entry.expiry >= today && entry.expiry <= ANCHOR_EXPIRY_CEILING) {
       baseline.set(entry.id, entry.subtype);
+    }
+  }
+  const pendingRows = parseStructuredList(options.anchorPendingPath);
+  const pending = new Map<string, AnchorSubtype>();
+  const pendingRowIds = new Set<string>();
+  for (const raw of pendingRows) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    if (typeof entry.id === 'string') pendingRowIds.add(entry.id);
+    if (typeof entry.id === 'string' && (entry.subtype === 'not-in-file' || entry.subtype === 'range-miss')
+      && typeof entry.issue === 'string' && /^#\d+$/.test(entry.issue)
+      && typeof entry.note === 'string' && entry.note.trim() !== '') {
+      pending.set(entry.id, entry.subtype);
     }
   }
   const unsupportedRows = parseStructuredList(options.anchorUnsupportedPath);
@@ -423,16 +454,48 @@ export function validateOracle(options: ValidateOptions): Violation[] {
       if (typeof entry.statement !== 'string' || entry.statement.trim() === '') add(file, id, 'statement-nonempty', 'statement must be non-empty');
     });
   }
+  // An actual failure is accounted for by exactly one of the two lists; an id claimed by both is an error
+  // (rule 3) and is attributed to the baseline, so no count check double-reports the same overlap.
+  const heldByPending = new Set([...actualBaseline]
+    .filter(([id, subtype]) => baseline.get(id) !== subtype && pending.get(id) === subtype)
+    .map(([id]) => id));
   for (const [id, subtype] of actualBaseline) {
-    if (baseline.get(id) !== subtype) add('<baseline>', id, 'source-anchor', `unbaselined ${subtype}`);
+    if (baseline.get(id) !== subtype && !heldByPending.has(id)) {
+      add('<baseline>', id, 'source-anchor', `unbaselined ${subtype}`);
+    }
   }
   for (const [id, subtype] of baseline) {
     if (actualBaseline.get(id) !== subtype) add('<baseline>', id, 'source-anchor', `stale baseline ${subtype}`);
   }
+  const accountedByBaseline = actualBaseline.size - heldByPending.size;
   if (options.anchorBaselinePath
-    && (baselineRows.length !== baseline.size || baselineRows.length !== actualBaseline.size)) {
+    && (baselineRows.length !== baseline.size || baselineRows.length !== accountedByBaseline)) {
     add('<baseline>', '<count>', 'source-anchor',
-      `baseline count must equal actual count: declared ${baselineRows.length}, distinct valid ${baseline.size}, actual ${actualBaseline.size}`);
+      `baseline count must equal actual count: declared ${baselineRows.length}, distinct valid ${baseline.size}, actual ${accountedByBaseline}`);
+  }
+  if (options.anchorPendingPath) {
+    const maximum = options.anchorPendingMaximum ?? ANCHOR_PENDING_MAXIMUM;
+    if (pendingRows.length > maximum) {
+      add('<pending>', '<count>', 'source-anchor',
+        `pending list may only shrink: declared ${pendingRows.length}, maximum ${maximum} — ${PENDING_NOTE}`);
+    }
+    if (pendingRows.length !== pending.size) {
+      add('<pending>', '<count>', 'source-anchor',
+        `pending count must equal distinct valid count: declared ${pendingRows.length}, distinct valid ${pending.size}`
+        + ` (every row needs a distinct id, a subtype, an issue like #1170, and a note) — ${PENDING_NOTE}`);
+    }
+    for (const [id, subtype] of pending) {
+      if (actualBaseline.get(id) !== subtype) {
+        add('<pending>', id, 'source-anchor',
+          `stale pending ${subtype}: this entry no longer fails that way, so delete its row — ${PENDING_NOTE}`);
+      }
+    }
+    for (const id of pendingRowIds) {
+      if (baselineRowIds.has(id)) {
+        add('<pending>', id, 'source-anchor',
+          `id is in both anchor-baseline.json and anchor-pending.json; a debt belongs to exactly one account — ${PENDING_NOTE}`);
+      }
+    }
   }
   if (options.anchorUnsupportedPath) {
     if (unsupportedRows.length !== registeredUnsupported.size) {
@@ -458,6 +521,7 @@ export function defaultOracleOptions(repoRoot: string): ValidateOptions {
     ownerAliasesPath: resolve(repoRoot, 'docs/oracle/owner-aliases.yaml'),
     anchorNonePath: resolve(repoRoot, 'docs/oracle/anchor-none.yaml'),
     anchorBaselinePath: resolve(repoRoot, 'fe/tools/oracle/anchor-baseline.json'),
+    anchorPendingPath: resolve(repoRoot, 'fe/tools/oracle/anchor-pending.json'),
     anchorUnsupportedPath: resolve(repoRoot, 'docs/oracle/anchor-unsupported.yaml'),
   };
 }
