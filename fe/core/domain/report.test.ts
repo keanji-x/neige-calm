@@ -708,6 +708,12 @@ describe('deriveReportTasks', () => {
    * window focus, and on remount. Re-deriving contention from the blocks would
    * buy a few seconds of that convergence back at the price of a second
    * authority on ownership, which is the thing #1160 removed.
+   *
+   * That argument holds *only while the verdict's own block is still a row* —
+   * see the next case, where it is not, and where `rowBlockIds` therefore
+   * protects nothing. This one also pins the other end of the fix that case
+   * required: `alpha` is contested here too, and `b-one` still shows its run,
+   * because the identity join is not what was narrowed.
    */
   it('keeps a run on the block the kernel gave it to when the verdicts lag the blocks', () => {
     expect(tasksOf(
@@ -720,6 +726,73 @@ describe('deriveReportTasks', () => {
       // Never decorated by its neighbour's verdict, which is the failure that
       // would actually mislead.
       ['b-two', null, null],
+    ]);
+  });
+
+  /*
+   * **The skew that IS a misattribution, and the half of the gate that stops
+   * it.** #1160 review round two overturned the round-one verdict above, which
+   * argued `rowBlockIds` already covered this: it does, but only for as long as
+   * the block the stale verdict names is still in the document.
+   *
+   * The sequence, all inside one edit: `alpha` is declared by block A, runs to
+   * a terminal status, its verdict is cached — then A is **hard-deleted**
+   * (`wave_report_doc.rs` `delete_block` leaves no block-level tombstone) and
+   * two new blocks are pasted, both declaring `alpha`. The blocks query
+   * refreshes; the `['wave-report', waveId]` query does not, and React Query
+   * keeps the stale verdict. `b-A` now names no row, so the verdict-side gate
+   * lets it into the key index, and *both* new rows miss at their own ids and
+   * fall back onto it: one dead task's `done` and its worker card, painted on
+   * two live rows at once, with a terminal status that no poll will revisit.
+   *
+   * So the row side gates too: a key more than one row claims is not a usable
+   * fallback for any of them. This is not `contestedLiveKeys` returning — it
+   * decides nothing about *ownership* and overrides no verdict; it counts how
+   * many rows would consult one index entry and declines to guess between them.
+   */
+  it('gives no row a run through the key when two rows claim that key', () => {
+    expect(tasksOf(
+      // A (`b-gone`) was hard-deleted; two fresh blocks took its key.
+      [task('b-two', live('alpha', true)), task('b-three', live('alpha', false))],
+      // The cached verdict is A's, and A is in no row now.
+      [verdict({ blockId: 'b-gone', key: 'alpha', status: 'done', workerCardId: 'card-1' })],
+    ).map((row) => [row.blockId, row.status, row.workerCardId, row.declaration])).toEqual([
+      ['b-two', null, null, null],
+      ['b-three', null, null, 'Not ready'],
+    ]);
+  });
+
+  /* The rule is about how many rows *claim* the key, so a tombstone counts:
+     withdraw `alpha`, redeclare it, and an id-less verdict on `alpha` is as
+     unattributable as it is between two live blocks — the projection emits one
+     verdict per declaration, so the key alone never picked a row out. (The
+     withdrawn row takes no decoration for its own reasons; the live one is the
+     assertion.) */
+  it('gives no row a run through the key when a tombstone and its redeclaration share it', () => {
+    expect(tasksOf(
+      [
+        task('b-old', { key: 'alpha', declared_by: 'spec', tombstoned_by: 'user', tombstone: {} }),
+        task('b-new', live('alpha', true)),
+      ],
+      [verdict({ blockId: 'b-gone', key: 'alpha', status: 'done', workerCardId: 'card-1' })],
+    ).map((row) => [row.blockId, row.status, row.workerCardId])).toEqual([
+      ['b-old', null, null],
+      ['b-new', null, null],
+    ]);
+  });
+
+  /* And the narrowing is scoped: one row on the key still takes the fallback,
+     which is the case the fallback exists for — the kernel's synthesised
+     verdict for a deleted declaration carries `blockId: ''` and has nothing but
+     the key to arrive by. A rule that refused every fallback would take that
+     with it. */
+  it('still falls back to the key when exactly one row claims it', () => {
+    expect(tasksOf(
+      [task('b-new', live('alpha', true)), task('b-other', live('beta', true))],
+      [verdict({ blockId: '', key: 'alpha', status: 'running', workerCardId: 'card-1' })],
+    ).map((row) => [row.blockId, row.status, row.workerCardId])).toEqual([
+      ['b-new', 'running', 'card-1'],
+      ['b-other', null, null],
     ]);
   });
 

@@ -2152,48 +2152,59 @@ mod tests {
         assert!(stale.is_some(), "the row itself carries the verdict");
     }
 
-    /// #1160 review ② — the withdrawal rationale used to be `verdict_indexes[0]`,
-    /// i.e. the first block in document order, so two blocks withdrawing
-    /// *different* edges sent a different rationale for `[X, Y]` than for
-    /// `[Y, X]` — the same block-order bug this change set removes elsewhere.
-    #[tokio::test]
-    async fn withdrawal_rationale_is_edge_ordered_not_block_ordered() {
-        async fn rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
-            let (repo, wave) = setup().await;
-            insert_block_task(&repo, &wave, "contended", "running").await;
-            // The row was established by a declaration that carried *both*
-            // edges; withdrawing either one is what the fold has to name.
-            sqlx::query(
-                "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE wave_id=?1 AND key='contended'",
-            )
+    /// One live block on the contested key `contended`, carrying whichever of
+    /// the two declaration edges the caller wants withdrawn.
+    fn contended_task_block(index: usize, ready: bool, released_by_user: bool) -> ReportBlock {
+        task_block(
+            index,
+            json!({"key": "contended", "kind": "codex", "goal": "goal contended",
+                   "ready": ready, "released_by_user": released_by_user,
+                   "declared_by": "spec", "no_gate_reason": "not needed"}),
+        )
+    }
+
+    /// Project `blocks` over an in-flight row whose stored declaration carried
+    /// *both* edges, under the policy that makes the release edge exist at all,
+    /// and return the `task.context_advanced` rationales.
+    async fn withdrawal_rationales_for(blocks: [ReportBlock; 2]) -> Vec<String> {
+        let (repo, wave) = setup().await;
+        insert_block_task(&repo, &wave, "contended", "running").await;
+        // The row was established by a declaration that carried *both*
+        // edges; withdrawing either one is what the fold has to name.
+        sqlx::query(
+            "UPDATE tasks SET decl_ready=1,decl_released_by_user=1 WHERE wave_id=?1 AND key='contended'",
+        )
+        .bind(&wave)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+        // The release edge only exists under this policy.
+        sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
             .bind(&wave)
             .execute(&repo.pool)
             .await
             .unwrap();
-            // The release edge only exists under this policy.
-            sqlx::query("UPDATE waves SET automation_policy='declare-and-wait' WHERE id=?1")
-                .bind(&wave)
-                .execute(&repo.pool)
-                .await
-                .unwrap();
-            let outcome = project_blocks(&repo, &wave, &blocks).await;
-            context_advanced_rationales(&outcome)
-        }
+        let outcome = project_blocks(&repo, &wave, &blocks).await;
+        context_advanced_rationales(&outcome)
+    }
 
+    /// #1160 review ② — the withdrawal rationale used to be `verdict_indexes[0]`,
+    /// i.e. the first block in document order, so two blocks withdrawing
+    /// *different* edges sent a different rationale for `[X, Y]` than for
+    /// `[Y, X]` — the same block-order bug this change set removes elsewhere.
+    ///
+    /// Both orders expect the *same* rationale here, which is the point of the
+    /// case but also its blind spot: an implementation that ignored the edges
+    /// and answered `Ready` unconditionally would satisfy it. That mutant is
+    /// killed by
+    /// `withdrawal_rationale_names_the_release_edge_when_it_is_the_only_one`
+    /// below, whose expectation is the *other* variant.
+    #[tokio::test]
+    async fn withdrawal_rationale_is_edge_ordered_not_block_ordered() {
         // X dropped `ready` → `WithdrawalEdge::Ready`.
-        let x = task_block(
-            0,
-            json!({"key": "contended", "kind": "codex", "goal": "goal contended",
-                   "ready": false, "released_by_user": true, "declared_by": "spec",
-                   "no_gate_reason": "not needed"}),
-        );
+        let x = contended_task_block(0, false, true);
         // Y kept `ready` but dropped the user release → `ReleasedByUser`.
-        let y = task_block(
-            1,
-            json!({"key": "contended", "kind": "codex", "goal": "goal contended",
-                   "ready": true, "released_by_user": false, "declared_by": "spec",
-                   "no_gate_reason": "not needed"}),
-        );
+        let y = contended_task_block(1, true, false);
         let (_, diags) =
             calm_types::report_blocks::tasks::project_task_declarations(&[x.clone(), y.clone()]);
         assert!(
@@ -2202,7 +2213,28 @@ mod tests {
         );
 
         let expected = ["task declaration ready was withdrawn".to_string()];
-        assert_eq!(rationales_for([x.clone(), y.clone()]).await, expected);
-        assert_eq!(rationales_for([y, x]).await, expected);
+        assert_eq!(
+            withdrawal_rationales_for([x.clone(), y.clone()]).await,
+            expected
+        );
+        assert_eq!(withdrawal_rationales_for([y, x]).await, expected);
+    }
+
+    /// #1160 review ② (second round) — the counter-example that makes the fold
+    /// falsifiable. Both live blocks keep `ready` and drop only the user
+    /// release, so `Ready` is not an edge *any* block withdrew and the only
+    /// honest rationale is the release one. A fold hard-coded to
+    /// `Some(WithdrawalEdge::Ready)` — which the paired case above cannot see —
+    /// reports "ready was withdrawn" about a declaration that is still ready.
+    #[tokio::test]
+    async fn withdrawal_rationale_names_the_release_edge_when_it_is_the_only_one() {
+        let x = contended_task_block(0, true, false);
+        let y = contended_task_block(1, true, false);
+        let expected = ["task declaration user release was withdrawn".to_string()];
+        assert_eq!(
+            withdrawal_rationales_for([x.clone(), y.clone()]).await,
+            expected
+        );
+        assert_eq!(withdrawal_rationales_for([y, x]).await, expected);
     }
 }

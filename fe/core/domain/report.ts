@@ -747,25 +747,53 @@ function declarationWord(state: ReportTaskState): string | null {
  * not evidence about this row, and the key index is used *only* for a verdict
  * whose block id matches no block at all.
  *
- * **That last sentence is enforced here, at indexing time, not at lookup.** A
- * verdict naming a block this report *does* have has already said which row it
- * is about; letting it also sit in the key index would let it decorate a
- * *different* row through the fallback whenever its own row happens not to
- * consult the index. Two rows `b-alpha`/`alpha` and `b-beta`/`beta` plus one
- * verdict `{blockId: 'b-beta', key: 'alpha'}` is the whole trigger: `b-alpha`
- * finds no verdict at its own id, falls back on its key, and reports a run the
- * verdict itself says belongs to `b-beta` — including routing the click at
- * `b-beta`'s worker card. So `rowBlockIds` gates the key index: only a verdict
- * whose block id names no row at all (the kernel's synthesised `blockId: ''`
- * among them) may ever be reached by key.
+ * **The key index is gated from both ends, and it takes both.**
+ *
+ * *Verdict side.* A verdict naming a block this report *does* have has already
+ * said which row it is about; letting it also sit in the key index would let it
+ * decorate a *different* row through the fallback whenever its own row happens
+ * not to consult the index. Two rows `b-alpha`/`alpha` and `b-beta`/`beta` plus
+ * one verdict `{blockId: 'b-beta', key: 'alpha'}` is the whole trigger:
+ * `b-alpha` finds no verdict at its own id, falls back on its key, and reports
+ * a run the verdict itself says belongs to `b-beta` — including routing the
+ * click at `b-beta`'s worker card. So `rowBlockIds` keeps such a verdict out.
+ *
+ * *Row side.* That half is **not** sufficient, and an earlier cut of this
+ * comment claimed it was ("only a verdict whose block id names no row at all
+ * may ever be reached by key" — true, and beside the point). It only bites
+ * while the block the verdict names is still in the document. Hard-delete that
+ * block and paste **two** new ones on its key in the same edit, and the verdict
+ * about the deleted block names no row any more: it enters the key index, and
+ * *both* new rows — neither of which has a verdict at its own id — fall back
+ * onto it, so one dead task's terminal status and worker card get painted onto
+ * two rows at once. A terminal status is outside `eventlessWindowTaskStatuses`,
+ * so nothing restarts the poll that would clear it either.
+ *
+ * Hence `keysClaimedByManyRows`: **a key more than one row in this render
+ * claims is not a usable fallback for any of them.** That is a question about
+ * the rows on screen — how many of them would consult this entry — and it is
+ * answered by counting them, which is why it can live here. It is *not* the
+ * removed `contestedLiveKeys` pre-pass in another spelling: that one re-read
+ * the blocks to decide who *owns* a key and then overrode the kernel's own
+ * answer, a second authority on ownership. This one never contradicts a
+ * verdict; it declines to guess which of several rows an id-less verdict was
+ * about, and the identity join is untouched — a row whose own block id is named
+ * still shows its run, contested key or not.
  */
-function indexVerdicts(verdicts: readonly TaskVerdict[], rowBlockIds: ReadonlySet<string>) {
+function indexVerdicts(
+  verdicts: readonly TaskVerdict[],
+  rowBlockIds: ReadonlySet<string>,
+  keysClaimedByManyRows: ReadonlySet<string>,
+) {
   const byBlockId = new Map<string, TaskVerdict>();
   const byKey = new Map<string, TaskVerdict>();
   for (const verdict of verdicts) {
     if (verdict.blockId !== '' && !byBlockId.has(verdict.blockId)) byBlockId.set(verdict.blockId, verdict);
     const namesARow = verdict.blockId !== '' && rowBlockIds.has(verdict.blockId);
-    if (verdict.key !== '' && !namesARow && !byKey.has(verdict.key)) byKey.set(verdict.key, verdict);
+    const ambiguousRow = keysClaimedByManyRows.has(verdict.key);
+    if (verdict.key !== '' && !namesARow && !ambiguousRow && !byKey.has(verdict.key)) {
+      byKey.set(verdict.key, verdict);
+    }
   }
   return { byBlockId, byKey };
 }
@@ -776,7 +804,9 @@ function indexVerdicts(verdicts: readonly TaskVerdict[], rowBlockIds: ReadonlySe
  * The block-id hit wins, but only if it does not contradict the declared key;
  * the key index is consulted only when no verdict names this block id, which is
  * what keeps a redeclared key from reporting the withdrawn block's run (and
- * vice versa) on both rows.
+ * vice versa) on both rows. A miss here is a real answer — the key index has
+ * already dropped every key that more than one row claims, so an ambiguous
+ * fallback returns nothing rather than a guess.
  */
 function verdictFor(
   blockId: string, declaredKey: string,
@@ -828,6 +858,31 @@ function declaredTaskKey(block: ReportBlock): string {
 }
 
 /**
+ * The keys two or more rows of this render declare.
+ *
+ * Every task block counts, withdrawn ones included: a tombstone beside its live
+ * re-declaration is two rows on one key, and an id-less verdict on that key is
+ * as unattributable there as it is between two live blocks — the kernel emits
+ * one verdict per declaration, so it has already said the key alone does not
+ * pick a row out. `''` is skipped because `verdictFor` refuses to look an
+ * undeclared key up in the first place (the display name falls back to the
+ * block id, and matching *that* against the key index is its own defect), so
+ * counting it would decide nothing.
+ */
+function keysDeclaredByMoreThanOneRow(blocks: readonly ReportBlock[]): ReadonlySet<string> {
+  const seen = new Set<string>();
+  const many = new Set<string>();
+  for (const block of blocks) {
+    if (!isTaskBlock(block)) continue;
+    const key = declaredTaskKey(block);
+    if (key === '') continue;
+    if (seen.has(key)) many.add(key);
+    else seen.add(key);
+  }
+  return many;
+}
+
+/**
  * Every `task` block, in document order, as one row each, decorated with
  * whatever the kernel's task projection says about it.
  *
@@ -848,7 +903,11 @@ export function deriveReportTasks(
      key index is only for verdicts about blocks this report does not have, and
      that predicate is not decidable one block at a time. */
   const rowBlockIds = new Set(blocks.filter(isTaskBlock).map((block) => block.id));
-  const index = indexVerdicts(verdicts, rowBlockIds);
+  /* And every key more than one of those rows declares: the fallback cannot
+     say which of them an id-less verdict was about, so it answers none of
+     them. Also not decidable one block at a time. */
+  const keysClaimedByManyRows = keysDeclaredByMoreThanOneRow(blocks);
+  const index = indexVerdicts(verdicts, rowBlockIds, keysClaimedByManyRows);
   const rows: ReportTaskRow[] = [];
   for (const block of blocks) {
     if (!isTaskBlock(block)) continue;
