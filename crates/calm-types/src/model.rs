@@ -25,6 +25,11 @@ pub enum CardRole {
     Worker,
     Spec,
     ReportCard,
+    /// #1189 — a wave-scoped assistant conversation. Reads/writes the
+    /// wave report through the block channel, runs shell in the wave
+    /// workspace, and has **no** lifecycle / plan / review / admin
+    /// authority. See `role_gate::enforce_assistant_scope`.
+    Assistant,
 }
 
 impl CardRole {
@@ -33,6 +38,7 @@ impl CardRole {
             CardRole::Worker => "worker",
             CardRole::Spec => "spec",
             CardRole::ReportCard => "reportcard",
+            CardRole::Assistant => "assistant",
         }
     }
 }
@@ -45,6 +51,7 @@ impl TryFrom<String> for CardRole {
             "worker" => Ok(CardRole::Worker),
             "spec" => Ok(CardRole::Spec),
             "reportcard" => Ok(CardRole::ReportCard),
+            "assistant" => Ok(CardRole::Assistant),
             other => Err(format!("unknown cards.role value `{other}`")),
         }
     }

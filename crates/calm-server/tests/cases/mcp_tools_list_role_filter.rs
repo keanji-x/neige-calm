@@ -115,6 +115,33 @@ async fn tools_list_for_worker_role_returns_completion_tools() {
     );
 }
 
+/// #1189 F6 — the `visible_to_roles` widening on the block channel had no
+/// test of its own (Spec / Worker / ReportCard each have an exact-set
+/// assertion; Assistant did not). Exact set, not `contains`: a future
+/// descriptor that quietly adds `CardRole::Assistant` — say
+/// `calm.report.write`, whose whole point is that it can carry lifecycle —
+/// must turn this red rather than slip in under a subset check.
+///
+/// `calm.report.read` is deliberately NOT here: it is callable by an
+/// assistant (see `mcp_assistant_tool_gate`) but its descriptor carries
+/// `visible_to_roles: &[]`, so it is hidden from *every* role's
+/// `tools/list` and is advertised through the agent brief instead.
+#[tokio::test]
+async fn tools_list_for_assistant_role_returns_block_channel_only() {
+    let names = tools_list_names_for_role(CardRole::Assistant).await;
+    assert_eq!(
+        names,
+        vec![
+            "calm.report.blocks.delete",
+            "calm.report.blocks.kinds",
+            "calm.report.blocks.move",
+            "calm.report.blocks.upsert",
+            "calm.report.write_markdown",
+        ],
+        "assistant tools/list must be exactly the report block channel",
+    );
+}
+
 #[tokio::test]
 async fn tools_list_for_report_card_role_is_empty() {
     let names = tools_list_names_for_role(CardRole::ReportCard).await;

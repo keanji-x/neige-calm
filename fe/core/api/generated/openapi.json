@@ -4480,7 +4480,8 @@
         "enum": [
           "worker",
           "spec",
-          "reportcard"
+          "reportcard",
+          "assistant"
         ]
       },
       "CardRuntimeView": {
