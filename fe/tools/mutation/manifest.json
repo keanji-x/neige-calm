@@ -105,15 +105,16 @@
       "oracle:INV-OVERLAY-006"
     ],
     "target": "tools/test-tier/checker.ts",
-    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -23,7 +23,7 @@ const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n  */\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'browser-coarse', 'playwright']),\n-  jsdom: Object.freeze(['web-dom', 'browser', 'browser-coarse']),\n+  jsdom: Object.freeze(['web-dom', 'browser-coarse']),\n   static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n   none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n } as const);\n",
+    "patch": "diff --git a/tools/test-tier/checker.ts b/tools/test-tier/checker.ts\n--- a/tools/test-tier/checker.ts\n+++ b/tools/test-tier/checker.ts\n@@ -23,7 +23,7 @@ const LOCATION = /^([^\\s:]+):(\\d+)(?:-(\\d+))?$/;\n  */\n const EXPECTED_PROJECTS = Object.freeze({\n   browser: Object.freeze(['browser', 'browser-coarse', 'playwright']),\n-  jsdom: Object.freeze(['web-dom', 'browser', 'browser-coarse']),\n+  jsdom: Object.freeze(['web-dom']),\n   static: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n   none: Object.freeze(['platform-independent', 'web-dom', 'browser', 'browser-coarse', 'playwright']),\n } as const);\n",
     "expected_red": [
-      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser"
+      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser",
+      "test-tier-project fixtures checks whether jsdom tier has sufficient capability in browser-coarse"
     ],
     "selection_paths": [
       "tools/test-tier/checker.ts",
       "tools/test-tier/checker.test.ts"
     ],
-    "why_more_than_one": "Only the explicit higher-capability jsdom-to-browser case should turn red; any additional red indicates unrelated tier behavior changed."
+    "why_more_than_one": "The edit strips the jsdom row's browser escape hatch, and there are now two browser projects in it, so both higher-capability jsdom-to-browser cases turn red — dropping only one of them would leave a jsdom-tier oracle landing in browser-coarse still accepted, which is the acceptance this mutation exists to remove. Any third red indicates unrelated tier behavior changed."
   },
   {
     "mutation_id": "test-tier-allow-browser-overlap",

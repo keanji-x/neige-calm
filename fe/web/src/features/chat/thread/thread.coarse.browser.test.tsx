@@ -33,8 +33,11 @@
  *
  * The one claim a render cannot make is the universal negative, so it moves
  * here rather than being deleted: "no rule anywhere reads `--nc-dot-lift`
- * outside a fine-pointer condition" is a statement about rules that do not
- * exist yet, and the engine can only be asked about the ones that do.
+ * where a finger can reach it" is a statement about rules that do not exist
+ * yet, and the engine can only be asked about the ones that do. It is a
+ * *sweep* over the loaded stylesheets, but every condition it finds is still
+ * put to `matchMedia` rather than read — which is only possible because this
+ * file, unlike the one it came from, runs on the device in question.
  *
  * ── The fixture is a copy, deliberately ──────────────────────────────────
  *
@@ -161,57 +164,128 @@ function centre(index: number): number {
 }
 
 /**
- * The conditions a grouping rule adds to everything inside it.
+ * One place the cascade could hand `--nc-dot-lift` to this page, with the media
+ * conditions standing between it and the page.
  *
- * `@layer` adds nothing — it orders the cascade and constrains nothing about
- * when a rule applies. `@media` contributes its own text, *conjoined* with
- * whatever it is already nested in rather than replacing it, so a fine block
- * inside an outer query still reads as fine.
+ * `media` is every `@media` condition enclosing the site, outermost first, each
+ * one kept as its own string. It is **not** joined: the two escapes that killed
+ * the joined form are `@media not (pointer: fine)` and
+ * `@media (pointer: fine), (pointer: coarse)`, and neither survives being
+ * concatenated with ` and ` into something a parser will take. Keeping them
+ * apart means each is asked of the engine on its own and the conjunction is
+ * done over the booleans, which is what nesting means anyway.
  *
- * **Everything else is a failure written into the condition string.** This
- * walk backs a universal negative — "no rule anywhere reads `--nc-dot-lift`
- * outside a fine-pointer condition" — and a grouping rule the walk does not
- * recognise is precisely the case where it does not know what it is looking
- * at. Skipping one silently, which is what descending only into `@media` and
- * `@layer` did, let a `@supports` or `@container` block hold a lift consumer
- * with the whole file green. Naming the type in the string means the caller's
- * `toContain('pointer: fine')` fails on it and the failure message says which
- * construct arrived.
+ * `where` is the container chain, for the failure message only. Nothing is
+ * decided from it.
  */
-function conditionsUnder(rule: CSSGroupingRule, outer: readonly string[]): string[] {
-  if (rule instanceof CSSLayerBlockRule) return [...outer];
-  if (rule instanceof CSSMediaRule) return [...outer, rule.conditionText];
-  const text = 'conditionText' in rule ? String(rule.conditionText) : '';
-  return [...outer, `<unhandled grouping rule ${rule.constructor.name}: ${text}>`];
+type LiftSite = { media: readonly string[]; where: string };
+
+/**
+ * Whether the cascade can reach this page through `site`.
+ *
+ * A nested rule applies only if **every** enclosing condition matches, so one
+ * false condition is enough to put it out of reach. The engine is asked, rather
+ * than the text being pattern-matched: the case this backs runs *inside* a
+ * coarse context, so "does this condition hold here" is a question the page can
+ * answer directly, and a substring test for `pointer: fine` cannot. Measured on
+ * this context, all three of the conditions a text test waves through are true:
+ * `not (pointer: fine)`, `(pointer: fine), (pointer: coarse)`, and — the outer
+ * half of a nested pair — `(any-pointer: fine)` is false while the
+ * `(pointer: coarse)` inside it is true, which is why the two are evaluated
+ * separately and not conjoined into one string.
+ */
+function reachesHere(site: LiftSite): boolean {
+  return site.media.every((condition) => matchMedia(condition).matches);
 }
 
 /**
- * Every media condition under which some rule declares `needle`, walking layers
- * and nested conditions. `''` for a rule at the top level. Copied from
- * `thread.browser.test.tsx`, where it is about to have no callers left: the
- * claim it serves is the one this file's renders cannot make.
+ * Every place a loaded stylesheet could hand `needle` to this page.
  *
- * Exported to the two cases below rather than inlined, because one of them
- * feeds it a stylesheet built to be the thing it must not miss.
+ * This walk backs a universal negative — "no rule anywhere reads
+ * `--nc-dot-lift` where a finger can get it" — so **the whole of its design is
+ * that nothing is skipped**. Three shapes of skip have each been demonstrated
+ * to hide a live consumer, and each is closed here rather than reasoned about:
+ *
+ * - **A container the walk does not descend into.** Descending only into
+ *   `@media` and `@layer` hid `@supports` and `@container` whole. Descending
+ *   into every `CSSGroupingRule` still hid `@keyframes` and `@property`, which
+ *   are not grouping rules at all: a `translate: 0 var(--nc-dot-lift)` inside
+ *   an ungated `@keyframes`, and `@property --nc-dot-lift { initial-value: 1 }`,
+ *   both came back as no finding.
+ * - **A sheet the walk never sees.** `document.styleSheets` does not list an
+ *   `@import`ed sheet, and `CSSImportRule` is not a grouping rule either, so a
+ *   consumer behind one produced nothing at all. Adopted sheets are the same
+ *   shape of miss; this page has none today (measured: zero), and the list is
+ *   walked anyway rather than the count being trusted to stay zero.
+ * - **A sheet the walk cannot read.** `sheet.cssRules` throws `SecurityError`
+ *   on a cross-origin sheet while that sheet's rules still take effect, and
+ *   swallowing the throw was a silent pass on a stylesheet whose whole contents
+ *   are unknown. It is recorded as a site instead.
+ *
+ * What is left is one allowlist, and it is the only one, so it is worth being
+ * precise about why it is safe: a rule that is **not** descended into is judged
+ * by `rule.cssText`, its own complete serialisation. If the property's name
+ * does not appear in it, no declaration inside it names the property — that is
+ * a property of the serialisation, not a marker convention. `@import` is the
+ * one construct that defeats it, because its serialisation is a URL, and it is
+ * therefore the one construct handled by name.
+ *
+ * Only `@media` narrows a site. `@supports`, `@container`, `@scope`,
+ * `@starting-style` and `@layer` are conditions on the document, the element or
+ * the cascade, never on the device, so none of them can put a rule out of a
+ * finger's reach and none of them contributes to `media`. A consumer inside one
+ * therefore comes back with an empty condition list and is reported.
  */
-function mediaConditionsDeclaring(needle: string): string[] {
-  const found: string[] = [];
-  const walk = (rules: CSSRuleList, conditions: readonly string[]) => {
+function liftSites(needle: string): LiftSite[] {
+  const found: LiftSite[] = [];
+
+  function walk(rules: CSSRuleList, media: readonly string[], trail: readonly string[]) {
     for (const rule of [...rules]) {
-      if (rule instanceof CSSGroupingRule) { walk(rule.cssRules, conditionsUnder(rule, conditions)); continue; }
-      /* Nested style rules carry their declarations in child rules of their own,
-         so the recursion is not only over grouping rules. */
+      const label = (text: string) => [...trail, text];
+      /* Style rules carry declarations *and*, since nesting, child rules. */
       if (rule instanceof CSSStyleRule) {
-        if (rule.style.cssText.includes(needle)) found.push(conditions.join(' and '));
-        walk(rule.cssRules, conditions);
+        const at = label(rule.selectorText);
+        if (rule.style.cssText.includes(needle)) found.push({ media: [...media], where: at.join(' › ') });
+        walk(rule.cssRules, media, at);
+        continue;
+      }
+      if (rule instanceof CSSMediaRule) {
+        const text = rule.media.mediaText;
+        walk(rule.cssRules, [...media, text], label(`@media ${text}`));
+        continue;
+      }
+      if (rule instanceof CSSGroupingRule) {
+        const text = 'conditionText' in rule ? String(rule.conditionText) : '';
+        walk(rule.cssRules, media, label(`${rule.constructor.name} ${text}`.trimEnd()));
+        continue;
+      }
+      if (rule instanceof CSSImportRule) {
+        const at = label(`@import ${rule.href}`);
+        const inner = rule.styleSheet;
+        /* A sheet that has not arrived is a sheet whose contents are unknown,
+           which is the same standing as one that cannot be read. */
+        if (inner === null) { found.push({ media: [...media], where: `${at.join(' › ')} <not loaded>` }); continue; }
+        walkSheet(inner, media, at);
+        continue;
+      }
+      if (rule.cssText.includes(needle)) {
+        found.push({ media: [...media], where: label(`${rule.constructor.name}`).join(' › ') });
       }
     }
-  };
-  for (const sheet of [...document.styleSheets]) {
-    let rules: CSSRuleList;
-    try { rules = sheet.cssRules; } catch { continue; }
-    walk(rules, []);
   }
+
+  function walkSheet(sheet: CSSStyleSheet, outer: readonly string[], trail: readonly string[]) {
+    const media = sheet.media.mediaText === '' ? [...outer] : [...outer, sheet.media.mediaText];
+    const at = [...trail, sheet.href ?? '<inline>'];
+    let rules: CSSRuleList;
+    try { rules = sheet.cssRules; } catch (error) {
+      found.push({ media, where: `${at.join(' › ')} <unreadable: ${String(error)}>` });
+      return;
+    }
+    walk(rules, media, at);
+  }
+
+  for (const sheet of [...document.styleSheets, ...document.adoptedStyleSheets]) walkSheet(sheet, [], []);
   return found;
 }
 
@@ -430,47 +504,164 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * here. It cannot say anything about a rule that does not exist yet — a new
    * declaration reading `--nc-dot-lift` outside a fine condition would change
    * some property this file never measures and stay green. So the sweep is over
-   * the loaded stylesheet: every rule declaring the property, wherever it is,
-   * has to sit under a `pointer: fine` condition.
+   * every loaded stylesheet: no site that can hand the property to a page may
+   * be reachable from *this* page.
    *
-   * This is the one assertion that moved out of `thread.browser.test.tsx`'s
-   * deleted case unchanged rather than being subsumed by a measurement.
+   * **The question is put to the engine, not to the condition's text**, and
+   * that is the whole difference between this case and the three rounds of it
+   * that came before. Asserting `toContain('pointer: fine')` over a condition
+   * string was walked past three separate ways, each demonstrated rather than
+   * imagined: `@media not (pointer: fine)` contains the needle and matches
+   * here; the media list `@media (pointer: fine), (pointer: coarse)` contains
+   * it and matches here — swapping the stylesheet's one real fine block for
+   * that list left this case green with the rail fully magnified under a
+   * finger; and conjoining nested conditions into one string let any outer text
+   * carrying the needle shield a coarse inner one, so
+   * `@media not (pointer: fine) { @media (pointer: coarse) { … } }` reads as
+   * fine while applying here in full. This case runs *inside* a coarse context,
+   * so none of that has to be parsed: every condition is asked of `matchMedia`
+   * and the nesting is conjoined over the answers.
+   *
+   * The count is asserted first because the sweep's own failure mode is
+   * finding nothing: three consumers live in `thread.module.css` today.
    */
-  it('keeps every rule that reads the published lift inside a fine condition', () => {
-    const conditions = mediaConditionsDeclaring('--nc-dot-lift');
-    expect(conditions.length).toBeGreaterThan(0);
-    for (const condition of conditions) expect(condition).toContain('pointer: fine');
+  it('keeps every rule that reads the published lift out of a finger’s reach', () => {
+    const sites = liftSites('--nc-dot-lift');
+    expect(sites.length).toBeGreaterThanOrEqual(3);
+    expect(sites.filter(reachesHere).map(({ where }) => where)).toEqual([]);
   });
 
   /*
    * ── And the sweep above is only worth its name if it cannot be walked past ─
    *
    * A universal negative asserted by a walk is only as strong as the walk's
-   * coverage, and the first version of it descended into exactly two rule
-   * types: `@media` and `@layer`. Every other grouping rule — `@supports`,
-   * `@container`, `@scope`, `@starting-style` — was skipped whole, so a
-   * consumer of `--nc-dot-lift` placed inside one was invisible to the case
-   * above and the file stayed green with a coarse rail free to be magnified.
+   * coverage, so every container the walk has ever been shown to miss gets a
+   * fixture, and each fixture is **one** violation: injected on its own, the
+   * sweep must come back with exactly one reachable site, and its trail must
+   * name the construct that carried it. A fixture that produced two would be
+   * proving something about the other one.
    *
-   * So the single-violation fixture is here rather than in a reviewer's head:
-   * one `@supports` block, declaring the property on the same pseudo-element
-   * the real rules use, installed into this page's own stylesheet list. The
-   * sweep has to come back with a condition for it, and that condition has to
-   * be one the case above rejects. `@supports (color: red)` because it must
-   * genuinely match — a block the engine drops is not a test of anything.
+   * The list is the history of the misses, not a survey of CSS. Descending
+   * only into `@media` and `@layer` hid `@supports` and `@container`;
+   * descending into every grouping rule still hid `@keyframes` and `@property`,
+   * which are not grouping rules; and reading condition text instead of asking
+   * the engine let the three media forms below through. `@supports
+   * (color: red)` and `@container (min-width: 1px)` are written to genuinely
+   * match — a block the engine drops is not a test of anything.
    */
-  it('fails closed on a lift consumer inside a grouping rule it does not know', () => {
+  it.each([
+    ['@supports (color: red) { .railDot::before { --nc-dot-lift: 1; } }', 'CSSSupportsRule (color: red)'],
+    ['@container (min-width: 1px) { .railDot::before { --nc-dot-lift: 1; } }', 'CSSContainerRule (min-width: 1px)'],
+    ['@scope (body) { .railDot::before { --nc-dot-lift: 1; } }', 'CSSScopeRule'],
+    ['@keyframes nc-lift-probe { to { translate: 0 var(--nc-dot-lift); } }', 'CSSKeyframesRule'],
+    ['@property --nc-dot-lift { syntax: "<number>"; inherits: false; initial-value: 1; }', 'CSSPropertyRule'],
+    ['@media not (pointer: fine) { .railDot::before { --nc-dot-lift: 1; } }', '@media not (pointer: fine)'],
+    ['@media (pointer: fine), (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } }', '@media (pointer: fine), (pointer: coarse)'],
+    ['@media not (pointer: fine) { @media (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } } }', '@media not (pointer: fine) › @media (pointer: coarse)'],
+  ])('reports the single lift consumer hidden in %s', (css, trail) => {
     const style = document.createElement('style');
-    style.textContent = '@supports (color: red) { .railDot::before { --nc-dot-lift: 1; } }';
+    style.textContent = css;
     document.head.append(style);
     try {
-      const conditions = mediaConditionsDeclaring('--nc-dot-lift');
-      const escaped = conditions.filter((condition) => !condition.includes('pointer: fine'));
-      expect(escaped).toHaveLength(1);
-      expect(escaped[0]).toContain('CSSSupportsRule');
-      expect(escaped[0]).toContain('(color: red)');
+      const reached = liftSites('--nc-dot-lift').filter(reachesHere);
+      expect(reached).toHaveLength(1);
+      expect(reached[0].where).toContain(trail);
     } finally {
       style.remove();
+    }
+  });
+
+  /*
+   * ── And the other direction of the nesting, which is what keeps it honest ─
+   *
+   * Reporting every nested site would satisfy every fixture above and be
+   * useless. Nesting is a conjunction, so an inner condition that matches sits
+   * behind an outer one that does not and the rule is genuinely out of reach.
+   * `(any-pointer: fine)` is that outer condition here — measured false on this
+   * context, alongside `(any-pointer: coarse)` true — and a walk that took the
+   * *disjunction* of the answers instead would report this and turn the case
+   * above into noise on any stylesheet that nests at all.
+   */
+  it('leaves a coarse block alone when the query around it does not match', () => {
+    const style = document.createElement('style');
+    style.textContent = '@media (any-pointer: fine) { @media (pointer: coarse) { .railDot::before { --nc-dot-lift: 1; } } }';
+    document.head.append(style);
+    try {
+      expect(matchMedia('(any-pointer: fine)').matches).toBe(false);
+      const sites = liftSites('--nc-dot-lift');
+      expect(sites.filter(({ where }) => where.includes('any-pointer'))).toHaveLength(1);
+      expect(sites.filter(reachesHere)).toEqual([]);
+    } finally {
+      style.remove();
+    }
+  });
+
+  /*
+   * ── Two containers that are not rules in this document at all ─────────────
+   *
+   * `document.styleSheets` does not list an `@import`ed sheet and
+   * `CSSImportRule` is not a grouping rule, so a consumer behind one was not
+   * missed by a wrong condition — it produced no finding whatsoever. The
+   * fixture imports a blob, which is a sheet arriving over the network as far
+   * as the CSSOM is concerned, so it is awaited rather than assumed: the
+   * `styleSheet` back-reference is null until it lands, and a null one is
+   * itself reported, because a sheet whose contents are unknown is not a sheet
+   * that has been checked.
+   *
+   * The unreadable sheet is the other half. A cross-origin sheet still applies
+   * while `cssRules` throws `SecurityError`, and the walk used to `continue` on
+   * that throw — a silent pass over a stylesheet nobody can see inside. It is
+   * reachable here for real rather than stubbed: the runner serves this page
+   * from `localhost`, so the identical URL under `127.0.0.1` is a different
+   * origin to the same server. Measured, that link produces a sheet in
+   * `document.styleSheets` whose `cssRules` throws — asserted below before the
+   * sweep is asked anything, so a runner where it does not fails loudly instead
+   * of passing on an empty page.
+   */
+  it('reports a lift consumer behind an @import', async () => {
+    const url = URL.createObjectURL(new Blob(['.railDot::before { --nc-dot-lift: 1; }'], { type: 'text/css' }));
+    const style = document.createElement('style');
+    style.textContent = `@import url("${url}");`;
+    document.head.append(style);
+    try {
+      const imported = style.sheet!.cssRules[0] as CSSImportRule;
+      for (let attempt = 0; attempt < 200 && imported.styleSheet === null; attempt += 1) await pause(10);
+      expect(imported.styleSheet).not.toBeNull();
+      const reached = liftSites('--nc-dot-lift').filter(reachesHere);
+      expect(reached).toHaveLength(1);
+      expect(reached[0].where).toContain('@import');
+      expect(reached[0].where).toContain('.railDot::before');
+    } finally {
+      style.remove();
+      URL.revokeObjectURL(url);
+    }
+  });
+
+  it('reports a stylesheet whose rules it is not allowed to read', async () => {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    /* The runner's own stylesheet, asked for as CSS (`?direct`, which is what
+       makes the dev server answer `text/css` rather than a JS module) from the
+       other name for the same host. A cross-origin sheet with the right type
+       loads and applies; only its rules are off limits. */
+    link.href = `${location.origin.replace('localhost', '127.0.0.1')}/web/src/features/chat/thread/thread.module.css?direct`;
+    document.head.append(link);
+    try {
+      await new Promise((resolve) => {
+        link.addEventListener('load', resolve);
+        link.addEventListener('error', resolve);
+        setTimeout(resolve, 5_000);
+      });
+      const sheet = [...document.styleSheets].find((candidate) => candidate.ownerNode === link);
+      expect(sheet).toBeDefined();
+      expect(() => sheet!.cssRules).toThrow(/Cannot access rules/);
+
+      const reached = liftSites('--nc-dot-lift').filter(reachesHere);
+      expect(reached).toHaveLength(1);
+      expect(reached[0].where).toContain('<unreadable:');
+      expect(reached[0].where).toContain('127.0.0.1');
+    } finally {
+      link.remove();
     }
   });
 

@@ -31,6 +31,19 @@ describe('vitest project partition', () => {
     expect(projectsForPath(path, projects)).toEqual(expected);
   });
 
+  /*
+   * The one representative path that must land in *no* project, which is why it
+   * is not a row above: `tools/architecture/fixtures/**` holds deliberately
+   * broken sources the lint rules are pointed at, and `check-test-tier.mjs`
+   * drops that directory from `trackedTests`. A coarse-suffixed file under it
+   * would therefore be executed for real while being invisible to the partition
+   * check — and `browser-coarse` was the one collecting project whose exclude
+   * did not say so. Nothing asserted that exclude until this row.
+   */
+  it('collects nothing out of the architecture fixture directory', () => {
+    expect(projectsForPath('tools/architecture/fixtures/probe.coarse.browser.test.ts', projects)).toEqual([]);
+  });
+
   it('runs every configured project in either test script', () => {
     const scripted = new Set([
       ...projectNamesFromScript(packageJson.scripts.test), ...projectNamesFromScript(packageJson.scripts['test:browser']),

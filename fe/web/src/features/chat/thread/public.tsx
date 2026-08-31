@@ -1222,6 +1222,21 @@ function ExchangeRail({ exchanges, active, onJump }: {
                * every dot and re-attaches every dot on each pass, and trimming
                * to `index` would cut live entries out from under the ones that
                * have not been detached yet.
+               *
+               * **No test binds this, and none is added to.** What it changes
+               * is retention and the per-frame scan's length, and both are
+               * invisible from outside: reverting the trim to the bare
+               * `dotRefs.current[index] = node` leaves all 52 cases in
+               * `thread.browser.test.tsx` and all 17 in
+               * `thread.coarse.browser.test.tsx` green, and an adversarial
+               * shrink / grow / id-swap probe reading the full per-dot ink
+               * profile came back byte-identical with the trim and without it —
+               * every slot the scan skips is one whose `null` it would have
+               * skipped anyway. Binding it would take a handle on the array
+               * itself: a `data-` attribute carrying its length, or an exported
+               * counter, both of which are production surface that exists only
+               * to be read by a test. That trade is refused; an unasserted note
+               * is the honest record.
                */
               ref={(node) => {
                 dotRefs.current[index] = node;
