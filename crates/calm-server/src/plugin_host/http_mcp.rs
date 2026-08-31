@@ -46,10 +46,13 @@
 //!   requests. Since `bringup_timeout_ms` has a validated ceiling, this
 //!   product has one too;
 //! * `PluginHost::autospawn_enabled` bounds the connector portion of boot as a
-//!   WHOLE. Bring-up is still inline and still serial (acceptance §4 #7 needs
-//!   materialization to precede the boot audit's `exposes_tools` read), so
-//!   without that second bound N unreachable connectors would still cost
-//!   N × the per-connector cap.
+//!   WHOLE — spawn, reconciliation and every persisted emission, under one
+//!   `connector_phase_ceiling`. Bring-up is still inline and still serial
+//!   (acceptance §4 #7 needs materialization to precede the boot audit's
+//!   `exposes_tools` read), so without that second bound N unreachable
+//!   connectors would still cost N × the per-connector cap — and without it
+//!   covering the emissions too, a slow event store would cost N × a repo
+//!   write on top.
 //!
 //! **The API key must never reach a string a human or an agent can read.** It
 //! rides in the URL's query string, and `ureq::Error`'s `Display` prints that
@@ -87,11 +90,19 @@
 //! Parsing first and then walking the tree — string values AND object keys —
 //! removes both: every string the module can hand back is scrubbed in its
 //! decoded form, and the document's syntax is never touched.
-//! [`super::connector::read_secrets`] constrains the credential at the source
-//! as defence in depth so the pathological shapes cannot be authored either.
-//! (Residual, accepted: an upstream that echoes an all-digit credential back as
-//! a JSON *number* rather than a string is not covered — there is no string to
-//! scrub, and coercing numbers would corrupt the payload.)
+//!
+//! **The shapes the scrubber cannot handle are refused before a client exists**
+//! ([`HttpCredential::parse`]). That check is on the constructor's parameter
+//! type, not in `read_secrets`, for two reasons: `HttpMcpClient::new` is
+//! `pub` and used to accept any `&str`, so the constraint could be bypassed by
+//! constructing a client in-process; and a `cli-query` secret is not on the
+//! HTTP-redaction path at all and has no business obeying HTTP-redaction rules.
+//! A credential that is entirely digits is refused there too — `scrub_value`
+//! deliberately does not touch JSON numbers (coercing them would corrupt the
+//! payload), so an upstream echoing an all-digit key back as a number in
+//! `structuredContent` would put it in the tool result and the wave transcript.
+//! Constraining the credential removes the case; there is nothing left to
+//! classify as residual.
 //!
 //! The raw-text scrub survives in exactly one place: the non-2xx arm, where the
 //! body is an arbitrary error page with nothing to parse. There the
@@ -130,6 +141,123 @@ pub const MAX_UPSTREAM_DETAIL_CHARS: usize = 512;
 /// (`serverInfo.name`, `protocolVersion`). Bounded and scrubbed, because both
 /// are attacker-controlled text that lands in the operator's log.
 const MAX_SERVER_IDENT_CHARS: usize = 128;
+
+/// Shortest credential this client will carry. Not a strength requirement — it
+/// is a *scrubbing* requirement: redaction is by literal match, so a short value
+/// matches constantly inside unrelated upstream text and turns redaction into
+/// corruption (a one-character credential of `e` rewrites every `true`).
+pub const MIN_CREDENTIAL_LEN: usize = 8;
+/// The TCP-connect deadline is never allowed below this.
+///
+/// Connect is a THIRD phase, and it belongs to neither [`Phase`]: it is network
+/// RTT plus a TLS handshake, work that is identical whether the tool behind it
+/// answers in 200 ms or ten minutes. ureq resolves `timeout_connect` **ahead of**
+/// the per-request deadline (`connect_host` in ureq 2.12 builds its connect
+/// deadline from `timeout_connect` when set and only falls back to the request
+/// deadline otherwise), so it cannot be relaxed per call: setting it from the
+/// bring-up budget alone made every steady-state `tools/call` subject to the
+/// bring-up deadline the moment the pooled connection was cold or idle-expired.
+/// The repo's own fixture (`bringup 400 ms`, `request 600 s`) would have failed
+/// against any real TLS endpoint; the long-call test misses it only because it
+/// reuses the connection bring-up opened.
+///
+/// Raising the floor does not weaken any boot bound: boot is bounded by
+/// `tokio::time::timeout` in `spawn_mcp_http` and by the connector-phase fence
+/// in `autospawn_enabled_within`, neither of which delegates to ureq's clock.
+/// The cost of a black-holed host is that the abandoned blocking-pool closure
+/// can linger for this long after the async caller has given up — one thread,
+/// bounded, and it already could for the read phase.
+pub const CONNECT_TIMEOUT_FLOOR: Duration = Duration::from_secs(10);
+
+/// A credential that has been checked against everything the HTTP path's
+/// redaction machinery requires of it.
+///
+/// **This type is the invariant.** [`HttpMcpClient::new`] takes one instead of a
+/// `&str`, and the only way to obtain one is [`HttpCredential::parse`], so no
+/// call site — including one in a future module, or a test — can register a
+/// scrub pattern that the scrubber cannot handle. Putting the same rules in
+/// `read_secrets` did not achieve that: `HttpMcpClient::new` is `pub` and was
+/// reachable with an arbitrary `&str`, and `read_secrets` simultaneously applied
+/// HTTP-redaction rules to `cli-query` secrets that never touch this path.
+#[derive(Clone)]
+pub struct HttpCredential(String);
+
+impl HttpCredential {
+    /// The four rules, each tied to a concrete failure of the redaction layer:
+    ///
+    /// * **non-empty** — an empty value registers `""` as a scrub pattern, and
+    ///   `"".replace("", "<redacted>")` inserts the marker at EVERY character
+    ///   boundary: a 4 MiB upstream error body expands by an order of magnitude
+    ///   and is then cloned into the live status entry, the broadcast
+    ///   `PluginState` event, and the HTTP error body;
+    /// * **printable ASCII, no space, no `"`, no `\`** — a credential containing
+    ///   a newline or a control character appears JSON-*escaped* on the wire, so
+    ///   the raw-text matcher used on the non-2xx arm never finds it; quote and
+    ///   backslash are the two characters that collide with JSON syntax there.
+    ///   None of them appear in any real API key;
+    /// * **at least [`MIN_CREDENTIAL_LEN`] characters** — see that constant;
+    /// * **at least one non-digit** — [`scrub_value`] does not descend into JSON
+    ///   numbers, so an all-digit credential echoed back as `{"key": 12345678}`
+    ///   in `structuredContent` reaches the tool result and the wave transcript
+    ///   unredacted. Making numbers scrubbable is not an option (it would
+    ///   rewrite unrelated values and change the payload's type); making the
+    ///   credential un-number-like is.
+    ///
+    /// The error text never quotes the credential — only the single offending
+    /// character class — because this string is operator-facing and lands in
+    /// `PluginState.last_error`.
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        if raw.is_empty() {
+            return Err("is empty; remove the key or give it a real credential".to_string());
+        }
+        if let Some(bad) = raw
+            .chars()
+            .find(|c| !c.is_ascii_graphic() || *c == '"' || *c == '\\')
+        {
+            let named = match bad {
+                '"' => "a double quote".to_string(),
+                '\\' => "a backslash".to_string(),
+                ' ' => "a space".to_string(),
+                c if c.is_control() => "a control character".to_string(),
+                c if !c.is_ascii() => "a non-ASCII character".to_string(),
+                _ => "a character outside printable ASCII".to_string(),
+            };
+            return Err(format!(
+                "contains {named}, which cannot be redacted reliably: an HTTP \
+                 credential must be printable ASCII with no spaces, quotes or \
+                 backslashes"
+            ));
+        }
+        if raw.len() < MIN_CREDENTIAL_LEN {
+            return Err(format!(
+                "is shorter than {MIN_CREDENTIAL_LEN} characters, which would make \
+                 redaction match unrelated upstream text"
+            ));
+        }
+        if raw.chars().all(|c| c.is_ascii_digit()) {
+            return Err(
+                "is entirely digits: an upstream is free to echo such a value back as \
+                 a JSON *number*, which carries no string to redact, so it would reach \
+                 tool results and wave transcripts in the clear. Add a non-digit \
+                 character to the credential."
+                    .to_string(),
+            );
+        }
+        Ok(Self(raw.to_string()))
+    }
+
+    fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Redacting, so a credential cannot reach a log line through a `{:?}` on a
+/// struct that happens to hold one.
+impl std::fmt::Debug for HttpCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HttpCredential(<redacted>)")
+    }
+}
 
 /// One remote streamable-HTTP MCP server.
 ///
@@ -203,13 +331,19 @@ impl HttpMcpClient {
     ///
     /// The key is folded into the URL / header here, once, so no call site can
     /// forget it and no code path logs the assembled URL.
-    pub fn new(plugin_id: &str, block: &McpHttpBlock, api_key: Option<&str>) -> Self {
+    ///
+    /// The parameter is an [`HttpCredential`], not a `&str`, and that is the
+    /// whole point: every constraint the redaction layer depends on is
+    /// discharged by the only constructor of that type, so this function cannot
+    /// be handed a value it cannot scrub — from here, from a test, or from a
+    /// module that does not exist yet.
+    pub fn new(plugin_id: &str, block: &McpHttpBlock, api_key: Option<&HttpCredential>) -> Self {
         let base = block.url.trim().to_string();
         let mut url = base.clone();
         let mut header_auth = None;
         let mut secret_forms = Vec::new();
 
-        if let Some(key) = api_key {
+        if let Some(key) = api_key.map(HttpCredential::as_str) {
             match block.api_key_in_parsed() {
                 Some(ApiKeyIn::Query(name)) => {
                     let sep = if base.contains('?') { '&' } else { '?' };
@@ -230,7 +364,7 @@ impl HttpMcpClient {
             // Both literal forms, longest first, so scrubbing the encoded form
             // is not pre-empted by a shorter raw substring match.
             //
-            // The `is_empty` filters are the braces to `read_secrets`' belt:
+            // The `is_empty` filters are the braces to `HttpCredential`'s belt:
             // an empty pattern turns `scrub` into a memory amplifier (see
             // `scrub_with`), and this is the last place that could register
             // one. `percent_encode("")` is also `""`, hence both guards.
@@ -253,20 +387,21 @@ impl HttpMcpClient {
             header_auth,
             secret_forms,
             agent: ureq::AgentBuilder::new()
-                // Connect is bounded by the BRING-UP budget in both phases, and
-                // that is deliberate: opening a TCP+TLS connection is the same
-                // work whether the tool behind it runs for 200 ms or ten
-                // minutes, and `timeout_connect` is the one deadline ureq will
-                // not let a per-request override relax. Bounding it by the
-                // (uncapped) call budget would hand a black-holed host an
-                // operator-controlled stall on the `tools/call` path too.
+                // Connect gets its OWN floor because it is a third phase with a
+                // third constraint — see [`CONNECT_TIMEOUT_FLOOR`]. It is not
+                // the bring-up budget (which would cut off a cold connection on
+                // the `tools/call` path, since ureq will not let a per-request
+                // deadline relax `timeout_connect`) and it is not the call
+                // budget (which is uncapped, and would hand a black-holed host
+                // an operator-controlled stall). The `max` keeps an operator who
+                // deliberately configures a LONGER bring-up in charge of it.
                 //
                 // The overall per-request deadline is NOT set here: it is
                 // supplied per call from [`Phase`], because the two phases have
                 // opposite constraints. Neither is a TOTAL bound — the caller
                 // wraps the whole connector spawn in one outer
                 // `tokio::time::timeout` (§2.2).
-                .timeout_connect(bringup_timeout)
+                .timeout_connect(bringup_timeout.max(CONNECT_TIMEOUT_FLOOR))
                 .build(),
             bringup_timeout,
             call_timeout,
@@ -576,8 +711,9 @@ fn scrub_value(forms: &[String], v: &mut Value) {
                 scrub_value(forms, child);
             }
         }
-        // Numbers, booleans and null carry no string to redact. See the
-        // module header's accepted residual about all-digit credentials.
+        // Numbers, booleans and null carry no string to redact. An all-digit
+        // credential — the one value an upstream could echo back HERE, as a
+        // JSON number — cannot exist: `HttpCredential::parse` refuses it.
         _ => {}
     }
 }
@@ -599,8 +735,8 @@ impl Drop for CancelOnDrop {
 /// `&self`.
 ///
 /// **Empty forms are impossible by construction** — [`HttpMcpClient::new`]
-/// refuses to register one, and `read_secrets` refuses an empty credential
-/// upstream of that. Both halves matter: `"".replace("", "<redacted>")` inserts
+/// refuses to register one, and [`HttpCredential::parse`] refuses an empty
+/// credential upstream of that. Both halves matter: `"".replace("", "<redacted>")` inserts
 /// the marker at every character boundary, so a 4 MiB upstream error body would
 /// expand ~11× and then be cloned into the status entry, the broadcast event,
 /// and the HTTP error body. The `debug_assert` keeps the invariant honest if a
@@ -708,6 +844,96 @@ fn read_capped(resp: ureq::Response) -> Result<String, String> {
 mod tests {
     use super::*;
 
+    /// Shorthand for a credential the HTTP path will accept.
+    fn cred(raw: &str) -> HttpCredential {
+        HttpCredential::parse(raw)
+            .unwrap_or_else(|e| panic!("{raw:?} must be a valid credential: {e}"))
+    }
+
+    /// The invariant `HttpMcpClient::new`'s parameter type carries: every shape
+    /// the redaction layer cannot handle is refused before a client exists.
+    ///
+    /// Each case is a concrete failure of the scrubber, not a style rule — see
+    /// [`HttpCredential::parse`]. The all-digit case is round-5 finding 3: the
+    /// tree scrub does not descend into JSON numbers, so an upstream echoing
+    /// such a value back as a number leaks it in full.
+    #[test]
+    fn a_credential_the_scrubber_cannot_handle_is_refused() {
+        let cases: &[(&str, &str)] = &[
+            ("", "empty"),
+            (
+                r#"ab":cdefgh"#,
+                "quote — collides with JSON syntax in the 4xx arm",
+            ),
+            (r"abc\defgh", "backslash — collides with escape pairs"),
+            (
+                "abcd\nefgh",
+                "newline — arrives JSON-escaped, never matched",
+            ),
+            ("abcd\u{7}efgh", "bell — control character"),
+            ("abcd efgh", "space"),
+            ("sk-\u{4e2d}\u{6587}-key", "non-ASCII"),
+            ("short12", "one under the length floor"),
+            ("e", "single character"),
+            (
+                "12345678",
+                "all digits — echoed back as a JSON number, unscrubbable",
+            ),
+            ("00000000000000000000", "all digits, long"),
+        ];
+        for (bad, why) in cases {
+            let err = HttpCredential::parse(bad)
+                .err()
+                .unwrap_or_else(|| panic!("{why}: {bad:?} must be refused"));
+            // The refusal reaches `PluginState.last_error`; it may name the
+            // rule, never the value. (Only meaningful for values long enough
+            // to be a credential: `"e"` occurs in English prose.)
+            if bad.len() >= MIN_CREDENTIAL_LEN {
+                assert!(!err.contains(bad), "{why}: the refusal quotes it: {err}");
+            }
+        }
+    }
+
+    /// Stated positively, so the test above cannot pass by refusing
+    /// everything — including the boundary of each numeric rule.
+    #[test]
+    fn a_well_formed_credential_is_accepted() {
+        for good in [
+            "a".repeat(MIN_CREDENTIAL_LEN),     // exactly the floor: `<`, not `<=`
+            "sk-super-secret-8213".to_string(), // the real shape
+            "1234567a".to_string(),             // digits are fine WITH a non-digit
+            "a/b+c=d&e".to_string(),            // punctuation an API key really uses
+        ] {
+            assert!(
+                HttpCredential::parse(&good).is_ok(),
+                "{good:?} must be accepted"
+            );
+        }
+    }
+
+    /// Connect is a third phase with its own constraint: ureq resolves
+    /// `timeout_connect` ahead of the per-request deadline, so a bring-up-sized
+    /// connect timeout would make every `tools/call` subject to the bring-up
+    /// budget the moment the pooled connection is cold.
+    #[test]
+    fn the_connect_deadline_is_never_below_its_own_floor() {
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "bringup_timeout_ms": 400,
+            "request_timeout_ms": 600_000,
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, None);
+        // The fixture that would have failed against a real TLS endpoint.
+        assert_eq!(client.bringup_timeout, Duration::from_millis(400));
+        assert!(
+            CONNECT_TIMEOUT_FLOOR > client.bringup_timeout,
+            "the floor must actually be doing something for this fixture"
+        );
+        // …and it is never the (uncapped) call budget either.
+        assert!(CONNECT_TIMEOUT_FLOOR < client.call_timeout);
+    }
+
     #[test]
     fn sse_envelope_stripped() {
         let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
@@ -749,8 +975,11 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some("sk a/b"));
-        assert_eq!(client.url, "https://mcp.example.com/mcp?api_key=sk%20a%2Fb");
+        let client = HttpMcpClient::new("c", &block, Some(&cred("sk/a+b=c")));
+        assert_eq!(
+            client.url,
+            "https://mcp.example.com/mcp?api_key=sk%2Fa%2Bb%3Dc"
+        );
         assert!(!client.log_target().contains("sk"));
         assert!(client.header_auth.is_none());
     }
@@ -763,8 +992,11 @@ mod tests {
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some("abc"));
-        assert_eq!(client.url, "https://mcp.example.com/mcp?v=1&api_key=abc");
+        let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
+        assert_eq!(
+            client.url,
+            "https://mcp.example.com/mcp?v=1&api_key=abcdefgh"
+        );
     }
 
     #[test]
@@ -775,11 +1007,11 @@ mod tests {
             "api_key_in": "header:x-api-key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some("abc"));
+        let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
         assert_eq!(client.url, "https://mcp.example.com/mcp");
         assert_eq!(
             client.header_auth,
-            Some(("x-api-key".to_string(), "abc".to_string()))
+            Some(("x-api-key".to_string(), "abcdefgh".to_string()))
         );
     }
 
@@ -792,7 +1024,7 @@ mod tests {
             "api_key_in": api_key_in,
         }))
         .unwrap();
-        HttpMcpClient::new("c", &block, Some(LEAKY))
+        HttpMcpClient::new("c", &block, Some(&cred(LEAKY)))
     }
 
     /// A derived `Debug` would print `url` (key in the query) and
@@ -815,14 +1047,14 @@ mod tests {
     /// literal an upstream echoing our query string back would use.
     #[test]
     fn scrub_removes_raw_and_percent_encoded_forms() {
-        let key = "sk a/b+c";
+        let key = "sk-a/b+c";
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
             "api_key_secret": "K",
             "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(key));
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
         let encoded = percent_encode(key);
         assert_ne!(encoded, key);
 
@@ -886,20 +1118,20 @@ mod tests {
     }
 
     /// `""` as a scrub pattern makes `String::replace` insert the marker at
-    /// every character boundary — an amplifier, not a redaction. `new` must
-    /// refuse to register one even if a credential slipped past `read_secrets`.
+    /// every character boundary — an amplifier, not a redaction. It is now
+    /// unrepresentable rather than merely filtered: `new` takes an
+    /// `HttpCredential`, and there is no empty one.
     #[test]
-    fn an_empty_key_registers_no_scrub_pattern() {
+    fn no_key_registers_no_scrub_pattern_and_an_empty_one_cannot_be_built() {
+        assert!(HttpCredential::parse("").is_err());
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
-            "api_key_secret": "K",
-            "api_key_in": "query:api_key",
         }))
         .unwrap();
-        let client = HttpMcpClient::new("c", &block, Some(""));
+        let client = HttpMcpClient::new("c", &block, None);
         assert!(
             client.secret_forms.is_empty(),
-            "empty key must register no pattern, got {:?}",
+            "no key must register no pattern, got {:?}",
             client.secret_forms
         );
         let big = "a".repeat(10_000);

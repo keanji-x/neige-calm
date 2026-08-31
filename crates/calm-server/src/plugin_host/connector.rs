@@ -282,49 +282,30 @@ fn read_secrets_blocking(path: &Path) -> Result<Option<BTreeMap<String, String>>
     Ok(Some(out))
 }
 
-/// Shortest credential we will accept. Not a strength requirement — it is a
-/// *scrubbing* requirement: `HttpMcpClient` redacts a credential by literal
-/// match, so a short value would match constantly inside unrelated upstream
-/// text and turn redaction into corruption (a one-character credential of `e`
-/// rewrites every `true` in the response).
-pub const MIN_SECRET_LEN: usize = 8;
-
-/// Constrain a credential at the source, as defence in depth for the redaction
-/// layer in [`super::http_mcp`].
+/// The only constraint that is true of EVERY secret, whatever consumes it.
 ///
-/// The scrubber there now parses before it redacts, so a hostile credential can
-/// no longer corrupt a JSON document — but "the value cannot be authored" is a
-/// stronger guarantee than "the one consumer we know about handles it", and
-/// `secrets.json` is a file an operator hand-writes. Three rules:
+/// The HTTP-redaction constraints (printable ASCII, no quote/backslash, a
+/// length floor, not all digits) deliberately do **not** live here any more.
+/// They now sit on [`super::http_mcp::HttpCredential`], the parameter type of
+/// `HttpMcpClient::new`, for two reasons this file cannot satisfy:
 ///
-/// * **non-empty / not whitespace-only** — an empty value would register `""`
-///   as a scrub pattern, and `"".replace("", "<redacted>")` inserts the marker
-///   at EVERY character boundary: a 4 MiB upstream error body expands by an
-///   order of magnitude and is then cloned into the live status entry, the
-///   broadcast `PluginState` event, and the HTTP error body;
-/// * **printable ASCII, no space, no `"`, no `\`** — a credential containing a
-///   newline or a control character appears JSON-*escaped* on the wire, so a
-///   raw-text matcher never finds it; quote and backslash are the two
-///   characters that make a value collide with JSON syntax. None of them
-///   appear in any real API key;
-/// * **at least [`MIN_SECRET_LEN`] characters** — see that constant.
+/// * **they were bypassable.** `HttpMcpClient::new` is `pub` and took a
+///   `&str`, so a credential that reaches the wire never had to come through
+///   `read_secrets` at all — checking here bounded one route to the client, not
+///   the client;
+/// * **they over-constrained.** `secrets.json` is not an HTTP-only file: a
+///   `cli-query` secret is interpolated into a subprocess argument and is on no
+///   redaction path, so refusing it for containing a space is a refusal with no
+///   security story behind it.
+///
+/// What survives is the rule that has nothing to do with HTTP: a key whose
+/// value is empty or whitespace-only is an authoring mistake in every
+/// consumer's terms — the operator meant to supply a credential and did not.
 fn validate_secret_value(s: &str) -> Result<(), String> {
     if s.trim().is_empty() {
         return Err(
             "is empty or whitespace-only; remove the key or give it a real credential".to_string(),
         );
-    }
-    if let Some(bad) = s
-        .chars()
-        .find(|c| !c.is_ascii_graphic() || *c == '"' || *c == '\\')
-    {
-        return Err(format!(
-            "contains {bad:?}, which is not allowed in a credential: values must be \
-             printable ASCII with no spaces, quotes or backslashes"
-        ));
-    }
-    if s.len() < MIN_SECRET_LEN {
-        return Err(format!("is shorter than {MIN_SECRET_LEN} characters"));
     }
     Ok(())
 }
@@ -553,63 +534,34 @@ mod tests {
         }
     }
 
-    /// Defence in depth for the redaction layer (round-4 finding B). Each of
-    /// these shapes is one the raw-text scrubber used to mishandle: `":` and a
-    /// lone `\` corrupt JSON structure when literal-replaced, `\n` and `\x07`
-    /// arrive JSON-*escaped* so a literal search never finds the decoded
-    /// secret, and a short value matches inside unrelated upstream text.
-    /// `http_mcp` parses before it scrubs now, but none of these can be
-    /// authored either.
+    /// The HTTP-redaction constraints are no longer `read_secrets`' business —
+    /// they live on `HttpCredential`, the parameter type of
+    /// `HttpMcpClient::new`, and are witnessed there
+    /// (`a_credential_the_scrubber_cannot_handle_is_refused`). What this file
+    /// still owes is the complement: a value that is merely *unusual* for HTTP
+    /// but perfectly valid for another consumer must NOT be refused here, or
+    /// the check is back to over-constraining `cli-query` secrets that are
+    /// interpolated into argv and are on no redaction path at all.
     #[tokio::test]
-    async fn a_credential_with_json_hostile_characters_or_too_short_is_refused() {
-        let cases: &[(&str, &str)] = &[
-            (r#"ab":cdefgh"#, "quote"),
-            (r"abc\defgh", "backslash"),
-            ("abcd\nefgh", "control character / newline"),
-            ("abcd\u{7}efgh", "bell"),
-            ("abcd efgh", "embedded space"),
-            ("sk-\u{4e2d}\u{6587}-key", "non-ASCII"),
-            ("short12", "one under the length floor"),
-            ("e", "single character"),
-        ];
-        for (bad, why) in cases {
-            let tmp = tempfile::tempdir().unwrap();
-            let path = tmp.path().join(SECRETS_FILENAME);
-            std::fs::write(&path, json!({ "K": bad }).to_string()).unwrap();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-            }
-            let err = read_secrets(tmp.path())
-                .await
-                .expect_err(&format!("{why}: {bad:?} must be refused"));
-            assert!(
-                matches!(err, SecretsError::Malformed { .. }),
-                "{why}: got {err:?}"
-            );
-        }
-    }
-
-    /// The rule stated positively, so the test above cannot pass by refusing
-    /// everything: a real-shaped API key is accepted, and exactly the length
-    /// floor is the boundary (`<`, not `<=`).
-    #[tokio::test]
-    async fn a_well_formed_credential_is_accepted_at_and_above_the_length_floor() {
-        for good in [
-            "a".repeat(MIN_SECRET_LEN),
-            "sk-super-secret-8213".to_string(),
+    async fn read_secrets_does_not_apply_http_redaction_rules_to_every_secret() {
+        for value in [
+            "short",                   // under the HTTP length floor
+            "pass phrase with spaces", // fatal to redaction, fine in argv
+            "12345678",                // all digits
+            "sk-\u{4e2d}\u{6587}-key", // non-ASCII
         ] {
             let tmp = tempfile::tempdir().unwrap();
             let path = tmp.path().join(SECRETS_FILENAME);
-            std::fs::write(&path, json!({ "K": &good }).to_string()).unwrap();
+            std::fs::write(&path, json!({ "K": value }).to_string()).unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
             }
-            let got = read_secrets(tmp.path()).await.expect("must be accepted");
-            assert_eq!(got.unwrap().get("K"), Some(&good));
+            let got = read_secrets(tmp.path())
+                .await
+                .unwrap_or_else(|e| panic!("{value:?} must be readable: {e}"));
+            assert_eq!(got.unwrap().get("K").map(String::as_str), Some(value));
         }
     }
 

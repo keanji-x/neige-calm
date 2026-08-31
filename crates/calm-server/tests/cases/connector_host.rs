@@ -913,10 +913,12 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
         // Build the client the same way `spawn_mcp_http` does, then call it
         // against the same dead/hung upstream.
         let manifest = state.plugin.registry().get(CONNECTOR_ID).unwrap();
+        let credential = calm_server::plugin_host::HttpCredential::parse(SECRET_VALUE)
+            .expect("the fixture credential must satisfy the HTTP-credential rules");
         let client = calm_server::plugin_host::HttpMcpClient::new(
             CONNECTOR_ID,
             manifest.mcp_http.as_ref().unwrap(),
-            Some(SECRET_VALUE),
+            Some(&credential),
         );
         let err = client
             .tools_call(ALLOWED_TOOL, json!({}))
@@ -2135,6 +2137,298 @@ async fn neige_callbacks_are_refused_for_connectors() {
         "the refusal must name the kind: {}",
         err.message
     );
+}
+
+// ===========================================================================
+// Round-5 finding 1 — the boot bound must be TOTAL
+// ===========================================================================
+
+/// A slow event store must not hold boot, however many connectors are enabled.
+///
+/// The previous bound wrapped `spawn` only. Everything the loop did *after* it
+/// — `publish_unavailable` for connectors the budget never reached,
+/// `publish_unavailable`/`reaffirm_running` in the timeout arm — was an
+/// unbounded persisted emission, performed serially, once per connector. So a
+/// stalled event store still stalled `AppState::new`, scaling with connector
+/// count, with every "bound" in the file green.
+///
+/// Driven deterministically: a foreign `BEGIN IMMEDIATE` holds the DB writer
+/// for far longer than the ceiling, so EVERY emission the loop attempts parks.
+/// Boot must still return inside `connector_phase_ceiling(budget)`.
+///
+/// Mutation witness: fence only `self.spawn(...)` again (i.e. drop the
+/// `timeout_at(phase_deadline, …)` wrapper) and this returns after the DB
+/// holder releases, ~8 s, not ~2 s.
+#[tokio::test]
+async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
+    use calm_server::plugin_host::connector_phase_ceiling;
+
+    let stub = StubServer::start(StubMode::Hang).await;
+    let b = boot().await;
+    const N: usize = 4;
+    for i in 0..N {
+        let id = format!("dead-connector-{i}");
+        let dir = b.plugins_dir.join(&id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut manifest = connector_manifest_json(
+            &stub.url(),
+            Budgets {
+                call_ms: 10_000,
+                bringup_ms: Some(200),
+            },
+        );
+        manifest["id"] = json!(id);
+        std::fs::write(
+            dir.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let secrets = dir.join("secrets.json");
+        std::fs::write(&secrets, json!({ SECRET_NAME: SECRET_VALUE }).to_string()).unwrap();
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+        seed_row(&b, &id).await;
+    }
+    let host = b.host();
+
+    // Hold the DB writer for much longer than the ceiling, so every
+    // `log_pure_event` inside the loop blocks.
+    const DB_HELD: Duration = Duration::from_secs(8);
+    let (held_tx, held_rx) = oneshot::channel::<()>();
+    let (release_db, db_rx) = oneshot::channel::<()>();
+    let repo = b.repo.clone();
+    let holder = tokio::spawn(async move {
+        repo.write_in_tx(Box::new(move |_tx| {
+            Box::pin(async move {
+                let _ = held_tx.send(());
+                let _ = tokio::time::timeout(DB_HELD, db_rx).await;
+                Ok(())
+            })
+        }))
+        .await
+    });
+    held_rx.await.expect("write tx never opened");
+
+    // Per-connector cap is 2 × 200 ms + 500 ms = 900 ms, so this budget is used
+    // as given (it exceeds `widest + slack`).
+    const BUDGET: Duration = Duration::from_millis(1_000);
+    let ceiling = connector_phase_ceiling(BUDGET);
+    let started = Instant::now();
+    tokio::time::timeout(DB_HELD * 2, host.autospawn_enabled_within(BUDGET))
+        .await
+        .expect("boot autospawn never returned at all");
+    let elapsed = started.elapsed();
+
+    // The fixture has to have been in force for this to mean anything.
+    assert!(
+        elapsed < DB_HELD,
+        "boot took {elapsed:?}, i.e. it waited for the event store to free up — \
+         the bound covers the spawn step only, not the emissions after it"
+    );
+    // …and the real bound, with headroom for scheduling on a loaded box only.
+    assert!(
+        elapsed < ceiling + Duration::from_millis(1_500),
+        "boot took {elapsed:?} against a {ceiling:?} connector-phase ceiling"
+    );
+
+    // Observability is NOT what was given up: every connector still has a
+    // terminal live entry, because that half of the transition is a synchronous
+    // table write with no await in it.
+    for i in 0..N {
+        let id = format!("dead-connector-{i}");
+        let status = host
+            .status(&id)
+            .await
+            .unwrap_or_else(|| panic!("{id} must leave an observable entry"));
+        assert!(
+            matches!(status.status, PluginRuntimeStatus::Unavailable { .. }),
+            "{id}: {:?}",
+            status.status
+        );
+    }
+
+    let _ = release_db.send(());
+    let _ = holder.await;
+}
+
+/// The ceiling that is *documented* and the ceiling that is *computed* are one
+/// expression. Rounds 1-4 stated 30 s and then 30.5 s in prose while the code
+/// computed something else, because the prose was a second arithmetic.
+///
+/// This pins the composed number, so any change to a constant that feeds it has
+/// to be an explicit decision here rather than a silent drift.
+#[test]
+fn the_connector_phase_ceiling_is_the_documented_one() {
+    use calm_server::plugin_host::{
+        CONNECTOR_AUTOSPAWN_BUDGET, MAX_CONNECTOR_AUTOSPAWN_WALL, MAX_CONNECTOR_BRINGUP_BUDGET,
+        connector_phase_ceiling,
+    };
+
+    // 2 × 15 s (the validated per-request bring-up ceiling) + 500 ms slack.
+    assert_eq!(MAX_CONNECTOR_BRINGUP_BUDGET, Duration::from_millis(30_500));
+    // …widened by another slack so the per-connector bound fires first, and
+    // then the reconcile tail. This is the number the docs state.
+    assert_eq!(MAX_CONNECTOR_AUTOSPAWN_WALL, Duration::from_millis(31_500));
+    // The wall is exactly the ceiling of the widest budget the loop can adopt,
+    // never a hand-computed constant beside it.
+    assert_eq!(
+        MAX_CONNECTOR_AUTOSPAWN_WALL,
+        connector_phase_ceiling(MAX_CONNECTOR_BRINGUP_BUDGET + Duration::from_millis(500))
+    );
+    // And the floor is a floor: the widened budget is never below the constant.
+    assert!(MAX_CONNECTOR_AUTOSPAWN_WALL > connector_phase_ceiling(CONNECTOR_AUTOSPAWN_BUDGET));
+}
+
+// ===========================================================================
+// Round-5 finding 2 — decide-and-emit is serialized for EVERY emitter
+// ===========================================================================
+
+/// Two emitters for one connector must never be inside the emission critical
+/// section at the same time.
+///
+/// The lock used to be taken by `reaffirm_running` and `stop` only, which left
+/// `spawn_mcp_http`'s trailing `Running`, the app-plugin spawn's `Running` and
+/// `publish_unavailable`'s `Unavailable` outside it. Any of those could start,
+/// `stop` could then remove the entry and persist `Disabled` under the lock,
+/// and the older unserialized emission would commit last — the same stale
+/// `Running` for a connector that no longer exists that `reaffirm_running` was
+/// added to prevent, reached through a different door.
+///
+/// Driven through two REAL paths, deterministically: the spawn is parked inside
+/// `emit_state(Running)` (gated stub + a held DB writer), and a real `stop()`
+/// runs against it in that window.
+///
+/// Mutation witness: drop the `lock_state` call from `emit_state` and the peak
+/// reaches 2.
+#[tokio::test]
+async fn two_emitters_for_one_connector_never_interleave() {
+    let (release_gate, gate) = oneshot::channel::<()>();
+    let stub = StubServer::start_gated(StubMode::Normal, Some(gate)).await;
+    let b = boot().await;
+    write_connector_with(&b.plugins_dir, &stub.url(), Budgets::uniform(5_000), 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let spawn_host = Arc::clone(&host);
+    let spawning = tokio::spawn(async move { spawn_host.spawn(CONNECTOR_ID).await });
+    stub.wait_for_tools_list().await;
+
+    // Park every emission: `emit_state` cannot commit while this is held.
+    let (held_tx, held_rx) = oneshot::channel::<()>();
+    let (release_db, db_rx) = oneshot::channel::<()>();
+    let repo = b.repo.clone();
+    let holder = tokio::spawn(async move {
+        repo.write_in_tx(Box::new(move |_tx| {
+            Box::pin(async move {
+                let _ = held_tx.send(());
+                let _ = db_rx.await;
+                Ok(())
+            })
+        }))
+        .await
+    });
+    held_rx.await.expect("write tx never opened");
+
+    // Let the spawn finish its network half: it materializes, publishes the
+    // live `Running` entry, and then parks inside `emit_state(Running)` —
+    // holding the per-id emission lock.
+    release_gate.send(()).expect("stub gate receiver gone");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if matches!(
+            host.status(CONNECTOR_ID).await.map(|s| s.status),
+            Some(PluginRuntimeStatus::Running)
+        ) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "spawn never reached the live insert"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+
+    // The operator disables it right there. `stop` reaches its remove-and-emit
+    // tail and must WAIT for the in-flight emission rather than interleave.
+    let stop_host = Arc::clone(&host);
+    let stopping = tokio::spawn(async move { stop_host.stop(CONNECTOR_ID).await });
+    sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(
+        host.peak_concurrent_state_emits(),
+        1,
+        "two emitters were inside the per-id emission critical section at once"
+    );
+
+    let _ = release_db.send(());
+    let _ = holder.await;
+    tokio::time::timeout(Duration::from_secs(20), spawning)
+        .await
+        .expect("spawn never returned")
+        .expect("spawn task panicked")
+        .expect("spawn must succeed");
+    tokio::time::timeout(Duration::from_secs(20), stopping)
+        .await
+        .expect("stop never returned")
+        .expect("stop task panicked")
+        .expect("stop must succeed");
+
+    // Non-vacuity: emissions really did happen through the instrumented path.
+    assert_eq!(host.peak_concurrent_state_emits(), 1);
+    // And the last word is the correct one.
+    assert!(host.status(CONNECTOR_ID).await.is_none());
+    let states = plugin_state_events(&b).await;
+    assert_eq!(
+        states.last().map(String::as_str),
+        Some("disabled"),
+        "{states:?}"
+    );
+}
+
+// ===========================================================================
+// Round-5 finding 3 — an all-digit credential is refused at the source
+// ===========================================================================
+
+/// `scrub_value` deliberately does not descend into JSON numbers, so an
+/// upstream that echoes an all-digit credential back as `{"k": 12345678}` in
+/// `structuredContent` would put it in the tool result and the wave transcript
+/// with nothing to redact. Round 4 classified that as an accepted residual;
+/// it is a disclosure. The credential is refused instead.
+///
+/// This drives the real `spawn` (and therefore the real `connect_mcp_http` →
+/// `HttpCredential::parse` boundary), not the validator in isolation.
+///
+/// Mutation witness: delete the all-digit arm of `HttpCredential::parse` and
+/// this connector comes up `Running`.
+#[tokio::test]
+async fn an_all_digit_credential_never_reaches_the_wire() {
+    let stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    let dir = write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+    const ALL_DIGITS: &str = "12345678";
+    let secrets = dir.join("secrets.json");
+    std::fs::write(&secrets, json!({ SECRET_NAME: ALL_DIGITS }).to_string()).unwrap();
+    std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let err = match host.spawn(CONNECTOR_ID).await {
+        Err(HostError::ConnectorUnavailable { reason, .. }) => reason,
+        other => panic!("an all-digit credential must not bring a connector up: {other:?}"),
+    };
+    assert!(
+        err.contains("digits"),
+        "the refusal must say what is wrong: {err}"
+    );
+    // The refusal itself must not quote the credential — it is persisted and
+    // broadcast as `PluginState.last_error`.
+    assert!(!err.contains(ALL_DIGITS), "{err}");
+    // Nothing was sent: the client is never constructed.
+    assert!(
+        stub.queries().is_empty(),
+        "the credential reached the wire: {:?}",
+        stub.queries()
+    );
+    assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
 }
 
 // ---------------------------------------------------------------------------

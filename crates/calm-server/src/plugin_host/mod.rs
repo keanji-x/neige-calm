@@ -40,7 +40,7 @@ use std::time::{Duration, Instant};
 pub use auth::{PluginToken, hash_token, verify_token};
 pub use connector::{ConnectorClient, SecretsError, read_secrets};
 pub use error::{HostError, McpError, ProcessError};
-pub use http_mcp::HttpMcpClient;
+pub use http_mcp::{HttpCredential, HttpMcpClient};
 pub use manifest::{ConnectorKind, Manifest};
 pub use mcp::{
     CallToolResult, ContentBlock, InboundNotification, InboundRequest, McpClient, RequestId,
@@ -311,22 +311,80 @@ pub struct PluginHost {
     /// #1164 §2.7(1) — recorded order of the two connector-spawn steps whose
     /// RELATIVE ORDER is the invariant. See [`Self::connector_spawn_order`].
     spawn_order: std::sync::Mutex<HashMap<String, ConnectorSpawnOrder>>,
-    /// Serializes "decide what the terminal state is" with "emit it", for the
-    /// two paths that can disagree about a single connector at the same moment.
+    /// Per-plugin-id serialization of "decide what the state is" with "emit
+    /// it". **Every** emission takes it, because [`Self::emit_state`] is the
+    /// only way to emit and [`Self::emit_state`] is the thing that acquires it.
     ///
     /// The process table alone cannot do this. A read of `live` is a SNAPSHOT:
     /// [`Self::reaffirm_running`] takes the table lock, sees `Running`, drops
-    /// the lock, and only then awaits `emit_state`. In that window a concurrent
+    /// the lock, and only then awaits an emission. In that window a concurrent
     /// [`Self::stop`] can remove the entry and emit `Disabled` — leaving the
     /// persisted and broadcast state falsely `Running` for a connector that is
     /// gone. Holding a *sync* mutex across those awaits is not an option
-    /// (`emit_state` writes to the repo), hence an async one; it is taken only
-    /// around the short decide-and-emit tails, never across the network.
+    /// (emission writes to the repo), hence async ones.
     ///
-    /// This is the mirror image of the F0 bug: F0 was a stale `Unavailable`
-    /// overwriting a live `Running`, this is a stale `Running` overwriting a
-    /// live `Disabled`. One lock closes both directions.
-    state_emit: Mutex<()>,
+    /// **Round-5: the lock moved from the two call sites into the emitter.**
+    /// It used to be taken by `reaffirm_running` and `stop` only, which left
+    /// three emitters outside it — `spawn_mcp_http`'s trailing `Running`, the
+    /// app-plugin spawn's `Running`, and `publish_unavailable`'s `Unavailable`.
+    /// Any of those could start, `stop` could then remove the entry and persist
+    /// `Disabled` under the lock, and the older unserialized emission would
+    /// commit last: byte-for-byte the bug `reaffirm_running` was added to fix,
+    /// reachable from three other doors. A rule that every future emitter must
+    /// remember to obey is not an invariant; owning the lock inside the emitter
+    /// is. The two decide-and-emit paths take the guard themselves and hand it
+    /// down ([`Self::emit_state_under`]), which is also why the guard is a
+    /// value and not an implicit re-entrant lock.
+    ///
+    /// Keyed per id: two different plugins have nothing to serialize, and one
+    /// global lock would put every plugin's boot emission behind one repo write.
+    /// The map only ever grows by installed-plugin count.
+    ///
+    /// **Lock order is one-way and unchanged: `state_emit` → `processes`.**
+    /// Nothing takes the (sync) process-table mutex and then awaits an
+    /// emission — every call site drops its `MutexGuard` before awaiting, which
+    /// the compiler enforces for the `Send` futures in this module — so the two
+    /// locks cannot form a cycle.
+    state_emit: std::sync::Mutex<HashMap<String, Arc<StateEmitCell>>>,
+    /// Instrumentation for the invariant above: the high-water mark of
+    /// emissions inside the critical section **for a single id** at once. `1`
+    /// is the invariant; two different plugins emitting at once is fine and
+    /// deliberately does not register here.
+    ///
+    /// Production cost is two atomics per emission. The point is that
+    /// `two_emitters_for_one_connector_never_interleave` can observe the real
+    /// production emitter rather than a fixture that re-implements it: remove
+    /// the lock from `emit_state` and the mark reaches 2, failing that test.
+    state_emit_peak: std::sync::atomic::AtomicUsize,
+}
+
+/// Per-id emission lock plus its concurrency probe.
+struct StateEmitCell {
+    lock: Arc<Mutex<()>>,
+    inflight: std::sync::atomic::AtomicUsize,
+}
+
+/// Proof that the caller holds the per-id emission lock for `id`.
+///
+/// Only [`PluginHost::lock_state`] constructs one, so a function that takes one
+/// cannot be called without the lock — which is what makes "every emission is
+/// serialized per id" a property of the types rather than of reviewer memory.
+pub struct StateEmitGuard {
+    id: String,
+    cell: Arc<StateEmitCell>,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+/// Decrements a cell's in-flight count however the emission ends (including a
+/// cancelled future — the caller's outer `timeout` can drop us mid-write).
+struct InflightGuard(Arc<StateEmitCell>);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0
+            .inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
 }
 
 /// Round trips `connect_mcp_http` makes: `initialize` then `tools/list`. The
@@ -378,6 +436,52 @@ const CONNECTOR_BRINGUP_SLACK: Duration = Duration::from_millis(500);
 /// load, and the widened loop budget can never exceed
 /// `max(30 s, MAX_CONNECTOR_BRINGUP_BUDGET + slack)`.
 pub const CONNECTOR_AUTOSPAWN_BUDGET: Duration = Duration::from_secs(30);
+
+/// Wall-clock allowed for everything the connector phase does **besides**
+/// bringing connectors up: the terminal `Unavailable` emission for connectors
+/// that never got their turn, and the reconcile emission for one that came up
+/// just as the budget ran out. All of those are persisted+broadcast events, so
+/// their cost is a slow event store's cost, not this process's.
+///
+/// It is a budget for the whole tail rather than a per-connector allowance on
+/// purpose: a per-connector one is `N ×` again, which is the shape this whole
+/// bound exists to remove.
+const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
+
+/// **The** wall-clock ceiling on the connector phase of boot, given the loop
+/// budget it runs with — spawn, reconcile and every emission inside it.
+///
+/// One expression, so the number that is *documented* and the number that is
+/// *enforced* cannot drift: [`MAX_CONNECTOR_AUTOSPAWN_WALL`] is this function
+/// applied to the widest budget any loadable manifest can produce, and
+/// [`PluginHost::autospawn_enabled_within`] fences its loop with this function
+/// applied to the budget it actually got. Rounds 1-4 each stated a ceiling in
+/// prose (30 s, then 30.5 s) while the code computed a different one, because
+/// the prose was a separate arithmetic.
+pub const fn connector_phase_ceiling(loop_budget: Duration) -> Duration {
+    Duration::from_millis(
+        loop_budget.as_millis() as u64 + CONNECTOR_RECONCILE_BUDGET.as_millis() as u64,
+    )
+}
+
+/// The largest wall-clock the connector phase of boot can consume, for **any**
+/// set of manifests that load.
+///
+/// `autospawn_enabled` starts from [`CONNECTOR_AUTOSPAWN_BUDGET`] and widens it
+/// to the widest per-connector cap plus slack (see there); that widening is
+/// capped by [`MAX_CONNECTOR_BRINGUP_BUDGET`], which manifest-parse-time
+/// validation makes structural. This is the composition of the two, and it is
+/// what "boot latency is an invariant" means numerically. With today's
+/// constants: `(2 × 15 s + 500 ms) + 500 ms` of widened loop budget, `+ 500 ms`
+/// of reconcile tail = **31.5 s** — computed here, never retyped, and asserted
+/// against the real loop by `the_connector_phase_ceiling_is_the_documented_one`.
+pub const MAX_CONNECTOR_AUTOSPAWN_WALL: Duration =
+    connector_phase_ceiling(Duration::from_millis({
+        let widened = MAX_CONNECTOR_BRINGUP_BUDGET.as_millis() as u64
+            + CONNECTOR_BRINGUP_SLACK.as_millis() as u64;
+        let floor = CONNECTOR_AUTOSPAWN_BUDGET.as_millis() as u64;
+        if widened > floor { widened } else { floor }
+    }));
 
 /// The largest value [`connector_bringup_budget`] can return for any manifest
 /// that passes `Manifest::validate`.
@@ -471,17 +575,33 @@ async fn connect_mcp_http(
         .map_err(|e| format!("secrets.json rejected: {e}"))?
         .unwrap_or_default();
 
+    // THE point at which a secret becomes an HTTP credential — and therefore
+    // the point at which the HTTP-redaction constraints apply. They are carried
+    // by `HttpCredential`, the type `HttpMcpClient::new` takes, so this is not
+    // "remember to validate here": there is no way to build the client without
+    // one. `read_secrets` deliberately does not apply them, since a `cli-query`
+    // secret is on no redaction path.
     let api_key = match block.api_key_secret.as_deref() {
-        Some(name) => Some(secrets.get(name).cloned().ok_or_else(|| {
-            format!(
-                "mcp_http.api_key_secret names `{name}`, which is absent from {}",
-                install_path.join(connector::SECRETS_FILENAME).display()
-            )
-        })?),
+        Some(name) => {
+            let raw = secrets.get(name).cloned().ok_or_else(|| {
+                format!(
+                    "mcp_http.api_key_secret names `{name}`, which is absent from {}",
+                    install_path.join(connector::SECRETS_FILENAME).display()
+                )
+            })?;
+            // The reason names the rule, never the value: it is persisted and
+            // broadcast as `PluginState.last_error`.
+            Some(HttpCredential::parse(&raw).map_err(|why| {
+                format!(
+                    "the credential in {} named by mcp_http.api_key_secret (`{name}`) {why}",
+                    install_path.join(connector::SECRETS_FILENAME).display()
+                )
+            })?)
+        }
         None => None,
     };
 
-    let client = Arc::new(HttpMcpClient::new(id, block, api_key.as_deref()));
+    let client = Arc::new(HttpMcpClient::new(id, block, api_key.as_ref()));
 
     // Best-effort: the probed server class answers `tools/list` with no
     // handshake at all, so an `initialize` failure is informational. It shares
@@ -532,7 +652,8 @@ impl PluginHost {
             write,
             processes: std::sync::Mutex::new(ProcessTable::default()),
             spawn_order: std::sync::Mutex::new(HashMap::new()),
-            state_emit: Mutex::new(()),
+            state_emit: std::sync::Mutex::new(HashMap::new()),
+            state_emit_peak: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -620,7 +741,10 @@ impl PluginHost {
     /// logged + swallowed: one broken plugin should not block boot.
     ///
     /// **Connector bring-up stays inline and stays serial**, but the connector
-    /// portion as a whole is bounded by [`CONNECTOR_AUTOSPAWN_BUDGET`]. Inline
+    /// portion as a whole is bounded by
+    /// `connector_phase_ceiling(CONNECTOR_AUTOSPAWN_BUDGET)` — spawn,
+    /// reconciliation and every persisted emission, not just the spawn step.
+    /// [`MAX_CONNECTOR_AUTOSPAWN_WALL`] is what that can be at its widest. Inline
     /// is not an accident: acceptance §4 #7 requires a connector's tools to be
     /// materialized before the boot audit loop in `AppState::new` reads
     /// `exposes_tools`, so detaching bring-up into a background task would make
@@ -677,6 +801,7 @@ impl PluginHost {
         // child ahead of a connector in `plugins_list_all()` order silently
         // consumed it — and the refusal then said the budget "was spent by
         // earlier connectors", which was false.
+        let ceiling = connector_phase_ceiling(connector_budget);
         let mut connector_elapsed = Duration::ZERO;
         for plug in rows {
             if !plug.enabled {
@@ -695,78 +820,128 @@ impl PluginHost {
                 continue;
             }
 
-            let remaining = connector_budget.saturating_sub(connector_elapsed);
-            if remaining.is_zero() {
+            // ---- THE bound. ------------------------------------------------
+            // One fence over the WHOLE per-connector iteration — bring-up,
+            // reconciliation, and every persisted emission either of them
+            // performs — rather than over the `spawn` sub-step alone.
+            //
+            // Bounding only `spawn` left two unbounded awaits after it
+            // (`publish_unavailable`, `reaffirm_running`) plus an unbounded
+            // emission on the budget-exhausted path, each of which writes an
+            // event. A slow event store therefore still held boot for as long
+            // as it liked, N times over — the bound existed but was not TOTAL.
+            //
+            // Because the fence wraps the iteration body rather than a named
+            // step inside it, an await added to that body later is covered
+            // without anyone remembering to cover it.
+            let started = Instant::now();
+            let spawn_deadline = started + connector_budget.saturating_sub(connector_elapsed);
+            let phase_deadline = started + ceiling.saturating_sub(connector_elapsed);
+            let fenced = tokio::time::timeout_at(
+                tokio::time::Instant::from_std(phase_deadline),
+                self.autospawn_one_connector(&plug.id, spawn_deadline, connector_budget),
+            )
+            .await;
+            // Every connector iteration is charged, and only connector
+            // iterations are: an `app` plugin's slow local child ahead of a
+            // connector must not consume the remote half's budget.
+            connector_elapsed += started.elapsed();
+            if fenced.is_err() {
+                // The whole connector phase is out of wall clock. Still leave a
+                // terminal, observable entry — but with NO await, because an
+                // await here is the very thing that ran us out. The table write
+                // is a `HashMap::insert` under a sync lock; the event that would
+                // normally accompany it is what we are giving up.
                 let reason = format!(
-                    "connector `{}` was not brought up at boot: the {} ms budget for \
-                     starting all connectors was already spent by earlier ones. \
-                     Re-enable it once the slow/unreachable connectors are fixed.",
+                    "connector `{}` was cut off at boot: the connector phase's {} ms \
+                     wall-clock ceiling was reached (a slow or unreachable connector, \
+                     or a slow event store). Re-enable it once that is fixed.",
                     plug.id,
-                    connector_budget.as_millis()
+                    ceiling.as_millis()
                 );
                 tracing::warn!(plugin_id = %plug.id, "{reason}");
-                // Terminal + observable, exactly like every other connector
-                // bring-up failure: `status`/`list`/detail must not report this
-                // id as if it had never been enabled.
-                // Same reconciliation as the timeout arm below: never regress
-                // an id that is already live and `Running`.
-                let _ = self.publish_unavailable(&plug.id, None, reason).await;
-                continue;
+                self.mark_unavailable(&plug.id, None, reason);
             }
-            let started = Instant::now();
-            let outcome = tokio::time::timeout(remaining, self.spawn(&plug.id)).await;
-            connector_elapsed += started.elapsed();
-            match outcome {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => {
-                    tracing::warn!(plugin_id = %plug.id, error = %e, "plugin autospawn failed");
-                }
-                Err(_elapsed) => {
-                    // The dropped `spawn` future released its admission
-                    // reservation via `AdmissionGuard::drop`, but nothing
-                    // emitted a terminal state — do it here so the event log
-                    // does not sit at `spawning` forever.
-                    //
-                    // **This arm must RECONCILE, not assume failure.** The
-                    // timeout wraps the whole spawn, including
-                    // `spawn_mcp_http`'s live-table insert; elapsing after that
-                    // insert but before the trailing `emit_state(Running)`
-                    // completes would otherwise replace a genuinely healthy
-                    // connector (client live, tools materialized) with
-                    // `Unavailable`, dropping it out of `running_plugin_ids`
-                    // and making every materialized tool invisible.
-                    // `publish_unavailable` refuses to regress a `Running`
-                    // entry and says so by returning `false`.
-                    let reason = format!(
-                        "connector `{}` did not finish starting within the remaining \
-                         {} ms of the {} ms boot budget for all connectors",
-                        plug.id,
-                        remaining.as_millis(),
-                        connector_budget.as_millis()
+        }
+    }
+
+    /// One connector's boot iteration: bring it up within `spawn_deadline`, then
+    /// reconcile whatever that produced. Every await in here — including the
+    /// terminal emissions — is inside the caller's phase fence.
+    async fn autospawn_one_connector(
+        self: &Arc<Self>,
+        id: &str,
+        spawn_deadline: Instant,
+        connector_budget: Duration,
+    ) {
+        let remaining = spawn_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let reason = format!(
+                "connector `{id}` was not brought up at boot: the {} ms budget for \
+                 starting all connectors was already spent by earlier ones. \
+                 Re-enable it once the slow/unreachable connectors are fixed.",
+                connector_budget.as_millis()
+            );
+            tracing::warn!(plugin_id = %id, "{reason}");
+            // Terminal + observable, exactly like every other connector
+            // bring-up failure: `status`/`list`/detail must not report this
+            // id as if it had never been enabled.
+            // Same reconciliation as the timeout arm below: never regress
+            // an id that is already live and `Running`.
+            let _ = self.publish_unavailable(id, None, reason).await;
+            return;
+        }
+        let outcome = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(spawn_deadline),
+            self.spawn(id),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(plugin_id = %id, error = %e, "plugin autospawn failed");
+            }
+            Err(_elapsed) => {
+                // The dropped `spawn` future released its admission
+                // reservation via `AdmissionGuard::drop`, but nothing
+                // emitted a terminal state — do it here so the event log
+                // does not sit at `spawning` forever.
+                //
+                // **This arm must RECONCILE, not assume failure.** The
+                // timeout wraps the whole spawn, including
+                // `spawn_mcp_http`'s live-table insert; elapsing after that
+                // insert but before the trailing `emit_state(Running)`
+                // completes would otherwise replace a genuinely healthy
+                // connector (client live, tools materialized) with
+                // `Unavailable`, dropping it out of `running_plugin_ids`
+                // and making every materialized tool invisible.
+                // `publish_unavailable` refuses to regress a `Running`
+                // entry and says so by returning `false`.
+                let reason = format!(
+                    "connector `{id}` did not finish starting within the remaining \
+                     {} ms of the {} ms boot budget for all connectors",
+                    remaining.as_millis(),
+                    connector_budget.as_millis()
+                );
+                if self.publish_unavailable(id, None, reason.clone()).await {
+                    tracing::warn!(plugin_id = %id, "{reason}");
+                } else {
+                    tracing::info!(
+                        plugin_id = %id,
+                        "connector boot budget elapsed after it had already come up; \
+                         keeping it Running"
                     );
-                    if self
-                        .publish_unavailable(&plug.id, None, reason.clone())
-                        .await
-                    {
-                        tracing::warn!(plugin_id = %plug.id, "{reason}");
-                    } else {
-                        tracing::info!(
-                            plugin_id = %plug.id,
-                            "connector boot budget elapsed after it had already come up; \
-                             keeping it Running"
-                        );
-                        // The dropped future never reached its own
-                        // `emit_state(Running)`, so the event log would
-                        // otherwise sit at `spawning` for a live connector.
-                        //
-                        // NOT `emit_state(Running)` directly: `publish_unavailable`
-                        // returning `false` is a SNAPSHOT taken under the table
-                        // lock and then released. `reaffirm_running` re-decides
-                        // and emits as one serialized step, so a `stop()` that
-                        // lands in the window cannot be overwritten by this
-                        // stale `Running`.
-                        self.reaffirm_running(&plug.id).await;
-                    }
+                    // The dropped future never reached its own
+                    // `emit_state(Running)`, so the event log would
+                    // otherwise sit at `spawning` for a live connector.
+                    //
+                    // NOT `emit_state(Running)` directly: `publish_unavailable`
+                    // returning `false` is a SNAPSHOT taken under the table
+                    // lock and then released. `reaffirm_running` re-decides
+                    // and emits as one serialized step, so a `stop()` that
+                    // lands in the window cannot be overwritten by this
+                    // stale `Running`.
+                    self.reaffirm_running(id).await;
                 }
             }
         }
@@ -1326,6 +1501,30 @@ impl PluginHost {
         guard: Option<AdmissionGuard>,
         reason: String,
     ) -> bool {
+        if !self.mark_unavailable(id, guard, reason.clone()) {
+            return false;
+        }
+        self.emit_state(id, &PluginRuntimeStatus::Unavailable { reason })
+            .await;
+        true
+    }
+
+    /// The **synchronous** half of [`Self::publish_unavailable`]: release any
+    /// admission reservation and publish the terminal live entry, under one
+    /// table lock and with no await anywhere.
+    ///
+    /// Split out because "the operator can see that this connector failed" and
+    /// "the event log records why" have different cost profiles: the first is a
+    /// `HashMap::insert`, the second is a repo write that a slow event store can
+    /// stall arbitrarily. The boot fence gives up the second when it is out of
+    /// wall clock, and must never give up the first — a connector reported by
+    /// `GET /api/plugins/{id}` as if it had never been enabled is the failure
+    /// mode the `Unavailable` entry exists to prevent.
+    ///
+    /// Returns `false` without touching anything when the id is live and
+    /// `Running` — see [`Self::publish_unavailable`] for why that check lives
+    /// here, once, rather than at each call site.
+    fn mark_unavailable(&self, id: &str, guard: Option<AdmissionGuard>, reason: String) -> bool {
         {
             // One lock: release the reservation and publish the terminal entry
             // together, so no observer sees the id as neither reserved nor
@@ -1364,8 +1563,6 @@ impl PluginHost {
             );
         }
         tracing::warn!(plugin_id = %id, reason = %reason, "connector unavailable");
-        self.emit_state(id, &PluginRuntimeStatus::Unavailable { reason })
-            .await;
         true
     }
 
@@ -1385,7 +1582,7 @@ impl PluginHost {
     ///
     /// Two things make the decision and the emission agree:
     ///
-    /// * [`Self::state_emit`] is held across both, and `stop`'s own
+    /// * the per-id [`Self::state_emit`] guard is held across both, and `stop`'s own
     ///   remove-then-emit tail takes the same lock — so the two orderings are
     ///   "stop finished, we see no entry and stay quiet" or "we emitted first,
     ///   and stop's `Disabled` lands after us". Either way the last word is
@@ -1398,16 +1595,19 @@ impl PluginHost {
     /// **Test coverage, stated honestly.** The re-check is driven by
     /// `the_boot_budget_reconcile_does_not_resurrect_a_stopped_connector` and
     /// is mutation-verified (delete it and that test fails). The `state_emit`
-    /// serialization and the `stopping` arm are not separately test-driven:
-    /// both cover windows an external caller cannot open deterministically —
-    /// the only tests available would be racy ones, which prove nothing when
-    /// green. They are correct by the lock discipline above, not by assertion.
+    /// serialization is driven by
+    /// `two_emitters_for_one_connector_never_interleave`, which parks a real
+    /// spawn's `Running` emission inside the critical section and runs a real
+    /// `stop` against it (removing the lock from `emit_state` fails it). The
+    /// `stopping` arm is not separately test-driven: it covers a window an
+    /// external caller cannot open deterministically, so the only test
+    /// available would be a racy one, which proves nothing when green.
     /// `pub` so the acceptance test can drive THIS function rather than a
     /// fixture that re-implements its check: the defect is precisely that the
     /// decision and the emission were two steps, and only the real one can
     /// witness that they have been joined.
     pub async fn reaffirm_running(self: &Arc<Self>, id: &str) -> bool {
-        let _serialized = self.state_emit.lock().await;
+        let serialized = self.lock_state(id).await;
         {
             let table = self.lock_table();
             match table.live.get(id) {
@@ -1415,7 +1615,8 @@ impl PluginHost {
                 _ => return false,
             }
         }
-        self.emit_state(id, &PluginRuntimeStatus::Running).await;
+        self.emit_state_under(&serialized, &PluginRuntimeStatus::Running)
+            .await;
         true
     }
 
@@ -1497,12 +1698,13 @@ impl PluginHost {
         // after the (possibly slow) child teardown above, so it never spans a
         // SIGTERM grace period.
         {
-            let _serialized = self.state_emit.lock().await;
+            let serialized = self.lock_state(id).await;
             {
                 let mut table = self.lock_table();
                 table.live.remove(id);
             }
-            self.emit_state(id, &PluginRuntimeStatus::Disabled).await;
+            self.emit_state_under(&serialized, &PluginRuntimeStatus::Disabled)
+                .await;
         }
         Ok(())
     }
@@ -1703,11 +1905,68 @@ impl PluginHost {
 
     // ----- internals -----
 
-    /// Persist a `plugin.state` event and broadcast it. Goes through
-    /// `Repo::log_pure_event` so every fired event lands in the events
-    /// table with a real `_id`; the bus broadcast is fired only after
-    /// commit succeeds (commit-then-emit invariant).
+    /// Acquire the per-id emission lock. See [`Self::state_emit`].
+    ///
+    /// `pub` for the same reason [`Self::reaffirm_running`] is: the acceptance
+    /// test drives the real serialization, not a copy of it.
+    pub async fn lock_state(&self, id: &str) -> StateEmitGuard {
+        let cell = {
+            let mut map = self
+                .state_emit
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Arc::clone(map.entry(id.to_string()).or_insert_with(|| {
+                Arc::new(StateEmitCell {
+                    lock: Arc::new(Mutex::new(())),
+                    inflight: std::sync::atomic::AtomicUsize::new(0),
+                })
+            }))
+        };
+        let held = Arc::clone(&cell.lock).lock_owned().await;
+        StateEmitGuard {
+            id: id.to_string(),
+            cell,
+            _held: held,
+        }
+    }
+
+    /// High-water mark of concurrent emissions. `1` is the invariant; see
+    /// [`Self::state_emit_peak`].
+    pub fn peak_concurrent_state_emits(&self) -> usize {
+        self.state_emit_peak
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Persist a `plugin.state` event and broadcast it, **taking the per-id
+    /// emission lock**. Goes through `Repo::log_pure_event` so every fired
+    /// event lands in the events table with a real `_id`; the bus broadcast is
+    /// fired only after commit succeeds (commit-then-emit invariant).
+    ///
+    /// The lock is acquired here rather than at the call sites so that no
+    /// emitter can be written that opts out of it — see [`Self::state_emit`].
+    /// A caller that must decide and emit as one step takes the guard itself
+    /// and calls [`Self::emit_state_under`]; there is no third way to emit.
     async fn emit_state(&self, id: &str, status: &PluginRuntimeStatus) {
+        let guard = self.lock_state(id).await;
+        self.emit_state_under(&guard, status).await;
+    }
+
+    /// [`Self::emit_state`] for a caller that already holds the guard, so that
+    /// its decision and this emission are one serialized step.
+    ///
+    /// The id comes from the guard, never from a second parameter: emitting for
+    /// an id you do not hold the lock on is the same defect one indirection
+    /// later, and this makes it unrepresentable.
+    async fn emit_state_under(&self, guard: &StateEmitGuard, status: &PluginRuntimeStatus) {
+        let id = guard.id.as_str();
+        let inflight = guard
+            .cell
+            .inflight
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.state_emit_peak
+            .fetch_max(inflight, std::sync::atomic::Ordering::SeqCst);
+        let _dec = InflightGuard(Arc::clone(&guard.cell));
         if let Some(bus) = &self.events {
             let event = Event::PluginState {
                 id: id.to_string(),
