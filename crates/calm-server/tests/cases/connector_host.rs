@@ -2544,9 +2544,20 @@ async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() 
     }
 
     // The operator disables it right there.
-    let err = host
-        .stop(CONNECTOR_ID)
+    //
+    // Bounded on purpose. The refusal is non-blocking, so a correct `stop`
+    // answers immediately; a `stop` that got *into* the critical section would
+    // park on the held DB writer instead, and an unbounded `.await` here would
+    // turn the mutation's red into a hang with no message.
+    let sh = Arc::clone(&host);
+    let stopping = tokio::spawn(async move { sh.stop(CONNECTOR_ID).await });
+    let err = tokio::time::timeout(Duration::from_secs(5), stopping)
         .await
+        .expect(
+            "stop did not answer within 5 s: it must be refused at the entry, \
+             not admitted into the spawn's critical section",
+        )
+        .expect("stop task panicked")
         .expect_err("stop must be refused inside the spawn's critical section");
     assert!(
         matches!(err, HostError::LifecycleBusy(ref id) if id == CONNECTOR_ID),
