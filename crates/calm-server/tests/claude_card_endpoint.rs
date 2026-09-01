@@ -755,6 +755,88 @@ async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
     // `wave_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`.
 }
 
+/// #1147 S6 — a claude card whose payload carries no `cwd` must fall back to
+/// the **wave's workspace**, never to `$HOME`.
+///
+/// This is the last path in the tree that could persist the server's own
+/// environment into a `terminals.cwd`, and since S6 that row freezes the wave's
+/// workspace in the same transaction — so a wrong directory here is permanent,
+/// not just wrong once.
+///
+/// The state is built directly rather than through the route on purpose: HTTP
+/// cannot produce it, because `ClaudeAdapter` fills `cwd` on every card it
+/// mints. That is the reachability argument, and it is exactly why the fallback
+/// is worth closing instead of trusting: it is a property of today's callers,
+/// not of this function.
+///
+/// The assertion is not vacuous: the fixture's card payload has had `cwd`
+/// REMOVED, so `/workspace` can only come from `waves.workspace_path`. With the
+/// old `default_cwd()` fallback the row would name `$HOME`.
+#[tokio::test]
+async fn post_claude_restart_without_a_payload_cwd_falls_back_to_the_wave_workspace() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_with_spawn_hook_factory(move |_, _| {
+        recording_spawn_hook(Arc::new(tokio::sync::Mutex::new(Vec::new())))
+    })
+    .await;
+
+    let (create_status, created) =
+        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap().to_string();
+    let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
+    boot.repo
+        .session_projection_complete_for_card(&card_id, WorkerSessionState::Exited)
+        .await
+        .unwrap();
+    boot.repo.terminal_delete(old_terminal_id).await.unwrap();
+
+    // Strip `cwd` from the card payload — the shape the fallback exists for.
+    let mut payload = created["payload"].clone();
+    payload.as_object_mut().unwrap().remove("cwd");
+    boot.repo
+        .card_update(
+            &card_id,
+            calm_server::model::CardPatch {
+                payload: Some(payload),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    let stored = boot.repo.card_get(&card_id).await.unwrap().unwrap();
+    assert!(
+        stored.payload.get("cwd").is_none(),
+        "premise: the payload has no cwd to fall back on"
+    );
+
+    let (restart_status, restarted) = post_restart(boot.app.clone(), &card_id).await;
+    assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
+
+    let workspace: String = sqlx::query_scalar(
+        "SELECT w.workspace_path FROM waves w JOIN cards c ON c.wave_id = w.id WHERE c.id = ?1",
+    )
+    .bind(&card_id)
+    .fetch_one(boot.repo.pool())
+    .await
+    .unwrap();
+    let recreated = boot
+        .repo
+        .terminal_get_by_card(&card_id)
+        .await
+        .unwrap()
+        .expect("restart recreates the terminal row");
+    assert_eq!(
+        recreated.cwd, workspace,
+        "#1147 S6 — the fallback is the wave's workspace, not $HOME"
+    );
+    let home = std::env::var("HOME").unwrap_or_default();
+    assert!(
+        !home.is_empty() && recreated.cwd != home,
+        "the fixture only proves anything while $HOME is set and differs: home={home:?}"
+    );
+}
+
 #[tokio::test]
 async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
     let _guard = ENV_LOCK.lock().await;

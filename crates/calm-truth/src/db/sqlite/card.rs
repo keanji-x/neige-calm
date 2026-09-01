@@ -666,15 +666,32 @@ pub async fn terminal_create_tx(
     // transaction is still open. The task then waits on itself forever in
     // `sqlx_sqlite::statement::unlock_notify::wait`.
     //
-    // So the rule for anyone adding a caller is not "do not freeze here". It is:
-    // **once a transaction has created a terminal row, it must not read `waves`
-    // off the pool before committing** — use the `_tx` reader. That is why
-    // `card_scope_tx` exists (`calm-server/src/routes/cards.rs`); a wall clock
-    // on the one production flow that does this sits in
-    // `claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`,
-    // so a regression is a red test rather than a wedged CI job. Every other
-    // adapter resolves its scope BEFORE creating the card (swept: codex,
-    // claude, claude-worker, terminal, terminal-worker).
+    // So the rule for anyone adding a caller is not "do not freeze here", and
+    // it is not about `waves` either. The general rule, of which this is one
+    // instance:
+    //
+    //   **A transaction must not read, off the pool, any table it has itself
+    //   written, before it commits.** The pool is a second connection; under
+    //   shared cache it blocks on a lock only the caller can release.
+    //
+    // `waves` is simply the table S6 added to this transaction's write set;
+    // `cards`, `terminals` and the event tables were already in it, and a pool
+    // read of any of them from inside these flows would hang the same way. What
+    // S6 changed is which reads are now unsafe, not what the rule is.
+    //
+    // **This rule has no mechanical enforcement.** Nothing scans for it. The
+    // whole of its coverage is one wall clock on one flow
+    // (`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`),
+    // which turns a wedged CI job into a legible red test for THAT flow only. A
+    // new adapter that creates a terminal row and then reads `waves` (or
+    // `cards`) through `self.repo` will still hang CI with no diagnosis. The
+    // tree was swept once, at S6: every other adapter (codex, claude,
+    // claude-worker, terminal, terminal-worker) resolves its scope BEFORE
+    // creating the card, which is equally correct. That sweep is a measurement
+    // of one moment, not a guarantee.
+    //
+    // The in-transaction readers exist for this: `card_scope_tx`
+    // (`calm-server/src/routes/cards.rs`), `wave_workspace_read_tx`.
     super::wave_workspace::wave_workspace_freeze_tx(tx, &wave_id, now).await?;
     Ok(Terminal {
         id,
