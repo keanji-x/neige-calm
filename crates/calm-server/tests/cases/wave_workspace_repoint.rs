@@ -17,6 +17,13 @@
 //! 3. the move's own assertions — inherited from S5's
 //!    `recycle_wave_workspace`, exercised here end to end
 //!
+//! **Running a subset locally: pass `--no-fail-fast`.** Without it cargo stops
+//! at the first failure, and a mutation check that stops at 48 of 62 reports
+//! "only one test died" for a mutation that actually kills three. That is not
+//! hypothetical — it nearly recorded N19's two new tests as one, in the
+//! opposite direction from the mistake above: a wrong *green* rather than a
+//! wrong *cause*.
+//!
 //! and the four refusals (frozen / already attached / system cove / non-empty)
 //! each have one too. The freeze latch's system-cove exclusion has
 //! `a_workspace_lease_never_freezes_the_launchpad`; the freeze point S3 does
@@ -1620,10 +1627,21 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
 /// follows the inode on Linux) into `.trash` afterwards. The route therefore
 /// also takes the live handle out of the registry and shuts it down.
 ///
-/// This exists because that half was **dead code under test**: no fixture ever
-/// put a `SpecHarness` in the registry, so deleting `harness.get` +
-/// `shutdown()` + `remove` turned nothing red — measured. `install_live_harness`
-/// is what makes the assertion reachable.
+/// This exists because that half had **no assertion**, and the distinction
+/// matters enough to state precisely — an earlier revision of this comment got
+/// it wrong and said the code was never executed.
+///
+/// It was executed. A panic probe planted in the loop fired in **six** tests
+/// that never call `install_live_harness`: creating a wave registers a live
+/// spec-harness runtime on its own, so the registry is populated naturally and
+/// the loop really runs. What was missing is that nothing ever *checked the
+/// slot afterwards*, so deleting `harness.get` + `shutdown()` + `remove` turned
+/// nothing red — measured. `install_live_harness` is not what makes the code
+/// run; it is what gives this test a runtime id it can name and then assert is
+/// gone.
+///
+/// "Never ran" and "ran, unobserved" call for different fixes, and only the
+/// second one is true here.
 #[tokio::test]
 async fn the_fence_also_takes_the_live_harness_out_of_the_registry() {
     let b = boot().await;

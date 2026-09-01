@@ -51,11 +51,15 @@ struct Boot {
     workspace_root: PathBuf,
     /// #1147 S3 — the registry `delete_wave`'s teardown acts on.
     ///
-    /// Held for the same reason the re-point suite holds it: without a real
-    /// `SpecHarness` in here, `teardown_wave_deletion`'s
-    /// `harness.get`/`shutdown`/`remove` loop is dead code under test. That was
-    /// measured on the re-point path and this path has the identical shape, so
-    /// it is covered here too rather than left as the same latent gap.
+    /// Held for the same reason the re-point suite holds it: the registry is
+    /// populated naturally (creating a wave registers a live spec-harness
+    /// runtime), so `teardown_wave_deletion`'s `harness.get`/`shutdown`/`remove`
+    /// loop does run under test — but nothing ever inspected the slot
+    /// afterwards, so removing the loop turned nothing red. Installing a
+    /// harness under a **known** runtime id is what lets a test name it and
+    /// assert it is gone. Measured on the re-point path; this path has the
+    /// identical shape, so it is covered here too rather than left as the same
+    /// latent gap.
     harness: calm_server::harness::HarnessRegistry,
     roles: CardRoleCache,
     waves: WaveCoveCache,
@@ -939,12 +943,17 @@ async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
 /// `DELETE /api/waves/{id}` must take the wave's live spec harness out of the
 /// registry before it moves the directory.
 ///
-/// Same shape, same latent gap as the re-point path: nothing in this suite ever
-/// put a `SpecHarness` in the registry, so `teardown_wave_deletion`'s
-/// `harness.get` → `shutdown` → `remove` loop was dead code under test and
-/// deleting it turned nothing red. A surviving harness is a live run loop whose
-/// process cwd follows the inode — it keeps writing into the directory after it
-/// has been renamed into `.trash`, until the GC erases the lot.
+/// Same shape, same latent gap as the re-point path, and the gap is an absent
+/// **assertion** rather than absent execution — a probe showed the loop runs in
+/// tests that install nothing, because creating a wave registers a live
+/// spec-harness runtime by itself. Nothing checked the slot afterwards, so
+/// deleting `teardown_wave_deletion`'s `harness.get` → `shutdown` → `remove`
+/// turned nothing red. A surviving harness is a live run loop whose process cwd
+/// follows the inode — it keeps writing into the directory after it has been
+/// renamed into `.trash`, until the GC erases the lot.
+///
+/// Running a subset of this suite locally: pass `--no-fail-fast`, or a stop at
+/// the first failure will under-report which tests a mutation actually kills.
 #[tokio::test]
 async fn deleting_a_wave_takes_its_live_harness_out_of_the_registry() {
     let b = boot().await;
