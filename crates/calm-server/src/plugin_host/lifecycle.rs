@@ -21,11 +21,21 @@
 //!   that step and returns the fresh row; the caller renders it. That read
 //!   point is load-bearing (it is what makes `enable` report `running`), so it
 //!   is preserved exactly.
-//! * The leading `plugin_get_by_id` 404 probes are preserved. Without them
-//!   `uninstall` of an unknown id would return 204 (`plugin_delete` does not
-//!   report `NotFound`) and `reload` would return a manifest-read 400/500.
-//!   `enable`/`disable` happen to be covered by `plugin_update_enabled`'s
-//!   `rows_affected() == 0 → NotFound`, but that is a coincidence, not a rule.
+//! * The leading `plugin_get_by_id` 404 probes are preserved. `reload`'s is the
+//!   only one that is load-bearing *on its own*: without it an unknown id
+//!   reaches the manifest read and returns a 400. The other three are today
+//!   redundant with the repo layer — `plugin_update_enabled` and
+//!   `plugin_delete` both raise `NotFound` on `rows_affected() == 0`
+//!   (`calm-truth/src/db/sqlite/out_of_domain.rs:414` / `:470`), formatting the
+//!   **byte-identical** `CalmError::NotFound(format!("plugin {id}"))`. So
+//!   deleting one probe alone is unobservable; what must not be lost is the
+//!   *endpoint contract*, and that is what the gate pins:
+//!   `tests/cases/plugin_routes.rs::{enable,disable}_unknown_id_returns_404`,
+//!   `uninstall_unknown_id_returns_404_not_204`,
+//!   `reload_unknown_id_returns_404_not_manifest_read_error` and — for the
+//!   `if plug.enabled` respawn guard — `reload_disabled_plugin_does_not_spawn`.
+//!   (§7 nail 5's stated rationale, "`plugin_delete` does not report
+//!   `NotFound`", is factually wrong; the contract it protects is not.)
 
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;

@@ -17,6 +17,9 @@
 //!   6. views catalog reflects the installed manifest
 //!   7. install rejects manifest with disallowed `scope`
 //!   8. install rejects reinstall with 409
+//!
+//! Plus the #1196 S0b lifecycle-probe gate at the bottom of the file: the four
+//! unknown-id 404s and reload's conditional respawn.
 
 #![cfg(unix)]
 
@@ -610,6 +613,132 @@ async fn patch_config_writes_user_config() {
     assert_eq!(resp.status(), StatusCode::OK);
     let det = body_to_json(resp).await;
     assert_eq!(det["user_config"]["theme"], "dark");
+}
+
+// ===========================================================================
+// #1196 S0b — the leading 404 probes and reload's `if plug.enabled` guard.
+//
+// These five tests are the gate for design §7 nails 5 / 6 / 7. Before them,
+// deleting any of `PluginHost::{enable,disable,uninstall,reload}`'s leading
+// `plugin_row_or_404` probe — or reload's `if plug.enabled` respawn guard —
+// was completely invisible to the suite: `uninstall` of an unknown id silently
+// became a 204, `reload` became a manifest-read 400, and a reload would
+// resurrect a disabled plugin. S1 rewrites every step of these methods, so the
+// probes need a red light of their own.
+// ===========================================================================
+
+const GHOST: &str = "test.no.such.plugin";
+
+#[tokio::test]
+async fn enable_unknown_id_returns_404() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state),
+        &format!("/api/plugins/{GHOST}/enable"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "enable of an unknown id must 404, not fall through to the enabled-flip"
+    );
+}
+
+#[tokio::test]
+async fn disable_unknown_id_returns_404() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state),
+        &format!("/api/plugins/{GHOST}/disable"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "disable of an unknown id must 404, not fall through to the enabled-flip"
+    );
+}
+
+/// `plugin_delete` does **not** report `NotFound`, so without the leading
+/// probe this endpoint answers 204 for an id that never existed.
+#[tokio::test]
+async fn uninstall_unknown_id_returns_404_not_204() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+    let resp = delete_path(app(state), &format!("/api/plugins/{GHOST}")).await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "uninstall of an unknown id must 404; a 204 would mean `plugin_delete` \
+         silently absorbed the missing row"
+    );
+}
+
+/// Without the leading probe, `reload` walks on to read
+/// `<install_path>/manifest.json` off an empty `install_path` and reports the
+/// io error as a 400 `plugin_install`.
+#[tokio::test]
+async fn reload_unknown_id_returns_404_not_manifest_read_error() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+    let resp = post_json(
+        app(state),
+        &format!("/api/plugins/{GHOST}/reload"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "reload of an unknown id must 404, not a manifest-read 400/500"
+    );
+}
+
+/// Nail 7: reload respawns **only if the pre-stop row said `enabled`**. An
+/// unconditional respawn resurrects a plugin the operator disabled.
+///
+/// The assertion is on the host's runtime table, not just the HTTP code:
+/// `PluginHost::spawn` is awaited to completion inside `reload`, so if the
+/// guard is gone the id has a live (or admission-reserved) entry by the time
+/// the response is built.
+#[tokio::test]
+async fn reload_disabled_plugin_does_not_spawn() {
+    let (state, _tmp, _plugins_dir) = boot_state().await;
+    let src_root = tempfile::tempdir().unwrap();
+    let src_dir = write_stub_plugin(src_root.path(), "test.reload.disabled");
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": src_dir.to_string_lossy() } }),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    // Install leaves the row disabled; never enable it.
+    assert!(
+        state.plugin.status("test.reload.disabled").await.is_none(),
+        "freshly installed plugin must not be running"
+    );
+
+    let resp = post_json(
+        app(state.clone()),
+        "/api/plugins/test.reload.disabled/reload",
+        json!({}),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK, "reload should 200");
+    let det = body_to_json(resp).await;
+    assert_eq!(det["enabled"], false, "reload must not flip `enabled`");
+    assert_eq!(
+        det["state"], "disabled",
+        "a disabled plugin must still read `disabled` after reload"
+    );
+
+    // The load-bearing assertion: nothing was spawned.
+    assert!(
+        state.plugin.status("test.reload.disabled").await.is_none(),
+        "reload of a disabled plugin must not spawn it — the `if plug.enabled` \
+         guard in PluginHost::reload is gone"
+    );
 }
 
 // The pre-M5 `iframe_write_without_cookie_returns_401` test exercised the

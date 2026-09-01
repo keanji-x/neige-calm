@@ -132,7 +132,9 @@ async fn spawn_under(self: &Arc<Self>, g: &LifecycleGuard) -> Result<(), HostErr
 
 **搬迁不扩宽写面**：六个 repo 方法全在 `RepoOutOfDomain`（`calm-truth/src/db/mod.rs:971-996`），而 `RouteRepo: RepoEventWrite + RepoOutOfDomain + …`（`:1114`），host 的 `repo` 已是 `Arc<dyn RouteRepo>`（`mod.rs:277`）。PR #41 那条「raw sync-domain writes 不可达」的窄化决定完全不受影响。
 
-**取锁点**：`install` 的 guard 只能在 `Manifest::parse` 之后取（id 来自 manifest，`routes/plugins.rs:326`）。取锁前的动作全是只读（`:314` / `:315` / `:322` / `:332-345`），落盘从 `:363` 开始——所以「Busy 之前无副作用」成立。
+**取锁点**：`install` 的 guard 只能在 `Manifest::parse` 之后取（id 来自 manifest，`routes/plugins.rs:326`）。取锁前的动作全是只读（`:314` / `:315` / `:322`），落盘从 `materialize_install_tree` 开始——所以「Busy 之前无副作用」成立。
+
+S0b 之后 min_kernel 校验已随 `install` 一起搬进 host，住在 `plugin_host/lifecycle.rs:61-72`（原 `routes/plugins.rs:332-345` 的行号引用作废）。**S1 的取锁点必须落在这段只读校验之后、重名检查之前**，即 `lifecycle.rs:72` 之后、`:76`（`plugin_get_by_id` 重名探针）之前。写在 `install()` 第一行是错的：那样「某 id 正忙 + manifest 内核过老」会返回 `LifecycleBusy` 409，而不是今天的 `PluginKernelTooOld` 422——一个被锁掩盖掉的错误码回归。min_kernel 段一行都不写，放在 guard 之前不破坏「Busy 之前无副作用」。
 
 **`stop_under` 的 `BadState("already stopping")`（`:1662-1664`）**：持锁后不可能发生，降级为 `debug_assert!` + 走 `NotFound` 分支。
 
@@ -399,10 +401,34 @@ S0 的价值不只是让 S1 可评审：那 24 处集成测试的改造若混在
 2. `build_detail` 的读时点原样保留（今天 enable / disable / reload 都在运行时步骤**之后**重读一次行）。
 3. `Manifest::parse` / `resolve_install_source` 留在路由（§2.3 的取锁点依赖它）。
 4. **S0 必须同时把 `PluginRegistry::insert` / `remove` / `set_exposes_tools` 降到 `pub(crate)`**，否则编译器不强制那 24 处迁移，S0 会以「builder 加好了、老 `insert` 还 `pub`、调用点一处没动」的形态合入，24 处洪水原样冲进 S1——正是这次切片要避免的事。
-5. **前置 `plugin_get_by_id` 的 404 必须保留**（`:416` / `:451` / `:528` / `:616`，不只是钉子 2 说的 `build_detail` 那次**后**读）。丢了它，`uninstall` 一个不存在的 id 会从 **404 变 204**（`plugin_delete` 不返回 `NotFound`），`reload` 从 404 变成读盘失败的 400/500。`enable`/`disable` 恰好被 `plugin_update_enabled` 的 `rows_affected()==0 → NotFound`（`out_of_domain.rs:413`）兜住——那是巧合，不能当规则。
+5. **前置 `plugin_get_by_id` 的 404 必须保留**（`:416` / `:451` / `:528` / `:616`，不只是钉子 2 说的 `build_detail` 那次**后**读）。丢了它，`reload` 从 404 变成读盘失败的 400/500。
+
+> **S0b 跟进更正**：原文这里还写着「`uninstall` 会从 404 变 204（`plugin_delete` 不返回 `NotFound`）」——**事实相反**，`plugin_delete` 在 `rows_affected()==0` 时就返回 `NotFound`（`out_of_domain.rs:469-471`）。`enable`/`disable` 同样被 `plugin_update_enabled` 兜住（`:413`）。所以四个探针里只有 `reload` 的是单独可观测的；另外三个是与 repo 层重复的防御。要守的是端点契约，见下面「钉子 5 / 6 / 7 的门禁」。
 6. **`reload` 的条件重生**：`:666` 是 `if plug.enabled` 才 spawn，且 `plug` 是 **stop 之前**读到的那一行（`plug.install_path` / `plug.enabled` 都来自它）。§2.3 的表已同步。无条件 spawn 会把一个已禁用插件拉起来——一个贴着「零行为变更」标签的行为变更。
 7. **`uninstall` 的三次 `let _ =` 吞错**（`:540-542`：token / kv / overlay）是**刻意**的（注释在 `:536-539`）。搬进 host 后最自然的写法是 `?`，那会让「overlay 清理失败」从静默变 500。明写为契约。
 8. **评审证据**：每个 handler 的错误码集合前后逐条对照表。没有这张表，「零行为变更」是一句自称。
+
+#### 钉子 5 / 6 / 7 的门禁（S0b 跟进补齐）
+
+S0b 首版把 5 / 6 / 7 写进了代码与注释，但**没有任何测试会因为删掉它们而变红**。跟进提交在 `crates/calm-server/tests/cases/plugin_routes.rs` 补了五条：
+
+| 测试 | 钉住 |
+|---|---|
+| `enable_unknown_id_returns_404` | 钉子 5（`lifecycle.rs:133` 探针） |
+| `disable_unknown_id_returns_404` | 钉子 5（`:155` 探针） |
+| `uninstall_unknown_id_returns_404_not_204` | 钉子 5（`:178` 探针；丢了就是 204） |
+| `reload_unknown_id_returns_404_not_manifest_read_error` | 钉子 5（`:215` 探针；丢了就是读盘 400） |
+| `reload_disabled_plugin_does_not_spawn` | 钉子 7（`:264` 的 `if plug.enabled`），断言 `PluginHost::status()` 仍为 `None`，不只断 HTTP 码 |
+
+五条均已做变异验证，并顺带证伪了钉子 5 自己的论据：
+
+- **`plugin_delete` 其实会返回 `NotFound`**（`out_of_domain.rs:469-471`，自 #899 拆分起就在）。钉子 5 写的「丢了探针 `uninstall` 会从 404 变 204」是错的——单独删掉 `uninstall` 的探针，门禁全绿。
+- 同理，单独删掉 `enable` / `disable` 的探针也全绿：`plugin_update_enabled` 的 `rows_affected()==0` 与其后的 `plugin_get_by_id().ok_or_else()` 是两层兜底，且 `disable` 结尾还有一次重读，产出的 `CalmError::NotFound(format!("plugin {id}"))` 与探针**逐字节相同**。
+- 唯一单独可变异的是 **`reload` 的探针**：删掉后 404 立刻变成读盘 400（实测 `left: 400 / right: 404`）。
+
+**因此钉子 5 的正确表述是**：这三个探针今天是与 repo 层重复的**防御**，不是唯一防线；要守的是**端点契约**（未知 id ⇒ 404），门禁钉的正是契约。三条的决定性变异需要同时打掉 repo 兜底（`let _ = plugin_update_enabled(...)` / `let _ = plugin_delete(...)`），此时 `enable` 变 500、`disable` 变 200、`uninstall` 变 204，三条分别变红。S1 若把 repo 调用换形（例如收进 guard 后改用别的写法），契约就只剩探针撑着——这正是补门禁的理由。
+
+钉子 6（`uninstall` 的三次 `let _ =` 吞错）仍只是契约注释，无门禁：把它们改成 `?` 只在 repo 清理失败时可观测，而 sqlite/mock 两个后端都不会失败——要门禁得先有可注错的 repo 接缝，留给 S1。
 
 ## §8 评审账本
 
