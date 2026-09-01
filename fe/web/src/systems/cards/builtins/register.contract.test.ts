@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { KernelCardInput } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
+import { ASSISTANT_CARD_ENTRY } from './assistant.ts';
 import { CLAUDE_CARD_ENTRY } from './claude.ts';
 import { CODEX_CARD_ENTRY } from './codex.ts';
 import { partitionWaveCards } from './headless-filter.js';
@@ -17,18 +18,19 @@ declare module '../registry.js' {
   }
 }
 
-const LANDED = ['terminal', 'codex', 'spec', 'claude', 'wave-report'] as const;
+const LANDED = ['terminal', 'codex', 'spec', 'assistant', 'claude', 'wave-report'] as const;
 
 describe('builtin card composition contract', () => {
-  it('[INV-CARD-225] pins the eight-item order tuple', () => {
+  it('[INV-CARD-225] pins the nine-item order tuple', () => {
     // Not a set and not sorted: the registry's fallback scan runs in insertion
     // order, so this literal *is* the resolution semantics. Changing an entry
     // or dropping one changes which adapter claims a shared kernel kind.
     expect([...BUILTIN_CARD_ORDER]).toEqual([
-      'terminal', 'codex', 'spec', 'claude', 'wave-report', 'file-viewer', 'iframe', 'plugin-iframe',
+      'terminal', 'codex', 'spec', 'assistant', 'claude', 'wave-report',
+      'file-viewer', 'iframe', 'plugin-iframe',
     ]);
-    expect(BUILTIN_CARD_ORDER).toHaveLength(8);
-    expect(new Set(BUILTIN_CARD_ORDER).size).toBe(8);
+    expect(BUILTIN_CARD_ORDER).toHaveLength(9);
+    expect(new Set(BUILTIN_CARD_ORDER).size).toBe(9);
   });
 
   it('registers only the entries that exist, with no placeholders for the three that do not', () => {
@@ -44,6 +46,7 @@ describe('builtin card composition contract', () => {
     expect(registry.get('terminal')).toBe(TERMINAL_CARD_ENTRY);
     expect(registry.get('codex')).toBe(CODEX_CARD_ENTRY);
     expect(registry.get('spec')).toBe(SPEC_CARD_ENTRY);
+    expect(registry.get('assistant')).toBe(ASSISTANT_CARD_ENTRY);
     expect(registry.get('claude')).toBe(CLAUDE_CARD_ENTRY);
     expect(registry.get('wave-report')).toBe(WAVE_REPORT_CARD_ENTRY);
   });
@@ -55,12 +58,12 @@ describe('builtin card composition contract', () => {
     const tupleIndexes = registered.map((type) => BUILTIN_CARD_ORDER.indexOf(type as never));
     expect(tupleIndexes).not.toContain(-1);
     expect([...tupleIndexes]).toEqual([...tupleIndexes].sort((left, right) => left - right));
-    // With codex landed the first five slots are contiguous; the hole that is
-    // still real is the tail — file-viewer (5), iframe (6) and plugin-iframe
-    // (7) are unregistered, so `wave-report` at index 4 is the last entry.
+    // With codex and assistant landed the first six slots are contiguous; the
+    // hole that is still real is the tail — file-viewer (6), iframe (7) and
+    // plugin-iframe (8) are unregistered, so `wave-report` at index 5 is last.
     // Asserted as *tuple* indexes rather than 0..n, so a later slice that lands
     // one of those three out of tuple position turns this red.
-    expect(tupleIndexes).toEqual([0, 1, 2, 3, 4]);
+    expect(tupleIndexes).toEqual([0, 1, 2, 3, 4, 5]);
     // The hole is a suffix, and the assertion above only pins that while the
     // unlanded set really is the tail. Pin the other side too, from the tuple
     // itself: every skipped type sits after every registered one.
@@ -97,6 +100,35 @@ describe('builtin card composition contract', () => {
   });
 
   /*
+   * #1189 §5.4 — the assistant marker's half of the same rule.
+   *
+   * The card the wave conversation endpoint mints is `kind: 'codex'` carrying
+   * `harness_profile: 'assistant'`, and `codex` is scanned before `assistant`.
+   * What is really under test is `CODEX_CARD_ENTRY`'s refusal: delete that
+   * clause and the assertion below reads `'codex'`, which in production means a
+   * headless conversation card drawn as an empty terminal in CARDS and on the
+   * board. Both entries are the production ones, registered in tuple-relative
+   * order.
+   */
+  it('[INV-CARD-180] leaves an assistant-marked codex card to the assistant adapter', () => {
+    const registry = createCardRegistry();
+    registry.register(CODEX_CARD_ENTRY);
+    registry.register(ASSISTANT_CARD_ENTRY);
+
+    expect(
+      registry.resolve({ id: 'a', kind: 'codex', payload: { harness_profile: 'assistant' } })?.type,
+      'the assistant marker must fall through the earlier codex adapter',
+    ).toBe('assistant');
+    /* And the marker is the whole predicate, in both directions: a cove chat
+       card carries `plain_chat` under the same field and must not become an
+       assistant. */
+    expect(
+      registry.resolve({ id: 'p', kind: 'codex', payload: { harness_profile: 'plain_chat' } }),
+      'a plain chat card is not a wave assistant',
+    ).toBeNull();
+  });
+
+  /*
    * Both mistakes delete cards from the product: a missing declaration puts a
    * card that renders nothing into the CARDS list and the grid; a spurious one
    * deletes every card of that type from both the moment its entry lands.
@@ -111,16 +143,18 @@ describe('builtin card composition contract', () => {
    * all and lives here.
    *
    * The expectation below is written per built-in **type**, decided from the
-   * oracle rather than read back off the entries, and covers all eight — so a
+   * oracle rather than read back off the entries, and covers all nine — so a
    * later slice cannot land an entry whose headlessness nobody decided. Nothing
    * here executes a component: an entry is a plain object and calling its
    * component outside a renderer would throw for any entry that uses a hook.
    */
   describe('headless is declared on the entry, and the declaration is what filters', () => {
-    // Source of truth: `INV-CARD-181` (spec) and `INV-CARD-201` (wave-report)
-    // are headless; every other built-in owns a surface.
+    // Source of truth: `INV-CARD-181` (spec), `INV-CARD-201` (wave-report) and
+    // the wave assistant (#1189 §5.4) are headless — all three are read in the
+    // conversation drawer or the report column and draw no card of their own;
+    // every other built-in owns a surface.
     const HEADLESS_BY_TYPE: Readonly<Record<BuiltinCardType, boolean>> = Object.freeze({
-      terminal: false, codex: false, spec: true, claude: false,
+      terminal: false, codex: false, spec: true, assistant: true, claude: false,
       'wave-report': true, 'file-viewer': false, iframe: false, 'plugin-iframe': false,
     });
     const bootedProductionRegistry = () => {
@@ -198,6 +232,7 @@ describe('builtin card composition contract', () => {
       terminal: { id: 'probe-term', kind: 'terminal', payload: { terminal_id: 't1' } },
       codex: { id: 'probe-codex', kind: 'codex', payload: { terminal_id: 't3' } },
       spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
+      assistant: { id: 'probe-assistant', kind: 'codex', payload: { harness_profile: 'assistant' } },
       claude: { id: 'probe-claude', kind: 'claude', payload: { terminal_id: 't2' } },
       'wave-report': { id: 'probe-report', kind: 'wave-report', payload: null },
     });

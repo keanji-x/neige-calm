@@ -70,7 +70,7 @@ describe('production app mount', () => {
     expect(cards).toBeDefined();
     // The booted registry is the one the router got — not a second instance.
     expect(vi.mocked(bootCards).mock.calls[0]?.[0]).toBe(cards?.registry);
-    expect(cards?.registry.entries().map((entry) => entry.type)).toEqual(['terminal', 'codex', 'spec', 'claude', 'wave-report']);
+    expect(cards?.registry.entries().map((entry) => entry.type)).toEqual(['terminal', 'codex', 'spec', 'assistant', 'claude', 'wave-report']);
     expect(cards?.host).toBeDefined();
   });
 
