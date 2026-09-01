@@ -506,9 +506,19 @@ async fn an_assistant_may_not_declare_a_task_block() {
 /// a schedulable task at all (which is exactly the state the earlier P2
 /// fixtures are in: their fences carry neither a gate nor a `no_gate_reason`,
 /// so under the wave's default `require_task_gates` they project no
-/// schedulable row regardless of the writer). Remove the P2 guard and step 2
-/// does not merely stop erroring — it grows the same `pending` row step 3
-/// does.
+/// schedulable row regardless of the writer).
+///
+/// What removing the P2 guard actually does, verified by mutation: step 2's
+/// write is no longer stopped at the guard, runs into the task projection, and
+/// the projection immediately tries to emit a dispatch-request for the newly
+/// released task — where the *role gate* refuses it with "only spec cards (or
+/// User/Kernel) may emit dispatch-request events (actor=AiCodex(<assistant
+/// card>))". So the row does not appear, because the whole write rolls back at
+/// that second, independent layer. That message is the evidence §7 P2 asks
+/// for — the assistant's edit reached the point of dispatching a worker — and
+/// it is why step 2 asserts P2's own message and not just an error code: with
+/// only the code asserted, the mutation would still be red, but for the wrong
+/// reason, and the deeper refusal would go unrecorded.
 #[tokio::test]
 async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
     let boot = boot().await;
@@ -552,6 +562,18 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
     )
     .await
     .expect_err("an assistant releasing a spec-declared task must be refused");
+    // The refusal must be P2's own, by message and not just by code. Delete
+    // the P2 guard and this write does not merely change error code: it runs
+    // all the way into the task projection and is stopped only by the
+    // dispatch-request role gate, whose message
+    // ("only spec cards (or User/Kernel) may emit dispatch-request events")
+    // is itself the proof that the edit reached the dispatch path.
+    assert!(
+        err.message
+            .contains("an assistant may not modify task block"),
+        "the refusal must be P2's, not an incidental one from a layer \
+         further in: {err:?}"
+    );
     assert_eq!(err.code, RpcError::INVALID_PARAMS);
     assert_eq!(
         before,
