@@ -198,7 +198,7 @@ pub fn workflow_template_task_payloads(key: &str) -> Option<Vec<Value>> {
 /// Placeholder so `require_task_gates` does not treat these as scheduled
 /// work. Spec must replace the block with a real `gate` from the target
 /// repo before setting `ready: true`. Never an executed shell command.
-const AUTHOR_REAL_GATE: &str = "author a real gate from the target repo toolchain \
+pub const AUTHOR_REAL_GATE: &str = "author a real gate from the target repo toolchain \
 (formatter, linter, tests) before activating; this reason is not a permanent skip";
 
 fn task(

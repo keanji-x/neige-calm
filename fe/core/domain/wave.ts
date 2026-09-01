@@ -217,48 +217,35 @@ export function waveTemplatesOperation(): ApiOperation<WaveTemplate[]> {
 }
 
 /**
- * A template's *editable* definition (#1230) — what Settings loads and puts
- * back, as opposed to `waveTemplateSchema`, which is the New wave picker's
- * chooser view.
+ * A template edit (#1230) — a **diff**, not a task list.
  *
- * `tasks` is deliberately `z.array(z.record(...))` and not a typed task shape.
- * The server round-trips whole task objects so that the fields Settings does
- * not display — `acceptance_criteria`, `context`, `gate`, `depends_on` — are
- * preserved by a save instead of being flattened away. Parsing them into a
- * narrow FE type would defeat exactly that: anything the schema did not name
- * would be stripped on the way back out. The two fields the editor *does* read
- * are picked off individually where they are used, and the object is otherwise
- * opaque cargo.
+ * The client states two facts about a task, `key` and `goal`, and nothing else;
+ * the server owns every other field of a task block. Review round 2 measured
+ * what happens when the client may send blocks: `released_by_user: true` and
+ * `spawn: "sub-wave"` were accepted and stored, and omitting a tombstone
+ * erased it. Under this shape none of that is expressible.
+ *
+ * There is no per-template read: `waveTemplatesOperation` already returns
+ * `id` / `title` / `tasks[{key, goal}]` for every template, which is exactly
+ * what the editor needs. A second endpoint would be a second authority for the
+ * same facts, and an N+1 read whose failure modes have to be reasoned about
+ * separately from the list's.
  */
-export const waveTemplateDefinitionSchema = z.object({
-  id: z.string(),
-  title: z.string(),
-  tasks: z.array(z.record(z.string(), z.unknown())),
-  /** `true` once the template wave exists; informational only. */
-  seeded: z.boolean(),
-});
-export type WaveTemplateDefinition = z.infer<typeof waveTemplateDefinitionSchema>;
-
-/** One task as the editor reads it. Everything else on the object is cargo. */
-export type WaveTemplateTaskDraft = Readonly<{ key: string; goal: string }>;
-
-export function waveTemplateDefinitionOperation(id: string): ApiOperation<WaveTemplateDefinition> {
-  return {
-    method: 'GET',
-    path: `/api/wave-templates/${encodeURIComponent(id)}`,
-    responseSchema: waveTemplateDefinitionSchema,
-  };
-}
+export type WaveTemplateGoalEdit = Readonly<{ key: string; goal: string }>;
 
 export function putWaveTemplateOperation(
   id: string,
-  body: { title: string; tasks: readonly Record<string, unknown>[] },
-): ApiOperation<WaveTemplateDefinition> {
+  body: Readonly<{
+    title: string;
+    edits: readonly WaveTemplateGoalEdit[];
+    appends: readonly WaveTemplateGoalEdit[];
+  }>,
+): ApiOperation<WaveTemplate> {
   return {
     method: 'PUT',
     path: `/api/wave-templates/${encodeURIComponent(id)}`,
     body,
-    responseSchema: waveTemplateDefinitionSchema,
+    responseSchema: waveTemplateSchema,
   };
 }
 

@@ -2907,55 +2907,6 @@
       }
     },
     "/api/wave-templates/{id}": {
-      "get": {
-        "tags": [
-          "waves"
-        ],
-        "operationId": "get_wave_template_definition",
-        "parameters": [
-          {
-            "name": "id",
-            "in": "path",
-            "description": "Template key",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "The template's editable definition",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WaveTemplateDefinition"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Unknown template key",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorBody"
-                }
-              }
-            }
-          }
-        }
-      },
       "put": {
         "tags": [
           "waves"
@@ -2984,17 +2935,17 @@
         },
         "responses": {
           "200": {
-            "description": "The stored definition after the edit",
+            "description": "The template as stored after the edit",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WaveTemplateDefinition"
+                  "$ref": "#/components/schemas/WaveTemplate"
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid title or task list",
+            "description": "Invalid title, unknown key, or duplicate append",
             "content": {
               "application/json": {
                 "schema": {
@@ -7652,31 +7603,19 @@
           }
         }
       },
-      "WaveTemplateDefinition": {
+      "WaveTemplateGoalEdit": {
         "type": "object",
-        "description": "A template's editable definition: what Settings loads, edits and puts back.\n\nSeparate from [`WaveTemplate`] on purpose. The picker's shape is a *chooser*\nview and #1209 argues down to `key` + `goal` for it deliberately; the editor\nneeds every field of the task or a save would silently drop the ones it\ncannot see. Widening [`WaveTemplateTask`] to serve both would put acceptance\ncriteria and dependency edges into the New wave dialog's payload to satisfy\na surface that is not the New wave dialog.",
+        "description": "One `(key, goal)` pair — the only two facts the editor may state about a\ntask. Everything else about a task block is the server's.",
         "required": [
-          "id",
-          "title",
-          "tasks",
-          "seeded"
+          "key",
+          "goal"
         ],
         "properties": {
-          "id": {
+          "goal": {
             "type": "string"
           },
-          "seeded": {
-            "type": "boolean",
-            "description": "`true` once the template wave exists, i.e. once the title and tasks above\ncame from the report the create path forks rather than from the built-in\nconstants. Purely informational for the editor; a `PUT` works either way\nbecause it seeds first."
-          },
-          "tasks": {
-            "type": "array",
-            "items": {},
-            "description": "Every task, with every field. `context` / `gate` / `acceptance_criteria`\nare not editable in the UI, but they are returned and expected back so a\nsave preserves them instead of flattening the task to `key` + `goal`."
-          },
-          "title": {
-            "type": "string",
-            "description": "Editable. Stored as the template wave's report summary — see the note on\nthis module about why the wave row's own title is not involved."
+          "key": {
+            "type": "string"
           }
         }
       },
@@ -7700,16 +7639,24 @@
       },
       "WaveTemplateUpdate": {
         "type": "object",
-        "description": "A template edit from Settings.",
+        "description": "A template edit from Settings — a **diff**, never a task list.\n\n## Why the client cannot send task payloads (#1230 review round 2)\n\nThe first two cuts took the whole task list back. Both leaked, in ways that\nwere fixed one at a time and kept reappearing in a new shape:\n\n* a client that simply **omitted** a task erased it. For a live task the\n  guard refused the write, but for a **tombstone** it did not —\n  `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`\n  — so omitting a tombstone silently reversed a #1179-governed deletion, and\n  re-appending the key resurrected it.\n* a client could put privileged vocabulary into a payload the server then\n  stored verbatim. Measured, not argued: `released_by_user: true` and\n  `spawn: \"sub-wave\"` were both accepted and persisted.\n\nBoth are the same root cause — the editor was a second author of task\nblocks on a document whose invariants assume one — and neither is fixable by\nadding checks, because the check list has to anticipate every field the task\nvocabulary will ever grow.\n\nSo the write side no longer accepts blocks at all. It accepts *what changed*:\na title, goals for keys that already exist, and tasks to append. The server\nreads the stored payloads, edits them in place and constructs appended ones\nitself. Omission is not expressible, privileged fields are not expressible,\nand a rename is not expressible — all three are structurally impossible\nrather than rejected.",
         "required": [
-          "title",
-          "tasks"
+          "title"
         ],
         "properties": {
-          "tasks": {
+          "appends": {
             "type": "array",
-            "items": {},
-            "description": "The new task list, in plan order. Each entry is a task object in the\nsame shape `GET /api/wave-templates/{id}` returned, so the fields the\neditor does not display survive the round trip.\n\nAn empty list is refused: a template *is* its task list, and forking an\nempty one would produce a wave whose plan is the intro paragraph alone."
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateGoalEdit"
+            },
+            "description": "Tasks to add, in the order they should appear after the existing ones."
+          },
+          "edits": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateGoalEdit"
+            },
+            "description": "New goals for tasks that already exist, keyed by the task's `key`.\nA key the template does not declare is a 400, not a silent create."
           },
           "title": {
             "type": "string",

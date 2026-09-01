@@ -108,14 +108,29 @@ describe('route registration', () => {
    * untouched.
    */
   it('matches every navigation target to a registered route, and no route is unreachable', () => {
-    const targets: NavTarget[] = [
-      { name: 'today' },
-      { name: 'cove', coveId: 'c1' },
-      { name: 'wave', waveId: 'w1' },
-      { name: 'settings' },
-      { name: 'settings-templates' },
-      { name: 'settings-template', templateId: 't1' },
-    ];
+    /*
+     * The forward direction is enforced by the **type**, not by this array.
+     *
+     * The previous version listed targets by hand and claimed set equality with
+     * `NavTarget`. It could not deliver that: adding a variant to `NavTarget`
+     * and a case to `pathFor` left this array untouched, the exhaustive switch
+     * still compiled, and the test stayed green while `go` landed on a blank
+     * screen — literally the failure its own comment said it had fixed.
+     *
+     * A mapped type over the union's discriminant makes the omission a
+     * *compile* error instead: a new `NavTarget` variant means a missing key
+     * here, and `tsc` refuses. That is the only place the coverage can be
+     * enforced, because the union does not exist at runtime.
+     */
+    const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
+      'today': { name: 'today' },
+      'cove': { name: 'cove', coveId: 'c1' },
+      'wave': { name: 'wave', waveId: 'w1' },
+      'settings': { name: 'settings' },
+      'settings-templates': { name: 'settings-templates' },
+      'settings-template': { name: 'settings-template', templateId: 't1' },
+    };
+    const targets: NavTarget[] = Object.values(samples);
     // A registered path with `$param` matches a concrete path of the same
     // segment count whose other segments are equal.
     const matches = (pattern: string, path: string): boolean => {

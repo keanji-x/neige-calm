@@ -4,10 +4,10 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { WaveTemplateDefinition } from '../../../../core/domain/wave.ts';
+import type { WaveTemplate } from '../../../../core/domain/wave.ts';
 import {
   TemplateEditorPage, TemplateListPage,
-  type TemplateEditorProps, type TemplateListProps,
+  type TemplateEditorProps, type TemplateListProps, type TemplateSave,
 } from './templates.tsx';
 
 // astryx's `Spinner` reaches `window.matchMedia` unguarded and jsdom has none.
@@ -23,17 +23,12 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-const SMALL_CHANGE: WaveTemplateDefinition = {
+const SMALL_CHANGE: WaveTemplate = {
   id: 'small-change',
   title: 'Small change',
-  seeded: true,
   tasks: [
-    {
-      key: 'inspect', kind: 'codex', goal: 'Read the requested change.',
-      acceptance_criteria: 'Constraints are captured.', depends_on: [],
-      no_gate_reason: 'inspect does not produce a repo change to verify',
-    },
-    { key: 'implement', kind: 'codex', goal: 'Implement and commit.', depends_on: ['inspect'] },
+    { key: 'inspect', goal: 'Read the requested change.' },
+    { key: 'implement', goal: 'Implement and commit.' },
   ],
 };
 
@@ -117,12 +112,12 @@ describe('Template editor', () => {
   });
 
   /**
-   * The reason the editor round-trips whole task objects. An implementation
-   * that rebuilt tasks from the two fields it displays would pass every other
-   * test in this file and silently drop the template's acceptance criteria and
-   * dependency graph on the first save.
+   * The save is a **diff**: only the goals that actually changed, plus the
+   * appends. Sending every task would re-assert values nobody edited, which is
+   * the defect INV-SETTINGS-001 removes on the settings form; and sending task
+   * *objects* is what let round 2's privileged vocabulary through.
    */
-  it('sends back every field of every task, including the ones it never shows', async () => {
+  it('sends only the goals that changed, and never a task object', async () => {
     const onSave = vi.fn();
     render(<TemplateEditorPage {...editorProps({ onSave })} />);
     await userEvent.clear(screen.getByLabelText('inspect'));
@@ -130,12 +125,26 @@ describe('Template editor', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     expect(onSave).toHaveBeenCalledTimes(1);
-    const sent = onSave.mock.calls[0][0] as { id: string; title: string; tasks: Record<string, unknown>[] };
-    expect(sent.id).toBe('small-change');
-    expect(sent.tasks).toEqual([
-      { ...SMALL_CHANGE.tasks[0], goal: 'Look first.' },
-      SMALL_CHANGE.tasks[1],
-    ]);
+    expect(onSave.mock.calls[0][0]).toEqual({
+      id: 'small-change',
+      title: 'Small change',
+      // `implement` was untouched and must not appear.
+      edits: [{ key: 'inspect', goal: 'Look first.' }],
+      appends: [],
+    });
+  });
+
+  it('has no way to express a task field other than key and goal', async () => {
+    const onSave = vi.fn();
+    render(<TemplateEditorPage {...editorProps({ onSave })} />);
+    await userEvent.type(screen.getByLabelText('Title'), '!');
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    const sent = onSave.mock.calls[0][0] as TemplateSave;
+    for (const entry of [...sent.edits, ...sent.appends]) {
+      // Not "these fields are absent" — "these are the ONLY fields". A
+      // whitelist check would pass a payload that also carried `spawn`.
+      expect(Object.keys(entry).sort()).toEqual(['goal', 'key']);
+    }
   });
 
   it('keeps Save disabled until something changes, and disables it again after Reset', async () => {
@@ -172,7 +181,7 @@ describe('Template editor', () => {
     expect(screen.getByText(/key is fixed once the template exists/)).toBeTruthy();
   });
 
-  it('appends a task with the kernel-shaped defaults and clears the add fields', async () => {
+  it('appends a task as a bare key/goal pair and clears the add fields', async () => {
     const onSave = vi.fn();
     render(<TemplateEditorPage {...editorProps({ onSave })} />);
     await userEvent.type(screen.getByLabelText('Key'), 'hand-off');
@@ -181,12 +190,11 @@ describe('Template editor', () => {
 
     expect(screen.getByLabelText<HTMLInputElement>('Key').value).toBe('');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    const sent = onSave.mock.calls[0][0] as { tasks: Record<string, unknown>[] };
-    expect(sent.tasks).toHaveLength(3);
-    expect(sent.tasks[2]).toMatchObject({ key: 'hand-off', kind: 'codex', goal: 'Summarize.' });
-    // Without a `no_gate_reason` the appended task reads as scheduled work
-    // missing a gate on every wave forked from this template.
-    expect(typeof sent.tasks[2].no_gate_reason).toBe('string');
+    const sent = onSave.mock.calls[0][0] as TemplateSave;
+    expect(sent.appends).toEqual([{ key: 'hand-off', goal: 'Summarize.' }]);
+    // The block's `kind` / `no_gate_reason` / `declared_by` are the server's to
+    // set — the editor must not be able to state them at all.
+    expect(Object.keys(sent.appends[0]).sort()).toEqual(['goal', 'key']);
   });
 
   it('blocks an add whose key is malformed or already taken, and says which', async () => {
@@ -272,7 +280,7 @@ describe('Template editor', () => {
    * without being applied, or no later re-seed can ever fire.
    */
   it('applies a definition that landed during a save once the save ends', () => {
-    const grown = { ...SMALL_CHANGE, tasks: [...SMALL_CHANGE.tasks, { key: 'extra', kind: 'codex', goal: 'Third.' }] };
+    const grown = { ...SMALL_CHANGE, tasks: [...SMALL_CHANGE.tasks, { key: 'extra', goal: 'Third.' }] };
     const view = render(<TemplateEditorPage {...editorProps({ saving: true })} />);
     // Arrives while the save is in flight — must not clobber the draft now…
     view.rerender(<TemplateEditorPage {...editorProps({ saving: true, template: grown })} />);

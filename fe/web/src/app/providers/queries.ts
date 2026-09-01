@@ -29,8 +29,8 @@ import {
 } from '../../../../core/domain/settings.ts';
 import {
   createTerminalCardOperation, createWaveOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
-  updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplateDefinitionOperation,
-  type WaveTemplateDefinition, putWaveTemplateOperation, waveTemplatesOperation, wavesInCoveOperation,
+  updateWaveOperation, waveActivityFrom, waveDetailOperation, putWaveTemplateOperation,
+  type WaveTemplateGoalEdit, waveTemplatesOperation, wavesInCoveOperation,
   type CardWire, type NewTerminalCardBody, type NewWaveBody, type OverlayWire, type Wave,
   type WaveDetailWire, type WavePatchBody, type WaveTemplate,
 } from '../../../../core/domain/wave.ts';
@@ -118,7 +118,6 @@ export const queryKeys = Object.freeze({
      can move under them is a plugin starting or stopping, which changes an
      `input_schema` the dialog reads when it opens. */
   waveTemplates: () => ['wave-templates'] as const,
-  waveTemplateDefinition: (id: string) => ['wave-template', id] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
   /* The event bridge can only invalidate the `['cove-conversations']` prefix —
@@ -463,10 +462,14 @@ export function waveTemplatesQueryOptions(transport: ApiTransportPort, unauthori
 }
 
 export type WaveTemplates = Readonly<{
-  /** Never `undefined`: pending and failed both read as "Blank only". */
+  /** Never `undefined`: for the New wave dialog, pending and failed both read
+   *  as "Blank only". */
   templates: WaveTemplate[];
   /** A notice for the dialog, not a blocker. `null` while pending. */
   error: string | null;
+  /** `false` while the first read is still in flight — see `useWaveTemplates`. */
+  loaded: boolean;
+  refetch: () => void;
 }>;
 
 /**
@@ -480,6 +483,12 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
   return {
     templates: query.data ?? [],
     error: query.isError ? 'Could not load templates.' : null,
+    // #1230 — the Settings editor reads this list too, and there `[]` must not
+    // be readable as "loaded and empty": rendering an empty form for a template
+    // whose read has not landed is INV-SETTINGS-002's defect in another place.
+    // The dialog keeps using `templates` and ignores this.
+    loaded: !query.isPending,
+    refetch: () => { void query.refetch(); },
   };
 }
 
@@ -669,75 +678,32 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
 }
 
 /**
- * The Settings template editor's read (#1230).
- *
- * One query per template, because the editable definition is a per-template
- * endpoint: the list endpoint is the New wave picker's chooser view and
- * deliberately carries only `key` + `goal`, which is not enough to save
- * without flattening the fields it omits.
- *
- * `undefined` while any of them is still pending, so the page can tell
- * "loading" from "loaded and empty" — the same distinction the settings bag
- * already makes for INV-SETTINGS-002.
+ * Saving a template invalidates the template list, which since #1230 is the
+ * single read for both the New wave picker and the Settings editor. One
+ * authority, one invalidation.
  */
-export function useWaveTemplateDefinitions(
-  transport: ApiTransportPort,
-  unauthorized: UnauthorizedChannel,
-): Readonly<{ definitions: WaveTemplateDefinition[] | undefined; error: string | null; refetch: () => void }> {
-  const list = useQuery(waveTemplatesQueryOptions(transport, unauthorized));
-  const ids = (list.data ?? []).map((template) => template.id);
-  const details = useQueries({
-    queries: ids.map((id) => ({
-      queryKey: queryKeys.waveTemplateDefinition(id),
-      queryFn: (): Promise<WaveTemplateDefinition> =>
-        runOperation(transport, waveTemplateDefinitionOperation(id), unauthorized),
-      retry: false,
-    })),
-  });
-  // Retrying has to re-run *both* levels: the list read is what produces the
-  // ids the detail reads are keyed by, so refetching only the details would
-  // retry nothing when it was the list that failed.
-  const refetch = () => {
-    void list.refetch();
-    details.forEach((detail) => { void detail.refetch(); });
-  };
-  // The list read is the only all-or-nothing failure: without it there are no
-  // ids, so there is nothing to show. A single *detail* failure must not hide
-  // the templates that loaded — the first cut collapsed the whole surface,
-  // which meant one unreadable template made the other two uneditable.
-  if (list.isError) {
-    return { definitions: undefined, error: 'Could not load templates.', refetch };
-  }
-  if (list.isPending || details.some((detail) => detail.isPending)) {
-    return { definitions: undefined, error: null, refetch };
-  }
-  const definitions = details
-    .map((detail) => detail.data)
-    .filter((data): data is WaveTemplateDefinition => data !== undefined);
-  const failed = details.filter((detail) => detail.isError).length;
-  return {
-    definitions,
-    // Names the shortfall rather than claiming everything failed. `null` when
-    // every detail landed.
-    error: failed === 0
-      ? null
-      : `${failed} of ${details.length} templates could not be loaded.`,
-    refetch,
-  };
-}
-
 export function useWaveTemplateMutation(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
-): (save: { id: string; title: string; tasks: readonly Record<string, unknown>[] }) => Promise<WaveTemplateDefinition> {
+): (save: {
+  id: string;
+  title: string;
+  edits: readonly WaveTemplateGoalEdit[];
+  appends: readonly WaveTemplateGoalEdit[];
+}) => Promise<WaveTemplate> {
   const client = useQueryClient();
   const mutation = useMutation({
-    mutationFn: (save: { id: string; title: string; tasks: readonly Record<string, unknown>[] }) =>
-      runOperation(transport, putWaveTemplateOperation(save.id, { title: save.title, tasks: save.tasks }), unauthorized),
-    onSuccess: (definition) => {
-      client.setQueryData(queryKeys.waveTemplateDefinition(definition.id), definition);
-      void client.invalidateQueries({ queryKey: queryKeys.waveTemplates() });
-    },
+    mutationFn: (save: {
+      id: string;
+      title: string;
+      edits: readonly WaveTemplateGoalEdit[];
+      appends: readonly WaveTemplateGoalEdit[];
+    }) => runOperation(
+      transport,
+      putWaveTemplateOperation(save.id, { title: save.title, edits: save.edits, appends: save.appends }),
+      unauthorized,
+    ),
+    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.waveTemplates() }); },
   });
   return (save) => mutation.mutateAsync(save);
 }

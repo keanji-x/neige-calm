@@ -32,7 +32,7 @@
 // `depends_on`, `no_gate_reason` — is opaque cargo it must hand back
 // untouched, because the server stores exactly what it is given.
 
-import type { WaveTemplateDefinition } from '../../../../core/domain/wave.ts';
+import type { WaveTemplate, WaveTemplateGoalEdit } from '../../../../core/domain/wave.ts';
 import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -44,16 +44,24 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
 import styles from './settings.module.css';
 
-/** What a template save sends back up. Task objects are handed over whole. */
+/**
+ * What a template save sends back up: a **diff**, never a task list.
+ *
+ * The editor states `key` and `goal` and nothing else. Every other field of a
+ * task block belongs to the server — review round 2 measured what happens
+ * otherwise (`released_by_user: true` and `spawn: "sub-wave"` were accepted and
+ * stored, and omitting a tombstone erased it).
+ */
 export type TemplateSave = Readonly<{
   id: string;
   title: string;
-  tasks: readonly Record<string, unknown>[];
+  edits: readonly WaveTemplateGoalEdit[];
+  appends: readonly WaveTemplateGoalEdit[];
 }>;
 
 export type TemplateListProps = Readonly<{
   /** `undefined` means "still loading" — never render an empty list for it. */
-  templates: readonly WaveTemplateDefinition[] | undefined;
+  templates: readonly WaveTemplate[] | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
   onOpenSettings: () => void;
@@ -118,7 +126,7 @@ export function TemplateListPage({
 
 export type TemplateEditorProps = Readonly<{
   /** `undefined` while the definition is still loading. */
-  template: WaveTemplateDefinition | undefined;
+  template: WaveTemplate | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
   saving: boolean;
@@ -128,42 +136,32 @@ export type TemplateEditorProps = Readonly<{
   onOpenTemplates: () => void;
 }>;
 
-type TemplateDraft = { title: string; tasks: Record<string, unknown>[] };
-
-function goalOf(task: Record<string, unknown>): string {
-  return typeof task.goal === 'string' ? task.goal : '';
-}
-
-function keyOf(task: Record<string, unknown>): string {
-  return typeof task.key === 'string' ? task.key : '';
-}
+type TemplateDraft = {
+  title: string;
+  /** Goals for the tasks that already exist, in the order they are shown. */
+  tasks: WaveTemplateGoalEdit[];
+  /** Tasks the user added and has not saved yet. */
+  appends: WaveTemplateGoalEdit[];
+};
 
 export function TemplateEditorPage({
   template, loadError, onRetryLoad, saving, saveError, savedAt, onSave, onOpenTemplates,
 }: TemplateEditorProps) {
   const incoming: TemplateDraft | null = template === undefined
     ? null
-    : { title: template.title, tasks: template.tasks.map((task) => ({ ...task })) };
-  // Seed by serialized *value*, not object identity: the query cache hands
-  // back an equal-but-new object on every render and must not wipe out what
-  // the user is typing. A genuine server change does re-seed.
+    : { title: template.title, tasks: template.tasks.map((task) => ({ ...task })), appends: [] };
+  // Seed by serialized *value*, not object identity: the query cache hands back
+  // an equal-but-new object on every render and must not wipe out what the user
+  // is typing. A genuine server change does re-seed.
   const incomingKey = incoming === null ? null : JSON.stringify(incoming);
 
   const [seed, setSeed] = useState<string | null>(null);
   const [draft, setDraft] = useState<TemplateDraft | null>(null);
   if (incoming !== null && incomingKey !== seed) {
-    // `seed` advances only when the draft actually takes the new value.
-    //
-    // The first cut advanced it unconditionally while suppressing `setDraft`
-    // under `saving`, which wedged the editor permanently: a definition that
-    // landed mid-save was recorded as seen and never applied, and afterwards
-    // `incomingKey === seed` forever, so no later re-seed could fire. The
-    // editor then showed pre-save content with `dirty` stuck true, and pressing
-    // Save resubmitted a stale task list.
-    //
-    // Not seeding at all during a save is the other half: an in-flight save
-    // must not have the user's typing replaced under them. Leaving `seed`
-    // behind means the next render after the save re-evaluates and applies it.
+    // `seed` advances only when the draft actually takes the new value, so a
+    // definition that lands mid-save is applied on the next render rather than
+    // being recorded as seen and lost. Advancing it unconditionally wedged the
+    // editor permanently (review round 1).
     if (seed === null || !saving) {
       setSeed(incomingKey);
       setDraft(incoming);
@@ -173,9 +171,10 @@ export function TemplateEditorPage({
   const dirty = draft !== null && JSON.stringify(draft) !== incomingKey;
   // The server refuses a blank title and a blank goal unconditionally, so
   // offering Save in those states would be an affordance whose only outcome is
-  // a 400 — the same rule `NewTaskRow` already applies to a malformed key.
+  // a 400 — the same rule `NewTaskRow` applies to a malformed key.
   const blankTitle = draft !== null && draft.title.trim() === '';
-  const blankGoal = draft !== null && draft.tasks.some((task) => goalOf(task).trim() === '');
+  const blankGoal = draft !== null
+    && [...draft.tasks, ...draft.appends].some((task) => task.goal.trim() === '');
   const submittable = dirty && !blankTitle && !blankGoal;
 
   return (
@@ -214,41 +213,37 @@ export function TemplateEditorPage({
 
               {draft.tasks.map((task, index) => (
                 <TextInput
-                  key={keyOf(task) || `task-${index}`}
-                  label={keyOf(task) || `Task ${index + 1}`}
-                  value={goalOf(task)}
+                  key={task.key}
+                  label={task.key}
+                  value={task.goal}
                   width="100%"
-                  status={goalOf(task).trim() === ''
-                    ? { type: 'error', message: 'A task needs a goal.' }
-                    : undefined}
+                  status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
                   onChange={(value: string) => setDraft({
                     ...draft,
-                    // Replace this entry's `goal` only. Everything else on the
-                    // object is cargo the server round-trips.
                     tasks: draft.tasks.map((entry, position) =>
                       position === index ? { ...entry, goal: value } : entry),
                   })}
                 />
               ))}
 
+              {draft.appends.map((task, index) => (
+                <TextInput
+                  key={`new-${task.key}`}
+                  label={`${task.key} (new)`}
+                  value={task.goal}
+                  width="100%"
+                  status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
+                  onChange={(value: string) => setDraft({
+                    ...draft,
+                    appends: draft.appends.map((entry, position) =>
+                      position === index ? { ...entry, goal: value } : entry),
+                  })}
+                />
+              ))}
+
               <NewTaskRow
-                existingKeys={draft.tasks.map(keyOf)}
-                onAdd={(key, goal) => setDraft({
-                  ...draft,
-                  // `kind: 'codex'` matches what the built-in templates declare;
-                  // `no_gate_reason` is the placeholder the kernel's own
-                  // template constants use so a pre-set task is not read as
-                  // scheduled work missing a gate.
-                  tasks: [...draft.tasks, {
-                    key,
-                    kind: 'codex',
-                    goal,
-                    depends_on: [],
-                    no_gate_reason:
-                      'author a real gate from the target repo toolchain (formatter, linter, tests) '
-                      + 'before activating; this reason is not a permanent skip',
-                  }],
-                })}
+                existingKeys={[...draft.tasks, ...draft.appends].map((task) => task.key)}
+                onAdd={(key, goal) => setDraft({ ...draft, appends: [...draft.appends, { key, goal }] })}
               />
 
               {saveError !== null && <Banner status="error" title={saveError} role="alert" />}
@@ -258,14 +253,20 @@ export function TemplateEditorPage({
                   variant="primary"
                   label={saving ? 'Saving…' : 'Save'}
                   isDisabled={!submittable && !saving}
-                  // Busy, not disabled — see `public.tsx`'s note: astryx renders
-                  // a native `disabled` unless the button is interruptible, and
-                  // focus is on this button at exactly this moment.
+                  // Busy, not disabled — astryx renders a native `disabled`
+                  // unless the button is interruptible, and focus is on this
+                  // button at exactly this moment. The re-entry guard is the
+                  // `if (saving) return` below, which has its own test.
                   isLoading={saving}
                   isInterruptible
                   onClick={() => {
-                    if (saving || template === undefined) return;
-                    void onSave({ id: template.id, title: draft.title, tasks: draft.tasks });
+                    if (saving || template === undefined || incoming === null) return;
+                    // Only the goals that actually changed. Sending every task
+                    // would make a save re-assert values nobody edited, which
+                    // is the same defect INV-SETTINGS-001 removes for settings.
+                    const edits = draft.tasks.filter((task, index) =>
+                      task.goal !== incoming.tasks[index]?.goal);
+                    void onSave({ id: template.id, title: draft.title, edits, appends: draft.appends });
                   }}
                 />
                 <Button

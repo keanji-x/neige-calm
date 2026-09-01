@@ -812,7 +812,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get: operations["get_wave_template_definition"];
+        get?: never;
         put: operations["update_wave_template"];
         post?: never;
         delete?: never;
@@ -2550,35 +2550,12 @@ export interface components {
             title: string;
         };
         /**
-         * @description A template's editable definition: what Settings loads, edits and puts back.
-         *
-         *     Separate from [`WaveTemplate`] on purpose. The picker's shape is a *chooser*
-         *     view and #1209 argues down to `key` + `goal` for it deliberately; the editor
-         *     needs every field of the task or a save would silently drop the ones it
-         *     cannot see. Widening [`WaveTemplateTask`] to serve both would put acceptance
-         *     criteria and dependency edges into the New wave dialog's payload to satisfy
-         *     a surface that is not the New wave dialog.
+         * @description One `(key, goal)` pair — the only two facts the editor may state about a
+         *     task. Everything else about a task block is the server's.
          */
-        WaveTemplateDefinition: {
-            id: string;
-            /**
-             * @description `true` once the template wave exists, i.e. once the title and tasks above
-             *     came from the report the create path forks rather than from the built-in
-             *     constants. Purely informational for the editor; a `PUT` works either way
-             *     because it seeds first.
-             */
-            seeded: boolean;
-            /**
-             * @description Every task, with every field. `context` / `gate` / `acceptance_criteria`
-             *     are not editable in the UI, but they are returned and expected back so a
-             *     save preserves them instead of flattening the task to `key` + `goal`.
-             */
-            tasks: unknown[];
-            /**
-             * @description Editable. Stored as the template wave's report summary — see the note on
-             *     this module about why the wave row's own title is not involved.
-             */
-            title: string;
+        WaveTemplateGoalEdit: {
+            goal: string;
+            key: string;
         };
         /**
          * @description One pre-set task, projected from the template's own `PlanTaskInput`.
@@ -2594,17 +2571,43 @@ export interface components {
             /** @description The task block's `key` in the seeded report. */
             key: string;
         };
-        /** @description A template edit from Settings. */
+        /**
+         * @description A template edit from Settings — a **diff**, never a task list.
+         *
+         *     ## Why the client cannot send task payloads (#1230 review round 2)
+         *
+         *     The first two cuts took the whole task list back. Both leaked, in ways that
+         *     were fixed one at a time and kept reappearing in a new shape:
+         *
+         *     * a client that simply **omitted** a task erased it. For a live task the
+         *       guard refused the write, but for a **tombstone** it did not —
+         *       `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`
+         *       — so omitting a tombstone silently reversed a #1179-governed deletion, and
+         *       re-appending the key resurrected it.
+         *     * a client could put privileged vocabulary into a payload the server then
+         *       stored verbatim. Measured, not argued: `released_by_user: true` and
+         *       `spawn: "sub-wave"` were both accepted and persisted.
+         *
+         *     Both are the same root cause — the editor was a second author of task
+         *     blocks on a document whose invariants assume one — and neither is fixable by
+         *     adding checks, because the check list has to anticipate every field the task
+         *     vocabulary will ever grow.
+         *
+         *     So the write side no longer accepts blocks at all. It accepts *what changed*:
+         *     a title, goals for keys that already exist, and tasks to append. The server
+         *     reads the stored payloads, edits them in place and constructs appended ones
+         *     itself. Omission is not expressible, privileged fields are not expressible,
+         *     and a rename is not expressible — all three are structurally impossible
+         *     rather than rejected.
+         */
         WaveTemplateUpdate: {
+            /** @description Tasks to add, in the order they should appear after the existing ones. */
+            appends?: components["schemas"]["WaveTemplateGoalEdit"][];
             /**
-             * @description The new task list, in plan order. Each entry is a task object in the
-             *     same shape `GET /api/wave-templates/{id}` returned, so the fields the
-             *     editor does not display survive the round trip.
-             *
-             *     An empty list is refused: a template *is* its task list, and forking an
-             *     empty one would produce a wave whose plan is the intro paragraph alone.
+             * @description New goals for tasks that already exist, keyed by the task's `key`.
+             *     A key the template does not declare is a 400, not a silent create.
              */
-            tasks: unknown[];
+            edits?: components["schemas"]["WaveTemplateGoalEdit"][];
             /**
              * @description The new title. Trimmed; must not be empty — a template with a blank
              *     title is unpickable in the New wave dialog, which lists templates by
@@ -5044,47 +5047,6 @@ export interface operations {
             };
         };
     };
-    get_wave_template_definition: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                /** @description Template key */
-                id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description The template's editable definition */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["WaveTemplateDefinition"];
-                };
-            };
-            /** @description Unknown template key */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-            /** @description Internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorBody"];
-                };
-            };
-        };
-    };
     update_wave_template: {
         parameters: {
             query?: never;
@@ -5101,16 +5063,16 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The stored definition after the edit */
+            /** @description The template as stored after the edit */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WaveTemplateDefinition"];
+                    "application/json": components["schemas"]["WaveTemplate"];
                 };
             };
-            /** @description Invalid title or task list */
+            /** @description Invalid title, unknown key, or duplicate append */
             400: {
                 headers: {
                     [name: string]: unknown;

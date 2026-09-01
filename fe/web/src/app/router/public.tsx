@@ -60,8 +60,8 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
   settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  useSettingsMutation, useSpecMutations, useWaveMutations, useWaveTemplateDefinitions,
-  useWaveTemplateMutation, useWorkspace,
+  useSettingsMutation, useSpecMutations, useWaveMutations, useWaveTemplateMutation,
+  useWaveTemplates, useWorkspace,
   waveBacklinksQueryOptions, waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
@@ -1704,13 +1704,19 @@ function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPor
  * Settings › Templates (#1230). Two routes rather than page-local state, so
  * Back leaves the editor instead of leaving Settings, and one template's
  * editor is a URL.
+ *
+ * Both read the **template list** — the same read the New wave picker uses.
+ * There is no per-template endpoint: the list already carries `id` / `title` /
+ * `tasks[{key, goal}]`, and a second read would be a second authority for the
+ * same facts plus an N+1 whose failure modes have to be reasoned about apart
+ * from the list's.
  */
 function TemplateListRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const go = useGo();
-  const templates = useWaveTemplateDefinitions(transport, unauthorized);
+  const templates = useWaveTemplates(transport, unauthorized);
   return (
     <TemplateListPage
-      templates={templates.definitions}
+      templates={templates.loaded ? templates.templates : undefined}
       loadError={templates.error}
       onRetryLoad={templates.refetch}
       onOpenSettings={() => go({ name: 'settings' })}
@@ -1720,21 +1726,45 @@ function TemplateListRoute({ transport, unauthorized }: { transport: ApiTranspor
 }
 
 function TemplateEditorRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
-  const go = useGo();
   const templateId = useRouteParam('/settings/templates/');
-  const templates = useWaveTemplateDefinitions(transport, unauthorized);
+  /*
+   * Keyed on the id: `saving` / `saveError` / `savedAt` are per-template facts,
+   * and this route component is reused across ids (same route, same instance).
+   * Without the key, one template's "Saved." and error banner render over the
+   * next template's editor, and an in-flight save suppresses the re-seed so
+   * template A's rows show under template B's title.
+   */
+  return (
+    <TemplateEditorSave
+      key={templateId ?? ''}
+      templateId={templateId}
+      transport={transport}
+      unauthorized={unauthorized}
+    />
+  );
+}
+
+function TemplateEditorSave({ templateId, transport, unauthorized }: {
+  templateId: string | undefined;
+  transport: ApiTransportPort;
+  unauthorized: UnauthorizedChannel;
+}) {
+  const go = useGo();
+  const templates = useWaveTemplates(transport, unauthorized);
   const saveTemplate = useWaveTemplateMutation(transport, unauthorized);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
-  const template = templates.definitions?.find((entry) => entry.id === templateId);
+  const template = templates.loaded
+    ? templates.templates.find((entry) => entry.id === templateId)
+    : undefined;
   return (
     <TemplateEditorPage
       template={template}
       /* An id that names no template is a load failure for this route, not an
          empty editor: blank fields for a template that does not exist would
          invite a save against nothing. */
-      loadError={templates.definitions !== undefined && template === undefined
+      loadError={templates.loaded && template === undefined
         ? `No template named ${templateId ?? ''}.`
         : templates.error}
       onRetryLoad={templates.refetch}

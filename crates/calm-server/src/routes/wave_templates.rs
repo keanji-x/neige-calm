@@ -120,28 +120,25 @@ use crate::routes::waves::{
 use crate::state::{AppState, RouteState};
 use crate::wave_report::{ReportDocOp, persist_report_with_shadow, resolve_report_for_wave};
 use crate::workflow_templates::{
-    WORKFLOW_TEMPLATES, is_workflow_template_key, task_payload_key_and_goal,
+    AUTHOR_REAL_GATE, WORKFLOW_TEMPLATES, is_workflow_template_key, task_payload_key_and_goal,
     workflow_template_report_from_payloads, workflow_template_task_payloads,
     workflow_template_task_payloads_from_body,
 };
 use axum::{
     Json, Router,
     extract::{Path, State},
-    routing::get,
+    routing::{get, put},
 };
-use calm_types::report_blocks::KIND_TASK;
 use calm_types::report_blocks::tasks::key_is_valid;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/wave-templates", get(list_wave_templates))
-        .route(
-            "/api/wave-templates/{id}",
-            get(get_wave_template_definition).put(update_wave_template),
-        )
+        .route("/api/wave-templates/{id}", put(update_wave_template))
 }
 
 /// One selectable starting point for a new wave.
@@ -221,31 +218,6 @@ pub(crate) async fn list_wave_templates(
     Ok(Json(templates))
 }
 
-/// A template's editable definition: what Settings loads, edits and puts back.
-///
-/// Separate from [`WaveTemplate`] on purpose. The picker's shape is a *chooser*
-/// view and #1209 argues down to `key` + `goal` for it deliberately; the editor
-/// needs every field of the task or a save would silently drop the ones it
-/// cannot see. Widening [`WaveTemplateTask`] to serve both would put acceptance
-/// criteria and dependency edges into the New wave dialog's payload to satisfy
-/// a surface that is not the New wave dialog.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct WaveTemplateDefinition {
-    pub id: String,
-    /// Editable. Stored as the template wave's report summary — see the note on
-    /// this module about why the wave row's own title is not involved.
-    pub title: String,
-    /// Every task, with every field. `context` / `gate` / `acceptance_criteria`
-    /// are not editable in the UI, but they are returned and expected back so a
-    /// save preserves them instead of flattening the task to `key` + `goal`.
-    pub tasks: Vec<Value>,
-    /// `true` once the template wave exists, i.e. once the title and tasks above
-    /// came from the report the create path forks rather than from the built-in
-    /// constants. Purely informational for the editor; a `PUT` works either way
-    /// because it seeds first.
-    pub seeded: bool,
-}
-
 /// The current authority for a template's title and tasks: the seeded report if
 /// there is one, the built-in constants otherwise.
 ///
@@ -257,21 +229,18 @@ struct Definition {
     /// `workflow_template_task_payloads_from_body` for why that distinction is
     /// load-bearing rather than stylistic.
     tasks: Vec<Value>,
-    seeded: bool,
 }
 
 async fn current_definition(s: &RouteState, key: &str) -> Result<Definition> {
     // A seeded template's report is the authority. A *read failure* on it is an
-    // error, never a reason to answer with the constants: the first cut used
-    // `if let Ok(...)` here and so reported stale constant content with
-    // `seeded: false` whenever the report card was unreadable — i.e. it turned
-    // an outage into exactly the drift this endpoint exists to remove.
+    // error, never a reason to answer with the constants: falling back would
+    // report stale constant content as current, i.e. turn an outage into
+    // exactly the drift this endpoint exists to remove.
     if let Some(wave_id) = lookup_workflow_template_wave(s, key).await? {
         let (_, _, report) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;
         return Ok(Definition {
             title: report.summary.clone(),
             tasks: workflow_template_task_payloads_from_body(&report.body),
-            seeded: true,
         });
     }
     // `unwrap_or_default` is unreachable for a `WORKFLOW_TEMPLATES` key and
@@ -285,16 +254,6 @@ async fn current_definition(s: &RouteState, key: &str) -> Result<Definition> {
             .map(|template| template.title.to_string())
             .unwrap_or_default(),
         tasks: workflow_template_task_payloads(key).unwrap_or_default(),
-        seeded: false,
-    })
-}
-
-fn definition_response(id: &str, definition: Definition) -> Result<WaveTemplateDefinition> {
-    Ok(WaveTemplateDefinition {
-        id: id.to_string(),
-        title: definition.title,
-        tasks: definition.tasks,
-        seeded: definition.seeded,
     })
 }
 
@@ -304,40 +263,54 @@ fn known_template(id: &str) -> Result<()> {
         .ok_or_else(|| CalmError::NotFound(format!("wave template `{id}`")))
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/wave-templates/{id}",
-    tag = "waves",
-    params(("id" = String, Path, description = "Template key")),
-    responses(
-        (status = 200, description = "The template's editable definition", body = WaveTemplateDefinition),
-        (status = 404, description = "Unknown template key", body = ErrorBody),
-        (status = 500, description = "Internal error", body = ErrorBody),
-    ),
-)]
-pub(crate) async fn get_wave_template_definition(
-    State(s): State<RouteState>,
-    Path(id): Path<String>,
-) -> Result<Json<WaveTemplateDefinition>> {
-    known_template(&id)?;
-    let definition = current_definition(&s, &id).await?;
-    Ok(Json(definition_response(&id, definition)?))
-}
-
-/// A template edit from Settings.
+/// A template edit from Settings — a **diff**, never a task list.
+///
+/// ## Why the client cannot send task payloads (#1230 review round 2)
+///
+/// The first two cuts took the whole task list back. Both leaked, in ways that
+/// were fixed one at a time and kept reappearing in a new shape:
+///
+/// * a client that simply **omitted** a task erased it. For a live task the
+///   guard refused the write, but for a **tombstone** it did not —
+///   `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`
+///   — so omitting a tombstone silently reversed a #1179-governed deletion, and
+///   re-appending the key resurrected it.
+/// * a client could put privileged vocabulary into a payload the server then
+///   stored verbatim. Measured, not argued: `released_by_user: true` and
+///   `spawn: "sub-wave"` were both accepted and persisted.
+///
+/// Both are the same root cause — the editor was a second author of task
+/// blocks on a document whose invariants assume one — and neither is fixable by
+/// adding checks, because the check list has to anticipate every field the task
+/// vocabulary will ever grow.
+///
+/// So the write side no longer accepts blocks at all. It accepts *what changed*:
+/// a title, goals for keys that already exist, and tasks to append. The server
+/// reads the stored payloads, edits them in place and constructs appended ones
+/// itself. Omission is not expressible, privileged fields are not expressible,
+/// and a rename is not expressible — all three are structurally impossible
+/// rather than rejected.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct WaveTemplateUpdate {
     /// The new title. Trimmed; must not be empty — a template with a blank
     /// title is unpickable in the New wave dialog, which lists templates by
     /// title and nothing else.
     pub title: String,
-    /// The new task list, in plan order. Each entry is a task object in the
-    /// same shape `GET /api/wave-templates/{id}` returned, so the fields the
-    /// editor does not display survive the round trip.
-    ///
-    /// An empty list is refused: a template *is* its task list, and forking an
-    /// empty one would produce a wave whose plan is the intro paragraph alone.
-    pub tasks: Vec<Value>,
+    /// New goals for tasks that already exist, keyed by the task's `key`.
+    /// A key the template does not declare is a 400, not a silent create.
+    #[serde(default)]
+    pub edits: Vec<WaveTemplateGoalEdit>,
+    /// Tasks to add, in the order they should appear after the existing ones.
+    #[serde(default)]
+    pub appends: Vec<WaveTemplateGoalEdit>,
+}
+
+/// One `(key, goal)` pair — the only two facts the editor may state about a
+/// task. Everything else about a task block is the server's.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct WaveTemplateGoalEdit {
+    pub key: String,
+    pub goal: String,
 }
 
 #[utoipa::path(
@@ -347,8 +320,8 @@ pub struct WaveTemplateUpdate {
     params(("id" = String, Path, description = "Template key")),
     request_body = WaveTemplateUpdate,
     responses(
-        (status = 200, description = "The stored definition after the edit", body = WaveTemplateDefinition),
-        (status = 400, description = "Invalid title or task list", body = ErrorBody),
+        (status = 200, description = "The template as stored after the edit", body = WaveTemplate),
+        (status = 400, description = "Invalid title, unknown key, or duplicate append", body = ErrorBody),
         (status = 404, description = "Unknown template key", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -357,7 +330,7 @@ pub(crate) async fn update_wave_template(
     State(s): State<RouteState>,
     Path(id): Path<String>,
     Json(update): Json<WaveTemplateUpdate>,
-) -> Result<Json<WaveTemplateDefinition>> {
+) -> Result<Json<WaveTemplate>> {
     known_template(&id)?;
     let title = update.title.trim().to_string();
     if title.is_empty() {
@@ -365,15 +338,17 @@ pub(crate) async fn update_wave_template(
             "wave template: `title` must not be blank".to_string(),
         ));
     }
-    if update.tasks.is_empty() {
-        return Err(CalmError::BadRequest(
-            "wave template: `tasks` must not be empty — a template is its task list".to_string(),
-        ));
+    for edit in update.edits.iter().chain(&update.appends) {
+        if edit.goal.trim().is_empty() {
+            return Err(CalmError::BadRequest(format!(
+                "wave template: task `{}` has a blank goal",
+                edit.key
+            )));
+        }
     }
-    let tasks = validate_task_payloads(update.tasks)?;
 
-    // Writing is the one path that may seed: a save has to have a wave to
-    // write to. The read paths above still must not.
+    // Writing is the one path that may seed: a save has to have a wave to write
+    // to. The read paths must not.
     ensure_workflow_templates(&s).await?;
     let wave_id = lookup_workflow_template_wave(&s, &id)
         .await?
@@ -382,20 +357,77 @@ pub(crate) async fn update_wave_template(
                 "wave template: seeded template `{id}` is missing after ensure"
             ))
         })?;
+    let (wave, report_card, current) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;
+    let mut payloads = workflow_template_task_payloads_from_body(&current.body);
 
-    // Same renderer as the seeding path — never a second spelling of it here.
-    let next = workflow_template_report_from_payloads(&id, &title, &tasks).ok_or_else(|| {
+    // Every existing key, including tombstoned ones: an append may not collide
+    // with a retired key either, or the block-level history for that key would
+    // have two authors.
+    let existing: BTreeSet<String> = payloads
+        .iter()
+        .filter_map(|payload| payload.get("key").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+
+    for edit in &update.edits {
+        if !existing.contains(&edit.key) {
+            return Err(CalmError::BadRequest(format!(
+                "wave template: no task named `{}` in this template",
+                edit.key
+            )));
+        }
+        for payload in &mut payloads {
+            // Tombstones are skipped rather than 400'd: they are not editable,
+            // they are not shown, and they must come through untouched.
+            if payload
+                .get("tombstone")
+                .is_some_and(|value| !value.is_null())
+            {
+                continue;
+            }
+            if payload.get("key").and_then(Value::as_str) == Some(edit.key.as_str()) {
+                payload["goal"] = Value::String(edit.goal.clone());
+            }
+        }
+    }
+
+    let mut appended = BTreeSet::new();
+    for append in &update.appends {
+        if !key_is_valid(&append.key) {
+            return Err(CalmError::BadRequest(format!(
+                "wave template: invalid task key `{}`",
+                append.key
+            )));
+        }
+        if existing.contains(&append.key) || !appended.insert(append.key.clone()) {
+            return Err(CalmError::BadRequest(format!(
+                "wave template: task key `{}` is already used in this template",
+                append.key
+            )));
+        }
+        // Constructed here, not accepted from the client. `no_gate_reason` is
+        // the same placeholder the kernel's own template constants carry, so an
+        // appended task is not read as scheduled work missing a gate.
+        payloads.push(json!({
+            "key": append.key,
+            "kind": "codex",
+            "goal": append.goal,
+            "depends_on": [],
+            "no_gate_reason": AUTHOR_REAL_GATE,
+            "ready": false,
+            "declared_by": "user",
+        }));
+    }
+
+    let next = workflow_template_report_from_payloads(&id, &title, &payloads).ok_or_else(|| {
         CalmError::Internal(format!("wave template: no intro registered for `{id}`"))
     })?;
-    let (wave, report_card, current) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;
     let if_doc_rev = current.doc_rev;
     // `WriteMarkdown`, not `Replace`. A template report is mostly `task`
     // fences, and the prose `Replace` path refuses by contract to modify or
-    // delete a non-prose block — "the prose write/edit path may not touch data
-    // blocks ... use calm.report.write_markdown for a whole-document rewrite".
-    // Seeding gets away with `Replace` only because it writes into a report
-    // that has no blocks yet; every save after the first is a rewrite of
-    // existing task blocks and must declare itself as one.
+    // delete a non-prose block. Seeding gets away with `Replace` only because
+    // it writes into a report that has no blocks yet; every save after the
+    // first rewrites existing task blocks and must declare itself as one.
     persist_report_with_shadow(
         s.repo.as_ref(),
         &s.events,
@@ -418,88 +450,19 @@ pub(crate) async fn update_wave_template(
     .await?;
 
     // Re-read rather than echo what we just built: the response then states
-    // what a subsequent GET will return, including anything `persist_report`'s
-    // CRDT projection did to the text.
+    // what a subsequent read will return.
     let definition = current_definition(&s, &id).await?;
-    Ok(Json(definition_response(&id, definition)?))
-}
-
-/// Validate the submitted task payloads.
-///
-/// Deliberately validates the **payload**, and does not deserialize it into
-/// `PlanTaskInput`: that struct is `#[serde(deny_unknown_fields)]` and does not
-/// model `refs` / `released_by_user` / `tombstone` / `spawn`, so routing the
-/// write side through it would reject — or worse, silently drop — task blocks
-/// the report contract accepts. The authority on a task block's shape is
-/// `calm_types::report_blocks::validate_payload`, which is what the persist
-/// boundary itself will apply; calling it here turns a whole-document rejection
-/// into a per-task 400 that names the offending index.
-///
-/// The three checks on top are the ones the payload validator cannot express,
-/// because they are about the *list*: key syntax, key uniqueness, and
-/// dependencies that resolve inside this template.
-fn validate_task_payloads(raw: Vec<Value>) -> Result<Vec<Value>> {
-    use calm_types::report_blocks::validate_payload;
-
-    let mut tasks = Vec::with_capacity(raw.len());
-    for (index, mut value) in raw.into_iter().enumerate() {
-        if !value.is_object() {
-            return Err(CalmError::BadRequest(format!(
-                "wave template: task {index} must be an object"
-            )));
-        }
-        // The write side owns these two on a template, and the client is not
-        // required to send them; stamp before validating so a payload that only
-        // omits them is accepted rather than 400ing on a field the server sets.
-        let tombstone = value.get("tombstone").is_some_and(|value| !value.is_null());
-        if !tombstone {
-            value["ready"] = Value::Bool(false);
-            value["declared_by"] = Value::String("user".into());
-        }
-        validate_payload(KIND_TASK, &value).map_err(|error| {
-            CalmError::BadRequest(format!("wave template: task {index} is invalid: {error}"))
-        })?;
-        tasks.push(value);
-    }
-
-    let mut seen = std::collections::BTreeSet::new();
-    for (index, task) in tasks.iter().enumerate() {
-        let Some(key) = task.get("key").and_then(Value::as_str) else {
-            return Err(CalmError::BadRequest(format!(
-                "wave template: task {index} has no key"
-            )));
-        };
-        if !key_is_valid(key) {
-            return Err(CalmError::BadRequest(format!(
-                "wave template: task {index} has an invalid key `{key}`"
-            )));
-        }
-        if !seen.insert(key) {
-            return Err(CalmError::BadRequest(format!(
-                "wave template: duplicate task key `{key}`"
-            )));
-        }
-    }
-
-    // A dependency on a key that is not in the list would render a task block
-    // whose `depends_on` dangles — `unknown_deps` diagnoses that on every wave
-    // forked from this template, i.e. the editor would be minting a broken plan
-    // once per use instead of failing the one save that caused it.
-    for task in &tasks {
-        let key = task.get("key").and_then(Value::as_str).unwrap_or_default();
-        for dependency in task
-            .get("depends_on")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-        {
-            if !seen.contains(dependency) {
-                return Err(CalmError::BadRequest(format!(
-                    "wave template: task `{key}` depends on `{dependency}`, which is not in the template"
-                )));
-            }
-        }
-    }
-    Ok(tasks)
+    Ok(Json(WaveTemplate {
+        id: id.clone(),
+        title: definition.title,
+        input_schema: resolve_trusted_workflow(&s, &id)
+            .await
+            .and_then(|manifest| manifest.input_schema.clone()),
+        tasks: definition
+            .tasks
+            .iter()
+            .filter_map(task_payload_key_and_goal)
+            .map(|(key, goal)| WaveTemplateTask { key, goal })
+            .collect(),
+    }))
 }
