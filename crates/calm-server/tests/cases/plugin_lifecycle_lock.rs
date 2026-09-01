@@ -1479,13 +1479,20 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     )
     .await;
 
-    // Point the manifest at a stub that stays up, then reload: that is a stop +
-    // a fresh spawn, so the live entry is a NEW run instance.
+    // Republish the manifest against a stub that STAYS up, then revive the
+    // plugin with an explicit `spawn`.
+    //
+    // Deliberately not `reload`/`restart` here: those call `stop_under`, which
+    // aborts the sleeping supervisor outright, and an aborted task cannot
+    // witness anything. An explicit `spawn` on a `Crashed` entry is admitted,
+    // replaces the live entry (and with it the supervisor handle — dropping a
+    // `JoinHandle` does not abort its task), and leaves the old supervisor
+    // alive and sleeping. That is the one reachable shape in which a stale
+    // supervisor meets a newer run instance.
     let dir = fx.plugins_dir.join(ID);
     std::os::unix::fs::symlink(Path::new(ECHO_BIN), dir.join("bin").join("stub2")).unwrap();
-    std::fs::write(
-        dir.join("manifest.json"),
-        json!({
+    let echo_manifest = Manifest::parse(
+        &json!({
             "manifest_version": 1,
             "id": ID,
             "version": "0.1.0",
@@ -1496,12 +1503,18 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
         .to_string(),
     )
     .unwrap();
-    fx.host.reload(ID).await.expect("reload onto the echo stub");
+    {
+        // A runtime registry write needs the id's guard — `try_lock_lifecycle`
+        // is `pub` for exactly this (design §5 R7).
+        let g = fx.host.try_lock_lifecycle(ID).expect("lock is free mid-backoff");
+        fx.host.registry_insert(&g, echo_manifest, Some(dir));
+    }
+    fx.host.spawn(ID).await.expect("explicit revive");
     let pid = fx
         .host
         .status(ID)
         .await
-        .expect("live after reload")
+        .expect("live after the revive")
         .pid
         .expect("app plugin has a pid");
 
