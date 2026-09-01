@@ -1384,7 +1384,7 @@ export interface components {
              *     `idempotency_collision`, `idempotency_key_exhausted`,
              *     `bad_request`, `unauthorized`,
              *     `forbidden`, `plugin_install`, `plugin_permission`,
-             *     `plugin_conflict`, `plugin_kernel_too_old`,
+             *     `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
              *     `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
              *     `codex_app_server`, `service_unavailable`, `internal`,
              *     `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
@@ -4208,7 +4208,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Plugin id already installed */
+            /** @description Plugin id already installed (`plugin_conflict`), or another lifecycle operation holds this id (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4335,6 +4335,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Another lifecycle operation holds this plugin (`plugin_busy`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Internal error */
             500: {
                 headers: {
@@ -4422,6 +4431,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            /** @description Another lifecycle operation holds this plugin (`plugin_busy`) */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Stop failed / internal error */
             500: {
                 headers: {
@@ -4463,7 +4481,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin */
+            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4574,7 +4592,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description Workflow id already registered by a running trusted plugin */
+            /** @description Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4678,6 +4696,15 @@ export interface operations {
             };
             /** @description Plugin not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Another lifecycle operation holds this plugin (`plugin_busy`) */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
