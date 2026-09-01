@@ -1719,9 +1719,18 @@ async fn a16_disable_stops_the_plugin_before_it_writes_the_row() {
 /// "both ends are asserted" as if they were the same kind of claim.
 ///
 /// Mutation witnesses (each applied alone to `respawn_after_backoff`'s `ok`
-/// block):
-/// * delete `rp.run_epoch == run_epoch` → red on `exactly two` below;
-/// * delete the whole `ok` block → red on the same assertion.
+/// block), **with the assertion that actually goes red** — r5 re-ran both after
+/// changing the lower-end barrier, and neither lands where r4's note said:
+/// * delete `rp.run_epoch == run_epoch` → the stale supervisor respawns instead
+///   of declining, so its give-up line never appears and the **`wait_for`
+///   barrier** fails (13 s deadline, whole captured log attached). The
+///   `exactly two` assertion below is never reached;
+/// * force `ok = false` → *both* supervisors decline, so the barrier and
+///   `exactly two` both pass and the **liveness wait** at the end (`>= 3
+///   running`) is what fails, on `["spawning","running","crashed","spawning",
+///   "running","crashed"]`. That is the correct place for it: this mutation
+///   does not break the epoch discrimination, it freezes everything, and the
+///   liveness half exists precisely to say so.
 #[tokio::test]
 async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     // Both supervisors sleep BACKOFF, and both start that sleep immediately
@@ -1861,9 +1870,13 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
 /// "it finished" cannot be luck.
 ///
 /// Mutation witness: delete the `tokio::time::timeout` wrapper around the `app`
-/// branch's `autospawn_one` call (keeping the body) and this test hangs until
-/// nextest's own slow-timeout kills it, which is the failure this fence exists
-/// to remove.
+/// branch's `autospawn_one` call (keeping the body). r5 ran it: the test fails
+/// in ~10 s on its own outer `timeout(…).expect("boot never returned: …")`, with
+/// that message. It does **not** hang — an earlier version of this note said it
+/// runs until nextest's slow-timeout kills it, which the outer bound below has
+/// always prevented. The distinction matters because "hangs" is what the
+/// *production* failure looks like; the test's job is to turn that into a
+/// readable red, and it does.
 #[tokio::test]
 async fn a19_a_wedged_lifecycle_lock_cannot_hang_boot() {
     let tmp = tempfile::tempdir().unwrap();
