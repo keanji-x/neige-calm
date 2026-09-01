@@ -1,5 +1,53 @@
+// The directory browser: an editable absolute path that is also a combobox
+// over the listing it names.
+//
+// ## What this revision is (#1228)
+//
+// Only the rendering. The props surface, the port, and every keyboard rule
+// below are the frozen §6.7a contract and are untouched; what the first cut
+// deliberately left undone was the visual layer — its class names were
+// placeholders with no CSS behind them, so the control shipped as unstyled
+// browser defaults inside an otherwise finished dialog.
+//
+// ## Built from `@astryxdesign/core`, with the listbox kept local
+//
+// astryx is this repo's component library and it owns everything here that is
+// a plain control: the path field, the parent button, and the two actions. It
+// does *not* own the option list. `List`/`Item` hard-code their roles, and
+// this list is a `role="listbox"` driven by `aria-activedescendant` from an
+// input that keeps DOM focus — the one shape astryx has no component for. So
+// the rows stay local markup with a CSS module, and only the chrome around
+// them is astryx.
+//
+// Two seams that follow from that choice, both deliberate:
+//
+//   * Every astryx `Button` renders its own always-present
+//     `<VisuallyHidden role="status">` loading region (`Button.tsx`). Three
+//     buttons therefore put three status nodes on this surface, so the
+//     loading row cannot be found by `role="status"` alone any more — the
+//     test names it by its text instead. The row is still a live region; it
+//     is just no longer the only one.
+//   * The path input's own font comes from astryx (`--font-family-body`). A
+//     path is one of the two things `fe-design.md:869` allows mono in a field
+//     for, so the module overrides it — which works without a specificity
+//     fight because the `ui` layer sorts after `astryx` in `entry.css`.
+//
+// ## The parent button is new, and it is not a new behaviour
+//
+// `DirectoryListing.parent` has always been part of the frozen port and this
+// component has always ignored it: going up meant editing the text by hand.
+// The button issues exactly the `load(parent)` that typing the parent path
+// and pressing Enter already issued, so it adds a pointer affordance to an
+// existing navigation, not a new one.
+
 import { useEffect, useId, useMemo, useRef, type KeyboardEvent } from 'react';
+import { Banner } from '@astryxdesign/core/Banner';
+import { Button } from '@astryxdesign/core/Button';
+import { TextInput } from '@astryxdesign/core/TextInput';
+
+import { Icon } from '../icon/public.tsx';
 import { useState } from '../state/public.ts';
+import styles from './directory-browser.module.css';
 
 export type DirectoryMode = 'directory' | 'file';
 export interface DirectoryEntry { name: string; path: string; isDirectory: boolean }
@@ -63,17 +111,95 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
     }
   };
   const matchesListing = listing !== null && pathText === directoryInputValue(listing.path);
-  return <section className="directory-browser">
-    <label>Directory path<input ref={inputRef} role="combobox" aria-controls={optionsId} aria-expanded="true"
-      aria-activedescendant={activeIndex === null ? undefined : `${optionsId}-option-${activeIndex}`}
-      value={pathText} onChange={(event) => { setPathText(event.currentTarget.value); setActiveIndex(null); }} onKeyDown={onKeyDown}/></label>
-    {loading && <p role="status">Loading…</p>}
-    {error && <p role="alert">{error}</p>}
-    <ul id={optionsId} role="listbox">{visible.map((entry, index) => <li key={entry.path} role="none"><button
-      id={`${optionsId}-option-${index}`} role="option" type="button" aria-selected={index === activeIndex}
-      aria-disabled={!interactive(entry) || undefined} onMouseMove={() => { if (interactive(entry)) setActiveIndex(index); }}
-      onClick={() => { if (entry.isDirectory) load(entry.path); else if (mode === 'file') onSelect(entry.path); }}>{entry.name}</button></li>)}</ul>
-    <button type="button" onClick={onCancel}>Cancel</button>
-    <button type="button" disabled={!matchesListing} onClick={() => { if (listing) onSelect(listing.path); }}>{selectLabel}</button>
-  </section>;
+  const parent = listing?.parent ?? null;
+  const empty = listing !== null && listing.entries.length === 0;
+  return (
+    <section className={styles.browser}>
+      {/* A grid and not astryx's `HStack`: the field has to take the rest of
+          the row, and `TextInput` sizes itself through `width` on its own
+          `Field` wrapper — `1fr` is the only place that width can come from
+          without hard-coding one. */}
+      <div className={styles.head}>
+        <Button
+          type="button"
+          variant="secondary"
+          isIconOnly
+          icon={<Icon name="arrow-up" />}
+          label="Parent directory"
+          isDisabled={parent === null || loading}
+          onClick={() => { if (parent !== null) load(parent); }}
+        />
+        <TextInput
+          ref={inputRef}
+          label="Directory path"
+          isLabelHidden
+          className={styles.path}
+          width="100%"
+          role="combobox"
+          aria-controls={optionsId}
+          aria-expanded
+          aria-activedescendant={activeIndex === null ? undefined : `${optionsId}-option-${activeIndex}`}
+          value={pathText}
+          placeholder="/absolute/path"
+          onChange={(next) => { setPathText(next); setActiveIndex(null); }}
+          onKeyDown={onKeyDown}
+        />
+      </div>
+
+      {/* The list keeps rendering the entries it already has while the next
+          listing loads, so this is a status *beside* it rather than a state
+          that replaces it — a reload must not blank the rows under the
+          pointer.
+
+          Text and no spinner: astryx's `Spinner` paints itself on a `<canvas>`
+          through `useTheme`, so it needs `matchMedia` and a 2D context that the
+          jsdom tier has neither of, and a control this small does not earn a
+          browser-tier test of its own to buy one. */}
+      {loading && <p className={styles.status} role="status">Loading…</p>}
+      {error !== null && <Banner status="error" title={error} />}
+
+      <ul id={optionsId} className={styles.list} role="listbox" aria-label="Directory entries">
+        {visible.map((entry, index) => (
+          <li key={entry.path} role="none">
+            <button
+              id={`${optionsId}-option-${index}`}
+              className={styles.entry}
+              role="option"
+              type="button"
+              aria-selected={index === activeIndex}
+              aria-disabled={!interactive(entry) || undefined}
+              onMouseMove={() => { if (interactive(entry)) setActiveIndex(index); }}
+              onClick={() => { if (entry.isDirectory) load(entry.path); else if (mode === 'file') onSelect(entry.path); }}
+            >
+              <span className={styles.entryIcon} data-nc-role="icon">
+                <Icon name={entry.isDirectory ? 'folder' : 'file'} size="sm" />
+              </span>
+              <span className={styles.entryName}>{entry.name}</span>
+            </button>
+          </li>
+        ))}
+        {/* `role="none"` for both: a listbox owns options, and neither of these
+            rows is one. They are two different facts — "this directory holds
+            nothing" and "what you typed matches nothing in it" — and telling
+            them apart is the difference between navigating on and backing up a
+            character. */}
+        {listing !== null && !loading && visible.length === 0 && (
+          <li className={styles.placeholder} role="none">
+            {empty ? 'Empty directory' : 'No matches'}
+          </li>
+        )}
+      </ul>
+
+      <div className={styles.actions}>
+        <Button type="button" variant="ghost" label="Cancel" onClick={onCancel} />
+        <Button
+          type="button"
+          variant="primary"
+          label={selectLabel}
+          isDisabled={!matchesListing}
+          onClick={() => { if (listing) onSelect(listing.path); }}
+        />
+      </div>
+    </section>
+  );
 }

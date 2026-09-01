@@ -34,10 +34,17 @@ describe('DirectoryBrowser behavior', () => {
   it('rejects a non-absolute Enter path', async () => {
     const { input } = await ready(); fireEvent.change(input, { target: { value: 'relative' } }); fireEvent.keyDown(input, { key: 'Enter' }); expect(screen.getByRole('alert').textContent).toBe('Enter an absolute path');
   });
+  /* Named by its text and not by `getByRole('status')` alone: every astryx
+     `Button` renders an always-present, empty `role="status"` live region of
+     its own (`Button.tsx`), so this surface's three buttons make the bare role
+     query ambiguous. The assertion is unchanged in what it locks — the row that
+     says Loading is a live region — and both halves still fail on their own if
+     the row loses its text or its role. */
   it('shows loading while a listing request is pending', () => {
     const pending = new Promise<DirectoryListing>(() => undefined);
     render(<DirectoryBrowser listDirectory={() => pending} initialPath={null} onCancel={vi.fn()} onSelect={vi.fn()}/>);
-    expect(screen.getByRole('status').textContent).toContain('Loading');
+    const loading = screen.getByText('Loading…');
+    expect(loading.getAttribute('role')).toBe('status');
   });
   it('resets active descendant when filtering changes', async () => {
     const { input } = await ready(); expect(input.getAttribute('aria-activedescendant')).toBe(screen.getByRole('option', { name: 'src' }).id);
@@ -62,6 +69,27 @@ describe('DirectoryBrowser behavior', () => {
     expect(inputs[1].getAttribute('aria-controls')).toBe(lists[1].id);
     expect(inputs[0].getAttribute('aria-activedescendant')).toBe(options[0].id);
     expect(inputs[1].getAttribute('aria-activedescendant')).toBe(options[1].id);
+  });
+  it('walks up to the listing parent from the pointer', async () => {
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Parent directory' }));
+    await waitFor(() => expect(listing).toHaveBeenLastCalledWith('/'));
+  });
+  it('offers no way up out of a listing that has no parent', async () => {
+    const filesystemRoot: DirectoryListing = { path: '/', parent: null, entries: [{ name: 'work', path: '/work', isDirectory: true }] };
+    render(<DirectoryBrowser listDirectory={() => Promise.resolve(filesystemRoot)} initialPath="/" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+    await screen.findByRole('option', { name: 'work' });
+    expect(screen.getByRole('button', { name: 'Parent directory' }).hasAttribute('disabled')).toBe(true);
+  });
+  /* Two different facts, and the difference decides what the reader does next:
+     back up a character, or navigate somewhere else entirely. */
+  it('tells an empty directory apart from a filtered-out one', async () => {
+    const { input } = await ready();
+    fireEvent.change(input, { target: { value: '/work/zzz' } });
+    expect(screen.getByText('No matches')).toBeTruthy();
+    fireEvent.change(input, { target: { value: '/work/src/' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(await screen.findByText('Empty directory')).toBeTruthy();
   });
   it('returns focus through two animation frames after loading', async () => {
     const callbacks: FrameRequestCallback[] = [];
