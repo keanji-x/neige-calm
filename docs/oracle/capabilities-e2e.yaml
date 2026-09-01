@@ -4871,8 +4871,8 @@
     no-op when this cove already covers the path (same-cove arm), so a second wave in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-cove case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/shell/public.tsx:135-150
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:134
+  source: fe/web/src/app/shell/public.tsx:138-153
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:161
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4891,8 +4891,8 @@
     Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
     the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
     break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:96-102
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:134-160
+  source: fe/web/src/features/cove/new-wave/public.tsx:103-115
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:161-175
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui

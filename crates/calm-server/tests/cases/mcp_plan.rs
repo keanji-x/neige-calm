@@ -123,6 +123,15 @@ async fn boot() -> Boot {
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    // #1189 §3.6 — the recorder gate resolves session → card → {role, wave}
+    // with a live `cards` read, so the spec card must be persisted as Spec
+    // and not merely cached that way (`Repo::card_create` mints Worker).
+    crate::support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        spec_card.id.as_str(),
+        CardRole::Spec,
+    )
+    .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
     card_role_cache.insert(
         report_card.id.clone(),

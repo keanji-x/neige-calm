@@ -15,7 +15,7 @@
 // choice — `managed → attached` is not a conversion the kernel offers — so an
 // always-visible optional field is the whole feature, not a shortcut for one.
 
-import { useId } from 'react';
+import { useId, type RefObject } from 'react';
 
 import { useState } from '../../../ui/state/public.ts';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
@@ -38,12 +38,23 @@ export type NewWaveFormProps = Readonly<{
   error: string | null;
   /** Injected: `ui/` primitives never reach a transport (see `app/providers/directory.ts`). */
   listDirectory: ListDirectory;
+  /*
+   * The dialog's opening focus target. Without one the dialog falls back to its
+   * first focusable, which is the header's Close button — so a reader who
+   * opened this and started typing put nothing in the field and closed the
+   * dialog on the first space. See #1161.
+   *
+   * Required rather than optional: the defect was a call site that simply did
+   * not think about opening focus, and an optional prop lets the next one make
+   * the same omission silently.
+   */
+  titleRef: RefObject<HTMLInputElement | null>;
   onCancel: () => void;
   onSubmit: (draft: NewWaveDraft) => void;
 }>;
 
 export function NewWaveForm({
-  submitting, error, listDirectory, onCancel, onSubmit,
+  submitting, error, listDirectory, titleRef, onCancel, onSubmit,
 }: NewWaveFormProps) {
   const fieldId = useId();
   const [title, setTitle] = useState('');
@@ -77,6 +88,7 @@ export function NewWaveForm({
             No `--font-mono` either: `fe-design.md:869` allows mono in a field
             only when it holds a prompt or a path, and a wave title is neither. */}
         <input
+          ref={titleRef}
           id={titleId}
           className={styles.input}
           type="text"

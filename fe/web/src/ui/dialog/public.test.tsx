@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Dialog, useDialogView, type DialogViewController } from './public.tsx';
 
 beforeEach(() => {
@@ -8,6 +8,31 @@ beforeEach(() => {
   vi.stubGlobal('cancelAnimationFrame', vi.fn());
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+/** A dialog whose named focus target is disabled, i.e. cannot receive focus. */
+function DisabledTargetDialog() {
+  const target = useRef<HTMLButtonElement | null>(null);
+  return (
+    <Dialog open title="Test" onClose={vi.fn()} initialFocusRef={target}>
+      <button type="button" ref={target} disabled>Disabled target</button>
+      <input aria-label="Task" />
+    </Dialog>
+  );
+}
+
+/**
+ * The named target is only disabled by its ancestor `<fieldset>`, so it carries
+ * no `disabled` attribute of its own and `focusables` accepts it. `hideClose`
+ * removes the one control that would otherwise rescue the focus.
+ */
+function InheritedDisabledDialog() {
+  const target = useRef<HTMLInputElement | null>(null);
+  return (
+    <Dialog open title="Test" hideClose onClose={vi.fn()} initialFocusRef={target}>
+      <fieldset disabled><input aria-label="Task" ref={target} /></fieldset>
+    </Dialog>
+  );
+}
 
 function Capture({ onController }: { onController: (value: DialogViewController) => void }) {
   const controller = useDialogView();
@@ -35,6 +60,144 @@ describe('Dialog behavior', () => {
     expect(background.hasAttribute('inert')).toBe(true);
     expect(focus).not.toHaveBeenCalled();
     background.remove();
+  });
+
+  /*
+   * #1161. The rest of this file stubs `requestAnimationFrame` to run its
+   * callback *synchronously*, which collapses the window this pair is about:
+   * in a browser the open-focus effect lands a frame later, and a reader who
+   * clicks into a field before it does had focus taken away from them. The
+   * frame is held here instead of run, so the ordering is chosen rather than
+   * raced.
+   */
+  const heldFrames = (): FrameRequestCallback[] => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    return frames;
+  };
+
+  it('focuses the first focusable when the frame lands and focus is still outside', () => {
+    const frames = heldFrames();
+    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+
+    // Positive control for the guard below: without this the guard could be
+    // "never focus anything" and the pair would still pass.
+    frames.forEach((frame) => { frame(0); });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+  });
+
+  it('does not take focus away from a field the reader already clicked into', () => {
+    const frames = heldFrames();
+    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+    const field = screen.getByLabelText('Task');
+    field.focus();
+
+    frames.forEach((frame) => { frame(0); });
+
+    /*
+     * The concrete harm when this fails: `focusables(panel)[0]` is the header's
+     * Close button, so every keystroke goes to a button, and the first space
+     * activates it and throws the half-typed dialog away. That is #1161's
+     * flake, and it is what a reader typing quickly gets in a real browser.
+     */
+    expect(document.activeElement).toBe(field);
+  });
+
+  /*
+   * The panel itself is focusable (`tabIndex={-1}`), so a mousedown on chrome —
+   * the title, the padding — makes it the active element inside the opening
+   * frame. Yielding to that would leave the reader with no field focused and
+   * nothing to type into, which is the original complaint in a quieter form.
+   */
+  it('does not treat the panel itself as a place the reader chose', () => {
+    const frames = heldFrames();
+    render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
+    screen.getByRole('dialog').focus();
+    expect(document.activeElement).toBe(screen.getByRole('dialog'));
+
+    frames.forEach((frame) => { frame(0); });
+
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+  });
+
+  /*
+   * A base-view element stays mounted under `display: none` once a child view
+   * is pushed, so `panel.contains(activeElement)` keeps saying yes about
+   * something nobody can see or reach. Reproduced here by hiding the container
+   * after focusing it, which is the same DOM state the pushed view produces.
+   */
+  it('does not yield to focus stranded on content that has been hidden', () => {
+    const frames = heldFrames();
+    render(
+      <Dialog open title="Test" onClose={vi.fn()}>
+        <div data-testid="region"><button type="button">Stranded</button></div>
+      </Dialog>,
+    );
+    const stranded = screen.getByRole('button', { name: 'Stranded' });
+    stranded.focus();
+    screen.getByTestId('region').style.display = 'none';
+
+    frames.forEach((frame) => { frame(0); });
+
+    expect(document.activeElement).not.toBe(stranded);
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+  });
+
+  /*
+   * A named target that cannot take focus. `.focus()` on a disabled element is
+   * a silent no-op and the background is `inert` by then, so focus stayed
+   * outside the dialog entirely — a modal with focus on `body`. Predates #1161;
+   * fixed alongside it because it is the same failure family.
+   */
+  it('falls back into the panel when the named target cannot take focus', () => {
+    const outside = document.body.appendChild(document.createElement('button'));
+    outside.textContent = 'Opener';
+    outside.focus();
+    render(<DisabledTargetDialog />);
+
+    /*
+     * The *specific* landing place, not merely "somewhere inside". Asserting
+     * containment alone is satisfied by the verify-after-focus fallback on its
+     * own, so it does not discriminate the membership check that is supposed to
+     * reject the disabled target and pick the first reachable control — Close,
+     * here, since this dialog keeps its header.
+     */
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close' }));
+    outside.remove();
+  });
+
+  it('keeps focus inside the panel when the target is disabled by an ancestor', () => {
+    const outside = document.body.appendChild(document.createElement('button'));
+    outside.focus();
+    render(<InheritedDisabledDialog />);
+
+    expect(screen.getByRole('dialog').contains(document.activeElement)).toBe(true);
+    outside.remove();
+  });
+
+  /*
+   * An SVG anchor is focusable and matches `a[href]`, but it is an
+   * `SVGElement`, not an `HTMLElement`. Narrowing the guard to `HTMLElement`
+   * made it fall through for precisely the reader it exists to protect.
+   */
+  it('yields to a focused SVG anchor, which is an Element but not an HTMLElement', () => {
+    const frames = heldFrames();
+    render(
+      <Dialog open title="Test" onClose={vi.fn()}>
+        <svg><a href="#test" tabIndex={0} aria-label="Chart link"><text>Link</text></a></svg>
+        <input aria-label="Task" />
+      </Dialog>,
+    );
+    const anchor = screen.getByLabelText('Chart link');
+    anchor.focus();
+    expect(document.activeElement).toBe(anchor);
+
+    frames.forEach((frame) => { frame(0); });
+
+    expect(document.activeElement).toBe(anchor);
   });
 
   it('re-queries focusables after dynamically inserting an item', () => {

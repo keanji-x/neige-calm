@@ -34,7 +34,20 @@ use support::mcp::{boot_with_role, connect, handshake, recv_frame, send_frame};
 /// report **write** channel (`calm.report.write` / `.edit`, which can carry
 /// lifecycle) stays denied — that is the §3.2 dividing line, not "reports
 /// are spec property".
-const ASSISTANT_ALLOWED_TOOLS: &[&str] = &["calm.report.read"];
+///
+/// #1189 S2 (§3.2b) opened the block channel too: `blocks.*` and
+/// `write_markdown` are the only write surface an assistant has, and none
+/// of them can carry a `lifecycle` field. What keeps that from being a
+/// state-machine grant lives below the entry gate — no auto-promote, and
+/// the task-block guard — not in this list.
+const ASSISTANT_ALLOWED_TOOLS: &[&str] = &[
+    "calm.report.read",
+    "calm.report.blocks.kinds",
+    "calm.report.blocks.upsert",
+    "calm.report.blocks.move",
+    "calm.report.blocks.delete",
+    "calm.report.write_markdown",
+];
 
 /// Denied tools whose handler a **Spec** token gets past. Used both as the
 /// negative list for the assistant and as the control list below.
@@ -42,14 +55,6 @@ const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
     // Report write channel — carries lifecycle, hence spec-only (§3.2).
     "calm.report.write",
     "calm.report.edit",
-    // Block channel: `visible_to_roles` already advertises these to the
-    // assistant, but the handlers stay spec-only until S2 relaxes them.
-    // Listed here so the day that flips, this test is what goes red.
-    "calm.report.blocks.kinds",
-    "calm.report.blocks.upsert",
-    "calm.report.blocks.move",
-    "calm.report.blocks.delete",
-    "calm.report.write_markdown",
     // Cross-wave / cross-cove report discovery reads.
     "calm.cove.outline",
     "calm.report.links.backlinks",

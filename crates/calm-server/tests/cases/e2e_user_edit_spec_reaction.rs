@@ -203,6 +203,12 @@ async fn boot() -> Boot {
     // clones so a write on either side updates a single source of truth.
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    crate::support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        spec_card.id.as_str(),
+        CardRole::Spec,
+    )
+    .await;
     card_role_cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,

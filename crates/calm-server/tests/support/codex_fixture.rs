@@ -331,22 +331,20 @@ pub async fn boot_forge_e2e_fixture(
         .await
         .expect("create spec card");
     cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
-    if matches!(spec.plan_source, PlanSource::RealSpecTurn) {
-        // `card_create` persists `cards.role = 'worker'` unconditionally
-        // (`card_create_tx` → `card_create_with_id_tx(.., CardRole::Worker, ..)`),
-        // independent of kind. The injected path never reads the DB role (it
-        // hand-builds `spec_identity()`), but the REAL spec turn's MCP calls
-        // resolve identity via `card_identity_get_by_session`, which reads
-        // `cards.role`. Production mints the spec card with
-        // `card_create_with_id_tx(.., CardRole::Spec, ..)`; the test must mirror
-        // that or the report task-block writer fails the role gate with
-        // `got=Worker`.
-        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
-            .bind(spec_card.id.as_str())
-            .execute(sqlx_repo.pool())
-            .await
-            .expect("persist spec card DB role");
-    }
+    // `card_create` persists `cards.role = 'worker'` unconditionally
+    // (`card_create_tx` → `card_create_with_id_tx(.., CardRole::Worker, ..)`),
+    // independent of kind. Production mints the spec card with
+    // `card_create_with_id_tx(.., CardRole::Spec, ..)`; the test must mirror
+    // that or the report task-block writer fails the role gate with
+    // `got=Worker`.
+    //
+    // #1189 §3.6 dropped the `RealSpecTurn`-only condition this used to
+    // carry: the recorder gate now resolves session → card → {role, wave}
+    // through a live `cards` read on EVERY report write, injected paths
+    // included, so a persisted role that contradicts the fixture's own
+    // story denies writes the test never meant to deny.
+    super::mcp::set_persisted_card_role(repo_dyn.as_ref(), spec_card.id.as_str(), CardRole::Spec)
+        .await;
     // Production `routes::waves::create_wave` atomically mints the wave-report
     // card alongside the spec card for EVERY wave (waves.rs) — no production
     // wave ever lacks one. This fixture bypasses that route (direct

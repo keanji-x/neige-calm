@@ -19,6 +19,7 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
     submitting: false,
     error: null,
     listDirectory: vi.fn(() => Promise.resolve(LISTING)),
+    titleRef: { current: null },
     onCancel: vi.fn(),
     onSubmit: vi.fn(),
     ...overrides,

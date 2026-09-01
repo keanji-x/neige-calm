@@ -1,6 +1,6 @@
 [
   {
-    "description": "root planner may record a wave lifecycle transition",
+    "description": "the wave root session (a Spec card of this wave) may record a wave lifecycle transition — under #1189 the grant comes from the card, not from root-ness",
     "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
     "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
     "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "from": "planning", "to": "dispatching", "agent_message": "root lifecycle" } },
@@ -9,7 +9,7 @@
     "expected": { "decision": "allow", "recorder": "allow", "role": "allow" }
   },
   {
-    "description": "root planner may record a report write",
+    "description": "the wave root session (a Spec card of this wave) may record a report write — same grant, card-keyed",
     "principal": { "session_id": "$ROOT_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
     "actor": { "kind": "AiSpec", "id": "$SPEC_CARD" },
     "event": { "ev": "wave.report_edited", "data": { "wave_id": "$HOME_WAVE", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-root-report", "summary_before": "", "summary_after": "root", "body_before": "", "body_after": "root body", "agent_message": "root report" } },

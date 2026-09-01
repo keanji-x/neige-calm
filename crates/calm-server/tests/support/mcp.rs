@@ -51,6 +51,31 @@ pub struct CardBoot {
     pub _tmp: TempDir,
 }
 
+/// Pin a card's **persisted** `cards.role` column.
+///
+/// `Repo::card_create` mints everything that is not a `wave-report` as
+/// `CardRole::Worker`, so a fixture that only writes the role into a
+/// `CardRoleCache` leaves the database disagreeing with the test's own
+/// story. That was harmless while every role check read the cache; #1189
+/// §3.6 made the recorder gate resolve session → card → `{role, wave}`
+/// with a live in-tx `cards` read, and a fixture whose "spec card" is
+/// persisted as a worker now denies for a reason the test never intended.
+///
+/// Production mints go through `card_with_codex_create_tx`, which writes
+/// the row and the cache together; fixtures that bypass it must reproduce
+/// both halves.
+pub async fn set_persisted_card_role(repo: &dyn Repo, card_id: &str, role: CardRole) {
+    let pool = repo
+        .sqlite_pool()
+        .expect("fixture repo must be sqlite-backed to pin a card role");
+    sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
+        .bind(role.as_db_str())
+        .bind(card_id)
+        .execute(&pool)
+        .await
+        .expect("pin persisted card role");
+}
+
 pub async fn boot_with_role(role: CardRole) -> CardBoot {
     boot_with_role_and_daemon_token(role, None).await
 }

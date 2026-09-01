@@ -102,6 +102,12 @@ async fn boot() -> Boot {
 
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    crate::support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        spec_card.id.as_str(),
+        CardRole::Spec,
+    )
+    .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
     let wave_cove_cache = WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();

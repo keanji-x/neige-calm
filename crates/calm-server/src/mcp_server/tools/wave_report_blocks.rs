@@ -27,17 +27,26 @@
 //!
 //! ## Authorization
 //!
-//! Identical to `calm.report.write`: `require_role(Spec)` at the entry,
-//! wave binding via the caller's spec card
+//! `require_role_any([Spec, Assistant])` at the entry (#1189 §3.2b),
+//! wave binding via the caller's own card
 //! (`wave_report::resolve_report_for_caller`), and the write funnels
 //! through `CardDecisionSink::commit_report_op` so recorder-shadow
-//! gating and `EditAuthor::Spec` attribution stay uniform.
+//! gating and `EditAuthor` attribution stay uniform.
+//!
+//! The block channel — not `calm.report.write`/`.edit` — is where the
+//! assistant role lives, because a `ReportDocOp` cannot carry a
+//! `lifecycle` field at all (§3.2). What the channel being open does
+//! *not* mean is that an assistant may write anything a spec may: the
+//! sink attributes its ops as `EditAuthor::Assistant` and suppresses
+//! auto-promote, and `wave_report_edit_guard` refuses any op of its
+//! that would touch a task declaration block. A Worker token is still
+//! refused here outright.
 
 use crate::decision_sink::CardDecisionSink;
 use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
-    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, require_role,
+    AppContext, ToolCallIdentity, ToolHandler, ToolHandlerFuture, ToolRegistry, require_role_any,
 };
 use crate::mcp_server::tools::wave_report::{resolve_report_for_caller, updated_report_doc_rev};
 use crate::model::CardRole;
@@ -89,7 +98,7 @@ async fn blocks_kinds(
     identity: ToolCallIdentity,
     _args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
     Ok(kinds_table())
 }
 
@@ -102,7 +111,7 @@ async fn blocks_upsert(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_UPSERT;
     let obj = require_object(&args, tool)?;
     let id = optional_string(obj, "id", tool)?;
@@ -233,7 +242,7 @@ async fn blocks_move(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_MOVE;
     let obj = require_object(&args, tool)?;
     let id = required_string(obj, "id", tool)?;
@@ -269,12 +278,21 @@ async fn blocks_move(
 // calm.report.blocks.delete
 // ---------------------------------------------------------------------------
 
+/// #1189 ruling — the assistant may delete *prose* blocks here, and no
+/// task blocks at all. Deleting one is not a right it grows into later:
+/// it cannot create a task block in the first place (`author_name`
+/// gives `EditAuthor::Assistant` no attribution name), so "delete the
+/// ones I declared" is the empty set, and everything it *could* reach is
+/// a declaration some spec or user made. The refusal is enforced one
+/// layer down, in `wave_report_edit_guard::guard_task_declarations`, so
+/// it covers the whole-document shapes too — this entry point stays open
+/// so the prose case works.
 async fn blocks_delete(
     ctx: Arc<AppContext>,
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
     let tool = TOOL_REPORT_BLOCKS_DELETE;
     let obj = require_object(&args, tool)?;
     let id = required_string(obj, "id", tool)?;
@@ -305,7 +323,7 @@ async fn write_markdown(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
     let tool = TOOL_REPORT_WRITE_MARKDOWN;
     let obj = require_object(&args, tool)?;
     let body = required_string(obj, "body", tool)?;

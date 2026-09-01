@@ -1554,6 +1554,8 @@ async fn boot_fixture() -> Fixture {
         .await
         .expect("create spec card");
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
+        .await;
     seed_spec_runtime(&sqlx_repo, &wave.id, &spec_card.id).await;
 
     let caller =

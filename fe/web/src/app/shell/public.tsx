@@ -21,7 +21,7 @@
 // owns the failure it can produce — the structured 409 below.
 
 import { Outlet } from '@tanstack/react-router';
-import { createContext, useContext, useEffect } from 'react';
+import { createContext, useContext, useEffect, useRef } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -111,6 +111,9 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
    * does not pick one. The POST still requires `cove_id` this slice.
    */
   const [newWaveCoveId, setNewWaveCoveId] = useState<string | null>(null);
+  // Named explicitly rather than left to the dialog's first-focusable default,
+  // which is the Close button (#1161).
+  const newWaveTitleRef = useRef<HTMLInputElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -211,9 +214,11 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           </RequestNewWaveContext.Provider>
         </div>
       </main>
-      <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave">
+      <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
+        initialFocusRef={newWaveTitleRef}>
         {newWaveCoveId !== null && (
           <NewWaveForm
+            titleRef={newWaveTitleRef}
             submitting={creating}
             error={createError}
             listDirectory={listDirectory}

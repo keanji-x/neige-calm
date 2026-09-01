@@ -11,7 +11,7 @@ use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::model::{Card, Wave, WaveLifecycle};
+use crate::model::{Card, CardRole, Wave, WaveLifecycle};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
@@ -415,12 +415,27 @@ impl CardDecisionSink {
         Ok(updated)
     }
 
-    /// #960 PR2 — the generalized spec-MCP report write: same recorder
-    /// shadow gate, same `EditAuthor::Spec` attribution, same
-    /// auto-promote semantics as [`Self::commit_report_write`], but the
-    /// mutation is an arbitrary [`ReportDocOp`] (typed `blocks.*` op or
-    /// marker-aware `write_markdown`) executed inside the persist
-    /// transaction against the CRDT truth.
+    /// #960 PR2 — the generalized agent-MCP report write: same recorder
+    /// shadow gate, same persist boundary as
+    /// [`Self::commit_report_write`], but the mutation is an arbitrary
+    /// [`ReportDocOp`] (typed `blocks.*` op or marker-aware
+    /// `write_markdown`) executed inside the persist transaction against
+    /// the CRDT truth.
+    ///
+    /// #1189 §3.2a / §3.4 — this is the single funnel every block-channel
+    /// write passes through, so the two things that must differ for an
+    /// assistant caller are decided here, once, from `identity.role`:
+    ///
+    /// * **attribution** (`EditAuthor`). Hard-coding `Spec` would let an
+    ///   assistant's edits land in the event log under the spec's name —
+    ///   and would silently undo the `author_name(Assistant) == None`
+    ///   line in `wave_report_edit_guard`, which is half of the P2 task
+    ///   guard.
+    /// * **auto-promote** (P1). A block write must not walk a Draft wave
+    ///   out of Draft on an assistant's behalf; that is the state machine
+    ///   §3.2 keeps on the far side of the line. The REST user block
+    ///   endpoint already passes `false`, so "a Draft wave with a report"
+    ///   is a long-standing legal state, not a new one.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_op(
         &self,
@@ -439,23 +454,48 @@ impl CardDecisionSink {
                 principal,
                 wave_id: wave.id.clone(),
             });
+        let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
         persist_report_with_shadow(
             self.repo.as_ref(),
             &self.events,
             &self.write,
             actor,
-            EditAuthor::Spec,
+            author,
             wave,
             report_card,
             current_payload,
             op,
             agent_message,
             lifecycle,
-            true,
+            auto_promote_draft,
             Some(recorder_shadow),
         )
         .await
     }
+}
+
+/// #1189 §3.2a / §3.4 — the role → (attribution, auto-promote) decision for
+/// every write that reaches [`CardDecisionSink::commit_report_op`].
+///
+/// Exhaustive on purpose (no `_` arm): a future role reaching this funnel has
+/// to state its attribution and its auto-promote verdict rather than inherit
+/// the spec's by default.
+///
+/// `Worker` and `ReportCard` are refused outright rather than folded in with
+/// `Spec`. Folding them in would attribute their edits to the spec *and* hand
+/// them auto-promote; today the five entry points' `require_role_any([Spec,
+/// Assistant])` masks that, but S3 is about to move the role surface, and this
+/// funnel must not be the thing that has to be re-audited when it does.
+fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError> {
+    Ok(match role {
+        CardRole::Assistant => (EditAuthor::Assistant, false),
+        CardRole::Spec => (EditAuthor::Spec, true),
+        role @ (CardRole::Worker | CardRole::ReportCard) => {
+            return Err(CalmError::Forbidden(format!(
+                "card role {role:?} may not write the wave report"
+            )));
+        }
+    })
 }
 
 struct CardDecisionSinkRecorderShadowProbe {
@@ -588,6 +628,35 @@ mod tests {
     use tracing_subscriber::layer::Context as TracingContext;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{Layer, registry as tracing_registry};
+
+    /// #1189 §3.2a — the report-write funnel's role table, pinned at the one
+    /// layer where every role is reachable. On the production path the five
+    /// block-channel entry points carry `require_role_any([Spec, Assistant])`,
+    /// so Worker/ReportCard never arrive today; S3 moves that surface, and
+    /// this is the assertion that catches it if the funnel is left assuming
+    /// "anything not Assistant is the spec".
+    #[test]
+    fn report_op_attribution_refuses_worker_and_report_cards() {
+        assert_eq!(
+            report_op_attribution(CardRole::Spec).expect("spec writes its own report"),
+            (EditAuthor::Spec, true)
+        );
+        assert_eq!(
+            report_op_attribution(CardRole::Assistant).expect("assistant writes the report"),
+            (EditAuthor::Assistant, false)
+        );
+        for role in [CardRole::Worker, CardRole::ReportCard] {
+            match report_op_attribution(role) {
+                Err(CalmError::Forbidden(msg)) => assert!(
+                    msg.contains("may not write the wave report"),
+                    "{role:?} refusal should say why, got {msg:?}"
+                ),
+                other => panic!(
+                    "{role:?} must be refused outright, not attributed to the spec; got {other:?}"
+                ),
+            }
+        }
+    }
 
     struct RecorderShadowWarnLayer {
         hits: Arc<AtomicUsize>,
@@ -796,8 +865,19 @@ mod tests {
         assert_eq!(removed_events, 0);
     }
 
+    /// #1189 §3.6 renamed this cell rather than re-expecting it. The old
+    /// name ("non-root") described the criterion that slice removed; what
+    /// the body always actually built was an identity whose `session_id`
+    /// has no `worker_sessions` row at all, and an unresolvable session is
+    /// still a denial — now for the reason the new criterion gives.
+    ///
+    /// What it pins is the fail-closed shape around that denial: a
+    /// `Forbidden`, one divergence record, one warning, and — the part no
+    /// other test covers — the report row and the event log both untouched,
+    /// i.e. the gate aborts the transaction rather than refusing after a
+    /// partial write.
     #[tokio::test(flavor = "current_thread")]
-    async fn non_root_report_write_is_forbidden_under_recorder_enforce() {
+    async fn report_write_from_an_unresolvable_session_is_forbidden_under_recorder_enforce() {
         let repo = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
@@ -849,6 +929,13 @@ mod tests {
 
         let root_session_id = WorkerSessionId::from("root-session");
         seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
+        // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
+        // `card_create` persists `worker` regardless of kind.
+        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+            .bind(spec_card.id.as_str())
+            .execute(repo.pool())
+            .await
+            .expect("persist spec card role");
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
@@ -908,7 +995,11 @@ mod tests {
             .expect_err("non-root report write must be forbidden");
 
         assert!(
-            matches!(err, CalmError::Forbidden(ref message) if message.contains("not wave root"))
+            matches!(
+                err,
+                CalmError::Forbidden(ref message) if message.contains("has no session row")
+            ),
+            "expected the recorder gate's session-resolution denial, got {err:?}"
         );
         assert_eq!(divergence_count_for_test(), before_divergences + 1);
         assert_eq!(warnings.load(Ordering::Relaxed), 1);
@@ -986,6 +1077,13 @@ mod tests {
 
         let root_session_id = WorkerSessionId::from("root-session");
         seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
+        // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
+        // `card_create` persists `worker` regardless of kind.
+        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+            .bind(spec_card.id.as_str())
+            .execute(repo.pool())
+            .await
+            .expect("persist spec card role");
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());

@@ -1,6 +1,6 @@
 [
   {
-    "description": "executor cannot record a wave lifecycle transition",
+    "description": "G-A — executor's session is bound to a Worker card, so the card-keyed recorder criterion refuses it (the role whitelist half)",
     "principal": { "session_id": "$EXECUTOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
     "actor": { "kind": "AiCodex", "id": "$EXECUTOR_CARD" },
     "event": { "ev": "wave.lifecycle_changed", "data": { "id": "$HOME_WAVE", "cove_id": "$HOME_COVE", "from": "planning", "to": "dispatching", "agent_message": "executor lifecycle" } },
@@ -9,7 +9,7 @@
     "expected": { "decision": "deny", "recorder": "deny", "role": "deny", "role_error_contains": "out of scope" }
   },
   {
-    "description": "executor cannot record a report write",
+    "description": "G-A — same Worker card, report write: refused by the recorder role whitelist",
     "principal": { "session_id": "$EXECUTOR_SESSION", "wave_id": "$HOME_WAVE", "cove_id": "$HOME_COVE" },
     "actor": { "kind": "AiCodex", "id": "$EXECUTOR_CARD" },
     "event": { "ev": "wave.report_edited", "data": { "wave_id": "$HOME_WAVE", "card_id": "$REPORT_CARD", "author": "spec", "edit_id": "pd-executor-report", "summary_before": "", "summary_after": "executor", "body_before": "", "body_after": "executor body", "agent_message": "executor report" } },

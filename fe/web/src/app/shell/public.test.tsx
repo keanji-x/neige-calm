@@ -9,7 +9,7 @@
 // branch would prove only that the fixture agrees with itself.
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -101,6 +101,33 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
+  });
+
+  /*
+   * #1161. The dialog's opening focus went to `focusables(panel)[0]`, which is
+   * the header's Close button, so a reader who opened this and typed put
+   * nothing in the field — and **space activates a focused button**, so the
+   * first space in a title threw the dialog away. It read as a flaky test
+   * because whether the frame landed before or after the reader's click
+   * decided which of the two failures happened.
+   *
+   * Asserted through the shell rather than against `<Dialog>` directly,
+   * because the defect was a missing `initialFocusRef` at this call site while
+   * the primitive was working as designed.
+   */
+  it('opens with the Task field focused, so typing a title reaches it', async () => {
+    harness();
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    await screen.findByRole('dialog', { name: 'New wave' });
+    await act(async () => { await new Promise((resolve) => { requestAnimationFrame(() => resolve(null)); }); });
+
+    expect(document.activeElement).toBe(screen.getByLabelText('Task'));
+
+    // The consequence, stated as behaviour: the space in "Read it" is what used
+    // to close the dialog.
+    await userEvent.keyboard('Read it');
+    expect(screen.getByLabelText<HTMLInputElement>('Task').value).toBe('Read it');
+    expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
   });
 
   it('posts the opener\'s cove_id and omits cwd / attach_folder with no folder chosen', async () => {

@@ -169,12 +169,17 @@ async fn boot() -> Boot {
     // state.
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
-
-    // Bypass the persisted-role update — `enforce_role` only reads
-    // the cache, so a cache-only pin is sufficient to drive the gate.
-    // (The full path runs `card_with_codex_create_tx` which writes
-    // both the row and the cache; PR7b's integration test doesn't
-    // need to assert on the persisted column.)
+    // #1189 §3.6 — the persisted column is no longer optional. `enforce_role`
+    // still only reads the cache, but the recorder gate resolves
+    // session → card → {role, wave} with a live `cards` read inside the write
+    // tx, so a cache-only pin would leave this "spec card" persisted as a
+    // worker and deny every write for a reason no test here is about.
+    crate::support::mcp::set_persisted_card_role(
+        repo.as_ref(),
+        spec_card.id.as_str(),
+        CardRole::Spec,
+    )
+    .await;
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
     repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
