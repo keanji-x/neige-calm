@@ -297,6 +297,24 @@ async fn snapshot(fx: &Fx, id: &str) -> Snapshot {
     }
 }
 
+/// Run a lifecycle call that is expected to be **refused at the entry**, under
+/// a hard time bound.
+///
+/// The bound is part of the assertion, not defensive padding: a refusal is
+/// non-blocking and answers immediately, whereas a call that got *into* the
+/// critical section parks on whatever barrier the winner is parked on. Without
+/// the bound, a regression that admits the loser shows up as a hung test with
+/// no message instead of a named failure.
+async fn refused<T>(what: &str, fut: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(Duration::from_secs(5), fut).await {
+        Ok(v) => v,
+        Err(_) => panic!(
+            "{what} did not answer within 5 s: it must be refused at the entry, \
+             not admitted into the winner's critical section"
+        ),
+    }
+}
+
 fn assert_busy_calm(err: &CalmError, what: &str) {
     assert_eq!(
         err.code(),
@@ -742,9 +760,7 @@ async fn a5_uninstall_is_refused_while_an_app_spawn_is_in_flight() {
     wait_until_locked(&fx.host, ID).await;
 
     let before = snapshot(&fx, ID).await;
-    let err = fx
-        .host
-        .uninstall(ID)
+    let err = refused("uninstall", fx.host.uninstall(ID))
         .await
         .expect_err("uninstall must be refused mid-spawn");
     assert_busy_calm(&err, "uninstall vs in-flight spawn");
@@ -800,9 +816,7 @@ async fn a6_concurrent_installs_of_one_id_give_busy_then_conflict() {
     let winner = tokio::spawn(async move { h.install(m, &s).await });
     wait_until_locked(&fx.host, ID).await;
 
-    let err = fx
-        .host
-        .install(manifest.clone(), &src)
+    let err = refused("install", fx.host.install(manifest.clone(), &src))
         .await
         .expect_err("the loser must be refused");
     assert_busy_calm(&err, "concurrent install");
@@ -854,9 +868,7 @@ async fn a7_disable_overlapping_an_enable_is_refused_then_works() {
     let enabling = tokio::spawn(async move { h.enable(ID).await });
     wait_until_locked(&fx.host, ID).await;
 
-    let err = fx
-        .host
-        .disable(ID)
+    let err = refused("disable", fx.host.disable(ID))
         .await
         .expect_err("disable must be refused inside enable's critical section");
     assert_busy_calm(&err, "disable vs enable");
@@ -893,9 +905,7 @@ async fn a7_enable_overlapping_a_disable_is_refused_then_works() {
     let disabling = tokio::spawn(async move { h.disable(ID).await });
     wait_until_locked(&fx.host, ID).await;
 
-    let err = fx
-        .host
-        .enable(ID)
+    let err = refused("enable", fx.host.enable(ID))
         .await
         .expect_err("enable must be refused inside disable's critical section");
     assert_busy_calm(&err, "enable vs disable");
