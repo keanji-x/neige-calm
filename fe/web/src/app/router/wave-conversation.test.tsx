@@ -322,10 +322,18 @@ describe('wave conversations', () => {
        at all. */
     client.removeQueries({ queryKey: queryKeys.waveConversations(WAVE.id) });
     fireEvent.click(screen.getByRole('button', { name: 'Conversation Assistant, on Test wave' }));
-    /* On the wave, list still in flight: nothing is open, and — the part that
-       matters — the request has not been thrown away. */
+    /*
+     * On the wave with the list still in flight — and the wave's *detail*
+     * already settled, which is the state that matters: that is precisely when
+     * `WaveRoute` gets to say whether this request is one of its own. A route
+     * that answers "no" here throws the request away a moment before the list
+     * that would have opened it lands.
+     */
     await waitFor(() => expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w1`));
-    expect(screen.queryByRole('complementary', { name: 'Assistant' })).toBeNull();
+    await waitFor(() => expect(client.isFetching({ queryKey: queryKeys.waveDetail(WAVE.id) })).toBe(0));
+    /* The panel is up, so the route really has rendered against that detail. */
+    await screen.findByRole('button', { name: 'New conversation' });
+    expect(document.querySelector('[data-nc-drawer]')).toBeNull();
 
     await act(async () => { releaseList(); await Promise.resolve(); });
     await screen.findByRole('complementary', { name: 'Assistant' });
@@ -364,12 +372,22 @@ describe('wave conversations', () => {
   /*
    * ── G7 ─────────────────────────────────────────────────────────────────────
    *
-   * One drawer serves both routes and the panel is not remounted when the
-   * reader walks from a wave to a cove, so a draft that does not name what it
-   * belongs to is a draft the other route's `+` picks up — and then the words
-   * and the key typed for a wave are posted to a cove, minting the conversation
-   * in the wrong place. The POST path is the damage; the drawer's contents are
-   * the symptom, and both are asserted.
+   * A draft belongs to what it was written on, and each route posts to its own
+   * scope: the wave's key and words never reach the cove endpoint, and the
+   * cove's `+` opens a blank draft rather than the wave's failed one.
+   *
+   * **Where the mutation lands is not here.** The reducer's `scopeId` guard
+   * (`heldIs`) is what makes this true when one panel *instance* serves two
+   * scopes, and that is the cove → cove walk, where `CoveRoute` is not
+   * remounted across a param change: `cove-conversation.test.tsx` holds it with
+   * `keeps a failed draft to the cove it belongs to` and `leaves another cove's
+   * draft alone when a late create finally succeeds`, and both go red when the
+   * `scopeId` comparison is dropped. Wave and cove are two different route
+   * components, so what this test pins is the layer above — that the two `+`s,
+   * the two derivations and the two endpoints are wired to their own scope, and
+   * a draft written on one does not surface on the other. Neither claim is
+   * covered by the cove pair, and neither is idle: they are what a shared panel
+   * or a copy-pasted `create` would break.
    */
   it('[G7] keeps a wave draft off a cove, and posts each to its own scope', async () => {
     const { requests, router } = setup((request) => request.method === 'POST'
