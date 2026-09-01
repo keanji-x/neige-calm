@@ -216,9 +216,19 @@ pub struct SpawnTimedOut;
 /// cancellable-exec mechanism the platform does not offer — so it is documented
 /// rather than papered over.
 ///
-/// If the runtime is torn down before the closure runs at all, the task is
-/// dropped un-run and `cmd` is dropped without ever forking, so there is
-/// nothing to leak.
+/// Runtime teardown splits into two cases, and neither is the leak the previous
+/// detached-adoption-task shape had (r3 H9). If the closure has not started, the
+/// blocking task is dropped un-run and `cmd` is dropped without ever forking —
+/// nothing exists to leak. If it has started, runtime shutdown waits for
+/// blocking tasks, so the closure completes and the unclaimed `GroupChild`
+/// sweeps its group on drop. What CAN still be lost is a shutdown that gives up
+/// on a wedged blocking thread via `shutdown_timeout`: there the fork is stuck
+/// in the kernel and no user-space code of ours runs at all.
+///
+/// One further residual, unrelated to teardown: `kill(-pgid)` reaches only the
+/// group this child leads. A tool that daemonizes PROPERLY — its own `fork` plus
+/// `setsid` — has left that group and survives. The common `( work & )` shape
+/// stays in the group and is swept.
 pub async fn spawn_within(
     mut cmd: tokio::process::Command,
     deadline: tokio::time::Instant,
