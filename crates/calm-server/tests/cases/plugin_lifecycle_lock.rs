@@ -1533,3 +1533,48 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
         "the stale supervisor respawned over a run instance that was not its own"
     );
 }
+
+// ===========================================================================
+// Acceptance 1, ordering half — the 404 probes sit BEFORE the guard
+//
+// Same shape as `a1_install_reports_kernel_too_old_even_when_the_id_is_busy`,
+// one endpoint over. `enable` / `disable` / `uninstall` raise part of their
+// unknown-id 404 from the *write* (`plugin_update_enabled` / `plugin_delete`
+// report `NotFound` on `rows_affected() == 0`) and `reload` raises it only from
+// its explicit probe. Put the guard first and "unknown id AND busy" answers 409
+// instead of 404 on all four — an error code silently changed by the lock, and
+// invisible to S0's unknown-id gates because those hold no lock.
+// ===========================================================================
+
+/// Mutation witness: move any of the four `try_lock_lifecycle` calls above its
+/// `plugin_row_or_404` probe and that endpoint's arm below reports
+/// `plugin_busy` instead of `not_found`.
+#[tokio::test]
+async fn a1_unknown_id_is_still_404_when_that_id_is_busy() {
+    let fx = boot_with(BootOpts {
+        seed: false,
+        ..Default::default()
+    })
+    .await;
+    const GHOST: &str = "test.never.installed";
+    let _held = fx
+        .host
+        .try_lock_lifecycle(GHOST)
+        .expect("an uninstalled id still has a lock cell");
+
+    for (what, res) in [
+        ("enable", fx.host.enable(GHOST).await.map(|_| ())),
+        ("disable", fx.host.disable(GHOST).await.map(|_| ())),
+        ("reload", fx.host.reload(GHOST).await.map(|_| ())),
+        ("uninstall", fx.host.uninstall(GHOST).await),
+    ] {
+        let err = res.expect_err(what);
+        assert_eq!(
+            err.code(),
+            "not_found",
+            "{what} on an unknown id must stay a 404 even while that id's lock \
+             is held; the lock must not be able to change an endpoint's error \
+             code. Got {err:?}"
+        );
+    }
+}
