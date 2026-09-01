@@ -11,7 +11,7 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('DirectoryField integration', () => {
   it('uses the owning Dialog child-view path without nesting a dialog', async () => {
     render(<Dialog open title="Settings" onClose={vi.fn()}><DirectoryField value="/work" onChange={vi.fn()} listDirectory={listDirectory}/></Dialog>);
-    fireEvent.click(screen.getByRole('button', { name: '/work' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose a directory: /work' }));
     expect(await screen.findByRole('dialog', { name: 'Choose a directory' })).toBeTruthy();
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -20,7 +20,7 @@ describe('DirectoryField integration', () => {
 
   it('falls back to an inline browser outside Dialog', async () => {
     render(<DirectoryField value="/work" onChange={vi.fn()} listDirectory={listDirectory}/>);
-    fireEvent.click(screen.getByRole('button', { name: '/work' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose a directory: /work' }));
     expect(await screen.findByRole('combobox')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -34,9 +34,9 @@ describe('DirectoryField integration', () => {
       return <DirectoryField value={value} onChange={setValue} listDirectory={browse} mode="file"/>;
     }
     render(<Harness/>);
-    fireEvent.click(screen.getByRole('button', { name: '/a/b' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose a directory: /a/b' }));
     fireEvent.click(await screen.findByRole('option', { name: 'c.txt' }));
-    fireEvent.click(screen.getByRole('button', { name: '/a/b/c.txt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Choose a directory: /a/b/c.txt' }));
     expect(await screen.findByRole('option', { name: 'c.txt' })).toBeTruthy();
     expect(browse).toHaveBeenLastCalledWith('/a/b');
   });

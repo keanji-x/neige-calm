@@ -26,12 +26,15 @@
 //
 // ## Names, since the visible text is never the whole value
 //
-//   * The name is always the full path, or the placeholder while there is
-//     none — set through `aria-label`, because the visible text is the
-//     basename and a reader who hears only "app" learns nothing about *which*
-//     `app`. A call site therefore does not need to wrap this in a labelled
-//     field, and should not: an outer `<label for>` would outrank nothing here
-//     and only split one name into two.
+//   * The name is the placeholder, and once there is a value the placeholder
+//     *and* the full path — set through `aria-label`, because neither half can
+//     come from the contents: the visible text is a basename, and a reader who
+//     hears only "app" learns neither which `app` nor what the control is for.
+//     Dropping the purpose half was the first cut of this and it was wrong;
+//     "/srv/app, button" is a control whose job you have to infer from a path.
+//     A call site therefore does not need to wrap this in a labelled field,
+//     and should not: an outer `<label for>` would outrank the whole thing and
+//     replace it with one word.
 //   * The native `title` carries the same string for the pointer, so the full
 //     path is one hover away from the basename. astryx drops `title` from
 //     `BaseProps` in favour of its `tooltip` prop, which would mount a
@@ -74,8 +77,12 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps -- capture value and callbacks only when browsing toggles; value changes must not repush the child view.
   }, [browsing, dialog]);
+  /* Purpose first, then value — and the placeholder's trailing ellipsis goes
+     with it, because "Choose a directory…: /srv/app" is the punctuation of a
+     control that is still waiting for something. */
+  const name = value === '' ? placeholder : `${placeholder.replace(/…$/, '')}: ${value}`;
   /* The one attribute astryx's prop surface has no room for; see the header. */
-  const nativeTitle: { title: string } = { title: value || placeholder };
+  const nativeTitle: { title: string } = { title: name };
   return (
     <div className={styles.field}>
       <Button
@@ -85,7 +92,7 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
         size="sm"
         className={styles.trigger}
         aria-haspopup="dialog"
-        aria-label={value || placeholder}
+        aria-label={name}
         {...nativeTitle}
         data-nc-empty={value === '' || undefined}
         icon={<Icon name="folder" size="sm" />}

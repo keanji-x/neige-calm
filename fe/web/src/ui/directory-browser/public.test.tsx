@@ -70,6 +70,31 @@ describe('DirectoryBrowser behavior', () => {
     expect(inputs[0].getAttribute('aria-activedescendant')).toBe(options[0].id);
     expect(inputs[1].getAttribute('aria-activedescendant')).toBe(options[1].id);
   });
+  /* The list is a bounded scrolling window, and arrow keys move
+     `aria-activedescendant` rather than DOM focus — so nothing scrolls the
+     highlight into view unless this component does it. Red when the effect is
+     dropped: the highlight walks under the fold and Enter acts on a row that is
+     not on screen. `block: 'nearest'` and not `center`: it must scroll only
+     when the row is actually out of view.
+
+     jsdom implements no scrolling at all, so `scrollIntoView` is installed for
+     the case and removed after — the component's own `typeof` guard is what
+     makes it a no-op the rest of the time. */
+  it('scrolls the highlighted option into view as the keyboard moves it', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const deep: DirectoryListing = { path: '/work', parent: '/', entries: [
+      { name: 'a', path: '/work/a', isDirectory: true },
+      { name: 'b', path: '/work/b', isDirectory: true },
+    ] };
+    render(<DirectoryBrowser listDirectory={() => Promise.resolve(deep)} initialPath="/work" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+    await screen.findByRole('option', { name: 'b' });
+    scrollIntoView.mockClear();
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(scrollIntoView.mock.instances[0]).toBe(screen.getByRole('option', { name: 'b' }));
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
   it('walks up to the listing parent from the pointer', async () => {
     await ready();
     fireEvent.click(screen.getByRole('button', { name: 'Parent directory' }));

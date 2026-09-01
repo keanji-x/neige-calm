@@ -95,6 +95,24 @@ export function DirectoryBrowser({ listDirectory, initialPath, onCancel, onSelec
   };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialPath is a mount-time seed; navigation owns all later loads.
   useEffect(() => { load(initialPath ?? undefined); }, []);
+  /*
+   * The highlight has to stay on screen, and this is the revision that made
+   * that possible to get wrong: the list is now a bounded scrolling window
+   * (`directory-browser.module.css`), so past about nine entries `ArrowDown`
+   * would move `activeIndex` under the fold and leave Enter and `/` acting on
+   * a row nobody can see. Arrow keys move `aria-activedescendant`, not DOM
+   * focus, so no browser scrolls anything on our behalf here.
+   *
+   * `block: 'nearest'` scrolls only when the option is actually out of view,
+   * which is what keeps a pointer-driven hover from yanking the list. The
+   * `typeof` guard is for jsdom, which implements no scrolling at all.
+   */
+  useEffect(() => {
+    if (activeIndex === null) return;
+    const option = document.getElementById(`${optionsId}-option-${activeIndex}`);
+    if (typeof option?.scrollIntoView !== 'function') return;
+    option.scrollIntoView({ block: 'nearest' });
+  }, [activeIndex, optionsId]);
   const move = (delta: 1 | -1) => {
     if (visible.length === 0) return;
     let index = activeIndex ?? (delta === 1 ? -1 : visible.length);
