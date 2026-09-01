@@ -41,8 +41,8 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::Value;
-use tokio::io::{AsyncRead, AsyncReadExt as _};
 
+use super::child_process::{KillGroupOnDrop, read_capped, set_process_group_leader};
 use super::manifest::{CliQueryBlock, CliQueryTool, argv_slot};
 use super::mcp::{CallToolResult, ContentBlock, RpcError};
 use crate::operation::forge_action_adapter::FORGE_PASSTHROUGH_ENV_KEYS;
@@ -302,108 +302,6 @@ fn text_block(text: String) -> ContentBlock {
         extra: serde_json::Map::new(),
     }
 }
-
-// ---------------------------------------------------------------------------
-// Bounded capture
-// ---------------------------------------------------------------------------
-
-/// Read `reader` into `buf` with `cap` enforced **before** buffering, then
-/// drain and DISCARD whatever else the child writes.
-///
-/// This is the same shape [`super::http_mcp`]'s `read_capped` uses for response
-/// bodies: `take(cap + 1)` makes "over the cap" observable without ever
-/// allocating the whole stream. A `read_to_end` that truncates afterwards
-/// bounds nothing — a child writing at pipe speed inside a 20 s default budget
-/// can allocate tens of GB before the first byte is trimmed.
-///
-/// The tail is drained rather than simply left unread, and this is load-bearing:
-/// stopping at the cap would leave the pipe buffer full, block the child on its
-/// next `write`, and turn every over-cap answer into a budget-expiry error
-/// instead of a truncated result. It is drained **without counting**, so the
-/// caller genuinely does not know the total — see [`capped_text`]'s marker.
-async fn read_capped<R>(reader: &mut R, cap: usize, buf: &mut Vec<u8>) -> std::io::Result<()>
-where
-    R: AsyncRead + Unpin,
-{
-    (&mut *reader).take(cap as u64 + 1).read_to_end(buf).await?;
-    if buf.len() > cap {
-        let mut sink = [0u8; 8 * 1024];
-        // A drain error is not the caller's problem: the answer is already
-        // capped, and the child is about to be reaped either way.
-        while matches!(reader.read(&mut sink).await, Ok(n) if n > 0) {}
-    }
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Process groups
-// ---------------------------------------------------------------------------
-
-/// Make the spawned child a session/process-group leader, so one
-/// `kill(-pgid)` reaches it AND every descendant it forked.
-///
-/// Same mechanism as
-/// [`crate::operation::task_verify_adapter`]'s gate wrapper: `setsid` in
-/// `pre_exec`, pgid == the child's pid. Without it, `Child::kill` and
-/// `kill_on_drop` reach only the direct child, and a wrapper script's `foo &`
-/// is orphaned onto pid 1 still holding this connector's secret environment.
-#[cfg(unix)]
-fn set_process_group_leader(cmd: &mut tokio::process::Command) {
-    // SAFETY: `setsid(2)` is async-signal-safe and runs in the forked child
-    // before exec; it touches no memory shared with the parent.
-    unsafe {
-        cmd.pre_exec(|| {
-            if libc::setsid() == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(unix))]
-fn set_process_group_leader(_cmd: &mut tokio::process::Command) {}
-
-/// SIGKILLs a process group unless disarmed.
-///
-/// Armed for exactly the window in which the group leader is still ours (not
-/// yet reaped), which is what makes the pgid unambiguous: a reaped pid can be
-/// recycled, and `kill(-pgid)` on a recycled group would hit strangers. Every
-/// path that reaps the leader disarms first.
-struct KillGroupOnDrop(Option<i32>);
-
-impl KillGroupOnDrop {
-    fn arm(pgid: Option<i32>) -> Self {
-        Self(pgid)
-    }
-
-    fn kill_now(&mut self) {
-        if let Some(pgid) = self.0.take() {
-            kill_process_group(pgid);
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.0 = None;
-    }
-}
-
-impl Drop for KillGroupOnDrop {
-    /// Covers the cancellation path the direct-child `kill_on_drop` cannot: a
-    /// dropped `tools_call` future leaves the leader unreaped, so the group is
-    /// still safely addressable.
-    fn drop(&mut self) {
-        self.kill_now();
-    }
-}
-
-#[cfg(unix)]
-fn kill_process_group(pgid: i32) {
-    crate::proc_identity::signal_process_group(pgid, libc::SIGKILL);
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pgid: i32) {}
 
 // ---------------------------------------------------------------------------
 // Bring-up
@@ -1005,44 +903,6 @@ mod tests {
         // The marker must NOT claim a total: the tail is drained uncounted, so
         // any "of M" here would be a number nobody measured.
         assert!(!out.contains("of 100"), "{out}");
-    }
-
-    /// #1164 P3 F2 — the cap must bound MEMORY, which means it is enforced
-    /// before buffering. `read_capped` never materialises more than `cap + 1`
-    /// bytes no matter how much the stream holds.
-    ///
-    /// This is the assertion the old `stdout_over_the_cap_is_truncated_with_the_marker`
-    /// could not make: with 100 bytes against a 16-byte cap, buffer-then-truncate
-    /// and cap-then-buffer are indistinguishable from the outside. Here the
-    /// source is 4 MiB and the assertion is on what was READ.
-    ///
-    /// Mutation witness: replace `read_capped`'s body with
-    /// `reader.read_to_end(buf).await?` and this goes red at 4 MiB vs 65.
-    #[tokio::test]
-    async fn a_stream_far_over_the_cap_is_never_buffered_whole() {
-        const CAP: usize = 64;
-        let src = vec![b'a'; 4 * 1024 * 1024];
-        let mut reader = std::io::Cursor::new(src);
-        let mut buf = Vec::new();
-        read_capped(&mut reader, CAP, &mut buf).await.unwrap();
-        assert_eq!(
-            buf.len(),
-            CAP + 1,
-            "at most cap+1 bytes may ever be materialised"
-        );
-        // …and the whole stream was still consumed, so a real child is never
-        // left blocked on a full pipe.
-        assert_eq!(reader.position(), 4 * 1024 * 1024);
-    }
-
-    /// An under-cap stream is read whole and reports no truncation.
-    #[tokio::test]
-    async fn a_stream_under_the_cap_is_read_whole() {
-        let mut reader = std::io::Cursor::new(b"hello".to_vec());
-        let mut buf = Vec::new();
-        read_capped(&mut reader, 64, &mut buf).await.unwrap();
-        assert_eq!(buf, b"hello");
-        assert_eq!(capped_text(&buf, 64), "hello");
     }
 
     /// The cap is a BYTE bound, but the result must be valid UTF-8: cutting at

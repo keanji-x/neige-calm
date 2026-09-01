@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod callbacks;
+pub mod child_process;
 pub mod cli_query;
 pub mod connector;
 pub mod error;
