@@ -162,12 +162,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented) {
         const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
-        if (layers.item(layers.length - 1) === mobileNavigationRef.current) {
-          // Escape closes the sheet, and the sheet's drill-in goes with it: the
-          // cove selection no longer unmounts with `MobileCoves` (§2.2).
-          setMobileSection(null);
-          setCoveSelection(NO_COVE_SELECTED);
-        }
+        if (layers.item(layers.length - 1) === mobileNavigationRef.current) setMobileSection(null);
         return;
       }
       if (event.key !== 'Tab') return;
@@ -188,10 +183,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   }, [mobileNavOpen]);
 
   useEffect(() => {
-    if (!narrowRail && mobileNavOpen) {
-      setMobileSection(null);
-      setCoveSelection(NO_COVE_SELECTED);
-    }
+    if (!narrowRail && mobileNavOpen) setMobileSection(null);
   }, [mobileNavOpen, narrowRail]);
 
   /*
@@ -225,17 +217,20 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     if (routeWaveId !== undefined) goSameWave(routeWaveId, { panel: undefined }, { replace: true });
   };
 
-  /** Every exit that closes the sheets, and with them the cove drill-in. */
-  const closeMobileSection = () => {
-    setMobileSection(null);
-    setCoveSelection(NO_COVE_SELECTED);
-  };
+  /*
+   * Closing a sheet closes the *section*, and deliberately leaves the cove
+   * drill-in alone. The selection is only ever read under
+   * `mobileSection === 'coves'` — the secondary formula above conjoins it and
+   * so does the render below — so a leftover cove is unobservable, and clearing
+   * it at each of the six exits would be six places to forget.
+   */
+  const closeMobileSection = () => setMobileSection(null);
 
   /*
-   * The one entry into a sheet. `coveId` defaults to `null`, which is what
-   * makes the dock's Coves press land on the cove root list every time —
-   * behaviour `shell/public.tsx` shipped with, and the only reason the shell
-   * ever stored a restore id.
+   * The one entry into a sheet, and the single site that resets the drill-in.
+   * `coveId` defaults to `null`, which *is* the product rule "pressing Coves in
+   * the dock always lands on the cove root list" — stated once, where it can be
+   * read, instead of inferred from what every exit remembered to clear.
    */
   const openMobileSection: OpenMobileSection = (section, coveId = null) => {
     setMobileSection(section);

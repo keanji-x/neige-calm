@@ -27,6 +27,9 @@ import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const COVE = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
+/* A second cove with no waves: the drill-in the shell must *replace*, not
+   inherit, when a report hands it the cove to return to. */
+const OTHER_COVE = { id: 'c2', name: 'Second', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const WAVE = {
   id: 'w1', cove_id: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
   archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
@@ -41,8 +44,9 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 function setup(path: string) {
   const transport: ApiTransportPort = {
     send(request) {
-      if (request.path === '/api/coves') return Promise.resolve(ok([COVE]));
+      if (request.path === '/api/coves') return Promise.resolve(ok([COVE, OTHER_COVE]));
       if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([WAVE]));
+      if (request.path === '/api/coves/c2/waves') return Promise.resolve(ok([]));
       if (request.path === '/api/waves/w1') return Promise.resolve(ok({ wave: WAVE, cards: [CARD], overlays: [] }));
       if (request.path === '/api/waves/w1/report') return Promise.resolve(ok({ taskDiagnostics: [] }));
       return Promise.resolve(ok([]));
@@ -69,7 +73,8 @@ const waveActions = () => screen.getByRole('button', { name: 'Wave actions' });
 /*
  * The dock is `inert` + `aria-hidden` whenever a secondary page is showing, so
  * a role query cannot see it — which is the contract working, not a hole. Its
- * buttons are addressed by their label instead, and pressed with `fireEvent`.
+ * buttons are addressed by their label instead, and every press below happens
+ * in a state where the dock is genuinely visible and genuinely clickable.
  */
 function dockButton(label: string): HTMLElement {
   const found = [...document.querySelectorAll<HTMLElement>('nav[aria-label="Primary"] button')]
@@ -180,22 +185,32 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
     expect(dock()?.getAttribute('aria-hidden')).toBe('true');
   });
 
+  /*
+   * The whole reason the shell resets the drill-in on *entry* rather than at
+   * every exit (#1191 §2.2). This is the reader's real gesture sequence, and
+   * every click here lands on a control that is visible at the moment it is
+   * pressed: closing the sheet leaves the selection behind — nothing reads it
+   * while `mobileSection` is not `'coves'` — and pressing Coves again must not
+   * reopen wherever they last were.
+   */
   it('sends the dock’s Coves press to the cove root list, never to the last drill-in', async () => {
-    setup('/wave/w1?from=cove');
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Waves' }));
+    // Today, not a report: the wave route is a secondary page on its own, and
+    // this sequence has to be one a reader can perform with the dock in view.
+    setup('/');
+    await waitFor(() => { fireEvent.click(dockButton('Coves')); screen.getByRole('dialog', { name: 'Coves' }); });
+    await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
     expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
+    expect(dock()?.getAttribute('aria-hidden')).toBe('true');
 
-    /*
-     * `fireEvent`, because the dock is `inert` while a secondary page shows and
-     * this is the state the reset exists for: the shell held a *restore id*
-     * that outlived the sheet, and pressing Coves had to clear it or the sheet
-     * reopened wherever the reader last was.
-     */
-    fireEvent.click(dockButton('Coves'));
-    await waitFor(() => { expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy(); });
-    expect(screen.queryByRole('heading', { name: 'Product' })).toBeNull();
-    // Back to the root list means back to a primary page: the dock returns.
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Coves' })).toBeNull();
+    // The sheet is closed and the drill-in is deliberately still remembered;
+    // nothing reads it while the section is not Coves, so the dock is back.
     expect(dock()?.getAttribute('aria-hidden')).toBeNull();
+
+    await userEvent.click(dockButton('Coves'));
+    expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Product' })).toBeNull();
   });
 
   it('defaults a report with no ?from= back to Pages', async () => {
@@ -204,25 +219,31 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
     expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
   });
 
+  it('replaces a remembered drill-in with the cove the report returns to', async () => {
+    setup('/');
+    await waitFor(() => { fireEvent.click(dockButton('Coves')); screen.getByRole('dialog', { name: 'Coves' }); });
+    await userEvent.click(await screen.findByRole('button', { name: /Second/ }));
+    expect(screen.getByRole('heading', { name: 'Second' })).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    // A report reached from a cove hands back its *own* cove (§1.2, derived
+    // from `wave.coveId`), which has to win over whatever the sheet still held.
+    await userEvent.click(dockButton('Coves'));
+    await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
+    await userEvent.click(await screen.findByRole('button', { name: /Responsive mobile UI/ }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Back to Waves' }));
+    expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Second' })).toBeNull();
+  });
+
   it('writes ?from= when a sheet is what opened the wave', async () => {
     const router = setup('/');
     await waitFor(() => { fireEvent.click(dockButton('Coves')); screen.getByRole('dialog', { name: 'Coves' }); });
     await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
     await userEvent.click(await screen.findByRole('button', { name: /Responsive mobile UI/ }));
     await waitFor(() => { expect(href(router)).toBe('/wave/w1?from=cove'); });
-    // And the sheet's drill-in went with the navigation: the shell's selection
-    // no longer unmounts with `MobileCoves`, so the exit clears it (§2.2).
+    // The report is a secondary page whatever the closed sheet still remembers.
     expect(dock()?.getAttribute('aria-hidden')).toBe('true');
   });
 
-  it('clears the cove drill-in on Escape', async () => {
-    setup('/wave/w1?from=cove');
-    await userEvent.click(await screen.findByRole('button', { name: 'Back to Waves' }));
-    expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
-
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByRole('dialog', { name: 'Coves' })).toBeNull();
-    fireEvent.click(dockButton('Coves'));
-    expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
-  });
 });
