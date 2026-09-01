@@ -64,12 +64,7 @@ struct Fx {
 
 /// Write a plugin tree (`manifest.json` + `bin/stub` symlink) under
 /// `plugins_dir/<id>` and return its path.
-fn write_plugin_with_args(
-    plugins_dir: &Path,
-    id: &str,
-    stub_bin: &str,
-    args: &[&str],
-) -> PathBuf {
+fn write_plugin_with_args(plugins_dir: &Path, id: &str, stub_bin: &str, args: &[&str]) -> PathBuf {
     let dir = plugins_dir.join(id);
     let bin_dir = dir.join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
@@ -389,7 +384,11 @@ async fn a1_restart_is_refused_while_the_lock_is_held() {
     let before = snapshot(&fx, ID).await;
     let held = fx.host.try_lock_lifecycle(ID).expect("lock is free");
 
-    let err = fx.host.restart(ID).await.expect_err("restart must be refused");
+    let err = fx
+        .host
+        .restart(ID)
+        .await
+        .expect_err("restart must be refused");
     assert_busy_host(&err, "restart");
     assert_eq!(snapshot(&fx, ID).await, before);
     assert_eq!(
@@ -399,7 +398,10 @@ async fn a1_restart_is_refused_while_the_lock_is_held() {
     );
 
     drop(held);
-    fx.host.restart(ID).await.expect("restart succeeds on retry");
+    fx.host
+        .restart(ID)
+        .await
+        .expect("restart succeeds on retry");
     assert_ne!(
         fx.host.status(ID).await.unwrap().pid,
         pid_before,
@@ -512,7 +514,11 @@ async fn a1_enable_is_refused_while_the_lock_is_held() {
     let before = snapshot(&fx, ID).await;
     let held = fx.host.try_lock_lifecycle(ID).expect("lock is free");
 
-    let err = fx.host.enable(ID).await.expect_err("enable must be refused");
+    let err = fx
+        .host
+        .enable(ID)
+        .await
+        .expect_err("enable must be refused");
     assert_busy_calm(&err, "enable");
     assert_eq!(snapshot(&fx, ID).await, before, "a refused enable did work");
 
@@ -533,12 +539,24 @@ async fn a1_disable_is_refused_while_the_lock_is_held() {
     let before = snapshot(&fx, ID).await;
     let held = fx.host.try_lock_lifecycle(ID).expect("lock is free");
 
-    let err = fx.host.disable(ID).await.expect_err("disable must be refused");
+    let err = fx
+        .host
+        .disable(ID)
+        .await
+        .expect_err("disable must be refused");
     assert_busy_calm(&err, "disable");
-    assert_eq!(snapshot(&fx, ID).await, before, "a refused disable did work");
+    assert_eq!(
+        snapshot(&fx, ID).await,
+        before,
+        "a refused disable did work"
+    );
 
     drop(held);
-    let plug = fx.host.disable(ID).await.expect("disable succeeds on retry");
+    let plug = fx
+        .host
+        .disable(ID)
+        .await
+        .expect("disable succeeds on retry");
     assert!(!plug.enabled);
     assert!(fx.host.status(ID).await.is_none());
 }
@@ -581,7 +599,11 @@ async fn a1_reload_is_refused_while_the_lock_is_held() {
     let before = snapshot(&fx, ID).await;
     let held = fx.host.try_lock_lifecycle(ID).expect("lock is free");
 
-    let err = fx.host.reload(ID).await.expect_err("reload must be refused");
+    let err = fx
+        .host
+        .reload(ID)
+        .await
+        .expect_err("reload must be refused");
     assert_busy_calm(&err, "reload");
     assert_eq!(snapshot(&fx, ID).await, before, "a refused reload did work");
 
@@ -688,9 +710,16 @@ async fn a12a_every_pair_of_entry_points_settles() {
             Op::Spawn => host.spawn(ID).await.map_err(|e| e.to_string()),
             Op::Stop => host.stop(ID).await.map_err(|e| e.to_string()),
             Op::Restart => host.restart(ID).await.map_err(|e| e.to_string()),
-            Op::Rotate => host.rotate_plugin_token(ID).await.map_err(|e| e.to_string()),
+            Op::Rotate => host
+                .rotate_plugin_token(ID)
+                .await
+                .map_err(|e| e.to_string()),
             Op::Enable => host.enable(ID).await.map(|_| ()).map_err(|e| e.to_string()),
-            Op::Disable => host.disable(ID).await.map(|_| ()).map_err(|e| e.to_string()),
+            Op::Disable => host
+                .disable(ID)
+                .await
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
             Op::Reload => host.reload(ID).await.map(|_| ()).map_err(|e| e.to_string()),
             Op::Uninstall => host.uninstall(ID).await.map_err(|e| e.to_string()),
         }
@@ -714,7 +743,10 @@ async fn a12a_every_pair_of_entry_points_settles() {
                 .iter()
                 .filter(|r| matches!(r, Err(m) if m.contains("busy")))
                 .count();
-            assert!(busy <= 1, "{a:?} + {b:?}: both reported busy ({ra:?}, {rb:?})");
+            assert!(
+                busy <= 1,
+                "{a:?} + {b:?}: both reported busy ({ra:?}, {rb:?})"
+            );
 
             // And the final runtime state must be one of the two operations'
             // legitimate terminals, never a torn one.
@@ -1041,7 +1073,10 @@ async fn a10_uninstall_during_backoff_prevents_the_respawn() {
     )
     .await;
 
-    fx.host.uninstall(ID).await.expect("uninstall during backoff");
+    fx.host
+        .uninstall(ID)
+        .await
+        .expect("uninstall during backoff");
 
     sleep(Duration::from_millis(BACKOFF + 1_500)).await;
     assert_eq!(fx.host.status(ID).await.map(|s| s.status), None);
@@ -1173,7 +1208,10 @@ async fn a14b_a_busy_lock_at_the_end_of_backoff_does_not_strand_the_plugin() {
     .await;
 
     // Hold the lock straight across the moment the backoff elapses.
-    let held = fx.host.try_lock_lifecycle(ID).expect("lock is free mid-backoff");
+    let held = fx
+        .host
+        .try_lock_lifecycle(ID)
+        .expect("lock is free mid-backoff");
     sleep(Duration::from_millis(1_600)).await;
     let ev = state_events(&fx).await;
     assert_eq!(
@@ -1253,7 +1291,9 @@ impl LifecycleDb for FaultyDb {
     async fn enabled_row(&self, id: &str) -> Result<Option<bool>, CalmError> {
         if self.fail_next.swap(false, Ordering::SeqCst) {
             self.failures.fetch_add(1, Ordering::SeqCst);
-            return Err(CalmError::Internal("injected plugin-row read failure".into()));
+            return Err(CalmError::Internal(
+                "injected plugin-row read failure".into(),
+            ));
         }
         while self.paused.load(Ordering::SeqCst) {
             self.resume.notified().await;
@@ -1299,7 +1339,11 @@ async fn a15a_a_plugin_row_read_failure_defers_the_respawn_and_recovery_resumes_
         "a read failure must not be treated as `probably still enabled`"
     );
     assert_eq!(
-        state_events(&fx).await.iter().filter(|s| *s == "running").count(),
+        state_events(&fx)
+            .await
+            .iter()
+            .filter(|s| *s == "running")
+            .count(),
         1,
         "nothing may have respawned while the row could not be read"
     );
@@ -1516,7 +1560,10 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     {
         // A runtime registry write needs the id's guard — `try_lock_lifecycle`
         // is `pub` for exactly this (design §5 R7).
-        let g = fx.host.try_lock_lifecycle(ID).expect("lock is free mid-backoff");
+        let g = fx
+            .host
+            .try_lock_lifecycle(ID)
+            .expect("lock is free mid-backoff");
         fx.host.registry_insert(&g, echo_manifest, Some(dir));
     }
     fx.host.spawn(ID).await.expect("explicit revive");

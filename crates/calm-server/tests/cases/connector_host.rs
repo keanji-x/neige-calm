@@ -2012,7 +2012,11 @@ async fn uninstall_is_refused_while_a_connector_spawn_is_in_flight() {
 
     // Fail closed: DB row, registry entry and token row are all untouched.
     assert!(
-        b.repo.plugin_get_by_id(CONNECTOR_ID).await.unwrap().is_some(),
+        b.repo
+            .plugin_get_by_id(CONNECTOR_ID)
+            .await
+            .unwrap()
+            .is_some(),
         "a refused uninstall must not delete the plugin row"
     );
     assert!(
@@ -2035,7 +2039,11 @@ async fn uninstall_is_refused_while_a_connector_spawn_is_in_flight() {
     assert!(host.registry().get(CONNECTOR_ID).is_none());
     assert!(host.registry().is_empty());
     assert!(
-        b.repo.plugin_get_by_id(CONNECTOR_ID).await.unwrap().is_none(),
+        b.repo
+            .plugin_get_by_id(CONNECTOR_ID)
+            .await
+            .unwrap()
+            .is_none(),
         "the plugin row must be gone"
     );
     assert!(
@@ -2104,7 +2112,10 @@ async fn reload_is_refused_while_a_spawn_is_in_flight_then_repoints_the_connecto
         .expect("spawn task panicked")
         .expect("spawn must succeed");
 
-    assert!(new_stub.methods().is_empty(), "nothing has hit the new endpoint yet");
+    assert!(
+        new_stub.methods().is_empty(),
+        "nothing has hit the new endpoint yet"
+    );
 
     host.reload(CONNECTOR_ID)
         .await
@@ -2581,7 +2592,9 @@ async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() 
         .expect("spawn must succeed");
 
     // Explicit retry — the loser did not queue.
-    host.stop(CONNECTOR_ID).await.expect("stop must succeed now");
+    host.stop(CONNECTOR_ID)
+        .await
+        .expect("stop must succeed now");
 
     assert!(host.status(CONNECTOR_ID).await.is_none());
     let states = plugin_state_events(&b).await;

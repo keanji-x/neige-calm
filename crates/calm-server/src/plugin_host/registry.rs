@@ -475,7 +475,11 @@ mod tests {
     fn insert_and_remove_in_memory() {
         let reg = PluginRegistry::empty();
         let m = Manifest::parse(VALID).unwrap();
-        reg.insert(&g("test.valid"), m.clone(), Some(PathBuf::from("/tmp/fake")));
+        reg.insert(
+            &g("test.valid"),
+            m.clone(),
+            Some(PathBuf::from("/tmp/fake")),
+        );
         assert_eq!(reg.len(), 1);
         assert_eq!(
             reg.install_path("test.valid"),
@@ -559,7 +563,11 @@ mod tests {
     fn list_returns_all() {
         let reg = PluginRegistry::empty();
         reg.insert(&g("test.valid"), Manifest::parse(VALID).unwrap(), None);
-        reg.insert(&g("test.second"), Manifest::parse(SECOND_VALID).unwrap(), None);
+        reg.insert(
+            &g("test.second"),
+            Manifest::parse(SECOND_VALID).unwrap(),
+            None,
+        );
         let mut ids: Vec<String> = reg.list().into_iter().map(|m| m.id).collect();
         ids.sort();
         assert_eq!(
