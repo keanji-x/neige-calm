@@ -660,6 +660,15 @@ fn event_warrants_spec_push_covers_push_allowlist() {
         &ActorId::Kernel,
         &write
     ));
+    // #1189 §3.4 — an assistant session editing the report is a *different*
+    // session writing the spec's work product, so it wakes the spec for the
+    // same reason a user or plugin edit does. Leaving it out would mean the
+    // spec keeps reasoning from a report that changed under it.
+    assert!(event_warrants_spec_push(
+        &report(EditAuthor::Assistant),
+        &ActorId::AiCodex(worker.clone()),
+        &write
+    ));
     assert!(!event_warrants_spec_push(
         &report(EditAuthor::Spec),
         &ActorId::User,

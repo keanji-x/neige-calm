@@ -1862,7 +1862,14 @@ fn prepare_fork_report(
     Ok((payload, doc, declarations, diagnostics))
 }
 
-pub(crate) fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
+/// The payload production writes on a spec-harness card.
+///
+/// `pub` rather than `pub(crate)` so integration fixtures that seed a spec card
+/// row directly can mint the production shape instead of re-typing a partial
+/// literal: `{"schemaVersion": 1}` alone drops `codex_source` and
+/// `spec_harness`, and a future backend reader of either key would then find
+/// the fixture silently unlike production (#1189 review F2).
+pub fn spec_harness_card_payload(goal: Option<String>) -> serde_json::Value {
     let mut card_payload = serde_json::Map::new();
     card_payload.insert(
         "schemaVersion".into(),

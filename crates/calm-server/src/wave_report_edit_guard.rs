@@ -85,6 +85,76 @@ pub(crate) fn normalize_report_op(
     })
 }
 
+/// #1189 §3.2a P2 — an assistant's write must leave the task declarations
+/// exactly as it found them.
+///
+/// ## Why this is a separate rule and not "one more author in the table"
+///
+/// The provenance rules below already stop an assistant from *creating*
+/// a task (no attribution name), from touching a **user**-controlled one,
+/// and from dropping a live task through a whole-document write. What they
+/// leave open is the middle of the range: editing a **spec**-declared live
+/// task in place (flipping `ready`, rewriting `goal`) and block-level
+/// deleting one. Both feed `task_projection`, i.e. both can dispatch or
+/// re-dispatch a worker — which is the entire thing §3.2 says an assistant
+/// must not be able to reach. `#1180` deliberately covers only the
+/// `declared_by/tombstoned_by == "user"` half, so nothing else covers this.
+///
+/// ## The criterion is per-block equivalence, not "no task blocks after"
+///
+/// `write_markdown` realigns block identity through markers/LCS. A
+/// prose-only rewrite that happens to carry the task fences through
+/// unchanged must succeed — an assistant editing the prose *around* a
+/// task list is the ordinary case, not an attack. So the check is:
+/// **the task blocks, keyed by id, are the same set with the same
+/// content before and after**. Order is not content (a `MoveBlock` never
+/// bumps a rev and is allowed for every non-user author already), and
+/// `rev` is not compared for the same reason a no-op content write is not
+/// a modification. Anything that adds, removes, re-ids, retypes, or
+/// rewrites a task block trips it.
+fn guard_assistant_leaves_task_blocks_alone(
+    before: &[ReportBlock],
+    after: &[ReportBlock],
+) -> Result<(), CalmError> {
+    fn tasks_by_id(blocks: &[ReportBlock]) -> HashMap<&str, (&str, &Value)> {
+        blocks
+            .iter()
+            .filter(|block| is_task(block))
+            .map(|block| (block.id.as_str(), (block.kind.as_str(), &block.payload)))
+            .collect()
+    }
+
+    let before_tasks = tasks_by_id(before);
+    let after_tasks = tasks_by_id(after);
+
+    for (id, content) in &after_tasks {
+        match before_tasks.get(id) {
+            None => {
+                return Err(bad(format!(
+                    "an assistant may not create task block {id}; task declarations \
+                     are the spec's and the user's to write"
+                )));
+            }
+            Some(was) if was != content => {
+                return Err(bad(format!(
+                    "an assistant may not modify task block {id}; its declaration \
+                     must survive the write byte-for-byte"
+                )));
+            }
+            Some(_) => {}
+        }
+    }
+    for id in before_tasks.keys() {
+        if !after_tasks.contains_key(id) {
+            return Err(bad(format!(
+                "an assistant may not delete task block {id}; only the declaring \
+                 author may retire a task"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Enforce task provenance and user-only control after every report operation.
 ///
 /// `block_delete_id` is the block a *block-level* delete op targeted (after
@@ -216,6 +286,14 @@ pub(crate) fn guard_task_declarations(
                 )));
             }
         }
+    }
+    // Runs LAST on purpose. Everything above is the shared provenance
+    // contract, and where it already has an answer for an assistant write
+    // (creating a task with no attribution name; laundering a deletion
+    // through a whole-document rewrite) its message is the more specific
+    // one. This adds only the cases it leaves open (§3.2a P2).
+    if author == EditAuthor::Assistant {
+        guard_assistant_leaves_task_blocks_alone(before, after)?;
     }
     Ok(())
 }
@@ -371,6 +449,75 @@ mod tests {
             None,
         )
         .expect("Spec may still declare its own task block");
+    }
+
+    /// #1189 §3.2a P2 — the gap the provenance table leaves open, and the
+    /// case it must NOT close by accident.
+    ///
+    /// The first two assertions are the whole reason P2 exists as its own
+    /// rule: `declared_by == "spec"` blocks are invisible to `#1180`'s
+    /// user-only protection, and a live task's `ready`/`goal` feed
+    /// dispatchability. The last one is the trap on the other side — a
+    /// guard written as "no task blocks after an assistant write" would
+    /// reject every prose edit made in a report that happens to hold a
+    /// task list.
+    #[test]
+    fn assistant_may_not_touch_a_spec_declared_task_but_may_leave_it_alone() {
+        let spec = block("b_task", live("spec"));
+        let user = block("b_user_task", live("user"));
+
+        let mut rewritten = spec.clone();
+        rewritten.payload["goal"] = json!("assistant rewrite");
+        let error = guard_task_declarations(
+            std::slice::from_ref(&spec),
+            &[rewritten],
+            EditAuthor::Assistant,
+            None,
+        )
+        .expect_err("an assistant may not rewrite a spec-declared task");
+        let CalmError::BadRequest(message) = &error else {
+            panic!("expected a 400, got {error:?}");
+        };
+        assert!(
+            message.contains("may not modify task block"),
+            "the refusal must be P2's, not an incidental attribution \
+             mismatch: {message}"
+        );
+
+        // Deleting one — including through the block-level exemption the
+        // #1179 rule grants every *other* author.
+        let error = guard_task_declarations(
+            std::slice::from_ref(&spec),
+            &[],
+            EditAuthor::Assistant,
+            Some("b_task"),
+        )
+        .expect_err("an assistant may not use the block-level delete exemption");
+        let CalmError::BadRequest(message) = &error else {
+            panic!("expected a 400, got {error:?}");
+        };
+        assert!(message.contains("may not delete task block"), "{message}");
+        // Control: the exemption is real for the spec.
+        guard_task_declarations(
+            std::slice::from_ref(&spec),
+            &[],
+            EditAuthor::Spec,
+            Some("b_task"),
+        )
+        .expect("the block-level delete exemption still works for the spec");
+
+        // And the positive: both declarations carried through untouched,
+        // prose (which this diff does not even model) free to change.
+        guard_task_declarations(
+            &[spec.clone(), user.clone()],
+            &[user, spec],
+            EditAuthor::Assistant,
+            None,
+        )
+        .expect(
+            "task blocks that survive the write unchanged — in any order — \
+             must not make the whole write fail",
+        );
     }
 
     #[test]
