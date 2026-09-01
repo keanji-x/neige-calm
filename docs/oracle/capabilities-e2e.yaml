@@ -1067,8 +1067,8 @@
   why: >
     wave-create-auto-match.spec.ts:112-120 — anchored on the testid so the locator survives
     copy tweaks; the visible copy starts with "Auto-matched to cove".
-  source: web/e2e/wave-create-auto-match.spec.ts:112-120
-  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:117
+  source: web/e2e/wave-create-auto-match.spec.ts:128-136
+  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:133
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -1652,8 +1652,8 @@
     a11y-keyboard.spec.ts:717-722 — the landmark is what lets role-scoped queries disambiguate
     the row from the sidebar nav button of the same name; the row being a real button (not a
     div) is the #127 nested-interactive fix.
-  source: web/e2e/a11y-keyboard.spec.ts:330-341
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:724
+  source: web/e2e/a11y-keyboard.spec.ts:353-364
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:747
   owner_slice: features/cove/page
   intentional_omission: false
   runtime_layer: features
@@ -1818,8 +1818,8 @@
   why: >
     a11y-keyboard.spec.ts:595-617 (slice 2 focus trap) — containment is measured against the
     outer `.modal-panel` precisely because the browser dialog lives INSIDE it.
-  source: web/e2e/a11y-keyboard.spec.ts:595-617
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  source: web/e2e/a11y-keyboard.spec.ts:618-640
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:554
   owner_slice: ui/dialog/modal
   intentional_omission: false
   runtime_layer: ui
@@ -1924,8 +1924,8 @@
   why: >
     a11y-keyboard.spec.ts:696-698,788-812 — the swap is optimistic in cache and confirmed
     asynchronously by the server ack, so assertions must wait on both halves.
-  source: web/e2e/a11y-keyboard.spec.ts:788-812
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:793
+  source: web/e2e/a11y-keyboard.spec.ts:811-835
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:816
   owner_slice: features/wave/list
   intentional_omission: false
   runtime_layer: features
@@ -1943,8 +1943,8 @@
     a11y-keyboard.spec.ts:814-822 — assertions must read `is-active`, NOT `toBeFocused`: the
     close button inside the active item can briefly capture focus after an optimistic
     re-render, and `is-active`/`aria-checked` are what AT actually consumes.
-  source: web/e2e/a11y-keyboard.spec.ts:814-827
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:825
+  source: web/e2e/a11y-keyboard.spec.ts:837-850
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:848
   owner_slice: features/wave/list
   intentional_omission: false
   runtime_layer: features
@@ -2254,8 +2254,8 @@
   why: >
     a11y-axe.spec.ts:400-404 — the roving-tabindex hook reads its internal `activeIndex` to
     decide which item to activate, so a synthetic keypress on the wrong item is a no-op.
-  source: web/e2e/a11y-axe.spec.ts:400-407
-  authoritative_test: web/e2e/a11y-axe.spec.ts:405
+  source: web/e2e/a11y-axe.spec.ts:403-410
+  authoritative_test: web/e2e/a11y-axe.spec.ts:408
   owner_slice: app/shell/add-panel
   intentional_omission: false
   runtime_layer: app
@@ -2672,7 +2672,7 @@
   why: >
     a11y-wave-cove-ops.spec.ts:896-919 (migration 0015 `ON DELETE CASCADE`) — orphaned folder
     claims would permanently block those paths from being claimed by any future cove.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:914-919
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:918-923
   authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:847
   owner_slice: features/cove/folders
   intentional_omission: false
@@ -4212,8 +4212,8 @@
   why: >
     helpers/reset.ts:148-153 — the renderer-free card used everywhere a populated card surface is
     needed without a terminal/codex daemon.
-  source: web/e2e/helpers/reset.ts:154-176
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:739
+  source: web/e2e/helpers/reset.ts:164-186
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:762
   owner_slice: systems/cards/iframe
   intentional_omission: false
   runtime_layer: systems
