@@ -29,9 +29,9 @@ import {
 } from '../../../../core/domain/settings.ts';
 import {
   createTerminalCardOperation, createWaveOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
-  updateWaveOperation, waveActivityFrom, waveDetailOperation, wavesInCoveOperation,
+  updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
   type CardWire, type NewTerminalCardBody, type NewWaveBody, type OverlayWire, type Wave,
-  type WaveDetailWire, type WavePatchBody,
+  type WaveDetailWire, type WavePatchBody, type WaveTemplate,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
@@ -99,6 +99,11 @@ export const queryKeys = Object.freeze({
   waveReportPrefix: () => ['wave-report'] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  /* #1209 — the New wave picker's list. Not invalidated by any event: the
+     kernel's template keys are compile-time constants and the only thing that
+     can move under them is a plugin starting or stopping, which changes an
+     `input_schema` the dialog reads when it opens. */
+  waveTemplates: () => ['wave-templates'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
   /* The event bridge can only invalidate the `['cove-conversations']` prefix —
@@ -377,6 +382,42 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
   return {
     queryKey: queryKeys.settings(),
     queryFn: (): Promise<SettingsBag> => runOperation(transport, settingsOperation(), unauthorized),
+  };
+}
+
+/**
+ * #1209 — templates for the New wave dialog.
+ *
+ * `retry: false` and a plain failure are the point: the dialog degrades to
+ * Blank-only when this read fails, and a retrying query would leave the entry
+ * point spinning instead. Creating a wave must never depend on this list.
+ */
+export function waveTemplatesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.waveTemplates(),
+    queryFn: (): Promise<WaveTemplate[]> => runOperation(transport, waveTemplatesOperation(), unauthorized),
+    retry: false,
+  };
+}
+
+export type WaveTemplates = Readonly<{
+  /** Never `undefined`: pending and failed both read as "Blank only". */
+  templates: WaveTemplate[];
+  /** A notice for the dialog, not a blocker. `null` while pending. */
+  error: string | null;
+}>;
+
+/**
+ * The New wave dialog's template list, collapsed to the two things the dialog
+ * can act on. A hook and not raw `useQuery` at the call site so the shell's
+ * contract tests keep mocking exactly one module (`providers/queries`) —
+ * the same shape `useWorkspace` and the mutation hooks already have.
+ */
+export function useWaveTemplates(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): WaveTemplates {
+  const query = useQuery(waveTemplatesQueryOptions(transport, unauthorized));
+  return {
+    templates: query.data ?? [],
+    error: query.isError ? 'Could not load templates.' : null,
   };
 }
 

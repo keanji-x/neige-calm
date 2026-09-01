@@ -23,6 +23,8 @@ mod wave_pin;
 mod wave_report_fork;
 #[path = "cases/wave_template_overlay.rs"]
 mod wave_template_overlay;
+#[path = "cases/wave_templates_read.rs"]
+mod wave_templates_read;
 #[path = "cases/wave_vcs.rs"]
 mod wave_vcs;
 #[path = "cases/wave_workflow_templates.rs"]

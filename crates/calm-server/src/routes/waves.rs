@@ -914,7 +914,10 @@ pub(crate) async fn create_wave(
 /// `bound_workflow_descriptor` on the spec harness side. `None` covers
 /// unknown, stopped, and untrusted workflows alike (the route
 /// deliberately does not distinguish them in the 400).
-async fn resolve_trusted_workflow(s: &RouteState, workflow_id: &str) -> Option<Manifest> {
+pub(crate) async fn resolve_trusted_workflow(
+    s: &RouteState,
+    workflow_id: &str,
+) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
     s.plugin.registry().list().into_iter().find(|manifest| {
         running_plugin_ids.contains(&manifest.id)
