@@ -163,6 +163,20 @@ pub enum HostError {
     #[error("connector `{plugin_id}` is unavailable: {reason}")]
     ConnectorUnavailable { plugin_id: String, reason: String },
 
+    /// #1196 §2.5 — the per-id lifecycle lock was held by another operation.
+    ///
+    /// **Nothing happened.** Every entry point that can return this takes the
+    /// lock as its first act, so a `LifecycleBusy` answer is inert: no DB row,
+    /// no registry entry, no live-table entry, no token row was touched. That
+    /// is what makes it safe for the caller to simply retry.
+    ///
+    /// Routes render it as a 409 with the code `plugin_busy`, which is
+    /// deliberately *not* `plugin_conflict`: the latter is permanent for the
+    /// request as written (duplicate id, workflow id already held) while this
+    /// one clears on its own. See [`crate::error::CalmError::PluginBusy`].
+    #[error("plugin `{0}` is busy: another lifecycle operation holds it")]
+    LifecycleBusy(String),
+
     /// #1164 §2.5 — an operation that only makes sense for a process-backed
     /// `app` plugin was attempted on a connector (e.g. token rotation).
     #[error("plugin `{plugin_id}` has kind `{kind}`, which does not support {operation}")]

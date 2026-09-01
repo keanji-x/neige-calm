@@ -68,6 +68,18 @@ const CRASH_WINDOW_LIMIT: u32 = 5;
 /// Exponential-backoff schedule for respawn: 1, 2, 4, 8, 30, 30, ...
 const BACKOFF_SCHEDULE_MS: &[u64] = &[1_000, 2_000, 4_000, 8_000, 30_000];
 
+/// #1196 §2.6 — how many times the supervisor's third segment re-reads the
+/// plugin row before giving up and leaving the plugin `Crashed`.
+///
+/// Bounded rather than infinite so a permanently dead repo does not leave a
+/// task spinning forever; the price of exhausting it is an observable
+/// `Crashed` state, which is the fail-closed side.
+const LIFECYCLE_DB_READ_RETRIES: u32 = 5;
+
+/// Delay between those retries. Short: the read is one indexed `SELECT`, and
+/// the plugin is sitting in `Crashed` while we wait.
+const LIFECYCLE_DB_READ_RETRY_DELAY: Duration = Duration::from_millis(200);
+
 // ---------------------------------------------------------------------------
 // Runtime status
 // ---------------------------------------------------------------------------
@@ -137,8 +149,37 @@ struct RunningPlugin {
     /// Set true by `stop()` before the wait observation.
     stopping: bool,
     /// Cumulative crash count within the current rolling window.
+    ///
+    /// #1196 §1.3 — this used to be reset to zero on every respawn, because
+    /// the supervisor removed the live entry *before* calling `spawn`, and the
+    /// spawn path inherited the counter by reading `live.get(id)` — which was
+    /// then necessarily `None`. The effect was that `crashes_in_window` was
+    /// permanently 1, `CRASH_WINDOW_LIMIT` never fired, and the backoff never left its
+    /// first step. The supervisor now carries the pair explicitly across the
+    /// remove (see [`CrashWindow`]).
     crashes_in_window: u32,
     window_started: Instant,
+    /// #1196 §2.6 — identity of THIS run instance, allocated from
+    /// [`PluginHost::run_epoch_seq`] immediately before the live insert and
+    /// captured by the supervisor task at creation time.
+    ///
+    /// It answers exactly one question: "is the entry I am looking at still the
+    /// one I was supervising?" A deletion counter cannot: the supervisor's own
+    /// third segment removes the entry, `HashMap::insert` replaces entries
+    /// without any removal at all, and a counter hung off the lock cell would
+    /// fail *open* the moment somebody dropped the cell on uninstall.
+    ///
+    /// It deliberately does NOT answer "is this plugin still enabled" — that is
+    /// a DB fact, and §2.6's third segment reads it separately, fail-closed.
+    run_epoch: u64,
+    /// #1196 §2.6 — how many crashes this run instance has been through,
+    /// monotonic for the life of the entry.
+    ///
+    /// Separate from [`Self::crashes_in_window`] on purpose: that one is reset
+    /// whenever the rolling window expires, so a supervisor comparing it across
+    /// its backoff sleep could see the same number for two different crashes
+    /// and wrongly conclude nothing had happened.
+    crash_attempt: u64,
     /// Supervisor task handle. Aborted on graceful stop so we don't leak.
     supervisor: Option<tokio::task::JoinHandle<()>>,
     /// Slice C router task that drains inbound MCP requests and dispatches
@@ -292,8 +333,21 @@ impl Default for BackoffConfig {
     }
 }
 
+/// #1196 §2.6 — the crash-window counters carried explicitly across the
+/// supervisor's `live.remove` into the respawn.
+///
+/// The old code expected `spawn` to inherit them by reading the live entry it
+/// was about to replace, which the supervisor had already deleted. Passing them
+/// as a value is the whole fix: there is no window in which the counters live
+/// nowhere.
+#[derive(Debug, Clone, Copy)]
+struct CrashWindow {
+    crashes: u32,
+    started: Instant,
+}
+
 pub struct PluginHost {
-    pub registry: Arc<PluginRegistry>,
+    registry: Arc<PluginRegistry>,
     /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` —
     /// the host only does eventized writes + out-of-domain plugin/token/kv
     /// writes + reads. Raw sync-domain writes (`cove_*`, `wave_*`,
@@ -323,51 +377,62 @@ pub struct PluginHost {
     /// #1164 §2.7(1) — recorded order of the two connector-spawn steps whose
     /// RELATIVE ORDER is the invariant. See [`Self::connector_spawn_order`].
     spawn_order: std::sync::Mutex<HashMap<String, ConnectorSpawnOrder>>,
-    /// Per-plugin-id serialization of "decide what the state is" with "emit
-    /// it". **Every** emission takes it, because [`Self::emit_state`] is the
-    /// only way to emit and [`Self::emit_state`] is the thing that acquires it.
+    /// #1196 S1 — **the** per-plugin-id lifecycle lock.
     ///
-    /// The process table alone cannot do this. A read of `live` is a SNAPSHOT:
-    /// [`Self::reaffirm_running`] takes the table lock, sees `Running`, drops
-    /// the lock, and only then awaits an emission. In that window a concurrent
-    /// [`Self::stop`] can remove the entry and emit `Disabled` — leaving the
-    /// persisted and broadcast state falsely `Running` for a connector that is
-    /// gone. Holding a *sync* mutex across those awaits is not an option
-    /// (emission writes to the repo), hence async ones.
+    /// One id's whole lifecycle vocabulary — install / enable / disable /
+    /// uninstall / reload / spawn / stop / restart / token rotation / crash
+    /// respawn — runs inside one [`LifecycleGuard`] lifetime, and so does every
+    /// `plugin.state` emission that operation produces.
     ///
-    /// **Round-5: the lock moved from the two call sites into the emitter.**
-    /// It used to be taken by `reaffirm_running` and `stop` only, which left
-    /// three emitters outside it — `spawn_mcp_http`'s trailing `Running`, the
-    /// app-plugin spawn's `Running`, and `publish_unavailable`'s `Unavailable`.
-    /// Any of those could start, `stop` could then remove the entry and persist
-    /// `Disabled` under the lock, and the older unserialized emission would
-    /// commit last: byte-for-byte the bug `reaffirm_running` was added to fix,
-    /// reachable from three other doors. A rule that every future emitter must
-    /// remember to obey is not an invariant; owning the lock inside the emitter
-    /// is. The two decide-and-emit paths take the guard themselves and hand it
-    /// down ([`Self::emit_state_under`]), which is also why the guard is a
-    /// value and not an implicit re-entrant lock.
+    /// **Why one lock and not two.** This map used to be `state_emit`, which
+    /// serialized emissions only. That left the two halves of every composite
+    /// operation splittable: `spawn_mcp_http` could insert a live `Running`
+    /// entry, drop the table lock, and only then await its emission — while a
+    /// concurrent `stop` removed the entry and committed `disabled` in between.
+    /// The live table ended empty while the event log's last word was
+    /// `running`, with no later event to reconcile it. A second lock covering
+    /// "operations" would not have fixed that: it would have reproduced the
+    /// same split one level up, because there would still exist a state in
+    /// which a task holds the operation lock but not the emission lock.
+    /// Widening the emission lock to cover the whole operation is the fix.
     ///
-    /// Keyed per id: two different plugins have nothing to serialize, and one
-    /// global lock would put every plugin's boot emission behind one repo write.
-    /// The map only ever grows by installed-plugin count.
+    /// **Why per-id and not global.** The real cost is runtime, not boot: one
+    /// connector bring-up can take ~30 s, and a global lock would block every
+    /// other plugin's enable/disable for that whole window. (Boot's autospawn
+    /// is a serial `for` loop already, so a global lock would cost it nothing —
+    /// that is not the argument.)
     ///
-    /// **Lock order is one-way and unchanged: `state_emit` → `processes`.**
-    /// Nothing takes the (sync) process-table mutex and then awaits an
-    /// emission — every call site drops its `MutexGuard` before awaiting, which
-    /// the compiler enforces for the `Send` futures in this module — so the two
-    /// locks cannot form a cycle.
-    state_emit: std::sync::Mutex<HashMap<String, Arc<StateEmitCell>>>,
-    /// Instrumentation for the invariant above: the high-water mark of
-    /// emissions inside the critical section **for a single id** at once. `1`
-    /// is the invariant; two different plugins emitting at once is fine and
-    /// deliberately does not register here.
+    /// Two acquisition semantics — see [`Self::try_lock_lifecycle`] (external,
+    /// non-blocking, refuses with [`HostError::LifecycleBusy`]) and
+    /// [`Self::await_lifecycle`] (internal, waits; for callers that have nobody
+    /// to answer and would otherwise silently drop information).
     ///
-    /// Production cost is two atomics per emission. The point is that
-    /// `two_emitters_for_one_connector_never_interleave` can observe the real
-    /// production emitter rather than a fixture that re-implements it: remove
-    /// the lock from `emit_state` and the mark reaches 2, failing that test.
-    state_emit_peak: std::sync::atomic::AtomicUsize,
+    /// **Lock order is one-way: `lifecycle` (async) → `processes` (sync) →
+    /// registry (leaf).** Nothing takes the process-table mutex and then awaits
+    /// the lifecycle lock; registry methods are synchronous, never await and
+    /// never call back into the host. A transaction closure handed to
+    /// `write_in_tx` must never take the lifecycle lock — nothing does today,
+    /// and saying so is what keeps the order acyclic (design §5 R2).
+    ///
+    /// The map only ever grows by installed-plugin count. Entries are never
+    /// removed: a `remove` on uninstall would hand a *fresh* mutex to the next
+    /// caller while an old guard was still alive, which is the one way to
+    /// break mutual exclusion here.
+    lifecycle: std::sync::Mutex<HashMap<String, Arc<LifecycleCell>>>,
+    /// #1196 §2.6 — allocator for per-run-instance identity. Every live-table
+    /// insert of a *running* instance gets a fresh value, which the supervisor
+    /// captures at creation time and re-checks at each of its three decision
+    /// points. See [`RunningPlugin::run_epoch`].
+    run_epoch_seq: std::sync::atomic::AtomicU64,
+    /// #1196 §4 acceptance 15/16 — the narrow DB port the supervisor's third
+    /// segment and the enable/disable pair speak.
+    ///
+    /// It exists because `Arc<dyn RouteRepo>` is ~100 methods wide, has exactly
+    /// one implementation in this repo, and cannot have a one-shot read failure
+    /// injected into it without 600–900 lines of delegating boilerplate
+    /// (`pool().close()` is a *permanent* failure and cannot express "fails
+    /// once, then recovers"). See [`lifecycle::LifecycleDb`].
+    lifecycle_db: Arc<dyn lifecycle::LifecycleDb>,
     /// #1196 S0a — crash-loop / respawn-backoff tunables, defaulted to the
     /// [`CRASH_WINDOW`] / [`CRASH_WINDOW_LIMIT`] / [`BACKOFF_SCHEDULE_MS`]
     /// constants and overridable via [`Self::with_backoff_schedule`].
@@ -380,32 +445,52 @@ pub struct PluginHost {
     backoff: BackoffConfig,
 }
 
-/// Per-id emission lock plus its concurrency probe.
-struct StateEmitCell {
+/// Per-id lifecycle lock. One `Arc<Mutex<()>>` behind a map entry that is
+/// created on first use and never removed (see [`PluginHost::lifecycle`]).
+struct LifecycleCell {
     lock: Arc<Mutex<()>>,
-    inflight: std::sync::atomic::AtomicUsize,
 }
 
-/// Proof that the caller holds the per-id emission lock for `id`.
+/// Proof that the caller holds the lifecycle lock for `id`.
 ///
-/// Only [`PluginHost::lock_state`] constructs one, so a function that takes one
-/// cannot be called without the lock — which is what makes "every emission is
-/// serialized per id" a property of the types rather than of reviewer memory.
-pub struct StateEmitGuard {
+/// Only [`PluginHost::try_lock_lifecycle`] and [`PluginHost::await_lifecycle`]
+/// construct one, so a function that takes one cannot be called without the
+/// lock. That is what makes "the decision and the emission are one step" — and
+/// "an id's composite operations are serialized" — properties of the types
+/// rather than of reviewer memory.
+///
+/// The id is read **off the guard**, never passed as a second parameter: acting
+/// on an id you do not hold the lock on is the original defect one indirection
+/// later, and taking it from the guard makes that unrepresentable.
+pub struct LifecycleGuard {
     id: String,
-    cell: Arc<StateEmitCell>,
     _held: tokio::sync::OwnedMutexGuard<()>,
 }
 
-/// Decrements a cell's in-flight count however the emission ends (including a
-/// cancelled future — the caller's outer `timeout` can drop us mid-write).
-struct InflightGuard(Arc<StateEmitCell>);
+impl LifecycleGuard {
+    /// The plugin id this guard is held for.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 
-impl Drop for InflightGuard {
-    fn drop(&mut self) {
-        self.0
-            .inflight
-            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    /// A guard over a throwaway mutex, for the lib's own unit tests of
+    /// [`PluginRegistry`]'s mutators.
+    ///
+    /// `#[cfg(test)]` is load-bearing here and is NOT the escape hatch design
+    /// §2.3 warns about: that warning is about a `pub` `insert_unlocked` that
+    /// the integration tests in `tests/` (a separate crate, linking the
+    /// non-test lib) would need. `tests/` cannot see this constructor at all,
+    /// so the migration to guard-carrying writes is still forced there — and
+    /// non-test builds of this crate cannot see it either, so no production
+    /// path can acquire one.
+    #[cfg(test)]
+    pub(crate) fn for_test(id: &str) -> Self {
+        let lock = Arc::new(Mutex::new(()));
+        let held = lock.try_lock_owned().expect("fresh mutex");
+        Self {
+            id: id.to_string(),
+            _held: held,
+        }
     }
 }
 
@@ -690,6 +775,8 @@ impl PluginHost {
         write: WriteContext,
     ) -> Self {
         let events_arc = Arc::new(events.clone());
+        let lifecycle_db: Arc<dyn lifecycle::LifecycleDb> =
+            Arc::new(lifecycle::RepoLifecycleDb::new(Arc::clone(&repo)));
         Self {
             registry,
             repo,
@@ -701,10 +788,24 @@ impl PluginHost {
             write,
             processes: std::sync::Mutex::new(ProcessTable::default()),
             spawn_order: std::sync::Mutex::new(HashMap::new()),
-            state_emit: std::sync::Mutex::new(HashMap::new()),
-            state_emit_peak: std::sync::atomic::AtomicUsize::new(0),
+            lifecycle: std::sync::Mutex::new(HashMap::new()),
+            run_epoch_seq: std::sync::atomic::AtomicU64::new(1),
+            lifecycle_db,
             backoff: BackoffConfig::default(),
         }
+    }
+
+    /// #1196 §4 acceptance 15/16 — post-construction override of the narrow
+    /// [`LifecycleDb`](lifecycle::LifecycleDb) port.
+    ///
+    /// A builder for the same reason [`Self::with_backoff_schedule`] is one:
+    /// `new_full` has ~106 call sites and none of them need to know this seam
+    /// exists. Production never calls this — `new_full` installs the repo-backed
+    /// implementation.
+    #[must_use]
+    pub fn with_lifecycle_db(mut self, db: Arc<dyn lifecycle::LifecycleDb>) -> Self {
+        self.lifecycle_db = db;
+        self
     }
 
     /// #1196 S0a — post-construction override of the crash-window / respawn
@@ -733,9 +834,114 @@ impl PluginHost {
         self
     }
 
-    /// Convenience accessor — most call sites only need the registry handle.
+    /// Read-only view of the registry.
+    ///
+    /// #1196 §2.3 — the field itself is private now. This handle is only useful
+    /// for `get` / `list` / `install_path` / `len`: the three mutators
+    /// ([`PluginRegistry::insert`] / [`PluginRegistry::remove`] /
+    /// [`PluginRegistry::set_exposes_tools`]) are `pub(in crate::plugin_host)`
+    /// **and** take a [`LifecycleGuard`], so possession of this `Arc` grants no
+    /// write capability to anything outside this module — including
+    /// `CallbackCtx`, which holds a clone of it.
+    ///
+    /// Stated honestly (design §2.3): this is not a type-level proof that the
+    /// registry cannot be written without the lock. It is a proof that it
+    /// cannot be written **from outside `plugin_host`**. The residual inside
+    /// the module is the enumerable set of `*_under` functions.
     pub fn registry(&self) -> &Arc<PluginRegistry> {
         &self.registry
+    }
+
+    // -----------------------------------------------------------------------
+    // #1196 §2.5 — the two acquisition semantics
+    // -----------------------------------------------------------------------
+
+    /// The `Arc<Mutex>` for `id`, creating the map entry on first use.
+    fn lifecycle_cell(&self, id: &str) -> Arc<Mutex<()>> {
+        let mut map = self
+            .lifecycle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Arc::clone(
+            &map.entry(id.to_string())
+                .or_insert_with(|| {
+                    Arc::new(LifecycleCell {
+                        lock: Arc::new(Mutex::new(())),
+                    })
+                })
+                .lock,
+        )
+    }
+
+    /// **External** acquisition: non-blocking. Returns
+    /// [`HostError::LifecycleBusy`] — a 409 with the code `plugin_busy` — when
+    /// another operation holds the id, **having done nothing at all**.
+    ///
+    /// Every public lifecycle entry point takes the lock through this function
+    /// as its first (or, for `install`, first side-effecting) act, which is what
+    /// makes the refusal inert and therefore safely retryable by the caller.
+    ///
+    /// Synchronous on purpose: `try_lock_owned` needs no async context, so the
+    /// boot fallback in [`Self::autospawn_enabled_within`] can take it from
+    /// inside a non-async block without changing [`Self::mark_unavailable_under`]
+    /// into an async fn, and without adding an await to the boot wall-clock
+    /// formula (design §5 R5).
+    ///
+    /// `pub` because the acceptance tests must be able to *hold* the real lock
+    /// (design §5 R7). An external holder cannot reach any `*_under` function,
+    /// so the worst it can do is block itself.
+    pub fn try_lock_lifecycle(&self, id: &str) -> Result<LifecycleGuard, HostError> {
+        let cell = self.lifecycle_cell(id);
+        match cell.try_lock_owned() {
+            Ok(held) => Ok(LifecycleGuard {
+                id: id.to_string(),
+                _held: held,
+            }),
+            Err(_) => Err(HostError::LifecycleBusy(id.to_string())),
+        }
+    }
+
+    /// **Internal** acquisition: waits until the lock is free.
+    ///
+    /// For the callers that have **nobody to answer**, where giving up loses
+    /// information permanently:
+    ///
+    /// * the crash supervisor's three segments. The supervisor task is created
+    ///   *before* the live insert and before `spawn`'s trailing `Running`
+    ///   emission, while `spawn` holds the guard for the whole of that. A child
+    ///   that dies in that window therefore makes the supervisor's first
+    ///   segment collide with `spawn`'s own lock **by construction**. One `try`
+    ///   and a give-up would mean the crash is never accounted, the live table
+    ///   keeps a `Running` entry over a dead child, and no later task exists to
+    ///   fix it. The third segment is the same story ending in a permanent
+    ///   `Crashed`;
+    /// * boot reconciliation ([`Self::publish_unavailable`] /
+    ///   [`Self::reaffirm_running`]) and boot autospawn's retry, where a `Busy`
+    ///   would be a *third* outcome the two-armed timeout branch has no place
+    ///   for — and where the natural mistake (fold it into the failure arm)
+    ///   pushes a healthy connector to `Unavailable`.
+    ///
+    /// Private, and each acquisition **re-decides everything** afterwards: the
+    /// world may have moved arbitrarily while we waited, which is what
+    /// [`RunningPlugin::run_epoch`] exists to detect.
+    ///
+    /// There is deliberately no wait budget. Any honest bound would have to
+    /// exceed the longest legal critical section, and that has no bound: a
+    /// connector bring-up, a reload's file I/O, and several unbounded event
+    /// writes all live inside one.
+    async fn await_lifecycle(&self, id: &str) -> LifecycleGuard {
+        let cell = self.lifecycle_cell(id);
+        let held = cell.lock_owned().await;
+        LifecycleGuard {
+            id: id.to_string(),
+            _held: held,
+        }
+    }
+
+    /// Allocate the next [`RunningPlugin::run_epoch`].
+    fn next_run_epoch(&self) -> u64 {
+        self.run_epoch_seq
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     /// #1196 S0a — **runtime** registry write, routed through the host.
@@ -747,13 +953,18 @@ impl PluginHost {
     /// `&LifecycleGuard` parameter — which is precisely why the routes must
     /// already be on it — today it is a pure pass-through and changes no
     /// behavior.
-    pub fn registry_insert(&self, manifest: manifest::Manifest, install_path: Option<PathBuf>) {
-        self.registry.insert(manifest, install_path);
+    pub fn registry_insert(
+        &self,
+        guard: &LifecycleGuard,
+        manifest: manifest::Manifest,
+        install_path: Option<PathBuf>,
+    ) {
+        self.registry.insert(guard, manifest, install_path);
     }
 
     /// #1196 S0a — **runtime** registry removal. See [`Self::registry_insert`].
-    pub fn registry_remove(&self, id: &str) -> Option<manifest::Manifest> {
-        self.registry.remove(id)
+    pub fn registry_remove(&self, guard: &LifecycleGuard) -> Option<manifest::Manifest> {
+        self.registry.remove(guard)
     }
 
     /// Lock the process table. Poison recovery via `into_inner`: the guarded
@@ -785,7 +996,12 @@ impl PluginHost {
     /// fresh one each kernel boot. **This is intentional**: restart is a
     /// security boundary; if the kernel was compromised between boots we want
     /// every plugin to surface a fresh credential anyway.
-    pub async fn ensure_plugin_token(&self, id: &str) -> Result<String, HostError> {
+    ///
+    /// #1196 §2.2 — takes the [`LifecycleGuard`] rather than an id: it writes
+    /// `plugin_tokens`, which `uninstall` deletes, so the write must be inside
+    /// the same critical section as the spawn that needs it.
+    pub async fn ensure_plugin_token(&self, guard: &LifecycleGuard) -> Result<String, HostError> {
+        let id = guard.id();
         let raw = PluginToken::generate();
         let hashed = hash_token(raw.as_str());
         self.repo
@@ -798,7 +1014,21 @@ impl PluginHost {
     /// Forced rotation: delete the existing row + restart the plugin so it
     /// picks up the new token on its next spawn. The actual mint happens
     /// inside `spawn` via `ensure_plugin_token`; we just clear the slot here.
+    ///
+    /// #1196 §2.2 — the registry lookup, the kind guard, the token delete and
+    /// the restart are ONE critical section. Split across guards, a concurrent
+    /// `uninstall` could land between the kind check and the restart, and the
+    /// restart would then respawn a plugin that no longer exists.
     pub async fn rotate_plugin_token(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        let guard = self.try_lock_lifecycle(id)?;
+        self.rotate_plugin_token_under(&guard).await
+    }
+
+    async fn rotate_plugin_token_under(
+        self: &Arc<Self>,
+        guard: &LifecycleGuard,
+    ) -> Result<(), HostError> {
+        let id = guard.id();
         // #1164 §2.5 — refuse for connectors BEFORE the delete and BEFORE the
         // restart. Connectors never had a token minted (the kind branch in
         // `spawn_admitted` precedes `ensure_plugin_token`), so "rotating" one
@@ -827,7 +1057,7 @@ impl PluginHost {
         // next spawn will mint fresh. Old (raw) token in any plugin's hands is
         // already worthless once the process is killed below.
         let _ = self.repo.plugin_token_delete(id).await;
-        self.restart(id).await
+        self.restart_under(guard).await
     }
 
     /// Auto-spawn every enabled plugin known to the repo. Called from
@@ -908,7 +1138,7 @@ impl PluginHost {
                 .get(&plug.id)
                 .is_some_and(|m| !m.kind.is_app());
             if !is_connector {
-                if let Err(e) = self.spawn(&plug.id).await {
+                if let Err(e) = self.autospawn_one(&plug.id).await {
                     tracing::warn!(plugin_id = %plug.id, error = %e, "plugin autospawn failed");
                 }
                 continue;
@@ -954,8 +1184,56 @@ impl PluginHost {
                     ceiling.as_millis()
                 );
                 tracing::warn!(plugin_id = %plug.id, "{reason}");
-                self.mark_unavailable(&plug.id, None, reason);
+                // #1196 §5 R5 — the no-lock exception is GONE. `mark_unavailable`
+                // writes the live table, and the live table is what
+                // `GET /api/plugins/{id}` and `running_plugin_ids` report; an
+                // unlocked write here can be the last runtime write of a
+                // concurrent `stop`, resurrecting a plugin with no matching
+                // event. So take the lock — synchronously, because
+                // `try_lock_owned` needs no async context and this arm must
+                // stay await-free (an await here is the very thing that ran the
+                // boot budget out, and `MAX_CONNECTOR_AUTOSPAWN_WALL` is
+                // computed on the assumption that it has none).
+                //
+                // What is given up when the lock is held is the observability
+                // contract, not correctness — and the window is tiny: the only
+                // possible holder is the `spawn` future we just dropped, whose
+                // guard is released by that drop.
+                match self.try_lock_lifecycle(&plug.id) {
+                    Ok(g) => {
+                        self.mark_unavailable_under(&g, None, reason);
+                    }
+                    Err(_) => tracing::warn!(
+                        plugin_id = %plug.id,
+                        "boot budget elapsed and the lifecycle lock was held; \
+                         leaving the runtime state to its holder"
+                    ),
+                }
             }
+        }
+    }
+
+    /// One non-connector autospawn attempt.
+    ///
+    /// #1196 §2.5 — `Busy` must have an explicit terminal, not a bare `warn!`
+    /// and `continue`: that leaves `enabled = true`, no live entry, and the
+    /// event log stopped at whatever the previous operation said — exactly the
+    /// "looks like it was never enabled" state the `Unavailable` entry exists to
+    /// prevent. Boot's only possible contender is a crash supervisor, so the
+    /// retry waits rather than guessing, and the wait is bounded by that
+    /// supervisor's own work.
+    async fn autospawn_one(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        match self.try_lock_lifecycle(id) {
+            Ok(g) => self.spawn_under(&g, None).await,
+            Err(HostError::LifecycleBusy(_)) => {
+                tracing::info!(
+                    plugin_id = %id,
+                    "autospawn found the lifecycle lock held; waiting for it"
+                );
+                let g = self.await_lifecycle(id).await;
+                self.spawn_under(&g, None).await
+            }
+            Err(other) => Err(other),
         }
     }
 
@@ -982,12 +1260,12 @@ impl PluginHost {
             // id as if it had never been enabled.
             // Same reconciliation as the timeout arm below: never regress
             // an id that is already live and `Running`.
-            let _ = self.publish_unavailable(id, None, reason).await;
+            let _ = self.publish_unavailable(id, reason).await;
             return;
         }
         let outcome = tokio::time::timeout_at(
             tokio::time::Instant::from_std(spawn_deadline),
-            self.spawn(id),
+            self.autospawn_one(id),
         )
         .await;
         match outcome {
@@ -1017,7 +1295,7 @@ impl PluginHost {
                     remaining.as_millis(),
                     connector_budget.as_millis()
                 );
-                if self.publish_unavailable(id, None, reason.clone()).await {
+                if self.publish_unavailable(id, reason.clone()).await {
                     tracing::warn!(plugin_id = %id, "{reason}");
                 } else {
                     tracing::info!(
@@ -1045,6 +1323,22 @@ impl PluginHost {
     /// and the supervisor task is wired. Errors before that point unwind
     /// without leaving a half-running entry.
     pub async fn spawn(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        let guard = self.try_lock_lifecycle(id)?;
+        self.spawn_under(&guard, None).await
+    }
+
+    /// [`Self::spawn`] for a caller that already holds the guard.
+    ///
+    /// `inherit` carries the crash-window counters across a supervisor respawn
+    /// (§2.6). `None` means "read whatever the live entry says", which is the
+    /// right answer for every other caller: an explicit `spawn` after a crash
+    /// finds the `Crashed` entry still in place and must not zero its counters.
+    async fn spawn_under(
+        self: &Arc<Self>,
+        lifecycle: &LifecycleGuard,
+        inherit: Option<CrashWindow>,
+    ) -> Result<(), HostError> {
+        let id = lifecycle.id();
         // Disabled-by-config short-circuit.
         if self.plugins_disabled.iter().any(|d| d == id) {
             return Err(HostError::Disabled(id.to_string()));
@@ -1129,7 +1423,7 @@ impl PluginHost {
                 }
             }
         };
-        let guard = match admission {
+        let admitted = match admission {
             Ok(guard) => guard,
             Err(conflict) => {
                 tracing::warn!(
@@ -1142,12 +1436,14 @@ impl PluginHost {
                 // the plugin isn't running instead of it silently looking
                 // stopped. Boot-loop tolerance is unchanged: autospawn logs and
                 // continues; the enable route maps this to a structured 409.
-                self.emit_crashed(id, &conflict.to_string()).await;
+                self.emit_crashed_under(lifecycle, &conflict.to_string())
+                    .await;
                 return Err(conflict);
             }
         };
 
-        self.spawn_admitted(id, &manifest, guard).await
+        self.spawn_admitted(lifecycle, &manifest, admitted, inherit)
+            .await
     }
 
     /// Everything downstream of a successful admission reservation: token
@@ -1158,10 +1454,12 @@ impl PluginHost {
     /// which releases the reservation; the success swap disarms it.
     async fn spawn_admitted(
         self: &Arc<Self>,
-        id: &str,
+        lifecycle: &LifecycleGuard,
         manifest: &Manifest,
         guard: AdmissionGuard,
+        inherit: Option<CrashWindow>,
     ) -> Result<(), HostError> {
+        let id = lifecycle.id();
         let install_path = self
             .registry
             .install_path(id)
@@ -1176,7 +1474,7 @@ impl PluginHost {
             ConnectorKind::App => {}
             ConnectorKind::McpHttp => {
                 return self
-                    .spawn_mcp_http(id, manifest, &install_path, guard)
+                    .spawn_mcp_http(lifecycle, manifest, &install_path, guard, inherit)
                     .await;
             }
             ConnectorKind::CliQuery => {
@@ -1189,7 +1487,7 @@ impl PluginHost {
                 // plain "not implemented yet".
                 return self
                     .connector_unavailable(
-                        id,
+                        lifecycle,
                         guard,
                         format!(
                             "cli-query connector `{id}` cannot be enabled yet: \
@@ -1207,9 +1505,10 @@ impl PluginHost {
         // Note: every spawn mints fresh. A prior row in `plugin_tokens` is
         // overwritten — the host doesn't try to "recover" the previous raw
         // (which it can't, by design — see `ensure_plugin_token` docs).
-        let token = self.ensure_plugin_token(id).await?;
+        let token = self.ensure_plugin_token(lifecycle).await?;
 
-        self.emit_state(id, &PluginRuntimeStatus::Spawning).await;
+        self.emit_state_under(lifecycle, &PluginRuntimeStatus::Spawning)
+            .await;
 
         // Spawn the process. On failure we propagate without touching the
         // live map (the caller releases the admission reservation).
@@ -1243,10 +1542,10 @@ impl PluginHost {
                     // reservation is released by the guard's Drop on this
                     // Err return.)
                     let _ = self.lock_table().live.remove(id);
-                    self.emit_crashed(id, reason).await;
+                    self.emit_crashed_under(lifecycle, reason).await;
                     return Err(HostError::AuthMismatch(id.to_string()));
                 }
-                self.emit_crashed(id, &format!("initialize failed: {e}"))
+                self.emit_crashed_under(lifecycle, &format!("initialize failed: {e}"))
                     .await;
                 return Err(HostError::InitializeRejected(e.to_string()));
             }
@@ -1294,11 +1593,17 @@ impl PluginHost {
         let child_handle = process.take_child().ok_or_else(|| {
             HostError::BadState("PluginProcess lost its Child before supervision".into())
         })?;
+        // #1196 §2.6 — the epoch is allocated BEFORE the supervisor task is
+        // created and BEFORE the live insert, and handed to the supervisor by
+        // value. Reading it back off the table later would defeat the purpose:
+        // the whole question the supervisor asks is "is the entry still MINE",
+        // and an answer read from the entry can only ever say yes.
+        let run_epoch = self.next_run_epoch();
         let supervisor = {
             let host = Arc::clone(self);
             let plugin_id = id.to_string();
             tokio::spawn(async move {
-                host.supervise(plugin_id, child_handle).await;
+                host.supervise(plugin_id, run_epoch, child_handle).await;
             })
         };
 
@@ -1313,10 +1618,7 @@ impl PluginHost {
         // not just the restarts within one spawn lifetime.
         {
             let mut table = self.lock_table();
-            let (crashes_in_window, window_started) = match table.live.get(id) {
-                Some(prev) => (prev.crashes_in_window, prev.window_started),
-                None => (0, Instant::now()),
-            };
+            let (crashes_in_window, window_started) = inherited_window(&table, id, inherit);
             table.spawning.remove(id);
             guard.disarm();
             table.live.insert(
@@ -1333,6 +1635,8 @@ impl PluginHost {
                     stopping: false,
                     crashes_in_window,
                     window_started,
+                    run_epoch,
+                    crash_attempt: 0,
                     supervisor: Some(supervisor),
                     router: Some(router),
                     subscriptions,
@@ -1340,7 +1644,8 @@ impl PluginHost {
             );
         }
 
-        self.emit_state(id, &PluginRuntimeStatus::Running).await;
+        self.emit_state_under(lifecycle, &PluginRuntimeStatus::Running)
+            .await;
         tracing::info!(plugin_id = %id, "plugin running");
 
         Ok(())
@@ -1360,11 +1665,13 @@ impl PluginHost {
     /// empty tool list — silently, and until the next restart.
     async fn spawn_mcp_http(
         self: &Arc<Self>,
-        id: &str,
+        lifecycle: &LifecycleGuard,
         manifest: &Manifest,
         install_path: &std::path::Path,
         guard: AdmissionGuard,
+        inherit: Option<CrashWindow>,
     ) -> Result<(), HostError> {
+        let id = lifecycle.id();
         let block = manifest.mcp_http.as_ref().ok_or_else(|| {
             HostError::BadState(format!(
                 "plugin `{id}` is kind mcp-http but has no mcp_http block"
@@ -1382,7 +1689,8 @@ impl PluginHost {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(id);
 
-        self.emit_state(id, &PluginRuntimeStatus::Spawning).await;
+        self.emit_state_under(lifecycle, &PluginRuntimeStatus::Spawning)
+            .await;
 
         // ONE outer wall-clock bound over the WHOLE bring-up (§2.2).
         //
@@ -1414,7 +1722,7 @@ impl PluginHost {
             Err(_elapsed) => {
                 return self
                     .connector_unavailable(
-                        id,
+                        lifecycle,
                         guard,
                         format!(
                             "connector bring-up timed out after {} ms \
@@ -1427,7 +1735,9 @@ impl PluginHost {
                     )
                     .await;
             }
-            Ok(Err(reason)) => return self.connector_unavailable(id, guard, reason).await,
+            Ok(Err(reason)) => {
+                return self.connector_unavailable(lifecycle, guard, reason).await;
+            }
             Ok(Ok(v)) => v,
         };
 
@@ -1445,7 +1755,7 @@ impl PluginHost {
         // from the registry while we were on the wire (uninstall races an
         // in-flight spawn; see R12). Losing the race means we abandon the
         // spawn rather than resurrect an uninstalled connector.
-        if !self.registry.set_exposes_tools(id, tools) {
+        if !self.registry.set_exposes_tools(lifecycle, tools) {
             let reason = format!(
                 "plugin `{id}` left the registry while its connector was starting \
                  (uninstalled or reloaded mid-spawn); abandoning spawn"
@@ -1457,7 +1767,7 @@ impl PluginHost {
             // never come up. No live entry is inserted on purpose: the id was
             // uninstalled, and a runtime row would be exactly the resurrection
             // §2.7(3) exists to prevent.
-            self.emit_state(id, &PluginRuntimeStatus::Unavailable { reason })
+            self.emit_state_under(lifecycle, &PluginRuntimeStatus::Unavailable { reason })
                 .await;
             return Err(HostError::NotFound(id.to_string()));
         }
@@ -1465,10 +1775,7 @@ impl PluginHost {
 
         {
             let mut table = self.lock_table();
-            let (crashes_in_window, window_started) = match table.live.get(id) {
-                Some(prev) => (prev.crashes_in_window, prev.window_started),
-                None => (0, Instant::now()),
-            };
+            let (crashes_in_window, window_started) = inherited_window(&table, id, inherit);
             table.spawning.remove(id);
             guard.disarm();
             table.live.insert(
@@ -1480,6 +1787,11 @@ impl PluginHost {
                     stopping: false,
                     crashes_in_window,
                     window_started,
+                    // Connectors have no supervisor, so nothing ever compares
+                    // this epoch. It is still allocated (rather than a
+                    // sentinel) so `live` has one meaning of "run instance".
+                    run_epoch: self.next_run_epoch(),
+                    crash_attempt: 0,
                     supervisor: None,
                     router: None,
                     subscriptions: Arc::new(Mutex::new(Vec::new())),
@@ -1489,7 +1801,8 @@ impl PluginHost {
             self.stamp_spawn_order(id, SpawnOrderStep::LiveInserted);
         }
 
-        self.emit_state(id, &PluginRuntimeStatus::Running).await;
+        self.emit_state_under(lifecycle, &PluginRuntimeStatus::Running)
+            .await;
         tracing::info!(
             plugin_id = %id,
             target = %client.log_target(),
@@ -1547,7 +1860,7 @@ impl PluginHost {
     /// errors and moves on.
     async fn connector_unavailable(
         self: &Arc<Self>,
-        id: &str,
+        lifecycle: &LifecycleGuard,
         guard: AdmissionGuard,
         reason: String,
     ) -> Result<(), HostError> {
@@ -1555,10 +1868,10 @@ impl PluginHost {
         // so the "already Running" arm is unreachable here (see the callee's
         // doc). The error below is the caller's answer either way.
         let _ = self
-            .publish_unavailable(id, Some(guard), reason.clone())
+            .publish_unavailable_under(lifecycle, Some(guard), reason.clone())
             .await;
         Err(HostError::ConnectorUnavailable {
-            plugin_id: id.to_string(),
+            plugin_id: lifecycle.id().to_string(),
             reason,
         })
     }
@@ -1589,16 +1902,28 @@ impl PluginHost {
     /// strictly BEFORE the live insert, so a `Running` entry at that point is
     /// impossible — and if one somehow existed it would belong to a different,
     /// successful bring-up that this failure has no claim to erase.
-    async fn publish_unavailable(
+    ///
+    /// #1196 §2.2 — this has two classes of caller: `spawn_under`'s internal
+    /// failure exits, which already hold the lifecycle guard, and boot
+    /// reconciliation, which does not. Hence the pair. The reconciliation
+    /// wrapper **waits** for the lock (§2.5): it has nobody to answer, and a
+    /// `Busy` folded into the failure arm would report a healthy connector as
+    /// `Unavailable`.
+    async fn publish_unavailable(self: &Arc<Self>, id: &str, reason: String) -> bool {
+        let guard = self.await_lifecycle(id).await;
+        self.publish_unavailable_under(&guard, None, reason).await
+    }
+
+    async fn publish_unavailable_under(
         self: &Arc<Self>,
-        id: &str,
+        lifecycle: &LifecycleGuard,
         guard: Option<AdmissionGuard>,
         reason: String,
     ) -> bool {
-        if !self.mark_unavailable(id, guard, reason.clone()) {
+        if !self.mark_unavailable_under(lifecycle, guard, reason.clone()) {
             return false;
         }
-        self.emit_state(id, &PluginRuntimeStatus::Unavailable { reason })
+        self.emit_state_under(lifecycle, &PluginRuntimeStatus::Unavailable { reason })
             .await;
         true
     }
@@ -1618,7 +1943,13 @@ impl PluginHost {
     /// Returns `false` without touching anything when the id is live and
     /// `Running` — see [`Self::publish_unavailable`] for why that check lives
     /// here, once, rather than at each call site.
-    fn mark_unavailable(&self, id: &str, guard: Option<AdmissionGuard>, reason: String) -> bool {
+    fn mark_unavailable_under(
+        &self,
+        lifecycle: &LifecycleGuard,
+        guard: Option<AdmissionGuard>,
+        reason: String,
+    ) -> bool {
+        let id = lifecycle.id();
         {
             // One lock: release the reservation and publish the terminal entry
             // together, so no observer sees the id as neither reserved nor
@@ -1650,6 +1981,11 @@ impl PluginHost {
                     stopping: false,
                     crashes_in_window,
                     window_started,
+                    // Terminal entry, no supervisor: nothing will ever compare
+                    // this epoch, but it must be distinct from the run it is
+                    // replacing so a stale supervisor cannot match it.
+                    run_epoch: self.next_run_epoch(),
+                    crash_attempt: 0,
                     supervisor: None,
                     router: None,
                     subscriptions: Arc::new(Mutex::new(Vec::new())),
@@ -1701,15 +2037,24 @@ impl PluginHost {
     /// decision and the emission were two steps, and only the real one can
     /// witness that they have been joined.
     pub async fn reaffirm_running(self: &Arc<Self>, id: &str) -> bool {
-        let serialized = self.lock_state(id).await;
+        // #1196 §2.5 — boot reconciliation waits. Returning `false` on a busy
+        // lock would be indistinguishable from "it is not running", and the
+        // caller uses that answer to decide whether the event log still needs a
+        // `running` — so a `Busy` would leave the log stuck at `spawning`
+        // forever for a connector that is genuinely up.
+        let serialized = self.await_lifecycle(id).await;
+        self.reaffirm_running_under(&serialized).await
+    }
+
+    async fn reaffirm_running_under(self: &Arc<Self>, guard: &LifecycleGuard) -> bool {
         {
             let table = self.lock_table();
-            match table.live.get(id) {
+            match table.live.get(guard.id()) {
                 Some(rp) if matches!(rp.status, PluginRuntimeStatus::Running) && !rp.stopping => {}
                 _ => return false,
             }
         }
-        self.emit_state_under(&serialized, &PluginRuntimeStatus::Running)
+        self.emit_state_under(guard, &PluginRuntimeStatus::Running)
             .await;
         true
     }
@@ -1733,14 +2078,36 @@ impl PluginHost {
     ///   disable is `disabled` — keeping a stale failure reason on a plugin the
     ///   operator has since turned off would be the misleading option.
     pub async fn stop(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        let guard = self.try_lock_lifecycle(id)?;
+        self.stop_under(&guard).await
+    }
+
+    /// [`Self::stop`] for a caller that already holds the guard.
+    ///
+    /// #1196 §2.4 — this is why `stop` no longer needs a "also look in
+    /// `spawning`" branch. An in-flight spawn necessarily holds the same guard
+    /// from before admission until either the live insert or the
+    /// `AdmissionGuard` rollback, so by the time we are here that spawn has
+    /// already landed or already unwound. There is no third state to see.
+    async fn stop_under(self: &Arc<Self>, guard: &LifecycleGuard) -> Result<(), HostError> {
+        let id = guard.id();
         let (process, supervisor, subs) = {
             let mut table = self.lock_table();
             let rp = table
                 .live
                 .get_mut(id)
                 .ok_or_else(|| HostError::NotFound(id.to_string()))?;
+            // #1196 §2.3 — unreachable while the guard is held: only a `stop`
+            // sets this flag, and only one `stop` can be inside the guard.
+            // Kept as a debug assertion rather than deleted so a future
+            // refactor that reintroduces an unlocked stop path trips on it in
+            // tests instead of silently corrupting the table.
+            debug_assert!(
+                !rp.stopping,
+                "{id} was already stopping while its lifecycle guard was held"
+            );
             if rp.stopping {
-                return Err(HostError::BadState(format!("{id} is already stopping")));
+                return Err(HostError::NotFound(id.to_string()));
             }
             rp.stopping = true;
             let process = rp.process.clone();
@@ -1792,26 +2159,31 @@ impl PluginHost {
         // after the (possibly slow) child teardown above, so it never spans a
         // SIGTERM grace period.
         {
-            let serialized = self.lock_state(id).await;
-            {
-                let mut table = self.lock_table();
-                table.live.remove(id);
-            }
-            self.emit_state_under(&serialized, &PluginRuntimeStatus::Disabled)
-                .await;
+            let mut table = self.lock_table();
+            table.live.remove(id);
         }
+        self.emit_state_under(guard, &PluginRuntimeStatus::Disabled)
+            .await;
         Ok(())
     }
 
     /// Stop then spawn. Returns the spawn error if either half fails.
+    /// #1196 §2.2 — the stop and the spawn are ONE critical section. As two,
+    /// the gap between them is a real window: a concurrent `uninstall` lands
+    /// there and the respawn resurrects a deleted plugin.
     pub async fn restart(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        let guard = self.try_lock_lifecycle(id)?;
+        self.restart_under(&guard).await
+    }
+
+    async fn restart_under(self: &Arc<Self>, guard: &LifecycleGuard) -> Result<(), HostError> {
         // Stop is best-effort: if it returns NotFound (e.g. already crashed
         // and cleaned up), we proceed to spawn.
-        match self.stop(id).await {
+        match self.stop_under(guard).await {
             Ok(()) | Err(HostError::NotFound(_)) => {}
             Err(e) => return Err(e),
         }
-        self.spawn(id).await
+        self.spawn_under(guard, None).await
     }
 
     /// Snapshot current status for one plugin. An admission-reserved id
@@ -1999,68 +2371,30 @@ impl PluginHost {
 
     // ----- internals -----
 
-    /// Acquire the per-id emission lock. See [`Self::state_emit`].
+    /// Persist a `plugin.state` event and broadcast it. Goes through
+    /// `Repo::log_pure_event` so every fired event lands in the events table
+    /// with a real `_id`; the bus broadcast fires only after commit succeeds
+    /// (commit-then-emit invariant).
     ///
-    /// `pub` for the same reason [`Self::reaffirm_running`] is: the acceptance
-    /// test drives the real serialization, not a copy of it.
-    pub async fn lock_state(&self, id: &str) -> StateEmitGuard {
-        let cell = {
-            let mut map = self
-                .state_emit
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            Arc::clone(map.entry(id.to_string()).or_insert_with(|| {
-                Arc::new(StateEmitCell {
-                    lock: Arc::new(Mutex::new(())),
-                    inflight: std::sync::atomic::AtomicUsize::new(0),
-                })
-            }))
-        };
-        let held = Arc::clone(&cell.lock).lock_owned().await;
-        StateEmitGuard {
-            id: id.to_string(),
-            cell,
-            _held: held,
-        }
-    }
-
-    /// High-water mark of concurrent emissions. `1` is the invariant; see
-    /// [`Self::state_emit_peak`].
-    pub fn peak_concurrent_state_emits(&self) -> usize {
-        self.state_emit_peak
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Persist a `plugin.state` event and broadcast it, **taking the per-id
-    /// emission lock**. Goes through `Repo::log_pure_event` so every fired
-    /// event lands in the events table with a real `_id`; the bus broadcast is
-    /// fired only after commit succeeds (commit-then-emit invariant).
+    /// **#1196: this is the ONLY emitter, and it demands the guard.** The
+    /// `emit_state(id, status)` overload that took the lock for you is gone.
+    /// Its existence was the defect: it made "decide under a lock, drop the
+    /// lock, emit afterwards" a shape one could write, and seven call sites had
+    /// written it. With only this signature left, an emission that is not
+    /// inside its decision's critical section is not expressible inside
+    /// `plugin_host`.
     ///
-    /// The lock is acquired here rather than at the call sites so that no
-    /// emitter can be written that opts out of it — see [`Self::state_emit`].
-    /// A caller that must decide and emit as one step takes the guard itself
-    /// and calls [`Self::emit_state_under`]; there is no third way to emit.
-    async fn emit_state(&self, id: &str, status: &PluginRuntimeStatus) {
-        let guard = self.lock_state(id).await;
-        self.emit_state_under(&guard, status).await;
-    }
-
-    /// [`Self::emit_state`] for a caller that already holds the guard, so that
-    /// its decision and this emission are one serialized step.
+    /// Stated honestly (design §4 acceptance 2 / §2.7): that is a property of
+    /// this module, not of the process. Any crate can still construct an
+    /// `Event::PluginState` and write it to the repo directly; closing *that*
+    /// needs a type fence on the event variant and is tracked as #1210. Do not
+    /// read this doc as "cannot be bypassed".
     ///
     /// The id comes from the guard, never from a second parameter: emitting for
     /// an id you do not hold the lock on is the same defect one indirection
     /// later, and this makes it unrepresentable.
-    async fn emit_state_under(&self, guard: &StateEmitGuard, status: &PluginRuntimeStatus) {
-        let id = guard.id.as_str();
-        let inflight = guard
-            .cell
-            .inflight
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1;
-        self.state_emit_peak
-            .fetch_max(inflight, std::sync::atomic::Ordering::SeqCst);
-        let _dec = InflightGuard(Arc::clone(&guard.cell));
+    async fn emit_state_under(&self, guard: &LifecycleGuard, status: &PluginRuntimeStatus) {
+        let id = guard.id();
         if let Some(bus) = &self.events {
             let event = Event::PluginState {
                 id: id.to_string(),
@@ -2088,11 +2422,11 @@ impl PluginHost {
         }
     }
 
-    async fn emit_crashed(&self, id: &str, reason: &str) {
+    async fn emit_crashed_under(&self, guard: &LifecycleGuard, reason: &str) {
         let status = PluginRuntimeStatus::Crashed {
             reason: reason.to_string(),
         };
-        self.emit_state(id, &status).await;
+        self.emit_state_under(guard, &status).await;
     }
 
     /// Supervisor loop for one plugin: awaits child exit, classifies as
@@ -2105,122 +2439,309 @@ impl PluginHost {
     fn supervise(
         self: Arc<Self>,
         id: String,
+        run_epoch: u64,
         child: tokio::process::Child,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
-        Box::pin(self.supervise_inner(id, child))
+        Box::pin(self.supervise_inner(id, run_epoch, child))
     }
 
-    async fn supervise_inner(self: Arc<Self>, id: String, mut child: tokio::process::Child) {
+    /// #1196 §2.6 — the supervisor in three segments:
+    ///
+    /// 1. **[lock held]** decide it was a crash, account it, rewrite the live
+    ///    entry, emit `crashed`;
+    /// 2. **[no lock]** sleep out the backoff (up to 30 s — holding the lock
+    ///    across it would make `disable` wait half a minute);
+    /// 3. **[lock re-taken]** re-decide *everything* and respawn.
+    ///
+    /// The supervisor is the one continuation not covered by the guard of the
+    /// operation that created it, which is why it is the only thing here that
+    /// needs a run-instance identity to re-validate against.
+    async fn supervise_inner(
+        self: Arc<Self>,
+        id: String,
+        run_epoch: u64,
+        mut child: tokio::process::Child,
+    ) {
         let exit_result = child.wait().await;
-        // Was this a graceful stop? Look at the map; if `stopping=true`, yes.
-        let stopping = {
-            let table = self.lock_table();
-            table.live.get(&id).map(|rp| rp.stopping).unwrap_or(true)
-        };
 
-        if stopping {
-            tracing::info!(plugin_id = %id, "plugin exited gracefully");
-            return;
-        }
+        // ---- segment 1 -----------------------------------------------------
+        // `await_lifecycle`, not `try`: the task was created BEFORE the live
+        // insert and before `spawn`'s trailing `Running` emission, all of which
+        // happen under the spawn's own guard. A child that dies inside that
+        // window collides with that guard by construction, and a `try` that
+        // gave up here would never account the crash — leaving a `Running`
+        // entry over a dead process with no task left to notice.
+        let (attempt, delay_ms) = {
+            let guard = self.await_lifecycle(&id).await;
 
-        let reason = match exit_result {
-            Ok(status) => format!("exited with {status}"),
-            Err(e) => format!("wait failed: {e}"),
-        };
-        tracing::warn!(plugin_id = %id, reason = %reason, "plugin exited unexpectedly");
-
-        // Snapshot stderr tail so the crash event carries useful detail.
-        let tail = {
-            let table = self.lock_table();
-            table
-                .live
-                .get(&id)
-                .and_then(|rp| rp.process.as_ref())
-                .map(|p| p.stderr_tail(10).join("\n"))
-                .unwrap_or_default()
-        };
-        let combined_reason = if tail.is_empty() {
-            reason
-        } else {
-            format!("{reason}\nstderr tail:\n{tail}")
-        };
-
-        // Crash-window bookkeeping.
-        let (attempts, exceeded) = {
-            let mut table = self.lock_table();
-            let entry = match table.live.get_mut(&id) {
-                Some(e) => e,
+            // Is this still MY run instance, and is it still in the state a
+            // crash can be attributed to? Without this check an old supervisor
+            // that only now got the lock — after a `stop` and a fresh `spawn` —
+            // would mark the NEW entry crashed.
+            let observed = {
+                let table = self.lock_table();
+                table.live.get(&id).map(|rp| {
+                    (
+                        rp.run_epoch,
+                        rp.stopping,
+                        matches!(rp.status, PluginRuntimeStatus::Running),
+                    )
+                })
+            };
+            match observed {
+                // Removed by `stop`/`uninstall`, or replaced by a newer run:
+                // not ours to report.
                 None => {
-                    // Was removed by `stop()` — nothing to do.
+                    tracing::info!(plugin_id = %id, "plugin exited; its live entry is gone");
                     return;
                 }
-            };
-            if entry.window_started.elapsed() > self.backoff.crash_window {
-                entry.window_started = Instant::now();
-                entry.crashes_in_window = 0;
+                Some((epoch, _, _)) if epoch != run_epoch => {
+                    tracing::info!(
+                        plugin_id = %id,
+                        "plugin exited; a newer run instance owns the entry"
+                    );
+                    return;
+                }
+                Some((_, true, _)) => {
+                    tracing::info!(plugin_id = %id, "plugin exited gracefully");
+                    return;
+                }
+                Some((_, false, false)) => {
+                    // Somebody already wrote a terminal state for this exact
+                    // run (`Crashed` from the auth-mismatch path, `Unavailable`
+                    // from a boot fence). Not a second crash.
+                    tracing::info!(
+                        plugin_id = %id,
+                        "plugin exited but its run instance is no longer Running"
+                    );
+                    return;
+                }
+                Some((_, false, true)) => {}
             }
-            entry.crashes_in_window += 1;
-            entry.status = PluginRuntimeStatus::Crashed {
-                reason: combined_reason.clone(),
+
+            let reason = match exit_result {
+                Ok(status) => format!("exited with {status}"),
+                Err(e) => format!("wait failed: {e}"),
             };
-            (
-                entry.crashes_in_window,
-                entry.crashes_in_window >= self.backoff.crash_window_limit,
-            )
+            tracing::warn!(plugin_id = %id, reason = %reason, "plugin exited unexpectedly");
+
+            // Snapshot stderr tail so the crash event carries useful detail.
+            let tail = {
+                let table = self.lock_table();
+                table
+                    .live
+                    .get(&id)
+                    .and_then(|rp| rp.process.as_ref())
+                    .map(|p| p.stderr_tail(10).join("\n"))
+                    .unwrap_or_default()
+            };
+            let combined_reason = if tail.is_empty() {
+                reason
+            } else {
+                format!("{reason}\nstderr tail:\n{tail}")
+            };
+
+            // Crash-window bookkeeping.
+            let (attempts, attempt, exceeded) = {
+                let mut table = self.lock_table();
+                let Some(entry) = table.live.get_mut(&id) else {
+                    return;
+                };
+                if entry.window_started.elapsed() > self.backoff.crash_window {
+                    entry.window_started = Instant::now();
+                    entry.crashes_in_window = 0;
+                }
+                entry.crashes_in_window += 1;
+                entry.crash_attempt += 1;
+                entry.status = PluginRuntimeStatus::Crashed {
+                    reason: combined_reason.clone(),
+                };
+                (
+                    entry.crashes_in_window,
+                    entry.crash_attempt,
+                    entry.crashes_in_window >= self.backoff.crash_window_limit,
+                )
+            };
+
+            self.emit_crashed_under(&guard, &combined_reason).await;
+
+            if exceeded {
+                tracing::error!(
+                    plugin_id = %id,
+                    attempts,
+                    "plugin exceeded crash-window limit; not respawning",
+                );
+                // Leave the Crashed entry in place so `status()` returns it. The
+                // supervisor task ends here; an explicit `spawn(id)` revives.
+                // We do, however, drop the supervisor handle so it gets reaped.
+                //
+                // Epoch-checked like every other write: without it, a
+                // `stop`+`spawn` that raced us would have its NEW entry's
+                // supervisor handle cleared, and that entry would then never be
+                // respawned after ITS crash.
+                let mut table = self.lock_table();
+                if let Some(rp) = table.live.get_mut(&id)
+                    && rp.run_epoch == run_epoch
+                {
+                    rp.supervisor = None;
+                }
+                return;
+            }
+
+            // Backoff then respawn. Index by (attempts - 1) clamped to the table.
+            let idx = (attempts as usize).saturating_sub(1);
+            let delay_ms = self
+                .backoff
+                .schedule_ms
+                .get(idx)
+                .copied()
+                .unwrap_or_else(|| *self.backoff.schedule_ms.last().expect("non-empty schedule"));
+            tracing::info!(
+                plugin_id = %id,
+                delay_ms,
+                attempts,
+                "scheduling plugin respawn",
+            );
+            (attempt, delay_ms)
         };
 
-        self.emit_crashed(&id, &combined_reason).await;
+        // ---- segment 2: the lock is NOT held ------------------------------
+        // Up to 30 s. Holding the lifecycle guard across it would make a
+        // `disable` issued during a crash loop block for the whole backoff.
+        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
 
-        if exceeded {
-            tracing::error!(
-                plugin_id = %id,
-                attempts,
-                "plugin exceeded crash-window limit; not respawning",
-            );
-            // Leave the Crashed entry in place so `status()` returns it. The
-            // supervisor task ends here; an explicit `spawn(id)` revives.
-            // We do, however, remove the process arc so its file descriptors
-            // (already-closed pipes mostly) get reaped.
-            let mut table = self.lock_table();
-            if let Some(rp) = table.live.get_mut(&id) {
-                rp.supervisor = None;
+        // ---- segment 3 ----------------------------------------------------
+        self.respawn_after_backoff(&id, run_epoch, attempt).await;
+    }
+
+    /// Segment 3 of [`Self::supervise_inner`]: re-decide everything, then
+    /// respawn.
+    ///
+    /// Everything decided before the sleep is re-derived here. Nothing is
+    /// carried over except the two identity values (`run_epoch`, `attempt`),
+    /// and in particular the manifest is NOT: a `reload` during the backoff may
+    /// have replaced it wholesale, so the respawn goes through the full
+    /// `spawn_under`.
+    async fn respawn_after_backoff(self: &Arc<Self>, id: &str, run_epoch: u64, attempt: u64) {
+        for retry in 0..LIFECYCLE_DB_READ_RETRIES {
+            let guard = self.await_lifecycle(id).await;
+
+            // (a) still our run instance, still the Crashed state WE wrote,
+            //     not being stopped, and no further crash has happened.
+            let ok = {
+                let table = self.lock_table();
+                match table.live.get(id) {
+                    Some(rp) => {
+                        rp.run_epoch == run_epoch
+                            && rp.crash_attempt == attempt
+                            && !rp.stopping
+                            && matches!(rp.status, PluginRuntimeStatus::Crashed { .. })
+                    }
+                    None => false,
+                }
+            };
+            if !ok {
+                tracing::info!(
+                    plugin_id = %id,
+                    "backoff elapsed but the run instance is gone or has moved on; not respawning"
+                );
+                return;
+            }
+
+            // (b) still installed.
+            if self.registry.get(id).is_none() {
+                tracing::info!(
+                    plugin_id = %id,
+                    "backoff elapsed but the plugin left the registry; not respawning"
+                );
+                return;
+            }
+
+            // (c) still enabled, per the DB. **Fail closed.**
+            //
+            // `run_epoch` proves the *runtime* instance was not replaced. It
+            // proves nothing about the `enabled` bit: the route layer holds an
+            // `Arc<dyn RouteRepo>` and can write the plugin row without going
+            // through the host at all (design §2.3 registers that residual
+            // explicitly). So a read failure must not be treated as "probably
+            // still enabled" — that respawns a plugin an operator has disabled.
+            // We keep `Crashed`, release the lock so nothing else is blocked,
+            // and retry the whole set of predicates from scratch.
+            match self.lifecycle_db.enabled_row(id).await {
+                Ok(Some(true)) => {}
+                Ok(Some(false)) | Ok(None) => {
+                    tracing::info!(
+                        plugin_id = %id,
+                        "backoff elapsed but the plugin is no longer enabled; not respawning"
+                    );
+                    return;
+                }
+                Err(e) => {
+                    drop(guard);
+                    tracing::warn!(
+                        plugin_id = %id,
+                        error = %e,
+                        retry,
+                        "could not read the plugin row after backoff; keeping Crashed and retrying"
+                    );
+                    tokio::time::sleep(LIFECYCLE_DB_READ_RETRY_DELAY).await;
+                    continue;
+                }
+            }
+
+            // #1196 §2.6 / §1.3 — carry the crash window ACROSS the remove.
+            // The old code removed the entry and then relied on `spawn` reading
+            // `live.get(id)` to inherit the counters, which was necessarily
+            // `None` — so every respawn started from zero, the crash-window
+            // limit never fired and the backoff never advanced past its first
+            // step. Taking the values out before the remove is the fix.
+            let carried = {
+                let mut table = self.lock_table();
+                let carried = table.live.get(id).map(|rp| CrashWindow {
+                    crashes: rp.crashes_in_window,
+                    started: rp.window_started,
+                });
+                table.live.remove(id);
+                carried
+            };
+            if let Err(e) = self.spawn_under(&guard, carried).await {
+                tracing::error!(plugin_id = %id, error = %e, "respawn failed");
+                self.emit_crashed_under(&guard, &format!("respawn failed: {e}"))
+                    .await;
             }
             return;
         }
-
-        // Backoff then respawn. Index by (attempts - 1) clamped to the table.
-        let idx = (attempts as usize).saturating_sub(1);
-        let delay_ms = self
-            .backoff
-            .schedule_ms
-            .get(idx)
-            .copied()
-            .unwrap_or_else(|| *self.backoff.schedule_ms.last().expect("non-empty schedule"));
-        tracing::info!(
+        tracing::error!(
             plugin_id = %id,
-            delay_ms,
-            attempts,
-            "scheduling plugin respawn",
+            "gave up respawning after {LIFECYCLE_DB_READ_RETRIES} failed plugin-row reads; \
+             the plugin stays Crashed"
         );
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
-
-        // Drop the old entry's process/mcp before respawning so the channels
-        // close before we open new ones.
-        {
-            let mut table = self.lock_table();
-            table.live.remove(&id);
-        }
-        if let Err(e) = self.spawn(&id).await {
-            tracing::error!(plugin_id = %id, error = %e, "respawn failed");
-            self.emit_crashed(&id, &format!("respawn failed: {e}"))
-                .await;
-        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/// The crash-window counters a new live entry starts from.
+///
+/// `inherit` (the supervisor's explicit carry across its own `live.remove`)
+/// wins; otherwise we read whatever entry we are about to replace, which is
+/// what an explicit `spawn` after a crash needs — the `Crashed` entry is still
+/// there and its counters must not be zeroed.
+fn inherited_window(
+    table: &ProcessTable,
+    id: &str,
+    inherit: Option<CrashWindow>,
+) -> (u32, Instant) {
+    match inherit {
+        Some(w) => (w.crashes, w.started),
+        None => match table.live.get(id) {
+            Some(prev) => (prev.crashes_in_window, prev.window_started),
+            None => (0, Instant::now()),
+        },
+    }
+}
 
 /// #891 slice ④ — pure core of the registration-time workflow-id uniqueness
 /// check `PluginHost::spawn` runs. Returns the [`HostError::WorkflowConflict`]

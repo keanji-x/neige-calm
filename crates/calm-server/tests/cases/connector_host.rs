@@ -1962,11 +1962,29 @@ async fn a_4xx_body_echoing_the_query_never_leaks_a_partial_key() {
 }
 
 // ===========================================================================
-// §4 #11 — uninstall completing during an in-flight spawn must not resurrect
+// #1196 acceptance 5 (connector half) — uninstall vs an in-flight spawn
+//
+// Replaces `uninstall_during_an_in_flight_spawn_does_not_resurrect_the_registry_entry`,
+// which reached in and called `registry_remove()` directly and carried the
+// comment "there is no per-plugin lifecycle lock (risk R12)". There is one now,
+// so that comment was about to become a lie and the test was about to stop
+// describing anything a caller can do.
 // ===========================================================================
 
+/// The composite `uninstall` operation, run against a spawn that is on the
+/// wire, must be refused **with nothing done** — and must then succeed on an
+/// explicit retry.
+///
+/// The barrier is named: `StubServer::start_gated` holds the connector's
+/// `tools/list` reply, which pins `spawn_under` inside the guard. Without it
+/// the spawn could simply finish first and the uninstall would succeed on the
+/// first call, and every assertion below would still pass — a test that never
+/// once observed the lock. Hence the explicit `plugin_busy` assertion.
+///
+/// Mutation witness: drop the `try_lock_lifecycle` from `PluginHost::spawn`
+/// and the first `uninstall` returns 204 instead of 409.
 #[tokio::test]
-async fn uninstall_during_an_in_flight_spawn_does_not_resurrect_the_registry_entry() {
+async fn uninstall_is_refused_while_a_connector_spawn_is_in_flight() {
     let (release, gate) = oneshot::channel::<()>();
     let stub = StubServer::start_gated(StubMode::Normal, Some(gate)).await;
     let b = boot().await;
@@ -1975,37 +1993,142 @@ async fn uninstall_during_an_in_flight_spawn_does_not_resurrect_the_registry_ent
     seed_row(&b, CONNECTOR_ID).await;
     assert!(host.registry().get(CONNECTOR_ID).is_some());
 
-    // Start the spawn; it will block inside `tools/list`.
+    // Start the spawn; it will block inside `tools/list`, holding the guard.
     let spawn_host = Arc::clone(&host);
     let spawning = tokio::spawn(async move { spawn_host.spawn(CONNECTOR_ID).await });
-
     stub.wait_for_tools_list().await;
 
-    // ... and while it is on the wire, uninstall lands. `uninstall_plugin`
-    // does `stop()` (NotFound for a spawning id — treated as benign), deletes
-    // the DB row, then removes the registry entry. The in-flight spawn keeps
-    // going: there is no per-plugin lifecycle lock (risk R12).
-    host.registry_remove(CONNECTOR_ID);
-    assert!(host.registry().get(CONNECTOR_ID).is_none());
+    // ... and while it is on the wire, the operator uninstalls.
+    let err = host
+        .uninstall(CONNECTOR_ID)
+        .await
+        .expect_err("uninstall must be refused while the spawn holds the lock");
+    assert_eq!(
+        err.code(),
+        "plugin_busy",
+        "the refusal must be distinguishable from `plugin_conflict`: got {err:?}"
+    );
+    assert_eq!(err.status(), StatusCode::CONFLICT);
+
+    // Fail closed: DB row, registry entry and token row are all untouched.
+    assert!(
+        b.repo.plugin_get_by_id(CONNECTOR_ID).await.unwrap().is_some(),
+        "a refused uninstall must not delete the plugin row"
+    );
+    assert!(
+        host.registry().get(CONNECTOR_ID).is_some(),
+        "a refused uninstall must not remove the registry entry"
+    );
 
     let _ = release.send(());
-    let outcome = spawning.await.unwrap();
+    tokio::time::timeout(Duration::from_secs(20), spawning)
+        .await
+        .expect("spawn never returned")
+        .expect("spawn task panicked")
+        .expect("the spawn must still succeed: the refusal happened to the OTHER caller");
 
-    assert!(
-        outcome.is_err(),
-        "the spawn must not report success after its manifest was uninstalled"
-    );
-    assert!(
-        host.registry().get(CONNECTOR_ID).is_none(),
-        "the uninstalled manifest must NOT be resurrected into the registry \
-         by the in-flight spawn's materialization (§2.7(3))"
-    );
+    // The caller retries — reject semantics mean nothing resumed on its own.
+    host.uninstall(CONNECTOR_ID)
+        .await
+        .expect("uninstall succeeds once the lock is free");
+
+    assert!(host.registry().get(CONNECTOR_ID).is_none());
     assert!(host.registry().is_empty());
     assert!(
+        b.repo.plugin_get_by_id(CONNECTOR_ID).await.unwrap().is_none(),
+        "the plugin row must be gone"
+    );
+    assert!(
         host.status(CONNECTOR_ID).await.is_none(),
-        "no live/reserved entry may survive the abandoned spawn"
+        "no live/reserved entry may survive the uninstall"
     );
     assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+}
+
+// ===========================================================================
+// #1196 acceptance 8 — reload vs an in-flight spawn
+// ===========================================================================
+
+/// `reload` landing on a connector whose spawn is on the wire must be refused
+/// with the manifest untouched; the retry must actually re-point the connector
+/// at the new endpoint.
+///
+/// Barrier: the FIRST stub's gated `tools/list`. Terminal assertion: the new
+/// endpoint really received `initialize` / `tools/list`, and the new
+/// allow-list is what materialized — not merely "the reload returned 200".
+///
+/// Mutation witness: drop the `try_lock_lifecycle` from `reload` and the first
+/// call returns 200, having stopped a connector another task believes it owns.
+#[tokio::test]
+async fn reload_is_refused_while_a_spawn_is_in_flight_then_repoints_the_connector() {
+    let (release, gate) = oneshot::channel::<()>();
+    let old_stub = StubServer::start_gated(StubMode::Normal, Some(gate)).await;
+    let new_stub = StubServer::start(StubMode::Normal).await;
+    let b = boot().await;
+    write_connector(&b.plugins_dir, &old_stub.url(), 5_000, 0o600);
+    let host = b.host();
+    seed_row(&b, CONNECTOR_ID).await;
+
+    let spawn_host = Arc::clone(&host);
+    let spawning = tokio::spawn(async move { spawn_host.spawn(CONNECTOR_ID).await });
+    old_stub.wait_for_tools_list().await;
+
+    // Point the on-disk manifest at the new endpoint, restricted to ONE tool,
+    // then reload while the old spawn is still on the wire.
+    write_connector_with(
+        &b.plugins_dir,
+        &new_stub.url(),
+        Budgets::uniform(5_000),
+        0o600,
+    );
+    let err = host
+        .reload(CONNECTOR_ID)
+        .await
+        .expect_err("reload must be refused while the spawn holds the lock");
+    assert_eq!(err.code(), "plugin_busy", "got {err:?}");
+    assert_eq!(
+        host.registry().get(CONNECTOR_ID).map(|m| m
+            .mcp_http
+            .as_ref()
+            .expect("connector block")
+            .url
+            .clone()),
+        Some(old_stub.url()),
+        "a refused reload must not have republished the manifest"
+    );
+
+    let _ = release.send(());
+    tokio::time::timeout(Duration::from_secs(20), spawning)
+        .await
+        .expect("spawn never returned")
+        .expect("spawn task panicked")
+        .expect("spawn must succeed");
+
+    assert!(new_stub.methods().is_empty(), "nothing has hit the new endpoint yet");
+
+    host.reload(CONNECTOR_ID)
+        .await
+        .expect("reload succeeds once the lock is free");
+
+    // The retry did the real work: the NEW endpoint was handshaken.
+    assert!(
+        new_stub.methods().contains(&"tools/list".to_string()),
+        "the reloaded connector must have queried the new endpoint: {:?}",
+        new_stub.methods()
+    );
+    assert_eq!(
+        host.registry()
+            .get(CONNECTOR_ID)
+            .and_then(|m| m.mcp_http.as_ref().map(|b| b.url.clone())),
+        Some(new_stub.url())
+    );
+    assert!(
+        matches!(
+            host.status(CONNECTOR_ID).await.map(|s| s.status),
+            Some(PluginRuntimeStatus::Running)
+        ),
+        "the reloaded connector must be Running"
+    );
 }
 
 // ===========================================================================
@@ -2341,28 +2464,39 @@ fn the_connector_phase_ceiling_is_the_documented_one() {
 }
 
 // ===========================================================================
-// Round-5 finding 2 — decide-and-emit is serialized for EVERY emitter
+// #1196 acceptance 3 — the bad interleaving from the issue, mutation-driven
+//
+// Replaces `two_emitters_for_one_connector_never_interleave`, which asserted
+// `peak_concurrent_state_emits() == 1`. Under the lifecycle lock that probe is
+// vacuous: `stop` is now refused at the *entry*, so it never reaches an
+// emission at all, and the peak would read 1 even with every emission lock
+// deleted. The probe and its accessor have been retired with it.
 // ===========================================================================
 
-/// Two emitters for one connector must never be inside the emission critical
-/// section at the same time.
+/// The #1196 interleaving, driven through two real paths.
 ///
-/// The lock used to be taken by `reaffirm_running` and `stop` only, which left
-/// `spawn_mcp_http`'s trailing `Running`, the app-plugin spawn's `Running` and
-/// `publish_unavailable`'s `Unavailable` outside it. Any of those could start,
-/// `stop` could then remove the entry and persist `Disabled` under the lock,
-/// and the older unserialized emission would commit last — the same stale
-/// `Running` for a connector that no longer exists that `reaffirm_running` was
-/// added to prevent, reached through a different door.
+/// The spawn is pinned with its live `Running` entry already published and its
+/// `running` emission not yet committed (gated stub for the first half, a held
+/// DB writer transaction for the second). A real `stop` runs in that window.
 ///
-/// Driven through two REAL paths, deterministically: the spawn is parked inside
-/// `emit_state(Running)` (gated stub + a held DB writer), and a real `stop()`
-/// runs against it in that window.
+/// * it must be refused with `LifecycleBusy` and change **nothing**;
+/// * on an explicit retry after the spawn completes, the event log's tail must
+///   be `running` → `disabled`, and the live table must be empty.
 ///
-/// Mutation witness: drop the `lock_state` call from `emit_state` and the peak
-/// reaches 2.
+/// Mutation witness: delete the `try_lock_lifecycle` line from
+/// `PluginHost::spawn`. The `stop` then succeeds inside the window, commits
+/// `disabled` first, and the parked spawn commits `running` afterwards — the
+/// last word becomes `running` for a connector with no live entry, and the
+/// final assertion fails.
+///
+/// Barrier note: the held `write_in_tx` blocks **every** write in the database,
+/// not just this plugin's — including autocommit writes issued by anything else
+/// in the same fixture. Do not drive a second plugin here, and do not copy this
+/// barrier into a test that needs a row to change during the window (it cannot:
+/// `sqlite::memory:` gives readers no snapshot isolation, so the blocked write
+/// simply never commits and both orderings look identical).
 #[tokio::test]
-async fn two_emitters_for_one_connector_never_interleave() {
+async fn a_stop_cannot_split_a_spawn_between_its_table_write_and_its_emission() {
     let (release_gate, gate) = oneshot::channel::<()>();
     let stub = StubServer::start_gated(StubMode::Normal, Some(gate)).await;
     let b = boot().await;
@@ -2374,7 +2508,7 @@ async fn two_emitters_for_one_connector_never_interleave() {
     let spawning = tokio::spawn(async move { spawn_host.spawn(CONNECTOR_ID).await });
     stub.wait_for_tools_list().await;
 
-    // Park every emission: `emit_state` cannot commit while this is held.
+    // Park every emission: no `plugin.state` write can commit while this is held.
     let (held_tx, held_rx) = oneshot::channel::<()>();
     let (release_db, db_rx) = oneshot::channel::<()>();
     let repo = b.repo.clone();
@@ -2391,8 +2525,8 @@ async fn two_emitters_for_one_connector_never_interleave() {
     held_rx.await.expect("write tx never opened");
 
     // Let the spawn finish its network half: it materializes, publishes the
-    // live `Running` entry, and then parks inside `emit_state(Running)` —
-    // holding the per-id emission lock.
+    // live `Running` entry, and then parks inside its `running` emission —
+    // still holding the lifecycle guard.
     release_gate.send(()).expect("stub gate receiver gone");
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -2409,16 +2543,22 @@ async fn two_emitters_for_one_connector_never_interleave() {
         sleep(Duration::from_millis(5)).await;
     }
 
-    // The operator disables it right there. `stop` reaches its remove-and-emit
-    // tail and must WAIT for the in-flight emission rather than interleave.
-    let stop_host = Arc::clone(&host);
-    let stopping = tokio::spawn(async move { stop_host.stop(CONNECTOR_ID).await });
-    sleep(Duration::from_millis(300)).await;
-
-    assert_eq!(
-        host.peak_concurrent_state_emits(),
-        1,
-        "two emitters were inside the per-id emission critical section at once"
+    // The operator disables it right there.
+    let err = host
+        .stop(CONNECTOR_ID)
+        .await
+        .expect_err("stop must be refused inside the spawn's critical section");
+    assert!(
+        matches!(err, HostError::LifecycleBusy(ref id) if id == CONNECTOR_ID),
+        "expected LifecycleBusy, got {err:?}"
+    );
+    // Reject semantics: nothing happened, and nothing resumes on its own.
+    assert!(
+        matches!(
+            host.status(CONNECTOR_ID).await.map(|s| s.status),
+            Some(PluginRuntimeStatus::Running)
+        ),
+        "a refused stop must not have touched the live table"
     );
 
     let _ = release_db.send(());
@@ -2428,21 +2568,16 @@ async fn two_emitters_for_one_connector_never_interleave() {
         .expect("spawn never returned")
         .expect("spawn task panicked")
         .expect("spawn must succeed");
-    tokio::time::timeout(Duration::from_secs(20), stopping)
-        .await
-        .expect("stop never returned")
-        .expect("stop task panicked")
-        .expect("stop must succeed");
 
-    // Non-vacuity: emissions really did happen through the instrumented path.
-    assert_eq!(host.peak_concurrent_state_emits(), 1);
-    // And the last word is the correct one.
+    // Explicit retry — the loser did not queue.
+    host.stop(CONNECTOR_ID).await.expect("stop must succeed now");
+
     assert!(host.status(CONNECTOR_ID).await.is_none());
     let states = plugin_state_events(&b).await;
     assert_eq!(
-        states.last().map(String::as_str),
-        Some("disabled"),
-        "{states:?}"
+        states.iter().rev().take(2).rev().collect::<Vec<_>>(),
+        vec!["running", "disabled"],
+        "the event tail must be running → disabled, got {states:?}"
     );
 }
 
