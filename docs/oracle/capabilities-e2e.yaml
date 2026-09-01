@@ -342,10 +342,15 @@
     `/dev/reset` and every other `/dev/*` hook must be mounted ONLY by the `replay --serve`
     binary, never by production calm-server.
   why: >
-    helpers/reset.ts:16-17 — dev-only by design doc §6.3; these endpoints bypass the actor /
-    lifecycle authorization surface.
-  source: web/e2e/helpers/reset.ts:31-33
-  authoritative_test: web/e2e/helpers/reset.ts:31
+    Dev-only by design doc §6.3; these endpoints bypass the actor / lifecycle authorization
+    surface. The carrier is Rust: `replay.rs` builds the `/dev/*` sub-router inline and merges it
+    only into the `--serve` router, so production `calm-server` (`main.rs`) has no code path that
+    can mount it. The former citation, helpers/reset.ts:31-33, only *calls* the endpoint — it
+    cannot witness who mounts it, which is the whole claim. Rust carries no TS/CSS anchor, so the
+    entry is registered in anchor-unsupported.yaml; authoritative_test is NONE because nothing
+    asserts the negative today (it is an architectural fact of where the router is built).
+  source: crates/calm-server/src/bin/replay.rs:226-245
+  authoritative_test: NONE
   owner_slice: none/e2e/infra
   intentional_omission: true
   runtime_layer: none
@@ -378,11 +383,17 @@
   kind: invariant
   family: seed-helpers
   statement: >
-    `POST /api/waves` requires both `cwd` and `theme`; a body missing `theme` is rejected 422.
+    Every wave the e2e suite creates is posted through one body shape — `cove_id`, `cwd`,
+    `attach_folder`, and an inert dark theme sentinel — so no fixture can seed a wave that
+    omits a field the kernel requires.
   why: >
-    helpers/reset.ts:95-104 — #250 PR2 made cwd required; #177 made `theme` required
-    end-to-end. Every wave-creating fixture in the suite carries an inert dark sentinel.
-  source: web/e2e/helpers/reset.ts:105-114
+    #250 PR2 made cwd required; #177 made theme required end-to-end. Funnelling every fixture
+    through this one literal is what keeps the suite from drifting away from the server's
+    accepted body. The server-side contract itself (a body missing theme is rejected 422) is
+    a Rust-side fact proven by crates/calm-server/tests/cases/theme_required.rs and has no
+    oracle entry of its own; this entry deliberately does not claim it, because nothing in
+    the cited TypeScript can witness a rejection.
+  source: web/e2e/helpers/reset.ts:106-112
   authoritative_test: web/e2e/helpers/reset.ts:105
   owner_slice: features/wave/create
   intentional_omission: false
@@ -4059,9 +4070,16 @@
   statement: >
     The exit badge must also cover signal and non-zero exits (`exit 137`, `signal_killed`), not
     only `exit 0`.
-  why: terminal-clean-exit.spec.ts:12-15 (#306) — the badge carries the full exit disposition.
-  source: web/src/XtermView.tsx:60-90 web/e2e/terminal-clean-exit.spec.ts:120-127
-  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:126
+  why: >
+    #306 — the badge carries the full exit disposition: `badgeLabel` renders "signal" when
+    `signal_killed`, and `badgeKind` splits non-zero codes into the user-abort palette (130/141)
+    and the error palette. TEST GAP, recorded rather than papered over: nothing in the suite
+    asserts either branch. The only badge e2e (terminal-clean-exit.spec.ts:120-127) asserts
+    `exit 0` plus the success palette, i.e. exactly the case this statement says is not enough,
+    so citing it as the authoritative test would be circular. authoritative_test is NONE until a
+    test covers the signal / non-zero branches.
+  source: web/src/shared/components/CardExitBadge.tsx:22-25,46-72
+  authoritative_test: NONE
   owner_slice: systems/terminal/card
   intentional_omission: false
   runtime_layer: systems

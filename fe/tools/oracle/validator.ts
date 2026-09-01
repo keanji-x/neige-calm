@@ -253,7 +253,12 @@ const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   'children', 'props', 'state', 'ref', 'refs', 'key', 'keys', 'node', 'nodes', 'element', 'elements',
   'event', 'events', 'handler', 'handlers', 'render', 'component', 'components', 'style', 'styles',
   'class', 'classname', 'value', 'values', 'data', 'type', 'types', 'name', 'names', 'index', 'item',
-  'items', 'list', 'lists', 'view', 'views', 'text', 'label', 'title', 'button', 'buttons', 'input',
+  'items', 'list', 'lists', 'text', 'label', 'title', 'button', 'buttons', 'input',
+  // `view` / `views`: a React/DOM word (`XtermView`, `view` state, `views` arrays) that also silently
+  // exempts INV-UI-DIALOG-003, whose statement is a proof-of-absence ("the focus effect's deps must NOT
+  // contain `view`"). Admitting `view` would red that entry for saying the word it forbids, which is the
+  // inverse of what an anchor means. Disclosed here rather than left implicit, the way `change` is.
+  'view', 'views',
   'form', 'span', 'null', 'true', 'false', 'undefined', 'void', 'this', 'that', 'return', 'async',
   'await', 'const', 'function', 'string', 'number', 'boolean', 'object', 'array', 'error', 'errors',
   // `change` / `changes` read as UI copy in a statement but land on a parameter name in the cited file —
@@ -266,6 +271,18 @@ const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   // Domain words so pervasive in this repo that every candidate file contains them.
   'card', 'cards', 'wave', 'waves', 'task', 'tasks', 'panel', 'panels', 'page', 'pages', 'user',
   'users', 'agent', 'agents', 'server', 'client', 'api', 'app', 'core', 'web', 'test', 'tests',
+  // The same shape, found the hard way: each of these is a whole subsystem of this repo, so it occurs in
+  // any file a statement about that subsystem could plausibly cite, and hitting it proves only that the
+  // author cited a file from the right area — never that the cited *lines* carry the claim.
+  //   `theme` / `themes`   — 89 sources: the theme token pipeline, every terminal theme, every fixture
+  //                          that builds a wave (`theme: { fg, bg }`). It is what made E2E-INV-INFRA-019
+  //                          go green on a helper that sends a *valid* body, while the statement claims a
+  //                          body *missing* the field is rejected.
+  //   `terminal` / `terminals` — 110 sources: a card kind, a route segment, a CSS namespace.
+  //   `codex`              — 105 sources: the agent backend's name, in imports, types and copy alike.
+  //   `cove` / `coves`     — 110/61 sources: the top-level container every wave hangs off.
+  //   `report` / `reports` — 117 sources: a card kind, a page, a rail, an API noun.
+  'theme', 'themes', 'terminal', 'terminals', 'codex', 'cove', 'coves', 'report', 'reports',
 ]);
 
 /** An anchor plus how it must be matched; see `codeAnchorLines` for why only display copy ignores case. */

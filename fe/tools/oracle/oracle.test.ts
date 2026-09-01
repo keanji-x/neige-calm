@@ -25,11 +25,19 @@ const anchorPositionShapes = [
   ['ts-template-comment.ts', ['templateCommentAnchor'], { templateCommentAnchor: [] }],
 ] as const;
 
-/** Anchor-class fixtures that must stay silent: the branch under test anchors, or refuses to anchor. */
+/**
+ * Anchor-class fixtures that must stay silent: the branch under test anchors, or refuses to anchor.
+ *
+ * The last three are guard fixtures (#1148 review): each names a threshold, not a branch. Relaxing the
+ * threshold — DISPLAY_COPY_MINIMUM 6 → 3, BACKTICK_WORD_MINIMUM 4 → 2, dropping the CJK veto — admits a
+ * candidate that occurs in no cited file, so the fixture turns red. Without them the four guard values were
+ * unpinned: every one of them could be loosened with the whole anchor-class suite still green.
+ */
 const anchorClassGreen = [
   'display-copy-with-identifier', 'display-copy-placeholder', 'display-copy-case-insensitive',
   'display-copy-typography-split', 'backtick-path-in-range', 'backtick-word-in-range',
   'generic-word-not-anchored', 'generic-display-copy-not-anchored',
+  'display-copy-below-minimum', 'backtick-word-below-minimum', 'display-copy-cjk-mixed',
 ] as const;
 
 /** Anchor-class fixtures that must red, each pinning exactly one extraction branch. */
@@ -37,6 +45,10 @@ const anchorClassRed = [
   ['display-copy-range-miss', 'range-miss', 'INV-TEST-010'],
   ['backtick-path-range-miss', 'range-miss', 'INV-TEST-015'],
   ['backtick-word-range-miss', 'range-miss', 'INV-TEST-017'],
+  // Guard fixture for the matching layer, not the extraction layer: the statement says `cardId` and the
+  // cited line declares `CardId`. Making identifier matching case-insensitive — the way display copy
+  // matches — would silently green this, so the red is the pin.
+  ['identifier-case-sensitive-miss', 'not-in-file', 'INV-TEST-023'],
 ] as const;
 
 function run(rule: string, kind: 'positive' | 'negative') {

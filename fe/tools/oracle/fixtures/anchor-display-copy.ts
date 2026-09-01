@@ -5,3 +5,4 @@ export const decoyLine = 'nothing anchors on this line';
 export const whoamiPath = '/api/auth/whoami';
 export const routerOption = 'basepath';
 export const emptyTranscript = 'No messages yet &mdash; ask below.';
+export type CardId = string;

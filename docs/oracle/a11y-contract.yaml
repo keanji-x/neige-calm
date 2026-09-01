@@ -182,11 +182,15 @@
   kind: invariant
   family: wave-semantics
   statement: >
-    Sidebar "waiting on you" 行的 accessible name 必须只是 wave title；其 `title` 属性
-    （`<cove> · <title>`）纯属信息性，不得进入 name
+    Sidebar "waiting on you" 行的 accessible name 由行按钮的可见内容算出 —— `side-wave-title`
+    与 `side-wave-cove` 两个 span，即 wave 标题加 cove 名；按钮不带 aria-label／aria-labelledby，
+    传给它的 `title` 属性（`<cove> · <title>`）纯属信息性，不进入 name
   why: >
-    §2.2 明示 title attribute is informational only
-  source: web/src/shared/components/Sidebar.tsx:271-290
+    §2.2 明示 title attribute is informational only —— 这一半仍然成立，且是这条的真正约束：
+    只要行按钮不长出 aria-label，name 就等于渲染出来的文字。原文案还写着「name 必须只是 wave
+    title」，与实现相反：cove 名是同一个按钮里可见的 span，本来就该进 name（#1148 裁决：文案错，
+    不是代码缺陷；隐藏它反而会让屏幕阅读器听不到跨 cove 的消歧信息）。
+  source: web/src/shared/components/Sidebar.tsx:278-283,653-660
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false

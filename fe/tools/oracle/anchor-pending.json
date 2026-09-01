@@ -13,9 +13,9 @@
   },
   {
     "id": "E2E-CAP-ADDPANEL-007",
-    "subtype": "range-miss",
+    "subtype": "not-in-file",
     "issue": "#1170",
-    "note": "the `terminal` / `codex` menuitem words occur elsewhere in the spec but never inside the cited range; re-pointing would land on an unrelated case"
+    "note": "#1148 A0 downgraded `terminal` / `codex` to stop words — they name whole subsystems, so hitting them elsewhere in the spec proved nothing; the sole surviving anchor, aria-hidden, appears in this file only inside a comment (a11y-keyboard.spec.ts:465), so the entry is now honestly not-in-file rather than range-miss"
   },
   {
     "id": "E2E-CAP-CWD-005",
