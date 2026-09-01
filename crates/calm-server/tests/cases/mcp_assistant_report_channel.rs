@@ -104,6 +104,44 @@ fn task_fence(declared_by: &str, key: &str) -> String {
     )
 }
 
+/// A task declaration that is **gate-clean**: it carries a `no_gate_reason`,
+/// so it satisfies the wave's default `require_task_gates` policy and its
+/// only remaining barrier to schedulability is the `ready` flag.
+///
+/// `task_fence` above is deliberately *not* this: it has no gate and no
+/// `no_gate_reason`, so it is unschedulable no matter who writes it. That is
+/// fine for the equivalence assertions, but it cannot carry §7 P2's
+/// counterexample, which is about a write that would have produced a
+/// dispatchable task.
+fn gated_task_fence(key: &str, ready: bool) -> String {
+    render_fence(
+        KIND_TASK,
+        &json!({
+            "key": key,
+            "kind": "codex",
+            "goal": "ship it",
+            "ready": ready,
+            "declared_by": "spec",
+            "no_gate_reason": "fixture: this key needs no verification gate",
+        }),
+    )
+}
+
+/// `(key, status)` of every row in the wave's task projection, which is what
+/// "a schedulable task" means concretely: `tasks_rebuild_tx` runs inside the
+/// same write transaction as the report edit, and the scheduler reads these
+/// rows and nothing else.
+async fn task_rows(boot: &Boot) -> Vec<(String, String)> {
+    let pool = boot.repo.sqlite_pool().expect("sqlite-backed fixture repo");
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT key, status FROM tasks WHERE wave_id = ?1 ORDER BY key",
+    )
+    .bind(boot.wave_id.as_str())
+    .fetch_all(&pool)
+    .await
+    .expect("read the task projection")
+}
+
 /// Seed the report with prose plus **two** live task declarations, one
 /// signed by the spec and one by the user.
 ///
@@ -449,9 +487,115 @@ async fn an_assistant_may_not_declare_a_task_block() {
     );
 }
 
+/// §7 P2's counterexample in its load-bearing form: the refused assistant
+/// write is one that **would have produced a dispatchable task**, and the
+/// control group proves this fixture can produce one.
+///
+/// Three steps, because each of the first two alone is satisfiable by an
+/// accident:
+///
+/// 1. the **spec** declares a gate-clean task with `ready: false` — no task
+///    row, because the declaration is withdrawn, not because the environment
+///    forbids tasks;
+/// 2. the **assistant** flips exactly that block to `ready: true` — refused,
+///    and still no task row;
+/// 3. the **spec** makes the identical edit — a `pending` row appears.
+///
+/// Step 3 is what makes step 2 mean something. Without it "no task row after
+/// the assistant's write" would stay green if the wave simply could not carry
+/// a schedulable task at all (which is exactly the state the earlier P2
+/// fixtures are in: their fences carry neither a gate nor a `no_gate_reason`,
+/// so under the wave's default `require_task_gates` they project no
+/// schedulable row regardless of the writer). Remove the P2 guard and step 2
+/// does not merely stop erroring — it grows the same `pending` row step 3
+/// does.
+#[tokio::test]
+async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
+    let boot = boot().await;
+
+    // 1. Spec seeds a gate-clean but withdrawn declaration.
+    let withheld = gated_task_fence("dispatchable", false);
+    let released = gated_task_fence("dispatchable", true);
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({
+            "body": format!("# Plan\n\nthe original prose\n\n{withheld}"),
+            "summary": "seed",
+            "if_doc_rev": doc_rev(&boot).await,
+        }),
+    )
+    .await
+    .expect("the spec may declare a not-yet-ready task");
+    assert_eq!(
+        task_rows(&boot).await,
+        Vec::<(String, String)>::new(),
+        "a `ready: false` declaration projects no task row — this is the \
+         baseline the next two steps are measured against"
+    );
+
+    // 2. The assistant flips exactly that block to ready.
+    let marked = marked_text(&boot, assistant_identity(&boot)).await;
+    let flipped = marked.replace(&withheld, &released);
+    assert_ne!(
+        flipped, marked,
+        "the fixture's fence must round-trip byte-for-byte, or step 2 is not \
+         actually flipping `ready`"
+    );
+    let before = body_text(&boot).await;
+    let err = call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        assistant_identity(&boot),
+        json!({ "body": flipped.clone(), "if_doc_rev": doc_rev(&boot).await }),
+    )
+    .await
+    .expect_err("an assistant releasing a spec-declared task must be refused");
+    assert_eq!(err.code, RpcError::INVALID_PARAMS);
+    assert_eq!(
+        before,
+        body_text(&boot).await,
+        "the refused write left the report untouched"
+    );
+    assert_eq!(
+        task_rows(&boot).await,
+        Vec::<(String, String)>::new(),
+        "and produced no dispatchable task"
+    );
+
+    // 3. Control: the spec makes the identical edit and a task appears.
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": flipped, "if_doc_rev": doc_rev(&boot).await }),
+    )
+    .await
+    .expect("the spec releases its own declaration");
+    assert_eq!(
+        task_rows(&boot).await,
+        vec![("dispatchable".to_string(), "pending".to_string())],
+        "the control group proves this exact edit does produce a schedulable \
+         task, so step 2's empty projection is the guard's doing"
+    );
+}
+
 /// The three shapes that reach a task block someone else declared. All of
 /// them funnel through the same before/after diff, which is why the guard
 /// lives there and not in a handler.
+///
+/// These three assert `before == after` on the report body rather than
+/// counting task rows, and that is sufficient — but only because of a fact
+/// worth writing down, since the assertion is otherwise strictly weaker than
+/// the one in `an_assistant_may_not_flip_a_spec_task_to_ready` above:
+/// `tasks_rebuild_with_tree_term_tx` (`wave_report.rs:128-151`) projects the
+/// task table from the wave-report card's `payload` + `body_crdt` and nothing
+/// else. It is a pure function of the report document. All three attempts
+/// here are refused as whole writes, so the document is bit-identical before
+/// and after; an unchanged input to a pure function cannot yield a changed
+/// projection. "No task was created" therefore follows from `before == after`
+/// and does not need its own assertion here.
 #[tokio::test]
 async fn an_assistant_may_not_modify_or_delete_an_existing_task_block() {
     let boot = boot().await;

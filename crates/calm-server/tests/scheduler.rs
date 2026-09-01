@@ -22,6 +22,8 @@
 //!   §8 sweep arms — `sweep_reconciles_running_terminal_with_recorded_exit`,
 //!     `sweep_resubmits_dispatched_task_with_missing_operation`.
 
+mod support;
+
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -185,17 +187,8 @@ async fn boot() -> Boot {
         SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
-    // #1189 §3.6 — `Repo::card_create` persists `cards.role = 'worker'`
-    // unconditionally; production mints the spec card through
-    // `card_create_with_id_tx(.., CardRole::Spec, ..)`. The recorder gate now
-    // resolves session → card → {role, wave} with a live `cards` read inside
-    // the write tx, so a cache-only pin leaves this fixture's "spec card"
-    // persisted as a worker and every report write denied.
-    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
-        .bind(spec_card.id.as_str())
-        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture repo"))
-        .await
-        .expect("persist spec card role");
+    support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
+        .await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
     seed_runtime_session(
         &sqlx_repo,
@@ -1560,13 +1553,12 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
         CardRole::Spec,
         template_wave.id.clone(),
     );
-    // #1189 §3.6 — the recorder gate reads `cards.role` in-tx and
-    // `card_create` persists `worker` regardless of `kind`.
-    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
-        .bind(template_spec.id.as_str())
-        .execute(&boot.repo.sqlite_pool().expect("sqlite pool"))
-        .await
-        .expect("persist template spec card role");
+    support::mcp::set_persisted_card_role(
+        boot.repo.as_ref(),
+        template_spec.id.as_str(),
+        CardRole::Spec,
+    )
+    .await;
     seed_runtime_session_in_pool(
         &boot.repo.sqlite_pool().expect("sqlite pool"),
         template_spec.id.as_str(),

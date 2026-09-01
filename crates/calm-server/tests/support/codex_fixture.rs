@@ -343,11 +343,8 @@ pub async fn boot_forge_e2e_fixture(
     // through a live `cards` read on EVERY report write, injected paths
     // included, so a persisted role that contradicts the fixture's own
     // story denies writes the test never meant to deny.
-    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
-        .bind(spec_card.id.as_str())
-        .execute(sqlx_repo.pool())
-        .await
-        .expect("persist spec card DB role");
+    super::mcp::set_persisted_card_role(repo_dyn.as_ref(), spec_card.id.as_str(), CardRole::Spec)
+        .await;
     // Production `routes::waves::create_wave` atomically mints the wave-report
     // card alongside the spec card for EVERY wave (waves.rs) — no production
     // wave ever lacks one. This fixture bypasses that route (direct

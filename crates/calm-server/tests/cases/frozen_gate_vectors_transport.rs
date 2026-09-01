@@ -44,22 +44,33 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const TEST_BUDGET: Duration = Duration::from_secs(5);
-/// 3 role files × 8 + the 6 assistant / cross-wave cells #1189 S2 adds.
+/// 3 role files × 8 + the 6 assistant / cross-wave cells #1189 S2 adds + the
+/// 2 surviving cells of the old `02_planner_non_root.json`.
 ///
-/// #1189 S2 retired `02_planner_non_root.json` (8 cells) outright rather
-/// than re-expecting it. Its premise was "a session bound to this wave's
-/// spec card that is not the wave root", and that shape cannot exist:
-/// `worker_sessions.card_id` is UNIQUE (one live session per card) and
-/// `idx_cards_one_spec_per_wave` (migration 0008) allows one spec card per
-/// wave, so the wave's spec session and its root session are the same row.
-/// The cell only ever ran because the old fixture bound every session to a
-/// synthetic `card-<session>` id that no `cards` row backed. Its role-gate
-/// half was a byte-for-byte duplicate of `01_root.json` (the role gate
-/// never reads the session for an `AiSpec` actor), and its recorder half —
-/// "root-ness is what grants" — is the criterion this slice removes, now
-/// pinned in the representable direction by `05_assistant.json`'s last cell
-/// and by `decision_gate`'s `a_root_marked_worker_session_is_still_refused`.
-const EXPECTED_PRINCIPAL_DELTA_VECTOR_COUNT: usize = 30;
+/// #1189 S2 retired **6** of that file's 8 cells: all six carried
+/// `recorder_gate: false`, and the role gate never reads the session for an
+/// `AiSpec` actor (`enforce_role(&actor, ..)` below takes no session at all),
+/// so they were byte-for-byte duplicates of `01_root.json`'s corresponding
+/// cells.
+///
+/// The 2 `recorder_gate: true` cells are **kept**, in
+/// `02_superseded_spec_session.json`, still expecting Deny. Their old premise
+/// ("bound to this wave's spec card but not the wave root") was denied by the
+/// root criterion this slice removes; their new premise is that the session on
+/// that card is `superseded`, and the liveness check in `decide_recorder` is
+/// the only thing refusing them. That makes them the regression nails for that
+/// check — nothing else in the corpus covers it (`05_assistant.json`'s last
+/// two cells pin the orthogonal cross-wave axis, and `decision_gate`'s
+/// `a_root_marked_worker_session_is_still_refused` pins the opposite
+/// direction).
+///
+/// Note the old comment's schema claim was wrong: `ws_one_active_per_card`
+/// (migration `0055_drop_runtimes.sql:200-202`) is a **partial** unique index
+/// — `WHERE state IN ('starting','running','idle','turn_pending')` — so
+/// `worker_sessions.card_id` is not UNIQUE and a card may carry any number of
+/// non-active sessions alongside its one live one. That is exactly why the
+/// superseded fixture below is representable.
+const EXPECTED_PRINCIPAL_DELTA_VECTOR_COUNT: usize = 32;
 
 type IdentityCaptureRx = mpsc::UnboundedReceiver<ToolCallIdentity>;
 
@@ -637,36 +648,63 @@ impl PrincipalFixture {
             &home_wave,
             &away_wave,
             &[
-                ("session-root", &spec, WorkerContract::Planner, &home_wave),
+                (
+                    "session-root",
+                    &spec,
+                    WorkerContract::Planner,
+                    &home_wave,
+                    WorkerSessionState::Running,
+                ),
+                // #1189 §3.6 liveness — the *superseded* predecessor of
+                // `session-root` on the very same Spec card. This is what a
+                // resume leaves behind: `session_supersede_replace_tx` keeps
+                // the old row (same `card_id`, same wave), flips it to
+                // `superseded`, and repoints `waves.root_session_id` at the
+                // successor. Both halves of the card criterion still admit
+                // it, so `decide_recorder`'s liveness check is the only thing
+                // between it and the report. `ws_one_active_per_card` is
+                // partial, so it coexists with the running row.
+                (
+                    "session-planner-superseded",
+                    &spec,
+                    WorkerContract::Planner,
+                    &home_wave,
+                    WorkerSessionState::Superseded,
+                ),
                 (
                     "session-executor",
                     &executor,
                     WorkerContract::Executor,
                     &home_wave,
+                    WorkerSessionState::Running,
                 ),
                 (
                     "session-validator",
                     &validator,
                     WorkerContract::Validator,
                     &home_wave,
+                    WorkerSessionState::Running,
                 ),
                 (
                     "session-assistant",
                     &assistant,
                     WorkerContract::Executor,
                     &home_wave,
+                    WorkerSessionState::Running,
                 ),
                 (
                     "session-away-assistant",
                     &away_assistant,
                     WorkerContract::Executor,
                     &away_wave,
+                    WorkerSessionState::Running,
                 ),
                 (
                     "session-away-spec",
                     &away_spec,
                     WorkerContract::Planner,
                     &away_wave,
+                    WorkerSessionState::Running,
                 ),
             ],
         )
@@ -674,6 +712,7 @@ impl PrincipalFixture {
 
         let subst = vec![
             ("$ROOT_SESSION", "session-root".to_string()),
+            ("$PLANNER_SESSION", "session-planner-superseded".to_string()),
             ("$EXECUTOR_SESSION", "session-executor".to_string()),
             ("$VALIDATOR_SESSION", "session-validator".to_string()),
             ("$ASSISTANT_SESSION", "session-assistant".to_string()),
@@ -720,12 +759,7 @@ async fn seed_role_card(
         })
         .await
         .unwrap();
-    sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
-        .bind(role.as_db_str())
-        .bind(card.id.as_str())
-        .execute(repo.pool())
-        .await
-        .unwrap();
+    crate::support::mcp::set_persisted_card_role(repo, card.id.as_str(), role).await;
     cache.insert(card.id.clone(), role, wave.clone());
     CardId::from(card.id.as_str())
 }
@@ -734,13 +768,13 @@ async fn seed_sessions(
     repo: &SqlxRepo,
     home_wave: &WaveId,
     away_wave: &WaveId,
-    sessions: &[(&str, &CardId, WorkerContract, &WaveId)],
+    sessions: &[(&str, &CardId, WorkerContract, &WaveId, WorkerSessionState)],
 ) {
     let mut tx = repo.pool().begin().await.unwrap();
-    for (id, card, contract, wave) in sessions {
+    for (id, card, contract, wave, state) in sessions {
         session_insert_tx(
             &mut tx,
-            worker_session(id, (*wave).clone(), (*card).clone(), *contract),
+            worker_session(id, (*wave).clone(), (*card).clone(), *contract, *state),
         )
         .await
         .unwrap();
@@ -767,6 +801,7 @@ fn worker_session(
     wave_id: WaveId,
     card_id: CardId,
     contract: WorkerContract,
+    state: WorkerSessionState,
 ) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
@@ -776,7 +811,7 @@ fn worker_session(
         contract,
         parent_session_id: None,
         requester_session_id: None,
-        state: WorkerSessionState::Running,
+        state,
         mcp_token_hash: None,
         thread_id: None,
         agent_session_id: None,

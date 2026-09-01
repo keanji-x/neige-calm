@@ -260,8 +260,20 @@ impl PrincipalDecisionGate {
     /// to be the *only* spec-roled session that may record, which #1189
     /// deliberately gives up (an assistant is by construction not root).
     ///
-    /// Every unresolvable step denies: no session row, a cardless session,
-    /// an unknown card, an unknown card wave.
+    /// Liveness is checked explicitly, mirroring
+    /// [`enforce_role_resolving_session`]: `session_get_tx` is a plain
+    /// `WHERE id = ?1` with no state filter, so a `superseded`/`exited`
+    /// row still resolves and still carries its `card_id`. The old
+    /// root-session criterion got liveness for free (the `waves.root_session_id`
+    /// pointer moves off a session when it is superseded); the card criterion
+    /// does not, so the check has to be written down. Production reaches this
+    /// state on every resume: `session_supersede_replace_tx` leaves the old
+    /// row in place — same card, same wave, state `superseded` — and repoints
+    /// root at the successor.
+    ///
+    /// Every unresolvable step denies: no session row, a session that is no
+    /// longer an active authority, a cardless session, an unknown card, an
+    /// unknown card wave.
     pub async fn decide_recorder<T>(&self, tx: &mut T, wave: &WaveId) -> Result<GateDecision>
     where
         T: WriteTx + ?Sized + Send,
@@ -273,9 +285,15 @@ impl PrincipalDecisionGate {
         };
         let Some(session) = tx.read_worker_session(session_id).await? else {
             return Ok(GateDecision::Deny(format!(
-                "session {session_id} has no live session row"
+                "session {session_id} has no session row"
             )));
         };
+        if !session.state.is_active_authority() {
+            let state = session.state;
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} is no longer an active authority (state {state:?})"
+            )));
+        }
         let Some(card_id) = session.card_id else {
             return Ok(GateDecision::Deny(format!(
                 "session {session_id} is not bound to a card"
@@ -690,6 +708,87 @@ mod tests {
                 .recorder_grant(&mut tx, &WaveId::from("wave-1"))
                 .await
                 .expect("unknown card is a denial, not an error")
+        );
+    }
+
+    /// #1189 §3.6 liveness — a session row whose card passes *both* halves of
+    /// the recorder criterion, parameterised only on `worker_sessions.state`.
+    /// `session_get_tx` is `WHERE id = ?1` with no state filter, so every one
+    /// of these rows resolves; only `is_active_authority` separates them.
+    async fn recorder_decision_for_state(state: WorkerSessionState) -> GateDecision {
+        let mut session = worker_session("s-spec", Some(CardId::from("card-spec")));
+        session.state = state;
+        let mut tx =
+            FakeWriteTx::with_worker_session(session).with_card("card-spec", CardRole::Spec, "w-1");
+        PrincipalDecisionGate::new(agent("s-spec"))
+            .decide_recorder(&mut tx, &WaveId::from("w-1"))
+            .await
+            .expect("recorder decision computes")
+    }
+
+    /// The predecessor row a resume leaves behind must not keep recording
+    /// rights. `session_supersede_replace_tx` keeps the old row bound to the
+    /// same card on the same wave — so the card criterion alone still admits
+    /// it — and only moves `waves.root_session_id`. The old root criterion got
+    /// this for free; the card criterion has to check it explicitly.
+    #[tokio::test]
+    async fn recorder_grant_refuses_a_session_that_is_no_longer_an_active_authority() {
+        for state in [
+            WorkerSessionState::Superseded,
+            WorkerSessionState::Exited,
+            WorkerSessionState::Failed,
+        ] {
+            assert!(
+                matches!(
+                    recorder_decision_for_state(state).await,
+                    GateDecision::Deny(_)
+                ),
+                "a {state:?} session on this wave's spec card must not record"
+            );
+        }
+        for state in [
+            WorkerSessionState::Starting,
+            WorkerSessionState::Running,
+            WorkerSessionState::Idle,
+            WorkerSessionState::TurnPending,
+        ] {
+            assert_eq!(
+                recorder_decision_for_state(state).await,
+                GateDecision::Allow,
+                "a {state:?} session on this wave's spec card still records"
+            );
+        }
+    }
+
+    /// The deny message used to claim "no live session row" for a read that is
+    /// not a live query at all. The two failures are now distinct facts and
+    /// must stay distinguishable, or the message is decoration again.
+    #[tokio::test]
+    async fn recorder_deny_distinguishes_a_missing_row_from_a_dead_one() {
+        let mut tx = FakeWriteTx::new();
+        let missing = PrincipalDecisionGate::new(agent("ghost"))
+            .decide_recorder(&mut tx, &WaveId::from("w-1"))
+            .await
+            .expect("missing row is a denial, not an error");
+        let GateDecision::Deny(missing) = missing else {
+            panic!("a session with no row must be denied");
+        };
+        assert!(
+            missing.contains("has no session row"),
+            "missing-row denial should say the row is absent, got {missing:?}"
+        );
+
+        let dead = recorder_decision_for_state(WorkerSessionState::Superseded).await;
+        let GateDecision::Deny(dead) = dead else {
+            panic!("a superseded session must be denied");
+        };
+        assert!(
+            dead.contains("is no longer an active authority") && dead.contains("Superseded"),
+            "dead-row denial should name the state it found, got {dead:?}"
+        );
+        assert_ne!(
+            missing, dead,
+            "the two denials must not collapse into one message"
         );
     }
 

@@ -135,13 +135,23 @@ async fn seed_wave_root_session(
 /// A live, card-bound, non-root session row. The recorder gate resolves
 /// session → card → {role, wave} against these rows, so a test identity
 /// without one is denied before any of the S2 behaviour is reached.
+///
+/// Contract is `Executor`, not `Planner`, and that is load-bearing:
+/// `session_mirror.rs:266-270` repoints `waves.root_session_id` at *any*
+/// session whose `contract == Planner` and whose state is an active
+/// authority. A Planner-contract session on the assistant card would
+/// therefore steal the wave root from the spec card the moment it went live
+/// — a shape that never occurs in production and that would make these tests
+/// a false reference for S3. Matches `frozen_gate_vectors_transport.rs`,
+/// which seeds its assistant sessions the same way.
 async fn seed_non_root_session(
     repo: &dyn RepoEventWrite,
     wave_id: &WaveId,
     card_id: &CardId,
     session_id: &str,
 ) {
-    let session = planner_session(session_id, wave_id.clone(), card_id.clone());
+    let mut session = planner_session(session_id, wave_id.clone(), card_id.clone());
+    session.contract = WorkerContract::Executor;
     calm_server::db::write_in_tx_typed(repo, move |tx| {
         Box::pin(async move {
             session_insert_tx(tx, session)

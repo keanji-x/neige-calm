@@ -454,13 +454,7 @@ impl CardDecisionSink {
                 principal,
                 wave_id: wave.id.clone(),
             });
-        // Exhaustive on purpose: a future role reaching this funnel has to
-        // state its attribution and its auto-promote verdict rather than
-        // inherit the spec's by falling into a `_` arm.
-        let (author, auto_promote_draft) = match identity.role {
-            CardRole::Assistant => (EditAuthor::Assistant, false),
-            CardRole::Spec | CardRole::Worker | CardRole::ReportCard => (EditAuthor::Spec, true),
-        };
+        let (author, auto_promote_draft) = report_op_attribution(identity.role)?;
         persist_report_with_shadow(
             self.repo.as_ref(),
             &self.events,
@@ -478,6 +472,30 @@ impl CardDecisionSink {
         )
         .await
     }
+}
+
+/// #1189 §3.2a / §3.4 — the role → (attribution, auto-promote) decision for
+/// every write that reaches [`CardDecisionSink::commit_report_op`].
+///
+/// Exhaustive on purpose (no `_` arm): a future role reaching this funnel has
+/// to state its attribution and its auto-promote verdict rather than inherit
+/// the spec's by default.
+///
+/// `Worker` and `ReportCard` are refused outright rather than folded in with
+/// `Spec`. Folding them in would attribute their edits to the spec *and* hand
+/// them auto-promote; today the five entry points' `require_role_any([Spec,
+/// Assistant])` masks that, but S3 is about to move the role surface, and this
+/// funnel must not be the thing that has to be re-audited when it does.
+fn report_op_attribution(role: CardRole) -> Result<(EditAuthor, bool), CalmError> {
+    Ok(match role {
+        CardRole::Assistant => (EditAuthor::Assistant, false),
+        CardRole::Spec => (EditAuthor::Spec, true),
+        role @ (CardRole::Worker | CardRole::ReportCard) => {
+            return Err(CalmError::Forbidden(format!(
+                "card role {role:?} may not write the wave report"
+            )));
+        }
+    })
 }
 
 struct CardDecisionSinkRecorderShadowProbe {
@@ -610,6 +628,35 @@ mod tests {
     use tracing_subscriber::layer::Context as TracingContext;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::{Layer, registry as tracing_registry};
+
+    /// #1189 §3.2a — the report-write funnel's role table, pinned at the one
+    /// layer where every role is reachable. On the production path the five
+    /// block-channel entry points carry `require_role_any([Spec, Assistant])`,
+    /// so Worker/ReportCard never arrive today; S3 moves that surface, and
+    /// this is the assertion that catches it if the funnel is left assuming
+    /// "anything not Assistant is the spec".
+    #[test]
+    fn report_op_attribution_refuses_worker_and_report_cards() {
+        assert_eq!(
+            report_op_attribution(CardRole::Spec).expect("spec writes its own report"),
+            (EditAuthor::Spec, true)
+        );
+        assert_eq!(
+            report_op_attribution(CardRole::Assistant).expect("assistant writes the report"),
+            (EditAuthor::Assistant, false)
+        );
+        for role in [CardRole::Worker, CardRole::ReportCard] {
+            match report_op_attribution(role) {
+                Err(CalmError::Forbidden(msg)) => assert!(
+                    msg.contains("may not write the wave report"),
+                    "{role:?} refusal should say why, got {msg:?}"
+                ),
+                other => panic!(
+                    "{role:?} must be refused outright, not attributed to the spec; got {other:?}"
+                ),
+            }
+        }
+    }
 
     struct RecorderShadowWarnLayer {
         hits: Arc<AtomicUsize>,
@@ -950,7 +997,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                CalmError::Forbidden(ref message) if message.contains("has no live session row")
+                CalmError::Forbidden(ref message) if message.contains("has no session row")
             ),
             "expected the recorder gate's session-resolution denial, got {err:?}"
         );
