@@ -99,7 +99,74 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
     const frame = requestAnimationFrame(() => {
       const panel = panelRef.current;
       if (!panel) return;
-      (initialFocusRef?.current ?? focusables(panel)[0] ?? panel).focus();
+      /*
+       * #1161 — the reader gets there first, and wins.
+       *
+       * This runs a frame after the panel mounts, and a reader who clicks into
+       * a field inside that frame had focus taken off them and put on
+       * `focusables(panel)[0]`, which is the header's Close button. Their
+       * keystrokes then went to a button, and the first **space** activated it
+       * and discarded the half-filled dialog. That was #1161: it read as a
+       * flaky test because the frame usually lands before the click, and every
+       * test in `ui/dialog` stubbed `requestAnimationFrame` to run
+       * synchronously, which removes the window entirely.
+       *
+       * Opening focus is a courtesy for a reader who has not acted yet, so it
+       * yields to one who has — but only to a real landing place. The test is
+       * membership of `focusables(panel)` and nothing else, not
+       * `panel.contains(…)`, and the difference is two ways the looser test
+       * would yield to nothing:
+       *
+       *  - the panel carries `tabIndex={-1}`, so a mousedown on chrome (the
+       *    title, the padding) makes the *panel* the active element. That is
+       *    not the reader choosing a field, and `initialFocusRef` should still
+       *    win; and
+       *  - a base-view element stays mounted under `display: none` once a child
+       *    view is pushed, so `contains` keeps saying yes about content nobody
+       *    can see or reach.
+       *
+       * `focusables` already excludes the panel itself and filters the
+       * `disabled` *attribute*, `inert` and anything not visible within the
+       * panel, so it is close enough to the question worth asking here. It is
+       * not exact — disability inherited from a `<fieldset disabled>` is not an
+       * attribute on the control — which is why the focus below is verified
+       * afterwards rather than assumed.
+       */
+      const reachable = focusables(panel);
+      const active = document.activeElement;
+      // Compared as `Element`, not `HTMLElement`: `focusables` matches `a[href]`,
+      // which an SVG anchor satisfies while being an `SVGElement`. Narrowing to
+      // `HTMLElement` here would have let the guard fall through for exactly the
+      // reader it exists to protect.
+      if (active !== null && (reachable as readonly Element[]).includes(active)) return;
+      /*
+       * The named target is checked against the same list rather than trusted.
+       * `.focus()` on a `disabled` or hidden element is a silent no-op, so
+       * focus simply stayed wherever it was — outside the panel. A modal open
+       * with focus outside it is worse than picking the wrong control inside.
+       * Measured before the check existed: `insidePanel=false`, with focus left
+       * on the opener. (In a browser the background is `inert` by then and the
+       * unfocusing steps would drop it to `body` instead; jsdom does not
+       * implement that, so the probe saw the opener. Outside either way.)
+       *
+       * This one predates #1161 and no caller passes an unusable ref today; it
+       * is fixed here because this is the function being repaired and the
+       * failure is the same family — opening focus landing somewhere nobody
+       * can use.
+       */
+      const named = initialFocusRef?.current ?? null;
+      (named !== null && reachable.includes(named) ? named : reachable[0] ?? panel).focus();
+      /*
+       * And then check, rather than predict.
+       *
+       * `focusables` asks `hasAttribute('disabled')`, which is an attribute
+       * test, while disability is *inherited* — a control inside a
+       * `<fieldset disabled>` passes the filter and still cannot take focus.
+       * That is one way; enumerating the rest is the losing game, and the thing
+       * that actually matters is a single fact that can just be read back: a
+       * modal must not be open with focus outside it.
+       */
+      if (!panel.contains(document.activeElement)) panel.focus();
     });
     return () => {
       cancelAnimationFrame(frame);
