@@ -1,15 +1,21 @@
 // @vitest-environment jsdom
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppShell } from './public.tsx';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { setMobileSecondaryOpen } from '../../ui/mobile-page/public.ts';
+import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
 
 vi.mock('@tanstack/react-router', () => ({ Outlet: () => <div>route</div> }));
+const COVE = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
+const WAVE = {
+  id: 'w1', coveId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  archivedAt: null, pinnedAt: null, terminalAt: null, createdAt: 0, updatedAt: 0, ...NEUTRAL_ACTIVITY,
+};
+
 vi.mock('../providers/queries.ts', () => ({
   useWorkspace: () => ({
-    coves: [], waves: [], wavesByCove: new Map(), waveErrorsByCove: new Map(), wavesLoadingByCove: new Map(),
+    coves: [COVE], waves: [WAVE], wavesByCove: new Map([['c1', [WAVE]]]), waveErrorsByCove: new Map(), wavesLoadingByCove: new Map(),
     covesError: null, overlaysError: null, covesLoading: false, overlaysLoading: false,
     retryCoves: vi.fn(), retryOverlays: vi.fn(), retryWaves: vi.fn(),
   }),
@@ -17,7 +23,12 @@ vi.mock('../providers/queries.ts', () => ({
   useWaveMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
   ApiError: class ApiError extends Error {},
 }));
-vi.mock('../router/navigation.ts', () => ({ useCurrentPath: () => '/', useGo: () => vi.fn() }));
+vi.mock('../router/navigation.ts', () => ({
+  useCurrentPath: () => '/',
+  useGo: () => vi.fn(),
+  useGoSameWave: () => vi.fn(),
+  routeParamFromPath: () => undefined,
+}));
 vi.mock('./sidebar.tsx', () => ({ Sidebar: ({ collapsed, onToggleCollapsed }: {
   collapsed: boolean; onToggleCollapsed: () => void;
 }) => <button type="button" aria-expanded={!collapsed} onClick={onToggleCollapsed}>{collapsed ? 'Expand' : 'Collapse'}</button> }));
@@ -60,11 +71,20 @@ describe('compact navigation interaction contracts', () => {
     expect(screen.queryByRole('dialog', { name: 'Coves' })).toBeNull();
     expect(opener.getAttribute('aria-expanded')).toBe('false');
 
+    /*
+     * The dock yields to a secondary page. That used to be published as a
+     * `window` event; since #1191 §2.1 it is derived, so the only way to reach
+     * it here is to drive the state it is derived from — drilling the Coves
+     * sheet into a cove. `useCurrentPath` is mocked to `/`, so the wave-route
+     * half of the OR is out of play and this is the cove half on its own.
+     */
     const dock = document.querySelector('nav[aria-label="Primary"]');
-    act(() => setMobileSecondaryOpen(true));
+    expect(dock?.getAttribute('aria-hidden')).toBeNull();
+    fireEvent.click(opener);
+    fireEvent.click(screen.getByRole('button', { name: /Product/ }));
     expect(dock?.getAttribute('aria-hidden')).toBe('true');
     expect(dock?.hasAttribute('inert')).toBe(true);
-    act(() => setMobileSecondaryOpen(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Coves' }));
     expect(dock?.getAttribute('aria-hidden')).toBeNull();
   });
 });

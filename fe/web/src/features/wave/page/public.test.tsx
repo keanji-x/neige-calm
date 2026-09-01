@@ -1,11 +1,10 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { WavePage } from './public.tsx';
-import { requestMobilePageRoot } from '../../../ui/mobile-page/public.ts';
 import { card, renderPage, wave } from './test-fixtures.tsx';
 
 afterEach(cleanup);
@@ -358,7 +357,12 @@ describe('WavePage card inventory', () => {
     expect(screen.getByRole('heading', { name: 'Outline' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Read path benchmark' }));
     expect(onOpenOutline).toHaveBeenCalledWith('benchmark');
-    expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
+    /*
+     * The panel closes because the anchor navigation drops `?panel=` (#1191
+     * §1.4) — one move, not a local flag plus a navigation. The page is a pure
+     * renderer of `panel`, so the closing is asserted where the URL is real:
+     * `app/router/mobile-report-navigation.test.tsx`.
+     */
   });
 
   it('keeps quick Chat floating on Report and leaves Conversations as history only', async () => {
@@ -393,11 +397,21 @@ describe('WavePage card inventory', () => {
     expect(panel?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
 
-  it('returns to Report when the shell opens Pages', async () => {
-    const { container } = renderPage({ cards: [card({ id: 'k1', title: 'Build log' })] });
-    await openCards();
+  /*
+   * The shell used to reach in through a `window` event to shut this panel.
+   * It is a prop now: whoever owns the URL takes `?panel=` away, and the page
+   * renders what it is given — including a POP the reader triggered with the
+   * hardware Back button, which no event bus could have delivered.
+   */
+  it('renders whatever panel it is handed, and closes when that becomes null', () => {
+    const props = {
+      wave: wave(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [],
+      onRenameWave: vi.fn(), onDeleteWave: vi.fn(),
+    };
+    const { container, rerender } = render(<WavePage {...props} panel="cards" />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
-    act(() => requestMobilePageRoot());
+    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+    rerender(<WavePage {...props} panel={null} />);
     expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
 

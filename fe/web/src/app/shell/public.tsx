@@ -23,12 +23,11 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
-import { requestMobilePageRoot, subscribeMobileSecondary } from '../../ui/mobile-page/public.ts';
 import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, useCoveMutations, useWaveMutations, useWorkspace,
 } from '../providers/queries.ts';
-import { useCurrentPath, useGo } from '../router/navigation.ts';
+import { routeParamFromPath, useCurrentPath, useGo, useGoSameWave } from '../router/navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
 import { MobileCoves } from './mobile-coves.tsx';
@@ -56,12 +55,23 @@ export type AppShellProps = Readonly<{
  */
 const RequestNewWaveContext = createContext<((coveId: string) => void) | null>(null);
 
-type MobileReportNavigation = Readonly<{
-  backLabel: string;
-  backFromReport: () => void;
-}>;
+type MobileSection = 'pages' | 'coves';
 
-const MobileReportNavigationContext = createContext<MobileReportNavigation | null>(null);
+/**
+ * The workspace sheet a route asks the shell to open, and — for Coves — the
+ * cove it should already be drilled into.
+ *
+ * A context and not a prop for the reason {@link RequestNewWaveContext} gives:
+ * the wave route renders inside `<Outlet />`. It replaces `MobileReportNavigationContext`
+ * (#1191 §2.3), which carried a *label* and a *closure over shell state* —
+ * `mobileReportSource` — so the shell and the report each held half of one
+ * decision. The return surface now rides in the URL as `?from=`, the label is
+ * derived from it by the route, and the only thing left to hand across the
+ * boundary is this verb.
+ */
+type OpenMobileSection = (section: MobileSection, coveId?: string | null) => void;
+
+const MobileSectionContext = createContext<OpenMobileSection | null>(null);
 
 /** Opens the shell's New wave dialog for `coveId` (hidden on the request). */
 export function useRequestNewWave(): (coveId: string) => void {
@@ -74,15 +84,25 @@ export function useRequestNewWave(): (coveId: string) => void {
 
 function noRequestNewWave(): void { /* no shell above this consumer */ }
 
-function noMobileReportBack(): void { /* no shell above this consumer */ }
+function noOpenMobileSection(): void { /* no shell above this consumer */ }
 
-export function useMobileReportNavigation(): MobileReportNavigation {
-  return useContext(MobileReportNavigationContext)
-    ?? { backLabel: 'Pages', backFromReport: noMobileReportBack };
+/** Opens one of the shell's mobile workspace sheets. */
+export function useOpenMobileSection(): OpenMobileSection {
+  return useContext(MobileSectionContext) ?? noOpenMobileSection;
 }
 
-type MobileSection = 'pages' | 'coves';
-type MobileReportSource = Readonly<{ kind: 'pages' }> | Readonly<{ kind: 'cove'; coveId: string }>;
+/**
+ * Which cove the Coves sheet has drilled into, **and** the motion that took it
+ * there — one state, because it is one transition (#1191 §2.2).
+ *
+ * These were two `useState`s in `mobile-coves.tsx`, coupled at every move; the
+ * id then had to be lifted here so `from=cove` could restore it, and lifting
+ * only half would have handed one transition to two owners — the exact shape
+ * this change exists to delete. Lifting it also loses "unmounting resets it",
+ * so every exit below clears it explicitly.
+ */
+type CoveSelection = Readonly<{ coveId: string | null; motion: 'none' | 'forward' | 'back' }>;
+const NO_COVE_SELECTED: CoveSelection = Object.freeze({ coveId: null, motion: 'none' });
 
 export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
@@ -90,6 +110,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const waveMutations = useWaveMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
   const go = useGo();
+  const goSameWave = useGoSameWave();
   const readError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
@@ -108,11 +129,22 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const [narrowRail, setNarrowRail] = useState(() => globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY).matches ?? false);
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
-  const [mobileSecondaryOpen, setMobileSecondaryOpen] = useState(false);
-  const [mobileReportSource, setMobileReportSource] = useState<MobileReportSource>({ kind: 'pages' });
-  const [mobileCoveRestoreId, setMobileCoveRestoreId] = useState<string | null>(null);
-  const shellSecondaryOpen = mobileSecondaryOpen
-    || (currentPath.includes('/wave/') && mobileSection === null);
+  const [coveSelection, setCoveSelection] = useState<CoveSelection>(NO_COVE_SELECTED);
+  const routeWaveId = routeParamFromPath(currentPath, '/wave/');
+  /*
+   * "A full-bleed secondary page is showing", derived here and nowhere else
+   * (#1191 §2.1). It used to be a `window` CustomEvent that three modules
+   * published and this one subscribed to, plus a second source of truth about
+   * being on a wave (`currentPath.includes('/wave/')`, which also matched
+   * `/cove/x/wave-notes`).
+   *
+   * **Two conditions OR'd, never a ternary.** #1191 §0.4: a
+   * `onWaveRoute ? … : …` shape returns on the first branch while the reader is
+   * on `/wave/x` with the Coves sheet drilled into a cove — the pathname is
+   * still the wave's — and the dock reappears over a secondary page.
+   */
+  const shellSecondaryOpen = (routeWaveId !== undefined && mobileSection === null)
+    || (mobileSection === 'coves' && coveSelection.coveId !== null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     const media = globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY);
@@ -130,7 +162,12 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented) {
         const layers = document.querySelectorAll<HTMLElement>('[data-nc-escape-layer]');
-        if (layers.item(layers.length - 1) === mobileNavigationRef.current) setMobileSection(null);
+        if (layers.item(layers.length - 1) === mobileNavigationRef.current) {
+          // Escape closes the sheet, and the sheet's drill-in goes with it: the
+          // cove selection no longer unmounts with `MobileCoves` (§2.2).
+          setMobileSection(null);
+          setCoveSelection(NO_COVE_SELECTED);
+        }
         return;
       }
       if (event.key !== 'Tab') return;
@@ -150,10 +187,11 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     return () => document.removeEventListener('keydown', onKeyDown);
   }, [mobileNavOpen]);
 
-  useEffect(() => subscribeMobileSecondary(setMobileSecondaryOpen), []);
-
   useEffect(() => {
-    if (!narrowRail && mobileNavOpen) setMobileSection(null);
+    if (!narrowRail && mobileNavOpen) {
+      setMobileSection(null);
+      setCoveSelection(NO_COVE_SELECTED);
+    }
   }, [mobileNavOpen, narrowRail]);
 
   /*
@@ -177,8 +215,36 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     setNewWaveCoveId(coveId);
   };
 
-  const navigateFromRail = (target: Parameters<typeof go>[0]) => {
+  /*
+   * Leaving the report layer drops `?panel=` (#1191 §2.1). It is a `replace`
+   * and not `closePanel()`'s history dance because the reader is not stepping
+   * back inside the report — they are walking off it — and it is guarded on
+   * actually being on a wave so a Today/Settings dock press does not navigate.
+   */
+  const clearReportPanel = () => {
+    if (routeWaveId !== undefined) goSameWave(routeWaveId, { panel: undefined }, { replace: true });
+  };
+
+  /** Every exit that closes the sheets, and with them the cove drill-in. */
+  const closeMobileSection = () => {
     setMobileSection(null);
+    setCoveSelection(NO_COVE_SELECTED);
+  };
+
+  /*
+   * The one entry into a sheet. `coveId` defaults to `null`, which is what
+   * makes the dock's Coves press land on the cove root list every time —
+   * behaviour `shell/public.tsx` shipped with, and the only reason the shell
+   * ever stored a restore id.
+   */
+  const openMobileSection: OpenMobileSection = (section, coveId = null) => {
+    setMobileSection(section);
+    setCoveSelection(coveId === null ? NO_COVE_SELECTED : { coveId, motion: 'none' });
+    clearReportPanel();
+  };
+
+  const navigateFromRail = (target: Parameters<typeof go>[0]) => {
+    closeMobileSection();
     go(target);
   };
 
@@ -187,19 +253,6 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const pagesDockSelected = mobileSection === 'pages'
     || (mobileSection === null && !todayDockSelected && !meDockSelected);
   const mobileNavigationLabel = mobileSection === 'pages' ? 'Pages' : 'Coves';
-  const backFromReport = () => {
-    setMobileSecondaryOpen(false);
-    if (mobileReportSource.kind === 'cove') {
-      setMobileCoveRestoreId(mobileReportSource.coveId);
-      setMobileSection('coves');
-      return;
-    }
-    setMobileSection('pages');
-  };
-  const mobileReportNavigation: MobileReportNavigation = {
-    backLabel: mobileReportSource.kind === 'cove' ? 'Waves' : 'Pages',
-    backFromReport,
-  };
 
   const submitNewWave = (draft: NewWaveDraft) => {
     if (newWaveCoveId === null) return;
@@ -237,30 +290,32 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
                 coves={workspace.coves}
                 waves={workspace.waves}
                 onOpenWave={(waveId) => {
-                  setMobileReportSource({ kind: 'pages' });
-                  setMobileSection(null);
-                  go({ name: 'wave', waveId });
+                  closeMobileSection();
+                  // The sheets are the only writers of `?from=` (#1191 §1.3):
+                  // this is the surface the reader will be returned to.
+                  go({ name: 'wave', waveId, from: 'pages' });
                 }}
               />
             ) : mobileSection === 'coves' ? (
               <MobileCoves
                 coves={workspace.coves}
                 wavesByCove={workspace.wavesByCove}
-                initialCoveId={mobileCoveRestoreId}
+                selectedCoveId={coveSelection.coveId}
+                motion={coveSelection.motion}
+                onSelectCove={(coveId) => setCoveSelection({ coveId, motion: 'forward' })}
+                onBack={() => setCoveSelection({ coveId: null, motion: 'back' })}
                 onOpenWave={(waveId) => {
-                  const coveId = coveIdOf(waveId);
-                  setMobileReportSource(coveId === undefined ? { kind: 'pages' } : { kind: 'cove', coveId });
-                  setMobileSection(null);
-                  go({ name: 'wave', waveId });
+                  closeMobileSection();
+                  go({ name: 'wave', waveId, from: coveIdOf(waveId) === undefined ? 'pages' : 'cove' });
                 }}
               />
             ) : null
           ) : <Sidebar
-            collapsed={narrowRail ? false : railCollapsed}
-            onToggleCollapsed={() => {
-              if (narrowRail) setMobileSection(null);
-              else setManualRailCollapsed(!railCollapsed);
-            }}
+            /* `narrowRail === false` is the branch this element is in, so the
+               two `narrowRail` tests that used to guard these were constants —
+               one always false, one never reached (#1191 §2.3). */
+            collapsed={railCollapsed}
+            onToggleCollapsed={() => setManualRailCollapsed(!railCollapsed)}
             coves={workspace.coves}
             wavesByCove={workspace.wavesByCove}
             waves={workspace.waves}
@@ -276,7 +331,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
             onGo={navigateFromRail}
             onCreateCove={async (name, color) => { await coveMutations.create({ name, color }); }}
             onDeleteCove={(coveId, signal) => coveMutations.remove(coveId, signal)}
-            onNewWave={(coveId) => { setMobileSection(null); requestNewWave(coveId); }}
+            onNewWave={(coveId) => { closeMobileSection(); requestNewWave(coveId); }}
             onSetPinned={async (waveId, pinned) => {
               const coveId = coveIdOf(waveId);
               if (coveId === undefined) return;
@@ -287,8 +342,8 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
               if (coveId === undefined) return;
               await waveMutations.remove(waveId, coveId, signal);
             }}
-            onOpenSettings={() => { setMobileSection(null); onOpenSettings(); }}
-            onSignOut={() => { setMobileSection(null); onSignOut(); }}
+            onOpenSettings={() => { closeMobileSection(); onOpenSettings(); }}
+            onSignOut={() => { closeMobileSection(); onSignOut(); }}
             userLabel={userLabel}
           />}
         </div>
@@ -300,11 +355,11 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
         {/* One flex item. Routes compose ErrorBox + page + Drawer as siblings;
             `:first-child` on `.main` would flex the banner, not the page. */}
         <div key={currentPath} className={styles.stage}>
-          <MobileReportNavigationContext.Provider value={mobileReportNavigation}>
+          <MobileSectionContext.Provider value={openMobileSection}>
             <RequestNewWaveContext.Provider value={requestNewWave}>
               <Outlet />
             </RequestNewWaveContext.Provider>
-          </MobileReportNavigationContext.Provider>
+          </MobileSectionContext.Provider>
         </div>
       </main>
       {/* Pages and Coves are deliberately different indexes. Pages will group
@@ -322,10 +377,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           aria-current={pagesDockSelected ? 'page' : undefined}
           aria-controls="mobile-workspace-navigation"
           aria-expanded={mobileSection === 'pages'}
-          onClick={() => {
-            requestMobilePageRoot();
-            setMobileSection('pages');
-          }}
+          onClick={() => openMobileSection('pages')}
         >
           <AstryxIcon icon="viewColumns" size="md" color="inherit" />
           <span>Pages</span>
@@ -334,7 +386,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           type="button"
           className={styles.mobileDockItem}
           aria-current={todayDockSelected ? 'page' : undefined}
-          onClick={() => { setMobileSection(null); go({ name: 'today' }); }}
+          onClick={() => { closeMobileSection(); go({ name: 'today' }); }}
         >
           <AstryxIcon icon="calendar" size="md" color="inherit" />
           <span>Today</span>
@@ -345,11 +397,9 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           aria-current={mobileSection === 'coves' ? 'page' : undefined}
           aria-controls="mobile-workspace-navigation"
           aria-expanded={mobileSection === 'coves'}
-          onClick={() => {
-            requestMobilePageRoot();
-            if (mobileSection !== 'coves') setMobileCoveRestoreId(null);
-            setMobileSection('coves');
-          }}
+          /* No cove argument: pressing Coves in the dock is always the root
+             list, never wherever the reader was last drilled to (§2.2). */
+          onClick={() => openMobileSection('coves')}
         >
           <AstryxIcon icon="menu" size="md" color="inherit" />
           <span>Coves</span>
@@ -358,7 +408,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           type="button"
           className={styles.mobileDockItem}
           aria-current={meDockSelected ? 'page' : undefined}
-          onClick={() => { setMobileSection(null); onOpenSettings(); }}
+          onClick={() => { closeMobileSection(); onOpenSettings(); }}
         >
           <AstryxIcon icon="wrench" size="md" color="inherit" />
           <span>Me</span>

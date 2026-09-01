@@ -62,12 +62,12 @@ import {
   useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
-import { AppShell, useMobileReportNavigation, useRequestNewWave } from '../shell/public.tsx';
+import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import {
-  useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRouteParam,
-  validateWaveSearch, type WaveSearch,
+  useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
+  useWavePanelNavigation, validateWaveSearch, type WaveSearch,
 } from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
@@ -1364,10 +1364,21 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   cardRuntime: CardRuntime;
 }) {
   const waveMutations = useWaveMutations(transport, unauthorized);
-  const mobileReportNavigation = useMobileReportNavigation();
+  const openMobileSection = useOpenMobileSection();
   const go = useGo();
   const goSameWave = useGoSameWave();
+  const { openPanel, closePanel } = useWavePanelNavigation();
   const requestedCardId = useRouteCardId();
+  /*
+   * The URL is read, validated and turned into props **here**, in `app/**`:
+   * `features-no-app` is an error-level dependency-cruiser rule, so `WavePage`
+   * cannot reach the router at all and stays a pure renderer (#1191 §2.4).
+   *
+   * A live `?card=` wins over `?panel=`. The two describe one surface and
+   * `buildWaveSearch` already refuses to emit both, so this only decides what a
+   * hand-edited URL means — and it means the card, the older deep-linkable one.
+   */
+  const routePanel = useRoutePanel();
   /*
    * `?from=` is a property of *this* visit to the report, so every move that
    * stays on this wave has to hand it back explicitly — `go` clears whatever it
@@ -1553,8 +1564,17 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       onCloseBoard={knownCard
         ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
         : undefined}
-      mobileBackLabel={mobileReportNavigation.backLabel}
-      onMobileBack={mobileReportNavigation.backFromReport}
+      panel={requestedCardId === null ? routePanel : null}
+      onOpenPanel={(kind) => { openPanel(wave.id, kind); }}
+      onClosePanel={() => { closePanel(wave.id); }}
+      /* `?from=` is the whole memory of how the reader got here; absent means
+         Pages, which is the default this route shipped with (§1.2). The cove to
+         return to is the wave's own, not a stored restore id. */
+      mobileBackLabel={routeFrom === 'cove' ? 'Waves' : 'Pages'}
+      onMobileBack={() => {
+        if (routeFrom === 'cove') openMobileSection('coves', wave.coveId);
+        else openMobileSection('pages');
+      }}
       report={<ReportDocument
         report={report}
         rail={<ReportOutline items={outline} />}

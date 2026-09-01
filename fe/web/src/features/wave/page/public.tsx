@@ -16,7 +16,7 @@
 
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { waveDisplayTitle, type CardWire, type Wave, type WaveLifecycle } from '../../../../../core/domain/wave.ts';
@@ -28,7 +28,6 @@ import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../../ui/mobile-list/public.tsx';
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
-import { setMobileSecondaryOpen, subscribeMobilePageRoot } from '../../../ui/mobile-page/public.ts';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
@@ -73,6 +72,19 @@ export type WavePageProps = Readonly<{
    */
   board?: ReactNode;
   onCloseBoard?: () => void;
+  /**
+   * Which secondary panel the mobile report is showing, or `null` for none.
+   *
+   * The panel is a navigation *destination*, so its identity lives in the URL
+   * (`?panel=`, #1191 §1) and `app/router` reads it — `features/**` may not
+   * import `app/**`, and this page stays a pure renderer. The mobile **card
+   * detail** below is the deliberate exception (§0.1): its legal set is the
+   * panel's cards, which includes cards `?card=` would bounce off the URL, so a
+   * URL-borne detail page could not open them at all.
+   */
+  panel?: 'outline' | 'cards' | 'tasks' | 'conversations' | null;
+  onOpenPanel?: (panel: 'outline' | 'cards' | 'tasks' | 'conversations') => void;
+  onClosePanel?: () => void;
   mobileBackLabel?: string;
   onMobileBack?: () => void;
   /** CR-8 — after a successful delete, focus lands on the cove page's title. */
@@ -112,25 +124,33 @@ export function WavePage({
   wave, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation,
   cardsAction, onOpenCard, onOpenTask, onOpenOutline, board, onCloseBoard,
+  panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
   onRenameWave, onDeleteWave,
 }: WavePageProps) {
   const deletion = useDeleteConfirm((_id, signal) => onDeleteWave(signal));
   const boardOpen = onCloseBoard !== undefined;
-  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
-  const [mobilePanelKind, setMobilePanelKind] = useState<MobilePanelKind>('cards');
+  const mobilePanelOpen = panel !== null;
+  const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
   const [mobileCardId, setMobileCardId] = useState<string | null>(null);
   const [mobileCardMotion, setMobileCardMotion] = useState<'none' | 'forward' | 'back'>('none');
   const mobileCard = mobileCardId === null ? undefined : cards.find((card) => card.id === mobileCardId);
   const lifecycle = headerLifecycle(wave.lifecycle);
+  const mobilePanelRef = useRef<HTMLElement | null>(null);
+  const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
+  const previousPanel = useRef<MobilePanelKind | null>(null);
 
+  /*
+   * Opening the card grid cannot leave a card detail behind it. The *panel*
+   * needs no closing here: `?card=` and `?panel=` are mutually exclusive by
+   * construction, and `app/router` gives the card precedence when both somehow
+   * appear (§0.1).
+   */
   useEffect(() => {
-    if (boardOpen && mobilePanelOpen) {
-      setMobilePanelOpen(false);
-      setMobileCardId(null);
-      setMobileCardMotion('none');
-    }
-  }, [boardOpen, mobilePanelOpen]);
+    if (!boardOpen) return;
+    setMobileCardId(null);
+    setMobileCardMotion('none');
+  }, [boardOpen]);
 
   useEffect(() => {
     if (!mobilePanelOpen) return;
@@ -139,67 +159,69 @@ export function WavePage({
       if (mobileCardId !== null) {
         setMobileCardMotion('back');
         setMobileCardId(null);
+      } else {
+        // Through the URL, not a local flag: Escape and the hardware Back
+        // button must end in the same place (#1191 §2.4).
+        setMobileCardMotion('none');
+        onClosePanel?.();
       }
-      else setMobilePanelOpen(false);
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [mobileCardId, mobilePanelOpen]);
+  }, [mobileCardId, mobilePanelOpen, onClosePanel]);
 
-  useEffect(() => subscribeMobilePageRoot(() => {
-    setMobileCardId(null);
-    setMobileCardMotion('none');
-    setMobilePanelOpen(false);
-  }), []);
-
+  /*
+   * ── The focus contract (#1191 §2.5) ─────────────────────────────────────
+   *
+   * Opening moves focus into the panel container; closing returns it to the
+   * three-dot menu that opened it. Both are driven off `panel` rather than off
+   * the click, which is what makes the *hardware Back button* (a POP that only
+   * changes the URL) restore focus too, and what makes a cold-start `?panel=`
+   * deep link land the reader inside the panel on first paint.
+   *
+   * Swapping one panel for another is not a transition: focus is already in
+   * the container the swap redraws.
+   */
   useEffect(() => {
-    setMobileSecondaryOpen(true);
-    return () => setMobileSecondaryOpen(false);
-  }, []);
+    const previous = previousPanel.current;
+    previousPanel.current = panel;
+    if (panel !== null) {
+      if (previous === null) mobilePanelRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (previous === null) return;
+    mobileActionsRef.current?.querySelector('button')?.focus({ preventScroll: true });
+  }, [panel]);
+
+  /** Every entry into a panel: the card detail is a page *inside* it, never a leftover. */
+  const openMobilePanel = (kind: MobilePanelKind) => {
+    setMobileCardMotion('forward');
+    setMobileCardId(null);
+    onOpenPanel?.(kind);
+  };
+  /** Leaving the panel by a navigation that clears `?panel=` on its own (§1.4). */
+  const leaveMobilePanel = () => {
+    setMobileCardMotion('none');
+    setMobileCardId(null);
+  };
+  const closeMobilePanel = () => {
+    leaveMobilePanel();
+    onClosePanel?.();
+  };
 
   const mobileActions = !boardOpen ? (
-    <span className={styles.mobilePanelButton}>
+    <span className={styles.mobilePanelButton} ref={mobileActionsRef}>
       <AstryxMoreMenu
         label="Wave actions"
         variant="ghost"
         size="lg"
         items={[
-          ...(outlineItems.length > 0 ? [{
-            label: 'Outline',
-            onClick: () => {
-              setMobilePanelKind('outline');
-              setMobileCardMotion('forward');
-              setMobileCardId(null);
-              setMobilePanelOpen(true);
-            },
-          }] : []),
-          {
-            label: 'Cards',
-            onClick: () => {
-              setMobilePanelKind('cards');
-              setMobileCardMotion('forward');
-              setMobileCardId(null);
-              setMobilePanelOpen(true);
-            },
-          },
-          {
-            label: 'Tasks',
-            onClick: () => {
-              setMobilePanelKind('tasks');
-              setMobileCardMotion('forward');
-              setMobileCardId(null);
-              setMobilePanelOpen(true);
-            },
-          },
-          {
-            label: 'Conversations',
-            onClick: () => {
-              setMobilePanelKind('conversations');
-              setMobileCardMotion('forward');
-              setMobileCardId(null);
-              setMobilePanelOpen(true);
-            },
-          },
+          ...(outlineItems.length > 0
+            ? [{ label: 'Outline', onClick: () => openMobilePanel('outline') }]
+            : []),
+          { label: 'Cards', onClick: () => openMobilePanel('cards') },
+          { label: 'Tasks', onClick: () => openMobilePanel('tasks') },
+          { label: 'Conversations', onClick: () => openMobilePanel('conversations') },
           { type: 'divider' },
           { label: 'Delete wave', onClick: () => deletion.request(wave.id) },
         ]}
@@ -337,9 +359,13 @@ export function WavePage({
             drawer is open — see the same marker on the cove page. */}
         <aside
           id="mobile-wave-panel"
+          ref={mobilePanelRef}
           className={`${styles.panel} ${mobilePanelOpen ? styles.mobilePanelOpen : styles.mobilePanelClosed}`}
           data-nc-panel=""
           data-nc-mobile-page={mobilePanelOpen ? 'open' : 'closed'}
+          /* Programmatically focusable only — the container is where focus
+             lands when the panel opens (§2.5), never a Tab stop of its own. */
+          tabIndex={mobilePanelOpen ? -1 : undefined}
         >
           <div className={styles.mobileListSurface} aria-hidden={mobilePanelOpen ? undefined : true} inert={!mobilePanelOpen}>
             {mobilePanelOpen && (mobileCard !== undefined ? (
@@ -363,10 +389,7 @@ export function WavePage({
                 title="Outline"
                 backLabel="Report"
                 motion={mobileCardMotion}
-                onBack={() => {
-                  setMobileCardMotion('none');
-                  setMobilePanelOpen(false);
-                }}
+                onBack={closeMobilePanel}
               >
                 <MobileList>
                   {outlineItems.flatMap((item) => [
@@ -375,8 +398,9 @@ export function WavePage({
                       title={item.label}
                       meta={item.number === null ? undefined : String(item.number)}
                       onSelect={() => {
-                        setMobileCardMotion('none');
-                        setMobilePanelOpen(false);
+                        // The anchor navigation clears `?panel=` itself (§1.4),
+                        // so closing it here too would be two moves for one.
+                        leaveMobilePanel();
                         onOpenOutline?.(item.blockId);
                       }}
                     />,
@@ -386,8 +410,7 @@ export function WavePage({
                         title={child.label}
                         nested
                         onSelect={() => {
-                          setMobileCardMotion('none');
-                          setMobilePanelOpen(false);
+                          leaveMobilePanel();
                           onOpenOutline?.(child.blockId);
                         }}
                       />
@@ -400,10 +423,7 @@ export function WavePage({
                 title="Cards"
                 backLabel="Report"
                 motion={mobileCardMotion}
-                onBack={() => {
-                  setMobileCardMotion('none');
-                  setMobilePanelOpen(false);
-                }}
+                onBack={closeMobilePanel}
               >
                 <MobileList>
                   {cards.map((card) => {
@@ -428,10 +448,7 @@ export function WavePage({
                 title="Tasks"
                 backLabel="Report"
                 motion={mobileCardMotion}
-                onBack={() => {
-                  setMobileCardMotion('none');
-                  setMobilePanelOpen(false);
-                }}
+                onBack={closeMobilePanel}
               >
                 <MobileList>
                   {tasks.map((task) => (
@@ -442,9 +459,7 @@ export function WavePage({
                         : task.state === 'withdrawn' ? 'Withdrawn'
                           : task.state === 'unreadable' ? 'Unreadable' : 'Not ready'}
                       onSelect={() => {
-                        setMobileCardMotion('none');
-                        setMobileCardId(null);
-                        setMobilePanelOpen(false);
+                        leaveMobilePanel();
                         onOpenTask?.(task.blockId);
                       }}
                     />
@@ -457,10 +472,7 @@ export function WavePage({
                 title="Conversations"
                 backLabel="Report"
                 motion={mobileCardMotion}
-                onBack={() => {
-                  setMobileCardMotion('none');
-                  setMobilePanelOpen(false);
-                }}
+                onBack={closeMobilePanel}
               >
                 <div className={styles.mobileConversationList}>
                   {conversationList ?? <p>No conversations yet.</p>}

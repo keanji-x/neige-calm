@@ -1,4 +1,15 @@
-import { useEffect } from 'react';
+// The Coves sheet: the cove list, and one cove's waves.
+//
+// Presentational. The drill-in used to live here as `selectedCoveId` plus a
+// coupled `motion`, and the shell learned about it through a `window`
+// CustomEvent — three owners for one transition. Both now sit in `app/shell`
+// as a single state (#1191 §2.2), because the shell is what has to derive
+// "a secondary page is showing" from it and what has to restore it when the
+// reader returns from a report with `?from=cove`.
+//
+// The unmount cleanup that used to publish "secondary closed" is gone with the
+// event: the shell's formula conjoins `mobileSection === 'coves'`, so a sheet
+// that is not rendered cannot claim the screen.
 
 import type { Cove } from '../../../../core/domain/cove.ts';
 import { visibleCoves } from '../../../../core/domain/cove.ts';
@@ -8,30 +19,25 @@ import {
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
 } from '../../ui/mobile-list/public.tsx';
-import { setMobileSecondaryOpen } from '../../ui/mobile-page/public.ts';
-import { useState } from '../../ui/state/public.ts';
 
-export function MobileCoves({ coves, wavesByCove, initialCoveId = null, onOpenWave }: Readonly<{
+export function MobileCoves({
+  coves, wavesByCove, selectedCoveId, motion, onSelectCove, onBack, onOpenWave,
+}: Readonly<{
   coves: readonly Cove[];
   wavesByCove: ReadonlyMap<string, readonly Wave[]>;
-  initialCoveId?: string | null;
+  selectedCoveId: string | null;
+  motion: 'none' | 'forward' | 'back';
+  onSelectCove: (coveId: string) => void;
+  onBack: () => void;
   onOpenWave: (waveId: string) => void;
 }>) {
-  const [selectedCoveId, setSelectedCoveId] = useState<string | null>(initialCoveId);
-  const [motion, setMotion] = useState<'none' | 'forward' | 'back'>('none');
   const rows = visibleCoves(coves);
   const selected = selectedCoveId === null ? undefined : rows.find((cove) => cove.id === selectedCoveId);
-
-  useEffect(() => setMobileSecondaryOpen(selectedCoveId !== null), [selectedCoveId]);
-  useEffect(() => () => setMobileSecondaryOpen(false), []);
 
   if (selected !== undefined) {
     const waves = visibleWaves(wavesByCove.get(selected.id) ?? []);
     return (
-      <MobileListPage title={selected.name} backLabel="Coves" motion={motion} onBack={() => {
-        setMotion('back');
-        setSelectedCoveId(null);
-      }}>
+      <MobileListPage title={selected.name} backLabel="Coves" motion={motion} onBack={onBack}>
         <MobileList title="Waves">
           {waves.map((wave) => (
             <MobileListItem
@@ -57,10 +63,7 @@ export function MobileCoves({ coves, wavesByCove, initialCoveId = null, onOpenWa
               key={cove.id}
               title={cove.name}
               meta={`${waves.length} ${waves.length === 1 ? 'wave' : 'waves'}`}
-              onSelect={() => {
-                setMotion('forward');
-                setSelectedCoveId(cove.id);
-              }}
+              onSelect={() => onSelectCove(cove.id)}
             />
           );
         })}

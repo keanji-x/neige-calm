@@ -1,6 +1,6 @@
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { render } from '@testing-library/react';
-import { useEffect, type ReactNode } from 'react';
+import { type ReactNode } from 'react';
 import { page } from 'vitest/browser';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,7 +8,6 @@ import '../../styles/entry.css';
 
 import type { Cove } from '../../../../core/domain/cove.ts';
 import { useState } from '../../ui/state/public.ts';
-import { subscribeMobileSecondary } from '../../ui/mobile-page/public.ts';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { card, wave } from '../../features/wave/page/test-fixtures.tsx';
 import { MobileCoves } from './mobile-coves.tsx';
@@ -19,11 +18,30 @@ afterEach(() => { document.body.replaceChildren(); });
 
 const settlePaint = () => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
-function MobileShellFrame({ children }: { children: (backFromReport: () => void) => ReactNode }) {
+/*
+ * The geometry harness. It is a stand-in for `AppShell`, and since #1191 §2.1
+ * it derives "a secondary page is showing" with the shell's own two-condition
+ * OR instead of subscribing to the deleted `nc:mobile-secondary` event — this
+ * frame is always on a wave route, so the first condition is `section === null`.
+ * The panel is likewise driven from here, the way `app/router` drives the real
+ * one off `?panel=`.
+ */
+type ReportControls = Readonly<{
+  panel: 'outline' | 'cards' | 'tasks' | 'conversations' | null;
+  openPanel: (panel: 'outline' | 'cards' | 'tasks' | 'conversations') => void;
+  closePanel: () => void;
+  backFromReport: () => void;
+}>;
+
+function MobileShellFrame({ children }: { children: (controls: ReportControls) => ReactNode }) {
   const [mobileSection, setMobileSection] = useState<'pages' | 'coves' | null>(null);
+  const [coveSelection, setCoveSelection] = useState<{ coveId: string | null; motion: 'none' | 'forward' | 'back' }>(
+    { coveId: null, motion: 'none' },
+  );
+  const [panel, setPanel] = useState<'outline' | 'cards' | 'tasks' | 'conversations' | null>(null);
   const navigationOpen = mobileSection !== null;
-  const [secondaryOpen, setSecondaryOpen] = useState(true);
-  useEffect(() => subscribeMobileSecondary(setSecondaryOpen), []);
+  const secondaryOpen = mobileSection === null
+    || (mobileSection === 'coves' && coveSelection.coveId !== null);
   const coves: readonly Cove[] = [
     { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 },
     { id: 'c2', name: 'Frontend', color: '#8B7FE8', sort: 2, kind: 'user', createdAt: 0, updatedAt: 0 },
@@ -44,22 +62,28 @@ function MobileShellFrame({ children }: { children: (backFromReport: () => void)
         <div className={shellStyles.navigationPanel} data-testid="mobile-navigation-panel">
           {mobileSection === 'pages' ? <MobilePages coves={coves} waves={productWaves} onOpenWave={() => {
             setMobileSection(null);
-            queueMicrotask(() => setSecondaryOpen(true));
+            setCoveSelection({ coveId: null, motion: 'none' });
           }} />
             : mobileSection === 'coves' ? <MobileCoves
               coves={coves}
               wavesByCove={new Map([['c1', productWaves], ['c2', []]])}
+              selectedCoveId={coveSelection.coveId}
+              motion={coveSelection.motion}
+              onSelectCove={(coveId) => setCoveSelection({ coveId, motion: 'forward' })}
+              onBack={() => setCoveSelection({ coveId: null, motion: 'back' })}
               onOpenWave={() => {
                 setMobileSection(null);
-                queueMicrotask(() => setSecondaryOpen(true));
+                setCoveSelection({ coveId: null, motion: 'none' });
               }}
             /> : null}
         </div>
       </div>
       <main className={shellStyles.main} inert={navigationOpen} aria-hidden={navigationOpen ? true : undefined}>
-        <div className={shellStyles.stage}>{children(() => {
-          setSecondaryOpen(false);
-          setMobileSection('pages');
+        <div className={shellStyles.stage}>{children({
+          panel,
+          openPanel: setPanel,
+          closePanel: () => setPanel(null),
+          backFromReport: () => { setPanel(null); setMobileSection('pages'); },
         })}</div>
       </main>
       <nav className={`${shellStyles.mobileDock} ${secondaryOpen ? shellStyles.mobileDockHidden : ''}`} aria-label="Primary">
@@ -77,7 +101,10 @@ function MobileShellFrame({ children }: { children: (backFromReport: () => void)
               aria-current={mobileSection === item || (item === 'pages' && mobileSection === null) ? 'page' : undefined}
               aria-expanded={item === 'pages' || item === 'coves' ? mobileSection === item : undefined}
               onClick={() => {
-                if (item === 'pages' || item === 'coves') setMobileSection(item);
+                if (item !== 'pages' && item !== 'coves') return;
+                setPanel(null);
+                setCoveSelection({ coveId: null, motion: 'none' });
+                setMobileSection(item);
               }}
             >
               {contents}
@@ -117,7 +144,7 @@ describe('Wave mobile presentation', () => {
   it('keeps Report as the root and pushes Cards in as a full-width page', async () => {
     await page.viewport(390, 844);
     render(
-      <MobileShellFrame>{(backFromReport) => <WavePage
+      <MobileShellFrame>{(controls) => <WavePage
         wave={wave({ title: 'Responsive mobile UI' })}
         cards={[
           card({ id: 'terminal-1', title: 'Implementation terminal' }),
@@ -145,8 +172,11 @@ describe('Wave mobile presentation', () => {
         onStartConversation={vi.fn()}
         onOpenCard={vi.fn()}
         onOpenTask={vi.fn()}
+        panel={controls.panel}
+        onOpenPanel={controls.openPanel}
+        onClosePanel={controls.closePanel}
         mobileBackLabel="Pages"
-        onMobileBack={backFromReport}
+        onMobileBack={controls.backFromReport}
         onRenameWave={vi.fn()}
         onDeleteWave={vi.fn()}
       />}</MobileShellFrame>,
