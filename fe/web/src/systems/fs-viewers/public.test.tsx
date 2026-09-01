@@ -209,6 +209,48 @@ describe('FileViewer', () => {
       expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'not inside a git repository');
     });
 
+    /*
+     * The pane must not outlive the folder it belongs to.
+     *
+     * Navigating the tree while the Diff tab is open re-reads `gitStatus` for
+     * the new folder, and that read takes a round-trip. If the old folder's
+     * root, changed-file list and diff survive until the answer lands, the card
+     * spends that whole window showing one repository's changes under another
+     * repository's path — the assertion below is deliberately on that
+     * *intermediate* state, with the second `gitStatus` still pending.
+     */
+    it('drops the previous folder\'s changes while the new status is still in flight', async () => {
+      let releaseSub: ((value: { repo_root: string; files: never[] }) => void) | undefined;
+      const gitStatus = vi.fn((requested: string) => (requested === '/repo'
+        ? Promise.resolve({ repo_root: '/repo', files: [{ path: 'src/main.rs', status: 'modified' }] })
+        : new Promise<{ repo_root: string; files: never[] }>((resolve) => { releaseSub = resolve; })));
+      renderViewer(port({
+        gitStatus: gitStatus as unknown as CardFilesPort['gitStatus'],
+        listDirectory: (requested: string) => Promise.resolve({
+          path: requested,
+          parent: '/',
+          entries: requested === '/repo' ? [{ name: 'sub', is_dir: true }] : [],
+        }),
+      }));
+      await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
+      expect(await screen.findByRole('button', { name: /src\/main\.rs/ })).toBeTruthy();
+      await screen.findByTestId('diff-pane');
+
+      await userEvent.click(screen.getByRole('button', { name: /sub/ }));
+      await waitFor(() => { expect(gitStatus).toHaveBeenCalledWith('/repo/sub'); });
+
+      // `/repo/sub`'s status has not answered yet — and `/repo`'s answer is no
+      // longer about the folder this card is on.
+      expect(releaseSub).toBeTypeOf('function');
+      expect(screen.queryByRole('button', { name: /src\/main\.rs/ })).toBeNull();
+      expect(screen.queryByTestId('diff-pane')).toBeNull();
+      expect(screen.getByText('No changed file selected')).toBeTruthy();
+      /* The list is off screen because it is *loading*, not because the rows
+         were cleared — pinned here so a change that stops raising the loading
+         flag on a folder move cannot quietly bring the old rows back. */
+      expect(screen.getByText('Loading changes…')).toBeTruthy();
+    });
+
     it('says so when the tree is clean', async () => {
       renderViewer(port({ gitStatus: () => Promise.resolve({ repo_root: '/repo', files: [] }) }));
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));

@@ -13,7 +13,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -35,9 +35,12 @@ function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
 
-function setup({ createFails = false } = {}) {
+function setup({ createFails = false, deferCreate = false } = {}) {
   const requests: ApiRequest[] = [];
   const cards: CardWire[] = [];
+  /* Held open so the reader can leave the wave *while* the create is in
+     flight — the window the route has to survive. */
+  const release: { current: (() => void) | null } = { current: null };
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
@@ -63,7 +66,10 @@ function setup({ createFails = false } = {}) {
           payload: {}, deletable: true, created_at: 1, updated_at: 2,
         };
         cards.push(created);
-        return Promise.resolve(ok(created));
+        if (!deferCreate) return Promise.resolve(ok(created));
+        return new Promise<ApiTransportResponse>((resolve) => {
+          release.current = () => { resolve(ok(created)); };
+        });
       }
       return Promise.resolve(ok([]));
     },
@@ -78,7 +84,10 @@ function setup({ createFails = false } = {}) {
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  return { requests, posts: () => requests.filter((request) => request.method === 'POST') };
+  return {
+    requests, router, release,
+    posts: () => requests.filter((request) => request.method === 'POST'),
+  };
 }
 
 async function pickKind(label: string) {
@@ -141,6 +150,35 @@ describe('adding a card from the CARDS module', () => {
     // `theme` is required by the kernel (422 without it): the daemon answers
     // codex's OSC 10/11 probe with these colours.
     expect(post?.body).toHaveProperty('theme');
+  });
+
+  /*
+   * A create is a write plus a navigation, and only the write belongs to the
+   * kernel. If the reader leaves the wave while the post is in flight, landing
+   * the answer still steered them back to the wave they had just left — a
+   * navigation nobody asked for, on top of state written into an unmounted
+   * body. The abort is per attempt and fires on unmount, exactly as the delete
+   * path's does; the card itself is still created server-side, which is why the
+   * assertion is about where the reader is, not about the request.
+   */
+  it('does not navigate when a create lands after the reader left the wave', async () => {
+    const { router, release, posts } = setup({ deferCreate: true });
+    await pickKind('terminal');
+    await waitFor(() => { expect(posts()).toHaveLength(1); });
+    expect(release.current).toBeTypeOf('function');
+
+    // The reader moves on while the create is still in flight: this unmounts
+    // the wave route body that owns the pending create.
+    await act(async () => { await router.navigate({ to: '/' }); });
+    await waitFor(() => { expect(router.state.location.pathname).toBe('/'); });
+
+    await act(async () => {
+      release.current?.();
+      await new Promise((done) => { setTimeout(done, 0); });
+    });
+
+    expect(router.state.location.pathname).toBe('/');
+    expect(router.state.location.searchStr).not.toContain('card=');
   });
 
   it('sends a file card to the generic create with the entry kind and payload', async () => {

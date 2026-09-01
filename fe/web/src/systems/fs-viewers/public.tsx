@@ -223,14 +223,40 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
     return () => { cancelled = true; };
   }, [files, selectedCodePath, tab]);
 
-  /* The changed-file list, and the selection inside it. A selection that no
-     longer appears in the status falls back to the first row rather than
-     leaving the pane pointed at a file that is no longer changed. */
+  /*
+   * The changed-file list, and the selection inside it. A selection that no
+   * longer appears in the status falls back to the first row rather than
+   * leaving the pane pointed at a file that is no longer changed.
+   *
+   * ── Nothing from the previous folder may outlive the move ────────────────
+   *
+   * `folderPath` is a dependency here, so the moment it changes, everything the
+   * previous folder produced describes a repository the card has already left —
+   * and showing one repository's changed files under another's path is the
+   * defect. Three things prevent it, and only one of them is a line in this
+   * effect, which is why they are named rather than restated as belt-and-braces
+   * assignments that no test could tell apart:
+   *
+   *   1. `diffSelected` is dropped *before* the read (below). That is the line
+   *      that matters, and it is the one under test — the diff effect keys on
+   *      the selection, so clearing it empties the pane in the same tick.
+   *   2. the list renders its `diffListLoading` branch until the new status
+   *      answers, so the previous folder's rows are off screen regardless of
+   *      what `changedFiles` still holds;
+   *   3. `gitRoot` cannot be read while there is no selection, because the
+   *      diff effect returns early on `diffSelected === null`.
+   *
+   * An earlier revision also cleared `gitRoot`, `changedFiles` and `diff` here.
+   * Deleting all three left the whole suite green — they were unreachable
+   * state, not protection — so they are gone rather than standing as
+   * unfalsifiable insurance.
+   */
   useEffect(() => {
     if (files === null || tab !== 'diff') return;
     let cancelled = false;
     setDiffListLoading(true);
     setDiffError(null);
+    setNav((current) => (current.diffSelected === null ? current : { ...current, diffSelected: null }));
     files.gitStatus(folderPath)
       .then((result) => {
         if (cancelled) return;

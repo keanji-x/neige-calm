@@ -1587,6 +1587,19 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
    */
   const cardCreateFeedback = useOperationFeedback();
   const newCardFieldRef = useRef<HTMLInputElement | null>(null);
+  /*
+   * A create that lands after the reader has left must not steer them.
+   *
+   * `submitNewCard` navigates on success, and the post outlives this route body
+   * whenever the reader moves on while it is in flight — the navigation would
+   * then yank them back to a wave they deliberately left. The shape is the one
+   * `useDeleteConfirm` already uses (INV-CONFIRM-001): one `AbortController`
+   * per attempt, aborted when this body unmounts, and read before the
+   * navigation and before every state write. The card is still created — the
+   * kernel's write is not the reader's problem — but nothing here acts on it.
+   */
+  const activeCardCreate = useRef<AbortController | null>(null);
+  useEffect(() => () => { activeCardCreate.current?.abort(); }, []);
 
   const createCardOfKind = async (entry: CardAddMenuEntry, values: NewCardValues) => {
     /* Empty is absent, not `""`. The kernel reads an empty `cwd` as "no
@@ -1627,16 +1640,24 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   /* Opening the new card is the point of creating one, so the create navigates
      to it — the same landing `onOpenCard` gives a row that already exists. */
   const submitNewCard = (entry: CardAddMenuEntry, values: NewCardValues) => {
+    const controller = new AbortController();
+    activeCardCreate.current = controller;
     setCreatingCard(true);
     void cardCreateFeedback
       .run(
         createCardOfKind(entry, values).then((card) => {
+          if (controller.signal.aborted) return;
           setCardDraft(null);
           goSameWave(wave.id, { card: card.id });
         }),
         `Could not create the ${entry.label} card.`,
+        () => controller.signal.aborted,
       )
-      .finally(() => { setCreatingCard(false); });
+      .finally(() => {
+        if (controller.signal.aborted || activeCardCreate.current !== controller) return;
+        activeCardCreate.current = null;
+        setCreatingCard(false);
+      });
   };
 
   /* A kind with nothing to ask is created on the spot; one with fields opens
