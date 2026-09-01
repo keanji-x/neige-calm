@@ -60,6 +60,12 @@ const SPEC_SESSION_ID: &str = "spec-session";
 /// it is bound to its own `CardRole::Assistant` card. Both facts are what
 /// the S2 recorder criterion actually reads.
 pub(crate) const ASSISTANT_SESSION_ID: &str = "assistant-session";
+/// #1189 S6 — a **second, independent** assistant conversation on the same
+/// wave: its own `CardRole::Assistant` card and its own non-root session.
+/// §3.3's whole argument ("concurrency is handled by the existing CAS, no
+/// locks") is a claim about two of these interleaving, which cannot be
+/// expressed with a single session handing itself a stale rev.
+pub(crate) const ASSISTANT_B_SESSION_ID: &str = "assistant-b-session";
 pub(crate) const WORKER_SESSION_ID: &str = "worker-session";
 
 /// In-memory fixture: one cove → one wave → one spec card + one
@@ -76,6 +82,9 @@ pub(crate) struct Boot {
     pub(crate) report_card_id: CardId,
     pub(crate) worker_card_id: CardId,
     pub(crate) assistant_card_id: CardId,
+    /// #1189 S6 — the second assistant conversation. See
+    /// [`ASSISTANT_B_SESSION_ID`].
+    pub(crate) assistant_b_card_id: CardId,
 }
 
 fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
@@ -246,10 +255,26 @@ pub(crate) async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    let assistant_b_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .unwrap();
     set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec).await;
     set_persisted_card_role(
         repo.as_ref(),
         assistant_card.id.as_str(),
+        CardRole::Assistant,
+    )
+    .await;
+    set_persisted_card_role(
+        repo.as_ref(),
+        assistant_b_card.id.as_str(),
         CardRole::Assistant,
     )
     .await;
@@ -262,6 +287,13 @@ pub(crate) async fn boot() -> Boot {
         ASSISTANT_SESSION_ID,
     )
     .await;
+    seed_non_root_session(
+        repo.as_ref(),
+        &wave.id,
+        &assistant_b_card.id,
+        ASSISTANT_B_SESSION_ID,
+    )
+    .await;
     seed_non_root_session(repo.as_ref(), &wave.id, &worker_card.id, WORKER_SESSION_ID).await;
 
     let events = EventBus::new();
@@ -269,6 +301,11 @@ pub(crate) async fn boot() -> Boot {
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
     card_role_cache.insert(
         assistant_card.id.clone(),
+        CardRole::Assistant,
+        wave.id.clone(),
+    );
+    card_role_cache.insert(
+        assistant_b_card.id.clone(),
         CardRole::Assistant,
         wave.id.clone(),
     );
@@ -309,6 +346,7 @@ pub(crate) async fn boot() -> Boot {
         report_card_id: report_card.id,
         worker_card_id: worker_card.id,
         assistant_card_id: assistant_card.id,
+        assistant_b_card_id: assistant_b_card.id,
     }
 }
 
@@ -358,6 +396,21 @@ pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "assistant-thread".to_string(),
+    }
+}
+
+/// #1189 S6 — the *other* assistant conversation on this same wave. Distinct
+/// card, distinct session, same wave and cove: exactly the two-token shape
+/// production mints when a user opens a second assistant chat on one wave.
+pub(crate) fn assistant_b_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.assistant_b_card_id.as_str().to_string(),
+        role: CardRole::Assistant,
+        provider: AgentProvider::Codex,
+        session_id: ASSISTANT_B_SESSION_ID.to_string(),
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
+        thread_id: "assistant-b-thread".to_string(),
     }
 }
 
