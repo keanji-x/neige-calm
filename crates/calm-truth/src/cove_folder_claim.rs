@@ -171,6 +171,85 @@ mod tests {
         assert_eq!(normalize_path("/"), "/");
     }
 
+    /// #1147 S3 — the edges nothing was pinning.
+    ///
+    /// This got written because the slice's fixture migration replaced the one
+    /// route-level test that fed `cwd: "/"` through `POST /api/waves` (the
+    /// system-cove case, which can no longer use `/` now that an attached
+    /// target must be an existing Git work tree). Rather than force a fixture
+    /// back onto a path that cannot work, the boundary is pinned here, where it
+    /// actually lives.
+    ///
+    /// Everything below is **measured behaviour**, not aspiration. Two of these
+    /// are sharper than the doc comment suggests, so they are stated rather
+    /// than left for someone to rediscover:
+    ///
+    /// * the function is **not idempotent** — it strips *exactly one* trailing
+    ///   slash, so `///` needs three passes to reach `/`;
+    /// * it does **not** resolve `..` and does **not** collapse interior
+    ///   slashes. It is a storage normalizer, not a path canonicalizer, and
+    ///   `is_descendant_of` compares the results as plain strings.
+    #[test]
+    fn normalize_pins_the_edges_it_actually_has() {
+        // Root, and the shapes that reduce to it.
+        assert_eq!(normalize_path("/"), "/");
+        assert_eq!(normalize_path("//"), "/");
+        // NOT idempotent: exactly one trailing slash comes off per call.
+        assert_eq!(normalize_path("///"), "//");
+        assert_eq!(normalize_path(&normalize_path("///")), "/");
+
+        // Ordinary paths, with and without the trailing slash.
+        assert_eq!(normalize_path("/a"), "/a");
+        assert_eq!(normalize_path("/a/"), "/a");
+        assert_eq!(normalize_path("/a/b/"), "/a/b");
+
+        // No `..` resolution and no interior-slash collapsing. Deliberate:
+        // callers hand in a path the filesystem already accepted, and the only
+        // job here is to make storage and comparison agree on the trailing
+        // slash.
+        assert_eq!(normalize_path("/a/../b"), "/a/../b");
+        assert_eq!(normalize_path("/a/.."), "/a/..");
+        assert_eq!(normalize_path("/a//b"), "/a//b");
+
+        // Not this function's business: absolute-ness is a 400 at the route
+        // layer, so the wire error code stays precise.
+        assert_eq!(normalize_path("a/b"), "a/b");
+        assert_eq!(normalize_path(""), "");
+    }
+
+    /// KNOWN GAP — a doubled trailing slash survives normalization and then
+    /// makes the claim unenforceable.
+    ///
+    /// `normalize_path("/a//")` is `"/a/"`, and `is_descendant_of` builds its
+    /// probe as `format!("{parent}/")`, i.e. `"/a//"` — which nothing under
+    /// `/a` starts with. So a claim stored as `"/a/"` covers *nothing*, and a
+    /// second cove can then claim `"/a"` as well: two rows overlapping the same
+    /// subtree, which is exactly the invariant issue #275's `BEGIN IMMEDIATE`
+    /// was introduced to protect.
+    ///
+    /// Pre-existing, not introduced by #1147 S3, and reachable: the filesystem
+    /// accepts `/a//` everywhere, so neither the route's `starts_with('/')` nor
+    /// S3's `validate_attached_workspace` (which stats and asks git) rejects it.
+    /// Asserted rather than fixed because the fix is a decision about what
+    /// normalization means — collapse runs of slashes? canonicalize? — and that
+    /// belongs to whoever owns the claim rules, not to a workspace slice.
+    /// Whoever takes it will see this test go red.
+    #[test]
+    fn a_doubled_trailing_slash_produces_a_claim_that_covers_nothing() {
+        let stored = normalize_path("/a//");
+        assert_eq!(stored, "/a/", "one slash comes off, one stays");
+        assert!(
+            !is_descendant_of(&stored, "/a/b"),
+            "KNOWN GAP (#1147 S3): a claim stored as `{stored}` matches nothing \
+             beneath it, so it neither protects its subtree nor blocks a second \
+             claim on `/a`. If this assertion fails, normalization was fixed — \
+             replace this test with the positive one."
+        );
+        // …and the un-doubled form does cover it, which is what makes the
+        // pair above a real divergence rather than a curiosity.
+        assert!(is_descendant_of(&normalize_path("/a/"), "/a/b"));
+    }
+
     #[test]
     fn descendant_match_basics() {
         assert!(is_descendant_of("/a", "/a"));
