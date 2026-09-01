@@ -14,6 +14,8 @@ export default defineConfig({
   },
   optimizeDeps: {
     include: [
+      '@tanstack/react-query',
+      '@tanstack/react-router',
       '@astryxdesign/core/Button',
       '@astryxdesign/core/Calendar',
       '@astryxdesign/core/Card',

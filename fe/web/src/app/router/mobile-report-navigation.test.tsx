@@ -76,6 +76,13 @@ const waveActions = () => screen.getByRole('button', { name: 'Wave actions' });
  * buttons are addressed by their label instead, and every press below happens
  * in a state where the dock is genuinely visible and genuinely clickable.
  */
+/*
+ * Presses go through `userEvent`, not `fireEvent`: `fireEvent` dispatches a
+ * click on a node whatever its state, so a dock that had wrongly stayed `inert`
+ * would still "work" here. `userEvent` performs the press the way a reader
+ * does. (`fireEvent.keyDown` on `document` below stays: Escape is a document
+ * listener, not a control being pressed.)
+ */
 function dockButton(label: string): HTMLElement {
   const found = [...document.querySelectorAll<HTMLElement>('nav[aria-label="Primary"] button')]
     .find((button) => button.textContent === label);
@@ -197,7 +204,9 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
     // Today, not a report: the wave route is a secondary page on its own, and
     // this sequence has to be one a reader can perform with the dock in view.
     setup('/');
-    await waitFor(() => { fireEvent.click(dockButton('Coves')); screen.getByRole('dialog', { name: 'Coves' }); });
+    await waitFor(() => dockButton('Coves'));
+    await userEvent.click(dockButton('Coves'));
+    screen.getByRole('dialog', { name: 'Coves' });
     await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
     expect(screen.getByRole('heading', { name: 'Product' })).toBeTruthy();
     expect(dock()?.getAttribute('aria-hidden')).toBe('true');
@@ -221,7 +230,9 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
 
   it('replaces a remembered drill-in with the cove the report returns to', async () => {
     setup('/');
-    await waitFor(() => { fireEvent.click(dockButton('Coves')); screen.getByRole('dialog', { name: 'Coves' }); });
+    await waitFor(() => dockButton('Coves'));
+    await userEvent.click(dockButton('Coves'));
+    screen.getByRole('dialog', { name: 'Coves' });
     await userEvent.click(await screen.findByRole('button', { name: /Second/ }));
     expect(screen.getByRole('heading', { name: 'Second' })).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape' });
@@ -238,7 +249,9 @@ describe('the shell derives whether a secondary page is showing (#1191 §2.1)', 
 
   it('writes ?from= when a sheet is what opened the wave', async () => {
     const router = setup('/');
-    await waitFor(() => { fireEvent.click(dockButton('Coves')); screen.getByRole('dialog', { name: 'Coves' }); });
+    await waitFor(() => dockButton('Coves'));
+    await userEvent.click(dockButton('Coves'));
+    screen.getByRole('dialog', { name: 'Coves' });
     await userEvent.click(await screen.findByRole('button', { name: /Product/ }));
     await userEvent.click(await screen.findByRole('button', { name: /Responsive mobile UI/ }));
     await waitFor(() => { expect(href(router)).toBe('/wave/w1?from=cove'); });
