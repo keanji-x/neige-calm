@@ -40,8 +40,12 @@ describe('compact navigation interaction contracts', () => {
     fireEvent.click(pages);
     expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
     expect(pages.getAttribute('aria-expanded')).toBe('true');
+    // #1191 3ec80a6b — dock 是幂等的目的地，不是 toggle：再次点击 Pages 仍停在 Pages。
+    // 这不是漏了关闭断言，别把它「修」回 toggle。关闭走 Escape（见下）或 dock 的其它目的地。
+    // 这里是该语义在真实 AppShell 上的唯一守卫：mobile.browser.test.tsx 用的是自建替身。
     fireEvent.click(pages);
-    expect(screen.queryByRole('dialog', { name: 'Pages' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Pages' })).toBeTruthy();
+    expect(pages.getAttribute('aria-expanded')).toBe('true');
 
     const opener = screen.getByRole('button', { name: 'Coves' });
     expect(opener.getAttribute('aria-expanded')).toBe('false');
