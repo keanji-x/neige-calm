@@ -1,0 +1,818 @@
+//! #1189 slice 3 — `POST`/`GET /api/waves/{wave_id}/conversations`.
+//!
+//! Owns the three gates the design assigns to this slice:
+//!
+//! * **G1** — the same `Idempotency-Key` retried lands on the same card, and the
+//!   wave namespace is separate from the cove one.
+//! * **G2** — a `spec_card_id` the adapter did not derive itself is refused,
+//!   including one derived for a different wave.
+//! * **G3** — the list returns assistant conversations and nothing else, on a
+//!   wave populated with a spec card, a report card and a real codex worker
+//!   card.
+
+#![cfg(unix)]
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use axum::Extension;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use calm_server::auth::Principal;
+use calm_server::card_role_cache::CardRoleCache;
+use calm_server::db::prelude::*;
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, card_with_codex_create_tx};
+use calm_server::event::EventBus;
+use calm_server::model::{CardRole, NewCove, RequestTheme};
+use calm_server::operation::OperationKey;
+use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::routes;
+use calm_server::shared_codex_appserver::SharedCodexAppServer;
+use calm_server::state::{AppState, CodexClient, DaemonClient};
+use calm_server::wave_cove_cache::WaveCoveCache;
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
+use tempfile::TempDir;
+use tower::ServiceExt;
+
+struct Boot {
+    app: axum::Router,
+    state: AppState,
+    cove_id: String,
+    repo: Arc<SqlxRepo>,
+    card_role_cache: CardRoleCache,
+    _tmp: TempDir,
+}
+
+async fn boot() -> Boot {
+    let tmp = TempDir::new().unwrap();
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "wave-conversations".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    repo.cove_folder_create(cove.id.as_str(), "/workspace")
+        .await
+        .unwrap();
+    let repo_dyn: Arc<dyn Repo> = repo.clone();
+    let events = EventBus::new();
+    let roles = CardRoleCache::new();
+    let waves = WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&waves).await.unwrap();
+    let state = AppState::from_parts(
+        repo_dyn.clone(),
+        events.clone(),
+        Arc::new(DaemonClient {
+            data_dir: tmp.path().to_path_buf(),
+            proc_supervisor_sock: None,
+        }),
+        Arc::new(PluginHost::new_full(
+            Arc::new(PluginRegistry::empty()),
+            repo_dyn.clone(),
+            PathBuf::new(),
+            tmp.path().join("plugins-data"),
+            Vec::new(),
+            events,
+            calm_server::state::WriteContext::new(roles.clone(), waves.clone()),
+        )),
+        Arc::new(CodexClient::new_stub()),
+        Some(roles.clone()),
+        Some(waves),
+    )
+    .with_workspace_root(tmp.path().join("workspaces"))
+    .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
+        repo_dyn, None,
+    ));
+    let app = routes::router()
+        .layer(Extension(Principal {
+            user_id: "owner".into(),
+            display_name: "owner".into(),
+            role: "owner".into(),
+            session_id: "test".into(),
+        }))
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state.clone());
+    Boot {
+        app,
+        state,
+        cove_id: cove.id.to_string(),
+        repo,
+        card_role_cache: roles,
+        _tmp: tmp,
+    }
+}
+
+impl Boot {
+    /// A real, user-visible wave — created through `POST /api/waves`, so it
+    /// carries the spec card, the report card and the workspace a production
+    /// wave has. G3 leans on that: a hand-rolled `wave_create` would give the
+    /// predicate nothing to exclude.
+    async fn create_wave(&self, title: &str) -> String {
+        let (status, body) = self
+            .request(
+                "POST",
+                "/api/waves",
+                None,
+                Some(json!({
+                    "cove_id": self.cove_id,
+                    "title": title,
+                    "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
+                })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::CREATED, "body={body}");
+        body["id"].as_str().unwrap().to_string()
+    }
+
+    async fn request(
+        &self,
+        method: &str,
+        uri: &str,
+        idempotency_key: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder().method(method).uri(uri);
+        if let Some(key) = idempotency_key {
+            builder = builder.header("idempotency-key", key);
+        }
+        let request = match body {
+            Some(body) => builder
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+            None => builder.body(Body::empty()).unwrap(),
+        };
+        let response = self.app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    async fn create_conversation(
+        &self,
+        wave_id: &str,
+        idempotency_key: &str,
+        text: &str,
+    ) -> (StatusCode, Value) {
+        self.request(
+            "POST",
+            &format!("/api/waves/{wave_id}/conversations"),
+            Some(idempotency_key),
+            Some(json!({ "text": text })),
+        )
+        .await
+    }
+
+    async fn list_conversations(&self, wave_id: &str) -> (StatusCode, Value) {
+        self.request(
+            "GET",
+            &format!("/api/waves/{wave_id}/conversations"),
+            None,
+            None,
+        )
+        .await
+    }
+
+    /// A genuine codex worker card, minted through the production transaction
+    /// (`card_with_codex_create_tx`) rather than an INSERT — so it carries the
+    /// role, kind, payload and linked rows a dispatched worker really has.
+    async fn mint_codex_worker_card(&self, wave_id: &str) -> String {
+        let card_id = calm_server::model::new_id();
+        let mut tx = self.repo.pool().begin().await.unwrap();
+        card_with_codex_create_tx(
+            &mut tx,
+            card_id.clone(),
+            &calm_server::model::new_id(),
+            None,
+            calm_server::ids::WaveId::from(wave_id.to_string()),
+            Some("worker".into()),
+            None,
+            "/workspace".into(),
+            json!({}),
+            None,
+            None,
+            None,
+            CardRole::Worker,
+            true,
+            &self.card_role_cache,
+            RequestTheme::default_dark(),
+        )
+        .await
+        .expect("mint codex worker card");
+        tx.commit().await.unwrap();
+        card_id
+    }
+
+    /// A codex card carrying only HALF of the `(role, marker)` pair the list
+    /// predicate requires — the shape production never mints (the mint writes
+    /// both halves from one `minted_card_shape` call) and therefore the shape a
+    /// predicate that dropped one conjunct would leak.
+    async fn mint_half_marked_card(&self, wave_id: &str, role: CardRole, marker: &str) -> String {
+        let card_id = calm_server::model::new_id();
+        let mut tx = self.repo.pool().begin().await.unwrap();
+        card_create_with_id_tx(
+            &mut tx,
+            card_id.clone(),
+            calm_server::model::NewCard {
+                wave_id: calm_server::ids::WaveId::from(wave_id.to_string()),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "harness_profile": marker}),
+            },
+            role,
+            true,
+            &self.card_role_cache,
+        )
+        .await
+        .expect("mint half-marked card");
+        tx.commit().await.unwrap();
+        card_id
+    }
+
+    async fn scalar(&self, sql: &str, bind: &str) -> i64 {
+        sqlx::query_scalar(sql)
+            .bind(bind)
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn card_role(&self, card_id: &str) -> String {
+        sqlx::query_scalar("SELECT role FROM cards WHERE id = ?1")
+            .bind(card_id)
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
+    }
+
+    async fn card_marker(&self, card_id: &str) -> Option<String> {
+        sqlx::query_scalar(
+            "SELECT json_extract(payload, '$.harness_profile') FROM cards WHERE id = ?1",
+        )
+        .bind(card_id)
+        .fetch_one(self.repo.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn shutdown_harnesses(&self) {
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM worker_sessions")
+            .fetch_all(self.repo.pool())
+            .await
+            .unwrap();
+        for id in ids {
+            if let Some(handle) = self.state.harness.remove(&id) {
+                let _ = handle.shutdown().await;
+            }
+        }
+    }
+}
+
+/// The mint writes an ASSISTANT card, not a plain-chat worker card.
+///
+/// Every assertion here is one of the four things #1189 §4.2 says the
+/// hard-coded mint got wrong. They are asserted on the persisted row rather
+/// than on the response body because the row is what the authorization gate,
+/// the list predicate and the CARDS panel all read.
+#[tokio::test]
+async fn the_first_message_mints_an_assistant_card_with_its_own_marker_and_mcp_token() {
+    let b = boot().await;
+    let wave_id = b.create_wave("assistant-mint").await;
+
+    let (status, body) = b
+        .create_conversation(&wave_id, "idem-mint", "hello assistant")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let card_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["kind"], "wave-assistant");
+    assert_eq!(body["waveId"], wave_id);
+    assert_eq!(body["title"], Value::Null);
+
+    assert_eq!(
+        b.card_role(&card_id).await,
+        "assistant",
+        "the card's role is what role_gate reads; minting a worker here would \
+         silently give the conversation the plain-chat surface"
+    );
+    assert_eq!(
+        b.card_marker(&card_id).await.as_deref(),
+        Some("assistant"),
+        "the persisted marker is what the list predicate and the CARDS panel read"
+    );
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM card_mcp_tokens WHERE card_id = ?1",
+            &card_id
+        )
+        .await,
+        1,
+        "an assistant without an MCP token cannot reach the block channel at all"
+    );
+    // A plain chat is `ThreadConfig::NoMcp`; the assistant must NOT be.
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM worker_sessions WHERE card_id = ?1 AND mcp_token_hash IS NOT NULL",
+            &card_id
+        )
+        .await,
+        1,
+        "the session must mirror the card token"
+    );
+    // `SharedSpec` would map to `WorkerContract::Planner` and hand the
+    // assistant the wave's root session pointer.
+    let contract: String =
+        sqlx::query_scalar("SELECT contract FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        contract, "executor",
+        "an assistant session must never be a Planner: Planner sessions take \
+         over waves.root_session_id"
+    );
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let assistant_session: String =
+        sqlx::query_scalar("SELECT id FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_ne!(
+        root.as_deref(),
+        Some(assistant_session.as_str()),
+        "the assistant displaced the spec card as the wave's root session"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// **G1** — one `Idempotency-Key`, one conversation, however many retries.
+///
+/// The second POST must come back with the SAME card id and must not add a
+/// second assistant card to the wave.
+#[tokio::test]
+async fn retrying_one_idempotency_key_lands_on_the_same_conversation() {
+    let b = boot().await;
+    let wave_id = b.create_wave("assistant-retry").await;
+
+    let (first_status, first) = b
+        .create_conversation(&wave_id, "idem-retry", "first message")
+        .await;
+    assert_eq!(first_status, StatusCode::CREATED, "body={first}");
+    let (second_status, second) = b
+        .create_conversation(&wave_id, "idem-retry", "first message")
+        .await;
+    assert_eq!(second_status, StatusCode::CREATED, "body={second}");
+    assert_eq!(first["id"], second["id"], "a retry minted a second card");
+
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM cards WHERE wave_id = ?1 AND role = 'assistant'",
+            &wave_id
+        )
+        .await,
+        1
+    );
+    // A different key on the same wave is a different conversation — the
+    // derivation must not collapse distinct drafts either.
+    let (status, other) = b
+        .create_conversation(&wave_id, "idem-other", "another message")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={other}");
+    assert_ne!(other["id"], first["id"]);
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM cards WHERE wave_id = ?1 AND role = 'assistant'",
+            &wave_id
+        )
+        .await,
+        2
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// **G2** — the adapter mints only ids it derived itself.
+///
+/// Driven through `operation_runtime.submit`, not through the route, because
+/// the route always derives a correct id: the guard exists for anything that
+/// reaches the operation with a payload of its own choosing. Three shapes are
+/// covered, and they are the three the design names — a conjured id, an id
+/// derived under a different key, and an id derived for a different wave.
+#[tokio::test]
+async fn a_spec_card_id_the_adapter_did_not_derive_is_refused() {
+    use calm_server::operation::spec_harness_start_adapter::{
+        HarnessProfile, LazyMintCardSeed, SpecHarnessStartOperationPayload,
+    };
+
+    let b = boot().await;
+    let wave_id = b.create_wave("assistant-forgery").await;
+    let other_wave_id = b.create_wave("assistant-forgery-other").await;
+    let wave = b.repo.wave_get(&wave_id).await.unwrap().unwrap();
+
+    let submit = |card_id: String, key: Option<String>, target_wave: String| {
+        let state = b.state.clone();
+        let cwd = wave.workspace.path.clone();
+        async move {
+            let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+                actor: calm_server::ids::ActorId::User,
+                wave_id: target_wave,
+                spec_card_id: card_id.into(),
+                report_card_id: None,
+                sort: None,
+                cwd,
+                goal: None,
+                reset_harness_items: false,
+                force_new_thread: true,
+                profile: HarnessProfile::Assistant,
+                create_card: Some(LazyMintCardSeed {
+                    title: None,
+                    sort: None,
+                    idempotency_key: key,
+                }),
+                first_message_sha256: None,
+            })
+            .unwrap();
+            state
+                .operation_runtime
+                .submit(
+                    "spec-harness-start",
+                    OperationKey {
+                        operation_key: calm_server::model::new_id(),
+                        idempotency_key: None,
+                        payload_hash: calm_server::model::new_id(),
+                    },
+                    payload,
+                )
+                .await
+                .err()
+                .map(|error| error.to_string())
+        }
+    };
+
+    // 1. A conjured id under a real key.
+    let conjured = submit(
+        "conv-deadbeefdeadbeefdeadbeefdeadbeef".into(),
+        Some("idem-forged".into()),
+        wave_id.clone(),
+    )
+    .await
+    .expect("a conjured card id must be refused");
+    assert!(
+        conjured.contains("is not the conversation id derived for wave"),
+        "rejected for the wrong reason: {conjured}"
+    );
+
+    // 2. A correctly derived id, presented with a DIFFERENT key. This is the
+    //    shape a plain "the id looks like a conversation id" check would let
+    //    through.
+    let real_id = calm_server::conversation_keys::derive_wave_conversation_card_id_for_test(
+        &wave_id,
+        "idem-real",
+    );
+    let mismatched = submit(
+        real_id.clone(),
+        Some("idem-different".into()),
+        wave_id.clone(),
+    )
+    .await
+    .expect("an id derived under another key must be refused");
+    assert!(
+        mismatched.contains("is not the conversation id derived for wave"),
+        "rejected for the wrong reason: {mismatched}"
+    );
+
+    // 3. An id derived for ANOTHER wave, aimed at this one — the "pointing at
+    //    somebody else's wave" case.
+    let foreign_id = calm_server::conversation_keys::derive_wave_conversation_card_id_for_test(
+        &other_wave_id,
+        "idem-real",
+    );
+    let foreign = submit(foreign_id, Some("idem-real".into()), wave_id.clone())
+        .await
+        .expect("an id derived for another wave must be refused");
+    assert!(
+        foreign.contains("is not the conversation id derived for wave"),
+        "rejected for the wrong reason: {foreign}"
+    );
+
+    // 4. No key at all fails closed rather than skipping the check.
+    let keyless = submit(real_id.clone(), None, wave_id.clone())
+        .await
+        .expect("a mint with no idempotency key must be refused");
+    assert!(
+        keyless.contains("without the idempotency key"),
+        "rejected for the wrong reason: {keyless}"
+    );
+
+    // The positive control: the id the adapter itself derives is accepted, so
+    // the three refusals above are the guard talking and not some unrelated
+    // failure that would reject everything.
+    assert!(
+        submit(real_id, Some("idem-real".into()), wave_id.clone())
+            .await
+            .is_none(),
+        "the correctly derived id must be accepted"
+    );
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM cards WHERE wave_id = ?1 AND role = 'assistant'",
+            &wave_id
+        )
+        .await,
+        1,
+        "exactly the accepted mint reached the database"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// **G3** — the list is assistant conversations and nothing else.
+///
+/// The wave is deliberately crowded: `POST /api/waves` leaves a spec card and a
+/// report card, and a real codex worker card is minted on top through the
+/// production transaction. A predicate widened to "a codex card on this wave"
+/// picks up the spec card and the worker; one widened to "not a report card"
+/// picks up both as well.
+///
+/// The two half-marked decoys cover the remaining shape: the predicate is a
+/// CONJUNCTION of role and marker, and every decoy above is missing both halves,
+/// so dropping either conjunct leaves the list correct anyway. A card with the
+/// assistant role but a plain-chat marker fails if the marker conjunct goes; a
+/// card with the assistant marker but a worker role fails if the role conjunct
+/// goes.
+#[tokio::test]
+async fn the_list_returns_assistant_conversations_and_nothing_else() {
+    let b = boot().await;
+    let wave_id = b.create_wave("assistant-list").await;
+    let worker_card = b.mint_codex_worker_card(&wave_id).await;
+    let role_only_card = b
+        .mint_half_marked_card(&wave_id, CardRole::Assistant, "plain_chat")
+        .await;
+    let marker_only_card = b
+        .mint_half_marked_card(&wave_id, CardRole::Worker, "assistant")
+        .await;
+
+    // The fixture is only meaningful if the decoys really are there.
+    let roles: Vec<String> = sqlx::query_scalar("SELECT role FROM cards WHERE wave_id = ?1")
+        .bind(&wave_id)
+        .fetch_all(b.repo.pool())
+        .await
+        .unwrap();
+    assert!(roles.contains(&"spec".to_string()), "roles={roles:?}");
+    assert!(roles.contains(&"reportcard".to_string()), "roles={roles:?}");
+    assert!(roles.contains(&"worker".to_string()), "roles={roles:?}");
+    assert_eq!(
+        b.card_role(&worker_card).await,
+        "worker",
+        "the worker decoy must be a real codex worker card"
+    );
+    // The half-marked decoys really are half-marked.
+    assert_eq!(b.card_role(&role_only_card).await, "assistant");
+    assert_eq!(
+        b.card_marker(&role_only_card).await.as_deref(),
+        Some("plain_chat")
+    );
+    assert_eq!(b.card_role(&marker_only_card).await, "worker");
+    assert_eq!(
+        b.card_marker(&marker_only_card).await.as_deref(),
+        Some("assistant")
+    );
+
+    let (status, empty) = b.list_conversations(&wave_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        empty.as_array().unwrap().len(),
+        0,
+        "a wave with a spec card, a report card and a worker has no \
+         conversations until one is created; got {empty}"
+    );
+
+    let (status, first) = b.create_conversation(&wave_id, "idem-a", "first").await;
+    assert_eq!(status, StatusCode::CREATED, "body={first}");
+    let (status, second) = b.create_conversation(&wave_id, "idem-b", "second").await;
+    assert_eq!(status, StatusCode::CREATED, "body={second}");
+
+    let (status, rows) = b.list_conversations(&wave_id).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = rows.as_array().unwrap();
+    assert_eq!(rows.len(), 2, "rows={rows:?}");
+    let mut listed: Vec<&str> = rows.iter().map(|row| row["id"].as_str().unwrap()).collect();
+    listed.sort_unstable();
+    let mut expected = vec![
+        first["id"].as_str().unwrap(),
+        second["id"].as_str().unwrap(),
+    ];
+    expected.sort_unstable();
+    assert_eq!(listed, expected);
+    assert!(
+        rows.iter().all(|row| row["kind"] == "wave-assistant"),
+        "rows={rows:?}"
+    );
+    assert!(
+        !listed.contains(&worker_card.as_str()),
+        "the codex worker card leaked into the conversation list"
+    );
+    assert!(
+        !listed.contains(&role_only_card.as_str()),
+        "a card with the assistant role but the plain-chat marker leaked in — \
+         the marker conjunct is not being applied"
+    );
+    assert!(
+        !listed.contains(&marker_only_card.as_str()),
+        "a card with the assistant marker but the worker role leaked in — \
+         the role conjunct is not being applied"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// `POST /api/cards/{id}/spec/reset` restarts an assistant under the ASSISTANT
+/// profile.
+///
+/// The arm in `routes::cards::reset_spec_harness_card` that selects
+/// `HarnessProfile::Assistant` had no caller in the suite: delete it and the
+/// card falls through to `HarnessProfile::Spec`, which `validate` refuses
+/// (`card ... is not a spec card`) — so the assertions below are the reset arm
+/// itself, not incidental coverage.
+///
+/// Both halves of the card's identity are re-read afterwards because reset
+/// re-enters the start adapter: a restart that rewrote the role or the marker
+/// would leave a card the list predicate or the authorization gate no longer
+/// recognises.
+#[tokio::test]
+async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile() {
+    let b = boot().await;
+    let wave_id = b.create_wave("assistant-reset").await;
+    let (status, created) = b
+        .create_conversation(&wave_id, "idem-reset", "hello assistant")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let card_id = created["id"].as_str().unwrap().to_string();
+    let thread_before: Option<String> =
+        sqlx::query_scalar("SELECT thread_id FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    // Captured BEFORE the reset. A one-sided "the assistant did not become the
+    // root" assertion also passes when reset clears `root_session_id` to NULL,
+    // which loses the spec card's root just as thoroughly, so the post-condition
+    // below is equality against this value, not absence of the assistant.
+    let root_before: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        root_before.is_some(),
+        "the wave must already have a spec root session before the reset, \
+         otherwise the equality check below is vacuous"
+    );
+
+    let (status, body) = b
+        .request(
+            "POST",
+            &format!("/api/cards/{card_id}/spec/reset"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "reset must accept an assistant conversation: body={body}"
+    );
+
+    assert_eq!(
+        b.card_role(&card_id).await,
+        "assistant",
+        "reset must not rewrite the conversation's role"
+    );
+    assert_eq!(
+        b.card_marker(&card_id).await.as_deref(),
+        Some("assistant"),
+        "reset must not rewrite the conversation's marker"
+    );
+    // The profile actually taken, observed rather than asserted about: the Spec
+    // arm writes a `SharedSpec` session, which is `WorkerContract::Planner` and
+    // takes over `waves.root_session_id`.
+    let contracts: Vec<String> =
+        sqlx::query_scalar("SELECT contract FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        contracts.iter().all(|contract| contract == "executor"),
+        "reset restarted the assistant as a planner: {contracts:?}"
+    );
+    let root_after: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        root_after, root_before,
+        "reset must leave the wave's root session exactly as it was: taking it \
+         over for the assistant and clearing it to NULL are both losses of the \
+         spec card's root"
+    );
+    let assistant_sessions: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        !assistant_sessions
+            .iter()
+            .any(|id| root_after.as_deref() == Some(id.as_str())),
+        "the reset assistant displaced the spec card as the wave's root session"
+    );
+    // A reset is a hard restart: a new thread, and the card still listed.
+    // Ordered explicitly: reset supersedes the old row and starts a new one, so
+    // "the live session" is the newest active row, not whatever sqlite happens
+    // to return first.
+    let thread_after: Option<String> = sqlx::query_scalar(
+        "SELECT thread_id FROM worker_sessions WHERE card_id = ?1 \
+           AND state IN ('starting','running','idle','turn_pending') \
+         ORDER BY created_at_ms DESC, id DESC LIMIT 1",
+    )
+    .bind(&card_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    assert!(thread_after.is_some());
+    assert_ne!(thread_after, thread_before, "reset must mint a new thread");
+    let (status, rows) = b.list_conversations(&wave_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows.as_array().unwrap().len(), 1, "rows={rows}");
+    b.shutdown_harnesses().await;
+}
+
+/// The endpoint's own boundaries: an unknown wave is 404, a cove chat wave is
+/// 403 (its conversations belong to the cove endpoint), and the header is
+/// genuinely required rather than defaulted.
+#[tokio::test]
+async fn the_endpoint_refuses_unknown_waves_chat_waves_and_a_missing_key() {
+    let b = boot().await;
+    let wave_id = b.create_wave("assistant-boundaries").await;
+
+    let (status, _) = b.list_conversations("wave-does-not-exist").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = b
+        .create_conversation("wave-does-not-exist", "idem-x", "hi")
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, body) = b
+        .request(
+            "POST",
+            &format!("/api/waves/{wave_id}/conversations"),
+            None,
+            Some(json!({"text": "hi"})),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+
+    let (status, body) = b.create_conversation(&wave_id, "idem-blank", "   ").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert_eq!(
+        b.scalar(
+            "SELECT COUNT(*) FROM cards WHERE wave_id = ?1 AND role = 'assistant'",
+            &wave_id
+        )
+        .await,
+        0,
+        "a rejected first message must leave no card behind"
+    );
+
+    // The cove's hidden chat wave.
+    let (status, chat_wave) = b
+        .request(
+            "POST",
+            &format!("/api/coves/{}/chat-wave/ensure", b.cove_id),
+            None,
+            None,
+        )
+        .await;
+    assert!(matches!(status, StatusCode::OK | StatusCode::CREATED));
+    let chat_wave_id = chat_wave["id"].as_str().unwrap();
+    let (status, body) = b.create_conversation(chat_wave_id, "idem-chat", "hi").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
