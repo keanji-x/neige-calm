@@ -176,4 +176,29 @@ describe('Settings states', () => {
       vi.useRealTimers();
     }
   });
+
+  /*
+   * The e2e locator, pinned where it can actually run (`fe e2e` needs the real
+   * stack). `settings-roundtrip.spec.ts` reads `[data-nc-settings-saved]` and
+   * then asserts its text, because `role="status"` resolves to three elements
+   * on this page — each Astryx `Button` renders an unconditional empty live
+   * region with that role. Locating by the anchor and asserting the text are
+   * two independent claims; filtering the role by 'Saved.' would collapse them
+   * into one and could never distinguish "the save succeeded" from "the string
+   * happens to be on the page".
+   *
+   * Both halves are load-bearing: the anchor must appear *only* after a save,
+   * and it must carry that text. Deleting the attribute, or dropping the
+   * `showSaved &&` guard so the notice is always mounted, must turn this red.
+   */
+  it('exposes the saved notice at the anchor the e2e spec locates, and only after a save', () => {
+    const { unmount } = render(<SettingsPage {...props({ savedAt: null })} />);
+    expect(document.querySelectorAll('[data-nc-settings-saved]')).toHaveLength(0);
+    unmount();
+
+    render(<SettingsPage {...props({ savedAt: 1234 })} />);
+    const anchored = document.querySelectorAll('[data-nc-settings-saved]');
+    expect(anchored).toHaveLength(1);
+    expect(anchored[0]?.textContent).toBe('Saved.');
+  });
 });

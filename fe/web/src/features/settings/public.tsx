@@ -154,7 +154,21 @@ export function SettingsPage({
                       data-nc-state={saving ? 'busy' : undefined}
                       onClick={() => { if (saving) return; setDraft(base); }}
                     />
-                    {showSaved && <span className={styles.saved} role="status">Saved.</span>}
+                    {/*
+                      * `data-nc-settings-saved` is the e2e seam, not decoration.
+                      * `role="status"` cannot locate this span: every Astryx
+                      * `Button` renders its own unconditional, empty-text
+                      * `role="status"` live region for loading announcements
+                      * (`@astryxdesign/core` `Button.tsx`), so the two buttons
+                      * beside this one make `getByRole('status')` resolve to
+                      * three elements. Filtering those by the text we are about
+                      * to assert would be circular — it could only prove "some
+                      * status says Saved.", never "the save succeeded". The
+                      * anchor keeps locating independent of asserting.
+                      */}
+                    {showSaved && (
+                      <span className={styles.saved} role="status" data-nc-settings-saved>Saved.</span>
+                    )}
                   </div>
                   {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
                 </>
