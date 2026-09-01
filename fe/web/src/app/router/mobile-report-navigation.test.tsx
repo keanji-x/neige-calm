@@ -394,7 +394,10 @@ describe('a desktop viewport never lets ?panel= disable the wave panel', () => {
     // take the surface out of the accessibility tree, so this heading — the
     // desktop CARDS module — disappears from it while the bug is present.
     expect(await screen.findByRole('heading', { name: 'Cards' })).toBeTruthy();
-    expect(await screen.findByRole('button', { name: /Build log/ })).toBeTruthy();
+    /* `^` anchors the query to the row itself: the CARDS row now has a delete
+       sibling whose accessible name also carries the card's title (#1231), and
+       an unanchored match finds both. The row is what this case is about. */
+    expect(await screen.findByRole('button', { name: /^Build log/ })).toBeTruthy();
     // And the URL stops claiming a state this viewport cannot be in.
     await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
   });
@@ -410,6 +413,9 @@ describe('a desktop viewport never lets ?panel= disable the wave panel', () => {
     // `replace`, not a push: widening a window is not a place to go Back to.
     await waitFor(() => { expect(href(router)).toBe('/wave/w1'); });
     expect(router.history.length).toBe(1);
-    expect(await screen.findByRole('button', { name: /Build log/ })).toBeTruthy();
+    /* `^` anchors the query to the row itself: the CARDS row now has a delete
+       sibling whose accessible name also carries the card's title (#1231), and
+       an unanchored match finds both. The row is what this case is about. */
+    expect(await screen.findByRole('button', { name: /^Build log/ })).toBeTruthy();
   });
 });

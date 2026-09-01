@@ -11,3 +11,6 @@
 @import "./dialog.css" layer(ui);
 @import "./wave-grid.css" layer(overrides);
 @import "./xterm-view.css" layer(overrides);
+/* The file card's frame. `ui`, not `overrides`: it styles a system's own
+   component, so anything a feature says about the same box must win. */
+@import "./file-viewer.css" layer(ui);

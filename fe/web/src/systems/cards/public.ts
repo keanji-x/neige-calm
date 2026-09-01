@@ -1,5 +1,8 @@
 export type {
+  CardAddMenuEntry,
+  CardAddPanel,
   CardComponentProps,
+  CardCreateField,
   CardCreateStrategy,
   CardDataMap,
   CardEntry,
@@ -9,7 +12,7 @@ export type {
   KernelCardInput,
   RegisteredCard,
 } from './registry.js';
-export { createCardRegistry, FALLBACK_SIZE } from './registry.js';
+export { cardAddMenuEntries, createCardRegistry, FALLBACK_SIZE } from './registry.js';
 export type {
   CardRecord,
   CardController,

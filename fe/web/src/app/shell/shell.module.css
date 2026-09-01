@@ -727,6 +727,13 @@
   .menuItem {
     display: flex;
     align-items: center;
+
+    /* A `<button>` shrinks to fit even at `display: flex`, so without this the
+       hover fill was the width of the *word* rather than of the row it sits in
+       — "Settings" lit a 60px box inside a 154px menu. Found while fixing the
+       same defect in the wave panel's add menu (#1231), which has since moved
+       onto astryx's `DropdownMenu` and gets the row for free. */
+    inline-size: 100%;
     block-size: var(--row-h-sm);
     padding-inline: var(--space-3);
     border-radius: var(--radius-sm);

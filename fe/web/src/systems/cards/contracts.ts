@@ -1,3 +1,7 @@
+import type { CardFilesPort } from '../../../../core/domain/fs.ts';
+
+export type { CardFilesPort };
+
 export interface CardRecord {
   readonly id: string;
   readonly type: string;
@@ -48,6 +52,17 @@ export interface CardHostCapabilities {
   readonly cardId: string;
   readonly lifecycle: CardLifecycleStore;
   readonly slots: CardSlotStore;
+  /**
+   * The filesystem reads this host was built with, or `null`.
+   *
+   * A card cannot reach a transport on its own — `systems/**` sits below
+   * `app/**` and holds none — so the reads arrive here, injected once by
+   * `app/composition`. `null` is a host assembled without them (a test, a
+   * board that hosts no file-reading kind), and a card that needs them must
+   * say so on screen rather than throw: an empty pane with a reason is a state
+   * a reader can act on, an exception is not.
+   */
+  readonly files: CardFilesPort | null;
   emit(command: CardRuntimeCommand): void;
 }
 
