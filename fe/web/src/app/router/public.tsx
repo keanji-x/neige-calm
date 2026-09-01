@@ -252,6 +252,13 @@ export function useConversationStore(
    * settle handlers below therefore touch the send state only while they are
    * still the active request, which is what makes "at most one" true rather
    * than merely intended.
+   *
+   * "At most one" is a statement about **this mounted store**, and only about
+   * it. A store that unmounts with a send still out leaves that request holding
+   * an echo nobody here can see; the store mounted next has its own slot, and
+   * the two can be unanswered at the same time. That is why echo ids carry a
+   * per-instance nonce (`echoNonce`) — the shared registry is the one place
+   * those two lifetimes meet.
    */
   const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -271,11 +278,29 @@ export function useConversationStore(
    * Every echo id this store has minted, which is how a write-through tells an
    * echo of its own apart from a user message the server sent back.
    *
-   * Ids are `echo-N` off a counter that is never reset, so they stay unique
-   * across conversation switches for the life of the store.
+   * Ids are `echo-<nonce>-N` off a counter that is never reset, so they stay
+   * unique across conversation switches for the life of the store.
    */
   const mintedEchoIds = useRef(new Set<string>());
   const seq = useRef(0);
+  /**
+   * What makes an echo id unique beyond this store instance.
+   *
+   * `seq` and `mintedEchoIds` die with the store; the registry does not — it
+   * lives on `ConversationProvider` at the root and outlives every route. So a
+   * counter alone is only unique *within one mounted instance*: leave the route
+   * with a send still in flight and come back, and the new store starts at
+   * `echo-1` again while the old closure is still holding an `echo-1` of its
+   * own. Both write through on success, and two different messages enter the
+   * shared registry under one id — a duplicate React key in the transcript, and
+   * a `mintedEchoIds` answer given about the wrong message.
+   *
+   * A per-instance nonce is the bounded fix: ids stay collision-free across
+   * mounts without moving ownership of minting up to the provider. Minted off
+   * `getRandomValues` (via `mintIdempotencyKey`) because the app is served over
+   * plain http on the LAN, where `crypto.randomUUID` does not exist.
+   */
+  const [echoNonce] = useState(mintIdempotencyKey);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   const serverTurns = useMemo(() => [...items]
     .sort((left, right) => left.id - right.id).flatMap((item) => {
@@ -489,9 +514,26 @@ export function useConversationStore(
     setSending(true);
     setActionError(null);
     seq.current += 1;
-    const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
+    const echo = {
+      id: `echo-${echoNonce}-${seq.current}`, author: 'you' as const, text, atMs: Date.now(),
+    };
     mintedEchoIds.current.add(echo.id);
     const sentTo = cardId;
+    /*
+     * Which server rows this conversation had *before* this message left.
+     *
+     * The write-through below asks whether the refresh already brought this very
+     * message back, and the only rows that can answer that are the ones that
+     * were not there yet. Asking the whole registry entry instead — as this did
+     * — makes an older identical message answer for this one: say `ping` twice
+     * and the server row for the first `ping` matches the second echo, so the
+     * second send is neither appended nor counted and the reader loses a message
+     * they watched being sent. `reconcileUserEchoes` pairs one-to-one only
+     * within the echoes of a single call, and this call passes one echo, so it
+     * cannot know the older row is already spoken for. Recording the ids here is
+     * how it is told.
+     */
+    const turnsBefore = new Set(registry.turnsOf(sentTo).map((entry) => entry.id));
     activeSend.current = { cardId: sentTo, echoId: echo.id };
     /* Still ours to answer for. False from the moment the reader moved to
        another conversation (the `cardId` effect) or started a later send. */
@@ -538,12 +580,14 @@ export function useConversationStore(
          * the transcript containing it — all before this promise settles.
          * Appending the echo then would show the reader their message twice and
          * count it twice. Matched by text through the same one-to-one rule the
-         * drawer reconciles echoes with (`reconcileUserEchoes`), and only
-         * against turns this store did *not* mint, so genuinely sending the
-         * same sentence twice still counts twice.
+         * drawer reconciles echoes with (`reconcileUserEchoes`), against the
+         * rows that **arrived since the send** (`turnsBefore`) and that this
+         * store did not mint itself — so a reader who genuinely sends the same
+         * sentence twice still has it counted twice, and an echo of this store's
+         * own is never mistaken for the server's account of it.
          */
         const serverSaid = knownTurns.filter((turn): turn is ConversationTurn =>
-          turn.author === 'you' && !mintedEchoIds.current.has(turn.id));
+          turn.author === 'you' && !mintedEchoIds.current.has(turn.id) && !turnsBefore.has(turn.id));
         const recorded = reconcileUserEchoes(serverSaid, [echo]).length === 0;
         return {
           conversation: {

@@ -16,12 +16,16 @@ import { RouterProvider } from '@tanstack/react-router';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { useEffect } from 'react';
+
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import type { Conversation, TranscriptEntry } from '../../../../core/domain/conversation.ts';
 import { waveConversationCardId } from '../../../../core/domain/conversation.ts';
+import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import { queryKeys } from '../providers/queries.ts';
 import { ThemeProvider } from '../theme/public.tsx';
-import { APP_BASEPATH, createAppRouter } from './public.tsx';
+import { APP_BASEPATH, createAppRouter, useConversationStore } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const COVE = { id: 'c1', name: 'Work', color: '#000', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
@@ -546,6 +550,65 @@ describe('wave conversations', () => {
   });
 
   /*
+   * And the same write-through from the other side: a message the reader really
+   * did send twice is two messages.
+   *
+   * The check above asks "did the refresh already bring this very message
+   * back?", and it asks it by text — an echo carries no server id, so text is
+   * all there is. Asked against the *whole* entry, an older identical message
+   * answers for the new one: `ping` is in the transcript from an hour ago, you
+   * type `ping` again, the POST succeeds, and the refresh that follows it is a
+   * moment behind the write. The write-through then finds a `ping` it did not
+   * mint, calls this one already recorded, and neither appends it nor counts
+   * it. `reconcileUserEchoes` pairs one-to-one only among the echoes of a
+   * single call, and this call passes one, so nothing tells it the old row is
+   * already spoken for. Only the rows that arrived *since the send* can answer
+   * the question that was asked.
+   *
+   * `2 turns` is the assertion and it fails in the one direction that matters:
+   * the old-`ping`-answers-for-the-new bug reports `1`.
+   */
+  it('[G5] counts a message really sent twice, when the refresh is a moment behind', async () => {
+    let releaseRun!: () => void;
+    const runSettled = new Promise<void>((resolve) => { releaseRun = resolve; });
+    let answered = false;
+    const { router } = setup(async (request) => {
+      /* The server's copy of the *first* `ping`, and only ever that one: the
+         second is accepted and persisted, and this read cannot see it yet. */
+      if (request.path.startsWith(`/api/cards/${ASSISTANT_CARD.id}/harness/items`)) {
+        return ok([harnessMessage(1, 'userMessage', { content: [{ text: 'ping' }] })]);
+      }
+      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/input`) {
+        answered = true;
+        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
+      }
+      /* Held so the send is still settling when the drawer shuts, which is the
+         only window in which the write-through decides anything. */
+      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/run`) {
+        await runSettled;
+        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    /* Named from the `ping` that is already there — the row this test is about
+       having to not answer for the next one. */
+    await screen.findByRole('complementary', { name: 'ping' });
+    await write('ping');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    await waitFor(() => expect(
+      document.querySelector('[data-nc-role="row"][aria-current="true"]'),
+    ).toBeNull());
+    await act(async () => { releaseRun(); await Promise.resolve(); });
+
+    await act(async () => { await router.navigate({ to: '/' }); });
+    await screen.findByRole('button', {
+      name: 'Conversation ping, on Test wave, 2 turns',
+    });
+  });
+
+  /*
    * The other half of the same decision, and the reason it is a wave id rather
    * than a flag: a cove's rows stay out of the registry. They live on the
    * cove's hidden chat wave, and Today navigates to `conversation.waveId` when
@@ -736,5 +799,104 @@ describe('wave conversations', () => {
     /* The row reads its title and then its kernel kind. The assistant card is
        absent entirely — not listed under some other name. */
     expect(labels).toEqual(['Workercodex']);
+  });
+});
+
+/*
+ * ── Echo identity, which outlives the store that minted it ───────────────────
+ *
+ * An echo id is minted off a counter in `useConversationStore`, and that store
+ * dies with the route. The registry does not: it hangs off `ConversationProvider`
+ * at the root and is the one thing on this surface with no `forget`. Leave a
+ * wave with a send still in flight and come back, and a *second* store starts
+ * counting from one while the first one's request is still out — two different
+ * messages arriving in one shared entry under one id.
+ *
+ * Driven through the store itself rather than the router because the defect is
+ * an identity, and the routes render turns by that identity without ever showing
+ * it: the count is `2` either way, and what a duplicate id costs — a React key
+ * that names two rows, a jump target that resolves to the wrong one — is only
+ * visible where the ids are. The two stores are mounted and unmounted for real
+ * under one provider, so the lifetimes being claimed are the real ones.
+ */
+describe('echo identity across store instances', () => {
+  const SCOPE = {
+    id: 'w1', title: 'Test wave', cardId: ASSISTANT_CARD.id, cardTitle: null,
+    updatedAt: 30, kind: 'wave-assistant' as const, state: 'idle' as const,
+  };
+  const ROWS: readonly Conversation[] = [{
+    id: ASSISTANT_CARD.id, waveId: 'w1', waveTitle: 'Test wave', title: null,
+    kind: 'wave-assistant', state: 'idle', updatedAt: 30,
+  }];
+
+  it('[G5] mints echo ids that a later mount cannot collide with', async () => {
+    /* Every send is held, so both are still out when their stores unmount. */
+    const holds: (() => void)[] = [];
+    const transport: ApiTransportPort = {
+      async send(request) {
+        if (request.path.endsWith('/spec/input')) {
+          await new Promise<void>((resolve) => { holds.push(resolve); });
+          return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
+        }
+        if (request.path.endsWith('/spec/run')) {
+          return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
+        }
+        /* No history: the server has brought nothing back, which is the state
+           in which an echo is the only account of the message. */
+        return ok([]);
+      },
+    };
+    let latestSend: (text: string) => void = () => undefined;
+    let latestTurns: readonly TranscriptEntry[] = [];
+
+    function StoreProbe() {
+      const store = useConversationStore(transport, unauthorized, SCOPE, {
+        kind: 'rows', rows: ROWS, rememberOn: 'w1',
+      });
+      const send = store.send;
+      useEffect(() => { latestSend = (text) => { send(ASSISTANT_CARD.id, text); }; });
+      return null;
+    }
+
+    function RegistryProbe() {
+      const turns = useConversationRegistry().turnsOf(ASSISTANT_CARD.id);
+      useEffect(() => { latestTurns = turns; });
+      return null;
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, structuralSharing: false } } });
+    const view = (instance: string | null) => (
+      <QueryClientProvider client={client}>
+        <ConversationProvider>
+          <RegistryProbe />
+          {instance === null ? null : <StoreProbe key={instance} />}
+        </ConversationProvider>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(view('first-mount'));
+
+    await act(async () => { latestSend('first'); await Promise.resolve(); });
+    await waitFor(() => expect(holds).toHaveLength(1));
+    /* The walk away: this store is gone, its counter with it, and its request
+       is still out. */
+    await act(async () => { rerender(view(null)); await Promise.resolve(); });
+    /* And the walk back — a new store, on the same conversation, under the same
+       registry. */
+    await act(async () => { rerender(view('second-mount')); await Promise.resolve(); });
+    await act(async () => { latestSend('second'); await Promise.resolve(); });
+    await waitFor(() => expect(holds).toHaveLength(2));
+    await act(async () => { rerender(view(null)); await Promise.resolve(); });
+
+    /* Both answers land with nobody mounted, which is exactly when the
+       write-through is the only writer of this entry. */
+    await act(async () => {
+      for (const release of holds) release();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(latestTurns).toHaveLength(2));
+    expect(latestTurns.map((turn) => 'text' in turn ? turn.text : '')).toEqual(['first', 'second']);
+    /* The assertion: two messages, two identities. A counter reset by the
+       remount hands the registry both of them as `echo-1`. */
+    expect(new Set(latestTurns.map((turn) => turn.id)).size).toBe(2);
   });
 });
