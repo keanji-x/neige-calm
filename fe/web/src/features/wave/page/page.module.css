@@ -310,6 +310,69 @@
     background: var(--overlay-hover);
   }
 
+  /*
+   * ── The row's trailing column ────────────────────────────────────────────
+   *
+   * The delete is positioned over the row rather than laid out beside it, for
+   * the same reason `features/wave/row` positions its own: the row is a
+   * `<button>` and the control may not nest inside it, but the two still have
+   * to read as one row. The `<li>` is the positioning context that lets them.
+   *
+   * The space is reserved at rest (`.cardRowRemovable`), so revealing the ×
+   * never reflows the title — a row whose text re-wraps on hover is a row that
+   * moves out from under the pointer. Flush at inset 0, which is where the
+   * module head's `+` and the wave rows' × already sit: one trailing column for
+   * the whole panel.
+   */
+  .cardItem {
+    position: relative;
+  }
+
+  .cardRowRemovable {
+    padding-inline-end: calc(var(--space-2) + var(--control-h-sm));
+  }
+
+  .cardRemove {
+    position: absolute;
+    inset-block-start: 50%;
+    inset-inline-end: 0;
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    padding: 0;
+    border-radius: var(--radius-sm);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    opacity: 0;
+    cursor: pointer;
+    translate: 0 -50%;
+    transition: opacity var(--motion-quick) ease-out,
+      background-color var(--motion-quick) ease-out;
+
+    /* Hidden by opacity, never by `visibility`: `visibility: hidden` drops the
+       button out of the focus order, and `:focus-within` below would then never
+       fire — the keyboard path would lose the delete entirely (§2.6). */
+    pointer-events: none;
+  }
+
+  /* Before the descendant rule below, which stylelint's
+     `no-descending-specificity` requires and which costs nothing here: the two
+     say the same thing about `opacity`, and only this one adds a background. */
+  .cardRemove:hover,
+  .cardRemove:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  .cardItem:hover .cardRemove,
+  .cardItem:focus-within .cardRemove {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
   .cardKind {
     min-inline-size: 0;
     overflow: hidden;

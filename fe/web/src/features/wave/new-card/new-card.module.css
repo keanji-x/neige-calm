@@ -1,0 +1,96 @@
+/* The add menu's own surface, and the form's two app-level facts.
+   Every control inside the form is astryx's and is deliberately not restated
+   here; the menu's keyboard and focus behaviour is `ui/menu`'s and needs no
+   CSS at all. What is left is where the popup hangs and what it looks like. */
+@layer features {
+  .menuWrap {
+    position: relative;
+
+    /* The trigger is the panel head's trailing control, so the wrapper must not
+       introduce a box of its own around it — `display: contents` would drop the
+       positioning context the popup needs, so the wrapper is a plain inline
+       grid the size of the button it holds. */
+    display: inline-grid;
+  }
+
+  /* The same 20px icon button as `ui/panel-card`'s `PanelAction`, because it
+     stands in exactly that slot — this module head's `+` has to be the same
+     mark as every other module head's. It is restated rather than reused: the
+     control is a menu trigger here, and `PanelAction` takes an `onClick`, not
+     the trigger props `ui/menu` supplies. */
+  .trigger {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    margin-inline-end: calc(var(--space-2) * -1);
+    border-radius: var(--radius-sm);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .trigger:hover,
+  .trigger:focus-visible {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  /*
+   * Anchored to the trigger's trailing edge and hanging below it. Absolute, not
+   * fixed: unlike the rail's account menu this trigger is not inside a
+   * scroll/clip box it has to escape — the panel card is a static column — and
+   * absolute keeps the popup with the button when the page scrolls.
+   */
+  .menu {
+    position: absolute;
+    inset-block-start: calc(100% + var(--space-2));
+    inset-inline-end: 0;
+    z-index: var(--z-overlay);
+    display: flex;
+    flex-direction: column;
+    min-inline-size: var(--menu-w-min);
+    max-inline-size: var(--menu-w-max);
+
+    /* 4px items inside a 12px radius: the padding is what makes the two agree,
+       the same arithmetic as the rail's menu. */
+    padding: var(--space-6);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-lg);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+  }
+
+  .menuItem {
+    display: flex;
+    align-items: center;
+    block-size: var(--row-h-sm);
+    padding-inline: var(--space-3);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-none);
+    color: var(--text);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .menuItem:hover,
+  .menuItem:focus-visible {
+    background: var(--overlay-hover);
+  }
+
+  .menuEmpty {
+    padding: var(--space-3);
+    font-size: var(--text-xs);
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+  }
+
+  /* As in `new-wave.module.css`: the column and the gap are `VStack`'s, and the
+     only things astryx cannot know are the dialog's text colour and font. */
+  .form {
+    color: var(--text);
+    font-family: var(--font-sans);
+  }
+}
