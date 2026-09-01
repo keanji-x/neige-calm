@@ -15,13 +15,7 @@
     "id": "E2E-CAP-ADDPANEL-007",
     "subtype": "not-in-file",
     "issue": "#1170",
-    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
-  },
-  {
-    "id": "E2E-CAP-AXE-008",
-    "subtype": "range-miss",
-    "issue": "#1170",
-    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
+    "note": "#1148 A0 downgraded `terminal` / `codex` to stop words — they name whole subsystems, so hitting them elsewhere in the spec proved nothing; the sole surviving anchor, aria-hidden, appears in this file only inside a comment (a11y-keyboard.spec.ts:465), so the entry is now honestly not-in-file rather than range-miss"
   },
   {
     "id": "E2E-CAP-CWD-005",
@@ -31,48 +25,12 @@
   },
   {
     "id": "E2E-CAP-DELETE-001",
-    "subtype": "not-in-file",
-    "issue": "#1170",
-    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
-  },
-  {
-    "id": "E2E-CAP-DELETE-003",
     "subtype": "range-miss",
     "issue": "#1170",
-    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
-  },
-  {
-    "id": "E2E-CAP-DELETE-020",
-    "subtype": "range-miss",
-    "issue": "#1170",
-    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
-  },
-  {
-    "id": "E2E-CAP-LIST-018",
-    "subtype": "range-miss",
-    "issue": "#1170",
-    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
-  },
-  {
-    "id": "E2E-CAP-MODAL-012",
-    "subtype": "range-miss",
-    "issue": "#1170",
-    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
-  },
-  {
-    "id": "E2E-CAP-RENAME-011",
-    "subtype": "not-in-file",
-    "issue": "#1170",
-    "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
+    "note": "only `Cancel` hits, and only outside the cited range; the cited lines carry none of the named controls"
   },
   {
     "id": "E2E-CAP-RENAME-015",
-    "subtype": "range-miss",
-    "issue": "#1170",
-    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
-  },
-  {
-    "id": "E2E-CAP-RENAME-016",
     "subtype": "range-miss",
     "issue": "#1170",
     "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
@@ -154,12 +112,6 @@
     "subtype": "not-in-file",
     "issue": "#1170",
     "note": "no candidate in the cited file: the identifiers occur only in comments or case titles, never in code"
-  },
-  {
-    "id": "E2E-INV-SPECCHAT-008",
-    "subtype": "range-miss",
-    "issue": "#1170",
-    "note": "the only code hits are another case title, unrelated setup, or a helper definition; re-pointing would fake the check"
   },
   {
     "id": "E2E-INV-SPECCHAT-011",

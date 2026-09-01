@@ -789,6 +789,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wave-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_wave_templates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -2418,6 +2434,7 @@ export interface components {
              *     vacuous. A present null resets to the kernel default (32).
              */
             tree_task_budget?: number | null;
+            workspace?: null | components["schemas"]["WaveWorkspacePatch"];
         };
         /**
          * @description The payload persisted in a wave-report card's `payload` JSON column.
@@ -2488,6 +2505,48 @@ export interface components {
             summary: string;
             taskDiagnostics: components["schemas"]["BlockVerdict"][];
         };
+        /**
+         * @description One selectable starting point for a new wave.
+         *
+         *     "Blank" is not in this list and never will be: it is the *absence* of a
+         *     template (`POST /api/waves` with no `workflow_id`), so the client renders it
+         *     as its own default option rather than the server minting a pseudo-row for
+         *     something that has no key, no title source, and no report to fork.
+         */
+        WaveTemplate: {
+            /**
+             * @description Template key. Passed back verbatim as `workflow_id` on
+             *     `POST /api/waves` — see the seam note on this module.
+             */
+            id: string;
+            /**
+             * @description JSON Schema for `workflow_input`, from the manifest of the running
+             *     trusted plugin bound to `id`. Absent means the template takes no input;
+             *     sending `workflow_input` for it is a 400 on create.
+             */
+            input_schema?: unknown;
+            /**
+             * @description The tasks this template pre-sets, in plan order. Always present and
+             *     never empty for a real template — a template *is* its task list — so the
+             *     client can show it without a "no tasks" branch that could never render.
+             */
+            tasks: components["schemas"]["WaveTemplateTask"][];
+            title: string;
+        };
+        /**
+         * @description One pre-set task, projected from the template's own `PlanTaskInput`.
+         *
+         *     `key` and `goal` only: those are the two facts a person choosing a starting
+         *     point needs, and both are verbatim from the seeded plan. Acceptance
+         *     criteria, dependencies and gate advice belong to the wave's report once it
+         *     exists, not to the chooser.
+         */
+        WaveTemplateTask: {
+            /** @description What that task is for, verbatim from the template. */
+            goal: string;
+            /** @description The task block's `key` in the seeded report. */
+            key: string;
+        };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
             /**
@@ -2508,6 +2567,42 @@ export interface components {
          * @enum {string}
          */
         WaveWorkspaceKind: "managed" | "attached";
+        /**
+         * @description #1147 S3 — point a wave at a repository the user already has.
+         *
+         *     The only transition this expresses is `managed → attached`. There is no
+         *     `managed → managed`: a managed path is *derived*
+         *     (`<workspace-root>/<cove_id>/<wave_id>`, see
+         *     `workspace_materialize::managed_workspace_path`) from a wave's cove and id,
+         *     neither of which can change, so "re-allocate a managed workspace" would
+         *     always re-derive the same path — an in-place reset, not a change. And a
+         *     caller-supplied *managed* path is worse than useless: S5's recycle guard 2
+         *     requires exactly `<root>/<cove>/<wave>` depth, so any other path produces a
+         *     row whose directory can never be reclaimed.
+         *
+         *     `attached → *` stays refused (an attached repository belongs to the user;
+         *     the server never moves, initializes or deletes it), which makes this a
+         *     one-way door — and the write below stamps `frozen_at` to say so.
+         */
+        WaveWorkspacePatch: {
+            /**
+             * @description Claim `path` for this wave's cove in the same transaction, exactly as
+             *     `POST /api/waves`'s field of the same name does (issue #275 rules:
+             *     equal / ancestor / descendant of any existing claim is a structured
+             *     409). Default `false`: an unclaimed path is refused rather than
+             *     silently making a homeless wave.
+             */
+            attach_folder?: boolean;
+            /** @description Must be `attached`. `managed` is a documented 400, not a silent no-op. */
+            kind: components["schemas"]["WaveWorkspaceKind"];
+            /**
+             * @description Absolute path to an existing Git work tree. Validated — existence and
+             *     git-ness included — *before* anything is written, because "the path was
+             *     wrong" surfacing later as a worker's `spawn-failed` is the defect
+             *     #1147 was opened on.
+             */
+            path: string;
+        };
         /**
          * @description Issue #250 PR 2 — calendar window query parameters for
          *     `GET /api/waves`. Every field is optional so omitting all three
@@ -4828,6 +4923,35 @@ export interface operations {
             };
         };
     };
+    list_wave_templates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Selectable wave templates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplate"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_waves_window: {
         parameters: {
             query?: {
@@ -5040,8 +5164,35 @@ export interface operations {
                     "application/json": components["schemas"]["Wave"];
                 };
             };
+            /** @description Unsupported workspace change */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Workspace change refused (system cove) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Workspace is frozen, attached, or no longer empty */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

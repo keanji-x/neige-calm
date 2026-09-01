@@ -123,8 +123,27 @@ pub(crate) fn workspace_key_digest(path: &str) -> String {
 
 /// Materialize `workspace` if — and only if — it is `Managed`.
 ///
-/// `Attached` workspaces point at directories the *user* owns. D3: attached
-/// gets validated, never created, never `git init`-ed, never written to.
+/// `Attached` workspaces point at directories the *user* owns: never created,
+/// never `git init`-ed, never written to.
+///
+/// # Why [`validate_attached_workspace`] is NOT called from here
+///
+/// It was, for one gate run. Design D3 says the attached branch "only
+/// validates", and this is the single contract point every create entry shares,
+/// so it looks like the right home. **Measured: 202 tests fail.** Attached
+/// waves are the default shape of nearly every fixture in the suite, and they
+/// point at strings (`/parent-cwd`, `""`, a bare tempdir) rather than at real
+/// Git work trees — because until #1147 S3 nothing ever looked. Making this the
+/// enforcement point therefore is not "add a check", it is "rewrite every
+/// attached fixture in the tree to build a real repository", which is a slice
+/// of its own.
+///
+/// So validation lives at the two entry points where a **user** names a
+/// directory — `POST /api/waves`'s attached branch and
+/// `PATCH /api/waves/{id}` — and those are the two this slice opens. The
+/// kernel-derived attached paths (a cove chat wave adopting an existing
+/// `cove_folders` claim, a child wave inheriting an attached parent) are NOT
+/// validated; see the design's 已知缺口 N18.
 pub fn materialize_workspace(
     workspace: &WaveWorkspace,
     workspace_root: &Path,
@@ -136,6 +155,82 @@ pub fn materialize_workspace(
         }
         WaveWorkspaceKind::Attached => Ok(()),
     }
+}
+
+/// #1147 S3 — design D3's other half: *"Attached 创建只做校验：绝对路径、目录
+/// 存在、是 Git 仓库"*. Until this slice only the first third existed
+/// (`create_wave`'s `starts_with('/')`), which was survivable while the new FE
+/// had no way to attach anything. This slice adds that way, so the gap had to
+/// close with it.
+///
+/// # Why it is checked here and not left to the worker
+///
+/// Without this, attaching a path that does not exist — or exists but is not a
+/// repository — is accepted with a 201, and the first `kind: codex` task then
+/// dies inside `git_repo_root_for_wave_cwd` leaving nothing but `spawn-failed`
+/// in `tasks.status_detail`. That is issue #1147's opening paragraph,
+/// reproduced by the FE entry point this slice adds. The error text below is
+/// git's own, surfaced verbatim.
+///
+/// # "Is a Git work tree", not "is a repository root"
+///
+/// `rev-parse --show-toplevel` succeeds from a subdirectory too, and that is
+/// deliberate: the worker path derives the repository root itself
+/// (`git_repo_root_for_wave_cwd`), so a subdirectory is a directory work can
+/// actually happen in. Refusing it would reject a legitimate cwd for a reason
+/// nothing downstream cares about.
+///
+/// Returns `BadRequest`: every one of these is the caller naming the wrong
+/// directory, not the server failing.
+pub fn validate_attached_workspace(path: &Path) -> Result<()> {
+    if !path.is_absolute() {
+        return Err(CalmError::BadRequest(format!(
+            "attached workspace: path must be absolute (start with `/`); got `{}`",
+            path.display()
+        )));
+    }
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(CalmError::BadRequest(format!(
+                "attached workspace: `{}` is not a directory",
+                path.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CalmError::BadRequest(format!(
+                "attached workspace: `{}` does not exist. Neige never creates an \
+                 attached directory — it is yours, so it has to be there already.",
+                path.display()
+            )));
+        }
+        Err(error) => {
+            return Err(CalmError::BadRequest(format!(
+                "attached workspace: cannot read `{}`: {error}",
+                path.display()
+            )));
+        }
+    }
+    let output = neige_git_command()
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|error| {
+            CalmError::BadRequest(format!(
+                "attached workspace: cannot run git in `{}`: {error}",
+                path.display()
+            ))
+        })?;
+    if !output.status.success() {
+        return Err(CalmError::BadRequest(format!(
+            "attached workspace: `{}` is not inside a Git work tree, so no worker \
+             could ever get a workspace lease there. git said: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 /// Create (or re-adopt) the managed git repository at `path`. Idempotent, and

@@ -6,7 +6,7 @@ Two presentational surfaces plus the shared cove palette.
 | --- | --- |
 | `palette.ts` | INV-DUP-006 — the canonical cove colour table (`COVE_PALETTE`), consumed only by the sidebar's random new-cove picker. Not redeclared anywhere. |
 | `page/public.tsx` | `<CovePage>` — the cove route shell: swatch, rename, wave count, `+ New wave`, delete-with-confirm, and a body slot. |
-| `new-wave/public.tsx` | `<NewWaveForm>` — title-only create (#1131). Local form state only; never calls an API. |
+| `new-wave/public.tsx` | `<NewWaveForm>` — the create form: a task, plus an optional folder (#1131, #1147). Local form state only; never calls an API. |
 
 ## Composition contract
 
@@ -37,17 +37,31 @@ sentence exists to prevent.
 - Rename goes through the shared `ui/editable-title` (INV-DUP-008), which trims
   and skips no-op commits; `CovePage` only wires `onRenameCove` into it.
 
-## Title-only create (#1131)
+## Create: a task, and optionally a folder (#1131, #1147 S3)
 
-The form has one field, Task. Submit is enabled iff `title.trim()` is non-empty.
-`NewWaveDraft` is `{ title }`. The caller (`AppShell`) sends `POST /api/waves`
-as `{ cove_id, title, theme }` and **omits** `cwd` / `attach_folder`. `cove_id`
-comes from the surface that opened the dialog (cove page `+` or the rail's
-per-cove `+`); it is not a form field.
+Submit is enabled iff `title.trim()` is non-empty — the folder is never
+required. `cove_id` comes from the surface that opened the dialog (cove page `+`
+or the rail's per-cove `+`); it is not a form field.
 
-The kernel then stores `$HOME` on the wave row and does not insert
-`cove_folders`. Binding a project in-conversation is a later slice. Legacy
-`web/` `NewTaskForm` is unchanged and still sends a full body.
+`NewWaveDraft` is `{ title, cwd? }`, and **the `cwd` key is absent, not empty,
+when no folder was chosen**. That distinction is the whole contract: the caller
+(`AppShell`) sends `POST /api/waves` as `{ cove_id, title, theme }` with no
+`cwd` / `attach_folder` on the default path — the kernel's *managed* branch,
+where it creates and owns a workspace under the workspace root — and adds
+`{ cwd, attach_folder: true }` once a folder is picked, which *attaches* the
+wave to a directory the kernel never creates, moves or deletes.
+
+Create time is the only entry into that choice: the kernel offers no
+`managed → attached` conversion (`docs/1147-workspace-design.md` §更换与冻结),
+which is why the field is here and why clearing it back to the managed default
+is a control on this form.
+
+The folder control is the frozen `ui/schema-form` `DirectoryField`, which pushes
+`ui/directory-browser` into the *surrounding* dialog rather than opening a
+second one. It takes a `listDirectory` port as a prop; `features/**` never
+reaches a transport (see `app/providers/directory.ts`).
+
+Legacy `web/` `NewTaskForm` is unchanged and still sends a full body.
 
 ## Deliberately deferred (not "missing")
 
@@ -56,8 +70,13 @@ Cut from the legacy NewTaskForm on purpose; do not re-add without a slice:
 - The GitHub issue-dev workflow variant.
 - The raw `workflow_input` JSON escape hatch.
 - The debounced `GET /api/coves/resolve` auto-match that pre-selects a cove from
-  the typed directory.
-- The directory `Browse…` picker (`ui/directory-browser`).
+  the typed directory. **Not** re-added by #1147 S3: its only effect was
+  choosing `attach_folder: false` when some cove already covered the path, and
+  the kernel's in-transaction claim scan reaches that same answer without the
+  round trip — atomically, which a client-side pre-check cannot be.
+- A free-text path input beside the picker. The picker's own combobox already
+  accepts a typed absolute path; a second one would be two sources of truth for
+  the same value.
 
 ## Test contract
 

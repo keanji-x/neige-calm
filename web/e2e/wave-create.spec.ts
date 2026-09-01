@@ -13,10 +13,16 @@
 // Prereq: `make dev` must be serving the docker stack at
 // http://localhost:4040 with the default seed. We use unique titles
 // per run (`E2E … <timestamp>`) so re-runs don't collide with
-// leftovers — and unique cwds (`/tmp/playwright-e2e-<ts>`) so
-// concurrent runs don't trip the cove_folders UNIQUE(path).
+// leftovers — and a unique per-run cwd under `$HOME` (see
+// `helpers/attached-workspace.ts`) so concurrent runs don't trip the
+// cove_folders UNIQUE(path).
 
 import { test, expect } from '@playwright/test';
+import {
+  attachedWorkspacePath,
+  cleanupAttachedWorkspaces,
+  createGitWorkTree,
+} from './helpers/attached-workspace';
 
 // Coves seeded (directly via REST or indirectly via the sidebar UI)
 // get tracked here so the afterEach hook can `DELETE /api/coves/<id>`
@@ -40,6 +46,7 @@ test.afterEach(async ({ request }) => {
     }
   }
   createdCoveIds.length = 0;
+  cleanupAttachedWorkspaces();
 });
 
 test('creates a new wave from a fresh cove via NewTaskForm and navigates to it', async ({ page }) => {
@@ -87,7 +94,12 @@ test('creates a new wave from a fresh cove via NewTaskForm and navigates to it',
   // with the current cove preselected (CovePage passes
   // `defaultCoveId={cove.id}`), so submit goes through with
   // `attach_folder: true`.
-  const cwd = `/tmp/playwright-e2e-${Date.now()}`;
+  //
+  // #1147 S3 — the legacy `web/` NewTaskForm always puts this input's
+  // value on the wire, so this spec cannot take the omit-cwd managed
+  // branch: the path has to be a real Git work tree the kernel can see.
+  // See `helpers/attached-workspace.ts` for why it lives under `$HOME`.
+  const cwd = createGitWorkTree(attachedWorkspacePath(`neige-e2e-wave-create-${Date.now()}`));
   await form.getByLabel(/working directory/i).fill(cwd);
 
   // Submit via the Create task button. (Pressing Enter on the cwd

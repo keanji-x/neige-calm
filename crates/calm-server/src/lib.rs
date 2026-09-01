@@ -618,6 +618,9 @@ pub mod wave_cove_cache;
 pub mod workspace_materialize;
 // #1147 S5 — safe recycling of managed wave workspaces (design §生命周期).
 pub mod workspace_recycle;
+// #1147 S3 — the "is anything on disk" predicate that gates a workspace
+// re-point (design §更换与冻结).
+pub mod workspace_repoint;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
 pub mod report_backlinks;

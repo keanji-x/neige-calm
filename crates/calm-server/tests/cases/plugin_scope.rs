@@ -21,6 +21,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::common;
+use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
     app: axum::Router,
@@ -128,7 +129,7 @@ async fn unbound_create_leaves_plugin_scope_null() {
         Some(json!({
             "cove_id": boot.cove_id,
             "title": "unbound plugin scope",
-            "cwd": "/tmp/1110-s4-unbound",
+            "cwd": attached_repo_fixture("1110-s4-unbound"),
             "attach_folder": true,
             "theme": theme(),
         })),
@@ -197,7 +198,7 @@ async fn create_rejects_client_supplied_plugin_scope() {
         Some(json!({
             "cove_id": boot.cove_id,
             "title": "client plugin_scope",
-            "cwd": "/tmp/1110-s4-create-scope",
+            "cwd": attached_repo_fixture("1110-s4-create-scope"),
             "attach_folder": true,
             "plugin_scope": "dev.neige.git-forge",
             "theme": theme(),

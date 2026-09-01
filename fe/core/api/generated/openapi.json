@@ -2843,6 +2843,39 @@
         }
       }
     },
+    "/api/wave-templates": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "list_wave_templates",
+        "responses": {
+          "200": {
+            "description": "Selectable wave templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WaveTemplate"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves": {
       "get": {
         "tags": [
@@ -3115,8 +3148,38 @@
               }
             }
           },
+          "400": {
+            "description": "Unsupported workspace change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace change refused (system cove)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace is frozen, attached, or no longer empty",
             "content": {
               "application/json": {
                 "schema": {
@@ -7314,6 +7377,17 @@
             ],
             "format": "int64",
             "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a\nwave with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
+          },
+          "workspace": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveWorkspacePatch",
+                "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::waves::update_wave` and **never** by\n`wave_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
+              }
+            ]
           }
         }
       },
@@ -7400,6 +7474,52 @@
           }
         }
       },
+      "WaveTemplate": {
+        "type": "object",
+        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `workflow_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
+        "required": [
+          "id",
+          "title",
+          "tasks"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Template key. Passed back verbatim as `workflow_id` on\n`POST /api/waves` — see the seam note on this module."
+          },
+          "input_schema": {
+            "description": "JSON Schema for `workflow_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `workflow_input` for it is a 400 on create."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateTask"
+            },
+            "description": "The tasks this template pre-sets, in plan order. Always present and\nnever empty for a real template — a template *is* its task list — so the\nclient can show it without a \"no tasks\" branch that could never render."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "WaveTemplateTask": {
+        "type": "object",
+        "description": "One pre-set task, projected from the template's own `PlanTaskInput`.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the seeded plan. Acceptance\ncriteria, dependencies and gate advice belong to the wave's report once it\nexists, not to the chooser.",
+        "required": [
+          "key",
+          "goal"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string",
+            "description": "What that task is for, verbatim from the template."
+          },
+          "key": {
+            "type": "string",
+            "description": "The task block's `key` in the seeded report."
+          }
+        }
+      },
       "WaveWorkspace": {
         "type": "object",
         "description": "A wave's typed workspace. `path` is its single stored path.",
@@ -7432,6 +7552,29 @@
           "managed",
           "attached"
         ]
+      },
+      "WaveWorkspacePatch": {
+        "type": "object",
+        "description": "#1147 S3 — point a wave at a repository the user already has.\n\nThe only transition this expresses is `managed → attached`. There is no\n`managed → managed`: a managed path is *derived*\n(`<workspace-root>/<cove_id>/<wave_id>`, see\n`workspace_materialize::managed_workspace_path`) from a wave's cove and id,\nneither of which can change, so \"re-allocate a managed workspace\" would\nalways re-derive the same path — an in-place reset, not a change. And a\ncaller-supplied *managed* path is worse than useless: S5's recycle guard 2\nrequires exactly `<root>/<cove>/<wave>` depth, so any other path produces a\nrow whose directory can never be reclaimed.\n\n`attached → *` stays refused (an attached repository belongs to the user;\nthe server never moves, initializes or deletes it), which makes this a\none-way door — and the write below stamps `frozen_at` to say so.",
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "attach_folder": {
+            "type": "boolean",
+            "description": "Claim `path` for this wave's cove in the same transaction, exactly as\n`POST /api/waves`'s field of the same name does (issue #275 rules:\nequal / ancestor / descendant of any existing claim is a structured\n409). Default `false`: an unclaimed path is refused rather than\nsilently making a homeless wave."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WaveWorkspaceKind",
+            "description": "Must be `attached`. `managed` is a documented 400, not a silent no-op."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to an existing Git work tree. Validated — existence and\ngit-ness included — *before* anything is written, because \"the path was\nwrong\" surfacing later as a worker's `spawn-failed` is the defect\n#1147 was opened on."
+          }
+        },
+        "additionalProperties": false
       },
       "WavesWindowQuery": {
         "type": "object",

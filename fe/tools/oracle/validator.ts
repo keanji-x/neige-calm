@@ -75,19 +75,22 @@ function withoutCssComments(text: string): string {
   return text.replace(/\/\*[\s\S]*?\*\//g, (comment) => comment.replace(/[^\r\n]/g, ' '));
 }
 
-function boundedOccurrenceOffsets(text: string, anchor: string): number[] {
+function boundedOccurrenceOffsets(text: string, anchor: string, caseInsensitive = false): number[] {
   const offsets: number[] = [];
-  let offset = text.indexOf(anchor);
+  const haystack = caseInsensitive ? text.toLowerCase() : text;
+  const needle = caseInsensitive ? anchor.toLowerCase() : anchor;
+  let offset = haystack.indexOf(needle);
   while (offset !== -1) {
-    const before = text[offset - 1];
-    const after = text[offset + anchor.length];
+    const before = haystack[offset - 1];
+    const after = haystack[offset + needle.length];
     if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) offsets.push(offset);
-    offset = text.indexOf(anchor, offset + 1);
+    offset = haystack.indexOf(needle, offset + 1);
   }
   return offsets;
 }
 
-function typescriptAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> {
+function typescriptAnchorLines(path: string, contents: string, identifiers: readonly string[],
+  caseInsensitive: ReadonlySet<string>): Map<string, Set<number>> {
   const result = new Map(identifiers.map((identifier) => [identifier, new Set<number>()]));
   const kind = path.endsWith('.tsx') ? ts.ScriptKind.TSX : path.endsWith('.jsx') ? ts.ScriptKind.JSX : ts.ScriptKind.TS;
   // A standalone ts.createScanner cannot resume a template literal that contains `${}` — that needs the
@@ -111,14 +114,8 @@ function typescriptAnchorLines(path: string, contents: string, identifiers: read
   retainLeafTokens(sourceFile);
   const codeText = code.join('');
   for (const identifier of identifiers) {
-    let offset = codeText.indexOf(identifier);
-    while (offset !== -1) {
-      const before = codeText[offset - 1];
-      const after = codeText[offset + identifier.length];
-      if (!isIdentifierCharacter(before) && !isIdentifierCharacter(after)) {
-        result.get(identifier)!.add(sourceFile.getLineAndCharacterOfPosition(offset).line + 1);
-      }
-      offset = codeText.indexOf(identifier, offset + 1);
+    for (const offset of boundedOccurrenceOffsets(codeText, identifier, caseInsensitive.has(identifier))) {
+      result.get(identifier)!.add(sourceFile.getLineAndCharacterOfPosition(offset).line + 1);
     }
   }
   return result;
@@ -128,7 +125,8 @@ function lineAtFieldOffset(startLine: number, field: string, offset: number): nu
   return startLine + (field.slice(0, offset).match(/\n/g)?.length ?? 0);
 }
 
-function postcssAnchorLines(contents: string, identifiers: readonly string[]): Map<string, Set<number>> {
+function postcssAnchorLines(contents: string, identifiers: readonly string[],
+  caseInsensitive: ReadonlySet<string>): Map<string, Set<number>> {
   const result = new Map(identifiers.map((identifier) => [identifier, new Set<number>()]));
   const root = postcss.parse(contents);
   const visit = (node: ChildNode): void => {
@@ -153,7 +151,7 @@ function postcssAnchorLines(contents: string, identifiers: readonly string[]): M
       }
       for (const identifier of identifiers) {
         for (const field of fields) {
-          for (const offset of boundedOccurrenceOffsets(field.text, identifier)) {
+          for (const offset of boundedOccurrenceOffsets(field.text, identifier, caseInsensitive.has(identifier))) {
             result.get(identifier)!.add(lineAtFieldOffset(field.startLine, field.text, offset));
           }
         }
@@ -165,10 +163,17 @@ function postcssAnchorLines(contents: string, identifiers: readonly string[]): M
   return result;
 }
 
-export function codeAnchorLines(path: string, contents: string, identifiers: readonly string[]): Map<string, Set<number>> | null {
+/**
+ * `caseInsensitive` names the subset of `identifiers` that match without regard to case. Only display-copy
+ * anchors (§ extractStatementAnchors) belong in it: a statement paraphrases a UI section as `"waiting on
+ * you"` while the source renders `Waiting on you`. Identifier-shaped anchors stay case-sensitive, because
+ * `cardId` and `CardId` are different things in code and conflating them manufactures hits.
+ */
+export function codeAnchorLines(path: string, contents: string, identifiers: readonly string[],
+  caseInsensitive: ReadonlySet<string> = new Set()): Map<string, Set<number>> | null {
   const ext = extension(path);
-  if (TYPESCRIPT_EXTENSIONS.has(ext)) return typescriptAnchorLines(path, contents, identifiers);
-  if (ext === '.css') return postcssAnchorLines(contents, identifiers);
+  if (TYPESCRIPT_EXTENSIONS.has(ext)) return typescriptAnchorLines(path, contents, identifiers, caseInsensitive);
+  if (ext === '.css') return postcssAnchorLines(contents, identifiers, caseInsensitive);
   if (!UNSUPPORTED_ANCHOR_EXTENSIONS.has(ext)) {
     throw new Error(`source-anchor extension is not registered: ${ext || '<none>'} (${path})`);
   }
@@ -232,22 +237,135 @@ function locationErrors(value: unknown, repoRoot: string): string[] {
   return errors;
 }
 
-export function extractStatementIdentifiers(statement: unknown): string[] {
+/**
+ * Words that are NOT admissible anchors, however the author typed them.
+ *
+ * The bar an anchor has to clear is: "this token missing from the cited file is a real defect". A word that
+ * occurs in almost every React/DOM source clears nothing — it turns `source:` into a formality, which is the
+ * exact fake-green this rule exists to prevent. Each entry below is here because it is a language, framework
+ * or CSS built-in whose presence in a cited file carries no information about the statement.
+ *
+ * Lower-cased on lookup; the list is deliberately short, because the shapes that admit a candidate at all
+ * (backtick-quoted, ≥ 4 characters, path/dotted/word form) already exclude most prose.
+ */
+const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
+  // React/DOM vocabulary present in essentially every component file.
+  'children', 'props', 'state', 'ref', 'refs', 'key', 'keys', 'node', 'nodes', 'element', 'elements',
+  'event', 'events', 'handler', 'handlers', 'render', 'component', 'components', 'style', 'styles',
+  'class', 'classname', 'value', 'values', 'data', 'type', 'types', 'name', 'names', 'index', 'item',
+  'items', 'list', 'lists', 'text', 'label', 'title', 'button', 'buttons', 'input',
+  // `view` / `views`: a React/DOM word (`XtermView`, `view` state, `views` arrays) that also silently
+  // exempts INV-UI-DIALOG-003, whose statement is a proof-of-absence ("the focus effect's deps must NOT
+  // contain `view`"). Admitting `view` would red that entry for saying the word it forbids, which is the
+  // inverse of what an anchor means. Disclosed here rather than left implicit, the way `change` is.
+  'view', 'views',
+  'form', 'span', 'null', 'true', 'false', 'undefined', 'void', 'this', 'that', 'return', 'async',
+  'await', 'const', 'function', 'string', 'number', 'boolean', 'object', 'array', 'error', 'errors',
+  // `change` / `changes` read as UI copy in a statement but land on a parameter name in the cited file —
+  // the coincidental-hit shape this list exists to stop.
+  'change', 'changes',
+  // CSS built-ins: every stylesheet has them, so citing one proves nothing about the rule under test.
+  'overflow', 'display', 'color', 'width', 'height', 'margin', 'padding', 'border', 'position',
+  'absolute', 'relative', 'static', 'fixed', 'sticky', 'block', 'inline', 'flex', 'grid', 'none',
+  'auto', 'hidden', 'visible', 'top', 'left', 'right', 'bottom', 'center', 'start', 'end',
+  // Domain words so pervasive in this repo that every candidate file contains them.
+  'card', 'cards', 'wave', 'waves', 'task', 'tasks', 'panel', 'panels', 'page', 'pages', 'user',
+  'users', 'agent', 'agents', 'server', 'client', 'api', 'app', 'core', 'web', 'test', 'tests',
+  // The same shape, found the hard way: each of these is a whole subsystem of this repo, so it occurs in
+  // any file a statement about that subsystem could plausibly cite, and hitting it proves only that the
+  // author cited a file from the right area — never that the cited *lines* carry the claim.
+  //   `theme` / `themes`   — 89 sources: the theme token pipeline, every terminal theme, every fixture
+  //                          that builds a wave (`theme: { fg, bg }`). It is what made E2E-INV-INFRA-019
+  //                          go green on a helper that sends a *valid* body, while that entry's statement
+  //                          then claimed a body *missing* the field is rejected. (#1148 has since narrowed
+  //                          the statement to the seed helper's own body literal, so it no longer claims the
+  //                          rejection at all; the word stays on this list for the general reason above.)
+  //   `terminal` / `terminals` — 110 sources: a card kind, a route segment, a CSS namespace.
+  //   `codex`              — 105 sources: the agent backend's name, in imports, types and copy alike.
+  //   `cove` / `coves`     — 110/61 sources: the top-level container every wave hangs off.
+  //   `report` / `reports` — 117 sources: a card kind, a page, a rail, an API noun.
+  'theme', 'themes', 'terminal', 'terminals', 'codex', 'cove', 'coves', 'report', 'reports',
+]);
+
+/** An anchor plus how it must be matched; see `codeAnchorLines` for why only display copy ignores case. */
+export interface StatementAnchor {
+  text: string;
+  /** Display copy is paraphrased in prose with free capitalisation, so it matches case-insensitively. */
+  caseInsensitive: boolean;
+}
+
+const CJK_PATTERN = /[\u3000-\u303F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/;
+/**
+ * Runs that a display-copy anchor can never match, so the quote is cut at them and only the literal pieces
+ * survive:
+ *  - `<message>` / `{count}` — placeholders, replaced at run time; `Failed to load settings: <message>` is
+ *    a template, and the only part that exists as a literal in the source is the prefix.
+ *  - anything outside printable ASCII — `—`, `→`, typographic quotes. Sources routinely spell these as HTML
+ *    entities (`&mdash;`) or escapes, so the character in the statement is not the bytes in the file.
+ */
+const UNMATCHABLE_RUN_PATTERN = /<[^<>]*>|\{[^{}]*\}|[^\x20-\x7E]+/g;
+const DISPLAY_COPY_MINIMUM = 6;
+const BACKTICK_WORD_MINIMUM = 4;
+/** `children`, `overflow` — a bare word the author explicitly marked as code. */
+const BACKTICK_WORD_PATTERN = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+/** `/api/auth/whoami`, `web/src/ui`, `card.updated`, `snake_case_key` — path/dotted/underscored shapes. */
+const BACKTICK_PATH_PATTERN = /^[/@]?[A-Za-z0-9_$][A-Za-z0-9_$./-]*$/;
+
+function isGeneric(candidate: string): boolean {
+  return GENERIC_ANCHOR_WORDS.has(candidate.toLowerCase());
+}
+
+/**
+ * Display copy: text the statement quotes with `"…"` or `“…”`, i.e. words the author claims the UI shows.
+ *
+ * Restrictions, each of which exists because dropping it produced fake anchors on the real corpus:
+ *  - Latin letters required, CJK rejected. Chinese inside quotes in these statements is prose emphasis
+ *    (`不得因为"看起来无关"而重排`), not UI copy, and would never appear in a source file.
+ *  - Unmatchable runs are cut out and every surviving literal piece becomes its own anchor. Taking only the
+ *    longest piece is not enough: `"Issue dev / issue → PR autoflow"` is rendered as two sibling spans, and
+ *    the longer half (`Issue dev / issue`) straddles the split while `PR autoflow` is right there in the
+ *    JSX. Each surviving piece is still a ≥ 6-character quoted UI phrase, not a word that happens to recur.
+ *  - A floor of DISPLAY_COPY_MINIMUM characters, so quoted noise (`"x"`, `"on"`) cannot become an anchor.
+ */
+function displayCopyAnchors(quoted: string): string[] {
+  if (CJK_PATTERN.test(quoted) || !/[A-Za-z]/.test(quoted)) return [];
+  return quoted.split(UNMATCHABLE_RUN_PATTERN)
+    .map((piece) => piece.trim())
+    .filter((piece) => piece.length >= DISPLAY_COPY_MINIMUM && /[A-Za-z]/.test(piece) && !isGeneric(piece));
+}
+
+export function extractStatementAnchors(statement: unknown): StatementAnchor[] {
   if (typeof statement !== 'string') return [];
-  const identifiers = new Set<string>();
-  const addMatches = (text: string, pattern: RegExp): void => {
-    for (const match of text.matchAll(pattern)) identifiers.add(match[0]);
-  };
+  // Case-sensitive wins on collision: an anchor that is also identifier-shaped keeps the stricter match.
+  const anchors = new Map<string, boolean>();
+  const addIdentifier = (text: string): void => { anchors.set(text, false); };
   for (const code of statement.matchAll(/`([^`]+)`/g)) {
     for (const match of code[1].matchAll(/\[[A-Za-z_][\w-]*(?:=[^\]]+)?\]|aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$-]*/g)) {
       const candidate = match[0];
       if (/^(?:aria-|[.#]|\[)/.test(candidate) || /[-_]/.test(candidate) || /[a-z][A-Z]|[A-Z].*[A-Z]/.test(candidate)) {
-        identifiers.add(candidate);
+        addIdentifier(candidate);
       }
     }
+    // Whole-fragment shapes the shape-based scan above misses: `/dev/reset`, `web/src/ui`, `children`.
+    const fragment = code[1].trim();
+    const wordShaped = BACKTICK_WORD_PATTERN.test(fragment) && fragment.length >= BACKTICK_WORD_MINIMUM;
+    const pathShaped = BACKTICK_PATH_PATTERN.test(fragment) && /[/._]/.test(fragment)
+      && fragment.length >= BACKTICK_WORD_MINIMUM;
+    if ((wordShaped || pathShaped) && !isGeneric(fragment)) addIdentifier(fragment);
   }
-  addMatches(statement, /\[[A-Za-z_][\w-]*(?:=[^\]]+)?\]|aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$]*(?=[(])|[A-Za-z_$][\w$]*(?:_[\w$]+)+|[a-z]+[A-Z][\w$]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9$]*)+/g);
-  return [...identifiers];
+  for (const match of statement.matchAll(/\[[A-Za-z_][\w-]*(?:=[^\]]+)?\]|aria-[a-z0-9-]+|[.#][A-Za-z_][\w-]*|[A-Za-z_$][\w$]*(?=[(])|[A-Za-z_$][\w$]*(?:_[\w$]+)+|[a-z]+[A-Z][\w$]*|[A-Z][a-z0-9]+(?:[A-Z][A-Za-z0-9$]*)+/g)) {
+    addIdentifier(match[0]);
+  }
+  for (const quoted of statement.matchAll(/"([^"\n]+)"|“([^”\n]+)”/g)) {
+    for (const literal of displayCopyAnchors(quoted[1] ?? quoted[2] ?? '')) {
+      if (!anchors.has(literal)) anchors.set(literal, true);
+    }
+  }
+  return [...anchors].map(([text, caseInsensitive]) => ({ text, caseInsensitive }));
+}
+
+export function extractStatementIdentifiers(statement: unknown): string[] {
+  return extractStatementAnchors(statement).map((anchor) => anchor.text);
 }
 
 type AnchorSubtype = 'not-in-file' | 'range-miss';
@@ -262,14 +380,18 @@ function sourceAnchorResult(source: unknown, statement: unknown, repoRoot: strin
   ignoredIdentifiers: ReadonlySet<string>): AnchorResult {
   const empty: AnchorResult = { error: null, subtype: null, unsupported: [] };
   if (typeof source !== 'string') return empty;
-  const identifiers = extractStatementIdentifiers(statement).filter((identifier) => !ignoredIdentifiers.has(identifier));
+  const anchorSpecs = extractStatementAnchors(statement).filter((anchor) => !ignoredIdentifiers.has(anchor.text));
+  const identifiers = anchorSpecs.map((anchor) => anchor.text);
+  const caseInsensitive = new Set(anchorSpecs.filter((anchor) => anchor.caseInsensitive).map((anchor) => anchor.text));
   const locations = parseLocations(source);
   if (locations.some((location) => typeof location === 'string')) return empty;
   const sourceFiles = new Map<string, { contents: string; anchors: Map<string, Set<number>> | null }>();
   for (const location of locations) {
     if (typeof location !== 'string' && !sourceFiles.has(location.path)) {
       const contents = readFileSync(resolve(repoRoot, location.path), 'utf8');
-      sourceFiles.set(location.path, { contents, anchors: codeAnchorLines(location.path, contents, identifiers) });
+      sourceFiles.set(location.path, {
+        contents, anchors: codeAnchorLines(location.path, contents, identifiers, caseInsensitive),
+      });
     }
   }
   const supportedFiles = [...sourceFiles.values()].filter((file) => file.anchors !== null);
@@ -301,7 +423,7 @@ function parseStructuredList(path: string | undefined): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
-const ANCHOR_BASELINE_MAXIMUM = 218;
+const ANCHOR_BASELINE_MAXIMUM = 174;
 const ANCHOR_EXPIRY_CEILING = '2026-12-31';
 
 // `anchor-pending.json` is NOT a second baseline. It holds the anchors the #1148 scanner fix exposed as
@@ -318,20 +440,20 @@ const ANCHOR_EXPIRY_CEILING = '2026-12-31';
 //   3. row shape — every row needs a subtype, an issue reference, and a note, each checked separately so
 //      that dropping any one branch reds its own fixture.
 //   4. no double accounting — an id present in both accounts is an error, never a silent exemption.
-// The 38 ids the #1148 scanner fix exposed. Rows may leave this list; nothing may enter it without a
-// deliberate edit here, which is the visible act the mechanism exists to force.
+// The 38 ids the #1148 scanner fix exposed, less the 8 that #1148's anchor-strength pass turned real:
+// stronger extraction gave those entries an anchor that actually holds, so their rows left the list.
+// Rows may leave this list; nothing may enter it without a deliberate edit here, which is the visible
+// act the mechanism exists to force.
 const ANCHOR_PENDING_IDS: ReadonlySet<string> = new Set([
-  'CAP-NEWTASK-029', 'E2E-CAP-ADDPANEL-005', 'E2E-CAP-ADDPANEL-007', 'E2E-CAP-AXE-008', 'E2E-CAP-CWD-005',
-  'E2E-CAP-DELETE-001', 'E2E-CAP-DELETE-003', 'E2E-CAP-DELETE-020', 'E2E-CAP-LIST-018', 'E2E-CAP-MODAL-012',
-  'E2E-CAP-RENAME-011', 'E2E-CAP-RENAME-015', 'E2E-CAP-RENAME-016', 'E2E-CAP-SYNC-009', 'E2E-CAP-TERMINAL-009',
-  'E2E-CAP-VIEWMODE-021', 'E2E-CAP-WAVECREATE-003', 'E2E-CAP-WAVECREATE-007', 'E2E-CAP-WAVECREATE-014',
-  'E2E-CAP-WAVECREATE-020', 'E2E-INV-ADDPANEL-009', 'E2E-INV-DELETE-002', 'E2E-INV-DELETE-005',
-  'E2E-INV-INFRA-038', 'E2E-INV-LIFECYCLE-012', 'E2E-INV-REPORT-008', 'E2E-INV-SPECCHAT-008',
-  'E2E-INV-SPECCHAT-011', 'E2E-INV-TERMINAL-005', 'E2E-INV-TERMINAL-010', 'E2E-INV-TERMTHEME-003',
-  'E2E-INV-TERMTHEME-007', 'E2E-INV-WAVECREATE-006', 'E2E-INV-WAVECREATE-011', 'E2E-INV-WHEEL-002',
-  'E2E-INV-WHEEL-003', 'INV-CARD-128', 'INV-SPECCONVO-004',
+  'CAP-NEWTASK-029', 'E2E-CAP-ADDPANEL-005', 'E2E-CAP-ADDPANEL-007', 'E2E-CAP-CWD-005', 'E2E-CAP-DELETE-001',
+  'E2E-CAP-RENAME-015', 'E2E-CAP-SYNC-009', 'E2E-CAP-TERMINAL-009', 'E2E-CAP-VIEWMODE-021',
+  'E2E-CAP-WAVECREATE-003', 'E2E-CAP-WAVECREATE-007', 'E2E-CAP-WAVECREATE-014', 'E2E-CAP-WAVECREATE-020',
+  'E2E-INV-ADDPANEL-009', 'E2E-INV-DELETE-002', 'E2E-INV-DELETE-005', 'E2E-INV-INFRA-038',
+  'E2E-INV-LIFECYCLE-012', 'E2E-INV-REPORT-008', 'E2E-INV-SPECCHAT-011', 'E2E-INV-TERMINAL-005',
+  'E2E-INV-TERMINAL-010', 'E2E-INV-TERMTHEME-003', 'E2E-INV-TERMTHEME-007', 'E2E-INV-WAVECREATE-006',
+  'E2E-INV-WAVECREATE-011', 'E2E-INV-WHEEL-002', 'E2E-INV-WHEEL-003', 'INV-CARD-128', 'INV-SPECCONVO-004',
 ]);
-const ANCHOR_PENDING_MAXIMUM = 38;
+const ANCHOR_PENDING_MAXIMUM = 30;
 const PENDING_NOTE = 'anchor-pending.json is not a baseline: these anchors are known to anchor nothing, '
   + 'are tracked in #1170, and the list exists to be emptied';
 

@@ -21,13 +21,16 @@ async function createWaveInCove(
   titleSuffix: string,
 ): Promise<{ id: string; title: string }> {
   const title = `E2E wheel wave switch ${titleSuffix}`;
-  const cwdSuffix = titleSuffix.replace(/[^a-zA-Z0-9_-]+/g, '-');
   const waveRes = await page.request.post('/api/waves', {
     data: {
       cove_id: coveId,
       title,
-      cwd: `/tmp/playwright-wave-switch-${coveId}-${cwdSuffix}`,
-      attach_folder: true,
+      // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+      // This spec is about wheel wave-switching, not working
+      // directories. See `helpers/reset.ts::createWaveInCove` for why
+      // the invented `/tmp/playwright-wave-switch-<id>` attached path
+      // was never valid. (The per-suffix cwd namespace it needed to
+      // dodge `cove_folders.UNIQUE(path)` goes away with it.)
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

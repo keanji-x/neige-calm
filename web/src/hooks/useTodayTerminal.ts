@@ -174,20 +174,31 @@ async function ensureTodayWave(coveId: string) {
   const waves = await api.wavesInCove(coveId);
   const existing = waves.find((w) => w.title === TODAY_WAVE_TITLE);
   if (existing) return { wave: existing, created: false };
-  // Issue #250 PR 2 — `createWave` now requires `cwd`. The Today
-  // wave is a kernel-internal singleton inside the system cove (a
-  // cove the user never sees); its spec daemon doesn't need a
-  // meaningful project cwd. We pass `/` as a placeholder. The
-  // server detects `cove.kind == System` and exempts this row from
-  // the cove_folders claim namespace, so `attach_folder` is a no-op
-  // here (the cwd is just stored on the wave row for the daemon's
-  // chdir). A subsequent call into this helper finds the existing
-  // wave and never re-mints (the `existing` short-circuit above).
+  // #1147 S3 — `cwd` is OMITTED, and that is the fix, not a shortcut.
+  //
+  // This used to send `cwd: '/'` as a placeholder, on the reasoning that a
+  // kernel-internal wave's spec daemon "doesn't need a meaningful project
+  // cwd". Two things have changed since:
+  //
+  //  * Since #1131/S2 an omitted `cwd` is the *managed* branch: the kernel
+  //    allocates `<workspace-root>/<cove>/<wave>`, creates it, `git init`s it
+  //    and owns it. That is a directory a worker can actually lease — `/` was
+  //    never one, so any `kind: codex` task on this wave died in
+  //    `git_repo_root_for_wave_cwd` with nothing but `spawn-failed`. That is
+  //    the defect #1147 was opened on, and this placeholder was one of its
+  //    live sources.
+  //  * S3 makes an explicit `cwd` mean "attach this existing repository", and
+  //    validates it (absolute, exists, inside a Git work tree). `/` fails that
+  //    check by construction, so continuing to send it would 400 the Today
+  //    bootstrap outright.
+  //
+  // `attach_folder` goes with it: with no cwd there is nothing to claim, and
+  // the system cove was exempt from the `cove_folders` namespace anyway.
+  // A subsequent call into this helper finds the existing wave and never
+  // re-mints (the `existing` short-circuit above).
   const wave = await api.createWave({
     cove_id: coveId,
     title: TODAY_WAVE_TITLE,
-    cwd: '/',
-    attach_folder: false,
     // #177 — same `readHostThemeRgb()` source as the terminal-card
     // create below. The spec daemon that the wave-create txn spawns
     // gets matching colors on its first paint.

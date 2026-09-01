@@ -95,8 +95,12 @@ test.describe.serial('tui theme protocol', () => {
       data: {
         cove_id: coveId,
         title: waveTitle,
-        cwd: `/tmp/playwright-cove-${coveId}`,
-        attach_folder: true,
+        // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+        // This spec is about the OSC theme protocol, not working
+        // directories (the terminal card below still passes its own
+        // `cwd: '/tmp'`, which is a real directory inside the kernel).
+        // See `helpers/reset.ts::createWaveInCove` for why the invented
+        // `/tmp/playwright-cove-<id>` attached path was never valid.
         theme: { fg: DARK_THEME_RGB.fg, bg: DARK_THEME_RGB.bg },
       },
       headers: { 'content-type': 'application/json' },
@@ -203,8 +207,11 @@ test.describe.serial('tui theme protocol', () => {
       data: {
         cove_id: coveId,
         title: `E2E tui-theme wave-B ${Date.now()}`,
-        cwd: `/tmp/playwright-cove-${coveId}-B`,
-        attach_folder: true,
+        // #1147 S3 — no `cwd` (see wave A above). The `-B` suffix on
+        // the old cwd existed only to keep this second wave in the
+        // same cove from colliding with wave A's claim on
+        // `cove_folders.UNIQUE(path)`; with no claim there is no
+        // collision to dodge.
         theme: { fg: DARK_THEME_RGB.fg, bg: DARK_THEME_RGB.bg },
       },
       headers: { 'content-type': 'application/json' },

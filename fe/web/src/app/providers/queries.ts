@@ -16,9 +16,9 @@ import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  coveListOperation, createCoveOperation, deleteCoveOperation,
+  asFolderConflict, coveListOperation, createCoveOperation, deleteCoveOperation,
   sortedCoves, toCove, updateCoveOperation, visibleCoves,
-  type Cove, type CovePatchBody, type NewCoveBody,
+  type Cove, type CovePatchBody, type FolderConflict, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
 import {
   deriveReportTasks, hasLiveTaskRun, waveBacklinksOperation, waveTaskVerdictsOperation,
@@ -29,9 +29,9 @@ import {
 } from '../../../../core/domain/settings.ts';
 import {
   createTerminalCardOperation, createWaveOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
-  updateWaveOperation, waveActivityFrom, waveDetailOperation, wavesInCoveOperation,
+  updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
   type CardWire, type NewTerminalCardBody, type NewWaveBody, type OverlayWire, type Wave,
-  type WaveDetailWire, type WavePatchBody,
+  type WaveDetailWire, type WavePatchBody, type WaveTemplate,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
@@ -49,6 +49,19 @@ export class ApiError extends Error {
     this.name = 'ApiError';
     this.failure = failure;
   }
+}
+
+/**
+ * The structured folder clash inside a rejected mutation, or `null`.
+ *
+ * Lives beside `ApiError` because unwrapping it is the only step that needs to
+ * know this class exists; the decode and the wording are `core/domain/cove.ts`.
+ * `'body' in failure` is the narrowing: transport and decode failures never
+ * carry one, and reading `.body` off the union without it does not compile.
+ */
+export function folderConflictOf(error: unknown): FolderConflict | null {
+  if (!(error instanceof ApiError)) return null;
+  return 'body' in error.failure ? asFolderConflict(error.failure.body) : null;
 }
 
 /** TanStack Query wants a rejected promise; core reports failures as data. */
@@ -99,12 +112,64 @@ export const queryKeys = Object.freeze({
   waveReportPrefix: () => ['wave-report'] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  /* #1209 — the New wave picker's list. Not invalidated by any event: the
+     kernel's template keys are compile-time constants and the only thing that
+     can move under them is a plugin starting or stopping, which changes an
+     `input_schema` the dialog reads when it opens. */
+  waveTemplates: () => ['wave-templates'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
   /* The event bridge can only invalidate the `['cove-conversations']` prefix —
      no event carries a cove id and no cached row can supply one — so this key
      must keep the cove id in second position for that prefix to reach it. */
   coveConversations: (coveId: string) => ['cove-conversations', coveId] as const,
+  /**
+   * The prefix `coveConversations` extends — the only shape the event bridge
+   * can name, and therefore the only thing that keeps this list live.
+   *
+   * `COVE_CONVERSATIONS` in `core/events/invalidation-plan` is the bare key by
+   * construction: no conversation-writing event carries a `cove_id`, and a cove
+   * chat wave's detail is never fetched, so no cached row can supply one
+   * either. Naming the prefix here is what lets the adapter map that plan key
+   * instead of dropping it — without this entry the cove drawer's `state` dots
+   * never move until something else refetches the list.
+   *
+   * A prefix invalidation reaches whichever cove's list is cached — at most the
+   * open drawer's — and costs nothing when none is.
+   */
+  coveConversationsPrefix: () => ['cove-conversations'] as const,
+  /**
+   * One wave's conversation list (#1189 §4.1), keyed by its wave.
+   *
+   * `GET /api/waves/{wave_id}/conversations` is per-wave, and unlike the cove
+   * list the id *is* derivable from the events: the plan emits
+   * `['wave-conversations', waveId]` whenever `derivedWaveId` resolves one.
+   *
+   * **The query that registers this key lands in S5; the mapping is here
+   * first, and that is deliberate, not dead code.** Invalidating a key with no
+   * mounted query is a no-op in TanStack Query — it marks nothing and refetches
+   * nothing — so the adapter may know a key before a query claims it. The
+   * reverse order is the one that breaks: a query that mounts against a key no
+   * adapter arm maps is silently never invalidated, which is exactly the defect
+   * this pair of entries fixes for the cove list.
+   */
+  waveConversations: (waveId: string) => ['wave-conversations', waveId] as const,
+  /**
+   * The prefix `waveConversations` extends, for the events that cannot name a
+   * wave.
+   *
+   * The three `runtime.*` kinds carry only a `card_id`, and
+   * `findWaveOwningCard` answers from the cached wave details — so a card in a
+   * wave nobody has open resolves to null and the plan emits the bare key. That
+   * is the honest "some wave's list may have changed", and dropping it here
+   * would leave a genuinely open list stale for precisely the transitions that
+   * move a row's `state`.
+   *
+   * It is a fallback and not the house shape: invalidating this prefix on every
+   * runtime tick would refetch the list of every wave the user has open, which
+   * is why the plan keys by wave whenever it can.
+   */
+  waveConversationsPrefix: () => ['wave-conversations'] as const,
 });
 
 export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
@@ -377,6 +442,42 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
   return {
     queryKey: queryKeys.settings(),
     queryFn: (): Promise<SettingsBag> => runOperation(transport, settingsOperation(), unauthorized),
+  };
+}
+
+/**
+ * #1209 — templates for the New wave dialog.
+ *
+ * `retry: false` and a plain failure are the point: the dialog degrades to
+ * Blank-only when this read fails, and a retrying query would leave the entry
+ * point spinning instead. Creating a wave must never depend on this list.
+ */
+export function waveTemplatesQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.waveTemplates(),
+    queryFn: (): Promise<WaveTemplate[]> => runOperation(transport, waveTemplatesOperation(), unauthorized),
+    retry: false,
+  };
+}
+
+export type WaveTemplates = Readonly<{
+  /** Never `undefined`: pending and failed both read as "Blank only". */
+  templates: WaveTemplate[];
+  /** A notice for the dialog, not a blocker. `null` while pending. */
+  error: string | null;
+}>;
+
+/**
+ * The New wave dialog's template list, collapsed to the two things the dialog
+ * can act on. A hook and not raw `useQuery` at the call site so the shell's
+ * contract tests keep mocking exactly one module (`providers/queries`) —
+ * the same shape `useWorkspace` and the mutation hooks already have.
+ */
+export function useWaveTemplates(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): WaveTemplates {
+  const query = useQuery(waveTemplatesQueryOptions(transport, unauthorized));
+  return {
+    templates: query.data ?? [],
+    error: query.isError ? 'Could not load templates.' : null,
   };
 }
 

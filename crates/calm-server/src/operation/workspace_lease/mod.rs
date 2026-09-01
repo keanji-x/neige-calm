@@ -220,6 +220,22 @@ async fn acquire_workspace_lease_at_path_tx(
     .execute(&mut **tx)
     .await?;
 
+    // #1147 S3 — freeze point 1 of 4 (design §更换与冻结): "the first workspace
+    // lease". A lease row stores an absolute path derived from the wave's
+    // workspace, and the worktree it is about to create is anchored to that
+    // repository by two absolute pointers (`<wt>/.git` and
+    // `<repo>/.git/worktrees/<n>/gitdir`) that a rename would leave dangling
+    // in both directions. Nothing re-anchors either, so the workspace has to
+    // stop moving before this row exists.
+    //
+    // Here rather than in the two `acquire_*` wrappers: this is the single
+    // statement both of them bottom out in, so a third lease flavour added
+    // later inherits the freeze instead of having to remember it. The system
+    // cove is excluded inside the freeze itself — the launchpad takes leases
+    // on every codex task and is the one wave whose path the kernel keeps
+    // re-deriving.
+    crate::db::sqlite::wave_workspace_freeze_tx(tx, wave_id, now).await?;
+
     create_workspace_lease_directory(path, directory_mode)?;
 
     let scope = workspace_scope_tx(tx, card_id, wave_id).await?;

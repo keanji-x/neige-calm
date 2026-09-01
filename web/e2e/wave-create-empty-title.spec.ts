@@ -7,6 +7,12 @@
 // shared "Untitled wave" fallback while the persisted title remains "".
 
 import { test, expect } from '@playwright/test';
+import {
+  attachedWorkspacePath,
+  cleanupAttachedWorkspaces,
+  createGitWorkTree,
+  createWorkTreeSubdir,
+} from './helpers/attached-workspace';
 
 const createdCoveIds: string[] = [];
 
@@ -24,6 +30,7 @@ test.afterEach(async ({ request }) => {
     }
   }
   createdCoveIds.length = 0;
+  cleanupAttachedWorkspaces();
 });
 
 test('creates a new wave with an empty title and renders the fallback label', async ({
@@ -31,8 +38,16 @@ test('creates a new wave with an empty title and renders the fallback label', as
 }) => {
   const ts = Date.now();
   const coveName = `E2E empty-title cove ${ts}`;
-  const folderPath = `/tmp/playwright-empty-title-${ts}`;
-  const cwd = `${folderPath}/worktree`;
+  // #1147 S3 — the submitted cwd is an *attached* workspace, so it has
+  // to exist and sit inside a Git work tree that the kernel can see.
+  // `folderPath` is the work-tree root (and the cove's folder claim);
+  // `cwd` is a real directory beneath it, which is what makes the
+  // auto-match banner fire on `folderPath`. See
+  // `helpers/attached-workspace.ts` for why these live under `$HOME`.
+  const folderPath = createGitWorkTree(
+    attachedWorkspacePath(`neige-e2e-empty-title-${ts}`),
+  );
+  const cwd = createWorkTreeSubdir(folderPath, 'worktree');
 
   const coveRes = await page.request.post('/api/coves', {
     data: { name: coveName, color: '#5a9' },

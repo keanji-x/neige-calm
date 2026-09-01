@@ -209,11 +209,14 @@ async function ids(page: Page): Promise<{ coveId: string; waveId: string }> {
   // changes.
   const waveTitle = `axe wave ${Date.now()}`;
   const wave = await createWaveInCove(page.request, coveId, waveTitle);
+  // #1147 S3 — the old `{ attachFolder: false }` argument existed only
+  // to stop this second wave from re-claiming the first one's invented
+  // cwd (`cove_folders.UNIQUE(path)`). `createWaveInCove` now sends no
+  // cwd at all, so there is no claim to collide with and no knob.
   const source = await createWaveInCove(
     page.request,
     coveId,
     `axe backlink source ${Date.now()}`,
-    { attachFolder: false },
   );
   await seedWaveReport(
     page.request,

@@ -12,11 +12,38 @@ It also owns the **New wave dialog**, for the same reason: two surfaces open it
 the rail is a sibling of the outlet, so a dialog owned by the cove route was
 reachable from exactly one of them. The rail gets the opener as a prop
 (`onNewWave`); the route gets it through `useRequestNewWave()`, the one context
-this module publishes, because there is no prop path across `<Outlet />`. The
-dialog is title-only; `cove_id` is the opener's cove and the POST omits `cwd` /
-`attach_folder` (#1131). `onOpenSettings` /
+this module publishes, because there is no prop path across `<Outlet />`.
+`cove_id` is the opener's cove. `onOpenSettings` /
 `onSignOut` are injected: the shell never signs out itself. `nowMs` exists so a
 test can pin the `pinned_at` stamp.
+
+## The wave-create body (#1131, #1147 S3)
+
+The dialog's Folder field is optional and decides the request shape:
+
+| Folder | `POST /api/waves` body | Kernel branch |
+| --- | --- | --- |
+| not chosen | `{ cove_id, title, theme }` | *managed* — the kernel derives, creates and owns a workspace under the workspace root |
+| chosen | `… + { cwd, attach_folder: true }` | *attached* — the user's own directory, never created, moved or deleted by the kernel |
+
+Both keys travel together, and absence is the signal — `cwd: null` or
+`attach_folder: false` are different kernel paths, not equivalents. `true`
+rather than a pre-flight `GET /api/coves/resolve`: with the flag omitted the
+kernel refuses any path no cove has already claimed, and `true` is a no-op when
+this cove already covers the path (`routes/waves.rs`, same-cove arm), so a
+second wave in the same repository does not conflict with the first.
+
+The failure that branch can produce is a **structured 409** (`FolderConflict`)
+with no `error` key, which the generic normaliser can only report as the bare
+word "Conflict". The shell decodes it (`folderConflictOf` +
+`folderConflictMessage`) and names the path, the owning cove, and the remedy.
+The cove *name* comes from `useWorkspace`, which is the second reason this lives
+here rather than in the form.
+
+The picker's `listDirectory` port is created here too
+(`app/providers/directory.ts`): `ui/directory-browser` must not know a transport
+exists, and `features/**` may not import `app/**`, so the composition layer is
+the only place that can bind them.
 
 ## Visual contract
 

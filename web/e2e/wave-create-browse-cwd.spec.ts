@@ -25,6 +25,7 @@
 // cleaned up in afterEach.
 
 import { test, expect } from '@playwright/test';
+import { execFileSync } from 'node:child_process';
 import { mkdir, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
@@ -69,6 +70,14 @@ test('Browse… picks a directory from disk and writes it into the cwd input', a
   const dirPath = path.join(home, dirName);
   await mkdir(dirPath, { recursive: true });
   createdDirs.push(dirPath);
+  // #1147 S3 — Step 6 below submits this path as the wave's `cwd`, i.e.
+  // the *attached* workspace branch, which the kernel now requires to
+  // be inside a Git work tree (`validate_attached_workspace`). A bare
+  // `mkdir` is enough for the Browse… listing but not for the submit,
+  // so make the directory a repository root. No commit is needed: the
+  // kernel's check is `git rev-parse --show-toplevel`, which succeeds
+  // on a fresh empty repository.
+  execFileSync('git', ['init', '--quiet', dirPath], { stdio: 'ignore' });
 
   // Step 1 — seed a cove via REST (no sidebar dependency; this spec
   // doesn't exercise the sidebar create flow).
