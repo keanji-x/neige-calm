@@ -701,6 +701,60 @@ async fn post_claude_restart_recreates_missing_terminal_row_and_resumes_session(
     assert_eq!(second_session, session_id);
 }
 
+/// #1147 S6 — the restart path recreates a `terminals` row, which now freezes
+/// the wave's workspace inside the same transaction. That makes this the one
+/// production flow where a transaction holds SQLite's write lock on `waves` and
+/// then goes on to resolve an event scope.
+///
+/// Measured: with the freeze in `terminal_create_tx` and the scope still
+/// resolved through `card_scope` (which reads `waves` off the **pool**, i.e. a
+/// second connection), this flow hangs forever — the probes logged `UPDATE ok`
+/// and then `about to card_scope`, and nothing after it; the task waits on a
+/// lock only it can release, in `sqlx_sqlite::statement::unlock_notify::wait`.
+/// The in-memory database is shared-cache, so those locks are per table.
+///
+/// The sibling test above covers the same route, but a deadlock makes it *hang*
+/// rather than fail — a wedged CI job, not a red test. This one puts a wall
+/// clock on it so the failure is legible.
+#[tokio::test]
+async fn post_claude_restart_does_not_deadlock_on_the_workspace_freeze() {
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_with_spawn_hook_factory(move |_, _| {
+        recording_spawn_hook(Arc::new(tokio::sync::Mutex::new(Vec::new())))
+    })
+    .await;
+
+    let (create_status, created) =
+        post(boot.app.clone(), &boot.wave_id, body(None), None, None).await;
+    assert_eq!(create_status, StatusCode::CREATED, "body={created:?}");
+    let card_id = created["id"].as_str().unwrap().to_string();
+    let old_terminal_id = created["payload"]["terminal_id"].as_str().unwrap();
+    boot.repo
+        .session_projection_complete_for_card(&card_id, WorkerSessionState::Exited)
+        .await
+        .unwrap();
+    boot.repo.terminal_delete(old_terminal_id).await.unwrap();
+
+    let app = boot.app.clone();
+    let card_for_restart = card_id.clone();
+    let restart = tokio::time::timeout(Duration::from_secs(20), async move {
+        post_restart(app, &card_for_restart).await
+    })
+    .await;
+    let (restart_status, restarted) = restart.expect(
+        "#1147 S6: the claude restart transaction freezes the wave workspace, so it must \
+         resolve its event scope with `card_scope_tx`. `card_scope` reads `waves` off the \
+         pool and deadlocks against this transaction's own write lock.",
+    );
+    assert_eq!(restart_status, StatusCode::OK, "body={restarted:?}");
+    // No `frozen_at` assertion here on purpose: this fixture's wave is
+    // `attached`, so it is frozen from creation and the assertion would hold
+    // with the freeze deleted. What this test is for is the deadlock — the
+    // freeze DOES run on this path (it is why the hang exists at all), and
+    // whether it lands is asserted where it can fail, in
+    // `wave_workspace_repoint::a_terminal_card_lands_in_the_workspace_and_freezes_it`.
+}
+
 #[tokio::test]
 async fn post_claude_restart_drops_stale_renderer_entry_before_respawn() {
     let _guard = ENV_LOCK.lock().await;

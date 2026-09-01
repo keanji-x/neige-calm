@@ -571,22 +571,46 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
 /// pre-checks, same `NotFound` / `Conflict` mapping — but composable inside
 /// `Repo::write_with_event` closures alongside the card write.
 ///
-/// Currently only invoked from `card_with_terminal_create_tx`; the standalone
-/// `RepoOutOfDomain::terminal_create` path still talks to the pool directly so
-/// the existing `POST /api/cards/:id/terminal` recipe keeps its behavior
-/// untouched until #13 PR2 swaps it out.
+/// Invoked from the three `card_with_*_create_tx` composites and, directly,
+/// from `claude_restart_adapter` — which is why the freeze below lives here and
+/// not on the composites.
+///
+/// The standalone `RepoOutOfDomain::terminal_create` still talks to the pool.
+/// It has **no production caller** (the `POST /api/cards/:id/terminal` write
+/// route it was built for is gone; `routes/terminal.rs` is read-only now), only
+/// test fixtures, so it is not a second write entry in production — but a
+/// fixture that reaches it does bypass the freeze. Fixtures needing a terminal
+/// row that behaves like production must go through a `card_with_*_create_tx`.
+///
+/// # #1147 S6 — this is freeze point 2 ("terminal persistence")
+///
+/// A `terminals` row stores a `cwd` string. Nothing re-anchors it: the spawn
+/// paths read the row, not the wave, so once this row exists the wave's
+/// workspace can no longer move without leaving a terminal pointed at a
+/// directory that has been renamed into `.trash/`. Design §更换与冻结 therefore
+/// lists terminal persistence as a freeze point, and requires the freeze to sit
+/// at the real low-level write entry rather than depend on an enumeration of
+/// call sites — S2 hung a guard on four composites and still missed
+/// `claude_restart_adapter`, which reaches this function directly.
+///
+/// It is deliberately unconditional in the *card kind*: codex, claude and
+/// terminal cards all persist a `cwd` here, and all three are the durable
+/// consumer the design names. The one exception — the system cove's launchpad
+/// wave, which the kernel re-points on every `ensure` — lives inside
+/// [`wave_workspace_freeze_tx`] as a SQL clause, so it cannot be forgotten here.
 pub async fn terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewTerminal,
 ) -> Result<Terminal> {
     // Parent card must exist; surface as NotFound to mirror MockRepo.
-    let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
+    // `wave_id` comes back on the same read because the freeze below needs it.
+    let owner: Option<(String,)> = sqlx::query_as("SELECT wave_id FROM cards WHERE id = ?1")
         .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-    if owner.is_none() {
+    let Some((wave_id,)) = owner else {
         return Err(CalmError::NotFound(format!("card {}", p.card_id)));
-    }
+    };
     // Per-card uniqueness — surface as Conflict to mirror MockRepo
     // (the schema also enforces this via UNIQUE on terminals.card_id).
     let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
@@ -624,24 +648,34 @@ pub async fn terminal_create_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
-    // #1147 S3 — there is deliberately NO workspace freeze here, and that is a
-    // measured decision rather than an omission. Design §更换与冻结 lists
-    // "terminal persistence" as a freeze point; see the design's 已知缺口 N17
-    // for why it lands in S6 instead:
+    // #1147 S6 — freeze point 2, closing gap N17. After this statement the row
+    // above is a durable, un-re-anchorable copy of a directory, so the wave's
+    // workspace must stop being movable in the SAME transaction: a freeze that
+    // could commit separately from the row it protects is not a freeze.
     //
-    //   * It is not load bearing yet. A terminal's `cwd` comes from the
-    //     request body or `default_cwd()` (`operation/terminal_adapter.rs`),
-    //     never from `waves.workspace_path`. S6 is the slice that makes
-    //     terminals land in the wave workspace, and that is the slice in which
-    //     a terminal row starts being a durable copy of the path.
-    //   * Writing `waves` from inside this transaction DEADLOCKS. Measured on
-    //     `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`:
-    //     the test hangs forever in `sqlx_sqlite::statement::unlock_notify::wait`.
-    //     The in-memory database runs in shared-cache mode, where locks are
-    //     per TABLE, and some other connection holds `waves` for the duration
-    //     of this flow. A `SELECT` on `waves` from here is fine; the `UPDATE`
-    //     never returns. Whoever adds the S6 freeze must put it somewhere that
-    //     does not take a `waves` write lock inside a terminal transaction.
+    // # The deadlock N17 recorded, re-measured
+    //
+    // N17 said the `UPDATE waves` here never returns. It does return — measured
+    // with printf probes on
+    // `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`,
+    // which logged `UPDATE ok` twice and then hung. The hang is one step later,
+    // and it is the mirror image of what N17 described: this transaction now
+    // holds the shared-cache WRITE lock on `waves`, and
+    // `ClaudeRestartAdapter::prepare_tx` went on to read `waves` through
+    // `card_scope`, which uses the *pool* — a second connection — while this
+    // transaction is still open. The task then waits on itself forever in
+    // `sqlx_sqlite::statement::unlock_notify::wait`.
+    //
+    // So the rule for anyone adding a caller is not "do not freeze here". It is:
+    // **once a transaction has created a terminal row, it must not read `waves`
+    // off the pool before committing** — use the `_tx` reader. That is why
+    // `card_scope_tx` exists (`calm-server/src/routes/cards.rs`); a wall clock
+    // on the one production flow that does this sits in
+    // `claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`,
+    // so a regression is a red test rather than a wedged CI job. Every other
+    // adapter resolves its scope BEFORE creating the card (swept: codex,
+    // claude, claude-worker, terminal, terminal-worker).
+    super::wave_workspace::wave_workspace_freeze_tx(tx, &wave_id, now).await?;
     Ok(Terminal {
         id,
         card_id: p.card_id,

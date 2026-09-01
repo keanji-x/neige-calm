@@ -182,12 +182,53 @@ pub fn normalize_terminal_create_request(
     request
 }
 
-pub(crate) fn normalize_terminal_worker_cwd(cwd: Option<String>) -> String {
+/// The cwd the caller actually named, or `None` when it named none — an absent
+/// field and a blank string are the same request.
+///
+/// #1147 S6 — this used to fall back to `$HOME` here. The default is no longer
+/// a process-environment constant: it is the wave's workspace, and only
+/// [`terminal_cwd_or_wave_workspace`] can resolve it, because that needs the
+/// transaction.
+pub(crate) fn explicit_terminal_cwd(cwd: Option<String>) -> Option<String> {
     cwd.as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(ToOwned::to_owned)
-        .unwrap_or_else(default_cwd)
+}
+
+/// #1147 S6 — resolve a terminal card's working directory: whatever the caller
+/// named, else **the wave's workspace**.
+///
+/// This is the slice's whole point. Design §产品契约 says every wave owns a
+/// repository; before S6 nothing made that true at a terminal prompt, because
+/// both terminal paths fell back to `$HOME` and never read
+/// `waves.workspace_path`. A user who opened a terminal in a wave landed
+/// outside the wave's repository — the same "the wave is not where you think it
+/// is" defect #1147 was opened on, one layer up.
+///
+/// Read inside the transaction that is about to write the terminal row, so the
+/// path cannot move between the read and the write (the row creation freezes
+/// the workspace in that same transaction).
+///
+/// An empty stored path is refused rather than silently falling back. Every
+/// wave has had a materialized workspace since S2, so an empty one means the
+/// row is broken; inheriting the server's cwd instead is exactly how #1147's
+/// original `spawn-failed` reached a user with no explanation.
+pub(crate) async fn terminal_cwd_or_wave_workspace(
+    tx: &mut Tx<'_>,
+    wave_id: &str,
+    requested: Option<String>,
+) -> Result<String> {
+    if let Some(cwd) = requested {
+        return Ok(cwd);
+    }
+    let workspace = crate::db::sqlite::wave_workspace_read_tx(tx, wave_id).await?;
+    if workspace.path.trim().is_empty() {
+        return Err(CalmError::Internal(format!(
+            "wave {wave_id} has no workspace path; refusing to open a terminal in the server's cwd"
+        )));
+    }
+    Ok(workspace.path)
 }
 
 #[async_trait]
@@ -224,11 +265,21 @@ impl ProviderAdapter for TerminalAdapter {
     ) -> Result<TxOutput> {
         let payload: TerminalCreateOperationPayload = serde_json::from_value(input.clone())?;
         let program = payload.request.program.clone();
-        let cwd = payload.request.cwd.clone();
         let env = payload.request.env.clone();
         let card_id = new_id();
         let runtime_id = payload.runtime_id.clone().unwrap_or_else(new_id);
         let wave_id = payload.request.wave_id.clone();
+        // #1147 S6 — an empty request `cwd` means "the wave's workspace". It is
+        // resolved here rather than in `normalize_terminal_create_request` for
+        // the same reason the dispatcher keeps `cwd: None` on the terminal-worker
+        // payload (see `scheduler::build_*_payload`): materializing a default
+        // into the operation payload puts it into `stable_payload_hash`.
+        let cwd = terminal_cwd_or_wave_workspace(
+            tx,
+            &wave_id,
+            explicit_terminal_cwd(Some(payload.request.cwd.clone())),
+        )
+        .await?;
         let scope = card_scope(
             self.repo.as_ref(),
             CardId::from(card_id.clone()),
@@ -589,7 +640,14 @@ impl ProviderAdapter for TerminalWorkerAdapter {
         let card_id = new_id();
         let runtime_id = new_id();
         let wave_id = WaveId::from(payload.wave_id.clone());
-        let cwd = normalize_terminal_worker_cwd(payload.cwd.clone());
+        // #1147 S6 — the task row's cwd if it named one, else the wave's
+        // workspace (was `$HOME`).
+        let cwd = terminal_cwd_or_wave_workspace(
+            tx,
+            &payload.wave_id,
+            explicit_terminal_cwd(payload.cwd.clone()),
+        )
+        .await?;
         let env = terminal_worker_env(self.repo.as_ref()).await?;
         let scope = card_scope(
             self.repo.as_ref(),
@@ -929,13 +987,12 @@ fn normalize_program(program: String) -> String {
     }
 }
 
+/// #1147 S6 — trim only. An empty cwd stays empty all the way into the
+/// operation payload and is resolved to the wave's workspace inside
+/// `prepare_tx` (`terminal_cwd_or_wave_workspace`). Filling `$HOME` in here
+/// would bake the server's environment into `stable_payload_hash`.
 fn normalize_cwd(cwd: String) -> String {
-    let cwd = cwd.trim();
-    if cwd.is_empty() {
-        default_cwd()
-    } else {
-        cwd.to_string()
-    }
+    cwd.trim().to_string()
 }
 
 fn normalize_env(env: Value) -> Value {
@@ -961,18 +1018,6 @@ fn default_program() -> String {
     } else {
         s
     }
-}
-
-fn default_cwd() -> String {
-    if let Ok(home) = std::env::var("HOME")
-        && !home.is_empty()
-    {
-        return home;
-    }
-    std::env::current_dir()
-        .unwrap_or_default()
-        .to_string_lossy()
-        .to_string()
 }
 
 #[cfg(test)]

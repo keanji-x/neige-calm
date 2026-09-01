@@ -94,7 +94,9 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
             cove_id: cove.id,
             title: "e2e".into(),
             sort: None,
-            cwd: String::new(),
+            // #1147 S6 — the terminal card's cwd defaults to the wave's
+            // workspace; an empty workspace path is refused.
+            cwd: "/neige-fixture-workspace".into(),
             workflow_id: None,
             plugin_scope: None,
             attach_folder: false,

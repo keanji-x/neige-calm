@@ -47,7 +47,7 @@ pub fn router() -> Router<AppState> {
 /// Deliberately omits `kind` (always `"terminal"`) and `payload` (the kernel
 /// persists schema payload and projects identity from `runtimes`). Empty
 /// `program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to
-/// `$HOME` then the server's cwd. `env` is merged into the daemon's environment
+/// the wave's workspace (#1147 S6). `env` is merged into the daemon's environment
 /// as additional vars on top of `TERM` / `COLORTERM` / inherited.
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
 pub struct NewTerminalCardBody {
@@ -59,7 +59,7 @@ pub struct NewTerminalCardBody {
     /// Empty string or missing → `$SHELL` (then `/bin/sh`).
     #[serde(default)]
     pub program: String,
-    /// Empty string or missing → `$HOME` (then cwd of server).
+    /// Empty string or missing → the wave's workspace path (#1147 S6).
     #[serde(default)]
     pub cwd: String,
     /// Extra env on top of the inherited set. JSON object: `{"FOO":"bar"}`.

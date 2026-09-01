@@ -73,6 +73,47 @@ pub(crate) async fn card_scope(
     })
 }
 
+/// The in-transaction twin of [`card_scope`].
+///
+/// #1147 S6 — `card_scope` reads `waves` through the pool, i.e. on a *second*
+/// connection. That is fine from a handler, and it is a hang from inside a
+/// transaction that has already written `waves`: since S6 every terminal-row
+/// creation freezes the wave's workspace in the same transaction, so the
+/// transaction holds SQLite's write lock on `waves` until it commits. In
+/// shared-cache mode (the in-memory test databases) those locks are per table,
+/// so the pool read blocks on a lock only the caller itself can release — the
+/// task waits on itself forever in `sqlx_sqlite::statement::unlock_notify::wait`.
+/// Measured: `ClaudeRestartAdapter::prepare_tx` did exactly this and hung
+/// `post_claude_restart_recreates_missing_terminal_row_and_resumes_session`.
+///
+/// Scope of the hang, stated precisely rather than generously: the in-memory
+/// databases every test uses run shared-cache with table locks, so there it is a
+/// hard deadlock. A file-backed production database runs WAL, where the pool
+/// connection reads a snapshot instead of blocking — so production would get a
+/// pre-write read rather than a hang. Neither is acceptable and the fix is the
+/// same, but do not describe this as "test-only" and do not describe production
+/// as "hangs".
+///
+/// Any `prepare_tx` that mints a card + terminal must resolve its scope through
+/// this function, not through [`card_scope`]. Callers that resolve the scope
+/// *before* the terminal write are equally correct, and several do.
+pub(crate) async fn card_scope_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    card: CardId,
+    wave: WaveId,
+) -> Result<EventScope> {
+    let cove: Option<(String,)> = sqlx::query_as("SELECT cove_id FROM waves WHERE id = ?1")
+        .bind(wave.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+    let (cove,) = cove.ok_or_else(|| CalmError::NotFound(format!("wave {wave}")))?;
+    Ok(EventScope::Card {
+        card,
+        wave,
+        cove: cove.into(),
+    })
+}
+
 /// Whether the persisted card shape is allowed to use the headless harness
 /// routes. Unknown/malformed profile values deliberately fail closed.
 ///

@@ -16,7 +16,7 @@ use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::new_id;
 use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
-use crate::routes::cards::card_scope;
+use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
 use crate::routes::codex_cards::{default_cwd, shell_single_quote};
 use crate::routes::theme::RequestTheme;
@@ -212,12 +212,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         )
         .await?;
 
-        let scope = card_scope(
-            self.repo.as_ref(),
-            CardId::from(card_id.clone()),
-            card.wave_id.clone(),
-        )
-        .await?;
+        // #1147 S6 — `card_scope_tx`, NOT `card_scope`. This transaction may
+        // have just created the terminal row above, which freezes the wave's
+        // workspace and therefore holds the write lock on `waves`; resolving the
+        // scope through the pool would deadlock the task against itself. See
+        // `card_scope_tx`'s doc comment for the measurement.
+        let scope = card_scope_tx(tx, CardId::from(card_id.clone()), card.wave_id.clone()).await?;
         let runtime_event = Event::RuntimeStarted {
             runtime_id: runtime_id.clone(),
             card_id: card_id.clone(),

@@ -138,7 +138,11 @@ async fn boot() -> Boot {
             cove_id: cove.id.clone(),
             title: "scheduler-test".into(),
             sort: None,
-            cwd: String::new(),
+            // #1147 S6 — a terminal worker with no cwd on its task row lands in
+            // the wave's workspace, and an empty one is a hard error (a wave
+            // without a materialized workspace is not a state any creation
+            // route produces). Fixture waves carry a path like production ones.
+            cwd: "/neige-fixture-workspace".into(),
             workflow_id: None,
             plugin_scope: None,
             attach_folder: false,

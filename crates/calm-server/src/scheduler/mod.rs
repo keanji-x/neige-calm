@@ -262,7 +262,8 @@ pub fn build_worker_payload(task: &Task) -> Result<(&'static str, Value)> {
                 // `resume_dispatched` see its OWN operation as a foreign
                 // payload-hash conflict and permanently fail the task.
                 // The terminal adapter resolves the default at spawn
-                // time (`normalize_terminal_worker_cwd` in `prepare_tx`).
+                // time (`terminal_cwd_or_wave_workspace` in `prepare_tx`),
+                // which since #1147 S6 means the wave's workspace.
                 cwd: task.cwd.clone(),
             })?;
             Ok(("terminal-worker", payload))
