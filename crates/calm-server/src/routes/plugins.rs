@@ -847,31 +847,51 @@ pub(crate) async fn rotate_plugin_token(
     cs.plugin
         .rotate_plugin_token(&id)
         .await
-        .map_err(|e| match e {
-            crate::plugin_host::HostError::UnsupportedForKind { .. } => {
-                CalmError::BadRequest(e.to_string())
-            }
-            // The host fails CLOSED when it cannot determine the plugin's kind
-            // (no registry entry). That is a 404, not a kernel fault — and, like
-            // the connector refusal, it happens before any token delete/restart.
-            crate::plugin_host::HostError::NotFound(_) => {
-                CalmError::NotFound(format!("plugin {id} is not loaded"))
-            }
-            // #1196 §2.5 — 409 `plugin_busy`, not a 500. Rotation takes the
-            // lifecycle guard as its first act, so a busy answer means the
-            // token row was NOT deleted and nothing was restarted; the identical
-            // request will work once the holder finishes.
-            busy @ crate::plugin_host::HostError::LifecycleBusy(_) => {
-                CalmError::PluginBusy(busy.to_string())
-            }
-            other => CalmError::Internal(format!("rotate failed: {other}")),
-        })?;
+        .map_err(|e| rotate_error_to_calm(&id, e))?;
     let plug = s
         .repo
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
     Ok(Json(build_detail(&cs, plug).await))
+}
+
+/// `POST /api/plugins/{id}/rotate-token`'s [`HostError`] → HTTP mapping.
+///
+/// A named function rather than an inline `match` so each cell can be pinned by
+/// a unit test the way `spawn_error_to_calm`'s are. #1196 S1 review r4 found the
+/// gap this closes: nothing anywhere exercised rotation against an id in
+/// `plugins_disabled`, so a probe that changed the host's answer to
+/// `HostError::Disabled` silently turned a 404/400 into a 500 and every gate
+/// stayed green.
+fn rotate_error_to_calm(id: &str, e: crate::plugin_host::HostError) -> CalmError {
+    use crate::plugin_host::HostError;
+    match e {
+        // #1164 §2.5 — a connector never had a token minted, so rotation is a
+        // 400, not a 500. The host refuses BEFORE deleting any row and BEFORE
+        // restarting anything, so a mistaken call is fully inert.
+        unsupported @ HostError::UnsupportedForKind { .. } => {
+            CalmError::BadRequest(unsupported.to_string())
+        }
+        // The host fails CLOSED when it cannot determine the plugin's kind
+        // (no registry entry). That is a 404, not a kernel fault — and, like
+        // the connector refusal, it happens before any token delete/restart.
+        HostError::NotFound(_) => CalmError::NotFound(format!("plugin {id} is not loaded")),
+        // #1196 §2.5 — 409 `plugin_busy`, not a 500. Rotation takes the
+        // lifecycle guard as its first act, so a busy answer means the
+        // token row was NOT deleted and nothing was restarted; the identical
+        // request will work once the holder finishes.
+        busy @ HostError::LifecycleBusy(_) => CalmError::PluginBusy(busy.to_string()),
+        // `Disabled` deliberately falls through to the 500 below and that is a
+        // documented pre-existing wart, not an oversight: it can only be reached
+        // for a *registered app* named in `plugins_disabled`, i.e. after the
+        // token row has already been deleted and the plugin already stopped, so
+        // the request genuinely did do something and genuinely did not finish.
+        // The cells that must NOT reach it — unregistered, and connector — are
+        // answered above and pinned by `a20`. Restoring them is what #1196 S1
+        // review r4 required; re-coding this one is a separate decision.
+        other => CalmError::Internal(format!("rotate failed: {other}")),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -952,3 +972,72 @@ async fn build_detail(cs: &CodexShellState, plug: Plugin) -> PluginDetail {
 // `wire_name()` / `last_error()` everywhere.
 #[allow(dead_code)]
 const _RUNTIME_STATUS_LIVE: Option<PluginRuntimeStatus> = None;
+
+#[cfg(test)]
+mod rotate_error_mapping_tests {
+    //! #1196 S1 review r4 — the `rotate-token` error table, cell by cell.
+    //!
+    //! The host-side half (which `HostError` each `plugins_disabled` cell
+    //! actually produces) is pinned by
+    //! `tests/cases/plugin_lifecycle_lock.rs::a20_*`; this is the other half,
+    //! and only the two together state an HTTP contract. Splitting them is not a
+    //! compromise: the handler needs a live `AppState` + repo row to reach, and
+    //! the defect being pinned was entirely in the pairing of a `HostError` with
+    //! a status code.
+
+    use super::rotate_error_to_calm;
+    use crate::error::CalmError;
+    use crate::plugin_host::HostError;
+    use axum::http::StatusCode;
+
+    /// An id the registry does not know — including one that is *also* in
+    /// `plugins_disabled`, which is the regression this file exists for.
+    #[test]
+    fn not_found_is_a_404_naming_the_plugin() {
+        let mapped = rotate_error_to_calm("dev.gone", HostError::NotFound("dev.gone".into()));
+        assert_eq!(mapped.status(), StatusCode::NOT_FOUND);
+        assert!(
+            matches!(&mapped, CalmError::NotFound(m) if m.contains("dev.gone") && m.contains("not loaded")),
+            "got {mapped:?}"
+        );
+    }
+
+    /// Rotating a connector is a client mistake, not a kernel fault.
+    #[test]
+    fn unsupported_for_kind_is_a_400() {
+        let mapped = rotate_error_to_calm(
+            "dev.conn",
+            HostError::UnsupportedForKind {
+                plugin_id: "dev.conn".into(),
+                kind: "mcp-http",
+                operation: "token rotation",
+            },
+        );
+        assert_eq!(mapped.status(), StatusCode::BAD_REQUEST);
+        assert!(matches!(mapped, CalmError::BadRequest(_)));
+    }
+
+    /// A request that did nothing because somebody else holds the guard is a
+    /// retryable 409 with its own code, never `internal`.
+    #[test]
+    fn lifecycle_busy_is_a_409_plugin_busy() {
+        let mapped = rotate_error_to_calm("dev.app", HostError::LifecycleBusy("dev.app".into()));
+        assert_eq!(mapped.status(), StatusCode::CONFLICT);
+        assert_eq!(mapped.code(), "plugin_busy");
+    }
+
+    /// The documented residual: `Disabled` is only reachable here for a
+    /// registered app whose token row was already deleted and whose process was
+    /// already stopped, so it stays a 500. Pinned so that a future probe cannot
+    /// widen this cell to swallow the two above it — which is exactly how the
+    /// r4 regression happened.
+    #[test]
+    fn disabled_is_the_documented_500_and_nothing_else_is() {
+        let mapped = rotate_error_to_calm("dev.app", HostError::Disabled("dev.app".into()));
+        assert_eq!(mapped.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(
+            matches!(&mapped, CalmError::Internal(m) if m.contains("rotate failed")),
+            "got {mapped:?}"
+        );
+    }
+}

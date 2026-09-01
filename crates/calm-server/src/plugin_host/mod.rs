@@ -611,8 +611,34 @@ const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
 /// is the *connector phase* ceiling, and app plugins are outside it by design
 /// (see the `connector_elapsed` accounting). What this gives is a per-app-plugin
 /// bound where there was none, so boot's total is now finite for every plugin
-/// kind rather than for one of them.
-const APP_AUTOSPAWN_WALL: Duration = Duration::from_secs(30);
+/// kind rather than for one of them — the composed number is
+/// [`boot_autospawn_ceiling`].
+///
+/// `pub` and pinned by `the_app_autospawn_wall_is_the_documented_one`: the only
+/// gate that exercises the fence (`a19`) overrides it to 300 ms through
+/// [`PluginHost::with_app_autospawn_wall`], so without that test a change to
+/// this literal would be invisible to CI.
+pub const APP_AUTOSPAWN_WALL: Duration = Duration::from_secs(30);
+
+/// **The** wall-clock ceiling on the whole boot autospawn loop, for a repo with
+/// `app_plugins` enabled `app` plugins.
+///
+/// The `app` half is `N ×` on purpose and is not a defect being papered over:
+/// app bring-up is a local fork/exec, the plugins are serial, and there is no
+/// cross-plugin budget for them the way there is for connectors. What matters is
+/// that the total is a closed-form expression of two constants instead of
+/// "connectors are bounded and apps are argued about", which is what it was
+/// before #1196 S1 review P1-6.
+///
+/// One expression for the same reason [`connector_phase_ceiling`] is one: the
+/// documented number and the enforced number must not be two arithmetics.
+/// Asserted against both constants by `the_app_autospawn_wall_is_the_documented_one`.
+pub const fn boot_autospawn_ceiling(app_plugins: u32) -> Duration {
+    Duration::from_millis(
+        APP_AUTOSPAWN_WALL.as_millis() as u64 * app_plugins as u64
+            + MAX_CONNECTOR_AUTOSPAWN_WALL.as_millis() as u64,
+    )
+}
 
 /// **The** wall-clock ceiling on the connector phase of boot, given the loop
 /// budget it runs with — spawn, reconcile and every emission inside it.
@@ -1063,12 +1089,51 @@ impl PluginHost {
     /// `uninstall` could land between the kind check and the restart, and the
     /// restart would then respawn a plugin that no longer exists.
     pub async fn rotate_plugin_token(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
-        // Reject-only; see `reject_unknown_before_locking`. The kind guard in
-        // `rotate_plugin_token_under` already answers `NotFound` for an id the
-        // registry does not know, and it stays the authoritative one.
-        self.reject_unknown_before_locking(id)?;
+        // Reject-only pre-lock probe; see `rotate_admission_check`. It is the
+        // SAME function `rotate_plugin_token_under` opens with, so the error a
+        // caller sees is unchanged by its presence — which the shared probe this
+        // replaces did not manage (see that function's doc).
+        self.rotate_admission_check(id)?;
         let guard = self.try_lock_lifecycle(id)?;
         self.rotate_plugin_token_under(&guard).await
+    }
+
+    /// `rotate_plugin_token`'s authoritative opening checks, in one place so the
+    /// pre-lock probe and the in-guard decision cannot be two different rules.
+    ///
+    /// #1196 S1 review r4 — this exists because the previous shape shared
+    /// [`Self::spawn_admission_check`] across `spawn` / `restart` / `rotate`, and
+    /// the sharing was wrong for `rotate`: rotation's own first questions are
+    /// "is it registered" and "is it an app", NOT "is it config-disabled". An id
+    /// in `plugins_disabled` therefore stopped answering 404 (unregistered) /
+    /// 400 (connector) and started answering `Disabled`, which the rotate route
+    /// maps through its catch-all to **500** — a kernel-fault claim for a request
+    /// that deleted nothing and restarted nothing. Sharing a probe is only safe
+    /// between entries whose in-guard openings are literally the same code; this
+    /// is `rotate`'s, and nothing else calls it.
+    ///
+    /// **Reject-only.** The `Manifest` it returns is authoritative only for the
+    /// caller that already holds the guard; the pre-lock caller discards it,
+    /// because a value read outside the guard is stale the instant the guard is
+    /// taken (the P0-1 defect one file over).
+    ///
+    /// Config-disabled is deliberately NOT checked here. A registered, enabled
+    /// `app` in `plugins_disabled` still reaches the delete + restart and still
+    /// fails inside `spawn_under` with `Disabled` → 500, exactly as it did before
+    /// #1196 touched this path. That is a pre-existing wart, not a new one, and
+    /// `a20` pins it as such so it cannot change silently either way.
+    fn rotate_admission_check(&self, id: &str) -> Result<Manifest, HostError> {
+        let Some(manifest) = self.registry.get(id) else {
+            return Err(HostError::NotFound(id.to_string()));
+        };
+        if !manifest.kind.is_app() {
+            return Err(HostError::UnsupportedForKind {
+                plugin_id: id.to_string(),
+                kind: manifest.kind.wire_name(),
+                operation: "token rotation (connectors are never issued a plugin token)",
+            });
+        }
+        Ok(manifest)
     }
 
     async fn rotate_plugin_token_under(
@@ -1090,16 +1155,10 @@ impl PluginHost {
         // rotation for an id the registry does not know: `spawn` itself starts
         // with the same lookup and returns `NotFound`, so a rotation could not
         // have restarted anything either way.
-        let Some(manifest) = self.registry.get(id) else {
-            return Err(HostError::NotFound(id.to_string()));
-        };
-        if !manifest.kind.is_app() {
-            return Err(HostError::UnsupportedForKind {
-                plugin_id: id.to_string(),
-                kind: manifest.kind.wire_name(),
-                operation: "token rotation (connectors are never issued a plugin token)",
-            });
-        }
+        //
+        // Both checks live in `rotate_admission_check` so the pre-lock probe is
+        // this code rather than a second copy of it.
+        let _manifest = self.rotate_admission_check(id)?;
         // Clearing the row first means: even if restart fails mid-flight, the
         // next spawn will mint fresh. Old (raw) token in any plugin's hands is
         // already worthless once the process is killed below.
@@ -1213,9 +1272,23 @@ impl PluginHost {
                         // the overwhelmingly likely holder is the guard we just
                         // gave up waiting for, and blocking on it here would
                         // reintroduce the very unbounded wait this fence removes.
+                        //
+                        // #1196 S1 review r4 — and `mark_unavailable_under`, not
+                        // `publish_unavailable_under`: this arm runs OUTSIDE the
+                        // fence above (the fence has already fired), so the
+                        // event-store write inside `publish` was unbounded and
+                        // boot could still hang forever. The reachable path is
+                        // the one this very reason string names: an `app` spawn
+                        // parked on a slow event store → the fence fires → the
+                        // dropped future releases the guard → `try_lock` succeeds
+                        // → we wait on the same wedged store, with no bound. §5 R5
+                        // and the connector arm below already settled the trade:
+                        // keep the table half (a `HashMap::insert` under a sync
+                        // lock, which is what `GET /api/plugins/{id}` reports),
+                        // give up the event half.
                         match self.try_lock_lifecycle(&plug.id) {
                             Ok(g) => {
-                                self.publish_unavailable_under(&g, None, reason).await;
+                                self.mark_unavailable_under(&g, None, reason);
                             }
                             Err(_) => tracing::warn!(
                                 plugin_id = %plug.id,
@@ -1414,42 +1487,47 @@ impl PluginHost {
     /// and the supervisor task is wired. Errors before that point unwind
     /// without leaving a half-running entry.
     pub async fn spawn(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
-        self.reject_unknown_before_locking(id)?;
+        self.spawn_admission_check(id)?;
         let guard = self.try_lock_lifecycle(id)?;
         self.spawn_under(&guard, None).await
     }
 
-    /// #1196 S1 review P2-10 — the pre-lock rejection probe for the four
-    /// `HostError` entry points that have no DB probe of their own.
+    /// `spawn_under`'s authoritative opening pair — config-disabled, then
+    /// registered — as a function, so that `spawn` / `restart` can run it before
+    /// minting a lock cell **without that being a second copy of the rule**.
     ///
-    /// The `lifecycle` map is created on first use and never emptied (see the
-    /// field doc for why removal would break mutual exclusion), and `spawn` /
-    /// `restart` / `rotate_plugin_token` took the lock as their *first* act. So
-    /// an authenticated caller could seed an unbounded number of map entries by
-    /// hammering e.g. `POST /api/plugins/{random}/rotate-token`. Low severity,
-    /// but real and free to close: refuse ids the registry does not know before
-    /// the cell is minted.
+    /// #1196 S1 review P2-10 (why the pre-lock call exists at all). The
+    /// `lifecycle` map is created on first use and never emptied (see the field
+    /// doc for why removal would break mutual exclusion), and `spawn` /
+    /// `restart` took the lock as their *first* act, so an authenticated caller
+    /// could seed unbounded map entries by hammering random ids.
     ///
-    /// **This probe may only REJECT.** It is the mirror image of the P0-1 defect
-    /// one file over (`reload` deciding on a row it read outside the guard): a
-    /// value read here is stale the instant the guard is taken, so nothing
-    /// downstream may act on it. `spawn_under` repeats both checks inside the
-    /// lock and those are the authoritative ones — a `Some` here is only ever
-    /// "not obviously bogus", never "known good". Deleting this function
-    /// therefore changes no outcome except the map growth it exists to stop,
-    /// which is exactly the property that makes it safe.
+    /// #1196 S1 review r4 (why it is shaped like this). The previous shape was a
+    /// standalone probe that *restated* this pair and was then shared with
+    /// `rotate_plugin_token`, whose in-guard opening is a different pair
+    /// entirely — turning rotate's 404/400 into a 500. A probe is safe to run
+    /// pre-lock exactly when it IS the entry's own opening check; the way to
+    /// keep that true is to call the same function from both places, which is
+    /// what `spawn_under` now does. `rotate` has its own
+    /// ([`Self::rotate_admission_check`]) for the same reason.
     ///
-    /// The two checks mirror `spawn_under`'s opening pair **in the same order**,
-    /// so an id that is both config-disabled and unregistered keeps answering
-    /// `Disabled` rather than silently switching to `NotFound`.
-    fn reject_unknown_before_locking(&self, id: &str) -> Result<(), HostError> {
+    /// **Reject-only for the pre-lock callers.** The `Manifest` is authoritative
+    /// only for `spawn_under`, which holds the guard; a value read outside the
+    /// guard is stale the instant the guard is taken (the P0-1 defect one file
+    /// over), so `spawn` / `restart` discard it. What deleting the pre-lock call
+    /// changes is therefore only the map growth it exists to stop — plus, for
+    /// `restart` on a config-disabled *running* id, whether the plugin is
+    /// stopped before the identical `Disabled` error is returned. `restart` has
+    /// no production caller outside `rotate_plugin_token_under` (which calls
+    /// `restart_under` and so does not go through here), and the pre-lock
+    /// refusal is the more inert of the two.
+    fn spawn_admission_check(&self, id: &str) -> Result<Manifest, HostError> {
         if self.plugins_disabled.iter().any(|d| d == id) {
             return Err(HostError::Disabled(id.to_string()));
         }
-        if self.registry.get(id).is_none() {
-            return Err(HostError::NotFound(id.to_string()));
-        }
-        Ok(())
+        self.registry
+            .get(id)
+            .ok_or_else(|| HostError::NotFound(id.to_string()))
     }
 
     /// [`Self::spawn`] for a caller that already holds the guard.
@@ -1464,15 +1542,10 @@ impl PluginHost {
         inherit: Option<CrashWindow>,
     ) -> Result<(), HostError> {
         let id = lifecycle.id();
-        // Disabled-by-config short-circuit.
-        if self.plugins_disabled.iter().any(|d| d == id) {
-            return Err(HostError::Disabled(id.to_string()));
-        }
-
-        let manifest = self
-            .registry
-            .get(id)
-            .ok_or_else(|| HostError::NotFound(id.to_string()))?;
+        // Disabled-by-config short-circuit, then the registry lookup. Both live
+        // in `spawn_admission_check` so that `spawn` / `restart` can run this
+        // exact rule before minting a lock cell instead of restating it.
+        let manifest = self.spawn_admission_check(id)?;
 
         // Issue #45: refuse to spawn plugins that demand a newer kernel than
         // we are. Parse failures on `min_kernel_version` already get caught
@@ -2209,7 +2282,10 @@ impl PluginHost {
         // #1196 S1 review P2-10 — reject-only pre-lock probe, so an unknown id
         // cannot mint a `lifecycle` map entry that is never reclaimed.
         //
-        // `stop` cannot use `reject_unknown_before_locking`: it is legitimate
+        // `stop` gets its own probe for the same reason `rotate` does (see
+        // `rotate_admission_check`): a probe is only safe pre-lock when it is
+        // that entry's own opening check. `spawn_admission_check` is not: it is
+        // legitimate
         // for a registered id to have nothing to stop (that is `NotFound`, which
         // `disable`/`uninstall`/`restart` all swallow), and it is legitimate to
         // stop an id whose registry entry is gone. The runtime tables are the
@@ -2317,11 +2393,12 @@ impl PluginHost {
     /// the gap between them is a real window: a concurrent `uninstall` lands
     /// there and the respawn resurrects a deleted plugin.
     pub async fn restart(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
-        // Reject-only; see `reject_unknown_before_locking`. An unknown id
-        // already ended in `NotFound` here — `stop_under` tolerates its
-        // `NotFound` and `spawn_under` raises the same one — so this only moves
-        // the answer earlier, before a map cell is minted.
-        self.reject_unknown_before_locking(id)?;
+        // Reject-only; see `spawn_admission_check`, which is literally the pair
+        // `restart_under`'s `spawn_under` opens with. An unknown id already
+        // ended in `NotFound` here — `stop_under` tolerates its `NotFound` and
+        // `spawn_under` raises the same one — so this only moves the answer
+        // earlier, before a map cell is minted.
+        self.spawn_admission_check(id)?;
         let guard = self.try_lock_lifecycle(id)?;
         self.restart_under(&guard).await
     }

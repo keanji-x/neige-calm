@@ -99,6 +99,12 @@ struct BootOpts {
     /// Pre-built repo, for the tests that must construct their
     /// [`LifecycleDb`] fake around the same handle the host will use.
     repo: Option<Arc<dyn Repo>>,
+    /// `config.plugins_disabled`, i.e. the operator's kill switch. Default
+    /// empty; `a20` is the only case that populates it.
+    plugins_disabled: Vec<String>,
+    /// Override for `APP_AUTOSPAWN_WALL`, so a gate can watch the `app` boot
+    /// fence fire without waiting out the production 30 s.
+    app_wall: Option<Duration>,
 }
 
 impl Default for BootOpts {
@@ -111,6 +117,8 @@ impl Default for BootOpts {
             backoff: None,
             lifecycle_db: None,
             repo: None,
+            plugins_disabled: Vec::new(),
+            app_wall: None,
         }
     }
 }
@@ -152,7 +160,7 @@ async fn boot_with(opts: BootOpts) -> Fx {
         repo.clone(),
         plugins_dir.clone(),
         plugins_data_dir,
-        Vec::new(),
+        opts.plugins_disabled.clone(),
         EventBus::new(),
         calm_server::state::WriteContext::new(
             calm_server::card_role_cache::CardRoleCache::new(),
@@ -164,6 +172,9 @@ async fn boot_with(opts: BootOpts) -> Fx {
     }
     if let Some(db) = opts.lifecycle_db {
         host = host.with_lifecycle_db(db);
+    }
+    if let Some(wall) = opts.app_wall {
+        host = host.with_app_autospawn_wall(wall);
     }
     Fx {
         host: Arc::new(host),
@@ -1609,16 +1620,34 @@ async fn a16_disable_stops_the_plugin_before_it_writes_the_row() {
 /// supervisor through respawns twice, and the extra `running` lands inside the
 /// window.
 ///
+/// **The window's barrier** (file header rule 1; #1196 S1 review r4). Both ends
+/// are derived from observed events, not from wall clock since the test started:
+/// the lower end from the first `crashed` (the stale supervisor emits it and
+/// then sleeps), the upper end from the revive spawn (the newer supervisor
+/// cannot be due before its own instance existed). Both are asserted at the
+/// sample point, so a slow machine that closes the window fails by name instead
+/// of passing vacuously — which the previous absolute sample point (`t0 + 3750
+/// ms`, against a deadline of `t0 + s1 + 3000`) did for any `s1 > 750 ms`.
+///
 /// Mutation witnesses (each applied alone to `respawn_after_backoff`'s `ok`
 /// block):
 /// * delete `rp.run_epoch == run_epoch` → red on `exactly two` below;
 /// * delete the whole `ok` block → red on the same assertion.
 #[tokio::test]
 async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
-    // The stale supervisor is due at T0+BACKOFF, the newer one at
-    // T0+STAGGER+BACKOFF. `WINDOW` samples strictly between them.
+    // Both supervisors sleep BACKOFF, and both start that sleep immediately
+    // after emitting their own `crashed` — see `supervise_inner`: the emission
+    // is the last statement of segment 1 and `sleep` is segment 2. So an
+    // observed `crashed` event is a barrier for that supervisor's sleep, and the
+    // window is named in terms of it rather than in terms of wall clock since
+    // the test started.
     const BACKOFF: u64 = 3_000;
     const STAGGER: u64 = 1_500;
+    /// Covers the gap between the `crashed` commit the test observes and the
+    /// `sleep` that starts a few statements later. Must stay well under
+    /// `STAGGER`, or the sample could drift past the NEWER supervisor's
+    /// deadline; the assertions below enforce both ends.
+    const MARGIN: Duration = Duration::from_millis(400);
     let fx = boot_with(BootOpts {
         stub: CRASH_BIN,
         backoff: Some((vec![BACKOFF], Duration::from_secs(300), 50)),
@@ -1626,8 +1655,22 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     })
     .await;
 
-    let t0 = Instant::now();
     fx.host.spawn(ID).await.expect("spawn");
+    // #1196 S1 review r4 — anchor on the OBSERVED first crash, not on `t0`.
+    // The old sample point was the absolute instant `t0 + 3750 ms`, while the
+    // stale supervisor is really due at `t0 + s1 + 3000` where `s1` is however
+    // long the first spawn-and-crash took. On this box `s1 ≈ 60 ms`, but any
+    // `s1 > 750 ms` — an entirely ordinary CI hiccup — puts the sample BEFORE
+    // the deadline it claims to be after, and the assertion becomes vacuous:
+    // green even under the mutations it exists to catch, with nothing in the
+    // test able to say so.
+    wait_for_events(
+        &fx,
+        |ev| ev.iter().filter(|s| *s == "crashed").count() >= 1,
+        Duration::from_secs(10),
+    )
+    .await;
+    let crashed1_at = Instant::now();
     wait_for_status(
         &fx.host,
         ID,
@@ -1640,6 +1683,7 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     // replacement crashes in its turn and parks its own supervisor, so the two
     // supervisors differ in `run_epoch` and in nothing else the predicate reads.
     sleep(Duration::from_millis(STAGGER)).await;
+    let revive_at = Instant::now();
     fx.host.spawn(ID).await.expect("explicit revive");
     wait_for_events(
         &fx,
@@ -1658,8 +1702,34 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     );
 
     // Sample after the STALE supervisor's deadline and before the newer one's.
-    let sample_at = t0 + Duration::from_millis(BACKOFF + STAGGER / 2);
+    let sample_at = crashed1_at + Duration::from_millis(BACKOFF) + MARGIN;
     tokio::time::sleep_until(sample_at).await;
+
+    // The two halves of the window, asserted rather than assumed — this is the
+    // positive observation the old absolute sample point lacked entirely.
+    //
+    // Lower end: the stale supervisor emitted `crashed` and THEN slept BACKOFF,
+    // so `crashed1_at + BACKOFF` is at or past its deadline, and MARGIN covers
+    // the handful of statements between the commit we saw and the sleep.
+    assert!(
+        crashed1_at.elapsed() >= Duration::from_millis(BACKOFF) + MARGIN,
+        "the stale supervisor's backoff has NOT provably elapsed at the sample \
+         point ({:?} since its `crashed`, needed {BACKOFF} ms + {MARGIN:?}); \
+         the assertion below would be vacuous",
+        crashed1_at.elapsed()
+    );
+    // Upper end: the newer supervisor's `crashed` cannot precede its own spawn,
+    // so its deadline is at or after `revive_at + BACKOFF`. If the sample drifted
+    // past that, "only two running events" would be a statement about a
+    // supervisor that has not woken yet either — also vacuous, in the other
+    // direction.
+    assert!(
+        revive_at.elapsed() < Duration::from_millis(BACKOFF),
+        "the sample drifted past the NEWER supervisor's earliest possible \
+         deadline ({:?} since the revive spawn); the window is gone",
+        revive_at.elapsed()
+    );
+
     let ev = state_events(&fx).await;
     assert_eq!(
         ev.iter().filter(|s| *s == "running").count(),
@@ -2009,4 +2079,294 @@ async fn a1_unknown_id_is_still_404_when_that_id_is_busy() {
              code. Got {err:?}"
         );
     }
+}
+
+// ===========================================================================
+// #1196 S1 review r4 — `plugins_disabled` × {spawn, restart, rotate-token}
+//
+// This cell of the matrix had ZERO coverage, which is why a pre-lock probe
+// shared between three entry points could silently rewrite rotate's error
+// codes: the probe answered `HostError::Disabled` where rotation's own opening
+// pair answers `NotFound` (unregistered) or `UnsupportedForKind` (connector),
+// and the rotate route maps `Disabled` through its catch-all to **500** —
+// "the kernel is broken" for a request that deleted nothing and restarted
+// nothing. Same class as install 422→409 and enable 404→409, which this slice
+// spent two rounds preventing.
+//
+// The HTTP half of the contract lives with the mapping function
+// (`routes::plugins::rotate_error_mapping_tests`); this is the host half, and
+// only the two together state an endpoint contract.
+// ===========================================================================
+
+/// Every `plugins_disabled` cell of the three `HostError` lifecycle entries.
+///
+/// Mutation witnesses (each applied alone):
+/// * add the `plugins_disabled` check back to `rotate_admission_check` (i.e.
+///   re-share `spawn_admission_check` with rotate) → the `ghost`/`connector`
+///   rotate arms below go red, reporting `Disabled` where 404 / 400 are owed;
+/// * delete the `plugins_disabled` check from `spawn_admission_check` → the
+///   `spawn`/`restart` arms go red (`NotFound`, or a real spawn, instead of
+///   `Disabled`).
+#[tokio::test]
+async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
+    const APP: &str = "test.disabled.app";
+    const CONNECTOR: &str = "test.disabled.connector";
+    const GHOST: &str = "test.disabled.ghost";
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let plugins_data_dir = tmp.path().join("plugins-data");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    std::fs::create_dir_all(&plugins_data_dir).unwrap();
+
+    let app_dir = write_plugin_with_args(&plugins_dir, APP, ECHO_BIN, &[]);
+    // A registered connector. It is never brought up here — rotation refuses on
+    // `kind` before touching the network — so a placeholder url is honest.
+    let conn_dir = plugins_dir.join(CONNECTOR);
+    std::fs::create_dir_all(&conn_dir).unwrap();
+    std::fs::write(
+        conn_dir.join("manifest.json"),
+        json!({
+            "manifest_version": 1,
+            "kind": "mcp-http",
+            "id": CONNECTOR,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Disabled Connector",
+            "mcp_http": {
+                "url": "http://127.0.0.1:1/never-contacted",
+                "api_key_secret": "NEVER",
+                "api_key_in": "query:api_key",
+                "tools_allow": ["noop"],
+                "request_timeout_ms": 1_000,
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    for (id, dir) in [(APP, &app_dir), (CONNECTOR, &conn_dir)] {
+        repo.plugin_install(calm_server::model::NewPlugin {
+            id: id.into(),
+            version: "0.1.0".into(),
+            install_path: dir.display().to_string(),
+            manifest: json!({}),
+            enabled: true,
+            user_config: json!({}),
+        })
+        .await
+        .unwrap();
+    }
+    // A token to watch: the one cell that legitimately reaches the delete must
+    // be shown reaching it, and the two that must not must be shown not to.
+    repo.plugin_token_set(APP, "hashed", i64::MAX)
+        .await
+        .unwrap();
+
+    let (registry, report) = PluginRegistry::load_from_dir(&plugins_dir).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert!(
+        registry.get(CONNECTOR).is_some() && registry.get(GHOST).is_none(),
+        "fixture: the connector must be registered and the ghost must not"
+    );
+
+    let host = Arc::new(PluginHost::new_full(
+        Arc::new(registry),
+        repo.clone(),
+        plugins_dir,
+        plugins_data_dir,
+        // Every id under test is behind the operator's kill switch — including
+        // the ghost, which is the combination the shared probe got wrong.
+        vec![APP.into(), CONNECTOR.into(), GHOST.into()],
+        EventBus::new(),
+        calm_server::state::WriteContext::new(
+            calm_server::card_role_cache::CardRoleCache::new(),
+            calm_server::wave_cove_cache::WaveCoveCache::new(),
+        ),
+    ));
+
+    // ---- spawn / restart: `Disabled` wins over `NotFound`, both before and
+    // ---- inside the guard. This is the pair `spawn_under` really opens with.
+    for (what, res) in [
+        ("spawn(registered app)", host.spawn(APP).await),
+        ("spawn(unregistered)", host.spawn(GHOST).await),
+        ("restart(registered app)", host.restart(APP).await),
+        ("restart(unregistered)", host.restart(GHOST).await),
+    ] {
+        let err = res.expect_err(what);
+        assert!(
+            matches!(err, HostError::Disabled(_)),
+            "{what}: a config-disabled id must answer `Disabled` — the kill \
+             switch is the first thing `spawn_under` checks. Got {err:?}"
+        );
+    }
+    assert!(
+        host.status(APP).await.is_none(),
+        "nothing may have been started"
+    );
+
+    // ---- rotate: the kill switch is NOT rotation's opening question, so it
+    // ---- must not be allowed to answer for these two cells.
+    let err = host
+        .rotate_plugin_token(GHOST)
+        .await
+        .expect_err("rotate ghost");
+    assert!(
+        matches!(err, HostError::NotFound(_)),
+        "rotate on an id the registry does not know is a 404 (`plugin {GHOST} \
+         is not loaded`), and being in `plugins_disabled` does not change that. \
+         `Disabled` here is a 500 through the route's catch-all. Got {err:?}"
+    );
+    let err = host
+        .rotate_plugin_token(CONNECTOR)
+        .await
+        .expect_err("rotate connector");
+    assert!(
+        matches!(err, HostError::UnsupportedForKind { .. }),
+        "rotate on a connector is a 400 — connectors are never issued a token — \
+         and being in `plugins_disabled` does not change that. Got {err:?}"
+    );
+    assert!(
+        repo.plugin_token_get(APP).await.unwrap().is_some(),
+        "neither refusal may have touched an unrelated token row"
+    );
+
+    // ---- the documented residual, pinned so it cannot drift either way.
+    // A REGISTERED APP in `plugins_disabled` does reach the delete and the
+    // restart, and only then fails with `Disabled` (→ 500). That is what this
+    // path did before #1196 touched it; it is a separate decision to change,
+    // and this arm is what makes changing it deliberate.
+    let err = host
+        .rotate_plugin_token(APP)
+        .await
+        .expect_err("rotate disabled app");
+    assert!(
+        matches!(err, HostError::Disabled(_)),
+        "a registered app in `plugins_disabled` reaches `spawn_under` and fails \
+         there. Got {err:?}"
+    );
+    assert!(
+        repo.plugin_token_get(APP).await.unwrap().is_none(),
+        "…and it got there THROUGH the token delete: that is precisely why this \
+         cell is not a 4xx like the two above it"
+    );
+}
+
+// ===========================================================================
+// #1196 S1 review r4 — the `app` boot fence's terminal arm is await-free
+// ===========================================================================
+
+/// The fence fires, the lock IS available, and the event store is still wedged.
+///
+/// `a19` cannot reach this: it holds the lifecycle lock for the whole test, so
+/// `try_lock_lifecycle` always fails and only the log-and-move-on branch ever
+/// runs. The publishing branch — the one the timeout arm exists for — had never
+/// been executed by any gate, and it contained an **unbounded await outside the
+/// fence** (`publish_unavailable_under` → `emit_state_under` → `log_pure_event`).
+///
+/// The reachable path is the one the fence's own reason string names: an `app`
+/// spawn parks on a slow event store → the fence fires → dropping that future
+/// releases its guard → `try_lock` now succeeds → boot waits on the same wedged
+/// store, forever. `APP_AUTOSPAWN_WALL` then bounds nothing.
+///
+/// Mutation witness: change the timeout arm back to
+/// `self.publish_unavailable_under(&g, None, reason).await` and this test fails
+/// on its 10 s `expect` — boot never returns while the DB writer is held.
+#[tokio::test]
+async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
+    let fx = boot_with(BootOpts {
+        app_wall: Some(Duration::from_millis(300)),
+        ..Default::default()
+    })
+    .await;
+
+    // Every repo write parks from here on, including the token mint that is the
+    // first thing an `app` spawn does inside its guard.
+    let barrier = DbBarrier::hold(&fx.repo).await;
+
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(10), fx.host.autospawn_enabled())
+        .await
+        .expect(
+            "boot never returned: the `app` fence's terminal arm awaited the \
+             same wedged event store that made the fence fire, and that await \
+             is outside the fence",
+        );
+    let elapsed = started.elapsed();
+    // The fixture has to have been in force: a boot that never met the fence
+    // would also be fast, and would prove nothing.
+    assert!(
+        elapsed >= Duration::from_millis(300),
+        "boot returned in {elapsed:?}, faster than the 300 ms wall it was given \
+         — the DB barrier is no longer parking the spawn"
+    );
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "boot took {elapsed:?} against a 300 ms app wall"
+    );
+
+    // What is kept is the table half — the one `GET /api/plugins/{id}` reads.
+    // Losing it is the "reported as if it had never been enabled" failure the
+    // whole arm exists to prevent; losing the event half is the acknowledged
+    // price, exactly as on the connector side.
+    let st = fx
+        .host
+        .status(ID)
+        .await
+        .expect("a cut-off app plugin must still leave an observable entry");
+    assert!(
+        matches!(st.status, PluginRuntimeStatus::Unavailable { .. }),
+        "expected a terminal Unavailable entry, got {:?}",
+        st.status
+    );
+
+    // And the guard was released, not leaked, on the way out.
+    fx.host
+        .try_lock_lifecycle(ID)
+        .expect("the terminal arm must not have kept the lifecycle guard");
+
+    barrier.release().await;
+}
+
+// ===========================================================================
+// #1196 S1 review r4 — boot's upper bound is a pinned number, not a shape
+// ===========================================================================
+
+/// `APP_AUTOSPAWN_WALL` and the composed boot ceiling, pinned as literals.
+///
+/// `a19` and `a21` both override the wall through
+/// `PluginHost::with_app_autospawn_wall`, so neither can see the production
+/// constant at all: editing `30 s` to `30 min` would leave every gate green
+/// while boot's real bound grew sixtyfold. This is the app-side counterpart of
+/// `the_connector_phase_ceiling_is_the_documented_one`, and it pins the same two
+/// things that test does — the constant, and the composition that turns it into
+/// the number the docs state.
+#[test]
+fn the_app_autospawn_wall_is_the_documented_one() {
+    use calm_server::plugin_host::{
+        APP_AUTOSPAWN_WALL, MAX_CONNECTOR_AUTOSPAWN_WALL, boot_autospawn_ceiling,
+    };
+
+    // Sized against a local fork/exec + `initialize` handshake + a few
+    // persisted events — not against a network round trip.
+    assert_eq!(APP_AUTOSPAWN_WALL, Duration::from_secs(30));
+    // The connector phase is a single fenced budget; the app half is `N ×` and
+    // that is the documented shape, not an accident.
+    assert_eq!(boot_autospawn_ceiling(0), MAX_CONNECTOR_AUTOSPAWN_WALL);
+    assert_eq!(
+        boot_autospawn_ceiling(1),
+        Duration::from_millis(30_000 + 31_500)
+    );
+    assert_eq!(
+        boot_autospawn_ceiling(4),
+        Duration::from_millis(4 * 30_000 + 31_500),
+        "boot's total for a repo with four enabled app plugins: 4 × the app \
+         wall plus the whole connector phase ceiling. If either constant moves, \
+         change this line deliberately"
+    );
+    // The ceiling is a real ceiling in both directions: it is never below
+    // either component.
+    assert!(boot_autospawn_ceiling(1) > MAX_CONNECTOR_AUTOSPAWN_WALL);
+    assert!(boot_autospawn_ceiling(1) > APP_AUTOSPAWN_WALL);
 }
