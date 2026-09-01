@@ -222,15 +222,20 @@ impl PluginRegistry {
     /// Install or overwrite a manifest. Used by Slice D's `/api/plugins/install`
     /// after the file copy completes.
     ///
-    /// #1196 S0a — **runtime** write. Deliberately `pub(crate)`: #1196 S1 gives
-    /// this method a `&LifecycleGuard` parameter, and only the crate-internal
-    /// call sites (routes + host) can ever hold one. Everything that writes the
+    /// #1196 S0a — **runtime** write. Deliberately `pub(in crate::plugin_host)`:
+    /// #1196 S1 gives this method a `&LifecycleGuard` parameter, and only
+    /// [`super::PluginHost`] can ever hold one. Narrower than `pub(crate)` on
+    /// purpose — with `pub(crate)` the routes could (and did) keep calling this
+    /// directly, so S1 would not have produced a compile error there and those
+    /// three lifecycle writes would have survived as unlocked writes. Every
+    /// write from outside this module tree goes through
+    /// [`super::PluginHost::registry_insert`]; everything that writes the
     /// registry *before* a [`super::PluginHost`] exists must go through
     /// [`PluginRegistry::builder`] / [`PluginRegistry::from_manifests`] instead
     /// — see the design doc §2.3 ("建表期 vs 运行期"). Do NOT re-widen this to
-    /// `pub` and do NOT add a `insert_unlocked` escape hatch: the signature is
-    /// the only thing that forces the migration.
-    pub(crate) fn insert(&self, manifest: Manifest, install_path: Option<PathBuf>) {
+    /// `pub` / `pub(crate)` and do NOT add a `insert_unlocked` escape hatch: the
+    /// signature is the only thing that forces the migration.
+    pub(in crate::plugin_host) fn insert(&self, manifest: Manifest, install_path: Option<PathBuf>) {
         let mut inner = self.inner.write().unwrap();
         let id = manifest.id.clone();
         if let Some(p) = install_path {
@@ -259,9 +264,9 @@ impl PluginRegistry {
     ///
     /// Returns whether the entry existed (and was therefore updated).
     ///
-    /// #1196 S0a — **runtime** write, `pub(crate)` for the same reason as
-    /// [`Self::insert`].
-    pub(crate) fn set_exposes_tools(
+    /// #1196 S0a — **runtime** write, `pub(in crate::plugin_host)` for the same
+    /// reason as [`Self::insert`].
+    pub(in crate::plugin_host) fn set_exposes_tools(
         &self,
         id: &str,
         tools: Vec<super::manifest::ExposedTool>,
@@ -278,9 +283,9 @@ impl PluginRegistry {
 
     /// Remove a manifest. Returns the previous entry, if any.
     ///
-    /// #1196 S0a — **runtime** write, `pub(crate)` for the same reason as
-    /// [`Self::insert`].
-    pub(crate) fn remove(&self, id: &str) -> Option<Manifest> {
+    /// #1196 S0a — **runtime** write, `pub(in crate::plugin_host)` for the same
+    /// reason as [`Self::insert`].
+    pub(in crate::plugin_host) fn remove(&self, id: &str) -> Option<Manifest> {
         let mut inner = self.inner.write().unwrap();
         inner.install_paths.remove(id);
         inner.manifests.remove(id)

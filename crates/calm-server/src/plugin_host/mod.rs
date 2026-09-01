@@ -739,11 +739,13 @@ impl PluginHost {
 
     /// #1196 S0a — **runtime** registry write, routed through the host.
     ///
-    /// [`PluginRegistry::insert`] is `pub(crate)`, so writes from outside this
-    /// crate that happen *after* a host exists (integration tests that mutate a
-    /// running registry) come through here. S1 gives this method a
-    /// `&LifecycleGuard` parameter; today it is a pure pass-through and changes
-    /// no behavior.
+    /// [`PluginRegistry::insert`] is `pub(in crate::plugin_host)`, so *every*
+    /// write that happens after a host exists comes through here: the three
+    /// lifecycle routes (`install` / `uninstall` / `reload`) as well as
+    /// integration tests that mutate a running registry. S1 gives this method a
+    /// `&LifecycleGuard` parameter — which is precisely why the routes must
+    /// already be on it — today it is a pure pass-through and changes no
+    /// behavior.
     pub fn registry_insert(&self, manifest: manifest::Manifest, install_path: Option<PathBuf>) {
         self.registry.insert(manifest, install_path);
     }

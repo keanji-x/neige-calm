@@ -1230,14 +1230,31 @@ mod connector_tool_routing_tests {
     /// it ever reaches a registry makes it a plain build-time seed. The
     /// resulting registry contents are identical.
     fn materialized_connector(id: &str, allow: &[&str], served: &[&str]) -> Manifest {
-        let mut manifest = connector_manifest(id, allow);
-        let block = manifest.mcp_http.clone().expect("mcp_http block");
         let upstream: Vec<Value> = served
             .iter()
             .map(|name| json!({ "name": name, "inputSchema": { "type": "object" } }))
             .collect();
+        materialized_connector_from_upstream(id, allow, &upstream)
+    }
+
+    /// Same, but the upstream `tools/list` entries carry NO `inputSchema` —
+    /// which materializes to `input_schema: None`. Kept as a distinct helper so
+    /// fixtures that were written against a schemaless upstream keep producing
+    /// byte-identical registry contents.
+    fn materialized_connector_schemaless(id: &str, allow: &[&str], served: &[&str]) -> Manifest {
+        let upstream: Vec<Value> = served.iter().map(|name| json!({ "name": name })).collect();
+        materialized_connector_from_upstream(id, allow, &upstream)
+    }
+
+    fn materialized_connector_from_upstream(
+        id: &str,
+        allow: &[&str],
+        upstream: &[Value],
+    ) -> Manifest {
+        let mut manifest = connector_manifest(id, allow);
+        let block = manifest.mcp_http.clone().expect("mcp_http block");
         manifest.exposes_tools =
-            crate::plugin_host::connector::materialize_http_tools(id, &block, &upstream);
+            crate::plugin_host::connector::materialize_http_tools(id, &block, upstream);
         manifest
     }
 
@@ -1338,11 +1355,19 @@ mod connector_tool_routing_tests {
     fn prefix_sibling_connector_cannot_shadow_the_route() {
         let sibling = "mcp";
         let near_miss = format!("wisburg_{UNDERSCORE_TOOL}");
-        let sibling_manifest = materialized_connector(sibling, &[&near_miss], &[&near_miss]);
+        // Schemaless on purpose: the pre-#1196 fixture built this sibling from
+        // `json!({ "name": near_miss })`, so its `input_schema` is `None`.
+        let sibling_manifest =
+            materialized_connector_schemaless(sibling, &[&near_miss], &[&near_miss]);
         assert_eq!(
             sibling_manifest.exposes_tools.len(),
             1,
             "sibling tool must materialize"
+        );
+        assert!(
+            sibling_manifest.exposes_tools[0].input_schema.is_none(),
+            "sibling upstream carries no `inputSchema` — keep this fixture \
+             byte-identical to the pre-#1196 one"
         );
         let registry = PluginRegistry::from_manifests([
             (

@@ -382,7 +382,7 @@ pub(crate) async fn install_plugin(
     // implicitly: the manifest carries the perms, and the registry/permission
     // checker reads them directly on every callback — no separate "granted"
     // table to update in M3.
-    cs.plugin.registry().insert(manifest, Some(install_dir));
+    cs.plugin.registry_insert(manifest, Some(install_dir));
 
     let detail = build_detail(&cs, plug).await;
     Ok((StatusCode::CREATED, Json(detail)))
@@ -541,7 +541,7 @@ pub(crate) async fn uninstall_plugin(
     let _ = s.repo.plugin_kv_clear(&id).await;
     let _ = s.repo.overlays_clear_by_plugin(&id).await;
     s.repo.plugin_delete(&id).await?;
-    cs.plugin.registry().remove(&id);
+    cs.plugin.registry_remove(&id);
 
     // The on-disk tree is left in place: removing it would race with any
     // observers (the user pointing the install at a checked-out repo loses
@@ -661,7 +661,7 @@ pub(crate) async fn reload_plugin(
     // this — this just keeps the detail endpoint from lying.
     let manifest_value = serde_json::to_value(&manifest)
         .map_err(|e| CalmError::Internal(format!("manifest re-serialize after reload: {e}")))?;
-    cs.plugin.registry().insert(manifest, Some(install_dir));
+    cs.plugin.registry_insert(manifest, Some(install_dir));
     s.repo.plugin_update_manifest(&id, manifest_value).await?;
     if plug.enabled
         && let Err(e) = cs.plugin.spawn(&id).await
