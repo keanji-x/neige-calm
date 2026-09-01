@@ -4932,8 +4932,8 @@
     Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
     the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
     break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:440-462
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:197-210
+  source: fe/web/src/features/cove/new-wave/public.tsx:435-449
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:206-219
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -4951,7 +4951,7 @@
     The kernel names an entry without placing it (`fs.rs` `DirEntry` is name + is_dir), while the
     picker navigates by entry path. A second copy of the join rule would drift from the one the
     picker's own input bar uses; core may not import ui, so the owner's function is injected.
-  source: fe/core/domain/fs.ts:67-79; fe/web/src/app/providers/directory.ts:25-32
+  source: fe/core/domain/fs.ts:166-179; fe/web/src/app/providers/directory.ts:28-36
   authoritative_test: fe/web/src/app/providers/directory.test.ts:34
   owner_slice: app/providers
   intentional_omission: false

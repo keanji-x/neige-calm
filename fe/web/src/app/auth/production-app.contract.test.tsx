@@ -70,8 +70,14 @@ describe('production app mount', () => {
     expect(cards).toBeDefined();
     // The booted registry is the one the router got — not a second instance.
     expect(vi.mocked(bootCards).mock.calls[0]?.[0]).toBe(cards?.registry);
-    expect(cards?.registry.entries().map((entry) => entry.type)).toEqual(['terminal', 'codex', 'spec', 'claude', 'wave-report']);
+    expect(cards?.registry.entries().map((entry) => entry.type))
+      .toEqual(['terminal', 'codex', 'spec', 'assistant', 'claude', 'wave-report', 'file-viewer']);
     expect(cards?.host).toBeDefined();
+    /* The host is built with the filesystem port, not bare: a card mounted on a
+       host without it renders "this board was built without filesystem access",
+       which is the shape of the defect this line exists to catch. */
+    expect(cards?.host.mount({ type: 'terminal', id: 'probe', title: null, terminalId: null }).card.files)
+      .not.toBeNull();
   });
 
   it('gives each mount its own registry instead of sharing module state', () => {

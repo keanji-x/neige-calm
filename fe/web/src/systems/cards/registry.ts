@@ -35,6 +35,49 @@ export type CardCreateStrategy =
 export interface CardComponentProps<Card extends { readonly id: string; readonly type: string } = RegisteredCard> {
   readonly card: Card;
   readonly host: CardHostCapabilities;
+  /**
+   * The board's delete, when this card may be deleted and the board was given
+   * one. A card draws its own head, so the head's × has to arrive as a prop —
+   * and it arrives already resolved: `undefined` here means "no delete on this
+   * card", whether because the kernel owns the row or because the surface
+   * hosting it offers no delete at all. An entry must not decide that for
+   * itself, which is why there is no `deletable` alongside it to re-derive.
+   */
+  readonly onRemove?: () => void;
+}
+
+/**
+ * One input the create form collects before a card of this kind can be minted.
+ *
+ * `kind` is what the form renders, not what the value *is*: every value reaches
+ * the create path as a string, because that is what both doors the kernel
+ * offers take (a JSON payload field, or a typed create body's string member).
+ * `directory` and `file` differ only in what the picker will let you land on.
+ */
+export interface CardCreateField {
+  readonly key: string;
+  readonly label: string;
+  readonly kind: 'text' | 'directory' | 'file';
+  readonly required?: boolean;
+  readonly placeholder?: string;
+  /** Rendered under the field. One sentence — this is a create form, not docs. */
+  readonly hint?: string;
+}
+
+/**
+ * The entry's presence in the wave panel's add menu.
+ *
+ * Declaring it here rather than in a list held by the panel is the whole point:
+ * the menu is then a *projection of the registry*, so a card kind this build
+ * cannot draw can never be offered, and adding a kind is one edit rather than
+ * two that can drift.
+ *
+ * No `fields` means no form: picking it creates the card immediately, which is
+ * the honest shape for a kind that has nothing to ask (terminal).
+ */
+export interface CardAddPanel {
+  readonly label: string;
+  readonly fields?: readonly CardCreateField[];
 }
 
 export interface CardEntry<Card extends { readonly id: string; readonly type: string } = RegisteredCard> {
@@ -45,7 +88,41 @@ export interface CardEntry<Card extends { readonly id: string; readonly type: st
   readonly title?: (card: Card) => string;
   readonly accessibleName?: (card: Card) => string;
   readonly create?: CardCreateStrategy;
+  readonly addPanel?: CardAddPanel;
   readonly fromKernel?: (card: KernelCardInput) => Card | null;
+}
+
+/** One row of the add menu: what to show, and what to create if it is picked. */
+export interface CardAddMenuEntry {
+  readonly type: string;
+  readonly label: string;
+  readonly fields: readonly CardCreateField[];
+}
+
+/**
+ * The add menu, read off the registry in registration order (which is
+ * `BUILTIN_CARD_ORDER`) — so the menu's order is the built-in order, declared
+ * once, rather than a second list to keep in step.
+ *
+ * `catalog` and `kernel-minted-only` entries are excluded whatever they declare:
+ * the first is created from somewhere else entirely, and the second is a kind
+ * only the kernel may mint (the spec harness, the wave report). Offering either
+ * would be the menu promising a create that has no endpoint behind it.
+ */
+export function cardAddMenuEntries(registry: CardRegistry): readonly CardAddMenuEntry[] {
+  const rows: CardAddMenuEntry[] = [];
+  for (const entry of registry.entries()) {
+    const addPanel = entry.addPanel;
+    if (addPanel === undefined) continue;
+    if (entry.create === undefined) continue;
+    if (entry.create.mode === 'catalog' || entry.create.mode === 'kernel-minted-only') continue;
+    rows.push(Object.freeze({
+      type: entry.type,
+      label: addPanel.label,
+      fields: Object.freeze([...(addPanel.fields ?? [])]),
+    }));
+  }
+  return Object.freeze(rows);
 }
 
 export interface CardRegistry {

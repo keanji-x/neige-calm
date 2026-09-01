@@ -1,0 +1,40 @@
+/* The folder control's visual layer (#1228). astryx's `Button` owns the chip —
+   fill, border, radius, focus ring, hover — so what is left is the two things a
+   generic button cannot know: that this one holds a path (mono, and bounded so
+   a long name cannot stretch the row it sits in), and that with no path it is a
+   mark and not a row. The `ui` layer sorts after `astryx` in entry.css, so both
+   win without a specificity fight. */
+@layer ui {
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  /* The canonical clip block: `clip-path` alone still leaves the node
+     selectable and `display: none` takes it out of the accessibility tree,
+     which is the one thing this node exists to be in. */
+  .srOnly {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .trigger {
+    /* A folder name is a name, not prose: it may be long, and past this it is
+       the astryx label span's own ellipsis that finishes the job. */
+    max-inline-size: 14rem;
+  }
+
+  /* Mono for the value only. The unset chip holds a sentence — a question the
+     reader is being asked — and a question set in a monospace path font reads
+     as data the app is reporting rather than a control offering a choice. */
+  .trigger:not([data-nc-empty]) {
+    font-family: var(--font-mono);
+  }
+}

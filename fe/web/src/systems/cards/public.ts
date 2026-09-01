@@ -1,5 +1,8 @@
 export type {
+  CardAddMenuEntry,
+  CardAddPanel,
   CardComponentProps,
+  CardCreateField,
   CardCreateStrategy,
   CardDataMap,
   CardEntry,
@@ -9,7 +12,7 @@ export type {
   KernelCardInput,
   RegisteredCard,
 } from './registry.js';
-export { createCardRegistry, FALLBACK_SIZE } from './registry.js';
+export { cardAddMenuEntries, createCardRegistry, FALLBACK_SIZE } from './registry.js';
 export type {
   CardRecord,
   CardController,
@@ -38,6 +41,10 @@ export { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './builtins/re
 // from CARDS and whether the conversation drawer exists are the same question,
 // so app must ask the entry's own predicate rather than re-implement it.
 export { isSpecHarnessPayload } from './builtins/spec.js';
+// The wave-assistant discriminator, on the same terms (#1189): app decides
+// whether a card opens the conversation drawer, and it must decide it with the
+// entry's own predicate rather than a second copy of the payload check.
+export { isAssistantHarnessPayload } from './builtins/assistant.js';
 export type {
   UnknownCardSlot,
   VisibleCardSlot,

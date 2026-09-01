@@ -28,14 +28,16 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  createTerminalCardOperation, createWaveOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
+  createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
+  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
   updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
-  type CardWire, type NewTerminalCardBody, type NewWaveBody, type OverlayWire, type Wave,
-  type WaveDetailWire, type WavePatchBody, type WaveTemplate,
+  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewWaveBody,
+  type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody, type WaveTemplate,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
   specRunOperation, coveConversationsOperation, createCoveConversationOperation,
+  createWaveConversationOperation, waveConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
 import type { ServerVersionInfo } from './public.tsx';
@@ -258,6 +260,66 @@ export function useCoveConversationMutations(
     create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
     refresh: () => client.fetchQuery({
       ...coveConversationsQueryOptions(transport, coveId, unauthorized),
+      staleTime: 0,
+    }),
+  };
+}
+
+/**
+ * One wave's assistant conversations (#1189 §4.1).
+ *
+ * The key it registers is `queryKeys.waveConversations(waveId)`, which the
+ * event bridge has mapped since S4 — so the list goes live the moment this
+ * query mounts, with no second refresh path of its own.
+ */
+export function waveConversationsQueryOptions(
+  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+) {
+  return {
+    queryKey: queryKeys.waveConversations(waveId),
+    queryFn: (): Promise<Conversation[]> =>
+      runOperation(transport, waveConversationsOperation(waveId), unauthorized),
+  };
+}
+
+/**
+ * The wave twin of `useCoveConversationMutations`, with the same two doors and
+ * the same reasons for them.
+ *
+ * Not shared with the cove version through a parameterised helper: the two
+ * endpoints have different paths, different derived namespaces and different
+ * cache keys, and the only thing a shared helper would save is four lines of
+ * plumbing at the cost of making "which list does a create write through to?"
+ * a question you have to trace.
+ */
+export function useWaveConversationMutations(
+  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+): CoveConversationMutations {
+  const client = useQueryClient();
+  const create = useMutation({
+    mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
+      runOperation(transport, createWaveConversationOperation(waveId, text, idempotencyKey), unauthorized),
+    onSuccess: (row) => {
+      /* Written through as well as invalidated, for the same reason the cove
+         list is: the drawer switches to this row in the same tick and a list
+         that does not hold it yet renders with no active row. */
+      client.setQueryData<Conversation[]>(queryKeys.waveConversations(waveId), (current) => {
+        const rows = current ?? [];
+        return rows.some((candidate) => candidate.id === row.id)
+          ? rows.map((candidate) => candidate.id === row.id ? row : candidate)
+          : [...rows, row];
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.waveConversations(waveId) });
+      /* The card is new on the wave, so the wave's own detail — which is where
+         the CARDS panel, the grid and the Today open-request all read cards
+         from — is now one card short of the truth. */
+      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    },
+  });
+  return {
+    create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
+    refresh: () => client.fetchQuery({
+      ...waveConversationsQueryOptions(transport, waveId, unauthorized),
       staleTime: 0,
     }),
   };
@@ -600,6 +662,9 @@ export type WaveMutations = Readonly<{
   patch: (waveId: string, coveId: string, body: WavePatchBody) => Promise<Wave>;
   setPinned: (waveId: string, coveId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
   createTerminal: (waveId: string, body: NewTerminalCardBody) => Promise<CardWire>;
+  createCodex: (waveId: string, body: NewCodexCardBody) => Promise<CardWire>;
+  createCard: (waveId: string, body: NewCardBody) => Promise<CardWire>;
+  removeCard: (waveId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
   remove: (waveId: string, coveId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
@@ -640,16 +705,58 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
     },
   });
+  /*
+   * The three card creates answer with the row the kernel just wrote, and the
+   * very next render needs it — the caller navigates to `?card=<id>`, and the
+   * board can only draw a card the detail cache already holds. So each one
+   * writes through and then invalidates, which is the write-through rule at the
+   * top of this section, not an exception to it.
+   */
+  const addCardToDetail = (card: CardWire): void => {
+    client.setQueryData(queryKeys.waveDetail(card.wave_id), (previous: WaveDetailWire | undefined) => {
+      if (previous === undefined) return previous;
+      if (previous.cards.some((existing) => existing.id === card.id)) return previous;
+      return { ...previous, cards: [...previous.cards, card] };
+    });
+    void client.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+  };
   const createTerminal = useMutation({
     mutationFn: ({ waveId, body }: { waveId: string; body: NewTerminalCardBody }) =>
       runOperation(transport, createTerminalCardOperation(waveId, body), unauthorized),
-    onSuccess: (card) => {
-      client.setQueryData(queryKeys.waveDetail(card.wave_id), (previous: WaveDetailWire | undefined) => {
+    onSuccess: addCardToDetail,
+  });
+  const createCodex = useMutation({
+    mutationFn: ({ waveId, body }: { waveId: string; body: NewCodexCardBody }) =>
+      runOperation(transport, createCodexCardOperation(waveId, body), unauthorized),
+    onSuccess: addCardToDetail,
+  });
+  const createCard = useMutation({
+    mutationFn: ({ waveId, body }: { waveId: string; body: NewCardBody }) =>
+      runOperation(transport, createCardOperation(waveId, body), unauthorized),
+    onSuccess: addCardToDetail,
+  });
+  /*
+   * Delete drops the row from the cached detail before the refetch lands: the
+   * card's surface is unmounted by that write, and leaving it on screen until
+   * the round-trip returns would keep a PTY attached to a card the kernel has
+   * already torn down.
+   *
+   * `onSettled`, not `onSuccess`, for the invalidation — an aborted wait says
+   * nothing about whether the server committed.
+   */
+  const removeCard = useMutation({
+    mutationFn: ({ cardId, signal }: { waveId: string; cardId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteCardOperation(cardId), signal }, unauthorized),
+    onSuccess: (_result, { waveId, cardId }) => {
+      client.setQueryData(queryKeys.waveDetail(waveId), (previous: WaveDetailWire | undefined) => {
         if (previous === undefined) return previous;
-        if (previous.cards.some((existing) => existing.id === card.id)) return previous;
-        return { ...previous, cards: [...previous.cards, card] };
+        const cards = previous.cards.filter((existing) => existing.id !== cardId);
+        return cards.length === previous.cards.length ? previous : { ...previous, cards };
       });
-      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+    },
+    onSettled: (_result, _error, { waveId }) => {
+      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
     },
   });
   const patchWave = async (waveId: string, coveId: string, body: WavePatchBody) =>
@@ -658,6 +765,11 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
     create: async (body) => toWave(await create.mutateAsync(body)),
     patch: patchWave,
     createTerminal: async (waveId, body) => createTerminal.mutateAsync({ waveId, body }),
+    createCodex: async (waveId, body) => createCodex.mutateAsync({ waveId, body }),
+    createCard: async (waveId, body) => createCard.mutateAsync({ waveId, body }),
+    removeCard: async (waveId, cardId, signal) => {
+      await removeCard.mutateAsync({ waveId, cardId, signal });
+    },
     // `pinned_at` is both the flag and the ordering key, so unpinning is a
     // null write rather than a delete of some separate row.
     setPinned: (waveId, coveId, pinned, nowMs) =>
