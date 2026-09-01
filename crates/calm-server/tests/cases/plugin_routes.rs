@@ -702,8 +702,8 @@ async fn reload_unknown_id_returns_404_not_manifest_read_error() {
 /// guard is gone the id has a live (or admission-reserved) entry by the time
 /// the response is built.
 ///
-/// Which assertion actually witnesses that is worth stating, because two of
-/// the three below do not:
+/// What each assertion below actually buys is worth stating, because they do
+/// not all buy the same thing:
 ///
 /// * the `status(id).is_none()` *before* the reload is a **precondition**, and
 ///   today a vacuous one — `install` has no runtime step at all, so it can
@@ -712,10 +712,16 @@ async fn reload_unknown_id_returns_404_not_manifest_read_error() {
 /// * `det["state"] == "disabled"` is rendered by `build_detail` from
 ///   `PluginHost::status(id)`, i.e. the *same* read as a trailing
 ///   `status(id).is_none()` would be — a trailing per-id probe could therefore
-///   never be the assertion that fires first, and pinned nothing extra;
-/// * so the witness is the trailing `list_running()`: a different host method
-///   over the whole live table, which is strictly stronger — it also catches a
-///   respawn landing under an id other than the one we query.
+///   never be the assertion that fires first, and pinned nothing extra. Under
+///   the mutation this test is named for (deleting the `if plug.enabled`
+///   guard), *this* is the assertion that goes red first: it is verified to
+///   fail with `left: "running" / right: "disabled"`;
+/// * the trailing `list_running()` buys **coverage, not priority**. It is
+///   broader than `det["state"]` — a different host method over the whole live
+///   table, so it also catches shapes `status(id)` cannot see (a respawn
+///   landing under some *other* id, and an entry that only reached the
+///   admission reservation without becoming live) — but it sits after
+///   `det["state"]`, so under the guard-deletion mutation it never executes.
 #[tokio::test]
 async fn reload_disabled_plugin_does_not_spawn() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
@@ -748,9 +754,18 @@ async fn reload_disabled_plugin_does_not_spawn() {
         "a disabled plugin must still read `disabled` after reload"
     );
 
-    // The load-bearing assertion: nothing at all is running. Orthogonal to the
+    // The broadest assertion: nothing at all is running. Orthogonal to the
     // `det["state"]` check above (that one reads `status(id)`; this one reads
-    // the whole live table via a different method).
+    // the whole live table via a different method), and strictly wider — it
+    // also catches a respawn landing under an id other than the one we query,
+    // and an entry that only got as far as the admission reservation without
+    // becoming live. Neither shape is visible to `status(id)`.
+    //
+    // It is *not* the assertion that fires first, though: under this test's
+    // named mutation (deleting the `if plug.enabled` guard in
+    // `PluginHost::reload`) the `det["state"]` check above goes red first
+    // ("running" vs "disabled") and this line never runs. It is here for the
+    // shapes above, not as the primary witness.
     let running = state.plugin.list_running().await;
     assert!(
         running.is_empty(),
