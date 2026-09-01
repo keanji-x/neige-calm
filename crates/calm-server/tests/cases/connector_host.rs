@@ -2239,15 +2239,32 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
     // …and the values a `cli-query` validator must REFUSE outright, so the
     // "loads" half above is a real filter and not a formality (r2 G1/G4).
     for extra in [
-        json!({ "max_output_bytes": OUTPUT_CEILING + 1 }),
-        json!({ "max_output_bytes": u64::MAX }),
         json!({ "env_allow": ["GH_TOKEN"] }),
         json!({ "env_allow": ["SSH_AUTH_SOCK"] }),
     ] {
         let m = cli_manifest(&extra);
         assert!(
             Manifest::parse(&m.to_string()).is_err(),
-            "{m} must be refused, not clamped"
+            "{m} must be refused: a forge credential has no safe fallback"
+        );
+    }
+
+    // …while an over-ceiling `max_output_bytes` LOADS and is CLAMPED (r3 H7).
+    // The asymmetry is deliberate: `load_from_dir` re-parses on boot and only
+    // `warn!`s past a failure, so a parse-time refusal makes an installed
+    // connector vanish. A credential denylist has no safe fallback — forwarding
+    // the key is the harm — but an over-large cap has an obviously correct one.
+    for extra in [
+        json!({ "max_output_bytes": OUTPUT_CEILING + 1 }),
+        json!({ "max_output_bytes": u64::MAX }),
+    ] {
+        let m = cli_manifest(&extra);
+        let parsed = Manifest::parse(&m.to_string())
+            .unwrap_or_else(|e| panic!("{m} must load and clamp, not be refused: {e}"));
+        assert_eq!(
+            parsed.cli_query.as_ref().unwrap().max_output_bytes(),
+            OUTPUT_CEILING,
+            "{m} must be clamped to the ceiling"
         );
     }
 }

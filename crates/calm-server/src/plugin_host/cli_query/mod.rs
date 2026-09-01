@@ -9,7 +9,7 @@
 //!
 //! * **It does not go through the forge-action adapter.** That adapter generates
 //!   a `/bin/sh` script and hands the child the forge credential passthrough
-//!   ([`FORGE_CREDENTIAL_ENV_KEYS`]). A query connector is authored by whoever
+//!   (`FORGE_CREDENTIAL_ENV_KEYS`). A query connector is authored by whoever
 //!   wrote the manifest, is reachable by any agent that can call its tools, and
 //!   has no business holding the operator's git identity — so it gets
 //!   `env_clear()` plus an explicit, enumerated environment, **and** the
@@ -43,7 +43,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::child_process::{
-    KillGroupOnDrop, SpawnTimedOut, read_capped, set_process_group_leader, spawn_within,
+    SpawnTimedOut, kill_process_group, read_capped, set_process_group_leader, spawn_within,
 };
 use super::manifest::{CliQueryTool, argv_slot};
 use super::mcp::{CallToolResult, ContentBlock, RpcError};
@@ -83,15 +83,6 @@ pub const CLI_QUERY_MAX_STDERR_BYTES: usize = 4 * 1024;
 /// whole stream inside [`VERSION_PROBE_BUDGET`].
 const PROBE_MAX_STDOUT_BYTES: usize = 4 * 1024;
 
-/// How long a child gets to actually die after its process group is SIGKILLed
-/// and its pipes have closed.
-///
-/// SIGKILL is not instantaneous for a task blocked in uninterruptible I/O, and
-/// an unbounded `wait()` there would hand the caller exactly the stall
-/// `cli_query.timeout_ms` exists to prevent. Short because by this point the
-/// child has already closed both pipes: it is exiting, or it is stuck in a way
-/// no amount of waiting fixes.
-const CHILD_REAP_GRACE: Duration = Duration::from_secs(5);
 // ---------------------------------------------------------------------------
 // Runtime
 // ---------------------------------------------------------------------------
@@ -198,8 +189,8 @@ impl CliQueryRuntime {
             // `tools_call` (client hangup, task abort) would otherwise leak a
             // process with the connector's secret environment. `kill_on_drop`
             // covers the DIRECT child only, which is why the spawn below also
-            // makes the child a process-group leader and `KillGroupOnDrop`
-            // carries the same guarantee to its descendants.
+            // makes the child a process-group leader and `GroupChild` carries
+            // the teardown to the rest of that group.
             .kill_on_drop(true);
         set_process_group_leader(&mut cmd);
 
@@ -225,26 +216,21 @@ impl CliQueryRuntime {
             }
             Err(SpawnTimedOut) => return Err(budget_expired()),
         };
-        // The child is a session/group leader (`setsid` in `pre_exec`), so its
-        // pid is its pgid and one `kill(-pgid)` reaches every descendant.
-        let mut group = KillGroupOnDrop::arm(child.id().map(|p| p as i32));
-        let mut child_stdout = child.stdout.take().ok_or_else(|| {
+        let mut child_stdout = child.stdout().ok_or_else(|| {
             RpcError::internal(format!("cli-query `{}`: stdout not piped", self.plugin_id))
         })?;
-        let mut child_stderr = child.stderr.take().ok_or_else(|| {
+        let mut child_stderr = child.stderr().ok_or_else(|| {
             RpcError::internal(format!("cli-query `{}`: stderr not piped", self.plugin_id))
         })?;
 
         // ---- Phase 2: drain BOTH pipes to EOF. Do NOT wait yet. ------------
         //
         // Reading before waiting is the order that cannot deadlock: it is what
-        // unblocks a child filling a 64 KiB pipe buffer. (Waiting *first* is
-        // the deadlock; waiting CONCURRENTLY, as this used to, avoids the
-        // deadlock but lets `wait()` reap the group leader while the drain is
-        // still running — after which the pgid may already have been recycled
-        // and the kill below would be aimed at a stranger. The old comment
-        // asserting that could not happen was simply false on that
-        // interleaving — r2 G3.)
+        // unblocks a child filling a 64 KiB pipe buffer. Waiting FIRST is the
+        // deadlock; waiting CONCURRENTLY (as this once did) avoids the deadlock
+        // but lets `wait()` reap the leader while the drain is still running,
+        // which is neither an ordering anyone can reason about nor one any test
+        // can pin.
         //
         // Each read is capped BEFORE buffering (`read_capped`): the cap is on
         // bytes because that is what bounds memory, and a `read_to_end` that
@@ -262,34 +248,6 @@ impl CliQueryRuntime {
             Ok::<(), std::io::Error>(())
         })
         .await;
-
-        // ---- Phase 3: kill the group, BEFORE anything is reaped. -----------
-        //
-        // Unconditional, including the success path. That is the whole point:
-        // a wrapper of the shape `( daemon --token "$LB_TOKEN" & ) >/dev/null
-        // 2>&1; echo ok` exits 0 and leaves a daemon holding every `secret_env`
-        // value forever — escaping the timeout-only kill by simply succeeding.
-        //
-        // Killing here cannot corrupt the reported exit status: EOF on BOTH
-        // pipes means every descriptor to them is closed, and for an ordinary
-        // child the kernel closes its descriptors inside `do_exit`, by which
-        // point it is already a zombie and SIGKILL is a no-op. A process that
-        // explicitly closes stdout/stderr and keeps running IS the case this
-        // must kill — the contract is that when the answer stream ends, the
-        // query is over.
-        //
-        // The leader has not been reaped, so its pid — and therefore the
-        // pgid — is still ours and cannot have been recycled. That is now a
-        // fact of the control flow rather than an assertion about a race.
-        group.kill_now();
-
-        // ---- Phase 4: reap, bounded. ---------------------------------------
-        //
-        // Bounded because a process wedged in uninterruptible I/O does not die
-        // on SIGKILL, and an unbounded wait here would hand the caller's task
-        // the very stall the budget exists to prevent.
-        let reaped = tokio::time::timeout(CHILD_REAP_GRACE, child.wait()).await;
-
         match drained {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
@@ -298,26 +256,53 @@ impl CliQueryRuntime {
                     self.plugin_id
                 )));
             }
+            // Dropping `child` on the way out sweeps the group, and does so
+            // BEFORE any reap — the unambiguous half of the guarantee.
             Err(_elapsed) => return Err(budget_expired()),
         }
-        let status = match reaped {
-            Ok(Ok(status)) => status,
-            Ok(Err(e)) => {
-                return Err(RpcError::internal(format!(
-                    "cli-query `{}`: reaping the child failed: {e}",
-                    self.plugin_id
-                )));
-            }
-            Err(_elapsed) => {
-                return Err(RpcError::internal(format!(
-                    "cli-query `{}`: `{}` closed its output but did not exit within \
-                     {} ms of SIGKILL (it is probably blocked in uninterruptible I/O)",
-                    self.plugin_id,
-                    self.program.display(),
-                    CHILD_REAP_GRACE.as_millis()
-                )));
-            }
-        };
+
+        // ---- Phase 3: reap the leader and take ownership of the group. -----
+        //
+        // The reap comes FIRST so the exit status is the child's own. Sweeping
+        // before it would rewrite the answer for a tool of the shape
+        // `…; exec 1>&- 2>&-; sleep 1; exit 0`: its pipes reach EOF while it is
+        // still alive, so a pre-reap SIGKILL turns a successful call into
+        // `signal: 9` / `is_error: true` (r3 H2).
+        //
+        // Bounded by the SAME deadline as the drain, not by a grace period of
+        // its own. A separate grace would make worst-case latency
+        // `timeout_ms + grace` while the error text promises `timeout_ms`
+        // (r3 H3).
+        let (status, released_pgid) =
+            match tokio::time::timeout_at(deadline, child.wait_and_release_group()).await {
+                Ok(v) => v,
+                Err(_elapsed) => return Err(budget_expired()),
+            };
+
+        // ---- Phase 4: sweep the group. -------------------------------------
+        //
+        // `wait_and_release_group` disarmed `GroupChild`'s own teardown, so
+        // this line is the ONLY thing that reaches the descendants — delete it
+        // and a backgrounded daemon survives. That separation is the point: it
+        // is what makes the step testable at all.
+        //
+        // What it catches: a tool that leaves work running in ITS OWN process
+        // group, e.g. `( daemon --token "$LB_TOKEN" & ) >/dev/null 2>&1; echo
+        // ok`, which exits 0 and would otherwise hold every `secret_env` value
+        // indefinitely. What it does NOT catch: a tool that daemonizes
+        // PROPERLY, with its own `fork` + `setsid`, because it has left this
+        // group and `kill(-pgid)` no longer names it. That residual is real and
+        // is not closed here (r3 H9).
+        if let Some(pgid) = released_pgid {
+            kill_process_group(pgid);
+        }
+
+        let status = status.map_err(|e| {
+            RpcError::internal(format!(
+                "cli-query `{}`: reaping the child failed: {e}",
+                self.plugin_id
+            ))
+        })?;
 
         let stdout = capped_text(&out_buf, self.max_output_bytes);
         let stderr = capped_text(&err_buf, CLI_QUERY_MAX_STDERR_BYTES);

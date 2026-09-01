@@ -268,15 +268,14 @@ impl McpHttpBlock {
 pub const CLI_QUERY_DEFAULT_TIMEOUT_MS: u64 = 20_000;
 pub const CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES: usize = 32_768;
 
-/// Parse-time ceiling on `cli_query.max_output_bytes` (#1164 P3 r2 G1).
+/// Ceiling on the effective `cli_query.max_output_bytes` (#1164 P3 r2 G1).
 ///
 /// **Why a ceiling at all.** Without one the value was unbounded, and
 /// `usize::MAX` loaded — which made `cap + 1` in the capture path overflow: a
 /// debug panic, and in release a wrap to `take(0)` that returned an EMPTY
 /// stdout with `is_error: false`, i.e. silent data loss. The arithmetic is now
 /// saturating regardless, but a manifest that can ask for an unbounded answer
-/// is a memory bound nobody can reason about, so the ceiling is the real fix
-/// and the saturation is the backstop.
+/// is a memory bound nobody can reason about.
 ///
 /// **Why 8 MiB.** This is ONE tool call's stdout, held whole in memory and then
 /// embedded in a JSON text block (which roughly doubles it) on its way to the
@@ -284,6 +283,17 @@ pub const CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES: usize = 32_768;
 /// default is 32 KiB. 8 MiB is ~250× the default, so no legitimate author is
 /// squeezed, while the worst a manifest can cost per concurrent call stays in
 /// the tens of megabytes rather than "whatever the child felt like writing".
+///
+/// **Why this CLAMPS rather than refusing to parse** (r3 H7). A parse-time
+/// refusal is retroactive: `registry::load_from_dir` re-parses every installed
+/// manifest at boot and merely `warn!`s past one that fails, so raising or
+/// introducing a ceiling makes a connector that worked yesterday silently
+/// vanish. This module already argues exactly that against widening the
+/// `env_allow` denylist; adding the same hazard for a number would be
+/// inconsistent. A credential denylist has no safe fallback — forwarding the
+/// key anyway is the harm — whereas an over-large cap has an obviously correct
+/// one: give the author the maximum and say so. The memory bound holds either
+/// way, which is the only property that mattered.
 pub const CLI_QUERY_MAX_OUTPUT_BYTES_CEILING: usize = 8 * 1024 * 1024;
 
 /// `cli_query` top-level block. Present iff `kind == "cli-query"`.
@@ -325,10 +335,26 @@ impl CliQueryBlock {
             .unwrap_or(CLI_QUERY_DEFAULT_TIMEOUT_MS)
     }
 
+    /// The cap the runtime actually uses: the manifest's value, defaulted when
+    /// absent or zero, and CLAMPED to [`CLI_QUERY_MAX_OUTPUT_BYTES_CEILING`].
+    ///
+    /// Clamped rather than refused so a manifest that used to load never stops
+    /// loading — see the ceiling's doc for why that asymmetry with the
+    /// `env_allow` denylist is deliberate.
     pub fn max_output_bytes(&self) -> usize {
-        self.max_output_bytes
+        let requested = self
+            .max_output_bytes
             .filter(|n| *n > 0)
-            .unwrap_or(CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES)
+            .unwrap_or(CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES);
+        if requested > CLI_QUERY_MAX_OUTPUT_BYTES_CEILING {
+            tracing::warn!(
+                requested,
+                ceiling = CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
+                "cli_query.max_output_bytes exceeds the ceiling and was clamped"
+            );
+            return CLI_QUERY_MAX_OUTPUT_BYTES_CEILING;
+        }
+        requested
     }
 }
 
@@ -933,18 +959,6 @@ impl CliQueryBlock {
                 "must declare at least one tool",
             ));
         }
-        if let Some(n) = self.max_output_bytes
-            && n > CLI_QUERY_MAX_OUTPUT_BYTES_CEILING
-        {
-            return Err(ManifestError::invalid(
-                "cli_query.max_output_bytes",
-                format!(
-                    "{n} exceeds the {CLI_QUERY_MAX_OUTPUT_BYTES_CEILING}-byte ceiling; \
-                     this is one tool call's stdout held whole in memory"
-                ),
-            ));
-        }
-
         // #1164 P3 F1 — `env_allow` is a passthrough from the SERVICE
         // environment, so a manifest that names a forge credential key would
         // hand a manifest-authored, agent-callable connector the operator's git

@@ -707,12 +707,19 @@ async fn assert_recorded_descendant_dies(pidfile: &Path, what: &str) {
 ///
 /// A wrapper that backgrounds a daemon with its own stdout and then exits 0
 /// escaped the timeout-only kill by simply succeeding: reaped, reported
-/// `is_error: false`, and left a process holding every `secret_env` value
-/// for as long as it felt like. The group kill is now unconditional and
-/// happens BEFORE the reap.
+/// `is_error: false`, and left a process holding every `secret_env` value for
+/// as long as it felt like.
 ///
-/// Mutation witness: move `group.kill_now()` back inside the budget-expiry
-/// arm and this goes red while every other execution test stays green.
+/// **Mutation witness: delete the `kill_process_group(pgid)` line in phase 4 of
+/// `tools_call`.** That is the whole of the steady-state sweep, because
+/// `wait_and_release_group` has already disarmed `GroupChild`'s own teardown.
+///
+/// The round-2 docstring here named a witness that did NOT hold — moving the
+/// kill into the budget-expiry arm left this green, because the guard was still
+/// armed and `Drop` did the same work microseconds later. This test was
+/// therefore a second, weaker witness for `Drop` and said nothing about the
+/// step it claimed to cover (r3 H1). Separating release from sweep is what
+/// makes the two distinguishable at all.
 #[cfg(unix)]
 #[tokio::test]
 async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
@@ -740,16 +747,80 @@ async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
     assert_recorded_descendant_dies(&pidfile, "a successful call").await;
 }
 
-/// #1164 P3 r2 G6 — the cancellation guarantee `KillGroupOnDrop`'s `Drop`
-/// advertises had zero coverage: every tested path took the `Option` first
-/// (`kill_now` on expiry, `disarm` on success), so replacing the whole
-/// `Drop` body with `self.0 = None;` left the suite fully green.
+/// #1164 P3 r3 H2 — exit-status fidelity for a tool that closes its output and
+/// then keeps working.
+///
+/// `…; exec 1>&- 2>&-; sleep 1; exit 0` reaches EOF on both pipes while it is
+/// still alive. Round 2 swept the process group at that moment, which SIGKILLed
+/// the leader and reported `signal: 9` / `is_error: true` for what was a
+/// perfectly successful call. Reaping before sweeping is what makes the
+/// reported status the child's own.
+///
+/// Mutation witness: move the phase-4 sweep back above the `wait`, i.e. sweep
+/// the group before `wait_and_release_group`, and this goes red with
+/// `is_error: Some(true)`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tool_that_closes_its_output_then_exits_reports_its_real_status() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Answer first, then detach the pipes and keep running for a beat. The
+    // sleep must comfortably outlast the drain returning, or the race the test
+    // exists for never happens.
+    let p = script(
+        tmp.path(),
+        "linger.sh",
+        "#!/bin/sh\necho answer\nexec 1>&- 2>&-\nsleep 1\nexit 0\n",
+    );
+    let rt = runtime_for(p, &[], 20_000, 4096);
+    let res = rt.tools_call("quote", json!({})).await.unwrap();
+
+    assert_eq!(
+        res.is_error,
+        Some(false),
+        "a call that exits 0 must not be reported as an error: {:?}",
+        res.content
+    );
+    assert_eq!(res.content[0].text.as_deref(), Some("answer\n"));
+    assert_eq!(
+        res.content.len(),
+        1,
+        "no failure detail block: {:?}",
+        res.content
+    );
+}
+
+/// …and the same for a NON-zero exit, so the fix is "report the truth", not
+/// "report success". A pre-reap sweep would flatten both of these into
+/// `signal: 9`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_tool_that_closes_its_output_then_fails_reports_its_real_code() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = script(
+        tmp.path(),
+        "linger_fail.sh",
+        "#!/bin/sh\necho partial\nexec 1>&- 2>&-\nsleep 1\nexit 7\n",
+    );
+    let rt = runtime_for(p, &[], 20_000, 4096);
+    let res = rt.tools_call("quote", json!({})).await.unwrap();
+    assert_eq!(res.is_error, Some(true));
+    let detail = res.content[1].text.clone().unwrap();
+    assert!(
+        detail.contains("exit status: 7"),
+        "the child's own code must survive: {detail}"
+    );
+}
+
+/// #1164 P3 r2 G6 — the cancellation guarantee `GroupChild`'s `Drop`
+/// advertises had zero coverage: every tested path took the pgid first, so
+/// emptying the whole `Drop` body left the suite fully green.
 ///
 /// Here the inner budget is 30 s and an OUTER timeout of 300 ms drops the
 /// `tools_call` future — a client hangup or a task abort, which is the only
-/// path `Drop` is responsible for.
+/// path `Drop` is responsible for. No `wait()` has run, so the sweep provably
+/// precedes any reap and the pgid is unambiguous.
 ///
-/// Mutation witness: `fn drop(&mut self) { self.0 = None; }` turns this red.
+/// Mutation witness: empty `GroupChild`'s `Drop` body (`self.pgid = None;`).
 #[cfg(unix)]
 #[tokio::test]
 async fn dropping_the_call_future_kills_the_process_group() {
@@ -832,20 +903,33 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
     assert_eq!(res.is_error, Some(false));
     assert_eq!(res.content[0].text.as_deref(), Some("hello\n"));
 
-    // …and one byte past it is refused rather than silently clamped.
-    let mut over = doc.clone();
-    over["cli_query"]["max_output_bytes"] = json!(CLI_QUERY_MAX_OUTPUT_BYTES_CEILING as u64 + 1);
-    let err = Manifest::parse(&over.to_string()).expect_err("over the ceiling must be refused");
-    assert!(err.to_string().contains("max_output_bytes"), "{err}");
-    assert!(
-        Manifest::parse(&{
-            let mut m = doc.clone();
-            m["cli_query"]["max_output_bytes"] = json!(u64::MAX);
-            m.to_string()
-        })
-        .is_err(),
-        "usize::MAX-shaped values must be refused"
-    );
+    // …and an over-ceiling value LOADS and is CLAMPED (r3 H7). It must not be
+    // refused at parse time: `registry::load_from_dir` re-parses every
+    // installed manifest at boot and only `warn!`s past a failure, so a
+    // parse-time refusal would make a connector that worked yesterday silently
+    // vanish — the exact retroactive-invalidation hazard this module refuses to
+    // accept for the `env_allow` denylist.
+    for over in [
+        json!(CLI_QUERY_MAX_OUTPUT_BYTES_CEILING as u64 + 1),
+        json!(u64::MAX),
+    ] {
+        let mut m = doc.clone();
+        m["cli_query"]["max_output_bytes"] = over.clone();
+        let parsed = Manifest::parse(&m.to_string())
+            .unwrap_or_else(|e| panic!("{over} must still LOAD, not be refused: {e}"));
+        let block = parsed.cli_query.as_ref().unwrap();
+        assert_eq!(
+            block.max_output_bytes(),
+            CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
+            "{over} must be clamped to the ceiling"
+        );
+        // …and the clamped connector still runs, i.e. the clamp is what the
+        // runtime actually uses rather than a number only the getter knows.
+        let rt = bring_up("cli-test", block, tmp.path()).await.unwrap();
+        let res = rt.tools_call("q", json!({})).await.unwrap();
+        assert_eq!(res.is_error, Some(false));
+        assert_eq!(res.content[0].text.as_deref(), Some("hello\n"));
+    }
 }
 
 #[cfg(unix)]
@@ -856,9 +940,17 @@ async fn a_child_that_outlives_its_budget_is_killed_and_named() {
     let rt = runtime_for(p, &[], 200, 4096);
     let started = std::time::Instant::now();
     let err = rt.tools_call("quote", json!({})).await.unwrap_err();
+    let elapsed = started.elapsed();
+    // Tight on purpose (r3 H3). The old bound was 10 s for a 200 ms budget,
+    // which could not see a whole extra reap grace being spent after expiry —
+    // worst-case latency was `timeout_ms + CHILD_REAP_GRACE` while the error
+    // text promised `timeout_ms`. Every phase now shares the one deadline, and
+    // teardown after expiry is asynchronous, so the overshoot is scheduling
+    // noise rather than another constant.
     assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "the budget must actually fire"
+        elapsed < Duration::from_secs(2),
+        "the call took {elapsed:?} against a 200 ms budget; some phase is \
+         spending time outside cli_query.timeout_ms"
     );
     assert!(err.message.contains("200 ms"), "{}", err.message);
     assert!(err.message.contains("budget"), "{}", err.message);
@@ -958,6 +1050,12 @@ async fn a_failing_version_probe_falls_back_instead_of_failing_bring_up() {
 #[cfg(unix)]
 #[tokio::test]
 async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
+    // The relationship that matters is the TOTAL the probe can cost, not one
+    // term of it (r3 H3). Round 2 asserted only this comparison while the probe
+    // ALSO spent a 5 s reap grace afterwards: 2 + 5 > 5, so a probe wedged in
+    // uninterruptible I/O took 7 s, the outer budget fired first, and the
+    // connector went `Unavailable` — precisely what the sub-budget exists to
+    // prevent. The measured assertion at the end is the real guard.
     assert!(
         VERSION_PROBE_BUDGET < CLI_QUERY_BRINGUP_BUDGET,
         "the sub-budget must be strictly smaller, or a hung probe takes the enable down"
@@ -977,10 +1075,19 @@ async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
         "a hung probe must fall back, got {}",
         rt.fingerprint()
     );
+    // The TOTAL, measured. Every probe phase shares one deadline, so a hung
+    // `--version` costs the sub-budget plus scheduling noise — not the
+    // sub-budget plus a per-phase grace. A term added anywhere in the probe
+    // lifecycle shows up here.
+    assert!(
+        elapsed < VERSION_PROBE_BUDGET + Duration::from_secs(1),
+        "bring-up took {elapsed:?}; the WHOLE probe must fit inside its \
+         {VERSION_PROBE_BUDGET:?} sub-budget, and some phase is spending time \
+         outside it"
+    );
     assert!(
         elapsed < CLI_QUERY_BRINGUP_BUDGET,
-        "bring-up took {elapsed:?}; the probe must be bounded by its own \
-         {VERSION_PROBE_BUDGET:?} sub-budget, not by the outer one"
+        "bring-up took {elapsed:?}; a hung probe must never reach the outer budget"
     );
 }
 
@@ -1048,6 +1155,56 @@ async fn a_binary_that_cannot_be_executed_fails_bring_up_instead_of_enabling() {
     }
 }
 
+/// #1164 P3 r3 H6 — only a FILE-shaped spawn failure may refuse an enable.
+///
+/// `fork`/`execve` also fails for reasons that are about the machine, not the
+/// binary: `EAGAIN`/`ENOMEM` under `RLIMIT_NPROC` or memory pressure,
+/// `EMFILE`/`ENFILE` on descriptor exhaustion, `ETXTBSY` while an upgrade
+/// rewrites the file. Bring-up runs inline at boot while every other connector
+/// is spawning, so fork pressure there is expected — and refusing on it would
+/// leave a perfectly good connector permanently `Unavailable` with nothing to
+/// retry it, a regression against the pre-round-2 behaviour.
+///
+/// Driven through the real classifier rather than a re-implementation of it, so
+/// the table below is the production decision.
+///
+/// Mutation witness: widen `is_permanent_spawn_failure` to `true` (or add
+/// `WouldBlock`/`OutOfMemory` to it) and the transient rows go red.
+#[test]
+fn only_file_shaped_spawn_failures_refuse_an_enable() {
+    use std::io::ErrorKind::*;
+
+    // Refuse: the file itself can never be executed by us.
+    for kind in [PermissionDenied, NotFound] {
+        assert!(
+            is_permanent_spawn_failure(&std::io::Error::from(kind)),
+            "{kind:?} is a property of the file and must fail the enable"
+        );
+    }
+    // Fall back and enable: the machine is under pressure right now.
+    for kind in [
+        WouldBlock,   // EAGAIN — RLIMIT_NPROC
+        OutOfMemory,  // ENOMEM
+        ResourceBusy, // ETXTBSY — the binary is being rewritten
+        Interrupted,
+        Other,
+    ] {
+        assert!(
+            !is_permanent_spawn_failure(&std::io::Error::from(kind)),
+            "{kind:?} is transient; refusing on it strands a good connector as \
+             Unavailable with nothing to retry it"
+        );
+    }
+    // EMFILE/ENFILE have no stable `ErrorKind` mapping across releases, so
+    // assert on the raw errno the kernel actually returns.
+    for errno in [libc::EMFILE, libc::ENFILE, libc::EAGAIN] {
+        assert!(
+            !is_permanent_spawn_failure(&std::io::Error::from_raw_os_error(errno)),
+            "errno {errno} is transient"
+        );
+    }
+}
+
 /// #1164 P3 r2 G2 — the child's PATH must carry the same absoluteness rule
 /// resolution applies. Refusing to PIN `.` and then exec'ing the child with
 /// `PATH=".:…"` just moves the problem: a query CLI that shells out to
@@ -1101,11 +1258,20 @@ fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
 
-    // SAFETY: single-threaded — no runtime has been built yet — and this
-    // test owns its process under nextest.
+    // SAFETY: `set_var` is sound only with no concurrent reader of `environ`,
+    // and nothing here is concurrent yet — no runtime has been built.
+    //
+    // The CROSS-TEST half of that requirement is not free: every sibling
+    // `bring_up` test calls `std::env::vars_os()`, so under a plain
+    // `cargo test --lib` (one process, many threads) this would race an
+    // `environ` realloc against a live reader — real UB, not a style
+    // objection. It is sound because the repo's gate is `cargo nextest`, which
+    // runs each test in its own process. If that ever changes, this test moves
+    // to its own integration binary rather than losing the assertion (r3 H8).
     unsafe {
         std::env::set_var(OsStr::from_bytes(b"CLI_QUERY_BAD_\xff"), "x");
         std::env::set_var("CLI_QUERY_BAD_VALUE", OsStr::from_bytes(b"v\xff"));
+        std::env::set_var("CLI_QUERY_PLAIN_OK", "plain");
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1116,17 +1282,35 @@ fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
         let tmp = tempfile::tempdir().unwrap();
         let p = script(tmp.path(), "ok.sh", "#!/bin/sh\necho hi\n");
         let b = block(json!({
+            // Named in `env_allow` ON PURPOSE. Without it the assertions below
+            // could not fail: with no `env_allow` the child environment is
+            // {PATH, HOME, LANG} by construction, so "the bad key is absent"
+            // was true of every possible implementation (r3 H8).
+            "env_allow": ["CLI_QUERY_BAD_VALUE", "CLI_QUERY_PLAIN_OK"],
             "command": p.display().to_string(),
             "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
         }));
         let rt = bring_up("cli-test", &b, tmp.path())
             .await
             .expect("a non-UTF-8 service variable must not fail the enable");
-        // The undecodable key is simply not forwarded; nothing else moved.
+        // A key whose VALUE is not UTF-8 is dropped, not forwarded lossily …
+        assert!(
+            !rt.env_keys().contains(&"CLI_QUERY_BAD_VALUE"),
+            "a non-UTF-8 value must not be forwarded: {:?}",
+            rt.env_keys()
+        );
+        // … the undecodable KEY likewise never appears …
         assert!(
             !rt.env_keys()
                 .iter()
                 .any(|k| k.starts_with("CLI_QUERY_BAD_"))
+        );
+        // … and an ordinary allowlisted key IS still forwarded, so the filter
+        // is not simply "drop everything".
+        assert!(
+            rt.env_keys().contains(&"CLI_QUERY_PLAIN_OK"),
+            "a decodable env_allow key must still be forwarded: {:?}",
+            rt.env_keys()
         );
     });
 }

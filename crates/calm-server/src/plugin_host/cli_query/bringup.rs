@@ -10,11 +10,11 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use super::super::child_process::{
-    KillGroupOnDrop, SpawnTimedOut, read_capped, set_process_group_leader, spawn_within,
+    SpawnTimedOut, kill_process_group, read_capped, set_process_group_leader, spawn_within,
 };
 use super::super::connector;
 use super::super::manifest::CliQueryBlock;
-use super::{CHILD_REAP_GRACE, CliQueryRuntime, PROBE_MAX_STDOUT_BYTES, VERSION_PROBE_BUDGET};
+use super::{CliQueryRuntime, PROBE_MAX_STDOUT_BYTES, VERSION_PROBE_BUDGET};
 use crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS;
 
 /// Is `key` a forge credential passthrough key — i.e. one this connector may
@@ -358,14 +358,29 @@ pub(super) async fn probe_fingerprint(
         Ok(Some(line)) => return Ok(format!("--version: {line}")),
         // Ran, told us nothing useful — fall through to the fallback.
         Ok(None) => {}
-        Err(e) => {
+        Err(e) if is_permanent_spawn_failure(&e) => {
             return Err(format!(
                 "cli_query.command `{}` resolved as executable but could not be \
                  executed: {e}. It would enable and then fail on every call \
-                 (a file can carry an execute bit we may not use, or have no \
-                 valid format or interpreter)",
+                 (a file can carry an execute bit we may not use, or name an \
+                 interpreter that does not exist)",
                 program.display()
             ));
+        }
+        // Every OTHER spawn error is about the MACHINE, not the binary:
+        // `EAGAIN`/`ENOMEM` under `RLIMIT_NPROC` or memory pressure,
+        // `EMFILE`/`ENFILE` on descriptor exhaustion, `ETXTBSY` while an
+        // upgrade rewrites the file. Bring-up runs inline at boot while every
+        // other connector is spawning too, so fork pressure there is expected —
+        // and refusing on it would permanently mark a perfectly good connector
+        // `Unavailable` with nothing to retry it (r3 H6). Fall back and enable.
+        Err(e) => {
+            tracing::warn!(
+                program = %program.display(),
+                error = %e,
+                "cli-query: --version probe could not be spawned; falling back to \
+                 the size+mtime fingerprint (transient machine-level failure)"
+            );
         }
     }
     // Blocking `stat(2)`, and the reason the budget above exists is that the
@@ -389,9 +404,12 @@ pub(super) async fn probe_fingerprint(
 /// `Err` = the child could not be started at all. `Ok(None)` = it started and
 /// yielded no usable version line (including by outliving the sub-budget).
 ///
-/// Same four-phase lifecycle as `tools_call` — spawn off the async path inside
-/// the deadline, drain to EOF, kill the group before anything is reaped, then
-/// reap under a grace — for the same reasons documented there.
+/// Same four-phase lifecycle as `tools_call`, for the same reasons documented
+/// there: spawn off the async path, drain to EOF, reap, then sweep the group.
+/// Every phase shares ONE deadline, so the whole probe costs at most
+/// [`VERSION_PROBE_BUDGET`] — a per-phase grace on top would push the total
+/// past [`super::CLI_QUERY_BRINGUP_BUDGET`] and take the enable down, which is
+/// the opposite of what the sub-budget exists for (r3 H3).
 async fn run_version_probe(
     program: &Path,
     env: &BTreeMap<String, String>,
@@ -417,8 +435,7 @@ async fn run_version_probe(
         // what decides whether the enable survives.
         Err(SpawnTimedOut) => return Ok(None),
     };
-    let mut group = KillGroupOnDrop::arm(child.id().map(|p| p as i32));
-    let Some(mut stdout) = child.stdout.take() else {
+    let Some(mut stdout) = child.stdout() else {
         return Ok(None);
     };
 
@@ -431,15 +448,22 @@ async fn run_version_probe(
         read_capped(&mut stdout, PROBE_MAX_STDOUT_BYTES, &mut buf),
     )
     .await;
-    group.kill_now();
-    let reaped = tokio::time::timeout(CHILD_REAP_GRACE, child.wait()).await;
 
     // A `--version` that hung is the case `VERSION_PROBE_BUDGET` exists for: it
     // must cost the sub-budget and then fall back, never the whole bring-up.
+    // Returning here drops `child`, which sweeps the group before any reap.
     let Ok(Ok(())) = drained else { return Ok(None) };
-    let Ok(Ok(status)) = reaped else {
-        return Ok(None);
-    };
+
+    let (status, released_pgid) =
+        match tokio::time::timeout_at(deadline, child.wait_and_release_group()).await {
+            Ok(v) => v,
+            Err(_elapsed) => return Ok(None),
+        };
+    // The sole sweep once the leader is reaped — see `GroupChild`.
+    if let Some(pgid) = released_pgid {
+        kill_process_group(pgid);
+    }
+    let Ok(status) = status else { return Ok(None) };
     if !status.success() {
         return Ok(None);
     }
@@ -451,4 +475,26 @@ async fn run_version_probe(
         return Ok(None);
     }
     Ok(Some(line.to_string()))
+}
+
+/// Is this spawn failure about the FILE (so the connector can never work), or
+/// about the machine right now (so it may work on the next call)?
+///
+/// Only the file-shaped ones may refuse an enable. `PermissionDenied` is the
+/// execute bit we cannot actually use; `NotFound` — for a path that resolution
+/// just stat'd successfully — is a `#!` line naming an interpreter that is not
+/// there.
+///
+/// `ENOEXEC` is deliberately absent, because it never reaches us: Rust's
+/// `Command::spawn` goes through `execvp`, and both glibc and musl implement
+/// the POSIX `ENOEXEC` retry, silently re-exec'ing the file under `/bin/sh`.
+/// A shebang-less text file — and a wrong-architecture ELF — therefore SPAWNS
+/// fine and merely exits non-zero, landing in the informational arm. Closing
+/// that would mean treating a non-zero `--version` as fatal, which is wrong:
+/// a CLI is entitled not to have `--version` at all.
+pub(super) fn is_permanent_spawn_failure(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
+    )
 }

@@ -932,20 +932,54 @@ fn forge_env_key_buckets_are_a_partition() {
         "the composed list must be exactly the two buckets"
     );
 
-    // The classification itself, stated once so a re-bucketing is a visible
-    // edit rather than a silent policy change. Proxy/host selection grants
-    // nothing; a token or an agent socket IS the operator.
+    // ---- The golden set. -------------------------------------------------
+    //
+    // Both buckets are pinned to exact literals (r3 H5). A shape check like
+    // `key.contains("TOKEN") || key.contains("SSH")` is not a lock: DELETING
+    // `GIT_SSH_COMMAND` — silently taking a variable away from every forge
+    // subprocess — left all 59 forge and cli_query tests green, because
+    // nothing asserted membership or length. Composing the two buckets and
+    // then asserting against the composition is self-certifying for the same
+    // reason.
+    //
+    // These literals are the second copy ON PURPOSE, and the only one: the
+    // production constants are the single source of truth for BEHAVIOUR, and
+    // this is a golden that forces any change to them to be a deliberate,
+    // reviewed edit in two places rather than a one-character slip.
+    assert_eq!(
+        FORGE_CREDENTIAL_ENV_KEYS,
+        &[
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+            "SSH_AUTH_SOCK",
+            "GIT_SSH_COMMAND",
+        ],
+        "the credential bucket changed. Removing a key takes it away from every \
+         forge subprocess AND lets a cli-query manifest name it in env_allow; \
+         adding one retroactively invalidates installed cli-query manifests at \
+         boot. Update this golden deliberately."
+    );
     assert_eq!(
         FORGE_NONCREDENTIAL_ENV_KEYS,
         &["GH_HOST", "NO_PROXY", "no_proxy"],
         "moving a key in or out of the non-credential bucket changes who may \
          name it in cli_query.env_allow — do it deliberately"
     );
-    for key in FORGE_CREDENTIAL_ENV_KEYS {
-        assert!(
-            key.contains("TOKEN") || key.contains("SSH"),
-            "{key} is in the credential bucket but does not look like a \
-             credential; if it really is one, widen this check deliberately"
-        );
-    }
+    // …and the composed order, which is what a forge subprocess actually sees.
+    assert_eq!(
+        forge_passthrough_env_keys().collect::<Vec<_>>(),
+        vec![
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+            "SSH_AUTH_SOCK",
+            "GIT_SSH_COMMAND",
+            "GH_HOST",
+            "NO_PROXY",
+            "no_proxy",
+        ]
+    );
 }
