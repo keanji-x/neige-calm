@@ -1770,11 +1770,15 @@
   kind: capability
   family: card-create
   statement: >
-    Activating the `terminal` menuitem must create a card immediately with no modal (zero
-    config) and persist a `kind: terminal` card row on the wave.
+    Activating the terminal menuitem must create a card immediately with no modal (zero config)
+    and persist a terminal card row on the wave — the spec polls `/api/waves` for that wave until
+    `containsTerminalCard` holds, so a UI-only success does not satisfy this.
   why: >
     a11y-keyboard.spec.ts:360-414 — terminal has no createSchema; the poll against
     `GET /api/waves/:id` proves keyboard activation reached the kernel, not just the UI.
+    #1148 A0 made `terminal` a stop word (it names a whole subsystem, so hitting it proves
+    nothing), which left this statement with no anchor at all; the poll's two real carriers
+    now do the anchoring.
   source: web/e2e/a11y-keyboard.spec.ts:386-414
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:360
   owner_slice: systems/terminal/card

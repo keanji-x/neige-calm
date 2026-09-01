@@ -60,7 +60,7 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
 | 档 | 条数 |
 | --- | --- |
 | 重新获得判据（原「抽不出 identifier」静默通过 → 现在有真 anchor） | **35**（34 条直接绿，1 条只引用了 unsupported 扩展名，不产生错误） |
-| 新暴露并已逐条处置的红条 | **13**（全部处置为绿，**0** 条进 baseline，**0** 条进 pending） |
+| 新暴露并已逐条处置的红条 | **11 条新暴露 + 2 条被新规则救回的旧红**（全部处置为绿，**0** 条进 baseline，**0** 条进 pending）[^exposed] |
 | 仍抽不出 identifier | **172**（原 207） |
 
 附带效果（不是本 PR 的目标，但必须记账）：原本就红的条目里有 **48** 条因为拿到真 anchor 转绿，
@@ -74,7 +74,13 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
   `E2E-CAP-ADDPANEL-007` / `E2E-CAP-DELETE-001` subtype 变了，note 一并改写成准确描述。
 - 实际失败 204 条 = baseline 174 + pending 30，无未记账项，无双重记账。
 
-### 逐条处置清单（13 条新暴露的红条）
+[^exposed]: 原文写作「13 条新暴露」，不准确，实测复核（在 `636ddc46` 的工作区上跑 main 版
+    `extractStatementIdentifiers`）：`CAP-SPECCONVO-021` 与 `CAP-COVE-NEWWAVE-017` 在 main 上抽出的
+    identifier 都是 `[]` —— 它们既不在 main 的 baseline 也不在 pending，是**无判据静默通过**，不是红条。
+    新规则给了它们 anchor 且当场命中，所以这两条属于上面「重新获得判据」那 35 条，把它们再算进「新暴露」
+    是重复记账。真正因判据加强而首次变红的是 **11** 条。
+
+### 逐条处置清单（11 条新暴露 + 2 条救回的旧红）
 
 | id | 新 anchor | 定性 | 动作 |
 | --- | --- | --- | --- |
@@ -124,7 +130,7 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
 另有一条集合相等的元测试 `anchor classes: every fixture directory is exercised, in both directions`，
 保证新加 fixture 目录不会漏跑。
 
-## 门禁
+## 门禁（S1+S2 轮）
 
 ```
 cd fe && npx vitest run --project platform-independent
@@ -135,3 +141,79 @@ cd fe && npx vitest run --project platform-independent
 cd fe && npm run lint:js       → exit 0（eslint --max-warnings=0 + 5 个架构/所有权检查全过）
 cd fe && npm run typecheck     → exit 0（tsc -b）
 ```
+
+---
+
+# 评审修复轮（双通道裁决：codex 通道的 6 条阻断项全部成立）
+
+## A0 停用表补本仓领域词 —— A1 假绿的机制性根因
+
+subagent 的逐词消融证明停用表就是这套判据的实际护栏，而本仓遍地都是的领域词不在表里。补入
+`theme`/`themes`、`terminal`/`terminals`、`codex`、`cove`/`coves`、`report`/`reports`，每个在源码里
+写清它覆盖多少源文件、为什么命中它只证明「引对了区域」而非「引对了行」。另把 `view`/`views` 单独成组，
+披露它正在替 `INV-UI-DIALOG-003`（statement 是「focus effect 的依赖**不得**包含 `view`」，证明不存在类）
+做静默豁免 —— 词表理由本身站得住，但这条关系必须像 `change` 那样写在源码里，不能留成隐式。
+
+**补词后的全库翻转清单（1088 条，只有 3 条动，逐条实跑得出）**：
+
+| id | 翻转 | 处置 |
+| --- | --- | --- |
+| `E2E-INV-INFRA-019` | 绿 → 红（`range-miss`）；唯一 anchor 是 `theme` | A1，见下 |
+| `E2E-CAP-ADDPANEL-007` | 红 `range-miss` → 红 `not-in-file`；`terminal`/`codex` 出表后只剩 `aria-hidden`，而它在该文件里只出现在注释 (`a11y-keyboard.spec.ts:465`) | pending 行 subtype 与 note 同步改写（仍在 #1170 名下，账本不增行） |
+| `E2E-CAP-ADDPANEL-010` | 绿 → **无判据静默通过**（唯一 anchor 是 `terminal`） | statement 改写成指名轮询的两个真载体 `` `/api/waves` ``（:406）与 `` `containsTerminalCard` ``（:410），重新拿回判据 |
+
+其余 1085 条无变化。「抽不出 identifier」的条数经 ADDPANEL-010 处置后仍是 172（与 S2 轮相同）。
+
+## A1~A6 逐条判定与处置
+
+| id | 判定 | 处置 |
+| --- | --- | --- |
+| `E2E-INV-INFRA-019` | **确认假绿**。`reset.ts:105-114` 是一个**合法**请求体（110 行带着 `theme`），区间里没有任何东西证明「缺字段被拒」 | 走简报的优先路线：statement 改成这段 helper 真正保证的东西（每个建 wave 的 fixture 走同一个 body 形状），source 收到 `106-112` 的对象字面量，anchor 落在 `cove_id`(107)/`attach_folder`(110)。**全库没有任何 oracle 条目覆盖服务端「缺 theme → 422」契约**；已在 `why` 里点名它由 `crates/calm-server/tests/cases/theme_required.rs` 证明、本条不再声称，等你另开 issue |
+| `INV-A11Y-010` | **文案错，不是代码缺陷**。行按钮（`Sidebar.tsx:653-660`）不带 aria-label／aria-labelledby，name 由内容计算，必然包含 `side-wave-cove` 的 cove 名；且 `docs/` 下已无 §2.2 那份 a11y 契约原文可援引。cove 名是同一按钮里可见的 span，藏起来反而让屏幕阅读器听不到跨 cove 的消歧信息 | statement 改成「name = wave 标题 + cove 名，`title` 属性纯属信息性」；source 从只框住分区标题的 `271-290` 重指到 `278-283,653-660` |
+| `CAP-REPORT-SHELL-014` | 三段陈旧区间证实：`84-87` 是类型成员、`163-169` 是 localStorage helper、`955-957` 是 Files rail | source 改为 `118-120`（`selectReportCards` 按 sort 升序）、`197-202`（横幅文案）、`779-781`（取第一张）、`1035-1037`（`>1` 才渲染）；statement 点名两个载体。查过全库 30 处 `WaveReportPage.tsx:` 引用，**没有第二条**携带这三段区间 |
+| `E2E-CAP-TERMINAL-006` | **真缺口**。全仓搜索确认：断言 exit badge 的测试只有 `terminal-clean-exit.spec.ts:121,127`（`exit 0` + success 配色），`signal_killed` 只在 `XtermView.test.tsx`/`codex.test.tsx` 里当**输入**出现、无人断言 badge 的 signal/非零分支 | 不找区间凑绿：source 重指真正的 badge 逻辑 `CardExitBadge.tsx:22-25,46-72`（anchor 是 `signal_killed`，那里是它的真实现），`authoritative_test` 改 `NONE` 并在 `why` 里写明「拿 exit 0 的用例当权威测试是循环论证」。缺的是**测试**，不是锚点 —— 等你另开 issue |
+| `E2E-INV-INFRA-017` | `reset.ts:31-33` 只是**调用**端点，见证不了「谁挂载」 | source 重指 `crates/calm-server/src/bin/replay.rs:226-245`（`/dev/*` 子路由在此构建、只并入 `--serve`），登记进 `anchor-unsupported.yaml`；`authoritative_test` 改 `NONE`（无人断言这个否定命题，它是「路由在哪构建」的架构事实） |
+| `INV-NEWTASK-ISSUEDEV-020` | 原区间 `369-373` 全是 JSDoc、`626-632` 全是 JSX 注释，两段都被 trivia 剥离；statement 与 `authoritative_test:77` 说的确实不是一件事 | statement 合并两层（控件层「表单不提供 notes 输入控件」+ payload 层「对象字面量只有四个键」），与 `:77`/`:277` 两个用例一一对应；source 扩到 `374-382` 的对象字面量与 `386-387` 的 raw JSON 逃生口 |
+
+## B1 四个护栏 fixture 与变异验证
+
+subagent 实跑证明：放宽大小写、`DISPLAY_COPY_MINIMUM` 6→3、`BACKTICK_WORD_MINIMUM` 4→2、去掉 CJK
+一票否决 —— 11 个 anchor-class fixture 全绿。也就是说原有 fixture 只钉住了「分支存在」，**一个护栏值都没钉住**。
+
+新增 4 个单违规 fixture（共享被引文件 `anchor-display-copy.ts` 新增第 8 行 `export type CardId = string;`）。
+变异验证：先 commit，再改实现、跑测试、读**具体哪条**变红，然后从备份拷回（不用 `git checkout -- <path>`）：
+
+| 变异 | 变红的测试（每次都另有 `accepts all real oracle data without exceptions`，它对任何变异都红） |
+| --- | --- |
+| `DISPLAY_COPY_MINIMUM` 6 → 3 | `anchor class display-copy-below-minimum produces no violation`（`"Retry"` 变成 anchor，被引文件里没有） |
+| `BACKTICK_WORD_MINIMUM` 4 → 2 | `anchor class backtick-word-below-minimum produces no violation`（`` `osc` `` 变成 anchor） |
+| 去掉 `CJK_PATTERN.test(quoted) \|\|` 一票否决 | `anchor class display-copy-cjk-mixed produces no violation`（`"保存 Draft copy 草稿"` 切出 `Draft copy`） |
+| `typescriptAnchorLines` 里 `caseInsensitive.has(identifier)` → `true` | `anchor class identifier-case-sensitive-miss is the only violation, as not-in-file`（statement 写 `cardId`、被引行只有 `CardId`，本该红；变异后它绿了，红的是这条断言本身） |
+
+每次变异都只红了它对应的那一条 anchor-class 测试 —— 四个护栏各自独立成立。
+
+## B2 记账更正与已知最弱的两个锚
+
+- 「13 条新暴露」已更正为「11 条新暴露 + 2 条原本无判据、被新规则救回的条目」，见上文脚注（实跑复核，不是转述）。
+- 当前最弱的两个锚，本轮**不改**，只记账：
+  - `E2E-INV-SPECCHAT-008`：anchor `working` 命中的是 `a11y-spec-chat-interrupt.spec.ts:61` 的可访问名
+    字符串 `'Spec Agent is working'`，而 statement 指的是 FSM 门控变量；点明这层关系的注释（:58）反而被
+    trivia 剥离。锚是真的，但它锚住的不是 statement 说的那个东西。
+  - `E2E-CAP-WAVECREATE-015`：statement 里的 `role="option"` 让 `option` 走**展示文案**通道成为
+    anchor（6 字符恰好过下限、不在停用表），于是任何用 `getByRole('option')` 的区间都会绿。
+    候选处置是把 `option` 收进停用表或要求它带 `role=` 前缀，属于下一轮判据强度问题。
+
+## 门禁（评审修复轮）
+
+```
+cd fe && npx vitest run --project platform-independent
+  → Test Files 39 passed | 1 skipped (40)；Tests 912 passed | 1 skipped (913)
+    其中 tools/oracle/oracle.test.ts 90 passed（本轮 +4），含
+    `accepts all real oracle data without exceptions`（全库 1088 条零违规）
+cd fe && npm run lint:js       → exit 0
+cd fe && npm run typecheck     → exit 0
+```
+
+账本对账（实跑读数，不是估算）：`anchor-baseline.json` **174** 行 = `ANCHOR_BASELINE_MAXIMUM` **174**；
+`anchor-pending.json` **30** 行 = `ANCHOR_PENDING_MAXIMUM` **30** = `ANCHOR_PENDING_IDS` 冻结集 **30** 个 id
+（无多余、无缺失）；实际失败 **204** = 174 + 30。本轮两个账本一行未增。
