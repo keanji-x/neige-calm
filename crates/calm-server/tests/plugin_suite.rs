@@ -6,6 +6,8 @@ mod connector_host;
 mod plugin_auth;
 #[path = "cases/plugin_host_callbacks.rs"]
 mod plugin_host_callbacks;
+#[path = "cases/plugin_lifecycle_lock.rs"]
+mod plugin_lifecycle_lock;
 #[path = "cases/plugin_host_smoke.rs"]
 mod plugin_host_smoke;
 #[path = "cases/plugin_routes.rs"]
