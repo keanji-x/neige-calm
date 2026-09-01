@@ -72,6 +72,9 @@ behind it. Mapping table (`mapPlannedQueryKey`):
 | `['wave-files', …]` | — | **no-op**: no wave-files query is built yet (stub) |
 | `['wave-report', id]` | `queryKeys.waveReport(id)` | the wave's task verdicts (TASKS panel) |
 | `['wave-report']` | `queryKeys.waveReportPrefix()` | prefix; the four `task.*` events carry no wave-id *field* (it is embedded in `idempotency_key`, which the plan does not parse), so this is the plan's only key for them |
+| `['cove-conversations']` | `queryKeys.coveConversationsPrefix()` | prefix only; no conversation-writing event carries a `cove_id` and no cached row can supply one, which is why `queryKeys.coveConversations(id)` keeps the id in second position |
+| `['wave-conversations', id]` | `queryKeys.waveConversations(id)` | the endpoint is per-wave (#1189 §4.1) and the plan names the wave whenever `derivedWaveId` resolves one |
+| `['wave-conversations']` | `queryKeys.waveConversationsPrefix()` | fallback for a `runtime.*` event whose card belongs to no cached wave detail. The query behind both arities lands in S5; mapping first is harmless (invalidating an unmounted key is a no-op) and the reverse order is what silently breaks a list |
 | `['waves-range']` | — | **no-op**: the calendar range query is not built yet (stub) |
 | `['wave-backlinks']` | — | **no-op**: no backlinks query is built yet (stub) |
 
@@ -84,14 +87,17 @@ Resulting per-kind behavior on the currently-built surfaces:
 | `wave.updated` | invalidate that cove's wave list + wave detail | `wave-files`/`waves-range` parts drop (stubs) |
 | `wave.lifecycle_changed` | same as `wave.updated` | |
 | `wave.deleted` | invalidate cove's wave list + wave overlays; **remove** wave detail | the detail can never resolve again |
-| `card.added` / `card.updated` / `card.deleted` | invalidate wave detail | |
-| `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus wave detail when the built-in cache lookup resolves; plus the wave's task verdicts | `wave-files` remains an adapter stub |
+| `card.added` / `card.updated` | invalidate wave detail + both conversation lists | |
+| `card.deleted` | invalidate wave detail | knowingly no conversation key on either list; dropping a deleted row is #1140's |
+| `runtime.started` / `runtime.status_changed` / `runtime.superseded` | invalidate card overlays, plus wave detail when the built-in cache lookup resolves; plus the wave's task verdicts and both conversation lists | `wave-files` remains an adapter stub. These three are what write `worker_sessions.state`, i.e. the dot each conversation row draws |
 | `overlay.set` / `overlay.deleted` | invalidate overlays of that kind, plus the owning wave detail | |
 | `wave.report_edited` | invalidate that wave's task verdicts | `wave-files` and `wave-backlinks` are still stubs |
 | `codex.hook`, `claude.hook` | invalidate `wave-files` **only** | a hook fires ~twice per tool call per worker and writes no `tasks` row; `wave-report` is a live whole-document projection, so it is deliberately excluded (`taskVerdictInvalidatingKinds`) |
 | `terminal.deleted`, `codex.worker_requested`, `terminal.worker_requested`, `task.dispatched`, `task.completed`, `task.failed`, `task.gate_result` | invalidate task verdicts — by wave id when the event resolves one, by prefix otherwise | `wave-files` is still a stub. The four `task.*` events carry only an idempotency key / task id, so `derivedWaveId` — which reads named fields, never parsing an opaque id — returns null and only the prefix form reaches the cache: that is why the prefix is mapped at all |
-| `harness.item.added` / `harness.phase.changed` | invalidate harness items / spec run respectively | fe has live query consumers and no card-topic consumer |
-| `harness.transcript.cleared` / `harness.user_message.enqueued` | invalidate harness items + spec run | reset and enqueue cross the transcript/run boundary |
+| `harness.item.added` | invalidate harness items | deliberately no conversation key: highest-frequency kind, and it is emitted *before* the `persist_snapshot` that moves the list's ordering column — see the note above `CONVERSATION_LIST_KINDS` in `core/events/invalidation-plan.test.ts` (follow-up tracked in #1216) |
+| `harness.phase.changed` | invalidate spec run + both conversation lists | |
+| `harness.transcript.cleared` | invalidate harness items + spec run | a reset always emits `harness.phase.changed` too, which carries the lists |
+| `harness.user_message.enqueued` | invalidate harness items + spec run + both conversation lists | reset and enqueue cross the transcript/run boundary |
 | `plugin.*`, `plan.updated`, `task.context_*`, `workspace.*`, `forge.*`, `worktree.*`, `review.round`, `ratify.*`, `proposal.*` | **no-op** | `core/events` declares these as `noop(reason)` and no query consumes them |
 | unknown / future kind | ignored, no throw | the plan lookup returns an empty plan |
 

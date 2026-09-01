@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-import type { CoveConversationSummary, HarnessItem } from '../api/generated/wire.js';
+import type {
+  CoveConversationSummary, HarnessItem, WaveConversationSummary,
+} from '../api/generated/wire.js';
 import type { ApiFailure, ApiOperation } from '../api/types.js';
 import {
   PLAN_LIST_TOOL, REPORT_DELETE_TOOL, REPORT_MOVE_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS,
@@ -16,9 +18,17 @@ import { sha256Hex } from './sha256.js';
  * cove chat runs on an ordinary codex-card session, so the session kind says
  * nothing about it — the server derives `'shared-chat'` from the card's own
  * persisted marker (`CoveConversationSummary.kind`). Do not "fix" this union
- * back into a mirror of `WorkerSessionKind` by deleting the last member.
+ * back into a mirror of `WorkerSessionKind` by deleting the last members.
+ *
+ * `'wave-assistant'` (#1189) is the same arrangement one layer over: an
+ * assistant conversation is also an ordinary codex-card session, and the server
+ * derives the value from that card's own marker. It is a value distinct from
+ * `'shared-chat'` on purpose — the two lists have different contracts, and
+ * collapsing them would route assistant rows through the cove chat's
+ * presentation.
  */
-export type ConversationKind = 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'shared-chat';
+export type ConversationKind =
+  | 'terminal' | 'codex' | 'claude' | 'shared-spec' | 'shared-chat' | 'wave-assistant';
 
 /** Mirrors `WorkerSessionState` — the session state machine (#679 §1). */
 export type ConversationState =
@@ -82,6 +92,9 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
   /* Every cove conversation reads "Chat" until one is named: the server mints
      the card with no title and nothing writes one yet (#1098 §7). */
   'shared-chat': 'Chat',
+  /* Same, on a wave. "Assistant" rather than "Chat" because a wave already
+     holds other conversations and the name has to say which one this is. */
+  'wave-assistant': 'Assistant',
 });
 
 /**
@@ -294,6 +307,64 @@ export function createCoveConversationOperation(
 /** The longest first message the server accepts, checked before it is sent so a
  *  rejected message costs no round trip (`NewCoveConversationBody`). */
 export const COVE_CONVERSATION_TEXT_MAX = 32768;
+
+/* ── Wave conversations (#1189) ─────────────────────────────────────────────
+ *
+ * A wave's conversations are `harness_profile: assistant` cards on the wave
+ * itself — its own list, its own endpoint (`§4.1`), and its own row type on the
+ * wire, which the server explains at `WaveConversationSummary`: the cove row's
+ * contract says `waveTitle` is absent *because every row lives on one hidden
+ * wave*, and on a real wave that reasoning is simply false. The fields coincide
+ * today; the contracts do not, so the schema is written out rather than aliased
+ * to the cove one — an alias would make the next divergence a silent one.
+ *
+ * Same reason as the cove block above for living here and not in
+ * `core/api/schemas.ts`: that module mirrors the kernel's *event* vocabulary,
+ * and `kind: 'wave-assistant'` is not in it — the wire spells the field as a
+ * bare string derived from a card marker, and narrowing it is this layer's job.
+ */
+
+const waveConversationSummarySchema: z.ZodType<WaveConversationSummary> = z.object({
+  id: z.string(),
+  waveId: z.string(),
+  title: z.string().nullable(),
+  kind: z.string(),
+  state: conversationStateSchema.nullable(),
+  updatedAt: z.number(),
+});
+
+/**
+ * The wire row as this app's own `Conversation`.
+ *
+ * `waveTitle` is absent for a different reason than the cove list's: the wave
+ * is real and does have a title, but this endpoint does not send it (every row
+ * belongs to the wave in the request path, so whoever asked already knows it).
+ * Inventing one here would be this function's fiction; a caller that names
+ * waves resolves it from the wave it asked about. `turns` is absent because the
+ * server will not count them, as on the cove list.
+ *
+ * `kind` is pinned to `'wave-assistant'` because that is the only value this
+ * endpoint produces — the wire's `string` is a ts-rs artefact, not a variation
+ * point.
+ */
+export function toWaveConversation(row: WaveConversationSummary): Conversation {
+  return {
+    id: row.id,
+    waveId: row.waveId,
+    title: row.title,
+    kind: 'wave-assistant',
+    state: row.state,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export function waveConversationsOperation(waveId: string): ApiOperation<Conversation[]> {
+  return {
+    method: 'GET',
+    path: `/api/waves/${encodeURIComponent(waveId)}/conversations`,
+    responseSchema: z.array(waveConversationSummarySchema).transform((rows) => rows.map(toWaveConversation)),
+  };
+}
 
 /**
  * The card id a create under `(coveId, idempotencyKey)` will have — computed

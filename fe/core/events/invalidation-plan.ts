@@ -89,6 +89,57 @@ export const WAVE_FILES_DERIVED_KINDS = Object.freeze([
  */
 export const COVE_CONVERSATIONS: QueryKey = Object.freeze(['cove-conversations']);
 
+/**
+ * The wave conversation list (#1189 §5.5), keyed by the wave it belongs to.
+ *
+ * Unlike the cove list above, the id is NOT omitted, because here it *is*
+ * derivable: every event this key hangs off carries either a `wave_id` or a
+ * `card_id` an `InvalidationContext` can resolve, and the endpoint itself is
+ * per-wave (`GET /api/waves/{wave_id}/conversations`, §4.1). The cove list's
+ * prefix shape is a concession to a cove id that cannot be recovered, not a
+ * house style to copy — invalidating `['wave-conversations']` wholesale on
+ * every runtime tick would refetch the list of every wave the user has open.
+ *
+ * The prefix is still what comes back when the wave genuinely cannot be
+ * resolved (a `runtime.*` event for a card no cached wave owns). That is the
+ * honest answer to "some wave's list may have changed", and it costs nothing
+ * when no wave-conversation query is mounted: invalidating a key with no
+ * active observer only marks cache entries stale.
+ */
+function waveConversations(waveId: string | null): QueryKey {
+  return waveId === null ? ['wave-conversations'] : ['wave-conversations', waveId];
+}
+
+/**
+ * Both conversation lists, which are invalidated together and never apart.
+ *
+ * They are one key set because they were one defect (#1189 §5.5). A row's
+ * `state` in either list is read from `worker_sessions.state` — the cove query
+ * in `cove_conversations.rs`, the wave one mirroring it — and until this slice
+ * both lists hung off card and harness events only. The three `runtime.*`
+ * kinds are what actually move that column, `runtime.started` being the
+ * `null → starting` transition that turns the dot on at all, so a session
+ * could start, change status and be superseded with the list still showing
+ * whatever it had. Adding the wave list without fixing the cove one would have
+ * left the older list with the same stale `state`.
+ *
+ * `wave.lifecycle_changed` is deliberately NOT a caller. It does not write
+ * `worker_sessions.state`; a wave reaching a terminal lifecycle ends its
+ * sessions by superseding their runtimes, which emits `runtime.superseded` —
+ * already here. A second trigger for one change buys a duplicate refetch of a
+ * wholesale list and makes it impossible to prove either one does the work.
+ *
+ * `card.deleted` is knowingly absent from both lists and is not this slice's to
+ * fix: nothing drops a deleted conversation's row today (#1140).
+ *
+ * The exact caller set is pinned from both sides in `invalidation-plan.test.ts`
+ * against a list kept by hand there, so neither a missing nor an extra caller
+ * can land silently.
+ */
+function conversationLists(waveId: string | null): readonly QueryKey[] {
+  return [COVE_CONVERSATIONS, waveConversations(waveId)];
+}
+
 function derivedWaveId(data: unknown, context: InvalidationContext): string | null {
   if (typeof data !== 'object' || data === null) return null;
   const value = data as { wave_id?: unknown; card_id?: unknown };
@@ -131,6 +182,22 @@ export function taskVerdictInvalidatingKinds(): readonly EventKind[] {
   ];
 }
 
+/**
+ * The three `runtime.*` kinds share one plan, because they are one statement:
+ * this card's session moved. They were already identical; they are now
+ * identical *and* carrying the conversation lists, so a third copy that drifted
+ * would silently drop a list from one transition only.
+ */
+function runtimePlan(cardId: string, context: InvalidationContext): InvalidationPlan {
+  const waveId = context.findWaveOwningCard(cardId);
+  return result([
+    ...(waveId === null ? [] : [['wave', waveId]]),
+    ['overlays', 'card'],
+    ...waveFilesDerived(waveId),
+    ...conversationLists(waveId),
+  ]);
+}
+
 export function defineInvalidationPolicies<T extends PolicyMap>(value: T): T {
   return value;
 }
@@ -156,33 +223,29 @@ function policies(): PolicyMap {
     ['wave-files', event.data.id], ['waves-range'],
   ])),
   'card.added': plan((event) => result([
-    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id], COVE_CONVERSATIONS,
+    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id],
+    ...conversationLists(event.data.wave_id),
   ])),
   'card.updated': plan((event) => result([
-    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id], COVE_CONVERSATIONS,
+    ['wave', event.data.wave_id], ['wave-files', event.data.wave_id],
+    ...conversationLists(event.data.wave_id),
   ])),
+  /* No conversation key, on either list, and not an oversight — see the note on
+     `conversationLists`. Dropping the deleted row is #1140's. */
   'card.deleted': plan((event) => result([['wave', event.data.wave_id], ['wave-files', event.data.wave_id]])),
-  'runtime.started': plan((event, context) => {
-    const waveId = context.findWaveOwningCard(event.data.card_id);
-    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
-  }),
-  'runtime.status_changed': plan((event, context) => {
-    const waveId = context.findWaveOwningCard(event.data.card_id);
-    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
-  }),
-  'runtime.superseded': plan((event, context) => {
-    const waveId = context.findWaveOwningCard(event.data.card_id);
-    return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);
-  }),
+  'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),
+  'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),
+  'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),
   'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),
   'harness.phase.changed': plan((event) => result([
-    ['spec-run', event.data.card_id], COVE_CONVERSATIONS,
+    ['spec-run', event.data.card_id], ...conversationLists(event.data.wave_id),
   ])),
   'harness.transcript.cleared': plan((event) => result([
     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
   ])),
   'harness.user_message.enqueued': plan((event) => result([
-    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id], COVE_CONVERSATIONS,
+    ['harness-items', event.data.card_id], ['spec-run', event.data.card_id],
+    ...conversationLists(event.data.wave_id),
   ])),
   'wave.report_edited': plan((event) => result([
     ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],
