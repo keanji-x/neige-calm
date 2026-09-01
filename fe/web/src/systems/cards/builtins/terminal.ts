@@ -40,6 +40,10 @@ export const TERMINAL_CARD_ENTRY = Object.freeze({
     mode: 'atomic' as const,
     submit: (): Promise<{ cardId: string }> => Promise.reject(new Error('TerminalCardSubmitViaWaveRoute')),
   }),
+  /* No fields: a terminal has nothing to ask. It opens in the wave's own
+     directory, and naming it before it exists is a decision the reader has no
+     information for yet — the head is renamable once there is something in it. */
+  addPanel: Object.freeze({ label: 'terminal' }),
   fromKernel: (card: KernelCardInput): TerminalCard | null => (
     card.kind === 'terminal'
       ? Object.freeze({ type: 'terminal', id: card.id, title: null, terminalId: terminalIdFromPayload(card.payload) } as const)

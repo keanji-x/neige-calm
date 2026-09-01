@@ -1,6 +1,7 @@
 import type { CardEntry, CardRegistry, RegisteredCard } from '../registry.js';
 import { CLAUDE_CARD_ENTRY } from './claude.js';
 import { CODEX_CARD_ENTRY } from './codex.js';
+import { FILE_VIEWER_CARD_ENTRY } from './file-viewer.js';
 import { SPEC_CARD_ENTRY } from './spec.js';
 import { TERMINAL_CARD_ENTRY } from './terminal.js';
 import { WAVE_REPORT_CARD_ENTRY } from './wave-report.js';
@@ -58,6 +59,7 @@ export function registerAvailableBuiltinCards(registry: CardRegistry): void {
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
     claude: BuiltinRegistrar.of(CLAUDE_CARD_ENTRY),
     'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
+    'file-viewer': BuiltinRegistrar.of(FILE_VIEWER_CARD_ENTRY),
   };
   for (const type of BUILTIN_CARD_ORDER) {
     registrars[type]?.run(registry);

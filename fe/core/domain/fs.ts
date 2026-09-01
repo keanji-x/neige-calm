@@ -51,6 +51,105 @@ export function listDirectoryOperation(path?: string): ApiOperation<DirectoryLis
   };
 }
 
+/**
+ * `GET /api/fs/readfile`. Text only: the kernel answers 400 for a binary or
+ * non-UTF-8 file rather than returning bytes, and `truncated` says the read hit
+ * the size cap — a viewer that did not print that would be silently showing a
+ * prefix as though it were the file.
+ */
+export const readFileWireSchema = z.object({
+  path: z.string(),
+  size: z.number(),
+  text: z.string(),
+  truncated: z.boolean(),
+});
+export type ReadFileWire = z.infer<typeof readFileWireSchema>;
+
+export function readFileOperation(path: string): ApiOperation<ReadFileWire> {
+  return {
+    method: 'GET',
+    path: `/api/fs/readfile?path=${encodeURIComponent(path)}`,
+    responseSchema: readFileWireSchema,
+  };
+}
+
+/**
+ * The URL an `<img>` reads an image file from. Not an `ApiOperation`: the
+ * browser fetches it itself, with the session cookie, and there is no JSON to
+ * decode — the whole value of the endpoint is that it is addressable.
+ */
+export function rawFileUrl(path: string): string {
+  return `/api/fs/readfile-raw?path=${encodeURIComponent(path)}`;
+}
+
+/** `status` is the kernel's word: modified / added / deleted / untracked / renamed. */
+export const gitChangedFileWireSchema = z.object({
+  path: z.string(),
+  status: z.string(),
+  old_path: z.string().optional(),
+});
+export type GitChangedFileWire = z.infer<typeof gitChangedFileWireSchema>;
+
+export const gitStatusWireSchema = z.object({
+  repo_root: z.string(),
+  files: z.array(gitChangedFileWireSchema),
+});
+export type GitStatusWire = z.infer<typeof gitStatusWireSchema>;
+
+export function gitStatusOperation(path: string): ApiOperation<GitStatusWire> {
+  return {
+    method: 'GET',
+    path: `/api/fs/gitstatus?path=${encodeURIComponent(path)}`,
+    responseSchema: gitStatusWireSchema,
+  };
+}
+
+/**
+ * Both sides of one changed file, as text. The kernel sends the two versions
+ * rather than a unified diff because the viewer renders them side by side and
+ * would otherwise have to parse a patch back into them.
+ *
+ * `head_text` is null for a file that is not in HEAD (added / untracked) and
+ * `working_text` is null for a deleted one; neither is an error.
+ */
+export const gitDiffWireSchema = z.object({
+  path: z.string(),
+  status: z.string(),
+  head_text: z.string().nullable(),
+  working_text: z.string().nullable(),
+  truncated: z.boolean(),
+});
+export type GitDiffWire = z.infer<typeof gitDiffWireSchema>;
+
+export function gitDiffOperation(path: string, oldPath?: string): ApiOperation<GitDiffWire> {
+  const query = oldPath === undefined || oldPath === ''
+    ? `path=${encodeURIComponent(path)}`
+    : `path=${encodeURIComponent(path)}&old_path=${encodeURIComponent(oldPath)}`;
+  return {
+    method: 'GET',
+    path: `/api/fs/gitdiff?${query}`,
+    responseSchema: gitDiffWireSchema,
+  };
+}
+
+/**
+ * The filesystem reads a card may make, as a port.
+ *
+ * A card is rendered deep inside `systems/**`, which holds no transport and may
+ * not acquire one — so the reads arrive as injected functions, built once at
+ * the composition layer (`app/composition.ts`) from the same transport and the
+ * same 401 channel every other read in the app uses. Declared here, in `core`,
+ * because that is the one place both ends may import from.
+ */
+export type CardFilesPort = Readonly<{
+  listDirectory: (path: string) => Promise<DirectoryListingWire>;
+  readFile: (path: string) => Promise<ReadFileWire>;
+  gitStatus: (path: string) => Promise<GitStatusWire>;
+  gitDiff: (path: string, oldPath?: string) => Promise<GitDiffWire>;
+  /** The `<img src>` for an image file — see `rawFileUrl`. */
+  rawUrl: (path: string) => string;
+}>;
+
 export type DirectoryListingEntry = Readonly<{
   name: string;
   path: string;

@@ -13,6 +13,21 @@ export const DELETE_WAVE_COPY = Object.freeze({
 });
 
 /**
+ * INV-DUP-010, again — a card's delete is offered from two places at once (the
+ * wave panel's CARDS row and the card's own head on the board), and both are
+ * the same irreversible act on the same row, so they read the same sentence.
+ *
+ * The consequence names the runtime, not the row: what a reader stands to lose
+ * by deleting a `codex` card is the session inside it, and "the card is
+ * removed" would have described the cheapest half of that.
+ */
+export const DELETE_CARD_COPY = Object.freeze({
+  title: 'Delete this card?',
+  description: 'The card and anything running in it — its terminal or agent session — are removed. This cannot be undone.',
+  confirmLabel: 'Delete card',
+});
+
+/**
  * CR-5 / CR-5a — parameterised, but still the single declaration site. INV-DUP-010
  * protects "one home", not "one string": both cove entry points (sidebar row, cove
  * page header) call this same function.

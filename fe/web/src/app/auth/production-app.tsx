@@ -12,6 +12,7 @@ import { EventBridge } from '../events/event-bridge.tsx';
 import { AppProviders, type ProviderRuntime } from '../providers/public.tsx';
 import { logoutOperation, runOperation, serverVersionOperation } from '../providers/queries.ts';
 import { createFetchTransport } from '../providers/transport.ts';
+import { createCardFilesPort } from '../providers/directory.ts';
 import { createAppRouter } from '../router/public.tsx';
 import { createCardHost, createCardRegistry } from '../../systems/cards/public.js';
 import { bootCards } from '../cards.ts';
@@ -45,7 +46,10 @@ export function mountProductionApp(root: HTMLElement, browser: Readonly<{
   // pins.
   const registry = createCardRegistry();
   bootCards(registry);
-  const host = createCardHost(registry);
+  // The card runtime's one I/O capability: the filesystem reads a card may
+  // make, built from this app's transport and its 401 channel so a card's read
+  // hits the same session handling as every other read (see `CardFilesPort`).
+  const host = createCardHost(registry, { files: createCardFilesPort(transport, unauthorized) });
   const router = createAppRouter({ transport, unauthorized, client, cards: { registry, host }, onSignOut: () => {
     void runOperation(transport, logoutOperation(), unauthorized).finally(browser.reload);
   } });

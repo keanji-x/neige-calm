@@ -484,6 +484,48 @@ describe('WavePage card inventory', () => {
     expect(screen.getAllByText('kernel-owned').length).toBe(1);
   });
 
+  /*
+   * ── The row's delete ──────────────────────────────────────────────────────
+   *
+   * Three claims, one per case, because they fail independently: the control
+   * exists only where the caller offers one, it addresses the row it sits on,
+   * and the kernel's `deletable: false` withholds it.
+   */
+  it('offers no delete when the caller supplies no onDeleteCard', () => {
+    renderPage({ cards: [card({ id: 'k1', title: 'Build log' })] });
+    expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull();
+  });
+
+  it('invokes onDeleteCard with the wire id of the row it sits on', async () => {
+    const onDeleteCard = vi.fn();
+    renderPage({
+      cards: [card({ id: 'k1', title: 'Build log' }), card({ id: 'k2', title: 'Notes' })],
+      onDeleteCard,
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete card Notes' }));
+    expect(onDeleteCard).toHaveBeenCalledWith('k2');
+    // The row button itself must not have fired: the delete is a sibling, and a
+    // click that also opened the card would be one gesture doing two things.
+    expect(onDeleteCard).toHaveBeenCalledTimes(1);
+  });
+
+  it('withholds the delete on a kernel-owned card even when onDeleteCard is supplied', () => {
+    renderPage({
+      cards: [
+        card({ id: 'k1', title: 'Wave report', deletable: false }),
+        card({ id: 'k2', title: 'Build log', deletable: true }),
+      ],
+      onDeleteCard: vi.fn(),
+    });
+    expect(screen.queryByRole('button', { name: 'Delete card Wave report' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Delete card Build log' })).toBeTruthy();
+  });
+
+  it('names the delete after the kind when the card has no title', () => {
+    renderPage({ cards: [card({ id: 'k1', kind: 'notes', title: null })], onDeleteCard: vi.fn() });
+    expect(screen.getByRole('button', { name: 'Delete card notes' })).toBeTruthy();
+  });
+
   // Deliberately gone. §5.3: an unbuilt region shows the *shape* of what is
   // coming, and nothing else — "no module path, no slice name, no apology".
   // The card list is built; there is nothing here to apologise for.

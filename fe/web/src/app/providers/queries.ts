@@ -28,11 +28,12 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  createTerminalCardOperation, createWaveOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
-  updateWaveOperation, waveActivityFrom, waveDetailOperation, putWaveTemplateOperation,
-  type WaveTemplateGoalEdit, waveTemplatesOperation, wavesInCoveOperation,
-  type CardWire, type NewTerminalCardBody, type NewWaveBody, type OverlayWire, type Wave,
-  type WaveDetailWire, type WavePatchBody, type WaveTemplate,
+  createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
+  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, putWaveTemplateOperation, toWave,
+  updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
+  type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewWaveBody,
+  type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody, type WaveTemplate,
+  type WaveTemplateGoalEdit,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
@@ -611,6 +612,9 @@ export type WaveMutations = Readonly<{
   patch: (waveId: string, coveId: string, body: WavePatchBody) => Promise<Wave>;
   setPinned: (waveId: string, coveId: string, pinned: boolean, nowMs: number) => Promise<Wave>;
   createTerminal: (waveId: string, body: NewTerminalCardBody) => Promise<CardWire>;
+  createCodex: (waveId: string, body: NewCodexCardBody) => Promise<CardWire>;
+  createCard: (waveId: string, body: NewCardBody) => Promise<CardWire>;
+  removeCard: (waveId: string, cardId: string, signal?: AbortSignal) => Promise<void>;
   remove: (waveId: string, coveId: string, signal?: AbortSignal) => Promise<void>;
 }>;
 
@@ -651,16 +655,58 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
       void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
     },
   });
+  /*
+   * The three card creates answer with the row the kernel just wrote, and the
+   * very next render needs it — the caller navigates to `?card=<id>`, and the
+   * board can only draw a card the detail cache already holds. So each one
+   * writes through and then invalidates, which is the write-through rule at the
+   * top of this section, not an exception to it.
+   */
+  const addCardToDetail = (card: CardWire): void => {
+    client.setQueryData(queryKeys.waveDetail(card.wave_id), (previous: WaveDetailWire | undefined) => {
+      if (previous === undefined) return previous;
+      if (previous.cards.some((existing) => existing.id === card.id)) return previous;
+      return { ...previous, cards: [...previous.cards, card] };
+    });
+    void client.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+  };
   const createTerminal = useMutation({
     mutationFn: ({ waveId, body }: { waveId: string; body: NewTerminalCardBody }) =>
       runOperation(transport, createTerminalCardOperation(waveId, body), unauthorized),
-    onSuccess: (card) => {
-      client.setQueryData(queryKeys.waveDetail(card.wave_id), (previous: WaveDetailWire | undefined) => {
+    onSuccess: addCardToDetail,
+  });
+  const createCodex = useMutation({
+    mutationFn: ({ waveId, body }: { waveId: string; body: NewCodexCardBody }) =>
+      runOperation(transport, createCodexCardOperation(waveId, body), unauthorized),
+    onSuccess: addCardToDetail,
+  });
+  const createCard = useMutation({
+    mutationFn: ({ waveId, body }: { waveId: string; body: NewCardBody }) =>
+      runOperation(transport, createCardOperation(waveId, body), unauthorized),
+    onSuccess: addCardToDetail,
+  });
+  /*
+   * Delete drops the row from the cached detail before the refetch lands: the
+   * card's surface is unmounted by that write, and leaving it on screen until
+   * the round-trip returns would keep a PTY attached to a card the kernel has
+   * already torn down.
+   *
+   * `onSettled`, not `onSuccess`, for the invalidation — an aborted wait says
+   * nothing about whether the server committed.
+   */
+  const removeCard = useMutation({
+    mutationFn: ({ cardId, signal }: { waveId: string; cardId: string; signal?: AbortSignal }) =>
+      runOperation(transport, { ...deleteCardOperation(cardId), signal }, unauthorized),
+    onSuccess: (_result, { waveId, cardId }) => {
+      client.setQueryData(queryKeys.waveDetail(waveId), (previous: WaveDetailWire | undefined) => {
         if (previous === undefined) return previous;
-        if (previous.cards.some((existing) => existing.id === card.id)) return previous;
-        return { ...previous, cards: [...previous.cards, card] };
+        const cards = previous.cards.filter((existing) => existing.id !== cardId);
+        return cards.length === previous.cards.length ? previous : { ...previous, cards };
       });
-      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(card.wave_id) });
+    },
+    onSettled: (_result, _error, { waveId }) => {
+      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+      void client.invalidateQueries({ queryKey: queryKeys.overlaysByKind('wave') });
     },
   });
   const patchWave = async (waveId: string, coveId: string, body: WavePatchBody) =>
@@ -669,6 +715,11 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
     create: async (body) => toWave(await create.mutateAsync(body)),
     patch: patchWave,
     createTerminal: async (waveId, body) => createTerminal.mutateAsync({ waveId, body }),
+    createCodex: async (waveId, body) => createCodex.mutateAsync({ waveId, body }),
+    createCard: async (waveId, body) => createCard.mutateAsync({ waveId, body }),
+    removeCard: async (waveId, cardId, signal) => {
+      await removeCard.mutateAsync({ waveId, cardId, signal });
+    },
     // `pinned_at` is both the flag and the ordering key, so unpinning is a
     // null write rather than a delete of some separate row.
     setPinned: (waveId, coveId, pinned, nowMs) =>

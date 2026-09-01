@@ -301,6 +301,68 @@ export function createTerminalCardOperation(
   };
 }
 
+/**
+ * `POST /api/waves/:id/codex-cards` — the atomic codex spawn. `theme` is
+ * required by the kernel (422 without it): the daemon answers codex's OSC 10/11
+ * probe with these colours, so a card minted from a light host must not come up
+ * painted for a dark one.
+ */
+export type NewCodexCardBody = Readonly<{
+  theme: ThemeRgb;
+  title?: string | null;
+  cwd?: string;
+  prompt?: string;
+  sort?: number | null;
+}>;
+
+export function createCodexCardOperation(
+  waveId: string,
+  body: NewCodexCardBody,
+): ApiOperation<CardWire> {
+  return {
+    method: 'POST',
+    path: `/api/waves/${encodeURIComponent(waveId)}/codex-cards`,
+    body,
+    responseSchema: cardWireSchema,
+  };
+}
+
+/**
+ * `POST /api/waves/:id/cards` — the kernel's direct-create path: the row is
+ * written verbatim from `kind` + `payload`. Only kinds that own no runtime may
+ * take this door; a worker kind (terminal / codex / claude) has an atomic
+ * endpoint of its own because the kernel has a daemon to spawn as well as a row
+ * to write.
+ */
+export type NewCardBody = Readonly<{
+  kind: string;
+  payload?: unknown;
+  title?: string | null;
+  sort?: number | null;
+}>;
+
+export function createCardOperation(waveId: string, body: NewCardBody): ApiOperation<CardWire> {
+  return {
+    method: 'POST',
+    path: `/api/waves/${encodeURIComponent(waveId)}/cards`,
+    body,
+    responseSchema: cardWireSchema,
+  };
+}
+
+/**
+ * `DELETE /api/cards/:id`. The kernel refuses this for a card it owns
+ * (`deletable === false`), which is why every surface that offers the gesture
+ * reads that bit first rather than discovering the refusal in an error toast.
+ */
+export function deleteCardOperation(cardId: string): ApiOperation<undefined> {
+  return {
+    method: 'DELETE',
+    path: `/api/cards/${encodeURIComponent(cardId)}`,
+    responseSchema: z.undefined(),
+  };
+}
+
 export function overlaysByKindOperation(entityKind: 'wave' | 'card'): ApiOperation<OverlayWire[]> {
   return {
     method: 'GET',

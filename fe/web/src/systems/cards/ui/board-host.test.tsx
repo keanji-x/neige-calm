@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactNode } from 'react';
 
@@ -114,5 +115,101 @@ describe('BoardHost react-grid-layout wiring', () => {
     expect(grid.layout).toEqual([
       { i: 'card-a', x: 4, y: 2, w: 6, h: 8, minW: 4, minH: 6 },
     ]);
+  });
+});
+
+/*
+ * ── The head's delete ───────────────────────────────────────────────────────
+ *
+ * `onRemove` reaches the component **already resolved**: the entry is never
+ * asked to decide whether the card may be deleted, so these cases assert on the
+ * prop the component receives rather than on any bit it reads for itself. That
+ * is what keeps one rule ("the kernel owns `deletable`") in one place instead of
+ * once per card kind.
+ */
+describe('BoardHost card removal', () => {
+  const removable: CardEntry = {
+    ...entry,
+    component: ({ onRemove }) => (
+      <div className="term live">
+        <CardHead
+          className="card-drag-handle"
+          title="Build log"
+          onClose={onRemove}
+          closeAriaLabel="Delete card Build log"
+        />
+        <div className="term-body">term body</div>
+      </div>
+    ),
+  };
+
+  function renderRemovable(options: {
+    onRemoveCard?: (cardId: string) => void;
+    deletable?: boolean;
+  }) {
+    const registry = createCardRegistry();
+    registry.register(removable);
+    const host = createCardHost(registry);
+    const card = { type: 'board-host-term' as const, id: 'card-a', title: null, terminalId: 't1' };
+    return render(
+      <BoardHost
+        host={host}
+        items={[Object.freeze({
+          card, title: 'Build log', originalIndex: 0, deletable: options.deletable,
+        })]}
+        activeCardId="card-a"
+        visible
+        onRemoveCard={options.onRemoveCard}
+      />,
+    );
+  }
+
+  it('hands the component a remove bound to its own card id', async () => {
+    const onRemoveCard = vi.fn();
+    renderRemovable({ onRemoveCard, deletable: true });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete card Build log' }));
+    expect(onRemoveCard).toHaveBeenCalledWith('card-a');
+  });
+
+  it('draws no delete when the board was given none', () => {
+    renderRemovable({ deletable: true });
+    expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull();
+  });
+
+  it('withholds the delete on a kernel-owned card', () => {
+    renderRemovable({ onRemoveCard: vi.fn(), deletable: false });
+    expect(screen.queryByRole('button', { name: 'Delete card Build log' })).toBeNull();
+  });
+
+  /* A wire row from a server newer than this bundle carries no `deletable`
+     field at all. `cardWireSchema` reads that omission as "user-deletable", and
+     the board must not read it as the opposite — a card nobody can delete and
+     no entry can draw is unreachable in both directions. */
+  it('treats an absent deletable bit as deletable', async () => {
+    const onRemoveCard = vi.fn();
+    renderRemovable({ onRemoveCard });
+    await userEvent.click(screen.getByRole('button', { name: 'Delete card Build log' }));
+    expect(onRemoveCard).toHaveBeenCalledWith('card-a');
+  });
+
+  /* The unknown-card fallback draws its own head, so it needs its own case:
+     no entry claims this kind, which makes the × the only control on the board
+     that can act on it at all. */
+  it('puts a delete on the unknown-card fallback head', async () => {
+    const onRemoveCard = vi.fn();
+    const registry = createCardRegistry();
+    const host = createCardHost(registry);
+    const card = { type: 'board-host-term' as const, id: 'card-z', title: null, terminalId: null };
+    render(
+      <BoardHost
+        host={host}
+        items={[Object.freeze({ card, title: 'Mystery', originalIndex: 0 })]}
+        activeCardId={null}
+        visible
+        onRemoveCard={onRemoveCard}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Delete card Mystery' }));
+    expect(onRemoveCard).toHaveBeenCalledWith('card-z');
   });
 });
