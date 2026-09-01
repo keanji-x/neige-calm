@@ -2175,6 +2175,56 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
     // refused rather than silently clamped.
     assert!(loaded >= 6, "only {loaded} manifests loaded");
     assert_eq!(refused, 2, "the over-ceiling values must be refused");
+
+    // ---- …and the OTHER connector kind. --------------------------------
+    //
+    // #1164 P3 F9: the claim above is universal ("no manifest that loads"),
+    // but every fixture so far is `mcp_http`, so `connector_bringup_budget`'s
+    // `cli-query` arm was never reached and the quantifier was only asserted
+    // over half its domain. `cli_query.timeout_ms` is the (uncapped) tools/call
+    // budget — a manifest naming a ten-minute one must still yield the fixed
+    // `CLI_QUERY_BRINGUP_BUDGET`.
+    let mut cli_loaded = 0;
+    for extra in [
+        json!({}),
+        json!({ "timeout_ms": 600_000 }),
+        json!({ "timeout_ms": u32::MAX }),
+        json!({ "timeout_ms": u64::MAX }),
+        json!({ "timeout_ms": 0, "max_output_bytes": usize::MAX }),
+        json!({ "search_path_extra": ["/opt/lb/bin"], "env_allow": ["TZ"] }),
+    ] {
+        let mut m = json!({
+            "manifest_version": 1,
+            "kind": "cli-query",
+            "id": CONNECTOR_ID,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "LB Query",
+            "cli_query": {
+                "command": "longbridge",
+                "tools": [{ "name": "quote", "input_schema": {}, "args": ["quote"] }],
+            }
+        });
+        for (k, v) in extra.as_object().unwrap() {
+            m["cli_query"][k] = v.clone();
+        }
+        let parsed =
+            Manifest::parse(&m.to_string()).unwrap_or_else(|e| panic!("{m} must load, got {e}"));
+        cli_loaded += 1;
+        let budget = connector_bringup_budget(&parsed);
+        assert!(
+            budget <= MAX_CONNECTOR_BRINGUP_BUDGET,
+            "{m} yields a {budget:?} bring-up cap, over the \
+             {MAX_CONNECTOR_BRINGUP_BUDGET:?} bound"
+        );
+        // Not merely under the cap: independent of the call budget entirely.
+        assert_eq!(
+            budget,
+            calm_server::plugin_host::CLI_QUERY_BRINGUP_BUDGET,
+            "{m}: the cli-query bring-up budget must be the fixed constant"
+        );
+    }
+    assert_eq!(cli_loaded, 6, "the cli-query arm must not be vacuous");
 }
 
 /// The other half of the same split: a `tools/call` that runs far longer than

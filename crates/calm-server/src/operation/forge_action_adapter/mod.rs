@@ -59,7 +59,15 @@ const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_FORGE_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
-const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
+/// The env keys a forge action forwards from the service environment — i.e.
+/// the operator's git/forge identity.
+///
+/// `pub` because it is also the **denylist** for `cli_query.env_allow`
+/// (#1164 P3): a query connector is authored in a manifest and callable by any
+/// agent that can see its tools, so it must never be able to name its way into
+/// this set. One constant, two readers — a copy in `plugin_host` would drift
+/// the moment this list grows.
+pub const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
     "GH_TOKEN",
     "GITHUB_TOKEN",
     "GH_HOST",

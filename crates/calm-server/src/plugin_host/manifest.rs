@@ -317,6 +317,24 @@ impl CliQueryBlock {
 /// One hand-declared CLI tool. `args` is a fixed argv template: a `{{slot}}`
 /// element is replaced *wholesale* by one argument. No shell, no string
 /// concatenation (§2.3).
+///
+/// # A value cannot become two arguments — but it can become a flag
+///
+/// Whole-element substitution means a value is never re-split and never
+/// concatenated (partial forms like `--out={{x}}` are refused at manifest-parse
+/// time), so shell metacharacters and whitespace are inert: `; rm -rf /` is one
+/// literal argv element.
+///
+/// It can still be *option-shaped*: `{"path": "--output=/etc/cron.d/x"}` reaches
+/// the child as the literal element `--output=/etc/cron.d/x`, and a CLI that
+/// accepts options anywhere in its argv will read it as one. The kernel does
+/// **not** refuse leading dashes (that would break legitimate values) and does
+/// **not** insert `--` for you (many CLIs do not accept it).
+///
+/// **An author who wants positional-only values writes the separator into the
+/// template**: `"args": ["quote", "--", "{{symbol}}"]`. A literal `--` element
+/// passes validation like any other literal, and every CLI that follows the
+/// convention treats what follows as positional.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CliQueryTool {
     pub name: String,
@@ -896,6 +914,35 @@ impl CliQueryBlock {
                 "cli_query.tools",
                 "must declare at least one tool",
             ));
+        }
+        // #1164 P3 F1 — `env_allow` is a passthrough from the SERVICE
+        // environment, so a manifest that names a forge credential key would
+        // hand a manifest-authored, agent-callable connector the operator's git
+        // identity. Refused at parse time, which is the earliest and loudest
+        // place: install and reload both go through here, so such a manifest
+        // never becomes an enabled connector at all. `build_child_env` keeps a
+        // fail-closed filter for anything that reaches the runtime by another
+        // route.
+        //
+        // `secret_env` is deliberately NOT subject to this list: those values
+        // come from the connector's own `secrets.json`, which the operator
+        // authored for this connector. Naming `GH_TOKEN` there sets it to
+        // whatever the operator put in that file — there is no escalation from
+        // the service identity, which is the thing this denylist protects.
+        for (i, key) in self.env_allow.iter().enumerate() {
+            if crate::operation::forge_action_adapter::FORGE_PASSTHROUGH_ENV_KEYS
+                .contains(&key.as_str())
+            {
+                return Err(ManifestError::invalid(
+                    format!("cli_query.env_allow[{i}]"),
+                    format!(
+                        "`{key}` is a forge credential passthrough key and may never be \
+                         forwarded to a cli-query connector: a query connector is authored \
+                         in a manifest and callable by any agent that can see its tools, so \
+                         it must not hold the operator's forge identity"
+                    ),
+                ));
+            }
         }
         for (i, tool) in self.tools.iter().enumerate() {
             tool.validate(i)?;
