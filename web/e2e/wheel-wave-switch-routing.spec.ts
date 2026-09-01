@@ -45,13 +45,14 @@ async function createWave(
   suffix: string,
 ): Promise<{ id: string; title: string }> {
   const title = `E2E wheel routing ${suffix}`;
-  const cwdSuffix = suffix.replace(/[^a-zA-Z0-9_-]+/g, '-');
   const res = await page.request.post('/api/waves', {
     data: {
       cove_id: coveId,
       title,
-      cwd: `/tmp/playwright-wheel-routing-${coveId}-${cwdSuffix}`,
-      attach_folder: true,
+      // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+      // This spec is about wheel routing, not working directories. See
+      // `helpers/reset.ts::createWaveInCove` for why the invented
+      // `/tmp/playwright-wheel-routing-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

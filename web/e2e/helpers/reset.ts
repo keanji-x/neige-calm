@@ -89,14 +89,26 @@ export async function createWaveInCove(
   request: APIRequestContext,
   coveId: string,
   title: string,
-  options?: { attachFolder?: boolean },
 ): Promise<{ id: string; title: string }> {
   const url = `http://127.0.0.1:${REPLAY_PORT}/api/waves`;
-  // #250 PR 2: cwd is required, and we ask the server to attach this
-  // path as a folder of `coveId` in the same tx so the helper stays a
-  // one-shot setup call. The cwd is derived from coveId so each test
-  // run's fresh cove gets its own folder claim and we don't trip
-  // cove_folders.UNIQUE(path) across reset boundaries.
+  // #1147 S3 — this helper sends NO `cwd` (and therefore no
+  // `attach_folder`). Omitting `cwd` is the *managed workspace* branch:
+  // the kernel derives `<workspace-root>/<cove>/<wave>` and creates the
+  // git repository itself, which is what the Today-wave bootstrap
+  // (`routes/today.rs`) already does on every environment. An explicit
+  // `cwd` is the *attached* branch, and since S3 the kernel requires
+  // that path to exist and be inside a git work tree — the helper used
+  // to invent `/tmp/playwright-cove-<id>` and never create it, so the
+  // seeded waves were structurally unusable (any worker on one dies in
+  // `git_repo_root_for_wave_cwd`) even before the check made it a 400.
+  //
+  // Consequence for callers: these waves no longer mint a
+  // `cove_folders` row. No a11y spec depended on that — the two
+  // cascade tests in `a11y-wave-cove-ops.spec.ts` claim their paths
+  // explicitly via `POST /api/coves/:id/folders`, which carries no
+  // filesystem contract. It also removes the reason the old signature
+  // needed an `attachFolder: false` escape hatch: two waves in the same
+  // cove no longer collide on `cove_folders.UNIQUE(path)`.
   //
   // `theme` is required end-to-end (#177): the kernel rejects a body
   // without it (422). Pass an inert dark-theme sentinel — the e2e
@@ -106,8 +118,6 @@ export async function createWaveInCove(
     data: {
       cove_id: coveId,
       title,
-      cwd: `/tmp/playwright-cove-${coveId}`,
-      attach_folder: options?.attachFolder ?? true,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

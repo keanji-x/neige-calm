@@ -852,11 +852,15 @@ test.describe('a11y · wave + cove ops', () => {
     await createWaveInCove(request, cove.id, 'Today');
 
     // Claim a folder up front so we have something to verify
-    // cascade-deleted. `createWaveInCove` already attaches a
-    // `/tmp/playwright-cove-<id>` folder via `attach_folder=true`;
-    // we register a second, non-overlapping path here so the
-    // assertion is direct ("the folder I claimed for this test
-    // is gone") rather than indirect ("some folder is gone").
+    // cascade-deleted. (Pre-#1147-S3 `createWaveInCove` also attached
+    // an invented `/tmp/playwright-cove-<id>` folder; it now sends no
+    // cwd, so this explicit claim is the cove's only folder row —
+    // which only sharpens the assertion below: "the folder I claimed
+    // for this test is gone", never "some folder is gone".)
+    //
+    // `POST /api/coves/:id/folders` carries no filesystem contract —
+    // a folder claim is a naming/ownership record, not an attached
+    // workspace — so this path does not need to exist on disk.
     const folderPath = `/tmp/playwright-cascade-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const folderRes = await request.post(
       `http://127.0.0.1:${REPLAY_PORT}/api/coves/${cove.id}/folders`,
@@ -934,11 +938,13 @@ test.describe('a11y · wave + cove ops', () => {
     // the false-green probability low enough to catch the obvious
     // failure mode every run.
     //
-    // We bypass `createWaveInCove` entirely (it auto-attaches a
-    // `/tmp/playwright-cove-<id>` folder that would crowd the
-    // assertion noise and could collide with the explicit claims
-    // below if `Date.now()` falls in the wrong window). The cove
-    // here exists purely as the parent of three folder claims.
+    // We bypass `createWaveInCove` entirely — the cove here exists
+    // purely as the parent of three folder claims, so a wave would be
+    // pure noise. (Pre-#1147-S3 the helper also auto-attached a
+    // `/tmp/playwright-cove-<id>` folder that could have collided with
+    // the explicit claims below; it sends no cwd now, but bypassing it
+    // still keeps this cove's folder set exactly the three paths the
+    // assertions name.)
     const cove = await createUserCove(request, 'AtlasMultiCascade');
 
     // Three non-overlapping paths. Per-run randomization (`Date.now`

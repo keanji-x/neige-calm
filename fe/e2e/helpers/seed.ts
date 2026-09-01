@@ -23,12 +23,21 @@ export async function createWave(
   coveId: string,
   title = `FE e2e wave ${Date.now()}`,
 ): Promise<SeededWave> {
+  // #1147 S3 — no `cwd`. Omitting it is the *managed workspace* branch:
+  // the kernel derives `<workspace-root>/<cove>/<wave>` and creates the
+  // git repository itself, so the seed works in every environment (docker
+  // stack or native server) without the spec having to own a directory.
+  // It is also exactly what the new FE's default create sends (see
+  // `wave-create.spec.ts`, which pins "no cwd on the wire"), so the seed
+  // stays representative. Sending an explicit `cwd` is the *attached*
+  // branch, and since S3 the kernel requires that path to already exist
+  // and be inside a git work tree — an invented `/tmp/...` path is a 400,
+  // and before S3 it was worse: the wave was created but every worker on
+  // it died in `git_repo_root_for_wave_cwd`.
   const response = await request.post('/api/waves', {
     data: {
       cove_id: coveId,
       title,
-      cwd: `/tmp/fe-e2e-${Date.now()}-${coveId}`,
-      attach_folder: true,
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
   });

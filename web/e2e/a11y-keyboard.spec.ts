@@ -40,6 +40,11 @@ import {
   resetReplayServer,
   seedWaveViewMode,
 } from './helpers/reset';
+import {
+  attachedWorkspacePath,
+  cleanupAttachedWorkspaces,
+  createGitWorkTree,
+} from './helpers/attached-workspace';
 import { clearEventTrace, getEventTrace, waitForEvent } from './helpers/trace';
 
 interface FocusInfo {
@@ -212,6 +217,13 @@ test.describe('a11y · keyboard-only navigation', () => {
     await clearEventTrace(page);
   });
 
+  // #1147 S3 — remove any per-run attached-workspace fixture the wave-
+  // create test minted under `$HOME`, so repeated runs don't accumulate
+  // directories on the runner. No-op for the tests that mint none.
+  test.afterEach(() => {
+    cleanupAttachedWorkspaces();
+  });
+
   test('Today → Cove via keyboard', async ({ page }) => {
     // Tab forward from the document start until focus lands on the
     // Atlas cove nav button in the sidebar. Its textContent-derived
@@ -289,7 +301,18 @@ test.describe('a11y · keyboard-only navigation', () => {
 
     // Unique absolute cwd so concurrent runs / re-runs don't trip
     // the cove_folders UNIQUE(path) backstop.
-    const cwd = `/tmp/playwright-a11y-${Date.now()}`;
+    //
+    // #1147 S3 — the keyboard contract under test is "Enter on the cwd
+    // input submits", so this spec cannot drop the cwd and take the
+    // managed branch: it has to type a path the submit accepts, which
+    // since S3 means a real directory inside a Git work tree. The
+    // `a11y` project runs the `replay` binary natively on this machine
+    // (see `playwright.config.ts` → `replay-setup`), so the kernel
+    // shares this filesystem; `$HOME` also happens to be what the
+    // docker-stack projects need. See `helpers/attached-workspace.ts`.
+    const cwd = createGitWorkTree(
+      attachedWorkspacePath(`neige-e2e-a11y-keyboard-${Date.now()}`),
+    );
     await page.keyboard.type(cwd);
 
     // Enter on the cwd input submits the form. The form's auto-

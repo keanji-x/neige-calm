@@ -44,13 +44,15 @@ test('newly created terminal card appears without a reload', async ({ page }) =>
   // variant is replay-port-pinned and only safe for the a11y project.
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E new-terminal ${Date.now()}`;
-  const cwd = `/tmp/playwright-cove-${coveId}`;
   const waveRes = await page.request.post('/api/waves', {
     data: {
       cove_id: coveId,
       title: waveTitle,
-      cwd,
-      attach_folder: true,
+      // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+      // This spec is about the AddPanel terminal-card path, not working
+      // directories. See `helpers/reset.ts::createWaveInCove` for why
+      // the invented `/tmp/playwright-cove-<id>` attached path was
+      // never valid.
       // #177 — `theme` is a required NewWave field. Mirrors
       // `DARK_THEME_RGB` in web/src/api/themeRgb.ts.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
