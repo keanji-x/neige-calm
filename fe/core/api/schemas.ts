@@ -367,7 +367,9 @@ export const harnessUserMessageEnqueuedSchema = z.object({
  * spec agent's user-edit notifier (PR5) read.
  *
  * `author` discriminates who produced the edit. PR2 only emits
- * `'spec'`; PR3 introduces `'user'` for REST-driven edits; `'kernel'`
+ * `'spec'`; PR3 introduces `'user'` for REST-driven edits; `'assistant'`
+ * is #1189's wave-scoped assistant conversation (no emitter until S2);
+ * `'kernel'`
  * is reserved for future server-internal rewrites; `'plugin'` is
  * reserved for historical proposal-channel events, with no emitter
  * today. Attribution is carried in the sibling optional
@@ -386,7 +388,7 @@ export const waveReportEditedSchema = z.object({
   data: z.object({
     wave_id: z.string(),
     card_id: z.string(),
-    author: z.enum(['spec', 'user', 'kernel', 'plugin']),
+    author: z.enum(['spec', 'user', 'assistant', 'kernel', 'plugin']),
     author_plugin_id: z.string().optional(),
     edit_id: z.string(),
     summary_before: z.string(),

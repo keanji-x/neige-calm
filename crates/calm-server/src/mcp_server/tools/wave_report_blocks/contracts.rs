@@ -26,7 +26,9 @@ pub(super) fn kinds_descriptor() -> ToolDescriptor {
             "properties": {}
         }),
         annotations: Some(read_only_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        // #1189 — the block channel is the assistant's report write
+        // surface (discovery only; the handler's `require_role` relaxes in S2).
+        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
     }
 }
 
@@ -274,7 +276,9 @@ pub(super) fn upsert_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        // #1189 — the block channel is the assistant's report write
+        // surface (discovery only; the handler's `require_role` relaxes in S2).
+        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
     }
 }
 
@@ -298,7 +302,9 @@ pub(super) fn move_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        // #1189 — the block channel is the assistant's report write
+        // surface (discovery only; the handler's `require_role` relaxes in S2).
+        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
     }
 }
 
@@ -319,7 +325,9 @@ pub(super) fn delete_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        // #1189 — the block channel is the assistant's report write
+        // surface (discovery only; the handler's `require_role` relaxes in S2).
+        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
     }
 }
 
@@ -358,7 +366,9 @@ pub(super) fn write_markdown_descriptor() -> ToolDescriptor {
             }
         }),
         annotations: Some(role_gated_write_annotations()),
-        visible_to_roles: &[CardRole::Spec],
+        // #1189 — the block channel is the assistant's report write
+        // surface (discovery only; the handler's `require_role` relaxes in S2).
+        visible_to_roles: &[CardRole::Spec, CardRole::Assistant],
     }
 }
 

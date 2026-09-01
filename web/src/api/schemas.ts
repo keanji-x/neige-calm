@@ -416,7 +416,7 @@ export const waveReportEditedSchema = z.object({
   data: z.object({
     wave_id: z.string(),
     card_id: z.string(),
-    author: z.enum(['spec', 'user', 'kernel', 'plugin']),
+    author: z.enum(['spec', 'user', 'assistant', 'kernel', 'plugin']),
     author_plugin_id: z.string().optional(),
     edit_id: z.string(),
     summary_before: z.string(),

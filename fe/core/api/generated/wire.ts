@@ -51,7 +51,7 @@ export type CardId = string;
 /**
  * Authorization role persisted on each card and enforced by `role_gate`.
  */
-export type CardRole = "worker" | "spec" | "reportcard";
+export type CardRole = "worker" | "spec" | "reportcard" | "assistant";
 
 /**
  * Live runtime projection read from `worker_sessions` when a card is fetched
@@ -147,7 +147,7 @@ export type CoveResolve = { cove_id: CoveId, folder_id: number, folder_path: str
 /**
  * Producer of a wave-report edit. Existing variants are persisted wire values.
  */
-export type EditAuthor = "spec" | "user" | "kernel" | "plugin";
+export type EditAuthor = "spec" | "user" | "assistant" | "kernel" | "plugin";
 
 /**
  * The full set of WS event envelopes the kernel emits on `/api/events`.

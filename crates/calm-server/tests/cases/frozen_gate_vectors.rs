@@ -60,7 +60,7 @@ use serde_json::{Value, json};
 /// silently dropped from a JSON file (e.g. a bad merge) fails loudly.
 /// Adding/removing vectors updates this constant in the same
 /// `FROZEN-VECTOR-CHANGE:` commit that touches the vectors dir.
-const EXPECTED_VECTOR_COUNT: usize = 59;
+const EXPECTED_VECTOR_COUNT: usize = 68;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +114,11 @@ impl Fixture {
         let spec = seed_card(&repo, &cache, &home_wave, CardRole::Spec).await;
         let report = seed_card(&repo, &cache, &home_wave, CardRole::ReportCard).await;
         let other = seed_card(&repo, &cache, &home_wave, CardRole::Worker).await;
+        // #1189 — the Assistant arm needs an assistant card in the home
+        // wave and a report card in a *foreign* wave (the "may not write
+        // another wave's report card" cell).
+        let assistant = seed_card(&repo, &cache, &home_wave, CardRole::Assistant).await;
+        let other_wave_report = seed_card(&repo, &cache, &other_wave, CardRole::ReportCard).await;
 
         let worker_session = seed_worker_session(
             &repo,
@@ -153,7 +158,15 @@ impl Fixture {
         .await;
 
         let subst = vec![
+            // Longest keys first so no placeholder is a prefix of an
+            // earlier-substituted one ($OTHER_WAVE_REPORT_CARD would
+            // otherwise be eaten by $OTHER_WAVE).
+            (
+                "$OTHER_WAVE_REPORT_CARD",
+                other_wave_report.as_str().to_string(),
+            ),
             ("$CLAUDE_WORKER_CARD", claude_worker.as_str().to_string()),
+            ("$ASSISTANT_CARD", assistant.as_str().to_string()),
             ("$TERMINAL_SESSION", terminal_session.as_str().to_string()),
             ("$CARDLESS_SESSION", cardless_session.as_str().to_string()),
             ("$UNKNOWN_SESSION", "session-never-minted-0000".to_string()),
@@ -233,11 +246,7 @@ async fn seed_card(
         })
         .await
         .unwrap();
-    let role_str = match role {
-        CardRole::Worker => "worker",
-        CardRole::Spec => "spec",
-        CardRole::ReportCard => "reportcard",
-    };
+    let role_str = role.as_db_str();
     sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
         .bind(role_str)
         .bind(card.id.as_str())
