@@ -42,9 +42,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::child_process::{
-    SpawnTimedOut, kill_process_group, read_capped, set_process_group_leader, spawn_within,
-};
+use super::child_process::{SpawnTimedOut, read_capped, set_process_group_leader, spawn_within};
 use super::manifest::{CliQueryTool, argv_slot};
 use super::mcp::{CallToolResult, ContentBlock, RpcError};
 
@@ -137,6 +135,17 @@ impl CliQueryRuntime {
     /// the property r2 G2 is about, and asserting it on the resolution helper
     /// instead would test a different function than the one that builds the
     /// environment.
+    /// The stdout cap the runtime will actually enforce.
+    ///
+    /// Exposed so a test can pin that bring-up read `CliQueryBlock`'s CLAMPING
+    /// getter rather than the raw `Option<usize>` field (r4 I3). Asserting only
+    /// on a small child's output cannot see that difference: `"hello\n"` is
+    /// under both the ceiling and `usize::MAX`, so the raw-field mutation stays
+    /// green no matter how the answer is checked.
+    pub fn max_output_bytes(&self) -> usize {
+        self.max_output_bytes
+    }
+
     pub fn child_path(&self) -> &str {
         self.env.get("PATH").map(String::as_str).unwrap_or_default()
     }
@@ -293,9 +302,7 @@ impl CliQueryRuntime {
         // PROPERLY, with its own `fork` + `setsid`, because it has left this
         // group and `kill(-pgid)` no longer names it. That residual is real and
         // is not closed here (r3 H9).
-        if let Some(pgid) = released_pgid {
-            kill_process_group(pgid);
-        }
+        released_pgid.sweep();
 
         let status = status.map_err(|e| {
             RpcError::internal(format!(

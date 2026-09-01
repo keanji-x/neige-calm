@@ -899,6 +899,7 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
     let rt = bring_up("cli-test", parsed.cli_query.as_ref().unwrap(), tmp.path())
         .await
         .unwrap();
+    assert_eq!(rt.max_output_bytes(), CLI_QUERY_MAX_OUTPUT_BYTES_CEILING);
     let res = rt.tools_call("q", json!({})).await.unwrap();
     assert_eq!(res.is_error, Some(false));
     assert_eq!(res.content[0].text.as_deref(), Some("hello\n"));
@@ -923,9 +924,18 @@ async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
             CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
             "{over} must be clamped to the ceiling"
         );
-        // …and the clamped connector still runs, i.e. the clamp is what the
-        // runtime actually uses rather than a number only the getter knows.
+        // …and the RUNTIME carries the clamped number, not the raw field.
+        //
+        // This is the assertion that pins `bring_up` to the clamping getter
+        // (r4 I3). The execution check below cannot: `"hello\n"` is under both
+        // the ceiling and `usize::MAX`, so reading the raw `Option<usize>`
+        // instead would leave it perfectly green.
         let rt = bring_up("cli-test", block, tmp.path()).await.unwrap();
+        assert_eq!(
+            rt.max_output_bytes(),
+            CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
+            "{over}: the runtime must enforce the clamped cap, not the raw field"
+        );
         let res = rt.tools_call("q", json!({})).await.unwrap();
         assert_eq!(res.is_error, Some(false));
         assert_eq!(res.content[0].text.as_deref(), Some("hello\n"));

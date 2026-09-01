@@ -10,7 +10,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use super::super::child_process::{
-    SpawnTimedOut, kill_process_group, read_capped, set_process_group_leader, spawn_within,
+    SpawnTimedOut, read_capped, set_process_group_leader, spawn_within,
 };
 use super::super::connector;
 use super::super::manifest::CliQueryBlock;
@@ -460,9 +460,7 @@ async fn run_version_probe(
             Err(_elapsed) => return Ok(None),
         };
     // The sole sweep once the leader is reaped — see `GroupChild`.
-    if let Some(pgid) = released_pgid {
-        kill_process_group(pgid);
-    }
+    released_pgid.sweep();
     let Ok(status) = status else { return Ok(None) };
     if !status.success() {
         return Ok(None);

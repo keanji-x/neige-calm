@@ -149,9 +149,31 @@ impl GroupChild {
     /// testable, step.
     pub async fn wait_and_release_group(
         &mut self,
-    ) -> (std::io::Result<std::process::ExitStatus>, Option<i32>) {
+    ) -> (std::io::Result<std::process::ExitStatus>, ReleasedGroup) {
         let status = self.child.wait().await;
-        (status, self.pgid.take())
+        (status, ReleasedGroup(self.pgid.take()))
+    }
+}
+
+/// The process group a reaped [`GroupChild`] handed back, which its new owner
+/// must sweep.
+///
+/// A bare `Option<i32>` was a footgun (r4 I4): ignore the second element of the
+/// tuple and the entire steady-state sweep silently disappears, with nothing to
+/// say so. `#[must_use]` plus a named method makes dropping it on the floor a
+/// deliberate act, while keeping the sweep a single deletable statement — which
+/// is what r3 H1 built this split for, and what its mutation witness needs.
+#[must_use = "a released process group must be swept, or the call's descendants \
+              outlive it — see GroupChild"]
+pub struct ReleasedGroup(Option<i32>);
+
+impl ReleasedGroup {
+    /// SIGKILL the group. `None` (the child was already gone at spawn time) is
+    /// a no-op rather than a guess.
+    pub fn sweep(self) {
+        if let Some(pgid) = self.0 {
+            kill_process_group(pgid);
+        }
     }
 }
 
@@ -185,10 +207,12 @@ pub struct SpawnTimedOut;
 /// Verified rather than assumed: tokio propagates the runtime context to
 /// blocking-pool threads (`Handle::try_current()` succeeds inside
 /// `spawn_blocking`), so registering the child's pipes and its reaper works
-/// there. The `Handle::enter()` guard is kept anyway so the requirement is
-/// stated in the code rather than relied on implicitly.
+/// there. The `Handle::enter()` guard is kept anyway — and it is load-bearing,
+/// not decorative: `PollEvented::new_with_interest`
+/// (`tokio/src/io/poll_evented.rs:100-107`) PANICS rather than erroring when
+/// there is no runtime context, and that registration happens after the fork.
 ///
-/// # Teardown is unconditional, by construction
+/// # Teardown once the child is OURS
 ///
 /// The blocking closure builds a [`GroupChild`], so the process group is swept
 /// by that value's `Drop` no matter WHERE it ends up (r3 H4). That matters
@@ -205,6 +229,37 @@ pub struct SpawnTimedOut;
 /// The previous shape adopted the child only on the FIRST of those, via a
 /// detached task; a cancelled caller left the child with nothing but
 /// `kill_on_drop`, which reaches the direct child alone.
+///
+/// # The one window where the child is never ours (r4 I2)
+///
+/// "Unconditional" is scoped to a spawn that RETURNED a child, and that is not
+/// the same as a spawn that forked one. Read from the tokio 1.52.3 source
+/// rather than assumed:
+///
+/// * `Command::spawn` (`process/mod.rs:865`) runs `std::process::Command::spawn`
+///   — the real `fork`/`execve` — and only THEN calls `build_child`.
+/// * `build_child` (`process/unix/mod.rs:118-140`) registers the three pipes
+///   (`:119-121`) and a reaper (`:124` pidfd, else `:137` SIGCHLD). Each of
+///   those can fail: `PollEvented::new` errors when the IO driver is gone or
+///   `epoll_ctl` refuses the fd, and `signal()` needs a live signal driver.
+/// * On every one of those arms the live `std::process::Child` is simply
+///   dropped (`:133` binds it to `_child` and discards it). `std` deliberately
+///   gives `Child` no `Drop`, so the process is neither killed nor reaped.
+///
+/// So tokio can hand us `Err` while the process exists, and in that instant
+/// there is no `GroupChild` and no `kill_on_drop` — the child leaks with the
+/// connector's environment. In practice the trigger is the IO/signal driver
+/// going away, i.e. runtime teardown racing this blocking task, which is also
+/// when the server itself is on the way out.
+///
+/// **Not fixed, and deliberately so.** Owning the pid regardless would mean
+/// spawning through `std::process::Command` and adopting the result — but tokio
+/// exposes no `Child::from_std` (only the stdio halves have one), so adoption
+/// means re-implementing the async child: pipes over `AsyncFd`, `wait` back on
+/// another blocking thread. That is materially more machinery than a
+/// teardown-race window justifies, and it would re-open the very
+/// blocking-spawn problem this function exists to solve. The claim is narrowed
+/// instead of the code being grown.
 ///
 /// # Residuals, stated accurately
 ///
