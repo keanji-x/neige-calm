@@ -288,6 +288,15 @@ tokio = { version = "1", features = ["full", "test-util"] }
 # as comment/string-sensitive text. This exact release is already locked as
 # a transitive dependency; only the test-only AST features are enabled here.
 syn = { version = "2.0.117", features = ["full", "visit"] }
+# #1196 S1 review r5 — `a9b` needs a POSITIVE observation that the stale crash
+# supervisor woke from its backoff and took the epoch-mismatch branch, instead
+# of sleeping to a computed instant and asserting an arithmetic identity about
+# it. The only signal that branch emits is its `tracing::info!`, so the test
+# installs a thread-local capturing subscriber. Both crates are already normal
+# dependencies of `calm-server` itself; integration-test crates are separate
+# crates and must re-declare them.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt"] }
 
 [[bench]]
 name = "event_append"

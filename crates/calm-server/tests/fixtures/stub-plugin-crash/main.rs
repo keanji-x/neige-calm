@@ -13,6 +13,21 @@
 use std::io::{BufRead, BufWriter, Write};
 
 fn main() {
+    // #1196 acceptance 14(a): `--delay-ms=<n>` sleeps before answering
+    // `initialize`. The kernel emits `spawning` (a committed DB write) just
+    // before exec'ing us and emits `running` (another one) after the handshake,
+    // so this delay is the window in which a test can install a write barrier
+    // and pin `spawn_under` inside its lifecycle guard. Without it the whole
+    // handshake is over in a millisecond or two and the test would be racing
+    // the production path it is trying to observe.
+    let delay_ms: u64 = std::env::args()
+        .find_map(|a| a.strip_prefix("--delay-ms=").map(|v| v.to_string()))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    if delay_ms > 0 {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+    }
+
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut out = BufWriter::new(stdout.lock());

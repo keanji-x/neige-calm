@@ -49,6 +49,22 @@ async fn boot_host_with_min_kernel(
     stub_bin: &str,
     min_kernel_version: &str,
 ) -> (Arc<PluginHost>, TempDir, EventBus) {
+    let (host, _repo, tmp, events) = host_parts(plugin_id, stub_bin, min_kernel_version).await;
+    (Arc::new(host), tmp, events)
+}
+
+/// The pieces every fixture in this file is built from, handed back **unbuilt**
+/// so a caller can apply a post-construction builder before wrapping in `Arc`.
+async fn host_parts(
+    plugin_id: &str,
+    stub_bin: &str,
+    min_kernel_version: &str,
+) -> (
+    PluginHost,
+    Arc<dyn calm_server::db::Repo>,
+    TempDir,
+    EventBus,
+) {
     let tmp = tempfile::tempdir().expect("tempdir");
     let plugins_dir = tmp.path().join("plugins");
     let plugins_data_dir = tmp.path().join("plugins-data");
@@ -89,9 +105,9 @@ async fn boot_host_with_min_kernel(
     })
     .await
     .expect("seed plugin row");
-    let host = Arc::new(PluginHost::new_full(
+    let host = PluginHost::new_full(
         Arc::new(registry),
-        repo,
+        repo.clone(),
         plugins_dir,
         plugins_data_dir,
         Vec::new(),
@@ -100,8 +116,27 @@ async fn boot_host_with_min_kernel(
             calm_server::card_role_cache::CardRoleCache::new(),
             calm_server::wave_cove_cache::WaveCoveCache::new(),
         ),
-    ));
-    (host, tmp, events)
+    );
+    (host, repo, tmp, events)
+}
+
+/// #1196 acceptance 13 — [`boot_host`] with the crash-window / backoff knobs
+/// injected through the post-construction builder, and the repo handed back so
+/// the test can count the *events* rather than sample a status.
+///
+/// A builder rather than `new_full` parameters: `new_full` has ~106 call sites
+/// and none of them care. `#[cfg(test)]` was not an option — this file is an
+/// integration test, i.e. a separate crate linking the non-test lib.
+async fn boot_host_with_backoff(
+    plugin_id: &str,
+    stub_bin: &str,
+    schedule_ms: Vec<u64>,
+    crash_window: Duration,
+    crash_window_limit: u32,
+) -> (Arc<PluginHost>, Arc<dyn calm_server::db::Repo>, TempDir) {
+    let (host, repo, tmp, _events) = host_parts(plugin_id, stub_bin, "0.0.1").await;
+    let host = Arc::new(host.with_backoff_schedule(schedule_ms, crash_window, crash_window_limit));
+    (host, repo, tmp)
 }
 
 async fn wait_for_status(
@@ -225,51 +260,95 @@ async fn crash_stub_respawns_after_first_crash() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Crash-loop disable: 5 fast crashes → no further respawn.
+// 4. Crash-loop disable: CRASH_WINDOW_LIMIT crashes → no further respawn.
 // ---------------------------------------------------------------------------
 
+/// #1196 §1.3 / acceptance 13 — **rewritten**, because the previous version was
+/// a fake gate.
+///
+/// It used to spawn the crash stub and pass if the status read `Crashed`, then
+/// still read `Crashed` three seconds later. With the production backoff pinned
+/// at 1 s (which is what the defect below caused) and a stub that re-crashes
+/// instantly, the plugin sits in `Crashed` for nearly all of any window you
+/// sample — so "still Crashed after 3 s" was satisfied by the crash **loop
+/// itself**, the very thing the test claimed to prove had stopped. It passed
+/// throughout the entire lifetime of the defect.
+///
+/// The defect: `supervise_inner` removed the live entry before respawning,
+/// while `spawn` inherited `crashes_in_window` by reading that same entry — so
+/// every respawn started from zero, `crashes_in_window` was permanently 1,
+/// `exceeded` was permanently false, and the backoff never advanced past
+/// `BACKOFF_SCHEDULE_MS[0]`. The supervisor now carries the counters across its
+/// own `remove` explicitly.
+///
+/// The gate is the **count**, not a dwell time: exactly `LIMIT` crashes, then
+/// no further `running`. The backoff schedule is injected through
+/// `with_backoff_schedule` — a construction-time seam, because this is an
+/// integration test and the lib's `#[cfg(test)]` is invisible here; falling back
+/// to "wait 15 s and look at the status" would have rebuilt the fake gate.
+///
+/// Mutation witness: drop the `carried` argument in `respawn_after_backoff`
+/// (pass `None`) and the crash count never reaches the limit — the plugin keeps
+/// respawning and the "no more than LIMIT crashes" assertion fails.
 #[tokio::test]
-async fn crash_loop_disables_after_threshold() {
-    // Force the backoff to be small by overriding the schedule via a custom
-    // host. The production schedule starts at 1s, which would make this test
-    // take ~15+ seconds. Instead we kick the supervisor through the cycle
-    // manually with `restart()` calls, which bypass backoff for the explicit
-    // path. 5 forced spawns of the crash stub should leave us in Crashed.
-    let (host, _tmp, _events) = boot_host("test.crashloop", CRASH_BIN).await;
+async fn crash_loop_stops_respawning_at_the_window_limit() {
+    const LIMIT: u32 = 4;
+    let (host, repo, _tmp) = boot_host_with_backoff(
+        "test.crashloop",
+        CRASH_BIN,
+        // Short, flat backoff: the point under test is the counter, and a
+        // production-shaped 1/2/4/8 s schedule would make this a ~15 s test.
+        vec![80],
+        Duration::from_secs(300),
+        LIMIT,
+    )
+    .await;
 
-    // We'll drive 5 spawn/wait-for-crash cycles, each one incrementing the
-    // internal crashes_in_window. The 5th one should not auto-respawn —
-    // but since `restart` always spawns explicitly, we instead spawn and
-    // wait, then check the supervisor disables us via crash-counter.
-    //
-    // Realistic-cost shortcut: spawn once, wait for the supervisor's natural
-    // respawn-after-crash loop to run, then assert we either (a) hit Crashed
-    // and stay there, or (b) the loop survives at least one cycle. The
-    // 1s/2s/4s/8s/30s backoff means within ~15s we should accumulate the
-    // 5 crashes that trip the disable.
     host.spawn("test.crashloop").await.expect("spawn");
 
-    // Wait up to 30s for the disable threshold to engage. This is generous —
-    // the schedule sums to 15s for 5 crashes, plus the per-spawn handshake
-    // overhead (~50ms each).
-    let deadline = Instant::now() + Duration::from_secs(45);
+    // Wait for the limit to be reached: LIMIT crash events, and no more.
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
-        if Instant::now() > deadline {
-            panic!("never reached Crashed-without-respawn within budget");
+        let crashes = crash_count(&repo, "test.crashloop").await;
+        if crashes >= LIMIT as usize {
+            break;
         }
-        // Look for a Crashed status that persists for >2s without flipping
-        // back to Running — that's the signature of the disable kicking in.
-        let st = host.status("test.crashloop").await.map(|s| s.status);
-        if matches!(st, Some(PluginRuntimeStatus::Crashed { .. })) {
-            sleep(Duration::from_secs(3)).await;
-            let still = host.status("test.crashloop").await.map(|s| s.status);
-            if matches!(still, Some(PluginRuntimeStatus::Crashed { .. })) {
-                return; // disabled, no further respawn — success.
-            }
-            // else: it respawned, keep waiting for the threshold to trip.
-        }
-        sleep(Duration::from_millis(250)).await;
+        assert!(
+            Instant::now() < deadline,
+            "the crash-window limit was never reached (saw {crashes} crashes);              `crashes_in_window` is not accumulating across respawns"
+        );
+        sleep(Duration::from_millis(25)).await;
     }
+
+    // ... and it must STOP there. Two full backoff periods of slack.
+    sleep(Duration::from_millis(800)).await;
+    assert_eq!(
+        crash_count(&repo, "test.crashloop").await,
+        LIMIT as usize,
+        "the supervisor kept respawning past the crash-window limit"
+    );
+    assert!(
+        matches!(
+            host.status("test.crashloop").await.map(|s| s.status),
+            Some(PluginRuntimeStatus::Crashed { .. })
+        ),
+        "the plugin must stay observably Crashed so an operator can see it"
+    );
+    // The `Crashed` entry is kept on purpose: an explicit spawn revives it.
+    host.spawn("test.crashloop").await.expect("explicit revive");
+}
+
+/// Persisted `crashed` events for `id`.
+async fn crash_count(repo: &Arc<dyn calm_server::db::Repo>, id: &str) -> usize {
+    repo.events_since(0, 1000)
+        .await
+        .expect("events")
+        .into_iter()
+        .filter(|(_, _, _, e)| {
+            matches!(e, calm_server::event::Event::PluginState { id: who, state, .. }
+                if who == id && state == "crashed")
+        })
+        .count()
 }
 
 // ---------------------------------------------------------------------------
