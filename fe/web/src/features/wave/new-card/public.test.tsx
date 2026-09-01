@@ -34,12 +34,17 @@ describe('AddCardMenu', () => {
 
   /* The `+` stays even with nothing to offer: a build that registered no
      creatable kind is a defect, and a missing button reads as a design choice
-     rather than the fault it is. */
+     rather than the fault it is. The one row is disabled — it says why the menu
+     is empty, and there is nothing behind it to pick. */
   it('keeps the trigger and says so when no kind is available', async () => {
-    render(<AddCardMenu entries={[]} onSelect={vi.fn()} />);
+    const onSelect = vi.fn();
+    render(<AddCardMenu entries={[]} onSelect={onSelect} />);
     await userEvent.click(screen.getByRole('button', { name: 'Add card' }));
-    expect(screen.queryAllByRole('menuitem')).toEqual([]);
-    expect(screen.getByText('No card kinds available')).toBeTruthy();
+    const rows = screen.getAllByRole('menuitem');
+    expect(rows.map((row) => row.textContent)).toEqual(['No card kinds available']);
+    expect(rows[0]?.getAttribute('aria-disabled')).toBe('true');
+    await userEvent.click(screen.getByRole('menuitem', { name: 'No card kinds available' }));
+    expect(onSelect).not.toHaveBeenCalled();
   });
 });
 

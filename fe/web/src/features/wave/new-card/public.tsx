@@ -33,10 +33,11 @@ import { HStack } from '@astryxdesign/core/HStack';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { VStack } from '@astryxdesign/core/VStack';
 
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
+
 import type { CardAddMenuEntry } from '../../../systems/cards/public.js';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
-import { Menu } from '../../../ui/menu/public.tsx';
 import { DirectoryField } from '../../../ui/schema-form/fields/DirectoryField/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './new-card.module.css';
@@ -53,39 +54,54 @@ export type AddCardMenuProps = Readonly<{
 /**
  * The `+` in the module head, and the kinds behind it.
  *
- * `ui/menu` owns the keyboard, focus-restore and outside-click contract; what
- * is here is the trigger's own shape (the same 20px icon button every panel
- * head uses) and the mapping from registry rows to menu items.
+ * ## astryx's `DropdownMenu`, not a hand-built one
  *
- * An empty registry renders the menu with its own empty state rather than
- * hiding the `+`: a build that registered no creatable kind is a defect, and a
- * missing button reads as "this panel has no add" rather than as the fault it is.
+ * The first cut drove `ui/menu` and dressed it in a local CSS module: the
+ * surface, the radius, the item height and the hover were all restated here.
+ * Two of them were wrong — a border on a surface whose own rule is "colour and
+ * radius, no outline", and an item that was a `<button>` inside a full-width
+ * `<li>`, so the hover highlight was the width of the *word* (50px inside a
+ * 172px row, measured) rather than the row. Both are defects that only exist
+ * because the styling was rewritten instead of used.
+ *
+ * `DropdownMenu` is the same control `features/cove/new-wave`'s Start-from
+ * picker uses, and it owns all of it: the popover surface and its layer, the
+ * item shape and its hover/active states, the APG menu-button keyboard model
+ * (arrows move real focus, Tab closes, Escape restores), and typeahead. What
+ * is left here is which entries exist and what picking one means.
+ *
+ * The trigger is `isIconOnly` with the app's own `+` glyph, so it stays the
+ * same mark as every other panel-module head, and its accessible name is the
+ * one word that says what it does.
+ *
+ * An empty registry still renders the `+`, and the menu says so: a build that
+ * registered no creatable kind is a defect, and a missing button reads as "this
+ * panel has no add" rather than as the fault it is. The row is disabled because
+ * there is nothing behind it to pick.
  */
 export function AddCardMenu({ entries, onSelect }: AddCardMenuProps) {
   return (
-    <Menu
-      items={entries.map((entry) => ({
-        label: entry.label,
-        onSelect: () => onSelect(entry),
-      }))}
-      wrapClassName={styles.menuWrap}
-      menuClassName={styles.menu}
-      itemClassName={styles.menuItem}
-      emptyClassName={styles.menuEmpty}
-      emptyState="No card kinds available"
-      trigger={(triggerProps) => (
-        <button
-          {...triggerProps}
-          type="button"
-          data-nc-role="icon"
-          className={styles.trigger}
-          aria-label={triggerProps['aria-expanded'] ? 'Close add card menu' : 'Add card'}
-          title="Add card"
-        >
-          <Icon name="plus" />
-        </button>
-      )}
-    />
+    <DropdownMenu
+      placement="below"
+      button={{
+        label: 'Add card',
+        icon: <Icon name="plus" />,
+        isIconOnly: true,
+        variant: 'ghost',
+        size: 'sm',
+        className: styles.trigger,
+      }}
+    >
+      {entries.length === 0
+        ? <DropdownMenuItem label="No card kinds available" isDisabled />
+        : entries.map((entry) => (
+          <DropdownMenuItem
+            key={entry.type}
+            label={entry.label}
+            onClick={() => onSelect(entry)}
+          />
+        ))}
+    </DropdownMenu>
   );
 }
 

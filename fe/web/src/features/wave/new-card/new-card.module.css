@@ -2,104 +2,30 @@
    Every control inside the form is astryx's and is deliberately not restated
    here; the menu's keyboard and focus behaviour is `ui/menu`'s and needs no
    CSS at all. What is left is where the popup hangs and what it looks like. */
+/* What is left after the menu moved onto `@astryxdesign/core`'s `DropdownMenu`:
+   the trigger's box, and the form root's type/colour. The popover surface, the
+   item shape, the hover and the keyboard model are astryx's and are deliberately
+   not restated — restating them is how this file previously grew a border the
+   panel forbids and a hover the width of one word. */
 @layer features {
-  .menuWrap {
-    position: relative;
-
-    /* The trigger is the panel head's trailing control, so the wrapper must not
-       introduce a box of its own around it — `display: contents` would drop the
-       positioning context the popup needs, so the wrapper is a plain inline
-       grid the size of the button it holds. */
-    display: inline-grid;
-  }
-
-  /* The same 20px icon button as `ui/panel-card`'s `PanelAction`, because it
-     stands in exactly that slot — this module head's `+` has to be the same
-     mark as every other module head's. It is restated rather than reused: the
-     control is a menu trigger here, and `PanelAction` takes an `onClick`, not
-     the trigger props `ui/menu` supplies. */
+  /*
+   * The trigger stands in `ui/panel-card`'s action slot, beside the
+   * CONVERSATIONS `+`, so it has to be that same 20px mark rather than astryx's
+   * default icon-button box. Only the box: the glyph, the hover fill and the
+   * focus ring stay astryx's.
+   *
+   * The negative trailing margin is `PanelAction`'s own: the module head pulls
+   * its action 4px out so the `+`, the menu below it and every row's × land on
+   * one column.
+   */
   .trigger {
-    display: grid;
-    place-items: center;
     inline-size: var(--control-h-sm);
     block-size: var(--control-h-sm);
+    min-inline-size: var(--control-h-sm);
+    min-block-size: var(--control-h-sm);
+    padding: 0;
     margin-inline-end: calc(var(--space-2) * -1);
     border-radius: var(--radius-sm);
-    line-height: var(--leading-none);
-    color: var(--text-3);
-    cursor: pointer;
-  }
-
-  .trigger:hover,
-  .trigger:focus-visible {
-    background: var(--overlay-hover-strong);
-    color: var(--text);
-  }
-
-  /*
-   * ── Anchored to the trigger, and raised by shadow alone ──────────────────
-   *
-   * **No outline.** `ui/panel-card` states the rule for this whole column —
-   * "colour and radius, no outline… one boundary, one channel" — and this menu
-   * opens *on top of that card*, on the same `--surface-card`. A hairline plus a
-   * shadow was two channels for one boundary, and on a white panel it read as a
-   * pasted-on white box rather than as the card's own menu. The shadow is the
-   * one channel it needs, because being raised is the only thing that
-   * distinguishes it from the surface underneath.
-   *
-   * `--radius-md`, the panel's own radius, for the same reason: a 16px corner
-   * over a 12px card is a second corner language in one column.
-   *
-   * The trailing edge lines up with the trigger, which pulls itself 4px out of
-   * the module head — so the `+`, the menu and every row's × land on one
-   * column instead of the three different edges this had before (measured at
-   * 1440: menu 1404, trigger 1408, card 1416).
-   *
-   * Absolute, not fixed: unlike the rail's account menu this trigger is not
-   * inside a scroll/clip box it has to escape — the panel card is a static
-   * column — and absolute keeps the popup with the button as the page scrolls.
-   */
-  .menu {
-    position: absolute;
-    inset-block-start: calc(100% + var(--space-2));
-    inset-inline-end: calc(var(--space-2) * -1);
-    z-index: var(--z-overlay);
-    display: flex;
-    flex-direction: column;
-    min-inline-size: var(--menu-w-min);
-    max-inline-size: var(--menu-w-max);
-
-    /* 4 + 8 = the panel's own 12px inset, so a menu item's word starts on the
-       same pixel as a card row's underneath it. */
-    padding: var(--space-2);
-    border-radius: var(--radius-md);
-    background: var(--surface-card);
-    box-shadow: var(--shadow-float);
-  }
-
-  .menuItem {
-    display: flex;
-    align-items: center;
-    block-size: var(--row-h-sm);
-    padding-inline: var(--space-4);
-    border-radius: var(--radius-sm);
-    font-size: var(--text-base);
-    font-weight: var(--weight-normal);
-    line-height: var(--leading-none);
-    color: var(--text);
-    text-align: start;
-    cursor: pointer;
-  }
-
-  .menuItem:hover,
-  .menuItem:focus-visible {
-    background: var(--overlay-hover);
-  }
-
-  .menuEmpty {
-    padding: var(--space-4);
-    font-size: var(--text-xs);
-    line-height: var(--leading-tight);
     color: var(--text-3);
   }
 
