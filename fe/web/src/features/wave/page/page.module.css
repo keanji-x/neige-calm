@@ -942,14 +942,14 @@
 
     .panel {
       position: fixed;
-      inset: 0 0 calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
+      inset: 0 0 calc(var(--mobile-dock-h, 0px) + env(safe-area-inset-bottom));
       z-index: var(--z-overlay);
       display: flex;
       flex-direction: column;
       gap: var(--space-8);
       inline-size: 100%;
-      block-size: calc(100dvh - var(--mobile-dock-h) - env(safe-area-inset-bottom));
-      min-block-size: calc(100dvh - var(--mobile-dock-h) - env(safe-area-inset-bottom));
+      block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
+      min-block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
       max-block-size: none;
       padding: 0;
       overflow: hidden;
