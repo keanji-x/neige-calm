@@ -349,7 +349,12 @@
     cannot witness who mounts it, which is the whole claim. Rust carries no TS/CSS anchor, so the
     entry is registered in anchor-unsupported.yaml; authoritative_test is NONE because nothing
     asserts the negative today (it is an architectural fact of where the router is built).
-  source: crates/calm-server/src/bin/replay.rs:226-245
+    #1148 第二轮：原来只登记了 dev_routes 的构造，而 statement 的关键词是 ONLY。现在四段合起来
+    才让这个词有证据 —— 130-159 是 `--assert` 提前 return、其余路径才进 `run_serve` 的门控，
+    241-245 是 `/dev/*` 三条路由的构造，277-284 是它被 merge 进 `--serve` 的 router 的唯一一处，
+    main.rs:185-192 是生产 router 的全部 merge 面（其中没有 dev_routes）。
+  source: crates/calm-server/src/bin/replay.rs:130-159,226-245,277-284
+    crates/calm-server/src/main.rs:185-192
   authoritative_test: NONE
   owner_slice: none/e2e/infra
   intentional_omission: true
@@ -383,17 +388,20 @@
   kind: invariant
   family: seed-helpers
   statement: >
-    Every wave the e2e suite creates is posted through one body shape — `cove_id`, `cwd`,
-    `attach_folder`, and an inert dark theme sentinel — so no fixture can seed a wave that
-    omits a field the kernel requires.
+    The shared seed helper `createWaveInCove` posts every wave it mints through one body
+    literal — `cove_id`, `cwd`, `attach_folder`, and an inert dark theme sentinel — so no
+    caller of this helper can seed a wave that omits a field the kernel requires.
   why: >
-    #250 PR2 made cwd required; #177 made theme required end-to-end. Funnelling every fixture
-    through this one literal is what keeps the suite from drifting away from the server's
-    accepted body. The server-side contract itself (a body missing theme is rejected 422) is
+    #250 PR2 made cwd required; #177 made theme required end-to-end. Funnelling this helper's
+    callers through one literal is what keeps the shared seed path from drifting away from the
+    server's accepted body. Scope is exactly this helper: specs that inline their own
+    `POST /api/waves` body (terminal-clean-exit, wheel-mode-edge, new-terminal-card and others)
+    do not go through it, and this entry does not claim anything about them. The server-side
+    contract itself (a body missing theme is rejected 422) is
     a Rust-side fact proven by crates/calm-server/tests/cases/theme_required.rs and has no
     oracle entry of its own; this entry deliberately does not claim it, because nothing in
     the cited TypeScript can witness a rejection.
-  source: web/e2e/helpers/reset.ts:106-112
+  source: web/e2e/helpers/reset.ts:88-93,101-112
   authoritative_test: web/e2e/helpers/reset.ts:105
   owner_slice: features/wave/create
   intentional_omission: false

@@ -268,7 +268,7 @@
     后端有 `idx_cards_one_report_per_wave` 唯一索引,但历史数据/竞态仍可能出现多张;静默挑一张会让用户
     看到"报告内容莫名其妙变了"。
   source: web/src/pages/WaveReportPage.tsx:118-120,197-202,779-781,1035-1037
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:864
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1040,1051,1054-1055
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -1000,7 +1000,7 @@
   why: >
     "does not promise a block target for a flat v1 report" —— 扁平报告里没有块锚点,承诺一个跳不到的目标是谎言。
   source: web/src/pages/WaveReportPage.tsx:637-642,704-708,846
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2338
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2559,2596,2618
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -3574,8 +3574,12 @@
     源码注释(#891 signoff):"it duplicated the task-description free-text"。两层是一件事的两半,
     分开写会漏:authoritative_test:77 钉的是「表单没有 notes 字段」(控件层),:277 钉的是「raw JSON
     覆盖派生字段、且只有它能带 notes」(payload 层)。source 从 JSDoc(369-373 全是 trivia,会被剥掉)
-    扩到 374-382 的对象字面量本身,那里才是「不含该键」的真正载体。
-  source: web/src/shared/components/NewTaskForm.tsx:369-382,386-387
+    扩到 374-382 的对象字面量本身,那里才是「不含该键」的真正载体。#1148 第二轮:三个分句里只有
+    「派生对象只有四个键」一句有载体,于是补上另外两段 —— 456-470 是提交分支
+    (`workflow_input` 要么是 `JSON.parse(rawJson)` 要么是 `derivedWorkflowInput`,别无第三个来源,
+    这就是「raw JSON 是唯一能送 notes 的路径」的正面载体),757-781 是那个 raw JSON textarea 本身。
+    「表单不提供 notes 控件」是证明不存在类,锚不住是正常的,由 authoritative_test:77 钉住。
+  source: web/src/shared/components/NewTaskForm.tsx:369-382,386-387,456-470,757-781
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,277
   owner_slice: features/wave/create
   intentional_omission: true

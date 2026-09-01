@@ -182,15 +182,19 @@
   kind: invariant
   family: wave-semantics
   statement: >
-    Sidebar "waiting on you" 行的 accessible name 由行按钮的可见内容算出 —— `side-wave-title`
-    与 `side-wave-cove` 两个 span，即 wave 标题加 cove 名；按钮不带 aria-label／aria-labelledby，
-    传给它的 `title` 属性（`<cove> · <title>`）纯属信息性，不进入 name
+    Sidebar「Waiting on you」分区（`aria-label` 为该串的 section）里，行的 accessible name
+    由行按钮的可见内容算出：`side-wave-title` span 恒渲染 wave 标题，`side-wave-cove` span
+    只在该行解析到 cove 时才渲染（查不到时上游传 `cove` 为 null），所以 name 是「标题」或
+    「标题 + cove 名」两种形态之一；按钮不带 aria-label／aria-labelledby，传给它的 `title`
+    属性（`<cove> · <title>`）纯属信息性，不进入 name
   why: >
     §2.2 明示 title attribute is informational only —— 这一半仍然成立，且是这条的真正约束：
     只要行按钮不长出 aria-label，name 就等于渲染出来的文字。原文案还写着「name 必须只是 wave
     title」，与实现相反：cove 名是同一个按钮里可见的 span，本来就该进 name（#1148 裁决：文案错，
-    不是代码缺陷；隐藏它反而会让屏幕阅读器听不到跨 cove 的消歧信息）。
-  source: web/src/shared/components/Sidebar.tsx:278-283,653-660
+    不是代码缺陷；隐藏它反而会让屏幕阅读器听不到跨 cove 的消歧信息）。#1148 第二轮：cove span
+    是条件渲染，写成恒为两段是把条件渲染写成了恒真；source 同时并回 271-283，因为 `WaveRow`
+    是所有分区共用的，只引按钮那几行看不出这条限定在「Waiting on you」分区。
+  source: web/src/shared/components/Sidebar.tsx:271-283,653-660
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false

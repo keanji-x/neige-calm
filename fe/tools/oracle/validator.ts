@@ -276,8 +276,10 @@ const GENERIC_ANCHOR_WORDS: ReadonlySet<string> = new Set([
   // author cited a file from the right area — never that the cited *lines* carry the claim.
   //   `theme` / `themes`   — 89 sources: the theme token pipeline, every terminal theme, every fixture
   //                          that builds a wave (`theme: { fg, bg }`). It is what made E2E-INV-INFRA-019
-  //                          go green on a helper that sends a *valid* body, while the statement claims a
-  //                          body *missing* the field is rejected.
+  //                          go green on a helper that sends a *valid* body, while that entry's statement
+  //                          then claimed a body *missing* the field is rejected. (#1148 has since narrowed
+  //                          the statement to the seed helper's own body literal, so it no longer claims the
+  //                          rejection at all; the word stays on this list for the general reason above.)
   //   `terminal` / `terminals` — 110 sources: a card kind, a route segment, a CSS namespace.
   //   `codex`              — 105 sources: the agent backend's name, in imports, types and copy alike.
   //   `cove` / `coves`     — 110/61 sources: the top-level container every wave hangs off.

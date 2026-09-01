@@ -217,3 +217,74 @@ cd fe && npm run typecheck     → exit 0
 账本对账（实跑读数，不是估算）：`anchor-baseline.json` **174** 行 = `ANCHOR_BASELINE_MAXIMUM` **174**；
 `anchor-pending.json` **30** 行 = `ANCHOR_PENDING_MAXIMUM` **30** = `ANCHOR_PENDING_IDS` 冻结集 **30** 个 id
 （无多余、无缺失）；实际失败 **204** = 174 + 30。本轮两个账本一行未增。
+
+---
+
+# 第三轮（第二轮双通道评审阻断项 C1~C5）
+
+本轮**全部是 oracle YAML 的文档级改动**，validator 逻辑一行未动（唯一的 `validator.ts` 改动是把
+停用表里 `theme` 那条注释里对 E2E-INV-INFRA-019 旧文案的引用改成过去时，因为该 statement 本轮已收窄）。
+核心教训：上一轮为了让 statement 可锚，把几条 statement 写宽到了载体之外 —— anchor 是真的，
+但量词/条件超出了被引区间能见证的范围。本轮每条改完都逐分句核对了行号。
+
+| # | 条目 | 改法 |
+| --- | --- | --- |
+| C1 | `E2E-INV-INFRA-019` | statement/why 从「整个 e2e 套件」收窄到 `createWaveInCove` 这个 shared seed helper；source 从 `106-112` 扩到 `88-93,101-112`（补上函数声明与 theme sentinel 注释） |
+| C2 | `INV-A11Y-010` | 把 `side-wave-cove` 写成条件渲染（上游查不到 cove 时传 null），name 是「标题」或「标题+cove 名」二选一；source `278-283` → `271-283` 并回分区标题（`WaveRow` 是所有分区共用的） |
+| C3 | `CAP-REPORT-SHELL-014` | `authoritative_test` 从 `:864`（unsupported-block 用例，无关）改指 `:1040,1051,1054-1055`（duplicate banner + Earliest/Later 断言） |
+| C4 | `E2E-INV-INFRA-017` | source 由单段构造扩为四段：`replay.rs:130-159`（`--assert` 提前 return 的门控）、`226-245`（`/dev/*` 构造）、`277-284`（`.merge(dev_routes)` 唯一一处）、`main.rs:185-192`（生产 router 的全部 merge 面）；`anchor-unsupported.yaml` 同步登记四段 |
+| C5 | `INV-NEWTASK-ISSUEDEV-020` | source 补 `456-470`（提交分支：`workflow_input` 只有 `JSON.parse(rawJson)` 与 `derivedWorkflowInput` 两个来源）与 `757-781`（raw JSON textarea）；「表单不提供 notes 控件」是证明不存在类，仍由 `authoritative_test:77` 钉住 |
+
+## C3 顺带扫描：本 PR 改动过的 16 条 `authoritative_test`
+
+`authoritative_test` 只被 `authoritative-test-location` 检查存在性与区间合法性，不检查语义。
+逐条实读结果：13 条指得对（`E2E-CAP-SHELL-006:908`、`E2E-CAP-SHELL-010:851`、`E2E-INV-CWD-004:234`、
+`E2E-CAP-ADDPANEL-010:360`、`E2E-INV-ENV-002:98`、`CAP-CARD-144:620,638,730`、
+`INV-NEWTASK-ISSUEDEV-020:77,277`，另 3 条为 `NONE`、1 条为 helper 自指见下）。发现并修：
+
+- `CAP-REPORT-SHELL-014`（C1 本身）:864 → :1040,1051,1054-1055。
+- `INV-REPORT-BACKLINK-010`：`:2338` 落在「report.md loading fallback」用例里，与「`cites block <id>`
+  只在有结构化 blocks 时渲染」无关；真正的两个用例是 `:2559`（有 blocks，提示在）与 `:2596/:2618`
+  （flat v1 报告，提示不在，正是 why 里引的那句测试名）。已改指 `:2559,2596,2618`。
+
+只记账、本轮不改的两条：
+
+- `INV-APP-047` → `websocket-driver.contract.test.ts:1`。真正的载体是 `:114` 的
+  `T-D7 probes only a connection that closes before open`（两个分句都在里面）。但 `:1` 是
+  `app-dataflow.yaml` 里 **5 条**条目共用的「文件级指针」写法，只改这一条会造成不一致 ——
+  这是全库范围的约定问题，留给 #1170 类的后续。
+- `E2E-INV-INFRA-019` → `reset.ts:105`，指向 helper 自己的 `request.post`，与 source 同文件同段，
+  是自指而非错指；这条本来就没有独立测试（真正的断言是 helper 自身 `:115-119` 的 throw）。
+
+## 非阻断项量化：`isGeneric()` 的通路覆盖
+
+`isGeneric()` 现在只挡两条通路（`:332` 展示文案、`:352` 反引号整片段），形状扫描（`:341-345`）与
+全局散文扫描（`:354-356`）从不查停用表。按简报要求先量化：把 `isGeneric()` 加到全部四条通路后重跑全库，
+
+```
+VIOLATIONS 5
+<baseline>|<count>|source-anchor|baseline count must equal actual count: declared 174, distinct valid 174, actual 178
+<baseline>|CAP-A11Y-044|source-anchor|unbaselined range-miss
+<baseline>|GATE-CARDHEAD-004|source-anchor|unbaselined not-in-file
+<baseline>|INV-A11Y-056|source-anchor|unbaselined range-miss
+<baseline>|INV-APP-020|source-anchor|unbaselined range-miss
+```
+
+即 **4 条翻转**（`CAP-A11Y-044`、`INV-A11Y-056` 与 `GATE-CARDHEAD-004` 现在靠 `className`/`classname`
+维持判据，`INV-APP-020` 靠 `start()`），且账本要从 174 涨到 178 —— 那还要同时抬 `ANCHOR_BASELINE_MAXIMUM`
+这个「只减不增」的上限。**> 3 条，按简报的判据本轮不做**，量化结果留档，另开 issue。
+验证用的 `validator.ts` 补丁已还原（`git diff` 对该文件除上述注释外为空）。
+
+## 门禁（第三轮）
+
+```
+cd fe && npx vitest run --project platform-independent
+  → Test Files 39 passed | 1 skipped (40)；Tests 912 passed | 1 skipped (913)
+cd fe && npm run lint:js       → exit 0
+cd fe && npm run typecheck     → exit 0
+```
+
+另实跑 `validateOracle(defaultOracleOptions(repoRoot))`：**VIOLATIONS 0**（全库）。
+账本对账不变：`anchor-baseline.json` **174** 行 = `ANCHOR_BASELINE_MAXIMUM` **174**；
+`anchor-pending.json` **30** 行 = `ANCHOR_PENDING_MAXIMUM` **30** = `ANCHOR_PENDING_IDS` **30**
+（集合相等，无多余无缺失）。本轮两个账本一行未增。
