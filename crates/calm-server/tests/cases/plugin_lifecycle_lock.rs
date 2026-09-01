@@ -1678,6 +1678,82 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
 }
 
 // ===========================================================================
+// #1196 S1 review P1-6 — boot's `app` branch is bounded
+// ===========================================================================
+
+/// A lifecycle lock nobody releases must not hang boot.
+///
+/// The `app` branch of `autospawn_enabled_within` had no fence at all: it goes
+/// through `autospawn_one`, whose `Busy` fallback is `await_lifecycle`, which is
+/// unbounded by design. The design's defence was "boot's only contender is a
+/// crash supervisor, whose work is bounded" — but §5 R6 says a timing argument
+/// is not a proof, `try_lock_lifecycle` is `pub`, and a supervisor's own
+/// `spawn_under` can park on a slow event store indefinitely. Connectors already
+/// had `timeout_at`; this is the same fence for the other half.
+///
+/// The lock here is held for the whole test, i.e. genuinely never released — so
+/// "it finished" cannot be luck.
+///
+/// Mutation witness: delete the `tokio::time::timeout` wrapper around the `app`
+/// branch's `autospawn_one` call (keeping the body) and this test hangs until
+/// nextest's own slow-timeout kills it, which is the failure this fence exists
+/// to remove.
+#[tokio::test]
+async fn a19_a_wedged_lifecycle_lock_cannot_hang_boot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let plugins_data_dir = tmp.path().join("plugins-data");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    std::fs::create_dir_all(&plugins_data_dir).unwrap();
+    let dir = write_plugin_with_args(&plugins_dir, ID, ECHO_BIN, &[]);
+
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    repo.plugin_install(calm_server::model::NewPlugin {
+        id: ID.into(),
+        version: "0.1.0".into(),
+        install_path: dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .unwrap();
+
+    let (registry, _) = PluginRegistry::load_from_dir(&plugins_dir).unwrap();
+    let host = Arc::new(
+        PluginHost::new_full(
+            Arc::new(registry),
+            repo.clone(),
+            plugins_dir,
+            plugins_data_dir,
+            Vec::new(),
+            EventBus::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
+        )
+        .with_app_autospawn_wall(Duration::from_millis(300)),
+    );
+
+    // Wedge it. Nothing in this test ever drops the guard.
+    let _wedged = host.try_lock_lifecycle(ID).expect("lock is free");
+
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(10), host.autospawn_enabled())
+        .await
+        .expect(
+            "boot never returned: an `app` plugin whose lifecycle lock is held \
+             hangs autospawn forever without a fence",
+        );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "boot took {:?}; the fence is supposed to be ~300 ms here",
+        started.elapsed()
+    );
+}
+
+// ===========================================================================
 // #1196 S1 review P0-1 — `reload` may not decide on a row read outside its
 // guard
 // ===========================================================================

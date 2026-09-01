@@ -433,6 +433,12 @@ pub struct PluginHost {
     /// (`pool().close()` is a *permanent* failure and cannot express "fails
     /// once, then recovers"). See [`lifecycle::LifecycleDb`].
     lifecycle_db: Arc<dyn lifecycle::LifecycleDb>,
+    /// #1196 S1 review P1-6 — the `app` half of boot's wall-clock fence. A field
+    /// rather than a bare constant for the same reason `backoff` is one: the
+    /// acceptance test proving boot terminates under a wedged lifecycle lock
+    /// lives in `tests/`, and waiting out [`APP_AUTOSPAWN_WALL`] there would make
+    /// it a gate nobody runs. See [`Self::with_app_autospawn_wall`].
+    app_autospawn_wall: Duration,
     /// #1196 S0a — crash-loop / respawn-backoff tunables, defaulted to the
     /// [`CRASH_WINDOW`] / [`CRASH_WINDOW_LIMIT`] / [`BACKOFF_SCHEDULE_MS`]
     /// constants and overridable via [`Self::with_backoff_schedule`].
@@ -813,6 +819,7 @@ impl PluginHost {
             lifecycle: std::sync::Mutex::new(HashMap::new()),
             run_epoch_seq: std::sync::atomic::AtomicU64::new(1),
             lifecycle_db,
+            app_autospawn_wall: APP_AUTOSPAWN_WALL,
             backoff: BackoffConfig::default(),
         }
     }
@@ -853,6 +860,20 @@ impl PluginHost {
             crash_window,
             crash_window_limit,
         };
+        self
+    }
+
+    /// #1196 S1 review P1-6 — post-construction override of
+    /// [`APP_AUTOSPAWN_WALL`], for the acceptance test that has to prove boot is
+    /// bounded when an `app` plugin's lifecycle lock is never released.
+    ///
+    /// Same reason as [`Self::with_backoff_schedule`]: the property is "boot
+    /// terminates", and a gate that has to wait out the production 30 s to see
+    /// it is a gate nobody runs. Shrinking the bound does not weaken what is
+    /// being proved — the fence either exists or it does not.
+    #[must_use]
+    pub fn with_app_autospawn_wall(mut self, wall: Duration) -> Self {
+        self.app_autospawn_wall = wall;
         self
     }
 
@@ -1169,7 +1190,8 @@ impl PluginHost {
                 // (the lock wait, the spawn, and every emission either performs)
                 // rather than a named step inside it, so an await added here
                 // later is covered without anyone remembering to cover it.
-                match tokio::time::timeout(APP_AUTOSPAWN_WALL, self.autospawn_one(&plug.id)).await {
+                match tokio::time::timeout(self.app_autospawn_wall, self.autospawn_one(&plug.id)).await
+                {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {
                         tracing::warn!(plugin_id = %plug.id, error = %e, "plugin autospawn failed");
@@ -1180,7 +1202,7 @@ impl PluginHost {
                              within {} ms (a wedged lifecycle lock, a stuck child, or a \
                              slow event store). Enable it again once that is fixed.",
                             plug.id,
-                            APP_AUTOSPAWN_WALL.as_millis()
+                            self.app_autospawn_wall.as_millis()
                         );
                         tracing::warn!(plugin_id = %plug.id, "{reason}");
                         // Terminal + observable, exactly as §2.5 requires and for
