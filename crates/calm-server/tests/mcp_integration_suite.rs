@@ -1,5 +1,7 @@
 mod support;
 
+#[path = "cases/mcp_assistant_report_channel.rs"]
+mod mcp_assistant_report_channel;
 #[path = "cases/mcp_plugin_tools.rs"]
 mod mcp_plugin_tools;
 #[path = "cases/mcp_report_links.rs"]

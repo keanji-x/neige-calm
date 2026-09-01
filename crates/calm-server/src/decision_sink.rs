@@ -11,7 +11,7 @@ use crate::error::CalmError;
 use crate::event::{EditAuthor, Event, EventBus, EventScope};
 use crate::ids::{ActorId, CardId, CoveId, WaveId};
 use crate::mcp_server::registry::{AppContext, ToolCallIdentity};
-use crate::model::{Card, Wave, WaveLifecycle};
+use crate::model::{Card, CardRole, Wave, WaveLifecycle};
 use crate::operation::workspace_lease::release_workspace_lease_for_card_repo;
 use crate::recorder_shadow::{
     RecorderShadowDecisionKind, RecorderShadowDivergence, RecorderShadowProbe, emit_divergence,
@@ -415,12 +415,27 @@ impl CardDecisionSink {
         Ok(updated)
     }
 
-    /// #960 PR2 — the generalized spec-MCP report write: same recorder
-    /// shadow gate, same `EditAuthor::Spec` attribution, same
-    /// auto-promote semantics as [`Self::commit_report_write`], but the
-    /// mutation is an arbitrary [`ReportDocOp`] (typed `blocks.*` op or
-    /// marker-aware `write_markdown`) executed inside the persist
-    /// transaction against the CRDT truth.
+    /// #960 PR2 — the generalized agent-MCP report write: same recorder
+    /// shadow gate, same persist boundary as
+    /// [`Self::commit_report_write`], but the mutation is an arbitrary
+    /// [`ReportDocOp`] (typed `blocks.*` op or marker-aware
+    /// `write_markdown`) executed inside the persist transaction against
+    /// the CRDT truth.
+    ///
+    /// #1189 §3.2a / §3.4 — this is the single funnel every block-channel
+    /// write passes through, so the two things that must differ for an
+    /// assistant caller are decided here, once, from `identity.role`:
+    ///
+    /// * **attribution** (`EditAuthor`). Hard-coding `Spec` would let an
+    ///   assistant's edits land in the event log under the spec's name —
+    ///   and would silently undo the `author_name(Assistant) == None`
+    ///   line in `wave_report_edit_guard`, which is half of the P2 task
+    ///   guard.
+    /// * **auto-promote** (P1). A block write must not walk a Draft wave
+    ///   out of Draft on an assistant's behalf; that is the state machine
+    ///   §3.2 keeps on the far side of the line. The REST user block
+    ///   endpoint already passes `false`, so "a Draft wave with a report"
+    ///   is a long-standing legal state, not a new one.
     #[allow(clippy::too_many_arguments)]
     pub async fn commit_report_op(
         &self,
@@ -439,19 +454,26 @@ impl CardDecisionSink {
                 principal,
                 wave_id: wave.id.clone(),
             });
+        // Exhaustive on purpose: a future role reaching this funnel has to
+        // state its attribution and its auto-promote verdict rather than
+        // inherit the spec's by falling into a `_` arm.
+        let (author, auto_promote_draft) = match identity.role {
+            CardRole::Assistant => (EditAuthor::Assistant, false),
+            CardRole::Spec | CardRole::Worker | CardRole::ReportCard => (EditAuthor::Spec, true),
+        };
         persist_report_with_shadow(
             self.repo.as_ref(),
             &self.events,
             &self.write,
             actor,
-            EditAuthor::Spec,
+            author,
             wave,
             report_card,
             current_payload,
             op,
             agent_message,
             lifecycle,
-            true,
+            auto_promote_draft,
             Some(recorder_shadow),
         )
         .await
@@ -796,8 +818,19 @@ mod tests {
         assert_eq!(removed_events, 0);
     }
 
+    /// #1189 §3.6 renamed this cell rather than re-expecting it. The old
+    /// name ("non-root") described the criterion that slice removed; what
+    /// the body always actually built was an identity whose `session_id`
+    /// has no `worker_sessions` row at all, and an unresolvable session is
+    /// still a denial — now for the reason the new criterion gives.
+    ///
+    /// What it pins is the fail-closed shape around that denial: a
+    /// `Forbidden`, one divergence record, one warning, and — the part no
+    /// other test covers — the report row and the event log both untouched,
+    /// i.e. the gate aborts the transaction rather than refusing after a
+    /// partial write.
     #[tokio::test(flavor = "current_thread")]
-    async fn non_root_report_write_is_forbidden_under_recorder_enforce() {
+    async fn report_write_from_an_unresolvable_session_is_forbidden_under_recorder_enforce() {
         let repo = Arc::new(
             SqlxRepo::open("sqlite::memory:")
                 .await
@@ -849,6 +882,13 @@ mod tests {
 
         let root_session_id = WorkerSessionId::from("root-session");
         seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
+        // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
+        // `card_create` persists `worker` regardless of kind.
+        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+            .bind(spec_card.id.as_str())
+            .execute(repo.pool())
+            .await
+            .expect("persist spec card role");
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
@@ -908,7 +948,11 @@ mod tests {
             .expect_err("non-root report write must be forbidden");
 
         assert!(
-            matches!(err, CalmError::Forbidden(ref message) if message.contains("not wave root"))
+            matches!(
+                err,
+                CalmError::Forbidden(ref message) if message.contains("has no live session row")
+            ),
+            "expected the recorder gate's session-resolution denial, got {err:?}"
         );
         assert_eq!(divergence_count_for_test(), before_divergences + 1);
         assert_eq!(warnings.load(Ordering::Relaxed), 1);
@@ -986,6 +1030,13 @@ mod tests {
 
         let root_session_id = WorkerSessionId::from("root-session");
         seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, &root_session_id).await;
+        // #1189 §3.6 — the recorder gate reads `cards.role` in-tx;
+        // `card_create` persists `worker` regardless of kind.
+        sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+            .bind(spec_card.id.as_str())
+            .execute(repo.pool())
+            .await
+            .expect("persist spec card role");
 
         let card_role_cache = CardRoleCache::new();
         card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());

@@ -203,6 +203,17 @@ async fn boot() -> Boot {
     // clones so a write on either side updates a single source of truth.
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    // #1189 §3.6 — `Repo::card_create` persists `cards.role = 'worker'`
+    // unconditionally; production mints the spec card through
+    // `card_create_with_id_tx(.., CardRole::Spec, ..)`. The recorder gate now
+    // resolves session → card → {role, wave} with a live `cards` read inside
+    // the write tx, so a cache-only pin leaves this fixture's "spec card"
+    // persisted as a worker and every report write denied.
+    sqlx::query("UPDATE cards SET role = 'spec' WHERE id = ?1")
+        .bind(spec_card.id.as_str())
+        .execute(&repo.sqlite_pool().expect("sqlite-backed fixture repo"))
+        .await
+        .expect("persist spec card role");
     card_role_cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,

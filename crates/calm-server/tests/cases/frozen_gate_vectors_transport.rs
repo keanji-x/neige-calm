@@ -44,7 +44,22 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 const TEST_BUDGET: Duration = Duration::from_secs(5);
-const EXPECTED_PRINCIPAL_DELTA_VECTOR_COUNT: usize = 32;
+/// 3 role files × 8 + the 6 assistant / cross-wave cells #1189 S2 adds.
+///
+/// #1189 S2 retired `02_planner_non_root.json` (8 cells) outright rather
+/// than re-expecting it. Its premise was "a session bound to this wave's
+/// spec card that is not the wave root", and that shape cannot exist:
+/// `worker_sessions.card_id` is UNIQUE (one live session per card) and
+/// `idx_cards_one_spec_per_wave` (migration 0008) allows one spec card per
+/// wave, so the wave's spec session and its root session are the same row.
+/// The cell only ever ran because the old fixture bound every session to a
+/// synthetic `card-<session>` id that no `cards` row backed. Its role-gate
+/// half was a byte-for-byte duplicate of `01_root.json` (the role gate
+/// never reads the session for an `AiSpec` actor), and its recorder half —
+/// "root-ness is what grants" — is the criterion this slice removes, now
+/// pinned in the representable direction by `05_assistant.json`'s last cell
+/// and by `decision_gate`'s `a_root_marked_worker_session_is_still_refused`.
+const EXPECTED_PRINCIPAL_DELTA_VECTOR_COUNT: usize = 30;
 
 type IdentityCaptureRx = mpsc::UnboundedReceiver<ToolCallIdentity>;
 
@@ -588,20 +603,95 @@ impl PrincipalFixture {
         let executor = seed_role_card(&repo, &cache, &home_wave, CardRole::Worker).await;
         let validator = seed_role_card(&repo, &cache, &home_wave, CardRole::Worker).await;
         let report = seed_role_card(&repo, &cache, &home_wave, CardRole::ReportCard).await;
+        // #1189 §3.6 — the recorder criterion is now card-keyed, so the
+        // corpus needs the two cards that criterion is about: an assistant
+        // on this wave (allowed) and one on a *different* wave (G-A').
+        let assistant = seed_role_card(&repo, &cache, &home_wave, CardRole::Assistant).await;
 
-        seed_sessions(&repo, &home_wave).await;
+        let away_wave_row = repo
+            .wave_create(NewWave {
+                workflow_input: None,
+                cove_id: cove.id.clone(),
+                title: "principal-delta-away".into(),
+                sort: None,
+                cwd: String::new(),
+                workflow_id: None,
+                plugin_scope: None,
+                attach_folder: false,
+                theme: calm_server::routes::theme::RequestTheme::default_dark(),
+            })
+            .await
+            .unwrap();
+        let away_wave = WaveId::from(away_wave_row.id.as_str());
+        wcc.insert(away_wave.clone(), home_cove.clone());
+        let away_assistant = seed_role_card(&repo, &cache, &away_wave, CardRole::Assistant).await;
+        let away_spec = seed_role_card(&repo, &cache, &away_wave, CardRole::Spec).await;
+
+        // Session → card bindings are the whole point of the new criterion,
+        // so they must be REAL card ids. They used to be a synthetic
+        // `card-<session>` string, which under the card-keyed gate would
+        // have denied every vector for the wrong reason (unknown card) and
+        // made the corpus vacuous.
+        seed_sessions(
+            &repo,
+            &home_wave,
+            &away_wave,
+            &[
+                ("session-root", &spec, WorkerContract::Planner, &home_wave),
+                (
+                    "session-executor",
+                    &executor,
+                    WorkerContract::Executor,
+                    &home_wave,
+                ),
+                (
+                    "session-validator",
+                    &validator,
+                    WorkerContract::Validator,
+                    &home_wave,
+                ),
+                (
+                    "session-assistant",
+                    &assistant,
+                    WorkerContract::Executor,
+                    &home_wave,
+                ),
+                (
+                    "session-away-assistant",
+                    &away_assistant,
+                    WorkerContract::Executor,
+                    &away_wave,
+                ),
+                (
+                    "session-away-spec",
+                    &away_spec,
+                    WorkerContract::Planner,
+                    &away_wave,
+                ),
+            ],
+        )
+        .await;
 
         let subst = vec![
             ("$ROOT_SESSION", "session-root".to_string()),
-            ("$PLANNER_SESSION", "session-planner".to_string()),
             ("$EXECUTOR_SESSION", "session-executor".to_string()),
             ("$VALIDATOR_SESSION", "session-validator".to_string()),
+            ("$ASSISTANT_SESSION", "session-assistant".to_string()),
+            (
+                "$AWAY_ASSISTANT_SESSION",
+                "session-away-assistant".to_string(),
+            ),
+            ("$AWAY_SPEC_SESSION", "session-away-spec".to_string()),
             ("$VALIDATOR_CARD", validator.as_str().to_string()),
             ("$EXECUTOR_CARD", executor.as_str().to_string()),
             ("$REPORT_CARD", report.as_str().to_string()),
             ("$SPEC_CARD", spec.as_str().to_string()),
+            ("$ASSISTANT_CARD", assistant.as_str().to_string()),
+            ("$AWAY_ASSISTANT_CARD", away_assistant.as_str().to_string()),
+            ("$AWAY_SPEC_CARD", away_spec.as_str().to_string()),
             ("$HOME_WAVE", home_wave.as_str().to_string()),
             ("$HOME_COVE", home_cove.as_str().to_string()),
+            ("$AWAY_WAVE", away_wave.as_str().to_string()),
         ];
 
         Self {
@@ -640,25 +730,44 @@ async fn seed_role_card(
     CardId::from(card.id.as_str())
 }
 
-async fn seed_sessions(repo: &SqlxRepo, wave_id: &WaveId) {
+async fn seed_sessions(
+    repo: &SqlxRepo,
+    home_wave: &WaveId,
+    away_wave: &WaveId,
+    sessions: &[(&str, &CardId, WorkerContract, &WaveId)],
+) {
     let mut tx = repo.pool().begin().await.unwrap();
-    for (id, contract) in [
-        ("session-root", WorkerContract::Planner),
-        ("session-planner", WorkerContract::Planner),
-        ("session-executor", WorkerContract::Executor),
-        ("session-validator", WorkerContract::Validator),
-    ] {
-        session_insert_tx(&mut tx, worker_session(id, wave_id.clone(), contract))
-            .await
-            .unwrap();
-    }
-    session_mark_wave_root_tx(&mut tx, wave_id, &WorkerSessionId::from("session-root"))
+    for (id, card, contract, wave) in sessions {
+        session_insert_tx(
+            &mut tx,
+            worker_session(id, (*wave).clone(), (*card).clone(), *contract),
+        )
         .await
         .unwrap();
+    }
+    // `session-root` stays marked as the home wave's root. The recorder
+    // criterion no longer reads it (#1189 §3.6), and keeping the mark is
+    // what makes that observable: root-ness alone must not be what any
+    // vector's Allow rests on.
+    session_mark_wave_root_tx(&mut tx, home_wave, &WorkerSessionId::from("session-root"))
+        .await
+        .unwrap();
+    session_mark_wave_root_tx(
+        &mut tx,
+        away_wave,
+        &WorkerSessionId::from("session-away-spec"),
+    )
+    .await
+    .unwrap();
     tx.commit().await.unwrap();
 }
 
-fn worker_session(id: &str, wave_id: WaveId, contract: WorkerContract) -> WorkerSession {
+fn worker_session(
+    id: &str,
+    wave_id: WaveId,
+    card_id: CardId,
+    contract: WorkerContract,
+) -> WorkerSession {
     WorkerSession {
         id: WorkerSessionId::from(id),
         wave_id,
@@ -673,7 +782,7 @@ fn worker_session(id: &str, wave_id: WaveId, contract: WorkerContract) -> Worker
         agent_session_id: None,
         active_turn_id: None,
         terminal_run_id: None,
-        card_id: Some(CardId(format!("card-{id}"))),
+        card_id: Some(card_id),
         handle_state_json: None,
         liveness: LivenessTag::Unknown,
         liveness_probed_at_ms: None,
