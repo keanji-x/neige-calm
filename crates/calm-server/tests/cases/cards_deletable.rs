@@ -43,6 +43,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::common;
+use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
     cove_id: String,
@@ -316,7 +317,7 @@ async fn spec_card_minted_by_wave_create_is_undeletable() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create returned: {body}");
@@ -368,7 +369,7 @@ async fn delete_card_returns_403_for_undeletable_spec_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -405,7 +406,7 @@ async fn delete_card_returns_204_for_deletable_worker_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -441,7 +442,7 @@ async fn delete_card_releases_active_workspace_lease_row_before_card_row_delete(
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-760-card-delete-lease", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-760-card-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -497,7 +498,7 @@ async fn wave_delete_cascades_to_undeletable_spec_card() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -590,7 +591,7 @@ async fn rest_wave_create_cannot_set_parent_wave_id() {
         json!({
             "cove_id": boot.cove_id,
             "title": "forged child",
-            "cwd": "/tmp/forged-child",
+            "cwd": attached_repo_fixture("forged-child"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
             "parent_wave_id": "wave-forged-parent"
@@ -611,7 +612,7 @@ async fn wave_delete_releases_active_workspace_lease_rows_before_cascade() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-760-wave-delete-lease", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-760-wave-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -651,7 +652,7 @@ async fn cove_delete_releases_wave_workspace_lease_rows_before_cascade() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-760-cove-delete-lease", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-760-cove-delete-lease"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -692,7 +693,7 @@ async fn wave_delete_route_sweeps_card_wave_and_view_overlays() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-454-route-overlay-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-454-route-overlay-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");
@@ -763,7 +764,7 @@ async fn patch_card_with_deletable_returns_400() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "w", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "w", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "wave create body: {body}");

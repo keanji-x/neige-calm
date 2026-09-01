@@ -28,6 +28,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::common;
+use crate::support::git_helpers::attached_repo_fixture;
 
 const ISSUE_DEVELOPMENT: &str = "issue-development";
 const SMALL_CHANGE: &str = "small-change";
@@ -152,7 +153,7 @@ fn create_body(cove_id: &str, title: &str, extra: Value) -> Value {
     let mut body = json!({
         "cove_id": cove_id,
         "title": title,
-        "cwd": format!("/tmp/1110-s6-{title}"),
+        "cwd": attached_repo_fixture(&format!("1110-s6-{title}")),
         "attach_folder": true,
         "theme": theme(),
     });

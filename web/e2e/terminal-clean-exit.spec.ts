@@ -38,13 +38,20 @@ test('terminal worker that exits cleanly shows the exit 0 header badge, no overl
   // Step 2 — mint a wave inside the cove via REST. Same shape as
   // `new-terminal-card.spec.ts`.
   const waveTitle = `E2E clean-exit ${Date.now()}`;
-  const cwd = `/tmp/playwright-clean-exit-${coveId}`;
+  // The terminal card below spawns in this directory. `/tmp` exists
+  // inside the kernel, and the terminal-card route carries no
+  // attached-workspace contract (#1147 S3 validates `POST /api/waves`
+  // only), so it stays a plain existing directory.
+  const cwd = '/tmp';
   const waveRes = await page.request.post('/api/waves', {
     data: {
       cove_id: coveId,
       title: waveTitle,
-      cwd,
-      attach_folder: true,
+      // #1147 S3 — no `cwd` on the wave: take the kernel-managed
+      // workspace branch. This spec is about the terminal clean-exit
+      // race, not working directories. See
+      // `helpers/reset.ts::createWaveInCove` for why the invented
+      // `/tmp/playwright-clean-exit-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

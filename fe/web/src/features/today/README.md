@@ -34,9 +34,17 @@ or DST.
   → verify the card still has a terminal row → bootstrap **only** on 404. Any
   other error must surface as an error, never a silent rebuild (INV-TODAYTERM-001),
   the whole chain runs in one in-flight-guarded async resolver
-  (INV-TODAYTERM-003), the Today wave passes `cwd: '/'` with
-  `attach_folder: false` (INV-TODAYTERM-005), and the 404 check is duck-typed on
+  (INV-TODAYTERM-003), the Today wave **omits `cwd` and `attach_folder`**
+  entirely (INV-TODAYTERM-005), and the 404 check is duck-typed on
   `status` rather than `instanceof` (INV-TODAYTERM-006).
+
+  INV-TODAYTERM-005 used to read "passes `cwd: '/'` with `attach_folder: false`".
+  #1147 S3 inverted it: an omitted `cwd` is the *managed* branch, so the kernel
+  allocates and `git init`s a real directory the wave's workers can lease, while
+  `/` was never a workspace at all — a `kind: codex` task on that wave died in
+  `git_repo_root_for_wave_cwd` with nothing but `spawn-failed`, which is the
+  defect #1147 was opened on. An explicit `cwd` now means "attach this existing
+  repository" and is validated, so `/` would be a 400.
 - Attention counting is lifecycle-only for now. The kernel's card-FSM signal
   (`anyCardNeedsInput`) is OR'd in once overlays are read; the sidebar and this
   clock must keep using the same predicate.

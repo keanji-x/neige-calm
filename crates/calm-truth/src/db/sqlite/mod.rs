@@ -128,7 +128,9 @@ pub use wave_tree::{
     deterministic_share, wave_tree_budget, wave_tree_member_count, wave_tree_spec_inventory,
     wave_tree_spec_inventory_by_member, wave_tree_term,
 };
-pub use wave_workspace::wave_workspace_write_tx;
+pub use wave_workspace::{
+    wave_workspace_freeze_tx, wave_workspace_read_tx, wave_workspace_write_tx,
+};
 
 use infra::check_no_unknown_future_migrations;
 

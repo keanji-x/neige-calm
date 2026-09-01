@@ -36,7 +36,6 @@ use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
 use calm_server::db::sqlite::{
     SqlxRepo, card_with_codex_create_tx, session_start_runtime_tx, status_detail_class,
-    wave_workspace_write_tx,
 };
 use calm_server::dispatcher::Dispatcher;
 use calm_server::error::Result as CalmResult;
@@ -52,7 +51,7 @@ use calm_server::mcp_server::tools::wave_state::TOOL_TASK_VERDICT;
 use calm_server::mcp_server::{ToolCallIdentity, ToolRegistry};
 use calm_server::model::{
     CardRole, NewCard, NewCove, NewOverlay, NewTerminal, NewWave, RequestTheme, Task, TaskKind,
-    TaskStatus, WaveLifecycle, WavePatch, WaveWorkspace, WaveWorkspaceKind, new_id, now_ms,
+    TaskStatus, WaveLifecycle, WavePatch, new_id, now_ms,
 };
 use calm_server::operation::child_wave_adapter::ChildWaveAdapter;
 use calm_server::operation::claude_adapter::ClaudeWorkerAdapter;
@@ -1826,22 +1825,20 @@ async fn spawn_failure_status_detail_carries_the_real_reason() {
     // A real, absolute, definitely-not-a-git-repo cwd.
     let non_git = tempfile::tempdir().expect("tempdir");
     let pool = boot.repo.sqlite_pool().expect("sqlite pool");
-    // #1147 S1 — re-point through the production single writer rather than a
-    // raw `UPDATE ... SET cwd`, so the fixture leaves `cwd` and
-    // `workspace_path` agreeing the way every production path does.
-    let mut tx = pool.begin().await.expect("begin");
-    calm_server::db::sqlite::wave_workspace_write_tx(
-        &mut tx,
-        boot.wave_id.as_str(),
-        &calm_server::model::WaveWorkspace {
-            kind: calm_server::model::WaveWorkspaceKind::Attached,
-            path: non_git.path().to_str().unwrap().to_string(),
-            frozen_at: Some(1),
-        },
+    // #1147 S1/S3 — the fixture needs this wave pointed at a real non-git
+    // directory *and* frozen, which is the state a production wave reaches by
+    // running. The production writer refuses a frozen row (S3's latch), and it
+    // has no un-freeze path by design, so a fixture that wants to force this
+    // state writes it directly. Registered in
+    // `calm-truth/tests/wave_write_point_registry.rs`.
+    sqlx::query(
+        "UPDATE waves SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
     )
+    .bind(non_git.path().to_str().unwrap())
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
     .await
     .expect("set wave workspace");
-    tx.commit().await.expect("commit");
 
     let task = plan_task(&boot.wave_id, "nogit", TaskKind::Codex, &[]);
     let task_id = task.id.clone();
@@ -8261,19 +8258,20 @@ async fn attach_boot_wave_to_a_real_directory(boot: &Boot) -> (tempfile::TempDir
     let dir = tempfile::TempDir::new().unwrap();
     let path = dir.path().to_string_lossy().into_owned();
     let pool = boot.repo.sqlite_pool().unwrap();
-    let mut tx = pool.begin().await.unwrap();
-    wave_workspace_write_tx(
-        &mut tx,
-        boot.wave_id.as_str(),
-        &WaveWorkspace {
-            kind: WaveWorkspaceKind::Attached,
-            path: path.clone(),
-            frozen_at: Some(now_ms()),
-        },
+    // Written directly, not through `wave_workspace_write_tx`: S3's freeze
+    // latch refuses a frozen row, and `boot()`'s wave may already be frozen by
+    // the time a test calls this. The state being forced here (attached, real
+    // path, frozen) is exactly what a production attached wave looks like.
+    // Registered in `calm-truth/tests/wave_write_point_registry.rs`.
+    sqlx::query(
+        "UPDATE waves SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
     )
+    .bind(&path)
+    .bind(now_ms())
+    .bind(boot.wave_id.as_str())
+    .execute(&pool)
     .await
     .unwrap();
-    tx.commit().await.unwrap();
     (dir, path)
 }
 
@@ -8357,15 +8355,18 @@ async fn child_bootstrap_key_follows_a_repointed_workspace_path() {
     .into_owned();
     assert_ne!(repointed_cwd, child_cwd);
     let mut tx = pool.begin().await.unwrap();
-    wave_workspace_write_tx(
-        &mut tx,
-        &child_id,
-        &WaveWorkspace {
-            kind: WaveWorkspaceKind::Managed,
-            path: repointed_cwd.clone(),
-            frozen_at: Some(now_ms()),
-        },
+    // #1147 S3 — child waves are frozen at creation (S4), and the production
+    // writer refuses a frozen row. This fixture is simulating exactly the
+    // thing the freeze forbids, in order to pin what happens to the
+    // *idempotency key* afterwards, so it writes the row directly.
+    // Registered in `calm-truth/tests/wave_write_point_registry.rs`.
+    sqlx::query(
+        "UPDATE waves SET workspace_kind='managed', workspace_path=?1, workspace_frozen_at=?2 WHERE id=?3",
     )
+    .bind(&repointed_cwd)
+    .bind(now_ms())
+    .bind(&child_id)
+    .execute(&mut *tx)
     .await
     .unwrap();
     sqlx::query(

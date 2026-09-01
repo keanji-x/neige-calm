@@ -16,14 +16,20 @@
 //   * Cove B is minted via the sidebar (the standard happy-path) so
 //     the page-navigation half of the scenario uses the real router
 //     flow.
-//   * Each run namespaces its cwd under `/srv/proj/auto-<ts>` to
-//     avoid colliding with concurrent / repeated runs on
-//     cove_folders.UNIQUE(path).
+//   * Each run namespaces its cwd under a per-run `$HOME` work tree
+//     (`neige-e2e-auto-match-<ts>`) to avoid colliding with concurrent
+//     / repeated runs on cove_folders.UNIQUE(path).
 //
 // Prereq: `make dev` serving http://localhost:4041 with the default
 // seed.
 
 import { test, expect } from '@playwright/test';
+import {
+  attachedWorkspacePath,
+  cleanupAttachedWorkspaces,
+  createGitWorkTree,
+  createWorkTreeSubdir,
+} from './helpers/attached-workspace';
 
 // Coves seeded via REST get tracked here so the afterEach hook can
 // `DELETE /api/coves/<id>` them. Without cleanup, leftover coves
@@ -47,6 +53,7 @@ test.afterEach(async ({ request }) => {
     }
   }
   createdCoveIds.length = 0;
+  cleanupAttachedWorkspaces();
 });
 
 test('NewTaskForm auto-matches cwd to claiming cove (not surrounding cove)', async ({
@@ -55,8 +62,17 @@ test('NewTaskForm auto-matches cwd to claiming cove (not surrounding cove)', asy
   const ts = Date.now();
   const coveAName = `E2E auto cove-A ${ts}`;
   const coveBName = `E2E auto cove-B ${ts}`;
-  const folderPath = `/srv/proj/auto-${ts}`;
-  const cwd = `${folderPath}/sub`;
+  // #1147 S3 — `cwd` is submitted as an *attached* workspace, so it has
+  // to exist and be inside a Git work tree the kernel can see.
+  // `folderPath` is the work-tree root and cove A's claim; `cwd` is a
+  // real directory beneath it, which is precisely the descendant shape
+  // this spec is about (the claim covers the cwd, so the wave-create tx
+  // must NOT mint a second claim). See `helpers/attached-workspace.ts`
+  // for why these live under `$HOME`.
+  const folderPath = createGitWorkTree(
+    attachedWorkspacePath(`neige-e2e-auto-match-${ts}`),
+  );
+  const cwd = createWorkTreeSubdir(folderPath, 'sub');
 
   // Step 1 — seed cove A + its folder claim via REST. Cove A is the
   // *correct* destination; the test's whole point is that the form

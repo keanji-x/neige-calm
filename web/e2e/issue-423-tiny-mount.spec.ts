@@ -339,8 +339,11 @@ async function createWave(
     data: {
       cove_id: coveId,
       title,
-      cwd: `/tmp/playwright-cove-${coveId}`,
-      attach_folder: true,
+      // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+      // This spec is about tiny-mount card layout, not working
+      // directories. See `helpers/reset.ts::createWaveInCove` for why
+      // the invented `/tmp/playwright-cove-<id>` attached path was
+      // never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

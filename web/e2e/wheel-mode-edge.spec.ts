@@ -17,8 +17,10 @@ async function createWave(page: Page): Promise<{ id: string; title: string }> {
     data: {
       cove_id: cove.id,
       title,
-      cwd: `/tmp/playwright-wheel-${cove.id}`,
-      attach_folder: true,
+      // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+      // This spec is about wheel mode, not working directories. See
+      // `helpers/reset.ts::createWaveInCove` for why the invented
+      // `/tmp/playwright-wheel-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

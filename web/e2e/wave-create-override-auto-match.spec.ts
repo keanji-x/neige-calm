@@ -18,6 +18,11 @@
 // seed.
 
 import { test, expect } from '@playwright/test';
+import {
+  attachedWorkspacePath,
+  cleanupAttachedWorkspaces,
+  createGitWorkTree,
+} from './helpers/attached-workspace';
 
 // Coves seeded (REST-direct or form-indirect) get tracked here so the
 // afterEach hook can `DELETE /api/coves/<id>` them. Without cleanup,
@@ -41,6 +46,7 @@ test.afterEach(async ({ request }) => {
     }
   }
   createdCoveIds.length = 0;
+  cleanupAttachedWorkspaces();
 });
 
 test('NewTaskForm "Use a different cove" lets user override auto-match → new cove', async ({
@@ -49,12 +55,23 @@ test('NewTaskForm "Use a different cove" lets user override auto-match → new c
   const ts = Date.now();
   const coveAName = `E2E override cove-A ${ts}`;
   const newCoveName = `E2E override cove-C ${ts}`;
+  // `coveAFolder` / `initialCwd` stay pure path strings on purpose:
+  // `initialCwd` is only ever *typed* (to make the auto-match banner
+  // fire) and is swapped out before submit, and a `cove_folders` claim
+  // carries no filesystem contract. Only the path that reaches
+  // `POST /api/waves` has to exist on disk.
   const coveAFolder = `/srv/proj/foo-override-${ts}`;
   const initialCwd = `${coveAFolder}/sub`;
   // Non-overlapping cwd for the actual submit — independent
   // namespace so it can't collide with cove A's claim or any other
   // spec's cwds.
-  const finalCwd = `/tmp/playwright-override-${ts}`;
+  //
+  // #1147 S3 — this one IS submitted as an *attached* workspace, so it
+  // must exist and be a Git work tree the kernel can see. See
+  // `helpers/attached-workspace.ts` for why it lives under `$HOME`.
+  const finalCwd = createGitWorkTree(
+    attachedWorkspacePath(`neige-e2e-override-${ts}`),
+  );
 
   // Step 1 — seed cove A + its folder claim via REST. We'll navigate
   // into A so defaultCoveId === A.id, which is what triggers the

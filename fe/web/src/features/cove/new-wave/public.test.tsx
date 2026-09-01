@@ -3,10 +3,18 @@ import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { DirectoryListing } from '../../../ui/directory-browser/public.tsx';
 import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
 import { NewWaveForm } from './public.tsx';
 
 afterEach(cleanup);
+
+/** What the injected `listDirectory` port answers with. */
+const LISTING: DirectoryListing = {
+  path: '/srv/app',
+  parent: '/srv',
+  entries: [{ name: 'crates', path: '/srv/app/crates', isDirectory: true }],
+};
 
 /*
  * The Task field's accessible name. It is visually hidden — the field is one
@@ -57,12 +65,28 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
     submitting: false,
     error: null,
     templates: TEMPLATES,
+    listDirectory: vi.fn(() => Promise.resolve(LISTING)),
     titleRef: { current: null },
     onCancel: vi.fn(),
     onSubmit,
     ...overrides,
   };
   return { props, onSubmit, ...render(<NewWaveForm {...props} />) };
+}
+
+/**
+ * Walks the folder picker to `/srv/app` and confirms it.
+ *
+ * No dialog wraps the form here, so `DirectoryField` renders `DirectoryBrowser`
+ * inline; that it pushes into the *surrounding* dialog instead is the shell's
+ * test, because only there is there a dialog to push into.
+ */
+async function pickTheListedFolder(): Promise<void> {
+  await userEvent.click(screen.getByLabelText('Folder'));
+  // The browser loads on mount and mirrors the listing into its path input;
+  // `Select this directory` only enables once the two agree.
+  await screen.findByDisplayValue('/srv/app/');
+  await userEvent.click(screen.getByRole('button', { name: 'Select this directory' }));
 }
 
 function submitButton(): HTMLButtonElement {
@@ -138,14 +162,26 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
    *     as permanent rows. They live behind one trigger.
    *   * No **checkbox** until a template that takes input is chosen.
    *
-   * What has not changed: this dialog still does not ask for a folder, a cove,
-   * or a working directory. Those are the assertions that were load-bearing.
+   * What #1147 S3 changes, and why this is a restatement and not a deletion:
+   * the dialog **does** ask for a folder now, optionally and empty by default.
+   * The line that said `queryByLabelText('Folder')` is null is now the positive
+   * assertion below — it was standing for "this dialog does not collect a
+   * working directory", and that is no longer the truth: create time is the
+   * only entry into an attached workspace, so the control has to be here. The
+   * `Cove` and `Claim this folder` absences are untouched — the cove is the
+   * opener's, and the claim is implied by picking a folder (see `app/shell`).
    */
-  it('asks for the task and a template — never a folder, cove, or claim control', async () => {
-    renderForm();
+  it('asks for the task, a template and an optional folder — never a cove or claim control', async () => {
+    const { props } = renderForm();
     await fillTitle();
-    expect(screen.queryByLabelText('Folder')).toBeNull();
+    // Present, and empty: the placeholder is what an unset folder shows, and an
+    // unset folder is the managed default.
+    expect(screen.getByLabelText('Folder').textContent).toContain('Neige picks one for this wave');
+    // Empty means nothing was read: the picker only reaches its port on open.
+    expect(props.listDirectory).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Cove')).toBeNull();
+    // The folder is not the legacy "Working directory" field either: that one
+    // was a free-text path with a claim checkbox beside it.
     expect(screen.queryByLabelText(/Working directory/i)).toBeNull();
     expect(screen.queryByLabelText(/Claim this folder/)).toBeNull();
     expect(screen.queryByRole('combobox')).toBeNull();
@@ -421,10 +457,17 @@ describe('Start from — each template says which tasks it pre-sets', () => {
    * tabbable, because the picker is entered from its trigger and walked with
    * arrow keys.
    *
-   * Green when: the dialog's tab order is task → picker → actions, and every
-   * option carries `tabindex="-1"`.
+   * Green when: the dialog's tab order is task → picker → folder → actions,
+   * and every option carries `tabindex="-1"`.
    * Red when: the "N tasks" trigger (or any other `tabindex="0"`) comes back
    * inside the menu, or an option is left tabbable.
+   *
+   * The **folder** stop is #1147 S3's, and it is the one change to this case:
+   * the walk was three steps and is now four. That is the new truth, not a
+   * weakening — the picker is still exactly one stop, which is what the case
+   * exists to pin, and the folder button is one control contributing one stop.
+   * Its "Use a Neige workspace instead" companion is deliberately not in the
+   * walk: it does not exist until a folder has been chosen, and none has here.
    */
   it('costs the tab order nothing — the picker is one stop, options are not', async () => {
     renderForm();
@@ -443,12 +486,13 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     await fillTitle();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
     const order: Element[] = [];
-    for (let step = 0; step < 3; step += 1) {
+    for (let step = 0; step < 4; step += 1) {
       await userEvent.tab();
       if (document.activeElement !== null) order.push(document.activeElement);
     }
     expect(order).toEqual([
       templateTrigger(),
+      screen.getByLabelText('Folder'),
       screen.getByRole('button', { name: 'Cancel' }),
       submitButton(),
     ]);
@@ -492,5 +536,97 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     const shown = screen.getAllByRole('dialog');
     expect(shown.map((card) => card.id)).toContain(describedBy);
     expect(document.getElementById(describedBy)?.textContent).toContain('gather-facts');
+  });
+});
+
+/*
+ * #1147 S3 — the folder, and the two request shapes it decides.
+ *
+ * The kernel keys its *managed*-workspace branch on the **absence** of `cwd`
+ * (`routes/waves.rs`'s `cwd_omitted`): it allocates a directory, `git init`s
+ * it and owns it. A path plus `attach_folder` takes the *attached* branch
+ * instead, against a repository the user already has. Create time is the only
+ * entry into that second branch — `managed → attached` after the fact is an
+ * API with no UI — so all of the following is reachable from nowhere else.
+ */
+describe('The folder is optional, and its absence is the managed default', () => {
+  it('never requires a folder to submit', async () => {
+    renderForm();
+    expect(submitButton().disabled).toBe(true);
+    await fillTitle();
+    // The title alone enables it: nothing about the folder gates the submit,
+    // before or after the picker has been opened.
+    expect(submitButton().disabled).toBe(false);
+  });
+
+  /*
+   * The default, asserted on *key absence* and not on a value. `cwd: ''` and
+   * `cwd: undefined` both take the attached branch for anything that inspects
+   * the draft before serialization, and `''` is a path that cannot work.
+   * `toEqual` is what pins the absence; `toMatchObject` stays green on an
+   * extra key.
+   */
+  it('submits no cwd key at all when no folder was chosen', async () => {
+    const { onSubmit } = renderForm();
+    await fillTitle('  Ship the thing  ');
+    await userEvent.click(submitButton());
+    const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+    expect(draft).toEqual({ title: 'Ship the thing' });
+    expect(Object.hasOwn(draft, 'cwd')).toBe(false);
+  });
+
+  it('submits the picked absolute path as cwd once a folder is chosen', async () => {
+    const { onSubmit } = renderForm();
+    await fillTitle();
+    await pickTheListedFolder();
+    expect(onSubmit).not.toHaveBeenCalled();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({ title: 'Ship the thing', cwd: '/srv/app' });
+  });
+
+  /* Create time is the only entry into the attached choice, so the way *back*
+     to the default has to exist here too — there is no later screen for it. */
+  it('drops back to the managed default when the chosen folder is cleared', async () => {
+    const { onSubmit } = renderForm();
+    await fillTitle();
+    await pickTheListedFolder();
+    await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
+    await userEvent.click(submitButton());
+    const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+    expect(draft).toEqual({ title: 'Ship the thing' });
+    expect(Object.hasOwn(draft, 'cwd')).toBe(false);
+  });
+
+  it('offers no way back before a folder is chosen — there is nothing to clear', () => {
+    renderForm();
+    expect(screen.queryByRole('button', { name: 'Use a Neige workspace instead' })).toBeNull();
+  });
+
+  /*
+   * The picker reads through the injected port and never a transport of its
+   * own: `ui/` primitives may not know a transport exists, and `features/**`
+   * may not import `app/**`, so the only route to the filesystem is the prop.
+   */
+  it('reads the directory through the injected port', async () => {
+    const { props } = renderForm();
+    await userEvent.click(screen.getByLabelText('Folder'));
+    await screen.findByDisplayValue('/srv/app/');
+    expect(props.listDirectory).toHaveBeenCalled();
+  });
+
+  /*
+   * The folder rides alongside #1209's template rather than replacing it: the
+   * two are collected by different controls and merged into one draft, and
+   * nothing else in this file proves the merge keeps both.
+   */
+  it('carries the folder and the chosen template on one draft', async () => {
+    const { onSubmit } = renderForm();
+    await fillTitle();
+    await chooseTemplate('Small change');
+    await pickTheListedFolder();
+    await userEvent.click(submitButton());
+    expect(onSubmit).toHaveBeenCalledWith({
+      title: 'Ship the thing', workflow_id: 'small-change', cwd: '/srv/app',
+    });
   });
 });

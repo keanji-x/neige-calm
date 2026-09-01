@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-// The shell's New wave dialog: one dialog, two entry points, title only.
-// `cove_id` is the opener's cove; the POST omits `cwd` / `attach_folder`.
+// The shell's New wave dialog: one dialog, two entry points. `cove_id` is the
+// opener's cove; the folder is optional and decides the whole request shape —
+// no folder omits `cwd` *and* `attach_folder` (the kernel's managed default),
+// a chosen folder sends both (#1147 S3).
 //
 // This drives the real router, the real QueryClient and the real form — the
 // wiring *is* the thing under test, and a fixture that re-implemented the
@@ -38,6 +40,15 @@ const TASK_LABEL = 'What this wave should do';
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 
+const LISTING = {
+  path: '/srv/app', parent: '/srv', entries: [{ name: 'crates', is_dir: true }],
+};
+
+/** The 409 `POST /api/waves` answers a folder clash with — no `error` key. */
+const CONFLICT = {
+  folder_id: 4, cove_id: 'c1', conflict_path: '/srv/app', conflict_kind: 'descendant',
+};
+
 /* #1209 — what `GET /api/wave-templates` returns, in the two shapes that
    matter: one template bound to a running plugin (an `input_schema`, therefore
    fields) and one that is not. */
@@ -51,12 +62,15 @@ const TEMPLATES = [
   },
 ];
 
-function harness(options: { templates?: unknown } = {}) {
+function harness(options: { templates?: unknown; waveCreate?: ApiTransportResponse } = {}) {
   const sent: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
       sent.push(request);
       const posted = request.body as { cove_id?: string } | undefined;
+      if (request.method === 'POST' && request.path === '/api/waves' && options.waveCreate) {
+        return Promise.resolve(options.waveCreate);
+      }
       if (request.path === '/api/wave-templates') {
         // `undefined` here is the read failing outright — the branch the
         // dialog must survive.
@@ -66,9 +80,10 @@ function harness(options: { templates?: unknown } = {}) {
           : Promise.resolve({ status: 200, statusText: 'OK', body: templates });
       }
       const body = request.path === '/api/coves' ? [COVE, OTHER]
-        : request.method === 'POST' && request.path === '/api/waves'
-          ? { ...COVE, id: 'w-new', cove_id: posted?.cove_id ?? 'c1', title: 'x', sort: 0 }
-          : [];
+        : request.path.startsWith('/api/fs/listdir') ? LISTING
+          : request.method === 'POST' && request.path === '/api/waves'
+            ? { ...COVE, id: 'w-new', cove_id: posted?.cove_id ?? 'c1', title: 'x', sort: 0 }
+            : [];
       return Promise.resolve({ status: 200, statusText: 'OK', body });
     },
   };
@@ -142,28 +157,121 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
   });
 
-  it('posts the opener\'s cove_id and omits cwd / attach_folder', async () => {
+  it('posts the opener\'s cove_id and omits cwd / attach_folder with no folder chosen', async () => {
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
-    // #1161 — establish the dialog is open *and exposed* first. The two
-    // `queryByLabelText` absence checks below would pass vacuously against a
+    // #1161 — establish the dialog is open *and exposed* first. The
+    // `queryByLabelText` absence check below would pass vacuously against a
     // dialog that never opened, and `getByLabelText` does no accessibility
-    // filtering, so neither of them can stand in for this wait.
+    // filtering, so it cannot stand in for this wait.
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
     expect(screen.queryByLabelText('Cove')).toBeNull();
-    expect(screen.queryByLabelText('Folder')).toBeNull();
+    /* #1147 S3 restated on top of #1209: the Folder control *is* here — this
+       assertion used to be `toBeNull()` — and it starts empty. Empty is what
+       "no folder chosen" looks like, and it is what the absence checks on the
+       body below are the consequence of. */
+    expect(screen.getByLabelText('Folder').textContent).toContain('Neige picks one');
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
     expect(body).toMatchObject({ cove_id: 'c2', title: 'Read it' });
     expect(body).toHaveProperty('theme');
+    // The managed-workspace branch is keyed on *absence*, not on a value:
+    // `cwd: null` and `attach_folder: false` are both a different kernel path.
     expect(body).not.toHaveProperty('cwd');
     expect(body).not.toHaveProperty('attach_folder');
+    expect(sent.some((request) => request.path.startsWith('/api/fs/listdir'))).toBe(false);
     // #1209 — Blank is the default, and Blank means the key is not on the wire
     // at all. `workflow_id: null` or `''` is a 400 from the kernel.
     expect(body).not.toHaveProperty('workflow_id');
     expect(body).not.toHaveProperty('workflow_input');
+  });
+
+  /*
+   * The other half of the same contract. `attach_folder: true` is not decorative
+   * — with it omitted the kernel refuses any path no cove has already claimed,
+   * so an attached create would 409 for exactly the folders a user is most
+   * likely to pick. It is a no-op when this cove already covers the path.
+   */
+  it('posts the picked folder as cwd with attach_folder: true', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+
+    await userEvent.click(await screen.findByLabelText('Folder'));
+    // The picker pushes into the *same* dialog rather than opening a second
+    // one — the frozen `DirectoryField` contract, and the reason this assertion
+    // is on the dialog's accessible name and not on a second dialog node.
+    expect(await screen.findByRole('dialog', { name: 'Choose a directory' })).toBeTruthy();
+    await screen.findByDisplayValue('/srv/app/');
+    await userEvent.click(await screen.findByRole('button', { name: 'Select this directory' }));
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
+    expect(body).toMatchObject({
+      cove_id: 'c1', title: 'Read it', cwd: '/srv/app', attach_folder: true,
+    });
+    expect(sent.some((request) => request.path === '/api/fs/listdir')).toBe(true);
+    // Attaching a folder is orthogonal to #1209's template choice: staying on
+    // Blank must still keep `workflow_id` off the wire.
+    expect(body).not.toHaveProperty('workflow_id');
+  });
+
+  /*
+   * The two features on one request. The folder and the template are collected
+   * by different controls and translated by different branches of
+   * `submitNewWave`, and nothing else proves the second spread does not
+   * clobber the first.
+   */
+  it('carries a chosen folder and a chosen template on the same POST', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
+
+    await userEvent.click(await screen.findByLabelText('Folder'));
+    await screen.findByDisplayValue('/srv/app/');
+    await userEvent.click(await screen.findByRole('button', { name: 'Select this directory' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
+
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    expect(createdWaveBodies(sent)[0]).toMatchObject({
+      cove_id: 'c1',
+      title: 'Read it',
+      workflow_id: 'small-change',
+      cwd: '/srv/app',
+      attach_folder: true,
+    });
+  });
+
+  /*
+   * The 409 body has no `error` key, so `ApiError.message` is the bare status
+   * text: without decoding it the user is told "Conflict" and nothing else —
+   * not which folder, not which cove, not what to do instead.
+   */
+  it('renders the structured folder conflict, not the word Conflict', async () => {
+    harness({
+      templates: TEMPLATES,
+      waveCreate: { status: 409, statusText: 'Conflict', body: CONFLICT },
+    });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
+    // The request, its rejection, and the re-render are three ticks the click
+    // does not await; the default 1s window is not enough under a loaded suite.
+    const alert = await screen.findByRole('alert', {}, { timeout: 5_000 });
+    expect(alert.textContent).toContain('/srv/app');
+    // `c1` is Work in the seeded cove list — the id must never reach the page.
+    expect(alert.textContent).toContain('cove “Work”');
+    expect(alert.textContent).not.toContain('c1');
+    expect(alert.textContent).not.toBe('Conflict');
   });
 
   /*

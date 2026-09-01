@@ -999,8 +999,8 @@
   why: >
     a11y-keyboard.spec.ts:851-858 — two Enters from the trigger is the documented keyboard
     path to Settings; item order is load-bearing for that.
-  source: web/e2e/a11y-keyboard.spec.ts:851-858
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:851
+  source: web/e2e/a11y-keyboard.spec.ts:874-881
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:874
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -1096,8 +1096,8 @@
   why: >
     wave-create-auto-match.spec.ts:112-120 — anchored on the testid so the locator survives
     copy tweaks; the visible copy starts with "Auto-matched to cove".
-  source: web/e2e/wave-create-auto-match.spec.ts:112-120
-  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:117
+  source: web/e2e/wave-create-auto-match.spec.ts:128-136
+  authoritative_test: web/e2e/wave-create-auto-match.spec.ts:133
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -1304,8 +1304,8 @@
   why: >
     wave-create-browse-cwd.spec.ts:116-126 — the walker is `GET /api/fs/listdir` running in
     the kernel container; the trailing slash in the input value is part of the contract.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:116-126
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:119
+  source: web/e2e/wave-create-browse-cwd.spec.ts:125-135
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:128
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -1323,8 +1323,8 @@
   why: >
     wave-create-browse-cwd.spec.ts:128-163 — closes the loop Browse → input → POST body →
     kernel row.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:128-163
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:131
+  source: web/e2e/wave-create-browse-cwd.spec.ts:137-172
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:140
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -1377,8 +1377,8 @@
   why: >
     a11y-keyboard.spec.ts:308-313 — the frontend's cache invalidation hangs off that event;
     a create that lands in the DB but emits nothing leaves every other surface stale.
-  source: web/e2e/a11y-keyboard.spec.ts:308-313
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:311
+  source: web/e2e/a11y-keyboard.spec.ts:331-336
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:334
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -1682,8 +1682,8 @@
     a11y-keyboard.spec.ts:717-722 — the landmark is what lets role-scoped queries disambiguate
     the row from the sidebar nav button of the same name; the row being a real button (not a
     div) is the #127 nested-interactive fix.
-  source: web/e2e/a11y-keyboard.spec.ts:330-341
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:724
+  source: web/e2e/a11y-keyboard.spec.ts:353-364
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:747
   owner_slice: features/cove/page
   intentional_omission: false
   runtime_layer: features
@@ -1797,8 +1797,8 @@
     #1148 A0 made `terminal` a stop word (it names a whole subsystem, so hitting it proves
     nothing), which left this statement with no anchor at all; the poll's two real carriers
     now do the anchoring.
-  source: web/e2e/a11y-keyboard.spec.ts:386-414
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:360
+  source: web/e2e/a11y-keyboard.spec.ts:409-437
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:383
   owner_slice: systems/terminal/card
   intentional_omission: false
   runtime_layer: systems
@@ -1833,8 +1833,8 @@
   why: >
     a11y-keyboard.spec.ts:584-590 — codex is the only built-in with a createSchema; the nested
     DirectoryBrowser also carries role="dialog", so the outer must be addressable by name.
-  source: web/e2e/a11y-keyboard.spec.ts:584-593
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  source: web/e2e/a11y-keyboard.spec.ts:607-616
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:554
   owner_slice: ui/dialog/modal
   intentional_omission: false
   runtime_layer: ui
@@ -1852,8 +1852,8 @@
   why: >
     a11y-keyboard.spec.ts:595-617 (slice 2 focus trap) — containment is measured against the
     outer `.modal-panel` precisely because the browser dialog lives INSIDE it.
-  source: web/e2e/a11y-keyboard.spec.ts:595-617
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  source: web/e2e/a11y-keyboard.spec.ts:618-640
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:554
   owner_slice: ui/dialog/modal
   intentional_omission: false
   runtime_layer: ui
@@ -1905,8 +1905,8 @@
   why: >
     a11y-keyboard.spec.ts:663-673 — F2 is the documented Windows-convention shortcut;
     `startRename()` does queueMicrotask focus + `.select()` so typing replaces.
-  source: web/e2e/a11y-keyboard.spec.ts:663-675
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
+  source: web/e2e/a11y-keyboard.spec.ts:686-698
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:655
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -1922,8 +1922,8 @@
     `wave.updated`, and RETURN FOCUS to the display span.
   why: >
     a11y-keyboard.spec.ts:677-689 — losing focus after commit strands a keyboard user mid-page.
-  source: web/e2e/a11y-keyboard.spec.ts:676-689
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:689
+  source: web/e2e/a11y-keyboard.spec.ts:699-712
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:712
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -1958,8 +1958,8 @@
   why: >
     a11y-keyboard.spec.ts:696-698,788-812 — the swap is optimistic in cache and confirmed
     asynchronously by the server ack, so assertions must wait on both halves.
-  source: web/e2e/a11y-keyboard.spec.ts:788-812
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:793
+  source: web/e2e/a11y-keyboard.spec.ts:811-835
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:816
   owner_slice: features/wave/list
   intentional_omission: false
   runtime_layer: features
@@ -1977,8 +1977,8 @@
     a11y-keyboard.spec.ts:814-822 — assertions must read `is-active`, NOT `toBeFocused`: the
     close button inside the active item can briefly capture focus after an optimistic
     re-render, and `is-active`/`aria-checked` are what AT actually consumes.
-  source: web/e2e/a11y-keyboard.spec.ts:814-827
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:825
+  source: web/e2e/a11y-keyboard.spec.ts:837-850
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:848
   owner_slice: features/wave/list
   intentional_omission: false
   runtime_layer: features
@@ -2288,8 +2288,8 @@
   why: >
     a11y-axe.spec.ts:400-404 — the roving-tabindex hook reads its internal `activeIndex` to
     decide which item to activate, so a synthetic keypress on the wrong item is a no-op.
-  source: web/e2e/a11y-axe.spec.ts:400-407
-  authoritative_test: web/e2e/a11y-axe.spec.ts:405
+  source: web/e2e/a11y-axe.spec.ts:403-410
+  authoritative_test: web/e2e/a11y-axe.spec.ts:408
   owner_slice: app/shell/add-panel
   intentional_omission: false
   runtime_layer: app
@@ -2706,7 +2706,7 @@
   why: >
     a11y-wave-cove-ops.spec.ts:896-919 (migration 0015 `ON DELETE CASCADE`) — orphaned folder
     claims would permanently block those paths from being claimed by any future cove.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:914-919
+  source: web/e2e/a11y-wave-cove-ops.spec.ts:918-923
   authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:847
   owner_slice: features/cove/folders
   intentional_omission: false
@@ -4253,8 +4253,8 @@
   why: >
     helpers/reset.ts:148-153 — the renderer-free card used everywhere a populated card surface is
     needed without a terminal/codex daemon.
-  source: web/e2e/helpers/reset.ts:154-176
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:739
+  source: web/e2e/helpers/reset.ts:164-186
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:762
   owner_slice: systems/cards/iframe
   intentional_omission: false
   runtime_layer: systems
@@ -4774,8 +4774,8 @@
   why: >
     wheel-wave-switch.spec.ts:92-95 — a real environment constraint that silently produces an
     empty terminal instead of a failure.
-  source: web/e2e/wheel-wave-switch.spec.ts:92-100
-  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:98
+  source: web/e2e/wheel-wave-switch.spec.ts:95-103
+  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:101
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
@@ -4875,3 +4875,108 @@
   verification_owner: e2e
   test_tier: browser
   migration: pending
+
+# ── #1147 S3 — choosing an existing directory when creating a wave (new `fe/`) ──
+# Mirrors the legacy E2E-CAP-WAVECREATE-014/015/016 directory-browser family,
+# re-anchored on the new app. The legacy rows stay `pending`: they describe
+# `web/`'s NewTaskForm, whose cwd field was *required* — the opposite default.
+
+- id: CAP-WAVEWORKSPACE-001
+  kind: capability
+  family: wave-workspace
+  statement: >
+    The new-wave form must offer an optional folder control, and with none chosen `NewWaveDraft`
+    must carry no cwd key at all, so `AppShell` posts neither cwd nor `attach_folder`.
+  why: >
+    The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
+    `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
+    attached branch, where the kernel neither creates nor reclaims the directory.
+  source: fe/web/src/features/cove/new-wave/public.tsx:147-158,303-309; fe/web/src/app/shell/public.tsx:174
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:160
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-002
+  kind: capability
+  family: wave-workspace
+  statement: >
+    Choosing a folder must post its absolute cwd together with `attach_folder` true; the flag may
+    not be omitted, and no `coves/resolve` pre-flight may decide it.
+  why: >
+    With the flag omitted the kernel refuses any path no cove has claimed ("is not claimed by any
+    cove", `routes/waves.rs`), i.e. exactly the folders a user is likeliest to pick; true is a
+    no-op when this cove already covers the path (same-cove arm), so a second wave in one
+    repository does not conflict. The legacy resolve round trip only ever chose false in that
+    same-cove case, which the kernel's in-transaction scan already reaches atomically.
+  source: fe/web/src/app/shell/public.tsx:159-176
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:197
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-003
+  kind: capability
+  family: wave-workspace
+  statement: >
+    The folder control must be the frozen `DirectoryField`, which pushes `DirectoryBrowser` into
+    the surrounding dialog — swapping that dialog's accessible name to "Choose a directory" —
+    rather than opening a second dialog.
+  why: >
+    Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
+    the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
+    break the focus trap the outer one owns.
+  source: fe/web/src/features/cove/new-wave/public.tsx:440-462
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:197-210
+  owner_slice: ui/directory-browser
+  intentional_omission: false
+  runtime_layer: ui
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-004
+  kind: capability
+  family: wave-workspace
+  statement: >
+    The listdir read must decode into the browser's listing shape: `is_dir` becomes `isDirectory`,
+    and every entry gets an absolute path built with the browser's own `joinDirectoryPath`.
+  why: >
+    The kernel names an entry without placing it (`fs.rs` `DirEntry` is name + is_dir), while the
+    picker navigates by entry path. A second copy of the join rule would drift from the one the
+    picker's own input bar uses; core may not import ui, so the owner's function is injected.
+  source: fe/core/domain/fs.ts:67-79; fe/web/src/app/providers/directory.ts:25-32
+  authoritative_test: fe/web/src/app/providers/directory.test.ts:34
+  owner_slice: app/providers
+  intentional_omission: false
+  runtime_layer: app
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-005
+  kind: capability
+  family: wave-workspace
+  statement: >
+    A wave-create folder clash must be rendered from the structured `FolderConflict` body — the
+    path, the owning cove's name, and a remedy that differs per conflict kind — never as the bare
+    status word, and never as a raw cove id.
+  why: >
+    The 409 body carries no error key, so the generic normaliser in core/api/client.ts leaves
+    `ApiError` holding the status text alone: undecoded, the only thing the user is told is
+    "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
+    by the shell and not by the form.
+  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:154-162
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:163
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated

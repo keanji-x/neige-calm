@@ -16,9 +16,9 @@ import { performApiRequest } from '../../../../core/api/client.ts';
 import type { ApiFailure, ApiOperation, ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import {
-  coveListOperation, createCoveOperation, deleteCoveOperation,
+  asFolderConflict, coveListOperation, createCoveOperation, deleteCoveOperation,
   sortedCoves, toCove, updateCoveOperation, visibleCoves,
-  type Cove, type CovePatchBody, type NewCoveBody,
+  type Cove, type CovePatchBody, type FolderConflict, type NewCoveBody,
 } from '../../../../core/domain/cove.ts';
 import {
   deriveReportTasks, hasLiveTaskRun, waveBacklinksOperation, waveTaskVerdictsOperation,
@@ -49,6 +49,19 @@ export class ApiError extends Error {
     this.name = 'ApiError';
     this.failure = failure;
   }
+}
+
+/**
+ * The structured folder clash inside a rejected mutation, or `null`.
+ *
+ * Lives beside `ApiError` because unwrapping it is the only step that needs to
+ * know this class exists; the decode and the wording are `core/domain/cove.ts`.
+ * `'body' in failure` is the narrowing: transport and decode failures never
+ * carry one, and reading `.body` off the union without it does not compile.
+ */
+export function folderConflictOf(error: unknown): FolderConflict | null {
+  if (!(error instanceof ApiError)) return null;
+  return 'body' in error.failure ? asFolderConflict(error.failure.body) : null;
 }
 
 /** TanStack Query wants a rejected promise; core reports failures as data. */

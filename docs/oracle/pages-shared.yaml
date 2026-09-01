@@ -2172,11 +2172,15 @@
   kind: invariant
   family: today-terminal-hook
   statement: >
-    Today wave 的 cwd 固定传 '/' 且 attach_folder: false —— system cove 被服务端豁免出 cove_folders 认领命名空间。
+    `createWave` 的 body 只有 `cove_id`、`title`、`theme` 三个键 —— **没有 cwd，也没有
+    attach_folder**，于是走内核的 managed 分支：由内核分配并初始化一个真能被 worker 取租约的目录。
+    这条不变量说的是「缺席」，所以按「在场的恰好是哪几个键」来陈述，否则 source-anchor 无从锚定。
   why: >
-    源码注释(#250 PR 2):"The server detects `cove.kind == System` and exempts this row from the
-    cove_folders claim namespace, so `attach_folder` is a no-op here."
-  source: web/src/hooks/useTodayTerminal.ts:177-195
+    #1147 S3 把这条反了过来。原文是「cwd 固定传 '/'，system cove 被豁免出 cove_folders 认领命名空间」，
+    豁免那半仍然成立，但 '/' 从来就不是一个工作区:该 wave 上任何 `kind: codex` 任务都会在
+    `git_repo_root_for_wave_cwd` 里死掉、只留一句 `spawn-failed`,正是 #1147 开的那个 bug。
+    S3 之后显式 cwd 的含义是「attach 这个已存在的仓库」并且会被校验,'/' 会直接 400。
+  source: web/src/hooks/useTodayTerminal.ts:177-206
   authoritative_test: NONE
   owner_slice: features/today/terminal
   intentional_omission: true

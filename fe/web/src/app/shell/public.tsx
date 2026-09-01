@@ -12,8 +12,13 @@
 // strings. The rail is a sibling of the outlet, so a dialog living inside the
 // cove route was unreachable from it; the shell is the nearest place that sees
 // both, and it already holds `useWorkspace` + `useWaveMutations`, which is
-// everything the dialog needs. `cove_id` is the opener's cove (hidden), and
-// the POST omits `cwd` / `attach_folder`.
+// everything the dialog needs. `cove_id` is the opener's cove (hidden).
+//
+// The form's Folder field is optional (#1147 S3): no folder ⇒ the POST omits
+// `cwd` *and* `attach_folder` and the kernel mints its own managed workspace;
+// a folder ⇒ both go out, and the wave is attached to a directory the kernel
+// will never move or delete. The shell owns that translation because it also
+// owns the failure it can produce — the structured 409 below.
 //
 // #1209 added the template picker, so the shell also owns the
 // `GET /api/wave-templates` read — for the same reason it owns the mutations,
@@ -25,11 +30,13 @@ import { createContext, useContext, useEffect, useRef } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
+import { folderConflictMessage } from '../../../../core/domain/cove.ts';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { createDirectoryLister } from '../providers/directory.ts';
 import {
-  ApiError, useCoveMutations, useWaveMutations, useWaveTemplates, useWorkspace,
+  ApiError, folderConflictOf, useCoveMutations, useWaveMutations, useWaveTemplates, useWorkspace,
 } from '../providers/queries.ts';
 import { useCurrentPath, useGo } from '../router/navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
@@ -74,6 +81,10 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const waveMutations = useWaveMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
   const go = useGo();
+  /* The picker's read, bound once here: `features/**` may not import
+     `app/**`, and `ui/directory-browser` may not know a transport exists, so
+     the port is created at the composition layer and passed down. */
+  const listDirectory = createDirectoryLister(transport, unauthorized);
   const readError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
@@ -145,10 +156,34 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
       // for anything that inspects the object before it is serialized.
       ...(draft.workflow_id === undefined ? {} : { workflow_id: draft.workflow_id }),
       ...(draft.workflow_input === undefined ? {} : { workflow_input: draft.workflow_input }),
+      /*
+       * Both keys or neither. `cwd` without `attach_folder` means "this path is
+       * already claimed by some cove", which the kernel answers with a 409
+       * whenever it is not — so the omitted-flag default is a request that
+       * fails for every folder the user has not already bound. `true` is what
+       * "I picked this folder for this cove" means, and it is a no-op when this
+       * cove already covers the path (`waves.rs`'s same-cove arm), so a second
+       * wave in the same repository does not conflict with the first.
+       *
+       * The pre-flight `GET /api/coves/resolve` the legacy form ran is
+       * deliberately not ported: its only effect was choosing `false` when some
+       * cove already covered the path, and the kernel's in-transaction scan
+       * already reaches that same answer without the round trip — and reaches
+       * it atomically, which a client-side pre-check cannot.
+       */
+      ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
     }).then((wave) => {
       setNewWaveCoveId(null);
       go({ name: 'wave', waveId: wave.id });
     }).catch((error: unknown) => {
+      const conflict = folderConflictOf(error);
+      if (conflict !== null) {
+        // The 409 body names a cove by id and carries no `error` key, so the
+        // generic message here would be the bare word "Conflict".
+        const owner = workspace.coves.find((cove) => cove.id === conflict.cove_id);
+        setCreateError(folderConflictMessage(conflict, owner?.name ?? null));
+        return;
+      }
       setCreateError(error instanceof ApiError ? error.message : 'Could not create the wave.');
     }).finally(() => { setCreating(false); });
   };
@@ -209,6 +244,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
             error={createError}
             templates={waveTemplates.templates}
             templatesError={waveTemplates.error}
+            listDirectory={listDirectory}
             onCancel={() => setNewWaveCoveId(null)}
             onSubmit={submitNewWave}
           />

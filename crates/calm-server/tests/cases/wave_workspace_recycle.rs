@@ -49,6 +49,21 @@ struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
+    /// #1147 S3 — the registry `delete_wave`'s teardown acts on.
+    ///
+    /// Held for the same reason the re-point suite holds it: the registry is
+    /// populated naturally (creating a wave registers a live spec-harness
+    /// runtime), so `teardown_wave_deletion`'s `harness.get`/`shutdown`/`remove`
+    /// loop does run under test — but nothing ever inspected the slot
+    /// afterwards, so removing the loop turned nothing red. Installing a
+    /// harness under a **known** runtime id is what lets a test name it and
+    /// assert it is gone. Measured on the re-point path; this path has the
+    /// identical shape, so it is covered here too rather than left as the same
+    /// latent gap.
+    harness: calm_server::harness::HarnessRegistry,
+    roles: CardRoleCache,
+    waves: WaveCoveCache,
+    shared_codex: Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
     tmp: TempDir,
 }
 
@@ -76,20 +91,19 @@ async fn boot() -> Boot {
         events.clone(),
         WriteContext::new(roles.clone(), waves.clone()),
     ));
+    let shared_codex = SharedCodexAppServer::new_fake_running_with_pending(sqlx_repo.clone(), None);
     let state = AppState::from_parts(
         repo,
         events,
         daemon,
         plugin,
         Arc::new(CodexClient::new_stub()),
-        Some(roles),
-        Some(waves),
+        Some(roles.clone()),
+        Some(waves.clone()),
     )
-    .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
-        sqlx_repo.clone(),
-        None,
-    ))
+    .with_shared_codex_appserver(shared_codex.clone())
     .with_workspace_root(workspace_root.clone());
+    let harness = state.harness.clone();
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -99,8 +113,54 @@ async fn boot() -> Boot {
         app,
         repo: sqlx_repo,
         workspace_root,
+        harness,
+        roles,
+        waves,
+        shared_codex,
         tmp,
     }
+}
+
+/// Install a real `SpecHarness` in the registry under the wave's live
+/// spec-harness runtime, and return that runtime id. Twin of the helper in
+/// `wave_workspace_repoint.rs`; see `Boot::harness` for why it exists.
+async fn install_live_harness(b: &Boot, wave_id: &str) -> String {
+    let runtime_id: String = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id LIMIT 1",
+    )
+    .bind(wave_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let card_id: String = sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id=?1")
+        .bind(&runtime_id)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let repo: Arc<dyn Repo> = b.repo.clone();
+    let (harness, _observations) = calm_server::harness::SpecHarness::run_unstarted_for_test(
+        calm_server::harness::SpecHarnessParams {
+            runtime_id: runtime_id.clone(),
+            wave_id: wave_id.to_string().into(),
+            card_id: card_id.into(),
+            thread_id: None,
+            repo,
+            events: calm_server::event::EventBus::new(),
+            card_role_cache: b.roles.clone(),
+            wave_cove_cache: b.waves.clone(),
+            daemon: b.shared_codex.clone(),
+            config: Default::default(),
+            snapshot: calm_server::harness::HarnessSnapshot::initial(0, Vec::new()),
+        },
+        8,
+    );
+    b.harness.insert(runtime_id.clone(), harness);
+    assert!(
+        b.harness.get(&runtime_id).is_some(),
+        "premise: harness live"
+    );
+    runtime_id
 }
 
 fn theme() -> Value {
@@ -199,6 +259,12 @@ fn user_repo(at: &Path) -> PathBuf {
         vec!["init", "-b", "main"],
         vec!["config", "user.name", "user"],
         vec!["config", "user.email", "user@example.com"],
+        // #1147 S3 — keep git from touching this repository behind our back;
+        // background maintenance after a commit leaves a lock file that a
+        // fingerprint pair can straddle. Measured on CI (git 2.55), invisible
+        // on a 2.39 host.
+        vec!["config", "gc.auto", "0"],
+        vec!["config", "maintenance.auto", "false"],
     ] {
         let status = Command::new("git")
             .arg("-C")
@@ -260,6 +326,31 @@ async fn attached_wave(b: &Boot, cove_id: &str, title: &str, path: &Path) -> Str
 /// ways the server could have taken ownership of a user's repository, and both
 /// show up here as a diff.
 fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    /// Git's **own** transient lock files under `.git/`, by exact name.
+    ///
+    /// Measured on CI (git 2.55) and not reproducible on this host (git 2.39):
+    /// background maintenance creates `.git/objects/maintenance.lock` after a
+    /// commit and removes it moments later, so a before/after pair straddling
+    /// that window reports `removed: …maintenance.lock` and blames the server
+    /// for a file it never saw. `user_repo` also turns maintenance off; this is
+    /// the half that does not depend on remembering to.
+    ///
+    /// **Named, and rooted at `.git/`, on purpose.** The first version matched
+    /// any `*.lock` anywhere, which was strictly wrong: it blinded the
+    /// fingerprint to `.git/config.lock` and `.git/index.lock` — the exact
+    /// files `workspace_materialize::clear_our_stale_git_locks` deletes — so
+    /// the one production routine that removes files from a repository became
+    /// invisible to the assertion whose entire job is "the server did not touch
+    /// the user's repository". It also hid a work-tree `Cargo.lock`. An
+    /// unexpected `*.lock` must fail this assertion, not be waved through.
+    fn is_transient_git_lock(rel: &Path) -> bool {
+        const NAMES: [&str; 2] = ["maintenance.lock", "gc.pid.lock"];
+        rel.starts_with(".git")
+            && rel
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| NAMES.contains(&name))
+    }
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"))
@@ -268,6 +359,9 @@ fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
         entries.sort();
         for path in entries {
             let rel = path.strip_prefix(root).unwrap().to_path_buf();
+            if is_transient_git_lock(&rel) {
+                continue;
+            }
             let meta = std::fs::symlink_metadata(&path).unwrap();
             if meta.file_type().is_symlink() {
                 let target = std::fs::read_link(&path).unwrap();
@@ -844,4 +938,37 @@ async fn the_trash_gc_expires_old_entries_on_the_next_delete() {
     assert!(!stale.exists(), "the expired trash entry was not swept");
     assert!(fresh.exists(), "a fresh trash entry was swept early");
     assert!(trash_entry_for(&b.workspace_root, &second_id).is_some());
+}
+
+/// `DELETE /api/waves/{id}` must take the wave's live spec harness out of the
+/// registry before it moves the directory.
+///
+/// Same shape, same latent gap as the re-point path, and the gap is an absent
+/// **assertion** rather than absent execution — a probe showed the loop runs in
+/// tests that install nothing, because creating a wave registers a live
+/// spec-harness runtime by itself. Nothing checked the slot afterwards, so
+/// deleting `teardown_wave_deletion`'s `harness.get` → `shutdown` → `remove`
+/// turned nothing red. A surviving harness is a live run loop whose process cwd
+/// follows the inode — it keeps writing into the directory after it has been
+/// renamed into `.trash`, until the GC erases the lot.
+///
+/// Running a subset of this suite locally: pass `--no-fail-fast`, or a stop at
+/// the first failure will under-report which tests a mutation actually kills.
+#[tokio::test]
+async fn deleting_a_wave_takes_its_live_harness_out_of_the_registry() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let runtime_id = install_live_harness(&b, &wave).await;
+
+    let (status, body) = delete_wave(&b, &wave).await;
+    assert_eq!(status, StatusCode::NO_CONTENT, "body={body}");
+
+    assert!(
+        b.harness.get(&runtime_id).is_none(),
+        "runtime {runtime_id} is still live in the registry after the wave was \
+         deleted; its run loop keeps writing into the directory that just moved \
+         to the trash"
+    );
+    assert!(!path.exists(), "the workspace should have been recycled");
 }

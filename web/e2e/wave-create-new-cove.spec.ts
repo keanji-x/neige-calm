@@ -21,6 +21,11 @@
 // cove_folders.UNIQUE(path).
 
 import { test, expect } from '@playwright/test';
+import {
+  attachedWorkspacePath,
+  cleanupAttachedWorkspaces,
+  createGitWorkTree,
+} from './helpers/attached-workspace';
 
 // Coves seeded (REST-direct or form-indirect) get tracked here so the
 // afterEach hook can `DELETE /api/coves/<id>` them. Without cleanup,
@@ -44,6 +49,7 @@ test.afterEach(async ({ request }) => {
     }
   }
   createdCoveIds.length = 0;
+  cleanupAttachedWorkspaces();
 });
 
 test('NewTaskForm "Create new cove" branch mints cove + claims cwd', async ({ page }) => {
@@ -81,10 +87,15 @@ test('NewTaskForm "Create new cove" branch mints cove + claims cwd', async ({ pa
   const title = `E2E new-cove wave ${ts}`;
   await form.getByLabel(/task description/i).fill(title);
 
-  // Per-spec cwd namespace — `/tmp/playwright-newcove-<ts>` belongs
+  // Per-spec cwd namespace — `$HOME/neige-e2e-new-cove-<ts>` belongs
   // to this run alone. No prior cove claims this prefix, so resolve
   // misses and the radio picker appears.
-  const cwd = `/tmp/playwright-newcove-${ts}`;
+  //
+  // #1147 S3 — this path is submitted as an *attached* workspace (and
+  // then becomes the new cove's folder claim), so it has to exist and
+  // be a Git work tree the kernel can see. See
+  // `helpers/attached-workspace.ts` for why it lives under `$HOME`.
+  const cwd = createGitWorkTree(attachedWorkspacePath(`neige-e2e-new-cove-${ts}`));
   await form.getByLabel(/working directory/i).fill(cwd);
 
   // The form defaults the cove choice to "Existing cove" because a

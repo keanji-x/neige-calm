@@ -624,6 +624,24 @@ pub async fn terminal_create_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    // #1147 S3 — there is deliberately NO workspace freeze here, and that is a
+    // measured decision rather than an omission. Design §更换与冻结 lists
+    // "terminal persistence" as a freeze point; see the design's 已知缺口 N17
+    // for why it lands in S6 instead:
+    //
+    //   * It is not load bearing yet. A terminal's `cwd` comes from the
+    //     request body or `default_cwd()` (`operation/terminal_adapter.rs`),
+    //     never from `waves.workspace_path`. S6 is the slice that makes
+    //     terminals land in the wave workspace, and that is the slice in which
+    //     a terminal row starts being a durable copy of the path.
+    //   * Writing `waves` from inside this transaction DEADLOCKS. Measured on
+    //     `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`:
+    //     the test hangs forever in `sqlx_sqlite::statement::unlock_notify::wait`.
+    //     The in-memory database runs in shared-cache mode, where locks are
+    //     per TABLE, and some other connection holds `waves` for the duration
+    //     of this flow. A `SELECT` on `waves` from here is fine; the `UPDATE`
+    //     never returns. Whoever adds the S6 freeze must put it somewhere that
+    //     does not take a `waves` write lock inside a terminal transaction.
     Ok(Terminal {
         id,
         card_id: p.card_id,

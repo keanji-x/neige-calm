@@ -22,6 +22,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use crate::support::git_helpers::attached_repo_fixture;
+
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
@@ -353,8 +355,15 @@ async fn launchpad_wave_carries_an_unfrozen_managed_workspace_on_both_branches()
     // pass on leftovers from branch 1: the adoption branch must rewrite both
     // columns through the single writer.
     sqlx::query(
+        // #1147 S3 — the stamp is scrambled to NULL, not to 99. S2 flipped it
+        // to 99 to keep the assertion non-vacuous, but S3's freeze latch makes
+        // a frozen launchpad row un-repointable, so a 99 here would fake a
+        // state nothing can produce (`wave_workspace_freeze_tx` excludes the
+        // system cove precisely so this row never gets a stamp) and would turn
+        // the adopt branch into a 409. `kind` and `path` still carry the
+        // scramble, so the rewrite assertions below still bite.
         "UPDATE waves SET purpose=NULL, workspace_path='/also-scrambled', \
-         workspace_kind='attached', workspace_frozen_at=99 WHERE id=?1",
+         workspace_kind='attached', workspace_frozen_at=NULL WHERE id=?1",
     )
     .bind(&wave_id)
     .execute(b.repo.pool())
@@ -395,7 +404,7 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     // route: a managed one (title-only) and an attached one (explicit cwd), so
     // the property below is neither empty nor all-launchpad.
     let cove = create_cove(&b, "Atlas").await;
-    let attached_dir = TempDir::new().unwrap();
+    let attached_dir = attached_repo_fixture("today-launchpad-under-root");
     create_wave(
         &b,
         serde_json::json!({
@@ -410,7 +419,7 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
         serde_json::json!({
             "cove_id": cove["id"],
             "title": "attached wave",
-            "cwd": attached_dir.path().to_string_lossy(),
+            "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -489,13 +498,13 @@ async fn no_attached_wave_is_ever_unfrozen() {
     // Both shapes in a *user* cove, minted through the production route —
     // otherwise the property is only tested against the row that motivated it.
     let cove = create_cove(&b, "Atlas").await;
-    let tmp = TempDir::new().unwrap();
+    let attached_dir = attached_repo_fixture("today-launchpad-never-unfrozen");
     create_wave(
         &b,
         serde_json::json!({
             "cove_id": cove["id"],
             "title": "user wave",
-            "cwd": tmp.path().to_string_lossy(),
+            "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -912,7 +921,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let cove = create_cove(&b, "Atlas").await;
-    let attached_dir = TempDir::new().unwrap();
+    let attached_dir = attached_repo_fixture("today-launchpad-shared-path");
     let managed_parent = create_wave(
         &b,
         serde_json::json!({
@@ -927,7 +936,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
         serde_json::json!({
             "cove_id": cove["id"],
             "title": "attached parent",
-            "cwd": attached_dir.path().to_string_lossy(),
+            "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -971,7 +980,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
          proves nothing about the scoping: {rows:?}"
     );
     let (shared_path, sharers) = &attached_sharing[0];
-    assert_eq!(shared_path, &attached_dir.path().to_string_lossy());
+    assert_eq!(shared_path, &attached_dir);
     assert!(
         sharers.contains(&attached_child) && sharers.len() == 2,
         "expected exactly the attached parent and its child on {shared_path}: \
