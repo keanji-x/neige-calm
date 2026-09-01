@@ -1345,7 +1345,14 @@ export interface components {
             /** Format: double */
             sort?: number | null;
             theme: components["schemas"]["RequestTheme"];
-            title: string;
+            /**
+             * @description Issue #1211 — the title is no longer the wave's intent, so the client
+             *     may omit it entirely (the wave then gets the server-side default name
+             *     and the spec agent renames it via `calm.wave.rename`). The type stays
+             *     `String`: the empty string has always been a legal title and the
+             *     server applies no non-empty validation.
+             */
+            title?: string;
             workflow_id?: string | null;
             workflow_input?: Record<string, never> | null;
         };
