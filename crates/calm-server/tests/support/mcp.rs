@@ -27,6 +27,17 @@ pub const TEST_BUDGET: Duration = Duration::from_secs(5);
 pub struct CardBoot {
     pub server: Arc<McpServer>,
     pub repo: Arc<dyn Repo>,
+    /// Same handle as `repo`, kept concrete so a fixture can open a
+    /// transaction and mint through the production `*_tx` helpers.
+    pub sqlx: Arc<SqlxRepo>,
+    /// The caches the booted `McpServer` actually gates on — a fixture
+    /// that mints a card outside `card_with_codex_create_tx` must write
+    /// through THESE, not a private cache of its own, or the role gate
+    /// will see a card with no role.
+    pub card_role_cache: CardRoleCache,
+    pub wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache,
+    /// Home wave of the minted card(s).
+    pub wave_id: calm_server::ids::WaveId,
     pub events: EventBus,
     pub card_id: String,
     /// Other card id tests may try to smuggle into tool args to prove the
@@ -153,7 +164,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -170,6 +181,10 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     CardBoot {
         server,
         repo,
+        sqlx: sqlx_repo,
+        card_role_cache,
+        wave_cove_cache,
+        wave_id: wave.id.clone(),
         events,
         card_id,
         other_card_id,

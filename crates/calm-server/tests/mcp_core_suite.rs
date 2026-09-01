@@ -1,5 +1,7 @@
 mod support;
 
+#[path = "cases/mcp_assistant_tool_gate.rs"]
+mod mcp_assistant_tool_gate;
 #[path = "cases/mcp_emit_tools.rs"]
 mod mcp_emit_tools;
 #[path = "cases/mcp_plan.rs"]

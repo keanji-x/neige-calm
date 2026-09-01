@@ -1129,7 +1129,7 @@ export interface components {
          * @description Authorization role persisted on each card and enforced by `role_gate`.
          * @enum {string}
          */
-        CardRole: "worker" | "spec" | "reportcard";
+        CardRole: "worker" | "spec" | "reportcard" | "assistant";
         /**
          * @description Live runtime projection read from `worker_sessions` when a card is fetched
          *     or serialized.

@@ -39,7 +39,12 @@ export const runtimeKindSchema = z.enum([
   'shared-spec',
 ]);
 
-export const waveFsCardRoleSchema = z.enum(['worker', 'spec', 'reportcard']);
+export const waveFsCardRoleSchema = z.enum([
+  'worker',
+  'spec',
+  'reportcard',
+  'assistant',
+]);
 
 export const waveFsCardMetaSchema = z.object({
   created_at: z.number(),

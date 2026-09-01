@@ -16,8 +16,15 @@
 //!
 //! ## Authorization
 //!
-//! All three tools require the caller's per-call card to be a
-//! `CardRole::Spec`. We re-use [`require_role`] for the soft gate; the
+//! The two write tools require the caller's per-call card to be a
+//! `CardRole::Spec`. `calm.report.read` additionally accepts
+//! `CardRole::Assistant` (#1189): it is the only source of `docRev` and
+//! the per-block `rev`s, so an assistant that could not call it could
+//! never form the `if_doc_rev` / `if_rev` a block-channel write needs.
+//! The assistant's response body is trimmed: `taskDiagnostics` (the
+//! dispatched-task runtime projection) is Spec-only, so opening the read
+//! does not hand the assistant the state `calm.plan.list` withholds.
+//! We re-use [`require_role`] / [`require_role_any`] for the soft gate; the
 //! eventized write itself routes through `card_update_tx` on the
 //! wave-report card row, which doesn't itself touch the role gate (the
 //! report card emits `CardUpdated` under its own card scope, which any
@@ -56,7 +63,7 @@ use crate::error::CalmError;
 use crate::mcp_server::framing::RpcError;
 use crate::mcp_server::registry::{
     AppContext, ToolCallIdentity, ToolDescriptor, ToolHandler, ToolHandlerFuture, ToolRegistry,
-    read_only_annotations, require_role, role_gated_write_annotations,
+    read_only_annotations, require_role, require_role_any, role_gated_write_annotations,
 };
 use crate::mcp_server::tools::lifecycle_args::{
     lifecycle_schema, message_schema, parse_write_args,
@@ -93,13 +100,15 @@ where
 fn read_descriptor() -> ToolDescriptor {
     ToolDescriptor {
         name: TOOL_REPORT_READ.into(),
-        description: "Spec-only: read the wave's report. Returns \
+        description: "Spec + Assistant: read the wave's report. Returns \
              `{ text, body, summary, schemaVersion, docRev, updated_at, \
              blocks, taskDiagnostics }` — `text` is the flat Markdown (`body` is a \
              legacy alias with the same value) and `blocks` is the \
              addressable index `[{ id, kind, rev }]` in document \
              order; `taskDiagnostics` is the read-time DB-aware task-block \
-             schedulability result. The report is made of blocks: address them with \
+             schedulability result and is returned to Spec callers only \
+             (it carries dispatched-task runtime state). \
+             The report is made of blocks: address them with \
              `calm.report.blocks.upsert` / `.move` / `.delete` (all \
              take `if_rev` for optimistic concurrency; see \
              `calm.report.blocks.kinds` for the block vocabulary). \
@@ -128,7 +137,13 @@ pub(crate) async fn report_read(
     identity: ToolCallIdentity,
     args: Value,
 ) -> Result<Value, RpcError> {
-    require_role(&identity, CardRole::Spec)?;
+    // #1189 — Assistant reads too. This tool is the ONLY source of
+    // `docRev` and the per-block `rev`s, and every block-channel write
+    // takes `if_doc_rev` / `if_rev`; keeping it Spec-only would leave the
+    // assistant unable to bootstrap the CAS handshake S2 opens up. The
+    // write channel (`calm.report.write` / `.edit`, which can carry
+    // lifecycle) stays Spec-only — that is the §3.2 dividing line.
+    require_role_any(&identity, &[CardRole::Spec, CardRole::Assistant])?;
     let with_markers = match args.get("with_markers") {
         None | Some(Value::Null) => false,
         Some(Value::Bool(b)) => *b,
@@ -168,7 +183,7 @@ pub(crate) async fn report_read(
         .iter()
         .map(|block| json!({ "id": block.id, "kind": block.kind, "rev": block.rev }))
         .collect();
-    Ok(json!({
+    let mut response = json!({
         "text": text,
         // Legacy alias — same value as `text`, kept so existing
         // consumers keyed on `body` keep working.
@@ -178,8 +193,19 @@ pub(crate) async fn report_read(
         "docRev": snapshot.doc_rev,
         "updated_at": snapshot.updated_at,
         "blocks": index,
-        "taskDiagnostics": snapshot.task_diagnostics,
-    }))
+    });
+    // #1189 review round 2 — `taskDiagnostics` is NOT report content. It
+    // is the read-time task/wave-tree projection (`status`, `statusDetail`,
+    // `gateResult`, `workerCardId`, `childWaveId`), i.e. exactly the class
+    // of dispatched-task runtime state `calm.plan.list` is kept Spec-only
+    // to withhold. Opening `report.read` to the assistant must not become a
+    // side door onto it, so the assistant gets the document (`text` /
+    // `body` / `summary` / `schemaVersion` / `docRev` / `updated_at` /
+    // `blocks`) and nothing else. Spec keeps the full payload.
+    if identity.role == CardRole::Spec {
+        response["taskDiagnostics"] = json!(snapshot.task_diagnostics);
+    }
+    Ok(response)
 }
 
 // ---------------------------------------------------------------------------

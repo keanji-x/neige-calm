@@ -60,6 +60,8 @@ export const cardRoleTones = {
   worker: 'neutral',
   spec: 'accent',
   reportcard: 'success',
+  // #1189 — wave-scoped assistant conversation card.
+  assistant: 'accent',
 } satisfies Record<CardRole, ViewerChipTone>;
 
 export function verdictTone(status: string): ViewerChipTone {
