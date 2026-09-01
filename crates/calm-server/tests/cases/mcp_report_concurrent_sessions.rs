@@ -20,8 +20,12 @@
 //!
 //!   1. has assistant **A** and assistant **B** — two distinct
 //!      `CardRole::Assistant` cards, two distinct non-root sessions —
-//!      each call `calm.report.read` for itself, and asserts the two reads
-//!      agree (they are genuinely racing from the same point);
+//!      each call `calm.report.read` for itself, and asserts both that the
+//!      two identities really are different (`assert_two_distinct_conversations`
+//!      — the one property that separates this file from the pre-existing
+//!      conflict cases, so it is the one property that must not be assumed)
+//!      and that the two reads agree (they are genuinely racing from the
+//!      same point);
 //!   2. lets A write with what A read → succeeds;
 //!   3. has B write with what B read, now stale → **`-32001`**;
 //!   4. asserts **B wrote nothing**: the persisted CRDT bytes, the read
@@ -32,6 +36,24 @@
 //!
 //! Covered write mouths: `blocks.upsert` (block-level `if_rev`),
 //! `blocks.move` (`if_doc_rev`) and `write_markdown` (`if_doc_rev`).
+//!
+//! ## What "B wrote nothing" does and does not compare
+//!
+//! Three persistence surfaces are compared byte-for-byte / value-for-value:
+//! the card's `body_crdt` blob, the read projection, and the event-log
+//! length. Three others are **not**: the tasks projection table, the
+//! wave-VCS manifest, and the *content* of the events (as opposed to their
+//! count).
+//!
+//! That is sound only because of a property of the current implementation,
+//! not of the contract: every one of those writes happens inside the same
+//! transaction as the report write, and the CAS runs first inside it, so a
+//! conflict rolls all of them back together — comparing them would be
+//! comparing the same rollback three more times. **If any of those writes
+//! ever moves out of the report-write transaction** (a post-commit hook, a
+//! background projector, an outbox drain), that reasoning dies and this
+//! file must grow explicit assertions for whichever surface moved: it is
+//! the only thing here that would not notice.
 //!
 //! Deliberately **not** here: any "you may not edit someone else's block"
 //! semantics. §3.5 rules that out of scope — CAS guarantees no lost update,
@@ -158,10 +180,58 @@ fn assert_same_starting_point(a: &Value, b: &Value) {
     );
 }
 
-fn assert_rev_conflict(err: calm_server::plugin_host::mcp::RpcError, mouth: &str) {
+/// **The distinguishing property of this whole file.** Every pre-existing
+/// conflict case is one session handing itself a stale rev; the only thing
+/// these three cases add is that the two writers are *two conversations*.
+/// Nothing else below would notice if that stopped being true: were
+/// `assistant_b_identity` to start returning A's card and A's session, all
+/// three cases would still pass — one session re-using an invalidated rev
+/// conflicts in exactly the same way, with the same `-32001` and the same
+/// "nothing was written" — and the file would have silently decayed back
+/// into the shape it exists to improve on. So the two identities are
+/// asserted distinct, on both axes the recorder gate resolves (card → role
+/// and wave; session → card), before either of them writes.
+fn assert_two_distinct_conversations(a: &ToolCallIdentity, b: &ToolCallIdentity) {
+    assert_ne!(
+        a.card_id, b.card_id,
+        "A and B must be two different assistant cards — one card writing \
+         twice is the single-session case the existing conflict tests \
+         already cover, and this file would then prove nothing new"
+    );
+    assert_ne!(
+        a.session_id, b.session_id,
+        "A and B must be two different sessions — §3.3's claim is about two \
+         conversations interleaving, and one session cannot express it"
+    );
+}
+
+/// Both sessions read for themselves and are proven to be (a) genuinely two
+/// conversations and (b) starting from the same revision.
+async fn read_both(boot: &Boot) -> (Value, Value) {
+    let a = assistant_identity(boot);
+    let b = assistant_b_identity(boot);
+    assert_two_distinct_conversations(&a, &b);
+    let a_read = read_as(boot, a).await;
+    let b_read = read_as(boot, b).await;
+    assert_same_starting_point(&a_read, &b_read);
+    (a_read, b_read)
+}
+
+/// -32001 is shared by the block-level (`if_rev`) and document-level
+/// (`if_doc_rev`) comparators, so the code alone does not say *which* CAS
+/// refused the write — a mutation that made the wrong one fire would still
+/// look green. `detail` is the fragment of the refusal that only one of them
+/// can produce, including the exact stale rev B was holding.
+fn assert_rev_conflict(err: calm_server::plugin_host::mcp::RpcError, mouth: &str, detail: &str) {
     assert_eq!(
         err.code, RPC_REV_CONFLICT,
         "{mouth}: the second writer must get -32001 (rev conflict), got: {err:?}"
+    );
+    assert!(
+        err.message.contains(detail),
+        "{mouth}: the refusal must be the one this mouth's CAS produces, \
+         naming the stale rev B held — expected to find {detail:?} in: {}",
+        err.message
     );
 }
 
@@ -176,9 +246,7 @@ async fn two_assistant_sessions_replacing_one_block_second_writer_gets_rev_confl
 
     // 1. Both sessions read for themselves. Neither rev below is written by
     //    this test — they come out of the tool.
-    let a_read = read_as(&boot, assistant_identity(&boot)).await;
-    let b_read = read_as(&boot, assistant_b_identity(&boot)).await;
-    assert_same_starting_point(&a_read, &b_read);
+    let (a_read, b_read) = read_both(&boot).await;
 
     let a_target = blocks(&a_read)[0].clone();
     let b_target = blocks(&b_read)[0].clone();
@@ -222,7 +290,18 @@ async fn two_assistant_sessions_replacing_one_block_second_writer_gets_rev_confl
     )
     .await
     .expect_err("B is writing over A's change with a stale block rev");
-    assert_rev_conflict(err, "blocks.upsert");
+    // The block-level comparator, naming B's block and the stale rev it held
+    // — not the document-level one, which shares the -32001 code.
+    assert_rev_conflict(
+        err,
+        "blocks.upsert",
+        &format!(
+            "rev conflict on block {}: current rev is {}, expected if_rev {}",
+            b_target["id"].as_str().expect("block id is a string"),
+            a_out["rev"],
+            b_target["rev"],
+        ),
+    );
 
     // 4. And B's bytes are nowhere.
     let after_b = persisted(&boot).await;
@@ -252,9 +331,7 @@ async fn two_assistant_sessions_reordering_blocks_second_writer_gets_doc_rev_con
     let boot = boot().await;
     seed(&boot).await;
 
-    let a_read = read_as(&boot, assistant_identity(&boot)).await;
-    let b_read = read_as(&boot, assistant_b_identity(&boot)).await;
-    assert_same_starting_point(&a_read, &b_read);
+    let (a_read, b_read) = read_both(&boot).await;
 
     let a_last = blocks(&a_read).last().expect("seeded blocks").clone();
     let b_last = blocks(&b_read).last().expect("seeded blocks").clone();
@@ -293,7 +370,16 @@ async fn two_assistant_sessions_reordering_blocks_second_writer_gets_doc_rev_con
     )
     .await
     .expect_err("B is reordering on top of A's move with a stale docRev");
-    assert_rev_conflict(err, "blocks.move");
+    // The document-level comparator, naming the docRev B held.
+    assert_rev_conflict(
+        err,
+        "blocks.move",
+        &format!(
+            "document revision conflict: current doc_rev is {}, expected if_doc_rev {}",
+            doc_rev(&after_a.read),
+            doc_rev(&b_read),
+        ),
+    );
 
     let after_b = persisted(&boot).await;
     assert_untouched(&after_a, &after_b, "blocks.move");
@@ -308,9 +394,7 @@ async fn two_assistant_sessions_rewriting_the_whole_document_second_writer_gets_
     let boot = boot().await;
     seed(&boot).await;
 
-    let a_read = read_as(&boot, assistant_identity(&boot)).await;
-    let b_read = read_as(&boot, assistant_b_identity(&boot)).await;
-    assert_same_starting_point(&a_read, &b_read);
+    let (a_read, b_read) = read_both(&boot).await;
 
     call_tool(
         &boot,
@@ -341,7 +425,15 @@ async fn two_assistant_sessions_rewriting_the_whole_document_second_writer_gets_
     )
     .await
     .expect_err("B is rewriting the whole document off a stale docRev");
-    assert_rev_conflict(err, "write_markdown");
+    assert_rev_conflict(
+        err,
+        "write_markdown",
+        &format!(
+            "document revision conflict: current doc_rev is {}, expected if_doc_rev {}",
+            doc_rev(&after_a.read),
+            doc_rev(&b_read),
+        ),
+    );
 
     let after_b = persisted(&boot).await;
     assert_untouched(&after_a, &after_b, "write_markdown");

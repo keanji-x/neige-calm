@@ -245,13 +245,21 @@ pub(crate) async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    // #1189 — the two assistant conversation cards. Payload is the one
+    // production mints (`spec_harness_start_adapter.rs:620`, via
+    // `minted_card_shape(HarnessProfile::Assistant)`): a v1 codex payload
+    // plus the `harness_profile` marker. It is not decoration — a card
+    // without that marker is invisible to the wave conversation list
+    // (`wave_conversations.rs:327`) and cannot receive a message
+    // (`plain_chat::card_is_wave_assistant`, `cards.rs:150`), so a fixture
+    // assistant card without it is not the thing production makes.
     let assistant_card = repo
         .card_create(NewCard {
             wave_id: wave.id.clone(),
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant"}),
         })
         .await
         .unwrap();
@@ -261,7 +269,7 @@ pub(crate) async fn boot() -> Boot {
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: Value::Null,
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant"}),
         })
         .await
         .unwrap();
@@ -399,9 +407,28 @@ pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
-/// #1189 S6 — the *other* assistant conversation on this same wave. Distinct
-/// card, distinct session, same wave and cove: exactly the two-token shape
-/// production mints when a user opens a second assistant chat on one wave.
+/// #1189 S6 — the *other* assistant conversation on this same wave: a
+/// distinct `CardRole::Assistant` card with the production `harness_profile`
+/// marker, a distinct live non-root `worker_sessions` row bound to it, same
+/// wave and cove.
+///
+/// **What this is not**: it is not minted by the production route. A real
+/// second conversation is born inside the harness-start operation
+/// (`spec_harness_start_adapter`), which also marks the card kernel-owned
+/// (`deletable = false`) and issues per-card / per-session MCP tokens that
+/// the transport then binds to the identity it hands a tool. Here the rows
+/// are inserted directly and the [`ToolCallIdentity`] is constructed by the
+/// test, so the token issuance and the transport's token → identity binding
+/// are out of frame — nothing in these tests could notice if they broke.
+///
+/// That is sound for what these tests claim, and only for that. The write
+/// path they exercise re-derives everything it authorizes on from the
+/// database: the recorder gate looks the `session_id` up in the real
+/// `worker_sessions` table, follows it to the real `cards.role`, and checks
+/// the real `cards.wave_id`. A hand-made identity that did not correspond to
+/// those rows would be refused before reaching any CAS. So the CAS
+/// conclusions in `mcp_report_concurrent_sessions.rs` hold; a claim about
+/// how conversations are *created* would not, and is not made here.
 pub(crate) fn assistant_b_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.assistant_b_card_id.as_str().to_string(),

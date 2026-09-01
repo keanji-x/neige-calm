@@ -7,37 +7,48 @@
  * served by the real server over the real HTTP surface — no mocked transport,
  * no fixture rows.
  *
- * ## What this job can and cannot reach
+ * ## The create really succeeds here, and that is the point
  *
  * `POST /api/waves/{id}/conversations` mints the card AND starts its codex
  * harness in one operation (`wave_conversations.rs`), so a 201 requires a live
- * shared codex app-server. The `fe e2e` job does not have one: `.github/
- * workflows/ci.yml` writes `CALM_CODEX_HOST_BIN=/bin/true` into `.env`, the
- * app-server exits before `initialize`, and the endpoint answers
+ * shared codex app-server. This spec previously accepted `201 | 500` because
+ * the job had none — and that made it prove far less than it looked like it
+ * did: the 500 is raised by the adapter's daemon preflight, which runs
+ * *before* `prepare_tx` mints the card, the session and the MCP token. A
+ * kernel that minted the card with the wrong role, without the
+ * `harness_profile` marker, or with no token at all would have returned the
+ * same 500 and this spec would still have been green. It pinned the browser's
+ * request contract and nothing about the thing the request asks for.
  *
- *   500 {"code":"internal","error":"internal: shared codex app-server is not
- *        running (last error: … exited before initialize …); supervisor is
- *        retrying in the background — retry shortly"}
+ * So the job now runs a codex app-server: `ci.yml` points
+ * `CALM_CODEX_HOST_BIN` at the `osc-probe-child` fixture binary, which answers
+ * `initialize` / `thread/start` / `turn/start` over the app-server socket
+ * (`crates/calm-server/tests/fixtures/osc-probe-child/appserver.rs`) — the
+ * same stand-in the Rust integration suites already use, and the reason they
+ * can assert 201 on wave create. 201 is therefore required, not tolerated.
  *
- * — measured against a real `calm-server` run with `CALM_CODEX_BIN=/bin/true`,
- * in ~17ms, not a hang. So "the conversation appears in the list" is not
- * assertable here, and pretending otherwise would mean either a test that
- * always skips or one that asserts nothing.
+ * What this file pins:
  *
- * What IS assertable, and is what this file pins:
- *
- *   1. the wave page reads its conversations from the real endpoint and renders
- *      the empty list — the `'rows'` arm S5 replaced the spec-card fork with;
+ *   1. the wave page **reads** its conversations from the real endpoint — the
+ *      `'rows'` arm S5 replaced the spec-card fork with — and renders the list
+ *      that comes back;
  *   2. the `+` is there, on an ordinary wave, and opens a draft;
  *   3. the first message produces **exactly one** POST, to the wave in the URL
  *      and to no other conversations endpoint, carrying the `Idempotency-Key`
- *      the retry contract is built on and the typed words as its body;
- *   4. the kernel treats that request as well-formed — it reaches the harness
- *      start rather than being turned away on shape or routing (a 400/403/404/
- *      405 would mean the browser is talking to the wrong endpoint, or in the
- *      wrong shape, which is exactly the class of bug an e2e is for);
- *   5. a create that fails says so in the drawer and offers a retry, and no
- *      conversation row is invented for it.
+ *      the retry contract is built on and the typed words as its body — and
+ *      still exactly one once the whole interaction has settled;
+ *   4. the kernel mints a real assistant conversation for it: 201, and the
+ *      conversation in that response is **the same card** the list endpoint
+ *      then returns;
+ *   5. the page shows that one conversation and no other — an optimistic row
+ *      left beside the server's would be two rows for one card.
+ *
+ * The *failure* UX (the drawer says so, offers `Try again`, and invents no
+ * row) is not here: forcing a failure against a healthy stack would mean
+ * mocking the transport, which is the one thing this file exists not to do.
+ * It is covered where a fake transport is honest —
+ * `web/src/app/router/wave-conversation.test.tsx` (`[G5]`, and the
+ * `Try again` cases around it).
  *
  * Plus one block of pure-HTTP assertions on the endpoint's own guards, which
  * are deterministic in every environment.
@@ -62,6 +73,17 @@ function conversationCreates(requests: Request[]): Request[] {
     && /\/conversations$/.test(new URL(request.url()).pathname));
 }
 
+/** Every GET **the page** made to this wave's conversations endpoint. */
+function conversationReads(requests: Request[], waveId: string): Request[] {
+  return requests.filter((request) => request.method() === 'GET'
+    && new URL(request.url()).pathname === `/api/waves/${waveId}/conversations`);
+}
+
+/** The rows the conversation list is rendering, by their accessible names. */
+function conversationRows(page: Page) {
+  return page.getByRole('button', { name: /^Conversation / });
+}
+
 test.beforeEach(() => { createdCoveIds.length = 0; });
 test.afterEach(async ({ request }) => {
   for (const id of createdCoveIds) await request.delete(`/api/coves/${id}`);
@@ -79,15 +101,21 @@ test('starts a conversation from a wave page and sends the first message to that
 
   await page.goto(`/next/wave/${wave.id}`);
 
-  // (1) The list is the server's plus one row the route injects from the wave's
-  // own spec card — which is the `'rows'` arm S5 replaced the spec-card fork
-  // with, and it is visible here precisely because the two sources are
-  // different: the endpoint lists assistant conversations only, and on a fresh
-  // wave it lists none.
+  // (1) The list on screen is the server's, plus one row the route injects
+  // from the wave's own spec card. Both halves are asserted, because either
+  // one alone is satisfiable by a page that never asks the kernel anything:
+  // that the page *made the request* (this array is the browser's own
+  // traffic — `request.get` below is Playwright's, and never appears in it),
+  // and that a fresh wave's answer is empty while the spec row still shows.
+  await expect(page.getByRole('button', { name: 'Conversation Spec' })).toBeVisible();
+  expect(
+    conversationReads(requests, wave.id).length,
+    'the page must read its conversations from GET /api/waves/{id}/conversations',
+  ).toBeGreaterThan(0);
   const seeded = await request.get(`/api/waves/${wave.id}/conversations`);
   expect(seeded.ok()).toBe(true);
   expect(await seeded.json() as unknown[]).toEqual([]);
-  await expect(page.getByRole('button', { name: 'Conversation Spec' })).toBeVisible();
+  await expect(conversationRows(page)).toHaveCount(1);
 
   // (2) The `+`. On a wave, not a cove: this affordance did not exist here
   // before S5, and `source.kind === 'elsewhere'` still withholds it.
@@ -118,38 +146,47 @@ test('starts a conversation from a wave page and sends the first message to that
   // one.
   expect(await post.headerValue('idempotency-key')).toMatch(/[0-9a-f-]{36}/);
 
-  // (4) The kernel accepted the shape and the route. 201 is what a stack with a
-  // live codex answers; 500 is this job's app-server-less stack reaching the
-  // harness start and failing there. Anything else means the browser asked the
-  // wrong question.
-  expect(
-    [201, 500],
-    `unexpected status ${created.status()}: ${await created.text()}`,
-  ).toContain(created.status());
+  // (4) The kernel minted a conversation. Not `201 | 500`: with an app-server
+  // present, anything but 201 means the browser asked the wrong question or
+  // the mint itself failed, and both are exactly what this file is for.
+  expect(created.status(), `create failed: ${await created.text()}`).toBe(201);
+  const conversation = await created.json() as { id: string; waveId: string; kind: string };
+  expect(conversation.waveId).toBe(wave.id);
+  expect(conversation.kind).toBe('wave-assistant');
 
-  if (created.status() === 201) {
-    // A stack with codex: the answer is adopted and the row is listed.
-    await expect(page.getByRole('complementary', { name: 'Assistant' })).toBeVisible();
-    const listed = await request.get(`/api/waves/${wave.id}/conversations`);
-    expect(listed.ok()).toBe(true);
-    expect(await listed.json() as unknown[]).toHaveLength(1);
-    expect(errors).toEqual([]);
-  } else {
-    // (5) This job's stack. The failure is *said*, with a retry offered, and
-    // nothing is invented: an optimistic row here would be a conversation the
-    // server has never heard of.
-    expect(await created.json() as { error: string })
-      .toHaveProperty('error', expect.stringContaining('shared codex app-server is not running'));
-    await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
-    const listed = await request.get(`/api/waves/${wave.id}/conversations`);
-    expect(listed.ok()).toBe(true);
-    expect(await listed.json() as unknown[]).toEqual([]);
-    // Chromium logs the refused POST itself; that one is the subject of this
-    // branch, not a defect. Everything else still has to be silent — a crash
-    // while rendering the failure is exactly what this would otherwise hide.
-    expect(errors.filter((error) =>
-      !/Failed to load resource: the server responded with a status of 500/.test(error))).toEqual([]);
-  }
+  // The card in the response and the card in the list are one card. This is
+  // what the old `201 | 500` shape could not reach: it is the only assertion
+  // here that fails if the mint writes a card the list predicate does not
+  // match (wrong role, missing `harness_profile` marker, wrong wave).
+  const listed = await request.get(`/api/waves/${wave.id}/conversations`);
+  expect(listed.ok()).toBe(true);
+  expect(await listed.json() as { id: string }[]).toEqual([
+    expect.objectContaining({ id: conversation.id, waveId: wave.id }),
+  ]);
+
+  // (5) On screen: the conversation opened as a drawer, and behind it the
+  // list now holds the spec row and this one conversation. An optimistic row
+  // that was never reconciled with the server's would show up here as a third
+  // — a conversation the user can see twice, or one the kernel never made.
+  // (The drawer replaces the list while it is open, so the list is counted
+  // after closing it — the count is the assertion, not the drawer.)
+  await expect(page.getByRole('complementary', { name: 'Assistant' })).toBeVisible();
+  await page.getByRole('button', { name: 'Close conversation' }).click();
+  await expect(conversationRows(page)).toHaveCount(2);
+
+  // A late duplicate POST — precisely the double-mint `Idempotency-Key`
+  // exists to make harmless, and precisely what a retry-on-settle bug would
+  // emit — lands after `waitForResponse` has already returned, so the count
+  // above cannot see it. Give the interaction a bounded moment to finish
+  // misbehaving, then count again.
+  await page.waitForTimeout(1_000);
+  expect(
+    conversationCreates(requests),
+    'the first message must mint once, and still once after the interaction settles',
+  ).toHaveLength(1);
+  expect(await (await request.get(`/api/waves/${wave.id}/conversations`)).json() as unknown[])
+    .toHaveLength(1);
+  expect(errors).toEqual([]);
 });
 
 /*
