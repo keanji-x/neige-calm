@@ -119,8 +119,7 @@ async fn boot(cfg: StubConfig<'_>) -> Fixture {
         "permissions": perms, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     // Seed plugin row so plugin_token_set's FK is satisfied at spawn time.
     repo.plugin_install(calm_server::model::NewPlugin {

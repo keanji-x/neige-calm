@@ -91,8 +91,7 @@ async fn boot_with_wave(
         }, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     // Seed plugins row so plugin_token_set's FK is satisfied at spawn time
     // (the REST install handler does this in production; these direct-spawn

@@ -106,8 +106,7 @@ async fn boot(cfg: FxConfig<'_>) -> Fixture {
     });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     // Shared repo so the dispatcher's writes are observable from the test.
     let repo: Arc<dyn Repo> = Arc::new(
