@@ -236,6 +236,83 @@ impl DbBarrier {
     }
 }
 
+/// Captures `tracing` events into a buffer for the duration of one test.
+///
+/// The guard is **thread-local** (`tracing::subscriber::set_default`, not
+/// `set_global_default`), and every test in this file runs on a
+/// `#[tokio::test]` current-thread runtime — so every task the host spawns is
+/// polled on the same thread that installed the subscriber, and no other test
+/// in the binary is affected.
+///
+/// This exists so a test can observe a branch that, by design, changes nothing:
+/// a supervisor that wakes from its backoff and declines to act writes no event,
+/// no status and no row. Its `tracing::info!` is the only thing it leaves
+/// behind, and it is a production statement, not a test seam.
+struct LogCapture {
+    buf: SharedBuf,
+    _guard: tracing::subscriber::DefaultGuard,
+}
+
+#[derive(Clone)]
+struct SharedBuf(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedBuf {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedBuf {
+    type Writer = SharedBuf;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+impl LogCapture {
+    fn install() -> Self {
+        let buf = SharedBuf(Arc::new(std::sync::Mutex::new(Vec::new())));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .with_writer(buf.clone())
+            .finish();
+        Self {
+            buf,
+            _guard: tracing::subscriber::set_default(subscriber),
+        }
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.buf.0.lock().unwrap()).into_owned()
+    }
+
+    /// Block until `needle` appears in the captured log, or fail loud.
+    ///
+    /// Matching on the message text is deliberate and its failure mode is the
+    /// safe one: if the production string is reworded, this hangs to its
+    /// deadline and fails with the whole captured log attached — it cannot go
+    /// silently vacuous the way an arithmetic identity about `Instant`s can.
+    async fn wait_for(&self, needle: &str, timeout: Duration, why: &str) {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if self.text().contains(needle) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "never saw `{needle}` within {timeout:?} — {why}\n--- captured log ---\n{}",
+                self.text()
+            );
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
 /// Block until `id`'s lifecycle lock is held by somebody else.
 ///
 /// This is the positive observation that makes "the winner is inside its
@@ -1620,14 +1697,26 @@ async fn a16_disable_stops_the_plugin_before_it_writes_the_row() {
 /// supervisor through respawns twice, and the extra `running` lands inside the
 /// window.
 ///
-/// **The window's barrier** (file header rule 1; #1196 S1 review r4). Both ends
-/// are derived from observed events, not from wall clock since the test started:
-/// the lower end from the first `crashed` (the stale supervisor emits it and
-/// then sleeps), the upper end from the revive spawn (the newer supervisor
-/// cannot be due before its own instance existed). Both are asserted at the
-/// sample point, so a slow machine that closes the window fails by name instead
-/// of passing vacuously — which the previous absolute sample point (`t0 + 3750
-/// ms`, against a deadline of `t0 + s1 + 3000`) did for any `s1 > 750 ms`.
+/// **The window's barrier** (file header rule 1; #1196 S1 review r4/r5). The two
+/// ends are established by different means, and they are not equally strong:
+///
+/// * **Lower end — observed.** The test blocks until the stale supervisor logs
+///   its own give-up line. That is a direct observation that it woke, took the
+///   lifecycle guard, compared `run_epoch` and declined; there is no clock
+///   arithmetic and no unasserted margin left in it. r5 replaced the previous
+///   shape here, which slept to a computed instant and then asserted an
+///   inequality that the sleep had just made true — a tautology that could only
+///   have caught `sleep_until` returning early, resting on an unstated
+///   assumption (that a 400 ms margin covers the gap between the `crashed`
+///   commit the test sees and the `sleep` a few statements later).
+/// * **Upper end — asserted on the clock.** `revive_at.elapsed() < BACKOFF` is a
+///   real assertion (a slow machine fails it loudly), but it is not an
+///   observation: the newer supervisor is supposed to still be asleep at this
+///   point, and a sleeping task emits nothing to observe. It is a genuine lower
+///   bound on its deadline, since its `crashed` cannot precede its own spawn.
+///
+/// So one end is witnessed and one end is bounded, and the file no longer says
+/// "both ends are asserted" as if they were the same kind of claim.
 ///
 /// Mutation witnesses (each applied alone to `respawn_after_backoff`'s `ok`
 /// block):
@@ -1643,11 +1732,12 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     // the test started.
     const BACKOFF: u64 = 3_000;
     const STAGGER: u64 = 1_500;
-    /// Covers the gap between the `crashed` commit the test observes and the
-    /// `sleep` that starts a few statements later. Must stay well under
-    /// `STAGGER`, or the sample could drift past the NEWER supervisor's
-    /// deadline; the assertions below enforce both ends.
-    const MARGIN: Duration = Duration::from_millis(400);
+    /// The stale supervisor's give-up line, verbatim from `respawn_after_backoff`
+    /// check (a). Seeing it is a POSITIVE observation that the supervisor woke
+    /// AND read the epoch AND declined — strictly stronger than "its backoff has
+    /// elapsed", which is all the window this test used to compute could claim.
+    const STALE_GAVE_UP: &str = "backoff elapsed but the run instance is gone or has moved on";
+    let capture = LogCapture::install();
     let fx = boot_with(BootOpts {
         stub: CRASH_BIN,
         backoff: Some((vec![BACKOFF], Duration::from_secs(300), 50)),
@@ -1656,14 +1746,11 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     .await;
 
     fx.host.spawn(ID).await.expect("spawn");
-    // #1196 S1 review r4 — anchor on the OBSERVED first crash, not on `t0`.
-    // The old sample point was the absolute instant `t0 + 3750 ms`, while the
-    // stale supervisor is really due at `t0 + s1 + 3000` where `s1` is however
-    // long the first spawn-and-crash took. On this box `s1 ≈ 60 ms`, but any
-    // `s1 > 750 ms` — an entirely ordinary CI hiccup — puts the sample BEFORE
-    // the deadline it claims to be after, and the assertion becomes vacuous:
-    // green even under the mutations it exists to catch, with nothing in the
-    // test able to say so.
+    // #1196 S1 review r4 — wait for the OBSERVED first crash before staggering,
+    // so `STAGGER` is measured from the stale supervisor's sleep and not from
+    // `t0`. (r4 also used this instant to compute a sample point; r5 dropped
+    // that computation entirely — see the give-up wait below. `crashed1_at`
+    // survives only as a diagnostic.)
     wait_for_events(
         &fx,
         |ev| ev.iter().filter(|s| *s == "crashed").count() >= 1,
@@ -1701,28 +1788,33 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
         "setup: exactly the two spawns this test made"
     );
 
-    // Sample after the STALE supervisor's deadline and before the newer one's.
-    let sample_at = crashed1_at + Duration::from_millis(BACKOFF) + MARGIN;
-    tokio::time::sleep_until(sample_at).await;
-
-    // The two halves of the window, asserted rather than assumed — this is the
-    // positive observation the old absolute sample point lacked entirely.
+    // ---- the sample point, and the two halves of the window ---------------
     //
-    // Lower end: the stale supervisor emitted `crashed` and THEN slept BACKOFF,
-    // so `crashed1_at + BACKOFF` is at or past its deadline, and MARGIN covers
-    // the handful of statements between the commit we saw and the sleep.
-    assert!(
-        crashed1_at.elapsed() >= Duration::from_millis(BACKOFF) + MARGIN,
-        "the stale supervisor's backoff has NOT provably elapsed at the sample \
-         point ({:?} since its `crashed`, needed {BACKOFF} ms + {MARGIN:?}); \
-         the assertion below would be vacuous",
-        crashed1_at.elapsed()
-    );
+    // Lower end — a REAL observation, not an arithmetic identity. The earlier
+    // shape slept to `crashed1_at + BACKOFF + MARGIN` and then asserted
+    // `crashed1_at.elapsed() >= BACKOFF + MARGIN`, which the preceding
+    // `sleep_until` had just made true: it could only ever catch `sleep_until`
+    // returning early, and the barrier it *claimed* — that `MARGIN` covers the
+    // gap between the `crashed` commit the test saw and the `sleep` a few
+    // statements later — was an unasserted assumption. Waiting for the stale
+    // supervisor's own give-up line replaces both: when it appears, that
+    // supervisor has provably woken, taken the lifecycle guard, read
+    // `run_epoch`, found it stale and returned. No margin, no assumption.
+    capture
+        .wait_for(
+            STALE_GAVE_UP,
+            Duration::from_millis(BACKOFF) + Duration::from_secs(10),
+            "the stale supervisor never woke from its backoff and reached the \
+             epoch check, so the assertion below would say nothing",
+        )
+        .await;
     // Upper end: the newer supervisor's `crashed` cannot precede its own spawn,
     // so its deadline is at or after `revive_at + BACKOFF`. If the sample drifted
     // past that, "only two running events" would be a statement about a
-    // supervisor that has not woken yet either — also vacuous, in the other
-    // direction.
+    // supervisor that has not woken yet either — vacuous in the other direction,
+    // and this end has no positive observation available (the newer supervisor
+    // is *supposed* to still be asleep, and a sleeping task emits nothing), so
+    // it stays an assertion on the clock.
     assert!(
         revive_at.elapsed() < Duration::from_millis(BACKOFF),
         "the sample drifted past the NEWER supervisor's earliest possible \
@@ -1734,9 +1826,11 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     assert_eq!(
         ev.iter().filter(|s| *s == "running").count(),
         2,
-        "the stale supervisor's backoff has elapsed and it must have left the \
-         newer run instance alone; only `run_epoch` tells the two apart here — \
-         status, crash_attempt and stopping are identical. Saw {ev:?}"
+        "the stale supervisor has woken and given up (observed, {:?} after its \
+         own `crashed`) and it must have left the newer run instance alone; \
+         only `run_epoch` tells the two apart here — status, crash_attempt and \
+         stopping are identical. Saw {ev:?}",
+        crashed1_at.elapsed()
     );
 
     // Liveness half: the NEWER supervisor is still owed its respawn, so this is
@@ -2234,9 +2328,13 @@ async fn a20_config_disabled_ids_keep_their_error_codes_on_every_entry() {
 
     // ---- the documented residual, pinned so it cannot drift either way.
     // A REGISTERED APP in `plugins_disabled` does reach the delete and the
-    // restart, and only then fails with `Disabled` (→ 500). That is what this
-    // path did before #1196 touched it; it is a separate decision to change,
-    // and this arm is what makes changing it deliberate.
+    // restart, and only then fails with `Disabled` (→ 500). "Before #1196
+    // touched it" here means S1's first commit `695813b1` (parent: the merge
+    // `3dd32702`), at which #1164's registry+kind guard and the route's
+    // 404/400 arms were already in place and this cell already answered 500 —
+    // NOT `main`'s merge-base with this branch, which predates #1164 and mapped
+    // every rotate error to 500. It is a separate decision to change, and this
+    // arm is what makes changing it deliberate.
     let err = host
         .rotate_plugin_token(APP)
         .await
@@ -2369,4 +2467,129 @@ fn the_app_autospawn_wall_is_the_documented_one() {
     // either component.
     assert!(boot_autospawn_ceiling(1) > MAX_CONNECTOR_AUTOSPAWN_WALL);
     assert!(boot_autospawn_ceiling(1) > APP_AUTOSPAWN_WALL);
+}
+
+// ===========================================================================
+// #1196 S1 review r5 — the `n > 1` term of `boot_autospawn_ceiling` is executed,
+// not just computed
+// ===========================================================================
+
+/// Two wedged `app` plugins cost **two** walls, not one shared one.
+///
+/// `the_app_autospawn_wall_is_the_documented_one` asserts
+/// `boot_autospawn_ceiling(4) == 4 × APP_AUTOSPAWN_WALL + …`, but that is
+/// arithmetic on a `const fn`: it would hold verbatim if the loop fenced all
+/// apps with a single shared deadline, in which case the documented `N ×` shape
+/// would be a claim about a function nothing in boot uses that way. `a19` runs
+/// the fence for exactly one plugin, so no gate had ever executed the multiplier.
+/// This one does: it is the smallest `n` at which "additive" and "shared" give
+/// different answers.
+///
+/// Both plugins are wedged the way `a19` wedges its one — the lifecycle guard is
+/// taken by the test and never released — so each iteration must run its fence
+/// to expiry, and the only thing that can make boot return early is the fences
+/// sharing a budget.
+///
+/// Mutation witness: hoist the `app` branch's bound out of the loop — compute
+/// `let deadline = Instant::now() + self.app_autospawn_wall;` before the `for`
+/// and swap the per-iteration `tokio::time::timeout(self.app_autospawn_wall, …)`
+/// for `tokio::time::timeout_at(deadline, …)`. The second plugin then gets
+/// whatever is left of one wall (nothing), boot returns in ~1 × WALL, and the
+/// lower-bound assertion below goes red.
+#[tokio::test]
+async fn two_wedged_app_plugins_cost_two_walls_not_one() {
+    const A: &str = "test.lock.two.a";
+    const B: &str = "test.lock.two.b";
+    /// Small enough for a fast test, large enough that 1 × and 2 × cannot be
+    /// told apart by scheduling noise (the assertions leave a 300 ms band on
+    /// the low side and 3 s of headroom on the high side).
+    const WALL: Duration = Duration::from_millis(500);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let plugins_dir = tmp.path().join("plugins");
+    let plugins_data_dir = tmp.path().join("plugins-data");
+    std::fs::create_dir_all(&plugins_dir).unwrap();
+    std::fs::create_dir_all(&plugins_data_dir).unwrap();
+
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    for id in [A, B] {
+        let dir = write_plugin_with_args(&plugins_dir, id, ECHO_BIN, &[]);
+        repo.plugin_install(calm_server::model::NewPlugin {
+            id: id.into(),
+            version: "0.1.0".into(),
+            install_path: dir.display().to_string(),
+            manifest: json!({}),
+            enabled: true,
+            user_config: json!({}),
+        })
+        .await
+        .unwrap();
+    }
+
+    let (registry, report) = PluginRegistry::load_from_dir(&plugins_dir).unwrap();
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    assert!(
+        registry.get(A).is_some() && registry.get(B).is_some(),
+        "fixture: boot must actually have two enabled app plugins to iterate"
+    );
+    let host = Arc::new(
+        PluginHost::new_full(
+            Arc::new(registry),
+            repo.clone(),
+            plugins_dir,
+            plugins_data_dir,
+            Vec::new(),
+            EventBus::new(),
+            calm_server::state::WriteContext::new(
+                calm_server::card_role_cache::CardRoleCache::new(),
+                calm_server::wave_cove_cache::WaveCoveCache::new(),
+            ),
+        )
+        .with_app_autospawn_wall(WALL),
+    );
+
+    // Wedge BOTH. Nothing in this test ever drops either guard, so neither
+    // iteration can finish early for a reason other than its own fence.
+    let _wedged_a = host.try_lock_lifecycle(A).expect("A's lock is free");
+    let _wedged_b = host.try_lock_lifecycle(B).expect("B's lock is free");
+
+    let started = Instant::now();
+    tokio::time::timeout(Duration::from_secs(20), host.autospawn_enabled())
+        .await
+        .expect("boot never returned even with both fences in place");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= 2 * WALL - Duration::from_millis(300),
+        "boot returned in {elapsed:?} for TWO wedged app plugins against a \
+         {WALL:?} wall. The two fences are sharing a budget, so \
+         `boot_autospawn_ceiling`'s `N ×` term describes something boot does \
+         not do — and with a shared budget the LAST plugin in \
+         `plugins_list_all()` order gets no bring-up time at all",
+    );
+    assert!(
+        elapsed < 2 * WALL + Duration::from_secs(3),
+        "boot took {elapsed:?}, well past the 2 × {WALL:?} the ceiling allows; \
+         something outside the fences is unbounded"
+    );
+
+    // The fixture has to have been in force for BOTH, not just the first: a
+    // plugin that was never reached is also a plugin that never started, and
+    // that would be indistinguishable from a fence firing if we only looked at
+    // wall clock. Neither may have been started, and — because this test holds
+    // both guards for its whole life — the timeout arm's `try_lock_lifecycle`
+    // fails for both, so both take the log-and-move-on branch and leave no
+    // runtime entry. (`a21` is the gate for the other branch, where the guard
+    // IS available and a terminal `Unavailable` must appear.)
+    for id in [A, B] {
+        assert!(
+            host.status(id).await.is_none(),
+            "{id}: the wedged guard means nothing may have started and the \
+             terminal arm cannot have run"
+        );
+        assert!(
+            host.try_lock_lifecycle(id).is_err(),
+            "{id}: the test still holds this guard; boot must not have taken it"
+        );
+    }
 }

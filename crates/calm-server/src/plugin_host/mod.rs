@@ -620,8 +620,21 @@ const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
 /// this literal would be invisible to CI.
 pub const APP_AUTOSPAWN_WALL: Duration = Duration::from_secs(30);
 
-/// **The** wall-clock ceiling on the whole boot autospawn loop, for a repo with
+/// The wall-clock ceiling on boot autospawn's **loop** — from the first
+/// iteration's start to the last iteration's end — for a repo with
 /// `app_plugins` enabled `app` plugins.
+///
+/// **What this does NOT bound, stated so the number is not read as more than it
+/// is.** [`PluginHost::autospawn_enabled_within`] opens with
+/// `self.repo.plugins_list_all().await`, before any fence exists, and that await
+/// is **unbounded**: a wedged event store makes boot stop there and never reach
+/// a single iteration, so no ceiling in this module — this one or
+/// [`MAX_CONNECTOR_AUTOSPAWN_WALL`], which has always had the same prelude
+/// outside it — fires at all. That is a real residual, registered here rather
+/// than argued away; closing it means a fence around the listing read, which is
+/// a different decision from fencing the loop and is not part of #1196 S1. The
+/// widening read that follows (`registry.get` per row) is in-memory and
+/// await-free, so the listing call is the only unbounded step in the prelude.
 ///
 /// The `app` half is `N ×` on purpose and is not a defect being papered over:
 /// app bring-up is a local fork/exec, the plugins are serial, and there is no
@@ -640,8 +653,12 @@ pub const fn boot_autospawn_ceiling(app_plugins: u32) -> Duration {
     )
 }
 
-/// **The** wall-clock ceiling on the connector phase of boot, given the loop
+/// The wall-clock ceiling on the connector phase of boot, given the loop
 /// budget it runs with — spawn, reconcile and every emission inside it.
+///
+/// Scoped to the loop, exactly like [`boot_autospawn_ceiling`]: the
+/// `plugins_list_all` read that precedes every iteration is outside it and
+/// unbounded. See that function's doc for the registered residual.
 ///
 /// One expression, so the number that is *documented* and the number that is
 /// *enforced* cannot drift: [`MAX_CONNECTOR_AUTOSPAWN_WALL`] is this function
@@ -1101,8 +1118,10 @@ impl PluginHost {
     /// `rotate_plugin_token`'s authoritative opening checks, in one place so the
     /// pre-lock probe and the in-guard decision cannot be two different rules.
     ///
-    /// #1196 S1 review r4 — this exists because the previous shape shared
-    /// [`Self::spawn_admission_check`] across `spawn` / `restart` / `rotate`, and
+    /// #1196 S1 review r4 — this exists because the previous shape shared one
+    /// `reject_unknown_before_locking` probe across `spawn` / `restart` /
+    /// `rotate` (introduced by this slice's own P1/P2 commit `1fc10775`, whose
+    /// first question was `plugins_disabled`), and
     /// the sharing was wrong for `rotate`: rotation's own first questions are
     /// "is it registered" and "is it an app", NOT "is it config-disabled". An id
     /// in `plugins_disabled` therefore stopped answering 404 (unregistered) /
@@ -1119,9 +1138,21 @@ impl PluginHost {
     ///
     /// Config-disabled is deliberately NOT checked here. A registered, enabled
     /// `app` in `plugins_disabled` still reaches the delete + restart and still
-    /// fails inside `spawn_under` with `Disabled` → 500, exactly as it did before
-    /// #1196 touched this path. That is a pre-existing wart, not a new one, and
-    /// `a20` pins it as such so it cannot change silently either way.
+    /// fails inside `spawn_under` with `Disabled` → 500.
+    ///
+    /// **Which baseline "as before" names.** Two different ones are easy to
+    /// confuse here, so both are spelled out:
+    /// * at `main`'s merge-base with this branch (`9976a66`), the rotate route
+    ///   had no registry lookup and no kind guard at all — *every* `HostError`
+    ///   became a 500. The 404/400 cells were introduced by **#1164** (`6065ef0a`,
+    ///   on this same branch), not by #1196;
+    /// * at #1196 S1's own first commit (`695813b1`, whose parent is the merge
+    ///   `3dd32702`), #1164's 404/400 mapping was already in place, and *that* is
+    ///   the baseline this paragraph means: the `Disabled` → 500 cell behaved
+    ///   then exactly as it does now.
+    ///
+    /// So it is a wart inherited from #1164's shape rather than one #1196 S1
+    /// added, and `a20` pins it as such so it cannot change silently either way.
     fn rotate_admission_check(&self, id: &str) -> Result<Manifest, HostError> {
         let Some(manifest) = self.registry.get(id) else {
             return Err(HostError::NotFound(id.to_string()));
@@ -1196,6 +1227,11 @@ impl PluginHost {
     /// test, and a test that only asserts "under 30 s" cannot tell the loop
     /// bound from the per-connector one.
     pub async fn autospawn_enabled_within(self: &Arc<Self>, connector_budget: Duration) {
+        // REGISTERED UNBOUNDED POINT. This await precedes every fence in this
+        // function, so neither `boot_autospawn_ceiling` nor
+        // `MAX_CONNECTOR_AUTOSPAWN_WALL` covers it: a wedged store stops boot
+        // here without a single iteration running. Both ceilings' docs say so
+        // explicitly; do not restate either of them as "boot's total".
         let rows = match self.repo.plugins_list_all().await {
             Ok(v) => v,
             Err(e) => {

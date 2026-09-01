@@ -501,6 +501,14 @@ impl Boot {
     /// like `AppState::new` does at boot. Calling this twice over the same
     /// `plugins_dir` + repo is our stand-in for a full service restart.
     fn host(&self) -> Arc<PluginHost> {
+        self.host_with_disabled(Vec::new())
+    }
+
+    /// [`Self::host`] with `config.plugins_disabled` populated — the operator's
+    /// kill switch. #1196 S1 review r5: the rotate regression r4 found was only
+    /// reachable for ids on this list, so an HTTP gate for it needs a host that
+    /// has one.
+    fn host_with_disabled(&self, plugins_disabled: Vec<String>) -> Arc<PluginHost> {
         let (registry, report) = PluginRegistry::load_from_dir(&self.plugins_dir).unwrap();
         assert!(
             report.skipped.is_empty(),
@@ -512,7 +520,7 @@ impl Boot {
             self.repo.clone(),
             self.plugins_dir.clone(),
             self.plugins_data_dir.clone(),
-            Vec::new(),
+            plugins_disabled,
             self.events.clone(),
             calm_server::state::WriteContext::new(
                 calm_server::card_role_cache::CardRoleCache::new(),
@@ -1239,9 +1247,14 @@ async fn rotate_token_with_no_registry_entry_has_no_side_effects() {
         json!({}),
     )
     .await;
-    assert!(
-        status.is_client_error(),
-        "an unprovable kind must fail CLOSED, got {status}: {body}"
+    // #1196 S1 review r5 — the exact code, not just "some 4xx". `is_client_error`
+    // would have stayed green if the id had started answering 400 (or, once the
+    // `plugins_disabled` variant below is in play, anything else in the 4xx
+    // range); the contract this cell owes is specifically 404.
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an unprovable kind must fail CLOSED as a 404, got {status}: {body}"
     );
     assert_eq!(
         b.repo.plugin_token_get(CONNECTOR_ID).await.unwrap(),
@@ -1252,6 +1265,111 @@ async fn rotate_token_with_no_registry_entry_has_no_side_effects() {
         state.plugin.status(CONNECTOR_ID).await.is_none(),
         "nothing may have been started"
     );
+}
+
+// ===========================================================================
+// #1196 S1 review r5 — the rotate error table, driven end to end over HTTP
+// ===========================================================================
+
+/// `POST /api/plugins/{id}/rotate-token` answers the exact documented status for
+/// both cells that are reachable at the HTTP layer, **with the ids on the
+/// operator's kill switch** — which is the combination the r4 regression needed.
+///
+/// Why this test and not the two halves that already existed. `a20`
+/// (`plugin_lifecycle_lock.rs`) pins which `HostError` each cell produces;
+/// `routes::plugins::rotate_error_mapping_tests` pins which status each
+/// `HostError` maps to. Both are real, but the conjunction of two tests is an
+/// argument, not an observation: nothing ran the route. The two tests above in
+/// this file *do* drive the route, but neither has a `plugins_disabled` entry,
+/// so neither could see the r4 defect — the shared pre-lock probe answered
+/// `Disabled` (→ 500) only for ids on that list.
+///
+/// Why only two cells. `a20`'s third rotate cell (a *registered app* on the kill
+/// switch, which legitimately reaches the delete and then 500s) is host-only by
+/// nature, and its GHOST cell is not reachable here in `a20`'s form: with no
+/// `plugins` row the route's own `plugin_get_by_id` answers 404 before the host
+/// is called at all, so the mapping would not be under test. The cell that IS
+/// reachable is "row present, registry absent" — an uninstall mid-flight, a
+/// manifest that failed to load, a moved `plugins_dir` — and that is what this
+/// drives.
+///
+/// Mutation witnesses (each applied alone to `routes::plugins::rotate_error_to_calm`):
+/// * fold the `HostError::NotFound` arm into the `other` catch-all → the ghost
+///   cell goes red (500, owed 404);
+/// * fold the `HostError::UnsupportedForKind` arm into the catch-all → the
+///   connector cell goes red (500, owed 400).
+#[tokio::test]
+async fn rotate_token_over_http_keeps_its_codes_for_ids_on_the_kill_switch() {
+    const GHOST: &str = "test.rotate.ghost";
+
+    let b = boot().await;
+    // A registered connector. Never brought up: rotation refuses on `kind`
+    // before any network contact, so an unroutable url is the honest fixture.
+    write_connector(
+        &b.plugins_dir,
+        "http://127.0.0.1:1/never-contacted",
+        1_000,
+        0o600,
+    );
+    // …and an id with a `plugins` row but no manifest on disk, so the registry
+    // cannot know it.
+    seed_row(&b, CONNECTOR_ID).await;
+    seed_row(&b, GHOST).await;
+
+    let host = b.host_with_disabled(vec![CONNECTOR_ID.to_string(), GHOST.to_string()]);
+    assert!(
+        host.registry().get(CONNECTOR_ID).is_some() && host.registry().get(GHOST).is_none(),
+        "fixture: the connector must be registered and the ghost must not"
+    );
+    let state = b.state(host);
+
+    // Token rows on both, so a stray delete anywhere is visible.
+    for id in [CONNECTOR_ID, GHOST] {
+        b.repo
+            .plugin_token_set(id, "planted-hash", i64::MAX)
+            .await
+            .expect("plant token row");
+    }
+
+    let (status, body) = post_json(
+        &state,
+        &format!("/api/plugins/{GHOST}/rotate-token"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "an id the registry does not know is a 404 even when it is also on the \
+         kill switch — being config-disabled is not rotation's opening \
+         question. Got {status}: {body}"
+    );
+
+    let (status, body) = post_json(
+        &state,
+        &format!("/api/plugins/{CONNECTOR_ID}/rotate-token"),
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "rotating a connector is a 400 even when it is also on the kill \
+         switch. Got {status}: {body}"
+    );
+
+    // Both refusals precede the delete and the restart, so nothing moved.
+    for id in [CONNECTOR_ID, GHOST] {
+        assert_eq!(
+            b.repo.plugin_token_get(id).await.unwrap(),
+            Some(("planted-hash".to_string(), i64::MAX)),
+            "{id}: the token row must NOT have been touched"
+        );
+        assert!(
+            state.plugin.status(id).await.is_none(),
+            "{id}: nothing may have been started"
+        );
+    }
 }
 
 // ===========================================================================

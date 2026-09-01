@@ -887,9 +887,21 @@ fn rotate_error_to_calm(id: &str, e: crate::plugin_host::HostError) -> CalmError
         // for a *registered app* named in `plugins_disabled`, i.e. after the
         // token row has already been deleted and the plugin already stopped, so
         // the request genuinely did do something and genuinely did not finish.
+        //
         // The cells that must NOT reach it — unregistered, and connector — are
-        // answered above and pinned by `a20`. Restoring them is what #1196 S1
-        // review r4 required; re-coding this one is a separate decision.
+        // answered above and pinned by `a20`. Precisely what "restored" means,
+        // since two baselines are easy to confuse: the 404/400 arms themselves
+        // were introduced by **#1164** (`6065ef0a`) and were never edited by
+        // #1196 — this whole `match` is byte-identical to the one at S1's first
+        // commit. What #1196 S1 broke was the *host* answer feeding them: its
+        // P1/P2 commit `1fc10775` put a shared `reject_unknown_before_locking`
+        // in front of rotate whose first question was `plugins_disabled`, so for
+        // an id on the operator's kill switch the host returned `Disabled` and
+        // these two arms stopped being reached at all. r4's fix was on the host
+        // side (`rotate_admission_check`); re-coding *this* arm is a separate
+        // decision. At `main`'s merge-base with this branch the route mapped
+        // every `HostError` to 500, but that predates #1164 and is not the
+        // baseline either statement is about.
         other => CalmError::Internal(format!("rotate failed: {other}")),
     }
 }
@@ -979,11 +991,19 @@ mod rotate_error_mapping_tests {
     //!
     //! The host-side half (which `HostError` each `plugins_disabled` cell
     //! actually produces) is pinned by
-    //! `tests/cases/plugin_lifecycle_lock.rs::a20_*`; this is the other half,
-    //! and only the two together state an HTTP contract. Splitting them is not a
-    //! compromise: the handler needs a live `AppState` + repo row to reach, and
-    //! the defect being pinned was entirely in the pairing of a `HostError` with
-    //! a status code.
+    //! `tests/cases/plugin_lifecycle_lock.rs::a20_*`; this is the other half —
+    //! the pairing of a `HostError` with a status code, which is where the r4
+    //! defect was.
+    //!
+    //! **These two do not add up to an HTTP contract on their own**, and r5
+    //! corrected an earlier version of this note that said they did: a
+    //! conjunction of two tests is an argument, and nothing here runs the
+    //! handler. The observation that does is
+    //! `tests/cases/connector_host.rs::rotate_token_over_http_keeps_its_codes_for_ids_on_the_kill_switch`,
+    //! which drives `POST /api/plugins/{id}/rotate-token` for both cells that
+    //! are reachable through the route. What this module buys on top of that is
+    //! cell-by-cell coverage of arms the route cannot reach — notably the
+    //! `Disabled` → 500 residual — at unit cost.
 
     use super::rotate_error_to_calm;
     use crate::error::CalmError;
