@@ -2452,6 +2452,14 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
 /// `connector_phase_ceiling(widened_connector_budget(...))`, the 31.5 s literal
 /// below also pins `widened_connector_budget` itself — previously the constant
 /// inlined its own copy of that `max` and nothing pinned the helper.
+///
+/// **#1196 S1 — the new lifecycle lock does not enter this formula, and that is
+/// not self-evident.** Every acquisition on the boot path happens *inside*
+/// `autospawn_enabled_within`'s `timeout_at` fence: `autospawn_one` takes it (or
+/// waits for it) within the fenced iteration body, and the budget-exhausted arm
+/// uses the **synchronous** `try_lock_lifecycle`, which cannot await and gives
+/// up immediately when the lock is held. So no acquisition can extend the phase
+/// past the fence, and the ceiling below is unchanged.
 #[test]
 fn the_connector_phase_ceiling_is_the_documented_one() {
     use calm_server::plugin_host::{
