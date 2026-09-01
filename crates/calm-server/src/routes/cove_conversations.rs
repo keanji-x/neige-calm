@@ -14,18 +14,22 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 
 use crate::actor::Actor;
+use crate::conversation_keys::derive_cove_conversation_keys;
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::model::{CoveConversationSummary, Wave};
 use crate::operation::spec_harness_start_adapter::{
-    HarnessProfile, PlainChatCardSeed, SpecHarnessStartOperationPayload,
+    HarnessProfile, LazyMintCardSeed, SpecHarnessStartOperationPayload,
 };
-use crate::operation::{OperationKey, OperationOutcome, Phase};
+use crate::operation::{OperationKey, OperationOutcome};
 use crate::per_card_lock::lock_card;
-use crate::routes::cards::{MAX_SPEC_INPUT_CHARS, SendSpecInputRequest, send_spec_input};
+use crate::routes::cards::{SendSpecInputRequest, send_spec_input};
+use crate::routes::conversations_shared::{
+    SPEC_HARNESS_START, first_message_digest, retryable_operation_key,
+    user_message_already_enqueued, validate_first_message,
+};
 use crate::routes::terminal_cards::{
     calm_error_from_operation_failure, parse_idempotency_key_header, stable_payload_hash,
 };
@@ -38,14 +42,6 @@ use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
 /// `codex-card` session and says nothing about the conversation being a shared
 /// cove chat.
 const COVE_CONVERSATION_KIND: &str = "shared-chat";
-
-const SPEC_HARNESS_START: &str = "spec-harness-start";
-
-/// Ceiling on the `#N` operation-key suffix search of
-/// [`retryable_operation_key`]. Reaching it means one `(cove, key)` pair
-/// already failed 64 times; answering 409 "this key is used up, pick another"
-/// beats looping.
-const MAX_OPERATION_KEY_ATTEMPTS: u32 = 64;
 
 /// Test-only rendezvous inside `create_cove_conversation`, placed exactly at
 /// the window F1 is about: after the mint operation settled, before the
@@ -207,7 +203,7 @@ pub(crate) async fn list_cove_conversations(
 ///
 /// None of this can produce a second conversation: the **card id** is a pure
 /// function of `(cove_id, Idempotency-Key)` and the `#N` suffix touches only
-/// the *operation* key (see [`derive_conversation_keys`] and its golden test).
+/// the *operation* key (see `conversation_keys::derive_cove_conversation_keys` and its golden test).
 pub(crate) async fn create_cove_conversation(
     State(s): State<RouteState>,
     State(w): State<WorkerState>,
@@ -230,20 +226,13 @@ pub(crate) async fn create_cove_conversation(
     // Validate the message before minting anything: an empty first message
     // must not leave a conversation behind.
     let text = body.text;
-    if text.trim().is_empty() {
-        return Err(CalmError::BadRequest("text must not be empty".into()));
-    }
-    if text.chars().count() > MAX_SPEC_INPUT_CHARS {
-        return Err(CalmError::BadRequest(format!(
-            "text must be at most {MAX_SPEC_INPUT_CHARS} characters",
-        )));
-    }
+    validate_first_message(&text)?;
     if s.repo.cove_get(&cove_id).await?.is_none() {
         return Err(CalmError::NotFound(format!("cove {cove_id}")));
     }
 
     let (wave, _created) = ensure_cove_chat_wave_inner(&s, actor.clone(), &cove_id).await?;
-    let derived = derive_conversation_keys(&cove_id, &idempotency_key);
+    let derived = derive_cove_conversation_keys(&cove_id, &idempotency_key);
 
     let payload = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
@@ -259,9 +248,14 @@ pub(crate) async fn create_cove_conversation(
         reset_harness_items: false,
         force_new_thread: true,
         profile: HarnessProfile::PlainChat,
-        create_card: Some(PlainChatCardSeed {
+        create_card: Some(LazyMintCardSeed {
             title: None,
             sort: None,
+            // Deliberately absent. The cove flavour's mint guard is the chat-wave
+            // check in `validate`, not the derived-id recomputation the wave
+            // flavour uses, and setting this would change every cove create's
+            // `payload_hash` for nothing.
+            idempotency_key: None,
         }),
         // Binds the body into `payload_hash` so "same key, different text" is
         // a 409 instead of a silent replay. Hash, not text — see the field's
@@ -323,7 +317,7 @@ pub(crate) async fn create_cove_conversation(
     //   2. `GET /api/coves/{cove}/conversations` lists that card, id and all.
     //      Nothing about the id is secret either: it is a public,
     //      deterministic SHA-256 of `(cove_id, Idempotency-Key)`, so anyone
-    //      holding both can compute it (see `derive_conversation_keys`).
+    //      holding both can compute it (see `conversation_keys::derive_cove_conversation_keys`).
     //   3. `POST /api/cards/{id}/spec/input` is a public endpoint on exactly
     //      that card and writes exactly this `harness.user_message.enqueued`
     //      kind (`routes/cards.rs::send_spec_input`).
@@ -398,142 +392,6 @@ pub(crate) async fn create_cove_conversation(
             ))
         })?;
     Ok((StatusCode::CREATED, Json(summary)))
-}
-
-/// Has this conversation card ever had a user message enqueued?
-///
-/// The truth read here is the same row the transcript, the tests and the audit
-/// log read — `harness.user_message.enqueued`, written by `send_spec_input`
-/// *after* the observation reached the harness queue. There is deliberately no
-/// separate "first message sent" flag: a write-only marker would have to be
-/// set before or after the send and would be wrong in one direction either way
-/// (double send, or a silently swallowed message).
-///
-/// Both scope columns are bound: `scope_wave` is indexed (`0007`), so the scan
-/// is bounded by one cove's chat wave rather than by every chat in the DB.
-///
-/// Durability premise, and it is a premise not a nice-to-have:
-/// `harness.user_message.enqueued` is **not** in `EVENTS_PRUNE_KINDS`
-/// (`calm-truth/src/events_prune.rs`). That allowlist is exact-kind and
-/// fails safe — a kind absent from it is permanent by construction — so this
-/// row outlives every retention pass and the dedup answer never decays.
-/// Adding this kind to the allowlist would silently re-open first-message
-/// double-send after the horizon; `first_message_dedup_kind_is_never_prunable`
-/// (in `events_prune.rs`) fails closed if anyone tries. If that ever has to
-/// change, this read must move to a marker that cannot be pruned.
-async fn user_message_already_enqueued(
-    w: &WorkerState,
-    wave_id: &str,
-    card_id: &str,
-) -> Result<bool> {
-    let pool = w.repo.sqlite_pool().ok_or_else(|| {
-        CalmError::Internal("cove conversations require a sqlite-backed repo".into())
-    })?;
-    let found: Option<i64> = sqlx::query_scalar(
-        r#"SELECT 1
-             FROM events
-            WHERE kind = 'harness.user_message.enqueued'
-              AND scope_wave = ?1
-              AND scope_card = ?2
-            LIMIT 1"#,
-    )
-    .bind(wave_id)
-    .bind(card_id)
-    .fetch_optional(&pool)
-    .await?;
-    Ok(found.is_some())
-}
-
-/// Pick the operation key to submit under.
-///
-/// The **card id** is untouched by this: it stays a pure function of
-/// `(cove_id, Idempotency-Key)`, which is the wall INV-CHAT-013(b) leans on —
-/// no suffix can ever produce a second card, because every attempt aims at the
-/// same id and `validate` refuses to re-mint an existing card.
-///
-/// The *operation* key is a different question. A terminally `Failed` op was
-/// fully compensated (the card is gone), so replaying its recorded failure
-/// forever would make the user's key a dead end — and slice 4 is expected to
-/// bind the key to a draft id, i.e. to the very message the user keeps
-/// pressing send on. So a `Failed` predecessor is stepped over with a `#N`
-/// suffix and the retry genuinely retries.
-///
-/// `Stuck` is deliberately NOT stepped over, and this is fail-closed on
-/// purpose, not an oversight: `Stuck` means compensation did **not** finish
-/// (`driver.rs` marks it on any compensation-step error and never re-drives
-/// it), so the derived card may still exist. Stepping over it would hand the
-/// user a 409 "card already exists" from `validate` instead — a worse answer,
-/// and one that hides an operation an operator has to look at. What the user
-/// sees under this key is the recorded `500 operation stuck, see DB`, until
-/// someone clears the row.
-async fn retryable_operation_key(s: &RouteState, base: &str) -> Result<String> {
-    for attempt in 1..=MAX_OPERATION_KEY_ATTEMPTS {
-        let key = if attempt == 1 {
-            base.to_string()
-        } else {
-            format!("{base}#{attempt}")
-        };
-        let existing = s
-            .operation_runtime
-            .find_by_kind_and_idempotency(SPEC_HARNESS_START, &key)
-            .await?;
-        match existing {
-            None => return Ok(key),
-            Some(op) if op.phase != Phase::Failed => return Ok(key),
-            Some(_) => continue,
-        }
-    }
-    // 409, not 500: nothing is broken server-side. This key has simply been
-    // used up by that many terminally failed attempts, and the actionable
-    // answer is "use a different Idempotency-Key", which a generic `internal`
-    // never conveys.
-    // Its own code, not the generic `conflict`: this route's other 409s mean
-    // "already exists, ignorable" or "your body disagrees with the key, fix
-    // the request", and a client cannot tell them apart from a status alone.
-    // `idempotency_key_exhausted` says the one thing that is actionable here —
-    // mint a new key.
-    Err(CalmError::IdempotencyKeyExhausted(format!(
-        "this Idempotency-Key exhausted its {MAX_OPERATION_KEY_ATTEMPTS} retry slots ({MAX_OPERATION_KEY_ATTEMPTS} failed attempts); retry under a new Idempotency-Key",
-    )))
-}
-
-/// SHA-256 of the first message, verbatim — no trim, no normalisation.
-///
-/// Verbatim on purpose: this is the value that decides whether "same key,
-/// different body" is a 409, so it has to change whenever the bytes the agent
-/// would receive change. `send_spec_input` also forwards the text untrimmed,
-/// so hashing the untrimmed string is what actually mirrors what is sent.
-fn first_message_digest(text: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(text.as_bytes());
-    hex::encode(hasher.finalize())
-}
-
-struct DerivedConversationKeys {
-    card_id: String,
-    operation_key: String,
-}
-
-/// Both ids are a pure function of `(cove_id, Idempotency-Key)`, which is what
-/// makes a retry land on the same card: the operation dedup catches the common
-/// case, and the deterministic card id makes even a dedup miss idempotent
-/// (`validate` refuses to re-mint an existing card).
-///
-/// Being deterministic, the card id is also **predictable**: the algorithm is
-/// right here and the inputs are a cove id and a header the client chose, so
-/// anyone holding both can compute the id before this handler returns it. That
-/// is fine — nothing is authorised by knowing it — but it is emphatically not
-/// a secret, and nothing may be built on the assumption that it is.
-fn derive_conversation_keys(cove_id: &str, idempotency_key: &str) -> DerivedConversationKeys {
-    let mut hasher = Sha256::new();
-    hasher.update(format!(
-        "cove-chat-conversation:{cove_id}:{idempotency_key}"
-    ));
-    let digest = hex::encode(hasher.finalize());
-    DerivedConversationKeys {
-        card_id: format!("conv-{}", &digest[..32]),
-        operation_key: format!("cove-chat-conversation-{digest}"),
-    }
 }
 
 async fn cove_chat_wave(s: &RouteState, cove_id: &str) -> Result<Option<Wave>> {
@@ -637,48 +495,5 @@ impl TryFrom<ConversationRow> for CoveConversationSummary {
             state,
             updated_at: row.updated_at,
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// INV-CHAT-013(b)'s load-bearing wall, pinned as a golden.
-    ///
-    /// The card id is a pure function of `(cove_id, Idempotency-Key)` and of
-    /// NOTHING else — no nonce, no timestamp, and in particular **no `#N`
-    /// operation-key suffix**. That is what makes "a retry can never mint a
-    /// second conversation" hold even when operation dedup does not fire:
-    /// `validate` refuses to re-mint a card that already exists, and every
-    /// attempt under one key aims at the same id.
-    ///
-    /// It is a golden rather than a self-consistency check on purpose: a
-    /// round-trip assertion (`derive(a) == derive(a)`) stays green if a nonce
-    /// is added to a memoized derivation, and the retry paths mask a broken
-    /// derivation behind the operation dedup's payload-hash 409 — so nothing
-    /// else in the suite fails for the right reason.
-    ///
-    /// That the `#N` retry suffix cannot reach the card id is a signature-level
-    /// fact, not something a test could falsify: `derive_conversation_keys`
-    /// takes `(cove_id, idempotency_key)` and has no parameter a suffix could
-    /// arrive through. A test asserting "the id contains no `#`" would pass
-    /// under every mutation and is deliberately not written.
-    #[test]
-    fn the_derived_card_id_depends_only_on_cove_and_idempotency_key() {
-        let derived = derive_conversation_keys("cove-1", "key-a");
-        assert_eq!(derived.card_id, "conv-7b12bb251f95129865ab81128125cbf5");
-        assert_eq!(
-            derived.operation_key,
-            "cove-chat-conversation-7b12bb251f95129865ab81128125cbf589c0a1e9e03c880294fa795f1e0f675f"
-        );
-
-        // Different key, different conversation — the derivation must not
-        // collapse distinct requests onto one card either.
-        let other = derive_conversation_keys("cove-1", "key-b");
-        assert_ne!(other.card_id, derived.card_id);
-        // Same key on another cove is another conversation.
-        let other_cove = derive_conversation_keys("cove-2", "key-a");
-        assert_ne!(other_cove.card_id, derived.card_id);
     }
 }

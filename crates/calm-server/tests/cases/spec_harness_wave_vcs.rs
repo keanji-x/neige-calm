@@ -236,6 +236,149 @@ async fn plain_chat_turn_does_not_refresh_or_read_wave_vcs() {
     harness.shutdown().await.unwrap();
 }
 
+/// #1189 A6 — the wave assistant makes the wave-VCS decision in two halves, and
+/// this pins both against each other.
+///
+/// * It **skips the per-turn transcript-refresh WRITE.** The premise of #1189 is
+///   N conversations on one wave; keeping the refresh would multiply a
+///   wave-scoped write transaction by N and contend with the spec harness's own
+///   per-turn refresh for the sqlite write lock. The sibling above asserts the
+///   same for a cove chat.
+/// * It **still receives the since-last-turn diff.** This is where the assistant
+///   differs from the cove chat, and it is the half that would be silently lost
+///   if `HarnessProfile::Assistant` were simply added to the plain-chat branch:
+///   an assistant whose job is answering questions about the wave and editing
+///   its report must see what changed under it. Skipping the refresh does not
+///   cost the block — `since_last_turn_block` falls back to the wave's current
+///   head when no refresh commit is supplied, which is what this test drives.
+#[tokio::test]
+async fn assistant_turn_skips_the_transcript_refresh_but_still_reads_the_wave_diff() {
+    let boot = boot().await;
+    // Shut the spec harness down first so every write and turn below is the
+    // assistant's; otherwise the spec's own refresh would mask the skip.
+    boot.harness.shutdown().await.unwrap();
+    let assistant_card = add_card_with_event(
+        &boot.repo,
+        &boot.events,
+        &boot.roles,
+        &boot.write,
+        &boot.wave_id,
+        &boot.cove_id,
+        "codex",
+        CardRole::Assistant,
+        json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+    )
+    .await;
+    // The baseline the assistant last saw…
+    let baseline_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .expect("wave has a vcs head");
+    // …and a change on the wave that landed after it, authored by somebody else.
+    let _other_card = add_card_with_event(
+        &boot.repo,
+        &boot.events,
+        &boot.roles,
+        &boot.write,
+        &boot.wave_id,
+        &boot.cove_id,
+        "codex",
+        CardRole::Worker,
+        json!({"schemaVersion": 1}),
+    )
+    .await;
+    let moved_head = wave_vcs::head(boot.repo.pool(), &boot.wave_id)
+        .await
+        .unwrap()
+        .expect("wave has a vcs head");
+    assert_ne!(
+        moved_head, baseline_head,
+        "the fixture must actually move the wave head, or the diff assertion is vacuous"
+    );
+
+    let runtime_id = new_id();
+    let thread_id = "thread-assistant-vcs".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    snapshot.last_seen_head = Some(baseline_head.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: runtime_id.clone(),
+            card_id: assistant_card.id.to_string(),
+            kind: WorkerSessionKind::CodexCard,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let refresh_commits = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM wave_vcs_commits \
+              WHERE wave_id = ?1 AND message = 'transcript refresh'",
+        )
+        .bind(boot.wave_id.as_str())
+        .fetch_one(boot.repo.pool())
+        .await
+        .unwrap()
+    };
+    let before = refresh_commits().await;
+
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id,
+        wave_id: boot.wave_id.clone(),
+        card_id: assistant_card.id.clone(),
+        thread_id: Some(thread_id),
+        repo: repo_dyn,
+        events: boot.events.clone(),
+        card_role_cache: boot.roles.clone(),
+        wave_cove_cache: boot.wave_cove_cache.clone(),
+        daemon: boot.daemon.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_millis(10),
+            debounce_max_wait: Duration::from_millis(100),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+    harness
+        .observe(Observation::UserMessage {
+            text: "what changed?".into(),
+        })
+        .unwrap();
+    wait_for_turn_count(&boot.daemon, 1).await;
+
+    assert_eq!(
+        refresh_commits().await,
+        before,
+        "an assistant turn must not add a wave-level transcript-refresh commit"
+    );
+    let text = turn_text(&boot.daemon, 0);
+    assert!(
+        text.contains("Wave state changes since your last turn"),
+        "the assistant lost the since-last-turn diff block: {text}"
+    );
+    assert!(
+        text.contains(short(&moved_head)),
+        "the diff block must be computed against the wave's CURRENT head, not \
+         the assistant's stale baseline: {text}"
+    );
+    harness.shutdown().await.unwrap();
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn add_card_with_event(
     repo: &SqlxRepo,

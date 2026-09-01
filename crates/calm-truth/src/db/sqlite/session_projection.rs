@@ -502,10 +502,34 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                WHERE ws.provider = ?1
                  AND (
                        ws.contract = ?2
+                       -- #1098 — a cove chat. Executor contract, worker role,
+                       -- `plain_chat` marker.
                        OR (ws.contract = 'executor'
                            AND c.role = 'worker'
                            AND c.kind = 'codex'
                            AND json_extract(c.payload, '$.harness_profile') = 'plain_chat')
+                       -- #1189 — a wave assistant. Structurally a sibling of the
+                       -- clause above (same executor contract, its own role +
+                       -- marker pair) and NOT covered by it: an assistant
+                       -- matches neither `contract = 'planner'` nor
+                       -- `role = 'worker'` nor the `plain_chat` marker, so
+                       -- without this arm a kernel restart mid-turn leaves the
+                       -- `worker_sessions` row running with no harness in
+                       -- memory: `GET /spec/run` answers dormant, and the reply
+                       -- to the in-flight turn is lost for good because no run
+                       -- loop is behind it any more. The conversation itself is
+                       -- not permanently stranded — the next `POST /spec/input`
+                       -- goes through `ensure_live_spec_harness`, which does not
+                       -- consult this selector and lazily rebuilds the harness —
+                       -- so the damage is one silently dropped turn plus a
+                       -- dormant-looking card until the user pokes it again.
+                       -- The literals below are pinned from the Rust side by
+                       -- `spec_harness_start_adapter::tests::
+                       -- boot_recovery_sql_literals_track_the_minted_card_shape`.
+                       OR (ws.contract = 'executor'
+                           AND c.role = 'assistant'
+                           AND c.kind = 'codex'
+                           AND json_extract(c.payload, '$.harness_profile') = 'assistant')
                  )
                  AND ws.state IN ('starting','running','idle','turn_pending')
                  AND ws.thread_id IS NOT NULL
