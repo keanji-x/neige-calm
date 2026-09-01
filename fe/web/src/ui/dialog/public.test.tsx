@@ -112,7 +112,7 @@ describe('Dialog behavior', () => {
    * frame. Yielding to that would leave the reader with no field focused and
    * nothing to type into, which is the original complaint in a quieter form.
    */
-  it('still honours the named target when focus landed on the panel chrome', () => {
+  it('does not treat the panel itself as a place the reader chose', () => {
     const frames = heldFrames();
     render(<Dialog open title="Test" onClose={vi.fn()}><input aria-label="Task" /></Dialog>);
     screen.getByRole('dialog').focus();

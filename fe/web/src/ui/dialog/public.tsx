@@ -114,8 +114,8 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
        * Opening focus is a courtesy for a reader who has not acted yet, so it
        * yields to one who has — but only to a real landing place. The test is
        * membership of `focusables(panel)` and nothing else, not
-       * `panel.contains(…)`, and the
-       * difference is two ways the looser test yields to nothing:
+       * `panel.contains(…)`, and the difference is two ways the looser test
+       * would yield to nothing:
        *
        *  - the panel carries `tabIndex={-1}`, so a mousedown on chrome (the
        *    title, the padding) makes the *panel* the active element. That is
@@ -141,10 +141,13 @@ export function Dialog({ open, onClose, title, hideTitleRow, hideClose, children
       if (active !== null && (reachable as readonly Element[]).includes(active)) return;
       /*
        * The named target is checked against the same list rather than trusted.
-       * `.focus()` on a `disabled` or hidden element is a silent no-op, and the
-       * background is `inert` by now, so focus stayed on `body` — a modal open
-       * with focus outside it, which is worse than picking the wrong control
-       * inside. Measured before the check existed: `insidePanel=false`.
+       * `.focus()` on a `disabled` or hidden element is a silent no-op, so
+       * focus simply stayed wherever it was — outside the panel. A modal open
+       * with focus outside it is worse than picking the wrong control inside.
+       * Measured before the check existed: `insidePanel=false`, with focus left
+       * on the opener. (In a browser the background is `inert` by then and the
+       * unfocusing steps would drop it to `body` instead; jsdom does not
+       * implement that, so the probe saw the opener. Outside either way.)
        *
        * This one predates #1161 and no caller passes an unusable ref today; it
        * is fixed here because this is the function being repaired and the
