@@ -336,16 +336,42 @@ impl PluginHost {
     /// republish it to registry + DB, and **respawn only if the row said
     /// `enabled`**.
     ///
-    /// The `enabled` bit and the install path both come from the row read
-    /// **before** the stop — that pre-read row is the one that decides whether
-    /// to respawn. An unconditional respawn would resurrect a disabled plugin.
+    /// The `enabled` bit and the install path both come from a row read
+    /// **inside the guard** — that row is the one that decides whether to
+    /// respawn. An unconditional respawn would resurrect a disabled plugin.
+    ///
+    /// **#1196 S1 review P0-1 — the probe may not supply decision values.** The
+    /// pre-guard probe below is an *existence* probe and nothing else. The
+    /// reachable interleaving it used to create: the probe reads `enabled =
+    /// true`, a concurrent `disable` takes the guard, stops the plugin and
+    /// commits `enabled = false`, releases; this reload then takes the guard and
+    /// respawns on the **stale** bit — terminal state `DB disabled + runtime
+    /// Running`, with nothing left to reconcile it. That is #1169 race 3 one
+    /// endpoint over. It applies to `install_path` too: an `install` that
+    /// re-materialized the tree in the same window would be read past.
+    ///
+    /// Why the probe goes through [`LifecycleDb::enabled_row`] rather than
+    /// [`Self::plugin_row_or_404`]: the port hands back an `Option<bool>` we
+    /// immediately discard, so there is no `Plugin` in scope before the guard
+    /// and the defect is not *expressible* here any more — which is a stronger
+    /// statement than "remember to re-read". It also gives the acceptance suite
+    /// the seam it needs to open the window deterministically (`a17`).
+    ///
+    /// The 404 shape is byte-identical to the probe it replaces: `enabled_row`
+    /// answers `Ok(None)` for a missing row, and the message is the same
+    /// `plugin {id}` this module has always produced.
     pub async fn reload(self: &Arc<Self>, id: &str) -> Result<Plugin> {
         // #1196 §2.3 — probe before guard. `reload`'s 404 is the one that is
         // load-bearing on its own: without the probe an unknown id falls
         // through to the manifest read and returns a 400. Behind the guard it
-        // would instead return 409 whenever the id were busy. Pure read.
-        let plug = self.plugin_row_or_404(id).await?;
+        // would instead return 409 whenever the id were busy. Pure read, and
+        // its VALUE is deliberately dropped on the floor.
+        if self.lifecycle_db.enabled_row(id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("plugin {id}")));
+        }
         let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
+        // The decision row. Read here, inside the guard, and NOT before it.
+        let plug = self.plugin_row_or_404(id).await?;
         // Stop first (NotFound is fine — could have crashed).
         match self.stop_under(&guard).await {
             Ok(()) => {}

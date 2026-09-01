@@ -586,6 +586,28 @@ pub const fn widened_connector_budget(supplied: Duration, widest_bringup: Durati
 /// bound exists to remove.
 const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
 
+/// #1196 S1 review P1-6 — wall-clock fence on ONE `app` plugin's boot autospawn
+/// iteration, the local-child mirror of the connector phase fence.
+///
+/// The `app` branch of [`PluginHost::autospawn_enabled_within`] had no bound at
+/// all. It reaches [`PluginHost::await_lifecycle`], which is unbounded on
+/// purpose, so a lifecycle guard nobody ever releases hangs boot silently and
+/// forever. The design's defence was "boot's only possible contender is a crash
+/// supervisor, whose work is itself bounded" — but §5 R6 is explicit that a
+/// timing argument is not a proof, and the argument is not even airtight: the
+/// guard is reachable from `pub` `try_lock_lifecycle`, and a supervisor's own
+/// `spawn_under` can park on a slow event store for as long as that store likes.
+///
+/// Sized against what an `app` bring-up actually is — fork/exec of a local child
+/// plus an `initialize` handshake plus a handful of persisted events — not
+/// against a network round trip; connectors have their own, much larger, budget.
+/// It is deliberately NOT part of [`MAX_CONNECTOR_AUTOSPAWN_WALL`]: that constant
+/// is the *connector phase* ceiling, and app plugins are outside it by design
+/// (see the `connector_elapsed` accounting). What this gives is a per-app-plugin
+/// bound where there was none, so boot's total is now finite for every plugin
+/// kind rather than for one of them.
+const APP_AUTOSPAWN_WALL: Duration = Duration::from_secs(30);
+
 /// **The** wall-clock ceiling on the connector phase of boot, given the loop
 /// budget it runs with — spawn, reconcile and every emission inside it.
 ///
@@ -1020,6 +1042,10 @@ impl PluginHost {
     /// `uninstall` could land between the kind check and the restart, and the
     /// restart would then respawn a plugin that no longer exists.
     pub async fn rotate_plugin_token(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        // Reject-only; see `reject_unknown_before_locking`. The kind guard in
+        // `rotate_plugin_token_under` already answers `NotFound` for an id the
+        // registry does not know, and it stays the authoritative one.
+        self.reject_unknown_before_locking(id)?;
         let guard = self.try_lock_lifecycle(id)?;
         self.rotate_plugin_token_under(&guard).await
     }
@@ -1138,8 +1164,43 @@ impl PluginHost {
                 .get(&plug.id)
                 .is_some_and(|m| !m.kind.is_app());
             if !is_connector {
-                if let Err(e) = self.autospawn_one(&plug.id).await {
-                    tracing::warn!(plugin_id = %plug.id, error = %e, "plugin autospawn failed");
+                // #1196 S1 review P1-6 — the app half gets a fence too. Same
+                // shape as the connector one below: it wraps the whole iteration
+                // (the lock wait, the spawn, and every emission either performs)
+                // rather than a named step inside it, so an await added here
+                // later is covered without anyone remembering to cover it.
+                match tokio::time::timeout(APP_AUTOSPAWN_WALL, self.autospawn_one(&plug.id)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => {
+                        tracing::warn!(plugin_id = %plug.id, error = %e, "plugin autospawn failed");
+                    }
+                    Err(_elapsed) => {
+                        let reason = format!(
+                            "plugin `{}` was cut off at boot: it did not finish starting \
+                             within {} ms (a wedged lifecycle lock, a stuck child, or a \
+                             slow event store). Enable it again once that is fixed.",
+                            plug.id,
+                            APP_AUTOSPAWN_WALL.as_millis()
+                        );
+                        tracing::warn!(plugin_id = %plug.id, "{reason}");
+                        // Terminal + observable, exactly as §2.5 requires and for
+                        // the same reason the connector arm below does it: an id
+                        // reported as if it had never been enabled is the failure
+                        // this entry exists to prevent. `try` and not `await`:
+                        // the overwhelmingly likely holder is the guard we just
+                        // gave up waiting for, and blocking on it here would
+                        // reintroduce the very unbounded wait this fence removes.
+                        match self.try_lock_lifecycle(&plug.id) {
+                            Ok(g) => {
+                                self.publish_unavailable_under(&g, None, reason).await;
+                            }
+                            Err(_) => tracing::warn!(
+                                plugin_id = %plug.id,
+                                "app autospawn was cut off and the lifecycle lock is \
+                                 still held; leaving the runtime state to its holder"
+                            ),
+                        }
+                    }
                 }
                 continue;
             }
@@ -1219,9 +1280,16 @@ impl PluginHost {
     /// and `continue`: that leaves `enabled = true`, no live entry, and the
     /// event log stopped at whatever the previous operation said — exactly the
     /// "looks like it was never enabled" state the `Unavailable` entry exists to
-    /// prevent. Boot's only possible contender is a crash supervisor, so the
-    /// retry waits rather than guessing, and the wait is bounded by that
-    /// supervisor's own work.
+    /// prevent. So the retry **waits** rather than guessing.
+    ///
+    /// The wait itself is unbounded here and that is deliberate — this function
+    /// has no budget of its own and no caller to answer. #1196 S1 review P1-6:
+    /// the bound lives in both callers instead, because it must cover the spawn
+    /// as well as the wait. `autospawn_one_connector` fences it with the
+    /// connector budget; the `app` branch of `autospawn_enabled_within` fences
+    /// it with [`APP_AUTOSPAWN_WALL`]. Do not call this from a third place
+    /// without a fence: "boot's only contender is a crash supervisor" is a
+    /// timing argument, and §5 R6 says those are not proofs.
     async fn autospawn_one(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
         match self.try_lock_lifecycle(id) {
             Ok(g) => self.spawn_under(&g, None).await,
@@ -1323,8 +1391,42 @@ impl PluginHost {
     /// and the supervisor task is wired. Errors before that point unwind
     /// without leaving a half-running entry.
     pub async fn spawn(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        self.reject_unknown_before_locking(id)?;
         let guard = self.try_lock_lifecycle(id)?;
         self.spawn_under(&guard, None).await
+    }
+
+    /// #1196 S1 review P2-10 — the pre-lock rejection probe for the four
+    /// `HostError` entry points that have no DB probe of their own.
+    ///
+    /// The `lifecycle` map is created on first use and never emptied (see the
+    /// field doc for why removal would break mutual exclusion), and `spawn` /
+    /// `restart` / `rotate_plugin_token` took the lock as their *first* act. So
+    /// an authenticated caller could seed an unbounded number of map entries by
+    /// hammering e.g. `POST /api/plugins/{random}/rotate-token`. Low severity,
+    /// but real and free to close: refuse ids the registry does not know before
+    /// the cell is minted.
+    ///
+    /// **This probe may only REJECT.** It is the mirror image of the P0-1 defect
+    /// one file over (`reload` deciding on a row it read outside the guard): a
+    /// value read here is stale the instant the guard is taken, so nothing
+    /// downstream may act on it. `spawn_under` repeats both checks inside the
+    /// lock and those are the authoritative ones — a `Some` here is only ever
+    /// "not obviously bogus", never "known good". Deleting this function
+    /// therefore changes no outcome except the map growth it exists to stop,
+    /// which is exactly the property that makes it safe.
+    ///
+    /// The two checks mirror `spawn_under`'s opening pair **in the same order**,
+    /// so an id that is both config-disabled and unregistered keeps answering
+    /// `Disabled` rather than silently switching to `NotFound`.
+    fn reject_unknown_before_locking(&self, id: &str) -> Result<(), HostError> {
+        if self.plugins_disabled.iter().any(|d| d == id) {
+            return Err(HostError::Disabled(id.to_string()));
+        }
+        if self.registry.get(id).is_none() {
+            return Err(HostError::NotFound(id.to_string()));
+        }
+        Ok(())
     }
 
     /// [`Self::spawn`] for a caller that already holds the guard.
@@ -1751,10 +1853,13 @@ impl PluginHost {
         // swapping the two blocks swaps the two ticks, and
         // `connector_spawn_order()` reports it. See the acceptance test.
 
-        // §2.7(2)(3) — field-level mutation, and a NO-OP if the id vanished
-        // from the registry while we were on the wire (uninstall races an
-        // in-flight spawn; see R12). Losing the race means we abandon the
-        // spawn rather than resurrect an uninstalled connector.
+        // §2.7(2)(3) — field-level mutation, and a NO-OP if the id is not in
+        // the registry. #1196 S1: that can no longer be an uninstall racing us
+        // (we have held `id`'s lifecycle guard since the registry lookup at the
+        // top of the spawn, and uninstall needs the same guard). It is now the
+        // fail-closed residue — and the arm is kept because abandoning the spawn
+        // is the right answer to "the registry does not know this id" however we
+        // got there.
         if !self.registry.set_exposes_tools(lifecycle, tools) {
             let reason = format!(
                 "plugin `{id}` left the registry while its connector was starting \
@@ -2078,6 +2183,23 @@ impl PluginHost {
     ///   disable is `disabled` — keeping a stale failure reason on a plugin the
     ///   operator has since turned off would be the misleading option.
     pub async fn stop(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        // #1196 S1 review P2-10 — reject-only pre-lock probe, so an unknown id
+        // cannot mint a `lifecycle` map entry that is never reclaimed.
+        //
+        // `stop` cannot use `reject_unknown_before_locking`: it is legitimate
+        // for a registered id to have nothing to stop (that is `NotFound`, which
+        // `disable`/`uninstall`/`restart` all swallow), and it is legitimate to
+        // stop an id whose registry entry is gone. The runtime tables are the
+        // right question here, and `spawning` must be part of it: an id that is
+        // mid-spawn has a reservation but no live entry yet, and it must still
+        // answer `Busy` — the spawn is about to finish and produce something to
+        // stop. Without that arm this probe would turn a real 409 into a 404.
+        {
+            let table = self.lock_table();
+            if !table.live.contains_key(id) && !table.spawning.contains(id) {
+                return Err(HostError::NotFound(id.to_string()));
+            }
+        }
         let guard = self.try_lock_lifecycle(id)?;
         self.stop_under(&guard).await
     }
@@ -2172,6 +2294,11 @@ impl PluginHost {
     /// the gap between them is a real window: a concurrent `uninstall` lands
     /// there and the respawn resurrects a deleted plugin.
     pub async fn restart(self: &Arc<Self>, id: &str) -> Result<(), HostError> {
+        // Reject-only; see `reject_unknown_before_locking`. An unknown id
+        // already ended in `NotFound` here — `stop_under` tolerates its
+        // `NotFound` and `spawn_under` raises the same one — so this only moves
+        // the answer earlier, before a map cell is minted.
+        self.reject_unknown_before_locking(id)?;
         let guard = self.try_lock_lifecycle(id)?;
         self.restart_under(&guard).await
     }
@@ -2711,10 +2838,47 @@ impl PluginHost {
             }
             return;
         }
+        // ---- the exhausted terminal (#1196 S1 review P0-3) -----------------
+        // A bare `tracing::error!` here was the whole ending: `live` stopped at
+        // `Crashed`, the event stream's last word stayed the `crashed` this
+        // supervisor emitted before its backoff, and NOTHING said the kernel had
+        // given up. No background path reconciles it either — only an explicit
+        // `spawn` or a kernel restart. That is the same defect §2.5 names for a
+        // `Busy` autospawn and the same reason the `Unavailable` entry exists:
+        // the terminal must be explicit and observable, not inferable only from
+        // a log line the operator does not have.
+        //
+        // Epoch-checked like every other write in this function: while we were
+        // sleeping between retries the world may have moved, and republishing
+        // over somebody else's instance is exactly what `run_epoch` is for. If
+        // it has moved, whoever moved it owns the terminal and we say nothing.
+        let guard = self.await_lifecycle(id).await;
+        let still_ours = {
+            let table = self.lock_table();
+            match table.live.get(id) {
+                Some(rp) => {
+                    rp.run_epoch == run_epoch
+                        && rp.crash_attempt == attempt
+                        && !rp.stopping
+                        && matches!(rp.status, PluginRuntimeStatus::Crashed { .. })
+                }
+                None => false,
+            }
+        };
+        if still_ours {
+            let reason = format!(
+                "plugin `{id}` crashed and the kernel gave up respawning it: its \
+                 database row could not be read {LIFECYCLE_DB_READ_RETRIES} times in a \
+                 row, so whether it is still enabled is unknown and a respawn would \
+                 be a guess. Nothing will retry automatically — enable (or spawn) it \
+                 explicitly once the database is readable again."
+            );
+            self.publish_unavailable_under(&guard, None, reason).await;
+        }
         tracing::error!(
             plugin_id = %id,
-            "gave up respawning after {LIFECYCLE_DB_READ_RETRIES} failed plugin-row reads; \
-             the plugin stays Crashed"
+            republished = still_ours,
+            "gave up respawning after {LIFECYCLE_DB_READ_RETRIES} failed plugin-row reads"
         );
     }
 }

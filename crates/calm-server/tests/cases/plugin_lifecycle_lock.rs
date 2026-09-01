@@ -629,9 +629,18 @@ async fn a1_reload_is_refused_while_the_lock_is_held() {
 /// competitor, which no timeout-based test can see.
 ///
 /// Mutation witness: make `stop_under` call `self.stop(id)` instead of doing
-/// the work (i.e. re-enter through the wrapper) and every entry below that
-/// stops — `disable`, `uninstall`, `reload`, `restart`, `rotate_plugin_token` —
-/// starts answering `plugin_busy`.
+/// the work (i.e. re-enter through the wrapper). `stop`, `restart` and
+/// `rotate_plugin_token` then answer `LifecycleBusy` with no competitor and this
+/// test fails on them.
+///
+/// **What that mutation does NOT catch, stated because the earlier note here
+/// claimed it did:** `disable` / `uninstall` / `reload` also re-enter, but each
+/// funnels every non-`NotFound` stop error into
+/// `CalmError::Internal("stop failed: ...")`, so their code is `internal`, not
+/// `plugin_busy`, and the `not_busy!` arms above stay green. Those three are
+/// covered by the `HostError` half of the same mutation one call deeper, not by
+/// their own arms. Widening the arms to "must not fail at all" is not an option:
+/// several of these legitimately fail on a plugin that is already stopped.
 #[tokio::test]
 async fn a12b_no_entry_point_returns_busy_without_contention() {
     let fx = boot_with(BootOpts {
@@ -759,6 +768,54 @@ async fn a12a_every_pair_of_entry_points_settles() {
                 ),
                 "{a:?} + {b:?} left a torn state: {live:?}"
             );
+
+            // #1196 S1 review P1-5 — the shape above is not enough. It accepts
+            // `busy = 0` + `Running` while the row says `enabled = false`, which
+            // is precisely the tear P0-1 produced (`reload` respawning on an
+            // `enabled` bit it read outside its guard). So cross-check the three
+            // stores against each other.
+            let row = fx.repo.plugin_get_by_id(ID).await.unwrap();
+            let in_registry = fx.host.registry().get(ID).is_some();
+            let running = matches!(live, Some(PluginRuntimeStatus::Running));
+
+            // Holds for EVERY pair: a plugin that has been uninstalled leaves
+            // nothing behind in either of the other two stores.
+            if row.is_none() {
+                assert!(
+                    !in_registry,
+                    "{a:?} + {b:?}: the row is gone but the registry still has \
+                     the manifest — `GET /api/plugins` and the DB disagree"
+                );
+                assert!(
+                    !running,
+                    "{a:?} + {b:?}: the row is gone but the plugin is still \
+                     Running — a live child with no row behind it"
+                );
+            }
+
+            // Holds for the `enabled`-aware pairs only. `spawn` / `restart` /
+            // `rotate_plugin_token` deliberately ignore the `enabled` bit (an
+            // operator may start a disabled plugin by hand), so "Running while
+            // disabled" is a legitimate terminal for any pair containing one of
+            // them and asserting against it would be asserting a falsehood.
+            let enabled_aware = |op| {
+                matches!(op, Op::Enable | Op::Disable | Op::Reload | Op::Uninstall)
+            };
+            if enabled_aware(a) && enabled_aware(b) && let Some(p) = row.as_ref() {
+                assert!(
+                    p.enabled || !running,
+                    "{a:?} + {b:?} left a TORN terminal: the row says \
+                     `enabled = false` and the runtime says Running. Nothing \
+                     reconciles that — the next boot's autospawn skips the \
+                     plugin *because* it is disabled. ({ra:?}, {rb:?})"
+                );
+                assert!(
+                    in_registry,
+                    "{a:?} + {b:?}: the row survived but the registry entry did \
+                     not, so the plugin can never be spawned again"
+                );
+            }
+
             let _ = fx.host.stop(ID).await;
         }
     }
@@ -998,13 +1055,23 @@ async fn wait_for_events(fx: &Fx, pred: impl Fn(&[String]) -> bool, timeout: Dur
 /// complete **within** the backoff, and after the backoff has fully elapsed the
 /// plugin must be down and stay down.
 ///
-/// Mutation witnesses, one per half:
-/// * move the `tokio::time::sleep` inside the guard (i.e. hold the guard across
-///   segments 1–3) → the `disable` blocks for the whole backoff and the
-///   `elapsed` assertion fails;
-/// * delete segment 3's live/epoch/attempt predicate → the supervisor wakes and
-///   respawns the plugin the operator disabled, and the terminal assertions
-///   fail.
+/// Mutation witness: move the `tokio::time::sleep` inside the guard (i.e. hold
+/// the guard across segments 1–3) → the `disable` blocks for the whole backoff
+/// and the `elapsed` assertion fails. That is the half this test owns.
+///
+/// **What the second half does NOT witness, corrected from the earlier note
+/// here:** deleting segment 3's live/epoch/attempt predicate leaves this test
+/// green. `disable` calls `stop_under`, which **aborts** the sleeping supervisor
+/// task outright (`rp.supervisor.take()` → `abort()`), so the mutated predicate
+/// is never evaluated — there is no task left to evaluate it. The same is true
+/// of `a10`. The predicate's real gate is `a9b`, which reaches it through the
+/// one shape that does *not* abort the supervisor (an explicit `spawn` over a
+/// `Crashed` entry), and the `enabled`-bit gate is `a15b`.
+///
+/// The terminal assertions below are still worth keeping: they pin that the
+/// abort + the `enabled` write together leave the plugin down and the event
+/// log's last word `disabled` — they just are not a witness for the epoch
+/// predicate.
 #[tokio::test]
 async fn a9_backoff_does_not_hold_the_lock_and_does_not_resurrect() {
     const BACKOFF: u64 = 2_000;
@@ -1052,8 +1119,14 @@ async fn a9_backoff_does_not_hold_the_lock_and_does_not_resurrect() {
     );
 }
 
-/// Same shape for `uninstall`: waking from the backoff onto a plugin that no
-/// longer exists must not respawn it.
+/// Same shape for `uninstall`: after an uninstall during the backoff, the
+/// plugin must be gone and stay gone.
+///
+/// Same correction as `a9`: this is **not** a witness for segment 3's
+/// registry/epoch predicates. `uninstall` also goes through `stop_under`, which
+/// aborts the sleeping supervisor, so the mutated predicate is never reached.
+/// What this pins is the composite operation's own terminal — row, registry and
+/// live entry all gone, and nothing brings them back.
 #[tokio::test]
 async fn a10_uninstall_during_backoff_prevents_the_respawn() {
     const BACKOFF: u64 = 2_000;
@@ -1501,22 +1574,49 @@ async fn a16_disable_stops_the_plugin_before_it_writes_the_row() {
 /// Acceptance 9/10, third predicate — a supervisor that wakes from its backoff
 /// onto a **different run instance** must leave it alone.
 ///
-/// The `enabled` bit cannot catch this case (the plugin is still enabled) and
-/// neither can the registry check (it is still installed). Only the per-instance
-/// identity can: `run_epoch` (and the `Crashed`-state check) says "the entry in
-/// front of me is not the one I was supervising". Without it the old supervisor
-/// removes a healthy live entry and respawns over it, orphaning the running
-/// child.
+/// **#1196 S1 review P1-4 — `run_epoch` is now the only discriminator.** The
+/// first version of this test revived the plugin with the *echo* stub, so the
+/// replacement entry was `Running` with `crash_attempt = 0`. Deleting
+/// `rp.run_epoch == run_epoch` from segment 3's predicate left that test green,
+/// because `matches!(rp.status, Crashed { .. })` and `rp.crash_attempt ==
+/// attempt` each rejected the stale supervisor on their own — the epoch
+/// predicate had no gate at all, which is the thing acceptance 9/10's third
+/// predicate is *for*.
 ///
-/// The reload swaps the entrypoint from the crash stub to the echo stub, so the
-/// replacement instance is one that *stays* Running and a resurrection is
-/// visible as a changed pid.
+/// So the replacement instance is deliberately built to satisfy every other
+/// conjunct:
 ///
-/// Mutation witness: delete the `ok` predicate block at the top of
-/// `respawn_after_backoff` and the pid changes under you.
+/// * same stub, so it crashes too and the entry is `Crashed { .. }` — ✓ status;
+/// * its own supervisor increments `crash_attempt` from the fresh entry's `0` to
+///   `1`, which is exactly the `attempt` the *stale* supervisor captured from
+///   the first crash — ✓ attempt;
+/// * nothing is stopping it — ✓ `!stopping`;
+/// * `spawn_under` allocates a fresh `run_epoch` — ✗ epoch, and only epoch.
+///
+/// The revive is an explicit `spawn` and not `reload`/`restart` on purpose:
+/// those call `stop_under`, which **aborts** the sleeping supervisor outright,
+/// and an aborted task cannot witness anything. An explicit `spawn` on a
+/// `Crashed` entry is admitted, replaces the live entry (and with it the
+/// supervisor handle — dropping a `JoinHandle` does not abort its task), and
+/// leaves the old supervisor alive and sleeping. That is the one reachable shape
+/// in which a stale supervisor meets a newer run instance.
+///
+/// The observation is the respawn COUNT inside the window between the two
+/// supervisors' deadlines: the stale one is due first and must do nothing, the
+/// newer one is due later and must respawn. A variant that lets the stale
+/// supervisor through respawns twice, and the extra `running` lands inside the
+/// window.
+///
+/// Mutation witnesses (each applied alone to `respawn_after_backoff`'s `ok`
+/// block):
+/// * delete `rp.run_epoch == run_epoch` → red on `exactly two` below;
+/// * delete the whole `ok` block → red on the same assertion.
 #[tokio::test]
 async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
-    const BACKOFF: u64 = 2_500;
+    // The stale supervisor is due at T0+BACKOFF, the newer one at
+    // T0+STAGGER+BACKOFF. `WINDOW` samples strictly between them.
+    const BACKOFF: u64 = 3_000;
+    const STAGGER: u64 = 1_500;
     let fx = boot_with(BootOpts {
         stub: CRASH_BIN,
         backoff: Some((vec![BACKOFF], Duration::from_secs(300), 50)),
@@ -1524,6 +1624,7 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     })
     .await;
 
+    let t0 = Instant::now();
     fx.host.spawn(ID).await.expect("spawn");
     wait_for_status(
         &fx.host,
@@ -1533,61 +1634,255 @@ async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
     )
     .await;
 
-    // Republish the manifest against a stub that STAYS up, then revive the
-    // plugin with an explicit `spawn`.
-    //
-    // Deliberately not `reload`/`restart` here: those call `stop_under`, which
-    // aborts the sleeping supervisor outright, and an aborted task cannot
-    // witness anything. An explicit `spawn` on a `Crashed` entry is admitted,
-    // replaces the live entry (and with it the supervisor handle — dropping a
-    // `JoinHandle` does not abort its task), and leaves the old supervisor
-    // alive and sleeping. That is the one reachable shape in which a stale
-    // supervisor meets a newer run instance.
-    let dir = fx.plugins_dir.join(ID);
-    std::os::unix::fs::symlink(Path::new(ECHO_BIN), dir.join("bin").join("stub2")).unwrap();
-    let echo_manifest = Manifest::parse(
-        &json!({
-            "manifest_version": 1,
-            "id": ID,
-            "version": "0.1.0",
-            "min_kernel_version": "0.0.1",
-            "display_name": "Lock Stub",
-            "entrypoint": { "command": "bin/stub2" },
-        })
-        .to_string(),
-    )
-    .unwrap();
-    {
-        // A runtime registry write needs the id's guard — `try_lock_lifecycle`
-        // is `pub` for exactly this (design §5 R7).
-        let g = fx
-            .host
-            .try_lock_lifecycle(ID)
-            .expect("lock is free mid-backoff");
-        fx.host.registry_insert(&g, echo_manifest, Some(dir));
-    }
+    // Stagger, then revive with an explicit `spawn` of the SAME crash stub. The
+    // replacement crashes in its turn and parks its own supervisor, so the two
+    // supervisors differ in `run_epoch` and in nothing else the predicate reads.
+    sleep(Duration::from_millis(STAGGER)).await;
     fx.host.spawn(ID).await.expect("explicit revive");
-    let pid = fx
-        .host
-        .status(ID)
-        .await
-        .expect("live after the revive")
-        .pid
-        .expect("app plugin has a pid");
+    wait_for_events(
+        &fx,
+        |ev| ev.iter().filter(|s| *s == "crashed").count() >= 2,
+        Duration::from_secs(10),
+    )
+    .await;
+    assert_eq!(
+        state_events(&fx)
+            .await
+            .iter()
+            .filter(|s| *s == "running")
+            .count(),
+        2,
+        "setup: exactly the two spawns this test made"
+    );
 
-    // Now let the ORIGINAL supervisor's backoff elapse.
-    sleep(Duration::from_millis(BACKOFF + 1_200)).await;
+    // Sample after the STALE supervisor's deadline and before the newer one's.
+    let sample_at = t0 + Duration::from_millis(BACKOFF + STAGGER / 2);
+    tokio::time::sleep_until(sample_at).await;
+    let ev = state_events(&fx).await;
+    assert_eq!(
+        ev.iter().filter(|s| *s == "running").count(),
+        2,
+        "the stale supervisor's backoff has elapsed and it must have left the \
+         newer run instance alone; only `run_epoch` tells the two apart here — \
+         status, crash_attempt and stopping are identical. Saw {ev:?}"
+    );
 
-    let after = fx.host.status(ID).await.expect("still live");
+    // Liveness half: the NEWER supervisor is still owed its respawn, so this is
+    // not "the epoch check froze everything".
+    wait_for_events(
+        &fx,
+        |ev| ev.iter().filter(|s| *s == "running").count() >= 3,
+        Duration::from_secs(15),
+    )
+    .await;
+}
+
+// ===========================================================================
+// #1196 S1 review P0-1 — `reload` may not decide on a row read outside its
+// guard
+// ===========================================================================
+
+/// A [`LifecycleDb`] that runs a full `disable` **inside** `reload`'s pre-guard
+/// existence probe, and then answers the probe with the value that was true
+/// before it did.
+///
+/// That is not a contrived value: it is exactly what the real interleaving
+/// produces. `reload`'s probe reads the row; a concurrent `disable` takes the
+/// guard (which `reload` does not hold yet), stops the plugin, commits
+/// `enabled = false` and releases; `reload` then takes the guard holding a row
+/// that is already history. The fake makes that window deterministic instead of
+/// hoping the scheduler produces it.
+struct StaleProbeWindow {
+    repo: Arc<dyn Repo>,
+    host: std::sync::OnceLock<std::sync::Weak<PluginHost>>,
+    /// One-shot: only the first probe opens the window, so the `disable` we run
+    /// inside it (and any later reload) sees a plain delegating port.
+    armed: AtomicBool,
+    fired: AtomicBool,
+}
+
+impl StaleProbeWindow {
+    fn new(repo: Arc<dyn Repo>) -> Arc<Self> {
+        Arc::new(Self {
+            repo,
+            host: std::sync::OnceLock::new(),
+            armed: AtomicBool::new(false),
+            fired: AtomicBool::new(false),
+        })
+    }
+}
+
+#[async_trait]
+impl LifecycleDb for StaleProbeWindow {
+    async fn enabled_row(&self, id: &str) -> Result<Option<bool>, CalmError> {
+        let before = self.repo.plugin_get_by_id(id).await?.map(|p| p.enabled);
+        if self.armed.swap(false, Ordering::SeqCst) {
+            let host = self
+                .host
+                .get()
+                .and_then(|w| w.upgrade())
+                .expect("host wired before use");
+            host.disable(id).await.expect("the racing disable must win");
+            self.fired.store(true, Ordering::SeqCst);
+        }
+        // The pre-window value. Any caller that treats a probe as a decision
+        // gets exactly this.
+        Ok(before)
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), CalmError> {
+        self.repo.plugin_update_enabled(id, enabled).await?;
+        Ok(())
+    }
+}
+
+/// A `disable` that lands between `reload`'s existence probe and `reload`'s
+/// guard must not be overwritten by the reload: the terminal may not be
+/// "DB says disabled, runtime says Running".
+///
+/// This is #1169 race 3 one endpoint over, and S1 re-introduced it: the probe
+/// was moved outside the guard (correctly — otherwise `unknown id + busy`
+/// answers 409 instead of 404) but the same read kept feeding `plug.enabled` and
+/// `plug.install_path` to the decision below it.
+///
+/// Mutation witness: in `PluginHost::reload`, bind the probe
+/// (`let probed = self.lifecycle_db.enabled_row(id).await?`) and branch on it
+/// instead of on the in-guard re-read's `plug.enabled`. The reload then respawns
+/// the plugin the operator just disabled and both terminal assertions below
+/// fail.
+#[tokio::test]
+async fn a17_reload_decides_on_the_row_it_reads_inside_its_guard() {
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let window = StaleProbeWindow::new(repo.clone());
+    let fx = boot_with(BootOpts {
+        repo: Some(repo),
+        lifecycle_db: Some(window.clone()),
+        ..Default::default()
+    })
+    .await;
+    window.host.set(Arc::downgrade(&fx.host)).ok();
+
+    fx.host.spawn(ID).await.expect("spawn");
+    assert!(matches!(
+        fx.host.status(ID).await.map(|s| s.status),
+        Some(PluginRuntimeStatus::Running)
+    ));
+
+    window.armed.store(true, Ordering::SeqCst);
+    fx.host.reload(ID).await.expect("reload");
     assert!(
-        matches!(after.status, PluginRuntimeStatus::Running),
-        "the newer instance must still be Running, got {:?}",
-        after.status
+        window.fired.load(Ordering::SeqCst),
+        "the racing disable never ran — this test proved nothing"
+    );
+
+    assert!(
+        !fx.repo.plugin_get_by_id(ID).await.unwrap().unwrap().enabled,
+        "the disable committed inside the window and nothing may undo it"
     );
     assert_eq!(
-        after.pid,
-        Some(pid),
-        "the stale supervisor respawned over a run instance that was not its own"
+        fx.host.status(ID).await.map(|s| s.status),
+        None,
+        "a plugin the DB says is disabled must not be left Running by a reload \
+         that decided on a pre-guard read: nothing reconciles that state, and \
+         the next boot's autospawn skips it *because* it is disabled"
+    );
+    let ev = state_events(&fx).await;
+    assert_eq!(
+        ev.last().map(String::as_str),
+        Some("disabled"),
+        "the event log's last word must be `disabled`, not `running`: {ev:?}"
+    );
+}
+
+// ===========================================================================
+// #1196 S1 review P0-3 — giving up on the respawn is a terminal, not silence
+// ===========================================================================
+
+/// A [`LifecycleDb`] whose `enabled_row` never succeeds.
+struct UnreadableDb {
+    repo: Arc<dyn Repo>,
+    failures: AtomicUsize,
+}
+
+#[async_trait]
+impl LifecycleDb for UnreadableDb {
+    async fn enabled_row(&self, _id: &str) -> Result<Option<bool>, CalmError> {
+        self.failures.fetch_add(1, Ordering::SeqCst);
+        Err(CalmError::Internal("injected permanent read failure".into()))
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), CalmError> {
+        self.repo.plugin_update_enabled(id, enabled).await?;
+        Ok(())
+    }
+}
+
+/// When the bounded fail-closed retry is exhausted, the supervisor must publish
+/// an explicit terminal state — not stop at a `tracing::error!` nobody reads.
+///
+/// The pre-fix ending left `live` at `Crashed`, the event stream's last word at
+/// the `crashed` emitted before the backoff, and no background path that would
+/// ever reconcile it: only an explicit `spawn` or a kernel restart. That is the
+/// same argument §2.5 makes for a `Busy` autospawn and the same reason the
+/// `Unavailable` entry exists — it was simply never applied to this path.
+///
+/// Mutation witness: delete the `publish_unavailable_under` call at the tail of
+/// `respawn_after_backoff` (leaving the `tracing::error!`) and both assertions
+/// below fail — the last event stays `crashed` and the live entry stays
+/// `Crashed`.
+#[tokio::test]
+async fn a18_exhausted_respawn_retries_publish_a_terminal_state() {
+    let repo: Arc<dyn Repo> = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let db = Arc::new(UnreadableDb {
+        repo: repo.clone(),
+        failures: AtomicUsize::new(0),
+    });
+    let fx = boot_with(BootOpts {
+        stub: CRASH_BIN,
+        backoff: Some((vec![200], Duration::from_secs(300), 50)),
+        repo: Some(repo),
+        lifecycle_db: Some(db.clone()),
+        ..Default::default()
+    })
+    .await;
+
+    fx.host.spawn(ID).await.expect("spawn");
+
+    // 5 retries × 200 ms of retry delay + the backoff itself.
+    wait_for_events(
+        &fx,
+        |ev| ev.last().map(String::as_str) == Some("unavailable"),
+        Duration::from_secs(20),
+    )
+    .await;
+
+    assert!(
+        db.failures.load(Ordering::SeqCst) >= 5,
+        "the retry budget must actually have been spent, saw {} reads",
+        db.failures.load(Ordering::SeqCst)
+    );
+
+    let st = fx.host.status(ID).await.expect("a terminal entry must exist");
+    let reason = match &st.status {
+        PluginRuntimeStatus::Unavailable { reason } => reason.clone(),
+        other => panic!(
+            "after giving up, the live entry must be an explicit terminal, not \
+             {other:?} — an operator reading `GET /api/plugins/{{id}}` has no \
+             other way to learn the kernel stopped trying"
+        ),
+    };
+    assert!(
+        reason.contains("gave up") && reason.contains("enable"),
+        "the terminal must say what happened and what the operator has to do: {reason}"
+    );
+
+    // And it stays there: nothing retries behind the operator's back.
+    sleep(Duration::from_secs(1)).await;
+    let ev = state_events(&fx).await;
+    assert_eq!(
+        ev.last().map(String::as_str),
+        Some("unavailable"),
+        "{ev:?}"
     );
 }
 
