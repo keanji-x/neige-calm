@@ -347,7 +347,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         .validate()
         .expect("schema-less mutation stays a valid manifest");
     // `install_path = None` keeps the registry's existing on-disk path.
-    fx.plugin_host.registry().insert(schemaless, None);
+    fx.plugin_host.registry_insert(schemaless, None);
 
     // Bound + input against a schema-less plugin → 400 fail-closed.
     let no_schema_dir = wave_cwd_tempdir("wf-input-noschema").expect("no-schema input cwd");
@@ -377,7 +377,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     );
 
     // Schema-less bound create without input stays valid (design §1.4 row 4).
-    fx.plugin_host.registry().insert(
+    fx.plugin_host.registry_insert(
         {
             let mut schemaless = read_manifest();
             schemaless.input_schema = None;
@@ -402,7 +402,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     assert_eq!(body["workflow_input"], Value::Null);
 
     // Restore the shipped manifest for the remaining cases.
-    fx.plugin_host.registry().insert(read_manifest(), None);
+    fx.plugin_host.registry_insert(read_manifest(), None);
 
     let missing_dir = wave_cwd_tempdir("wf-missing").expect("missing workflow cwd");
     let (status, body) = post_wave(
@@ -1855,8 +1855,7 @@ async fn boot_plugin_host(
 
     let manifest = read_manifest();
     let manifest_json = manifest.to_json();
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     repo.plugin_install(NewPlugin {
         id: PLUGIN_ID.into(),
         version: "0.1.0".into(),

@@ -1985,7 +1985,7 @@ async fn uninstall_during_an_in_flight_spawn_does_not_resurrect_the_registry_ent
     // does `stop()` (NotFound for a spawning id — treated as benign), deletes
     // the DB row, then removes the registry entry. The in-flight spawn keeps
     // going: there is no per-plugin lifecycle lock (risk R12).
-    host.registry().remove(CONNECTOR_ID);
+    host.registry_remove(CONNECTOR_ID);
     assert!(host.registry().get(CONNECTOR_ID).is_none());
 
     let _ = release.send(());

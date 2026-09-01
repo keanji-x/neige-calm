@@ -323,8 +323,7 @@ async fn plugin_tool_call_threads_call_id_as_correlation() {
     });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     repo.plugin_install(calm_server::model::NewPlugin {
         id: plugin_id.into(),
@@ -482,8 +481,7 @@ async fn plugin_tool_call_without_call_id_leaves_correlation_null() {
     });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     repo.plugin_install(calm_server::model::NewPlugin {
         id: plugin_id.into(),
@@ -636,8 +634,7 @@ async fn plugin_tool_call_treats_empty_call_id_as_absent() {
     });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     repo.plugin_install(calm_server::model::NewPlugin {
         id: plugin_id.into(),
