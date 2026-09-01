@@ -79,8 +79,29 @@
     animation: chat-pulse var(--motion-pulse) ease-in-out infinite;
   }
 
+  /* Two things on one line, in the order the aria-label says them: what the
+     conversation is called, then — on the routes that show rows from more than
+     one wave — where it lives. Two ranks and two tones, not two columns: the
+     wave is the crumb (§3.3's `--text-xs` job), so the row still reads as one
+     name with a note after it, and a list of conversations from one wave does
+     not turn into a list of repeated wave titles.
+
+     Both truncate. `min-inline-size: 0` on each child is what lets them: a flex
+     item's automatic minimum size is its content, so without it the name would
+     push the wave out of the row rather than ellipsing. The name shrinks last
+     (`flex-shrink: 0` is wrong here too — a long name would then clip the wave
+     entirely), so the two share what there is in proportion to their length. */
   .label {
+    display: flex;
+    gap: var(--space-2);
+    align-items: baseline;
     min-inline-size: 0;
+    overflow: hidden;
+  }
+
+  .name {
+    min-inline-size: 0;
+    flex: 0 1 auto;
     overflow: hidden;
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
@@ -90,7 +111,19 @@
     text-overflow: ellipsis;
   }
 
-  .rowActive .label {
+  .wave {
+    min-inline-size: 0;
+    flex: 0 1 auto;
+    overflow: hidden;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .rowActive .name {
     font-weight: var(--weight-semibold);
     color: var(--text);
   }

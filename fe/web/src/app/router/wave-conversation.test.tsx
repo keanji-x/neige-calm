@@ -90,6 +90,11 @@ function setup(reply?: Reply) {
       if (request.path === BARE_CONVERSATIONS) return ok([]);
       if (request.path.includes('/harness/items')) return ok([]);
       if (request.path.endsWith('/spec/run')) return ok({ card_id: SPEC_CARD.id, runtime_id: 'r', phase: 'idle' });
+      /* Answering an open conversation's send. The shape matters: an
+         off-schema body is refused by the transport, the optimistic echo is
+         rolled back, and the name derived from that echo — what the test
+         below is about — never exists. */
+      if (request.path.endsWith('/spec/input')) return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },
@@ -249,8 +254,55 @@ describe('wave conversations', () => {
     expect(document.querySelector('[data-nc-drawer]')).toBeNull();
 
     await act(async () => { await router.navigate({ to: '/' }); });
-    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave' });
-    await screen.findByRole('button', { name: 'Conversation Assistant, on Test wave' });
+    const spec = await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave' });
+    const assistant = await screen.findByRole('button', { name: 'Conversation Assistant, on Test wave' });
+    /*
+     * And they are distinguishable **on screen**, not only to a screen reader.
+     *
+     * Asserting the two `aria-label`s alone is what let the row render the
+     * *wave's* title in place of the conversation's: this list's whole point is
+     * now that one wave contributes several rows to Today, and while the label
+     * carried the difference the visible text of all of them was `Test wave`.
+     * A reader with a mouse had N identical rows and no way to choose. So the
+     * text is pinned here, both that each row says its own name and that the
+     * two rows differ.
+     */
+    expect(spec.textContent).toBe('Spec chatTest wave');
+    expect(assistant.textContent).toBe('AssistantTest wave');
+    expect(assistant.textContent).not.toBe(spec.textContent);
+  });
+
+  /*
+   * The name a conversation earns, and what re-reading the list does to it.
+   *
+   * An assistant card is minted with no title and nothing backfills one, so the
+   * server's row is `title: null` for the whole life of the conversation. The
+   * only name it ever has is the one the drawer derives from its first message,
+   * and only the drawer can derive it. The batch remember below the drawer
+   * writes every listed row into the same registry entries — carrying `turns`
+   * and the transcript across, and, before this test existed, *not* the name:
+   * the moment the drawer closed, Today fell back to the bare kind label.
+   */
+  it('[G5] keeps the name it derived from the first message after the drawer closes', async () => {
+    const { router } = setup();
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    await write('rename this conversation');
+    /* The drawer names itself from the transcript — the same derivation the
+       registry is about to be given. */
+    await screen.findByRole('complementary', { name: 'rename this conversation' });
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+
+    await act(async () => { await router.navigate({ to: '/' }); });
+    const row = await screen.findByRole('button', {
+      /* The turn count is the *other* thing this batch remember carries over,
+         and it is on the label for the same reason the name is: this tab read
+         it and the list does not send it. */
+      name: 'Conversation rename this conversation, on Test wave, 1 turns',
+    });
+    expect(row.textContent).toBe('rename this conversationTest wave');
+    /* Not the kind label it would have fallen back to. */
+    expect(screen.queryByRole('button', { name: /^Conversation Assistant,/ })).toBeNull();
   });
 
   /*
@@ -376,10 +428,14 @@ describe('wave conversations', () => {
    * scope: the wave's key and words never reach the cove endpoint, and the
    * cove's `+` opens a blank draft rather than the wave's failed one.
    *
-   * **Where the mutation lands is not here.** The reducer's `scopeId` guard
-   * (`heldIs`) is what makes this true when one panel *instance* serves two
-   * scopes, and that is the cove → cove walk, where `CoveRoute` is not
-   * remounted across a param change: `cove-conversation.test.tsx` holds it with
+   * **Where the mutation lands is not here**, and the first half of this test
+   * in particular is not a gate on the `scopeId` guard: wave and cove are two
+   * sibling route components, so the walk between them unmounts the panel and
+   * the wave's draft is gone before the cove's `+` is ever pressed — dropping
+   * the `scopeId` comparison from `heldIs` leaves that assertion green (the
+   * cove's `held` is null on arrival either way). What survives one panel
+   * *instance* serving two scopes is the cove → cove walk, where `CoveRoute` is
+   * not remounted across a param change: `cove-conversation.test.tsx` holds it with
    * `keeps a failed draft to the cove it belongs to` and `leaves another cove's
    * draft alone when a late create finally succeeds`, and both go red when the
    * `scopeId` comparison is dropped. Wave and cove are two different route

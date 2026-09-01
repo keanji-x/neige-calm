@@ -100,6 +100,15 @@ type ConversationStore = Readonly<{
  * `'all'` and `'waves'` read the session registry — conversations this tab has
  * opened. `'rows'` is the opposite: the server sends the list, so the registry
  * is not consulted for it.
+ *
+ * `'waves'` has no construction site left: the cove route filtered the registry
+ * by its waves before it listed conversations from the server (#1098), and
+ * Today is the only registry-backed surface now, with `'all'`. It is left
+ * standing rather than deleted here because deleting it is not one line — the
+ * same sweep takes `ConversationPanelSource`'s `'card'` arm, `store.start`, and
+ * the `scope` arm of the open-request consume with it, and that is a change to
+ * the Today → wave path this very slice is being reviewed for. Recorded here so
+ * nobody reads a live decision into an arm nothing selects (#1189 review).
  */
 type ConversationListIntent = Readonly<
   { kind: 'all' } | { kind: 'waves'; waveIds: readonly string[] }
@@ -276,10 +285,36 @@ export function useConversationStore(
          so a row always arrives with `turns` absent; writing that over an entry
          the drawer counted would make a conversation lose its count on Today
          the moment its own wave was visited again. The transcript is carried
-         over for the same reason and by the same rule. */
+         over for the same reason and by the same rule.
+
+         And so is the **name**, which is that rule a third time and was the one
+         omission: an assistant card is minted `title: None`
+         (`wave_conversations.rs`) and nothing backfills it, so `row.title` is
+         permanently null on the wire. The name a reader sees is derived by the
+         effect above from the conversation's first message. The moment the
+         drawer closes — or opens on another row — this effect stops skipping
+         that row, and a plain `{...row}` would put the null back: Today would
+         fall from the derived name to the bare kind label `Assistant`. Only
+         the absent direction is carried — a title the server *does* send (the
+         cove list's, and any future backfill) is the server's to change and
+         wins, exactly as `turns` does. */
+      /* `updatedAt` never goes backwards, which is the same rule once more.
+         A row's time is whatever column produced it — the listed rows read
+         `COALESCE(worker_sessions.updated_at_ms, cards.updated_at)`, the
+         injected spec row reads the card's `updated_at`, and neither moves
+         when a turn is added to a conversation the drawer is reading. The
+         drawer *does* know that time (`turns.at(-1)?.atMs`) and wrote it here.
+         Taking the later of the two keeps a conversation you have just been
+         talking in at the top of Today, instead of sinking it back to whenever
+         its card row was last touched. */
       const known = registry.conversations.find((candidate) => candidate.id === row.id);
       registry.remember(
-        known?.turns === undefined ? row : { ...row, turns: known.turns },
+        {
+          ...row,
+          ...(known?.turns === undefined ? {} : { turns: known.turns }),
+          ...(row.title === null && known?.title != null ? { title: known.title } : {}),
+          updatedAt: Math.max(row.updatedAt, known?.updatedAt ?? 0),
+        },
         registry.turnsOf(row.id),
       );
     }
@@ -391,6 +426,14 @@ type SpecConversationScope = Readonly<{
  * opening a row there navigates; a cove route can hold one for every row it
  * lists, so opening one must not navigate — the wave it would navigate to is
  * hidden.
+ *
+ * Two routes select two of the three: Today is `'elsewhere'` and both the cove
+ * and the wave route are `'rows'`. **`'card'` is selected by nothing** since the
+ * wave route stopped forking on its spec card (#1189 §5.3) — it is dead, and it
+ * is left standing for the reason given on `ConversationListIntent`: removing it
+ * also removes `store.start`, the `scope` arm of the open-request consume, and
+ * the `/new` parity argument below, none of which belongs in a review fix. Read
+ * every `source.kind === 'card'` branch below as unreachable today.
  */
 type ConversationPanelSource =
   | Readonly<{ kind: 'elsewhere'; intent: ConversationListIntent }>
@@ -431,14 +474,27 @@ type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
  * fields make each such rule a thing to remember at every branch, and the two
  * bugs this shape replaces were both one field moving without its partner.
  *
- * `scopeId` is in here for the same reason: the panel is not remounted when the
- * reader walks from one cove to another, or from a cove to a wave (proved by
- * `keeps a failed draft to the cove it belongs to` and by its wave twin), so a
- * draft that does not name what it belongs to is a draft any `+` can pick
- * up — and posting cove A's key and words to cove B, or to a wave, mints a
- * conversation in the wrong place. #1189 is why it is `scopeId` and not
- * `coveId`: the two id spaces are distinct values in one field, which is
- * exactly what makes a wave draft and a cove draft unable to be each other.
+ * `scopeId` is in here for one concrete reason, and it is worth stating exactly
+ * because a looser version of it was written here first and was false. The
+ * panel is **not** remounted when the reader walks from one cove to another:
+ * `/cove/$coveId` is one route component across a param change, so the reducer
+ * survives and a draft that did not name its cove would be a draft cove B's `+`
+ * picks up — posting cove A's key and words to cove B. That is what
+ * `cove-conversation.test.tsx`'s `keeps a failed draft to the cove it belongs
+ * to` holds down, and it is the whole of what the guard is *proved* to do.
+ *
+ * Cove → wave is a different walk and has no twin test, because it cannot: the
+ * cove and wave routes are two sibling components under `rootRoute`, so that
+ * walk unmounts the panel and takes the reducer — draft and all — with it.
+ * Nothing can leak across it, and nothing survives it either (#1225 is the
+ * second half of that sentence: an unsent draft, and the idempotency key that
+ * makes a retry a retry, are simply lost).
+ *
+ * #1189 is still why the field is `scopeId` and not `coveId`: a wave route now
+ * holds drafts too, and one field carrying values from two id spaces is what
+ * keeps the guard total should a future route ever hold both — a generalisation
+ * that costs nothing and closes the shape rather than a claim about today's
+ * routing.
  */
 type ConversationDraft = Readonly<{
   /** The cove or wave this draft belongs to. It is only ever visible there. */
@@ -656,11 +712,17 @@ function useConversationPanel(
   /*
    * The draft, if it belongs *here*.
    *
-   * A held draft from another cove — or from a wave — is not visible, not
-   * reopenable and not sendable here; it is simply not this route's business.
-   * It is kept rather than dropped so that walking back to it still finds it;
-   * the one thing that discards it is starting a draft somewhere else, because
-   * only one is held at a time.
+   * A held draft from another cove is not visible, not reopenable and not
+   * sendable here; it is simply not this route's business. It is kept rather
+   * than dropped so that walking back to that cove still finds it; the one
+   * thing that discards it is starting a draft somewhere else, because only one
+   * is held at a time.
+   *
+   * "Walking back" means within one route component — cove → cove. A draft
+   * written on a wave is never seen by a cove for a blunter reason: the two are
+   * separate route components, so the walk unmounted this hook and there is no
+   * held draft left to filter (see `ConversationDraft`, and #1225). The test is
+   * the same either way, and being the same is the point.
    */
   const draft = held !== null && source.kind === 'rows' && held.scopeId === source.scopeId ? held : null;
 
@@ -1532,11 +1594,16 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
    * The wave's opening conversation, derived from the spec card rather than
    * listed — it is the one row on this route the server does not send.
    *
-   * `updatedAt` comes from the card's own `updated_at`, which is the same
-   * column and the same milliseconds the listed rows' `updatedAt` is read from,
-   * so the one ordering `ChatList` applies (`byRecency`) compares like with
-   * like. A row timed from anything else would sort against a clock nobody else
-   * is reading.
+   * `updatedAt` comes from the card's own `updated_at`. That is the same
+   * *quantity* the listed rows carry — epoch milliseconds off the same clock —
+   * which is what the one ordering `ChatList` applies (`byRecency`) needs. It
+   * is **not** the same column: a listed row reads
+   * `COALESCE(worker_sessions.updated_at_ms, cards.updated_at)`, so it usually
+   * reports its session's last activity while this row reports when the card
+   * itself was last written. Both are "when something last happened to this
+   * conversation" to within the accuracy this list claims, and neither moves
+   * per turn — the drawer's own reading is the one that does, and the registry
+   * keeps the later of the two (`useConversationStore`, the batch remember).
    *
    * `state` is null: no endpoint reports this card's session state to this
    * route, and `null` says "nothing is known to be happening", which is the
@@ -1552,13 +1619,23 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     state: null,
     updatedAt: specCard.updated_at,
   }, [specCard, wave.id, waveTitle]);
+  /* Every row carries the wave's title, so a row that reaches Today can say
+     where it is. On this page `showWave: false` hides it again.
+     *
+     * Unconditionally, and *before* the spec row is considered: whether this
+     * wave happens to have a spec card has nothing to do with whether its
+     * assistant rows know where they live, and while the two were one
+     * expression the `specRow === null` arm returned the rows untouched. A
+     * reader who had only ever visited waves without a spec card then saw a
+     * Today list of rows reading `Assistant` with no wave named on any of
+     * them — the waves that most need the `+` (§5.3) losing the label first. */
+  const placedRows = useMemo(
+    () => assistantRows.map((row) => ({ ...row, waveTitle })),
+    [assistantRows, waveTitle],
+  );
   const rows = useMemo<readonly Conversation[]>(
-    () => specRow === null
-      ? assistantRows
-      /* Every row carries the wave's title, so a row that reaches Today can say
-         where it is. On this page `showWave: false` hides it again. */
-      : [specRow, ...assistantRows.map((row) => ({ ...row, waveTitle }))],
-    [assistantRows, specRow, waveTitle],
+    () => specRow === null ? placedRows : [specRow, ...placedRows],
+    [placedRows, specRow],
   );
   /*
    * `'rows'`, unconditionally — no longer `'card'` when a spec card exists and
@@ -1593,6 +1670,18 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           };
         }
         const row = assistantRows.find((candidate) => candidate.id === conversationId);
+        /*
+         * `id: row.waveId` — the row's own wave, never `wave.id`.
+         *
+         * This is the line the whole `rememberOn` defence rests on. `scope.id`
+         * becomes `conversation.waveId` in the store, which is what
+         * `conversation.waveId !== rememberOn` compares against the wave this
+         * route claimed. Written `id: wave.id` it would be a tautology — every
+         * open row would pass, whatever wave it really belongs to — and no
+         * existing test would notice: the fixtures list rows of this wave, so
+         * the two values are equal in every green case. The comparison is only
+         * a comparison because this side is the row's.
+         */
         return row === undefined ? null : {
           id: row.waveId, title: waveTitle, cardId: row.id, cardTitle: row.title,
           updatedAt: row.updatedAt, kind: row.kind, state: row.state,
