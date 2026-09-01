@@ -213,7 +213,10 @@
       inset-block-end: calc(env(safe-area-inset-bottom) + var(--space-4));
       z-index: var(--z-toast);
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      /* `--mobile-dock-count` is set by the shell from `DOCK_ITEMS.length`
+         (#1191 §3.3); the fallback keeps the strip laid out if the element is
+         ever rendered without it. */
+      grid-template-columns: repeat(var(--mobile-dock-count, 4), minmax(0, 1fr));
       inline-size: min(calc(100% - var(--space-10) * 2), 17.5rem);
       block-size: calc(var(--mobile-dock-h) - var(--space-4));
       padding: var(--space-1) var(--space-3);

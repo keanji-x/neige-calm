@@ -6,7 +6,17 @@ import { AppShell } from './public.tsx';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
 
-vi.mock('@tanstack/react-router', () => ({ Outlet: () => <div>route</div> }));
+/*
+ * `navigation.ts` is now loaded for real below — only its hooks are replaced —
+ * so the router exports it imports at module scope have to resolve. Nothing
+ * here is called: the mocked hooks are what the shell actually uses.
+ */
+vi.mock('@tanstack/react-router', () => ({
+  Outlet: () => <div>route</div>,
+  useNavigate: () => vi.fn(),
+  useRouter: () => ({}),
+  useRouterState: () => undefined,
+}));
 const COVE = { id: 'c1', name: 'Product', color: '#5B8DEF', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0 };
 const WAVE = {
   id: 'w1', coveId: 'c1', title: 'Responsive mobile UI', sort: 1, lifecycle: 'working', cwd: '/tmp',
@@ -23,7 +33,13 @@ vi.mock('../providers/queries.ts', () => ({
   useWaveMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
   ApiError: class ApiError extends Error {},
 }));
-vi.mock('../router/navigation.ts', () => ({
+/*
+ * A *partial* mock: the hooks are stubbed, but `pathFor` — which the dock's
+ * selection rule reads the route table from (#1191 §3.3) — stays the real one.
+ * Re-declaring it here would put a second copy of the route table in a test.
+ */
+vi.mock('../router/navigation.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../router/navigation.ts')>()),
   useCurrentPath: () => '/',
   useGo: () => vi.fn(),
   useGoSameWave: () => vi.fn(),

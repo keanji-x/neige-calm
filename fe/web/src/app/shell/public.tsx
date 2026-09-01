@@ -17,7 +17,7 @@
 
 import { Icon as AstryxIcon } from '@astryxdesign/core/Icon';
 import { Outlet } from '@tanstack/react-router';
-import { createContext, useContext, useEffect, useRef } from 'react';
+import { createContext, useContext, useEffect, useRef, type CSSProperties } from 'react';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
@@ -29,7 +29,8 @@ import {
 } from '../providers/queries.ts';
 import { routeParamFromPath, useCurrentPath, useGo, useGoSameWave } from '../router/navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
-import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
+import { useCompactViewport } from '../../ui/viewport/public.ts';
+import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
 import { MobileCoves } from './mobile-coves.tsx';
 import { MobilePages } from './mobile-pages.tsx';
 import { Sidebar } from './sidebar.tsx';
@@ -54,8 +55,6 @@ export type AppShellProps = Readonly<{
  * callback, so a consumer cannot come to depend on the shell's internals.
  */
 const RequestNewWaveContext = createContext<((coveId: string) => void) | null>(null);
-
-type MobileSection = 'pages' | 'coves';
 
 /**
  * The workspace sheet a route asks the shell to open, and — for Coves — the
@@ -126,7 +125,9 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
    * click that appeared to do nothing.
    */
   const [manualRailCollapsed, setManualRailCollapsed] = useState<boolean | null>(null);
-  const [narrowRail, setNarrowRail] = useState(() => globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY).matches ?? false);
+  // The third copy of the compact-viewport subscription used to be inlined
+  // right here, under a different name (#1191 §3.2).
+  const narrowRail = useCompactViewport();
   const [mobileSection, setMobileSection] = useState<MobileSection | null>(null);
   const mobileNavOpen = mobileSection !== null;
   const [coveSelection, setCoveSelection] = useState<CoveSelection>(NO_COVE_SELECTED);
@@ -146,14 +147,6 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const shellSecondaryOpen = (routeWaveId !== undefined && mobileSection === null)
     || (mobileSection === 'coves' && coveSelection.coveId !== null);
   const mobileNavigationRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const media = globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY);
-    if (!media) return;
-    const sync = () => setNarrowRail(media.matches);
-    sync();
-    media.addEventListener('change', sync);
-    return () => media.removeEventListener('change', sync);
-  }, []);
   const railCollapsed = manualRailCollapsed ?? narrowRail;
 
   useEffect(() => {
@@ -243,11 +236,10 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     go(target);
   };
 
-  const todayDockSelected = mobileSection === null && currentPath === '/';
-  const meDockSelected = mobileSection === null && currentPath.startsWith('/settings');
-  const pagesDockSelected = mobileSection === 'pages'
-    || (mobileSection === null && !todayDockSelected && !meDockSelected);
-  const mobileNavigationLabel = mobileSection === 'pages' ? 'Pages' : 'Coves';
+  const selectedDockKey = dockSelection(mobileSection, currentPath);
+  // The sheet's accessible name is the dock label that opens it — stated once,
+  // in `DOCK_ITEMS`, so the two can never disagree.
+  const mobileNavigationLabel = DOCK_ITEMS.find((item) => item.opensSection === mobileSection)?.label ?? 'Pages';
 
   const submitNewWave = (draft: NewWaveDraft) => {
     if (newWaveCoveId === null) return;
@@ -365,49 +357,33 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
         aria-label="Primary"
         aria-hidden={shellSecondaryOpen ? true : undefined}
         inert={shellSecondaryOpen}
+        /* The column count is `DOCK_ITEMS.length`, not a `4` written twice: the
+           grid used to hard-code it, so adding a fifth destination would have
+           silently overflowed the strip (#1191 §3.3). */
+        style={{ '--mobile-dock-count': DOCK_ITEMS.length } as CSSProperties}
       >
-        <button
-          type="button"
-          className={styles.mobileDockItem}
-          aria-current={pagesDockSelected ? 'page' : undefined}
-          aria-controls="mobile-workspace-navigation"
-          aria-expanded={mobileSection === 'pages'}
-          onClick={() => openMobileSection('pages')}
-        >
-          <AstryxIcon icon="viewColumns" size="md" color="inherit" />
-          <span>Pages</span>
-        </button>
-        <button
-          type="button"
-          className={styles.mobileDockItem}
-          aria-current={todayDockSelected ? 'page' : undefined}
-          onClick={() => { closeMobileSection(); go({ name: 'today' }); }}
-        >
-          <AstryxIcon icon="calendar" size="md" color="inherit" />
-          <span>Today</span>
-        </button>
-        <button
-          type="button"
-          className={styles.mobileDockItem}
-          aria-current={mobileSection === 'coves' ? 'page' : undefined}
-          aria-controls="mobile-workspace-navigation"
-          aria-expanded={mobileSection === 'coves'}
-          /* No cove argument: pressing Coves in the dock is always the root
-             list, never wherever the reader was last drilled to (§2.2). */
-          onClick={() => openMobileSection('coves')}
-        >
-          <AstryxIcon icon="menu" size="md" color="inherit" />
-          <span>Coves</span>
-        </button>
-        <button
-          type="button"
-          className={styles.mobileDockItem}
-          aria-current={meDockSelected ? 'page' : undefined}
-          onClick={() => { closeMobileSection(); onOpenSettings(); }}
-        >
-          <AstryxIcon icon="wrench" size="md" color="inherit" />
-          <span>Me</span>
-        </button>
+        {DOCK_ITEMS.map((item) => (
+          <button
+            key={item.key}
+            type="button"
+            className={styles.mobileDockItem}
+            aria-current={selectedDockKey === item.key ? 'page' : undefined}
+            /* Only the two items that actually operate the sheet claim it. */
+            aria-controls={item.opensSection === undefined ? undefined : 'mobile-workspace-navigation'}
+            aria-expanded={item.opensSection === undefined ? undefined : mobileSection === item.opensSection}
+            onClick={() => {
+              // No cove argument: pressing Coves in the dock is always the root
+              // list, never wherever the reader was last drilled to (§2.2).
+              if (item.opensSection !== undefined) { openMobileSection(item.opensSection); return; }
+              closeMobileSection();
+              if (item.key === 'today') go({ name: 'today' });
+              else onOpenSettings();
+            }}
+          >
+            <AstryxIcon icon={item.icon} size="md" color="inherit" />
+            <span>{item.label}</span>
+          </button>
+        ))}
       </nav>
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
         initialFocusRef={newWaveTitleRef}>
