@@ -16,7 +16,7 @@ use calm_server::harness::{
 };
 use calm_server::ids::WaveId;
 use calm_server::model::{
-    Card, CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, new_id, now_ms,
+    Card, CardPatch, CardRole, NewCard, NewCove, NewTerminal, NewWave, RequestTheme, new_id, now_ms,
 };
 use calm_server::operation::spec_harness_start_adapter::SpecHarnessStartAdapter;
 use calm_server::operation::{
@@ -2551,6 +2551,39 @@ async fn spec_harness_start_payloads(repo: &SqlxRepo, card_id: &str) -> Vec<Valu
         .collect()
 }
 
+/// The committed `TxOutput` of every `spec-harness-start` for `card_id`,
+/// oldest first. `data.snapshot` is the `HarnessSnapshot` the start adapter
+/// persisted for the new runtime — the durable record of what the harness was
+/// handed, which a running harness may have already drained off the live
+/// session row.
+async fn spec_harness_start_outputs(repo: &SqlxRepo, card_id: &str) -> Vec<Value> {
+    let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+        "SELECT payload_json, tx_output_json FROM operations \
+         WHERE kind = 'spec-harness-start' ORDER BY rowid",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    rows.into_iter()
+        .filter(|(payload, _)| {
+            serde_json::from_str::<Value>(payload)
+                .ok()
+                .map(|payload| {
+                    payload
+                        .get("request")
+                        .unwrap_or(&payload)
+                        .get("spec_card_id")
+                        .and_then(Value::as_str)
+                        == Some(card_id)
+                })
+                .unwrap_or(false)
+        })
+        .map(|(_, output)| {
+            serde_json::from_str::<Value>(&output.expect("committed tx_output_json")).unwrap()
+        })
+        .collect()
+}
+
 fn assert_no_seeded_goal(payloads: &[Value], what: &str) {
     assert!(
         !payloads.is_empty(),
@@ -2740,4 +2773,259 @@ async fn spec_reset_seeds_no_wave_goal() {
     );
     assert_no_seeded_goal(&payloads, "spec reset");
     assert_harness_queue_empty(&boot, spec_card.id.as_str(), "spec reset").await;
+}
+
+/// #1211 fix round 1 (F1) — `/spec/reset` re-seeds from the spec card's OWN
+/// `payload.prompt`, which is the only durable record of what drove this
+/// harness.
+///
+/// A child wave's spec card is stamped at creation with the rendered seed its
+/// parent declared (`operation/child_wave_adapter.rs` →
+/// `spec_harness_card_payload(Some(render_child_seed(..)))`). Reset clears the
+/// harness items and mints a fresh thread, and nobody is in the loop to type
+/// the child's first turn — so without this the restarted harness would have
+/// nothing to run at all. The seed here is built by the SAME production
+/// function the child-wave adapter calls, so a change to the payload shape
+/// cannot pass this test while breaking the real one.
+///
+/// The companion assertion is `spec_reset_seeds_no_wave_goal` above: a
+/// user-driven wave's spec card has no `prompt` key after S1, so the very same
+/// rule reads as "do not seed" for it. Restore the unconditional `goal: None`
+/// in `routes::cards::reset_spec_harness_card` and THIS test fails while that
+/// one stays green.
+#[tokio::test]
+async fn spec_reset_reseeds_goal_from_spec_card_prompt() {
+    const SEED: &str = "Task 3: land the rename tool and report back";
+
+    let boot = boot_shared().await;
+    let cove = boot
+        .repo
+        .cove_create(NewCove {
+            name: "reset-reseeds-prompt".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let (status, body) = post_json(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": cove.id,
+            "title": SEED,
+            "cwd": attached_repo_fixture("issue-1211-reseed"),
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave_id = body["id"].as_str().expect("wave id").to_string();
+    let spec_card = spec_card_of_wave(&boot, &wave_id).await;
+
+    // Stamp the card the way a child wave is born: the parent's rendered seed
+    // on `payload.prompt`. The wave title is deliberately set to the same text
+    // as well — a child wave's title IS its parent's task goal — so a
+    // regression that went back to reading `wave.title` would also turn this
+    // test green. The distinguishing assertion is the one in
+    // `spec_reset_seeds_no_wave_goal`, whose wave has a non-empty title and no
+    // `prompt`.
+    let seeded_payload = routes::waves::spec_harness_card_payload(Some(SEED.to_string()));
+    assert_eq!(
+        seeded_payload.get("prompt").and_then(Value::as_str),
+        Some(SEED),
+        "production payload builder must carry the seed on `prompt`"
+    );
+    boot.repo
+        .card_update(
+            spec_card.id.as_str(),
+            CardPatch {
+                payload: Some(seeded_payload),
+                ..CardPatch::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", spec_card.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let payloads = spec_harness_start_payloads(boot.repo.as_ref(), spec_card.id.as_str()).await;
+    assert_eq!(
+        payloads.len(),
+        2,
+        "expected the create payload and the reset payload: {payloads:?}"
+    );
+    // Create still seeds nothing (S1); only the reset picks the seed back up.
+    assert_no_seeded_goal(&payloads[..1], "create before reseeding reset");
+    let reset_request = payloads[1].get("request").unwrap_or(&payloads[1]);
+    assert_eq!(
+        reset_request.get("goal").and_then(Value::as_str),
+        Some(SEED),
+        "reset must carry the card's own prompt as the goal; payload = {}",
+        payloads[1]
+    );
+
+    // …and the goal really became an observation. Read the snapshot the start
+    // adapter committed (`tx_output_json`) rather than the live runtime row:
+    // the running harness consumes the seed and re-persists an empty queue,
+    // which is the whole point (something drives the restarted session) but
+    // makes the live row a racy place to look.
+    let outputs = spec_harness_start_outputs(boot.repo.as_ref(), spec_card.id.as_str()).await;
+    assert_eq!(outputs.len(), 2, "create + reset outputs: {outputs:?}");
+    let reset_queue =
+        HarnessSnapshot::from_value_strict(outputs[1]["data"]["snapshot"].clone()).pending_queue;
+    assert_eq!(
+        reset_queue,
+        vec![Observation::WaveGoal {
+            text: SEED.to_string()
+        }],
+        "the restarted harness must start with the card's seed queued"
+    );
+    let create_queue =
+        HarnessSnapshot::from_value_strict(outputs[0]["data"]["snapshot"].clone()).pending_queue;
+    assert!(
+        create_queue.is_empty(),
+        "create must still queue nothing (S1): {create_queue:?}"
+    );
+}
+
+/// #1211 fix round 1 (F1), the other half — a card that carries a seed does
+/// NOT get it queued on top of observations the previous session never
+/// answered. The inherited queue is a live drive; adding the seed to it would
+/// make the restarted agent re-run its opening instruction while real work is
+/// still pending. Only an EMPTY inherited queue leaves the seed in place
+/// (`operation/spec_harness_start_adapter.rs`, `prepare_tx`).
+#[tokio::test]
+async fn spec_reset_keeps_inherited_queue_instead_of_the_card_prompt() {
+    const SEED: &str = "Task 4: the seed that must not jump the queue";
+
+    let _guard = ENV_LOCK.lock().await;
+    let boot = boot_shared().await;
+    let card = boot
+        .repo
+        .card_create(NewCard {
+            wave_id: WaveId::from(boot.wave_id.clone()),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: routes::waves::spec_harness_card_payload(Some(SEED.to_string())),
+        })
+        .await
+        .unwrap();
+    boot.state.card_role_cache.insert(
+        card.id.clone(),
+        CardRole::Spec,
+        WaveId::from(boot.wave_id.clone()),
+    );
+    let old_runtime_id = new_id();
+    let thread_id = "thread-old-prompt-inherit".to_string();
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    snapshot.last_thread_id = Some(thread_id.clone());
+    let mut tx = boot.repo.pool().begin().await.unwrap();
+    session_start_runtime_tx(
+        &mut tx,
+        WorkerSessionInit {
+            id: old_runtime_id.clone(),
+            card_id: card.id.to_string(),
+            kind: WorkerSessionKind::SharedSpec,
+            agent_provider: Some(AgentProvider::Codex),
+            status: WorkerSessionState::Idle,
+            terminal_run_id: None,
+            thread_id: Some(thread_id.clone()),
+            session_id: None,
+            active_turn_id: None,
+            handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+            spawn_op_id: None,
+            now_ms: now_ms(),
+        },
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+
+    let repo_dyn: Arc<dyn Repo> = boot.repo.clone();
+    let harness = SpecHarness::run(SpecHarnessParams {
+        runtime_id: old_runtime_id.clone(),
+        wave_id: card.wave_id.clone(),
+        card_id: card.id.clone(),
+        thread_id: Some(thread_id),
+        repo: repo_dyn,
+        events: boot.state.events.clone(),
+        card_role_cache: boot.state.card_role_cache.clone(),
+        wave_cove_cache: boot.state.wave_cove_cache.clone(),
+        daemon: boot.state.shared_codex_appserver.clone(),
+        config: HarnessConfig {
+            debounce_min_idle: Duration::from_secs(60),
+            debounce_max_wait: Duration::from_secs(60),
+            ..HarnessConfig::default()
+        },
+        snapshot,
+    });
+    boot.state
+        .harness
+        .insert(old_runtime_id.clone(), harness.clone());
+    for envelope_id in 1_i64..=2 {
+        harness
+            .observe_envelope(
+                Observation::WaveGoal {
+                    text: format!("unanswered observation {envelope_id}"),
+                },
+                envelope_id,
+            )
+            .unwrap();
+    }
+    wait_for_harness_watermark(&harness, 2).await;
+    harness.persist_snapshot().await.unwrap();
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", card.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    // The route still decided to carry the seed…
+    let payloads = spec_harness_start_payloads(boot.repo.as_ref(), card.id.as_str()).await;
+    let request = payloads
+        .last()
+        .map(|payload| payload.get("request").unwrap_or(payload))
+        .expect("a reset payload");
+    assert_eq!(request.get("goal").and_then(Value::as_str), Some(SEED));
+
+    // …and the adapter still let the live queue win.
+    let active = boot
+        .repo
+        .session_projection_active_for_card(&card.id.to_string())
+        .await
+        .unwrap()
+        .expect("new active runtime");
+    let new_snapshot = HarnessSnapshot::from_value_strict(
+        active
+            .handle_state_json
+            .clone()
+            .expect("new runtime snapshot"),
+    );
+    assert_eq!(new_snapshot.push_watermark, 2);
+    assert_eq!(
+        new_snapshot.pending_queue.len(),
+        2,
+        "the seed must not be added to a queue that still has work: {:?}",
+        new_snapshot.pending_queue
+    );
+    assert!(
+        !new_snapshot.pending_queue.contains(&Observation::WaveGoal {
+            text: SEED.to_string()
+        }),
+        "the seed must not jump an unanswered queue: {:?}",
+        new_snapshot.pending_queue
+    );
+    if let Some(handle) = boot.state.harness.remove(&active.id) {
+        handle.shutdown().await.unwrap();
+    }
 }

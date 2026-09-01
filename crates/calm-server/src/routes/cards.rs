@@ -1404,10 +1404,23 @@ async fn reset_spec_harness_card(
     // `assistant`, so the thread and the card would disagree about what the
     // session may do.
     //
-    // #1211 S1: no profile inherits the wave title as a goal. A seeded
-    // `Observation::WaveGoal` makes the agent speak before the user does, and
-    // the title is no longer the wave's intent anyway — it defaults to
-    // `Untitled` until the spec agent names the wave.
+    // #1211 S1: no profile inherits the wave TITLE as a goal on this
+    // user-driven reset path. A seeded `Observation::WaveGoal` makes the agent
+    // speak before the user does, and on the create/reset paths the title is
+    // no longer the wave's intent anyway — it stays empty until the spec agent
+    // names the wave. (Child waves are the one remaining place where a title
+    // IS intent: `operation/child_wave_adapter.rs` copies the parent spec's
+    // declared task goal into it. That is machine-written and stays.)
+    //
+    // #1211 fix round 1 (F1): the seed instead comes from the spec card's OWN
+    // `payload.prompt`, which is the only durable record of what drove this
+    // harness. Child waves get that key written at creation time
+    // (`operation/child_wave_adapter.rs` → `spec_harness_card_payload(Some(
+    // rendered_seed))`), and nobody is in the loop to type their first turn —
+    // dropping it would leave the reset harness with nothing to run. User-driven
+    // waves have no `prompt` key at all after S1, so the same rule reads as
+    // "do not seed" for them without this path having to ask whether the wave
+    // is a child.
     let role = s.write.verify_role(&card.id);
     let profile = if crate::plain_chat::card_is_plain_chat(&card, role, true) {
         HarnessProfile::PlainChat
@@ -1416,6 +1429,13 @@ async fn reset_spec_harness_card(
     } else {
         HarnessProfile::Spec
     };
+    let goal = card
+        .payload
+        .get("prompt")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|seed| !seed.is_empty())
+        .map(str::to_string);
     let start_request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
@@ -1423,7 +1443,7 @@ async fn reset_spec_harness_card(
         report_card_id: None,
         sort: None,
         cwd: wave.workspace.path.clone(),
-        goal: None,
+        goal,
         reset_harness_items: true,
         force_new_thread: true,
         profile,
