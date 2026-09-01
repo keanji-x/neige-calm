@@ -2,9 +2,12 @@
 # compares it against the actual non-module CSS both ways, so an unlisted class
 # and an unused entry both fail.
 #
-# base.css owns the first two; styles/dialog.css owns the nine the frozen dialog
-# primitive hard-codes (§0.2, §0.4 CR-4 / CR-7). The xterm and react-grid-layout
-# names are the vendor class surfaces those ports restyle.
+# base.css owns `calm-prose` and `live`; styles/dialog.css owns the nine the
+# frozen dialog primitive hard-codes (§0.2, §0.4 CR-4 / CR-7). The astryx, xterm
+# and react-grid-layout names are the vendor class surfaces this app restyles —
+# `astryx-text-input` is where astryx's boxed field and base.css's underlined
+# one are reconciled (see astryx-theme.css).
+- astryx-text-input
 - calm-prose
 - card-drag-handle
 - card-grid-close

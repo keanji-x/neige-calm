@@ -374,7 +374,6 @@ export function NewWaveForm({
         placeholder={TASK_PLACEHOLDER}
         value={title}
         width="100%"
-        className={styles.task}
         data-nc-new-wave-title
         onChange={(value) => setTitle(value)}
       />
