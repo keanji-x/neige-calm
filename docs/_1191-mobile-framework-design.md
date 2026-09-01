@@ -45,6 +45,50 @@ r2 写成 `onWaveRoute ? (section === null) : (section === 'coves' && ...)`。
 从 `/wave/x` 点开 Coves 再选 cove 时 pathname 仍是 wave，第一分支返回 false 并**整个跳过 cove 分支**
 ⇒ Coves 二级页会露出 dock。现行为本就是两个条件 OR（`shell/public.tsx:109-115`）。见 §2.1。
 
+### 0.5 实现阶段：双路评审结论相反，靠**执行**裁决
+
+实现完成后跑实现级双路评审，**第一路判定「无阻塞，可以合并」，第二路找到两个真实运行时缺陷**。
+第二路是对的，而且它是跑出来的不是读出来的。两条都已复现并修复：
+
+1. **非法 card 回弹会吞掉 `panel`**（违反 §1.4）。
+   `waveSearchFromLocation()` 在**解析原始 location 时**就执行 card/panel 互斥，
+   把 `{card:bad, panel:tasks}` 归一成只剩 card；随后 patch `{card: undefined}` 时 panel 已无从恢复。
+   实测 `sameWaveSearch({searchStr:'?card=bad&panel=tasks&from=cove'},'w1',{card:undefined})` 返回 `{from:'cove'}`。
+   **互斥必须在重建输出时执行，不能在解析阶段。**
+   原有测试只覆盖「重复 card 被拒后保留 panel」与「设置 card 时清 panel」，恰好绕开这个交叉点。
+
+2. **`?panel=` 让桌面侧栏「可见但键盘/读屏不可达」**。
+   `desktopPanelSurface` 只要 URL 带 `panel` 就被打 `aria-hidden` + `inert`，**无任何视口条件**，
+   而桌面上手机面板本身是 `display:none`。分享的深链在桌面打开、或手机开着面板变宽都会踩到。
+   修复需**两半**：变宽时从 URL 清掉 `panel`（保持 URL 诚实）**加上**注入处按视口把关（深链冷启动时 effect 还没跑）。
+
+> **测试可观测性的边界（重要）**：注入处的视口把关在 jsdom 里**不可观测**——清理 effect 在 `act` 内 flush，
+> 测试拿不到那一帧；实测删掉视口门槛后 15 条集成用例**全绿**。
+> 因此该决策被提成纯函数 `renderedMobilePanel()` 并在单测断言。
+> 教训：**集成测试全绿证明不了一个它在时序上根本观察不到的分支。**
+
+### 0.6 跨特性冲突：#1173 与 #1191 的产品决策直接对撞
+
+`browser-coarse` 在 `origin/main` 上全绿（21 passed），在本分支 3 red，**引入点是合并提交本身**，
+不是任何一刀实现（已二分确认；也已排除 `vitest.config.ts` 的 `dedupe` 与 `optimizeDeps`，两者都不是元凶）。
+
+失败断言是 `expected +0 to be 28`——**测到 0，元素根本没渲染**。
+根因：`browser-coarse` 在**手机视口**下断言 #1173 exchange 轨的触控几何；
+而 #1191 的移动 IA 要「手机全屏 Chat 隐藏该桌面侧轨」，由 `ui/drawer` 的 `@media (width < 60rem)` 实现。
+本 PR **完全没碰** `features/chat/`。两个特性单独都绿，合起来必红。
+
+**裁决**：改 #1173 coarse 测试的视口为 coarse-pointer + 宽屏，不回退 #1191 的隐藏。
+`pointer: coarse` 指触摸，不等于窄屏；#1173 真正的不变量（24×28、28px pitch、320px cap）在宽屏 coarse 下依然成立。
+
+> **实施时又精确了一层**：`@media (width < 60rem)` 判的是 **Vitest 给每个 suite 的 iframe**（默认 414×896），
+> **不是** Playwright context 的 viewport。只改 `contextOptions.viewport` 反而变成 4 red；
+> 必须**两个都设**（`contextOptions.viewport` 管页面/`screen`，`browser.viewport` 管 iframe/媒体查询）。
+> 选**竖屏** 1024×1366 而非横屏：文件里 `@media (pointer: coarse) and (orientation: landscape)` 那条 fixture
+> 的全部价值在于「此处 false、转屏即 true」，横屏会让它在此 match 从而失去约束力。
+
+并**补了一条反向断言锁住手机视口下该轨不存在**（`ui/drawer/mobile.browser.test.tsx`）——
+这次冲突之所以表现成一个看不出来源的 `+0`，正是因为 #1191 的这个决策只活在 CSS 和 PR 描述里，没有测试守着。
+
 ---
 
 ## 1. v1 的 URL 模型
@@ -149,11 +193,25 @@ const secondary =
 `mobile-coves.tsx:21` 还有一个 `motion` state，`:30-33`/`:60-62` 与 `selectedCoveId` 的每次转移严格耦合。
 **只上提 id 会把一次转移拆给两个所有者**，正是本设计要消灭的形状 ⇒ `motion` 改为由 id 变化派生，或一并上提。
 
-上提后**丢失了「组件卸载即重置」语义**，必须在这些出口显式清空 `selectedCoveId`：
-Escape、视口变宽、dock 点 Pages/Today/Me、rail 导航、普通关闭。
-`shell/public.tsx:344` 现有的「dock 点 Coves 总是回到 cove 根列表」也必须显式保留，否则是行为回归。
-只有 `from=cove` 返回时才由 `coveIdOf(waveId)` 派生并设置。
+上提后**丢失了「组件卸载即重置」语义**。
+只有 `from=cove` 返回时才由 wave 自己的 `coveId` 设置。
 `mobile-coves.tsx:25-26` 的卸载清理可安全删除——新公式已把 `mobileSection === 'coves'` 作为合取项。
+
+> **实现更正（本节原文写错，勿照旧文档回退）**
+>
+> 原文要求「在六个出口显式清空 `selectedCoveId`」**并且**「dock 点 Coves 回到根列表」。
+> 两者叠加使后者**不可达**：出口都清空后，没有任何可达状态能让 dock 在 selection 尚存时被按下，
+> 于是守卫它的测试只能用 `fireEvent` 去点一个 `inert` 的 dock——**一条空断言**。
+>
+> 落地实现改为 **只在进入时重置**（`openMobileSection`，commit `93605565`），
+> 出口只 `setMobileSection(null)`、不清 selection。可证成立：`setMobileSection(非 null)` 的唯一写点就是
+> `openMobileSection`，且渲染与 secondary 公式都合取了 `mobileSection === 'coves'`，故残留 selection 不可观察。
+> 这样那条产品规则重新变成**可达且可用 `userEvent` 验证**的。
+>
+> 教训与 §0.4 同类：**一条「此后 X 不得发生」的断言，必须能指出哪个可达状态会违反它。**
+>
+> 另：§1.2 的 `coveIdOf(waveId)` 也不必要——`WaveRouteBody` 手上就有 `wave.coveId`，
+> 同一事实且不会在 workspace 加载中途查空。实现用了后者。
 
 ### 2.3 死掉的 state、context、死分支
 
