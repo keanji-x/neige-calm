@@ -1030,10 +1030,40 @@
    * uses: yours is usually one line, this is the paragraph that gets read, and
    * a short measure needs the extra leading more than a long one does.
    */
+  /*
+   * The reply's own three type facts are set twice on purpose, and the second
+   * set is the one that reaches the words.
+   *
+   * The body of a reply is rendered by Astryx's `Markdown`, whose blocks take
+   * their family, size and leading from *its* variables — `--font-family-body`,
+   * `--text-body-size`, `--text-body-leading` (`Markdown.tsx:233-236`) — which
+   * `styles/astryx-theme.css` maps app-wide to our sans at the interface rank.
+   * That mapping is right everywhere else in the app and wrong here, so it is
+   * overridden **for this subtree only**. Declaring `font-family` on the
+   * container alone would not do it: the markdown blocks set their own.
+   *
+   * This is the same move `astryx-theme.css` documents at the root — structure
+   * and behaviour stay Astryx's, appearance stays ours — applied at a scope
+   * instead of at `:root`. It is not `!important` and it is not a descendant
+   * selector reaching into vendor internals; it is the variables the vendor
+   * documents as the way to theme it.
+   *
+   * The plain properties stay because they are what the container's own text
+   * nodes take — the live mark's line box, and any reply that renders to bare
+   * text — and because they are what a reader of this rule expects to find.
+   *
+   * `white-space` is gone: it was `pre-wrap`, and with markdown in the box that
+   * is the parser's job now. The `Reply` note in `public.tsx` states what that
+   * costs.
+   */
   .reply {
+    /* Astryx's namespace, not ours — see the note above. */
+    --font-family-body: var(--font-serif);
+    --text-body-size: var(--text-md);
+    --text-body-leading: var(--leading-loose);
+
     min-inline-size: 0;
     overflow-wrap: anywhere;
-    white-space: pre-wrap;
     font-family: var(--font-serif);
     font-size: var(--text-md);
     font-weight: var(--weight-normal);

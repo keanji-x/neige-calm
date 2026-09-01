@@ -2920,6 +2920,67 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 });
 
+/*
+ * ── The reply keeps the report's voice after the words became markdown ─────
+ *
+ * `.reply` used to set `font-family` on the one element that held the text, so
+ * the family and the words were the same box. They are not any more: Astryx's
+ * `Markdown` emits its own blocks, and those take their family, size and
+ * leading from *its* variables (`--font-family-body`, `--text-body-size`,
+ * `--text-body-leading`), which `styles/astryx-theme.css` maps app-wide to our
+ * **sans** at the interface rank. `.reply` overrides the three for its subtree.
+ *
+ * That override is invisible to every other tier: jsdom computes no styles, and
+ * reading the declaration out of the stylesheet would only prove it was
+ * written — the failure this guards is that it stops *connecting*, which is
+ * what an upstream rename of any of the three variable names would do, silently
+ * and with every existing assertion still green.
+ *
+ * Compared against probes carrying the page's own tokens rather than against a
+ * font-name string, for the same reason the composer's popover case does it:
+ * what is pinned is that the hook connects, not how a family is spelled.
+ */
+describe('the reply’s type, through Astryx’s markdown', () => {
+  const MARKDOWN_REPLY: ConversationTurn[] = [
+    { id: 'you-0', author: 'you', text: 'Ask', atMs: 0 },
+    { id: 'agent-0', author: 'agent', text: 'An answer that runs long enough to wrap.', atMs: 1 },
+  ];
+
+  /** The block Astryx actually painted the words into — not `.reply`, which is
+   *  now only the box around it. */
+  function paintedReply(): HTMLElement {
+    const reply = replies()[0];
+    return (reply.querySelector<HTMLElement>('[role="paragraph"], p') ?? reply);
+  }
+
+  function probe(styles: Partial<CSSStyleDeclaration>): CSSStyleDeclaration {
+    const element = document.createElement('div');
+    Object.assign(element.style, styles);
+    document.body.append(element);
+    const computed = getComputedStyle(element);
+    /* Read every property before the element leaves the document. */
+    const snapshot = {
+      fontFamily: computed.fontFamily,
+      fontSize: computed.fontSize,
+    } as CSSStyleDeclaration;
+    element.remove();
+    return snapshot;
+  }
+
+  it('paints the reply in the report’s serif at the drawer’s step, not Astryx’s body sans', () => {
+    render(<RailPane turns={MARKDOWN_REPLY} />);
+    const painted = getComputedStyle(paintedReply());
+
+    const wanted = probe({ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-md)' });
+    expect(painted.fontFamily).toBe(wanted.fontFamily);
+    expect(painted.fontSize).toBe(wanted.fontSize);
+
+    /* And the sans the app-wide bridge would otherwise have handed it is a
+       different answer, so the line above cannot pass by falling through. */
+    expect(painted.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-sans)' }).fontFamily);
+  });
+});
+
 /**
  * WCAG 2.x relative luminance from whatever `getComputedStyle` hands back.
  *

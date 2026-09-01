@@ -301,6 +301,69 @@ describe('ChatThread', () => {
     expect(screen.queryByLabelText('Working')).toBeNull();
   });
 
+  /*
+   * ── The reply is markdown; what you typed is not ──────────────────────────
+   *
+   * Both halves are asserted because both are decisions, and the second one is
+   * the one that gets undone by reflex ("why is only one side rendered?").
+   *
+   * The reply case asserts *elements*, not text: before this, the same string
+   * produced one paragraph with `##` and `-` still in it, and every
+   * text-content assertion in this file passed on that. Only the element names
+   * separate "rendered as markdown" from "printed the source".
+   */
+  it('renders the reply as markdown — headings, lists and fenced code', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn({
+          id: 't2',
+          author: 'agent',
+          text: '## Findings\n\n- first\n- second\n\n```js\nconst a = 1;\n```\n',
+        })]}
+      />,
+    );
+    const reply = container.querySelector('[data-nc-turn="agent"]')!;
+    /* `##` is one level below `#`, and `#` starts at `h3` — see the case below. */
+    expect(reply.querySelector('h4')?.textContent).toBe('Findings');
+    expect([...reply.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['first', 'second']);
+    expect(reply.querySelector('pre, code')).toBeTruthy();
+    /* The source characters are gone, not merely re-styled. */
+    expect(reply.textContent).not.toContain('##');
+    expect(reply.textContent).not.toContain('```');
+  });
+
+  /*
+   * `headingLevelStart={3}`: the page owns `<h1>` and its sections own `<h2>`,
+   * so a reply's own `#` may not mint either. Asserted separately from the
+   * rendering case above because it is a different claim — that markdown is
+   * rendered *at a level*, not merely rendered — and a change to the prop
+   * leaves that case green.
+   */
+  it('starts the reply’s headings below the page’s own', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn({ id: 't2', author: 'agent', text: '# Top' })]}
+      />,
+    );
+    const reply = container.querySelector('[data-nc-turn="agent"]')!;
+    expect(reply.querySelector('h1, h2')).toBeNull();
+    expect(reply.querySelector('h3')?.textContent).toBe('Top');
+  });
+
+  it('leaves what you typed as literal text, markdown or not', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[turn({ text: '# not a heading *not* emphasis' })]}
+      />,
+    );
+    const said = container.querySelector('[data-nc-turn="you"]')!;
+    expect(said.textContent).toBe('# not a heading *not* emphasis');
+    expect(said.querySelector('h1, h2, h3, em, strong')).toBeNull();
+  });
+
   it('states failure in text and exposes activity state through the shared attribute', () => {
     const { container } = render(
       <ChatThread conversation={conversation()} turns={[activity({ state: 'failed' })]} />,

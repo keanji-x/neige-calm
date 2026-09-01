@@ -38,6 +38,7 @@ import {
   ChatSendButton,
   type ChatComposerTrigger,
 } from '@astryxdesign/core/Chat';
+import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 
 import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
@@ -501,15 +502,14 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
               {opensAfterGap(turns, index) && index > 0 && (
                 <p className={styles.gap}>{clockTime(turn.atMs)}</p>
               )}
-              <p
-                className={turn.author === 'you' ? styles.said : styles.reply}
-                data-nc-turn={turn.author}
-              >
-                {turn.text}
-                {live && last && turn.author === 'agent' && (
-                  <span className={styles.live} aria-label="Working" />
-                )}
-              </p>
+              {turn.author === 'you' ? (
+                <p className={styles.said} data-nc-turn="you">{turn.text}</p>
+              ) : (
+                <div className={styles.reply} data-nc-turn="agent">
+                  <Reply text={turn.text} streaming={live && last} />
+                  {live && last && <span className={styles.live} aria-label="Working" />}
+                </div>
+              )}
             </div>
           );
         })}
@@ -1554,6 +1554,50 @@ function jumpToExchange(frame: HTMLElement | null, id: string): boolean {
   if (scroller === null) return false;
   scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   return true;
+}
+
+/**
+ * ── The reply is markdown, and what that costs ────────────────────────────
+ *
+ * It used to be `{turn.text}` inside a `<p>` with `white-space: pre-wrap`, and
+ * that was a lie about what the agent writes: the thing on the other end of
+ * this drawer is the same one that writes the report, and it answers in
+ * headings, lists and fenced code. All of it arrived as one flat paragraph
+ * with the hashes and backticks still in it.
+ *
+ * **Why Astryx's `Markdown` and not a markdown library.** It is already a
+ * dependency, it carries its own parser and its own `CodeBlock` (fences are
+ * rendered through it automatically — `Markdown.tsx:1147-1166`), so nothing
+ * new is installed for either, and `isStreaming` is incremental parsing with a
+ * per-chunk fade rather than a re-parse of the whole answer on every poll.
+ * That last one is not a nicety here: a live turn re-renders this component
+ * dozens of times over a four-minute answer.
+ *
+ * **The cost, stated rather than discovered later: whitespace is now
+ * CommonMark's, not the author's.** A single newline inside a paragraph is a
+ * soft break — it renders as a space (`Markdown/parser.ts:388-404`: a hard
+ * break needs two trailing spaces). Before this, `pre-wrap` printed every
+ * newline exactly where it was written. Prose typed with single returns and no
+ * blank line between them therefore reflows into one paragraph. That is the
+ * whitespace contract of the language we are now speaking, and the alternative
+ * — rewriting single newlines into hard breaks before handing the string over
+ * — cannot be done without knowing which of them are inside a fence, which is
+ * re-implementing the parser we just adopted in order to feed it.
+ *
+ * `core/domain/conversation.ts` still says the text is verbatim, and it still
+ * is: what changed is the renderer, not the transport.
+ *
+ * **Only the reply.** What *you* typed stays a plain `<p>`: `*` and `#` in
+ * something a person typed into a chat box are punctuation, not syntax, and a
+ * composer that silently reinterprets what you sent is worse than one that
+ * shows it back.
+ *
+ * `headingLevelStart={3}` because the page owns `<h1>` and its sections own
+ * `<h2>`; a reply's own `#` is a heading inside a drawer, not a second page
+ * title. Astryx clamps anything past `h6`.
+ */
+function Reply({ text, streaming }: { text: string; streaming: boolean }) {
+  return <Markdown density="compact" headingLevelStart={3} isStreaming={streaming}>{text}</Markdown>;
 }
 
 /**
