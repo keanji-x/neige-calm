@@ -21,8 +21,12 @@ import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import {
   toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
-import type { BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry } from '../../systems/cards/public.js';
-import { cardAddMenuEntries, isSpecHarnessPayload, partitionWaveCards } from '../../systems/cards/public.js';
+import type {
+  BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
+} from '../../systems/cards/public.js';
+import {
+  cardAddMenuEntries, isAssistantHarnessPayload, isSpecHarnessPayload, partitionWaveCards,
+} from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
@@ -45,8 +49,9 @@ import {
   backlinkCountsByBlock, deriveReportOutline, deriveReportTasks, readWaveReport, type ReportLinkTarget,
 } from '../../../../core/domain/report.ts';
 import {
-  buildTranscript, conversationName, conversationNameFrom, coveConversationCardId,
+  buildTranscript, conversationName, conversationNameFrom, CONVERSATION_STATE_SOURCE,
   coveConversationFailure, COVE_CONVERSATION_TEXT_MAX, harnessItemToTurn, mergeTranscript, reconcileUserEchoes,
+  waveConversationCardId, coveConversationCardId,
   type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
   type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
@@ -61,8 +66,9 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
   settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
-  waveBacklinksQueryOptions, waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
+  useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations, useWorkspace,
+  waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
+  waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
@@ -101,9 +107,24 @@ type ConversationStore = Readonly<{
  * Where a route's conversation list comes from.
  *
  * `'all'` and `'waves'` read the session registry — conversations this tab has
- * opened — because no endpoint lists a wave's conversations. `'rows'` is the
- * opposite: the server sends the list, so the registry is not consulted at all
- * and nothing on the route is written back into it.
+ * opened. `'rows'` is the opposite: the server sends the list, so the registry
+ * is not consulted for it.
+ *
+ * `'waves'` has no construction site left: the cove route filtered the registry
+ * by its waves before it listed conversations from the server (#1098), and
+ * Today is the only registry-backed surface now, with `'all'`. It is left
+ * standing rather than deleted here because deleting it is not one line — the
+ * same sweep takes `ConversationPanelSource`'s `'card'` arm, `store.start` and
+ * the `scope` arm of the open-request consume with it, which is a wider edit
+ * than a review fix should carry.
+ *
+ * What that sweep would **not** change is behaviour, and an earlier version of
+ * this note claimed otherwise. The live Today → wave path runs through the
+ * `rows !== null` branch of that consume (`useConversationPanel`); the `scope`
+ * branch below it is only reachable when the source is `'card'`, which nothing
+ * selects. So the reason to defer is size and blast radius, not risk to the
+ * path this slice is about. Recorded here so nobody reads a live decision into
+ * an arm nothing selects (#1189 review).
  */
 type ConversationListIntent = Readonly<
   { kind: 'all' } | { kind: 'waves'; waveIds: readonly string[] }
@@ -111,7 +132,29 @@ type ConversationListIntent = Readonly<
 
 type ConversationRouteIntent =
   | ConversationListIntent
-  | Readonly<{ kind: 'rows'; rows: readonly Conversation[] }>;
+  | Readonly<{
+    kind: 'rows';
+    rows: readonly Conversation[];
+    /**
+     * The wave these rows may be *sent to*, or null when there is none.
+     *
+     * This is what decides whether a `'rows'` route writes its list back into
+     * the session registry, and it is a wave id rather than a boolean so the
+     * decision can be enforced here rather than trusted (§5.1).
+     *
+     * A cove route passes null: its rows live on the cove's hidden chat wave,
+     * Today navigates to `conversation.waveId` when a row is opened, and
+     * remembering them would walk the reader into a wave that is deliberately
+     * on no list. A wave route passes its own wave id: its rows are on a real,
+     * navigable wave, and they are the *only* place an assistant conversation
+     * exists — without this they could never reach Today at all.
+     *
+     * It lives on the route intent and not on `ConversationPanelSource` because
+     * the store is where the decision is made and the store is handed only
+     * `scope` and this value; a field on the source would be invisible here.
+     */
+    rememberOn: string | null;
+  }>;
 
 export function pendingConversationIds(
   conversation: Conversation | null, working: boolean, sending: boolean,
@@ -121,6 +164,62 @@ export function pendingConversationIds(
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
+}
+
+/**
+ * Everything about the open conversation that does *not* come from its turns.
+ *
+ * Split out only so the row below can be derived twice from one expression —
+ * see `useConversationStore` for why there are two.
+ */
+type ConversationFacts = Readonly<{
+  cardId: string;
+  waveId: string;
+  waveTitle: string | undefined;
+  cardTitle: string | null;
+  kind: ConversationKind;
+  state: ConversationState | null;
+  working: boolean;
+  /** The row's own time, used when no turn has supplied a later one. */
+  fallbackUpdatedAt: number;
+}>;
+
+/**
+ * The conversation row these turns describe.
+ *
+ * Three of its fields — the derived `title`, `updatedAt` and `turns` — are
+ * statements *about the turns*, and are therefore only ever as true as the set
+ * they are computed from. That is the whole reason this is a function of the
+ * turns rather than a closure over the one list in scope: the drawer shows a
+ * message the moment you press Enter, and "shown" and "happened" are not the
+ * same claim (`useConversationStore`).
+ */
+function describeConversation(
+  facts: ConversationFacts, turns: readonly ConversationTurn[],
+): Conversation {
+  return {
+    id: facts.cardId, waveId: facts.waveId,
+    /* Absent, not `''`: a cove conversation's wave is hidden and has no title
+       to show. `ChatList` renders the difference; `''` would render a blank. */
+    ...(facts.waveTitle === undefined ? {} : { waveTitle: facts.waveTitle }),
+    title: facts.cardTitle
+      ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+    kind: facts.kind,
+    /* A server-listed conversation's state is the server's to report —
+       `run_status_for` writes `turn_pending`, never `running`, for a headless
+       harness, and everything outside the four live states arrives as `null`.
+       The local phase still wins while a turn is in flight, because the list
+       would otherwise sit on the state the last fetch happened to catch.
+       Which kinds those are is a total table (`CONVERSATION_STATE_SOURCE`) and
+       not a `=== 'shared-chat'` test: this branch is silent, and a new kind
+       falling into the `else` would swap the server's reading for an invented
+       `'idle'` with nothing to notice it. */
+    state: CONVERSATION_STATE_SOURCE[facts.kind] === 'server'
+      ? (facts.working ? 'turn_pending' : facts.state)
+      : (facts.working ? 'running' : 'idle'),
+    updatedAt: turns.at(-1)?.atMs ?? facts.fallbackUpdatedAt,
+    turns: turns.length,
+  };
 }
 
 export function useConversationStore(
@@ -138,17 +237,79 @@ export function useConversationStore(
   const scopeKind = scope?.kind ?? 'shared-spec';
   const scopeState = scope?.state ?? null;
   const serverRows = routeIntent.kind === 'rows' ? routeIntent.rows : null;
+  const rememberOn = routeIntent.kind === 'rows' ? routeIntent.rememberOn : null;
   const history = useInfiniteQuery({
     ...harnessItemsQueryOptions(transport, cardId, unauthorized), enabled: scope !== null,
   });
   const run = useQuery({ ...specRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
   const mutations = useSpecMutations(transport, cardId, unauthorized);
   const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
+  /**
+   * The echo whose `POST /spec/input` has not been answered yet, if any.
+   *
+   * One id and not a set, and that is a claim about reachability rather than
+   * about this line: a second unanswered echo would make `confirmedEchoes`
+   * report the first one as confirmed, which is exactly the false fact the
+   * registry must never be told (`durableConversation`).
+   *
+   * What holds it to one is `sendingRef` **plus** `activeSend` below. On its
+   * own `sendingRef` does not: the `cardId` effect clears it so a second
+   * conversation can be written in while the first one's POST is still out, and
+   * an in-flight request that cleared it again on the way out — as this one
+   * unconditionally did — would re-open the composer over a *new* conversation
+   * whose own echo was still unanswered. Two unanswered echoes, one slot. The
+   * settle handlers below therefore touch the send state only while they are
+   * still the active request, which is what makes "at most one" true rather
+   * than merely intended.
+   *
+   * "At most one" is a statement about **this mounted store**, and only about
+   * it. A store that unmounts with a send still out leaves that request holding
+   * an echo nobody here can see; the store mounted next has its own slot, and
+   * the two can be unanswered at the same time. That is why echo ids carry a
+   * per-instance nonce (`echoNonce`) — the shared registry is the one place
+   * those two lifetimes meet.
+   */
+  const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [interruptPending, setInterruptPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const sendingRef = useRef(false);
+  /**
+   * The send whose settling is still allowed to speak for this store.
+   *
+   * A request that is no longer this one has nothing true to say about
+   * `sending`, `sendingRef` or `actionError`: those describe the conversation
+   * the reader is in now, and it is not the conversation that request was sent
+   * to. (Its *own* result is still written through — see `send`.)
+   */
+  const activeSend = useRef<{ cardId: string; echoId: string } | null>(null);
+  /**
+   * Every echo id this store has minted, which is how a write-through tells an
+   * echo of its own apart from a user message the server sent back.
+   *
+   * Ids are `echo-<nonce>-N` off a counter that is never reset, so they stay
+   * unique across conversation switches for the life of the store.
+   */
+  const mintedEchoIds = useRef(new Set<string>());
   const seq = useRef(0);
+  /**
+   * What makes an echo id unique beyond this store instance.
+   *
+   * `seq` and `mintedEchoIds` die with the store; the registry does not — it
+   * lives on `ConversationProvider` at the root and outlives every route. So a
+   * counter alone is only unique *within one mounted instance*: leave the route
+   * with a send still in flight and come back, and the new store starts at
+   * `echo-1` again while the old closure is still holding an `echo-1` of its
+   * own. Both write through on success, and two different messages enter the
+   * shared registry under one id — a duplicate React key in the transcript, and
+   * a `mintedEchoIds` answer given about the wrong message.
+   *
+   * A per-instance nonce is the bounded fix: ids stay collision-free across
+   * mounts without moving ownership of minting up to the provider. Minted off
+   * `getRandomValues` (via `mintIdempotencyKey`) because the app is served over
+   * plain http on the LAN, where `crypto.randomUUID` does not exist.
+   */
+  const [echoNonce] = useState(mintIdempotencyKey);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   const serverTurns = useMemo(() => [...items]
     .sort((left, right) => left.id - right.id).flatMap((item) => {
@@ -163,7 +324,12 @@ export function useConversationStore(
   }, [serverTurns]);
   useEffect(() => {
     setEchoes([]);
+    setUnconfirmedEchoId(null);
     setActionError(null);
+    /* The send in flight, if any, belongs to the conversation being left: it
+       stops being the active one here, and stops being allowed to write the
+       state below. Its own answer is still delivered (`send`). */
+    activeSend.current = null;
     sendingRef.current = false;
     setSending(false);
     setInterruptPending(false);
@@ -173,50 +339,168 @@ export function useConversationStore(
     () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
     [echoes, serverTurns],
   );
+  /*
+   * The same turns, minus the one nobody has agreed to yet.
+   *
+   * `reconcileUserEchoes` drops an echo once the server sends the message back,
+   * so every echo still standing is either in flight or already confirmed by
+   * the 200 its own POST returned; this removes the first kind. `serverTurns`
+   * needs no filter — it *is* the server's account.
+   */
+  const confirmedEchoes = useMemo(
+    () => unconfirmedEchoId === null
+      ? echoes
+      : echoes.filter((turn) => turn.id !== unconfirmedEchoId),
+    [echoes, unconfirmedEchoId],
+  );
+  const confirmedTurns = useMemo(
+    () => [...serverTurns, ...confirmedEchoes].sort((left, right) => left.atMs - right.atMs),
+    [confirmedEchoes, serverTurns],
+  );
   /* An echo is a message you already sent, so it belongs after everything the
      server has confirmed. Keep `buildTranscript`'s positional pairing intact:
      a completed action retains the started row's place even when its end time
      is later than an interleaved message. A completed tail thought stops being
      the tail as soon as the user speaks again. */
   const transcript = useMemo(() => mergeTranscript(serverEntries, echoes), [echoes, serverEntries]);
+  const confirmedTranscript = useMemo(
+    () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
+  );
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
-  const conversation = useMemo<Conversation | null>(() => waveId === undefined ? null : {
-    id: cardId, waveId,
-    /* Absent, not `''`: a cove conversation's wave is hidden and has no title
-       to show. `ChatList` renders the difference; `''` would render a blank. */
-    ...(waveTitle === undefined ? {} : { waveTitle }),
-    title: cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
-    kind: scopeKind,
-    /* A chat card's state is the server's to report — `run_status_for` writes
-       `turn_pending`, never `running`, for a headless harness, and everything
-       outside the four live states arrives as `null`. The local phase still
-       wins while a turn is in flight, because the list would otherwise sit on
-       the state the last fetch happened to catch. */
-    state: scopeKind === 'shared-chat'
-      ? (working ? 'turn_pending' : scopeState)
-      : (working ? 'running' : 'idle'),
-    updatedAt: turns.at(-1)?.atMs ?? scopeUpdatedAt ?? 0, turns: turns.length,
-  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, turns, waveId, waveTitle, working]);
+  const facts = useMemo<ConversationFacts | null>(() => waveId === undefined ? null : {
+    cardId, waveId, waveTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
+    state: scopeState, working, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
+  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, waveId, waveTitle, working]);
+  /**
+   * What the reader is looking at: every turn, echoes included.
+   *
+   * This is the optimistic row. Pressing Enter has to put the message on the
+   * screen and name the drawer after it immediately — that is the whole point
+   * of an echo — and this route replaces the open row in its own list with this
+   * value so the panel behind the drawer agrees with the drawer.
+   */
+  const conversation = useMemo(
+    () => facts === null ? null : describeConversation(facts, turns), [facts, turns],
+  );
+  /**
+   * What the tab will still believe once the drawer is gone: confirmed turns
+   * only.
+   *
+   * The registry is not a view, it is a **memory** — nothing refreshes it, it
+   * has no `forget`, and Today reads it for the life of the tab. So the one
+   * thing that may never enter it is a fact that is not yet a fact.
+   *
+   * The shape that got in: an assistant card is minted `title: null` and the
+   * only name it ever has is the one derived from its first message, and an
+   * echo's `atMs` is `Date.now()` on the *browser's* clock. Send the first
+   * message on a fresh conversation, close the drawer while the POST is still
+   * in flight, and let the POST fail — the drawer's `catch` drops the echo, but
+   * `scope` is null by then, so the effect below no longer runs and nothing
+   * revisits the entry. Today was left naming a conversation after a message
+   * that never left the browser, and holding it at the top of the list on a
+   * clock reading nobody else shares.
+   *
+   * Deriving the remembered row from the confirmed turns closes it at the
+   * source rather than by repair: the false value is never written, so there is
+   * nothing for the failure path to undo, and the rule holds for any future
+   * writer of this entry rather than for the one that was found.
+   */
+  const durableConversation = useMemo(
+    () => facts === null ? null : describeConversation(facts, confirmedTurns),
+    [confirmedTurns, facts],
+  );
   useEffect(() => {
-    if (conversation === null) return;
+    if (durableConversation === null) return;
     /*
-     * A server-listed conversation is never remembered.
+     * A server-listed conversation is not remembered *here*.
      *
      * The registry exists so a conversation stays visible on routes that cannot
      * fetch it — which is exactly what a `'rows'` route can do for itself. What
-     * remembering would add is a leak: these rows live on a cove's hidden chat
-     * wave, and Today lists everything the registry holds and navigates to
-     * `conversation.waveId` when a row is opened, which would walk the user
-     * into the hidden wave. This one gate is the whole defence; Today has no
-     * second filter, so removing it is immediately visible in the tests.
+     * remembering would add on a cove route is a leak: those rows live on the
+     * cove's hidden chat wave, and Today lists everything the registry holds and
+     * navigates to `conversation.waveId` when a row is opened, which would walk
+     * the reader into the hidden wave. Today has no second filter.
+     *
+     * A `'rows'` route that named a wave (`rememberOn`) is the exception, and
+     * it carries that defence itself: only the named wave's rows are written,
+     * here and in the effect below.
      */
-    if (serverRows !== null) return;
-    // Remember the full transcript so reopening the conversation preserves its
-    // activity lines and looks identical to the route the user just left.
-    registry.remember(conversation, transcript);
-  }, [conversation, registry, serverRows, transcript]);
+    if (serverRows !== null && (rememberOn === null || durableConversation.waveId !== rememberOn)) return;
+    /* Remember the transcript so reopening the conversation preserves its
+       activity lines and looks identical to the route the user just left — the
+       confirmed one, for the reason `durableConversation` gives: a message that
+       may still fail is not part of what this conversation *is*. */
+    registry.remember(durableConversation, confirmedTranscript);
+  }, [confirmedTranscript, durableConversation, registry, rememberOn, serverRows]);
+  useEffect(() => {
+    /*
+     * A `'rows'` route that named a wave remembers **every** row it lists.
+     *
+     * Not only the open one, and not only on open. An assistant conversation
+     * exists nowhere but in this list — no other surface fetches it — so a
+     * registry that only learned about opened rows would leave Today permanently
+     * without them, and the whole Today → wave path below would be dead code for
+     * the one kind of conversation it was written for (§5.1).
+     *
+     * `rememberOn` is compared against each row rather than merely consulted:
+     * Today navigates to `conversation.waveId`, so a row belonging to some other
+     * wave — or to a hidden one — would be a link into a place this route never
+     * claimed. Remembering exactly the rows of the named wave is the defence,
+     * held here rather than downstream.
+     *
+     * Turns are carried over from whatever the registry already holds, never
+     * reset: the open row is remembered with its full transcript by the effect
+     * above, and writing `[]` here would erase it on the next render.
+     */
+    if (serverRows === null || rememberOn === null) return;
+    for (const row of serverRows) {
+      if (row.waveId !== rememberOn) continue;
+      /* The open row belongs to the effect above, which knows its transcript
+         and its live name. Writing the plain row over that here would undo it
+         on every render, and the two effects would then take turns rewriting
+         one entry for as long as the drawer stayed open. */
+      if (row.id === conversation?.id) continue;
+      /* A turn count this tab really read is not unread by a list that does not
+         send one. The server will not count turns (`WaveConversationSummary`),
+         so a row always arrives with `turns` absent; writing that over an entry
+         the drawer counted would make a conversation lose its count on Today
+         the moment its own wave was visited again. The transcript is carried
+         over for the same reason and by the same rule.
+
+         And so is the **name**, which is that rule a third time and was the one
+         omission: an assistant card is minted `title: None`
+         (`wave_conversations.rs`) and nothing backfills it, so `row.title` is
+         permanently null on the wire. The name a reader sees is derived by the
+         effect above from the conversation's first message. The moment the
+         drawer closes — or opens on another row — this effect stops skipping
+         that row, and a plain `{...row}` would put the null back: Today would
+         fall from the derived name to the bare kind label `Assistant`. Only
+         the absent direction is carried — a title the server *does* send (the
+         cove list's, and any future backfill) is the server's to change and
+         wins, exactly as `turns` does. */
+      /* `updatedAt` never goes backwards, which is the same rule once more.
+         A row's time is whatever column produced it — the listed rows read
+         `COALESCE(worker_sessions.updated_at_ms, cards.updated_at)`, the
+         injected spec row reads the card's `updated_at`, and neither moves
+         when a turn is added to a conversation the drawer is reading. The
+         drawer *does* know that time (`turns.at(-1)?.atMs`) and wrote it here.
+         Taking the later of the two keeps a conversation you have just been
+         talking in at the top of Today, instead of sinking it back to whenever
+         its card row was last touched. */
+      const known = registry.conversations.find((candidate) => candidate.id === row.id);
+      registry.remember(
+        {
+          ...row,
+          ...(known?.turns === undefined ? {} : { turns: known.turns }),
+          ...(row.title === null && known?.title != null ? { title: known.title } : {}),
+          updatedAt: Math.max(row.updatedAt, known?.updatedAt ?? 0),
+        },
+        registry.turnsOf(row.id),
+      );
+    }
+  }, [conversation?.id, registry, rememberOn, serverRows]);
 
   const allConversations = conversation === null
     ? registry.conversations
@@ -239,12 +523,106 @@ export function useConversationStore(
     setSending(true);
     setActionError(null);
     seq.current += 1;
-    const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
+    const echo = {
+      id: `echo-${echoNonce}-${seq.current}`, author: 'you' as const, text, atMs: Date.now(),
+    };
+    mintedEchoIds.current.add(echo.id);
+    const sentTo = cardId;
+    /*
+     * Which server rows this conversation had *before* this message left.
+     *
+     * The write-through below asks whether the refresh already brought this very
+     * message back, and the only rows that can answer that are the ones that
+     * were not there yet. Asking the whole registry entry instead — as this did
+     * — makes an older identical message answer for this one: say `ping` twice
+     * and the server row for the first `ping` matches the second echo, so the
+     * second send is neither appended nor counted and the reader loses a message
+     * they watched being sent. `reconcileUserEchoes` pairs one-to-one only
+     * within the echoes of a single call, and this call passes one echo, so it
+     * cannot know the older row is already spoken for. Recording the ids here is
+     * how it is told.
+     */
+    const turnsBefore = new Set(registry.turnsOf(sentTo).map((entry) => entry.id));
+    activeSend.current = { cardId: sentTo, echoId: echo.id };
+    /* Still ours to answer for. False from the moment the reader moved to
+       another conversation (the `cardId` effect) or started a later send. */
+    const stillActive = () => activeSend.current?.echoId === echo.id;
     setEchoes((current) => [...current, echo]);
-    void mutations.send(text).catch((error: unknown) => {
+    setUnconfirmedEchoId(echo.id);
+    void mutations.send(text).then(() => {
+      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+      /*
+       * The answer can outlive the drawer, and the effects above cannot.
+       *
+       * Closing the drawer takes `scope` to null, so `durableConversation`
+       * becomes null and this store stops writing to the registry — including
+       * for a turn that lands a moment later and *is* now a fact. Nothing else
+       * would ever supply it: an assistant row is `title: null` on the wire for
+       * good, so the name would be lost for the life of the tab rather than
+       * merely delayed. So the confirmation is written straight through — for
+       * the conversation it was *sent to*, which is not necessarily the one
+       * open now.
+       *
+       * Through `updateExisting`, not `remember`, because both halves of this
+       * write have to happen at the moment of the write rather than at the
+       * moment of the send. `mutations.send` resolves two refreshes after its
+       * POST returned 200 (`useSpecMutations`), and either of them can land a
+       * newer transcript, turn count or state in this entry first: merging into
+       * `registry.conversations` and `registry.turnsOf` as captured here would
+       * put the pre-send entry back and drop what just arrived. The
+       * "only into an entry that already exists" check is the same story —
+       * that is what keeps this on the right side of the `rememberOn` defence
+       * above (on a cove route the open conversation is never remembered, so
+       * there is nothing to find), and a decision made off a captured list is
+       * a decision made about a list that may no longer be the one being
+       * written to.
+       *
+       * Only the absent direction of the name, exactly as the batch remember
+       * below does it — a title the server sends is the server's.
+       */
+      registry.updateExisting(sentTo, ({ conversation: known, turns: knownTurns }) => {
+        /*
+         * The refresh may already have brought this very message back.
+         *
+         * `POST /spec/input` is answered, the history query refetches, the
+         * server's own row for this message lands, and the effect above writes
+         * the transcript containing it — all before this promise settles.
+         * Appending the echo then would show the reader their message twice and
+         * count it twice. Matched by text through the same one-to-one rule the
+         * drawer reconciles echoes with (`reconcileUserEchoes`), against the
+         * rows that **arrived since the send** (`turnsBefore`) and that this
+         * store did not mint itself — so a reader who genuinely sends the same
+         * sentence twice still has it counted twice, and an echo of this store's
+         * own is never mistaken for the server's account of it.
+         */
+        const serverSaid = knownTurns.filter((turn): turn is ConversationTurn =>
+          turn.author === 'you' && !mintedEchoIds.current.has(turn.id) && !turnsBefore.has(turn.id));
+        const recorded = reconcileUserEchoes(serverSaid, [echo]).length === 0;
+        return {
+          conversation: {
+            ...known,
+            title: known.title ?? conversationNameFrom(text),
+            updatedAt: Math.max(known.updatedAt, echo.atMs),
+            ...(recorded ? {} : { turns: (known.turns ?? 0) + 1 }),
+          },
+          turns: recorded ? knownTurns : [...knownTurns, echo],
+        };
+      });
+    }).catch((error: unknown) => {
+      /* A failure belongs to the conversation that failed. Reported on another
+         one it is a sentence under a composer the reader never sent from, and
+         dropping the echo there would be dropping someone else's. */
+      if (!stillActive()) return;
       setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
       setActionError(errorMessage(error, 'Could not send the message.'));
     }).finally(() => {
+      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+      /* Re-opening the composer is a statement about the send in flight *now*.
+         Made unconditionally, this is what let a second unanswered echo exist:
+         the request left behind by a conversation switch cleared the flag of a
+         send that had not been answered yet. See `unconfirmedEchoId`. */
+      if (!stillActive()) return;
+      activeSend.current = null;
       sendingRef.current = false;
       setSending(false);
     });
@@ -324,15 +702,37 @@ type SpecConversationScope = Readonly<{
  * opening a row there navigates; a cove route can hold one for every row it
  * lists, so opening one must not navigate — the wave it would navigate to is
  * hidden.
+ *
+ * Two routes select two of the three: Today is `'elsewhere'` and both the cove
+ * and the wave route are `'rows'`. **`'card'` is selected by nothing** since the
+ * wave route stopped forking on its spec card (#1189 §5.3) — it is dead, and it
+ * is left standing for the reason given on `ConversationListIntent`: removing it
+ * also removes `store.start`, the `scope` arm of the open-request consume, and
+ * the `/new` parity argument below, none of which belongs in a review fix. Read
+ * every `source.kind === 'card'` branch below as unreachable today.
  */
 type ConversationPanelSource =
   | Readonly<{ kind: 'elsewhere'; intent: ConversationListIntent }>
   | Readonly<{ kind: 'card'; intent: ConversationListIntent; scope: SpecConversationScope }>
   | Readonly<{
     kind: 'rows';
-    coveId: string;
+    /**
+     * What a draft on this route belongs to — a cove id on a cove route, a wave
+     * id on a wave route. Two routes, one drawer, and the reducer tells their
+     * drafts apart by this value alone (`ConversationDraft`).
+     */
+    scopeId: string;
     rows: readonly Conversation[];
+    /** See `ConversationRouteIntent`: the wave these rows may be sent to, or
+     *  null when there is none and nothing may be remembered. */
+    rememberOn: string | null;
     scopeOf: (conversationId: string) => SpecConversationScope | null;
+    /**
+     * The id the card minted under this key *will* have, derived rather than
+     * observed — the two endpoints derive it from different namespaces, so this
+     * cannot be one shared function of `(scopeId, key)`.
+     */
+    derivedCardId: (idempotencyKey: string) => string;
     create: (text: string, idempotencyKey: string) => Promise<Conversation>;
     refresh: () => Promise<readonly Conversation[]>;
   }>;
@@ -350,15 +750,31 @@ type OpenTarget = Readonly<{ kind: 'row'; id: string } | { kind: 'draft' }>;
  * fields make each such rule a thing to remember at every branch, and the two
  * bugs this shape replaces were both one field moving without its partner.
  *
- * `coveId` is in here for the same reason: the panel is not remounted when the
- * reader walks from one cove to another (proved by
- * `keeps a failed draft to the cove it belongs to`), so a draft that does not
- * name its cove is a draft any cove's `+` can pick up — and posting cove A's
- * key and words to cove B mints a conversation in the wrong place.
+ * `scopeId` is in here for one concrete reason, and it is worth stating exactly
+ * because a looser version of it was written here first and was false. The
+ * panel is **not** remounted when the reader walks from one cove to another:
+ * `/cove/$coveId` is one route component across a param change, so the reducer
+ * survives and a draft that did not name its cove would be a draft cove B's `+`
+ * picks up — posting cove A's key and words to cove B. That is what
+ * `cove-conversation.test.tsx`'s `keeps a failed draft to the cove it belongs
+ * to` holds down, and it is the whole of what the guard is *proved* to do.
+ *
+ * Cove → wave is a different walk and has no twin test, because it cannot: the
+ * cove and wave routes are two sibling components under `rootRoute`, so that
+ * walk unmounts the panel and takes the reducer — draft and all — with it.
+ * Nothing can leak across it, and nothing survives it either (#1225 is the
+ * second half of that sentence: an unsent draft, and the idempotency key that
+ * makes a retry a retry, are simply lost).
+ *
+ * #1189 is still why the field is `scopeId` and not `coveId`: a wave route now
+ * holds drafts too, and one field carrying values from two id spaces is what
+ * keeps the guard total should a future route ever hold both — a generalisation
+ * that costs nothing and closes the shape rather than a claim about today's
+ * routing.
  */
 type ConversationDraft = Readonly<{
-  /** The cove this draft belongs to. It is only ever visible there. */
-  coveId: string;
+  /** The cove or wave this draft belongs to. It is only ever visible there. */
+  scopeId: string;
   /** Identifies the draft to the server for as long as it exists; minted when
    *  the drawer opens and *never* per send. */
   key: string;
@@ -458,8 +874,8 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
 }
 
 /** Everything needed to say "is this still the draft I was working on?": the
- *  cove it belongs to and the key that is the identity of its attempt. */
-type DraftId = Readonly<{ coveId: string; key: string }>;
+ *  cove or wave it belongs to and the key that is the identity of its attempt. */
+type DraftId = Readonly<{ scopeId: string; key: string }>;
 
 /**
  * What the drawer is showing and which draft is held — **one** state, moved by
@@ -498,7 +914,7 @@ type DrawerMove = Readonly<
 >;
 
 const heldIs = (held: ConversationDraft | null, id: DraftId): held is ConversationDraft =>
-  held !== null && held.coveId === id.coveId && held.key === id.key;
+  held !== null && held.scopeId === id.scopeId && held.key === id.key;
 
 function moveDrawer(state: DrawerState, move: DrawerMove): DrawerState {
   switch (move.kind) {
@@ -557,9 +973,10 @@ function useConversationPanel(
     ? source.scope
     : source.kind === 'rows' && openRowId !== null ? source.scopeOf(openRowId) : null;
   const routeIntent: ConversationRouteIntent = source.kind === 'rows'
-    ? { kind: 'rows', rows: source.rows }
+    ? { kind: 'rows', rows: source.rows, rememberOn: source.rememberOn }
     : source.intent;
 
+  const rows = source.kind === 'rows' ? source.rows : null;
   const store = useConversationStore(transport, unauthorized, scope, routeIntent);
   const registry = useConversationRegistry();
   const go = useGo();
@@ -569,12 +986,18 @@ function useConversationPanel(
    * The draft, if it belongs *here*.
    *
    * A held draft from another cove is not visible, not reopenable and not
-   * sendable on this one — it is simply not this route's business. It is kept
-   * rather than dropped so that walking back to its own cove still finds it;
-   * the one thing that discards it is starting a draft somewhere else, because
-   * only one is held at a time.
+   * sendable here; it is simply not this route's business. It is kept rather
+   * than dropped so that walking back to that cove still finds it; the one
+   * thing that discards it is starting a draft somewhere else, because only one
+   * is held at a time.
+   *
+   * "Walking back" means within one route component — cove → cove. A draft
+   * written on a wave is never seen by a cove for a blunter reason: the two are
+   * separate route components, so the walk unmounted this hook and there is no
+   * held draft left to filter (see `ConversationDraft`, and #1225). The test is
+   * the same either way, and being the same is the point.
    */
-  const draft = held !== null && source.kind === 'rows' && held.coveId === source.coveId ? held : null;
+  const draft = held !== null && source.kind === 'rows' && held.scopeId === source.scopeId ? held : null;
 
   /*
    * Every write to the draft goes through one of these three, and each is a
@@ -616,11 +1039,39 @@ function useConversationPanel(
     withDraft(from, (current) => ({ ...current, text, sentText: text }));
   };
 
+  /*
+   * Today asked for a conversation to be opened, and this route is where it
+   * lives. Two shapes, because the two sources answer "which conversation is
+   * this route holding?" at different times.
+   *
+   * A `'card'` route knows its one card before anything is fetched, so `scope`
+   * is the whole answer. A `'rows'` route has no scope at all until a row is
+   * *already* open (`scope` is computed from `openRowId`), so asking `scope`
+   * there is asking whether the drawer is open — which it is not, that being
+   * the entire request. It has to consume the request against the rows.
+   *
+   * The condition is "the rows are loaded **and** contain this id", never
+   * "the rows do not contain it, so clear". The list arrives a round trip
+   * later than the request, and a request cleared while it was still empty is
+   * lost for good — the reader lands on the wave with the drawer shut and no
+   * second chance. The registry is also tab-wide, so the id may belong to
+   * another wave entirely; that case is not this effect's to decide either, and
+   * the route clears it from outside (`WaveRoute`, and the failed-read fallback
+   * beside the rows query).
+   */
   useEffect(() => {
-    if (scope === null || registry.requestedOpenId !== scope.cardId) return;
+    const requestedOpenId = registry.requestedOpenId;
+    if (requestedOpenId === null) return;
+    if (rows !== null) {
+      if (!rows.some((row) => row.id === requestedOpenId)) return;
+      moveDrawerTo({ kind: 'open-row', id: requestedOpenId });
+      registry.clearOpenRequest();
+      return;
+    }
+    if (scope === null || requestedOpenId !== scope.cardId) return;
     moveDrawerTo({ kind: 'open-row', id: scope.cardId });
     registry.clearOpenRequest();
-  }, [registry, scope]);
+  }, [registry, rows, scope]);
 
   useEffect(() => {
     if (open === null) return;
@@ -694,7 +1145,7 @@ function useConversationPanel(
     moveDrawerTo({
       kind: 'start-draft',
       draft: {
-        coveId: source.coveId,
+        scopeId: source.scopeId,
         key: mintIdempotencyKey(),
         text: null, sentText: null, error: null, remedy: null,
       },
@@ -754,9 +1205,12 @@ function useConversationPanel(
    * goes unclaimed.
    *
    * So the question asked is the exact one: the card id is a pure public
-   * function of `(coveId, key)` (`coveConversationCardId`, golden-tested against
-   * the server's own golden), so the row this attempt would have created can be
-   * named before looking, and only that id counts.
+   * function of `(scopeId, key)` — `coveConversationCardId` on a cove and
+   * `waveConversationCardId` on a wave, each golden-tested against the server's
+   * own golden and each hashing its **own namespace**, which is what stops one
+   * `(id, key)` pair naming one card from two endpoints. The route supplies the
+   * derivation (`source.derivedCardId`); this asks it. So the row this attempt
+   * would have created can be named before looking, and only that id counts.
    *
    * Three answers, not two. `'unknown'` is the re-read *itself* failing, which
    * is the likeliest thing to happen while the network is the reason we are
@@ -765,20 +1219,23 @@ function useConversationPanel(
    * attempt that may well have committed, which is the second conversation.
    */
   const adoptIfItLanded = async (
-    refresh: () => Promise<readonly Conversation[]>, coveId: string, key: string,
+    refresh: () => Promise<readonly Conversation[]>,
+    derivedCardId: (idempotencyKey: string) => string,
+    scopeId: string,
+    key: string,
   ): Promise<'landed' | 'absent' | 'unknown'> => {
     const rows = await refresh().catch(() => null);
     if (rows === null) return 'unknown';
-    const cardId = coveConversationCardId(coveId, key);
+    const cardId = derivedCardId(key);
     const landed = rows.find((row) => row.id === cardId);
     if (landed === undefined) return 'absent';
-    adopt({ coveId, key }, landed);
+    adopt({ scopeId, key }, landed);
     return 'landed';
   };
 
   const sendDraft = (text: string) => {
     if (source.kind !== 'rows' || creating || draft === null) return;
-    const { create, refresh, coveId } = source;
+    const { create, refresh, scopeId, derivedCardId } = source;
     /*
      * Two different questions, and they are asked of two different strings —
      * because the server asks them that way.
@@ -823,7 +1280,7 @@ function useConversationPanel(
          * Only a re-read that came back and said "no new row" earns a new key.
          */
         if (previousText !== null && previousText !== text) {
-          const landing = await adoptIfItLanded(refresh, coveId, attempt.key);
+          const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
           if (landing === 'landed') return;
           if (landing === 'unknown') {
             amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
@@ -835,7 +1292,7 @@ function useConversationPanel(
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key));
       } catch (error: unknown) {
-        await handleCreateFailure(error, refresh, coveId, attempt);
+        await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
         setCreating(false);
       }
@@ -845,7 +1302,8 @@ function useConversationPanel(
   async function handleCreateFailure(
     error: unknown,
     refresh: () => Promise<readonly Conversation[]>,
-    coveId: string,
+    derivedCardId: (idempotencyKey: string) => string,
+    scopeId: string,
     attempt: ConversationDraft,
   ): Promise<void> {
     const failure = error instanceof ApiError
@@ -883,7 +1341,7 @@ function useConversationPanel(
            choice yet — a new key here would be a second card next to the one
            the server just told us exists. */
         amendDraft(attempt, { error: message });
-        const landing = await adoptIfItLanded(refresh, coveId, attempt.key);
+        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
         if (landing === 'absent') amendDraft(attempt, { remedy: 'new-conversation' });
         if (landing === 'unknown') amendDraft(attempt, { error: UNCONFIRMED, remedy: 'retry' });
         return;
@@ -904,7 +1362,7 @@ function useConversationPanel(
          * is the same key and the same words again.
          */
         amendDraft(attempt, { error: message });
-        if (await adoptIfItLanded(refresh, coveId, attempt.key) !== 'landed') {
+        if (await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key) !== 'landed') {
           amendDraft(attempt, { remedy: 'retry' });
         }
         return;
@@ -913,7 +1371,7 @@ function useConversationPanel(
 
   const sendAsNewConversation = () => {
     if (source.kind !== 'rows' || creating || draft === null || draft.text === null) return;
-    const { create, refresh, coveId } = source;
+    const { create, refresh, scopeId, derivedCardId } = source;
     const text = draft.text;
     let attempt = draft;
     setCreating(true);
@@ -922,7 +1380,7 @@ function useConversationPanel(
       try {
         /* Pressed deliberately, but the same fence applies: a new key is only
            safe once the list has actually said the old one produced nothing. */
-        const landing = await adoptIfItLanded(refresh, coveId, attempt.key);
+        const landing = await adoptIfItLanded(refresh, derivedCardId, scopeId, attempt.key);
         if (landing === 'landed') return;
         if (landing === 'unknown') {
           amendDraft(attempt, { error: UNCONFIRMED, remedy: 'new-conversation' });
@@ -933,7 +1391,7 @@ function useConversationPanel(
         attempt = { ...attempt, text, sentText: text };
         adopt(attempt, await create(text, attempt.key));
       } catch (error: unknown) {
-        await handleCreateFailure(error, refresh, coveId, attempt);
+        await handleCreateFailure(error, refresh, derivedCardId, scopeId, attempt);
       } finally {
         setCreating(false);
       }
@@ -1208,8 +1666,13 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
   const conversationMutations = useCoveConversationMutations(transport, coveId ?? '', unauthorized);
   const chat = useConversationPanel(transport, unauthorized, {
     kind: 'rows',
-    coveId: coveId ?? '',
+    scopeId: coveId ?? '',
     rows: coveConversations,
+    /* Null, and this is the one gate on this route: every row here lives on the
+       cove's hidden chat wave, and Today navigates to `conversation.waveId`
+       when a row is opened. */
+    rememberOn: null,
+    derivedCardId: (idempotencyKey) => coveConversationCardId(coveId ?? '', idempotencyKey),
     scopeOf: (conversationId) => {
       const row = coveConversations.find((candidate) => candidate.id === conversationId);
       /* No `title`: the chat wave is hidden, so there is no wave name to pass
@@ -1326,8 +1789,23 @@ function WaveRoute({ transport, unauthorized, cardRuntime }: {
     ...waveDetailQueryOptions(transport, waveId ?? '', unauthorized),
     enabled: waveId !== undefined,
   });
+  /*
+   * The card Today asked for, if this wave has it and it is a conversation card
+   * at all. **Both** conversation markers, not just the spec one (#1189 §5.2):
+   * an assistant card is a `codex` card carrying `harness_profile: 'assistant'`,
+   * and while this predicate said `isSpecHarnessPayload` alone every assistant
+   * request answered `undefined` here and was cleared by the effect below —
+   * before `WaveRouteBody`'s conversation list had even loaded. The Today →
+   * assistant path was cut here, one level above the effect that consumes it,
+   * and no change down there could have reached it.
+   *
+   * Reading the markers off the wave detail is also what makes the consuming
+   * effect's "wait for the rows" honest: the card and the row are two views of
+   * one thing, and the card arrives with the route.
+   */
   const requestedCard = detail.data?.cards.find((card) => card.id === registry.requestedOpenId
-    && card.kind === 'codex' && isSpecHarnessPayload(card.payload));
+    && card.kind === 'codex'
+    && (isSpecHarnessPayload(card.payload) || isAssistantHarnessPayload(card.payload)));
   const detailMatchesRoute = waveId !== undefined && detail.data?.wave.id === waveId;
   useEffect(() => {
     if (registry.requestedOpenId === null || detail.isLoading || detail.isFetching) return;
@@ -1368,6 +1846,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   cardRuntime: CardRuntime;
 }) {
   const waveMutations = useWaveMutations(transport, unauthorized);
+  const conversationMutations = useWaveConversationMutations(transport, wave.id, unauthorized);
   const openMobileSection = useOpenMobileSection();
   const go = useGo();
   const goSameWave = useGoSameWave();
@@ -1400,21 +1879,137 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   // rather than copied: hiding the card from CARDS and giving it a drawer are
   // one decision, and two hand-written copies would drift apart silently.
   const specCard = cards.find((card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload));
+  const registry = useConversationRegistry();
+  /*
+   * The wave's assistant conversations (#1189). Its own endpoint, its own list;
+   * the spec card is deliberately not in it — the server's list predicate is
+   * `role == Assistant` — so the row for it is injected below.
+   */
+  const conversationsQuery = useQuery(waveConversationsQueryOptions(transport, wave.id, unauthorized));
+  const assistantRows = useMemo(() => conversationsQuery.data ?? [], [conversationsQuery.data]);
+  const waveTitle = waveDisplayTitle(wave.title);
+  /*
+   * The wave's opening conversation, derived from the spec card rather than
+   * listed — it is the one row on this route the server does not send.
+   *
+   * `updatedAt` comes from the card's own `updated_at`. That is the same
+   * *quantity* the listed rows carry — epoch milliseconds off the same clock —
+   * which is what the one ordering `ChatList` applies (`byRecency`) needs. It
+   * is **not** the same column: a listed row reads
+   * `COALESCE(worker_sessions.updated_at_ms, cards.updated_at)`, so it usually
+   * reports its session's last activity while this row reports when the card
+   * itself was last written. Both are "when something last happened to this
+   * conversation" to within the accuracy this list claims, and neither moves
+   * per turn — the drawer's own reading is the one that does, and the registry
+   * keeps the later of the two (`useConversationStore`, the batch remember).
+   *
+   * `state` is null: no endpoint reports this card's session state to this
+   * route, and `null` says "nothing is known to be happening", which is the
+   * honest reading. The row picks up the live phase the moment it is opened —
+   * that is the one row `useConversationStore` replaces in place.
+   */
+  const specRow = useMemo<Conversation | null>(() => specCard === undefined ? null : {
+    id: specCard.id,
+    waveId: wave.id,
+    waveTitle,
+    title: specCard.title,
+    kind: 'shared-spec',
+    state: null,
+    updatedAt: specCard.updated_at,
+  }, [specCard, wave.id, waveTitle]);
+  /* Every row carries the wave's title, so a row that reaches Today can say
+     where it is. On this page `showWave: false` hides it again.
+     *
+     * Unconditionally, and *before* the spec row is considered: whether this
+     * wave happens to have a spec card has nothing to do with whether its
+     * assistant rows know where they live, and while the two were one
+     * expression the `specRow === null` arm returned the rows untouched. A
+     * reader who had only ever visited waves without a spec card then saw a
+     * Today list of rows reading `Assistant` with no wave named on any of
+     * them — the waves that most need the `+` (§5.3) losing the label first. */
+  const placedRows = useMemo(
+    () => assistantRows.map((row) => ({ ...row, waveTitle })),
+    [assistantRows, waveTitle],
+  );
+  const rows = useMemo<readonly Conversation[]>(
+    () => specRow === null ? placedRows : [specRow, ...placedRows],
+    [placedRows, specRow],
+  );
+  /*
+   * `'rows'`, unconditionally — no longer `'card'` when a spec card exists and
+   * `'elsewhere'` when it does not (§5.3).
+   *
+   * The branch that is gone took the `+` away from exactly the waves that need
+   * it most: a wave with no spec card had no conversation at all and no way to
+   * start one. The list being empty is a state this panel already renders, and
+   * an empty list with a `+` over it is the whole feature.
+   */
   const chat = useConversationPanel(
     transport,
     unauthorized,
-    specCard === undefined
-      ? { kind: 'elsewhere', intent: { kind: 'waves', waveIds: [wave.id] } }
-      : {
-        kind: 'card',
-        intent: { kind: 'waves', waveIds: [wave.id] },
-        scope: {
-          id: wave.id, title: waveDisplayTitle(wave.title), cardId: specCard.id,
-          cardTitle: specCard.title, updatedAt: specCard.updated_at,
-        },
+    {
+      kind: 'rows',
+      scopeId: wave.id,
+      rows,
+      /* Unlike a cove's, these rows are on a wave the reader can be sent to —
+         this very route — so Today may hold and open them. The store checks
+         each row's `waveId` against this, so a row from anywhere else is not
+         remembered whatever put it in the list. */
+      rememberOn: wave.id,
+      derivedCardId: (idempotencyKey) => waveConversationCardId(wave.id, idempotencyKey),
+      scopeOf: (conversationId) => {
+        /* The spec row first: it is not in `assistantRows`, and without this
+           arm the one conversation a wave has always had would stop opening. */
+        if (specCard !== undefined && conversationId === specCard.id) {
+          return {
+            id: wave.id, title: waveTitle, cardId: specCard.id,
+            cardTitle: specCard.title, updatedAt: specCard.updated_at,
+            kind: 'shared-spec', state: null,
+          };
+        }
+        const row = assistantRows.find((candidate) => candidate.id === conversationId);
+        /*
+         * `id: row.waveId` — the row's own wave, never `wave.id`.
+         *
+         * This is the line the whole `rememberOn` defence rests on. `scope.id`
+         * becomes `conversation.waveId` in the store, which is what
+         * `conversation.waveId !== rememberOn` compares against the wave this
+         * route claimed. Written `id: wave.id` it would be a tautology — every
+         * open row would pass, whatever wave it really belongs to — and no
+         * existing test would notice: the fixtures list rows of this wave, so
+         * the two values are equal in every green case. The comparison is only
+         * a comparison because this side is the row's.
+         */
+        return row === undefined ? null : {
+          id: row.waveId, title: waveTitle, cardId: row.id, cardTitle: row.title,
+          updatedAt: row.updatedAt, kind: row.kind, state: row.state,
+        };
       },
+      create: conversationMutations.create,
+      refresh: conversationMutations.refresh,
+    },
     { showWave: false },
   );
+  /*
+   * The fallback clear, for the one case the effects on both sides leave open.
+   *
+   * `WaveRoute` clears a request whose card this wave does not have, and the
+   * panel consumes one whose row it does. What neither covers is a request for
+   * a card this wave *does* have while the list that would open it could not be
+   * read: the panel is right to keep waiting, and the wait would never end. The
+   * reader then walks into this wave some other day and the drawer springs open
+   * for a conversation they asked about once.
+   *
+   * So: the read is over, it failed, and the id is not among whatever rows did
+   * arrive. Not "the read failed", which would also throw away a perfectly
+   * openable spec row.
+   */
+  useEffect(() => {
+    const requestedOpenId = registry.requestedOpenId;
+    if (requestedOpenId === null || !conversationsQuery.isError) return;
+    if (rows.some((row) => row.id === requestedOpenId)) return;
+    registry.clearOpenRequest();
+  }, [conversationsQuery.isError, registry, rows]);
   /*
    * The runtime half of the TASKS panel.
    *

@@ -1,4 +1,5 @@
 import type { CardEntry, CardRegistry, RegisteredCard } from '../registry.js';
+import { ASSISTANT_CARD_ENTRY } from './assistant.js';
 import { CLAUDE_CARD_ENTRY } from './claude.js';
 import { CODEX_CARD_ENTRY } from './codex.js';
 import { FILE_VIEWER_CARD_ENTRY } from './file-viewer.js';
@@ -10,6 +11,10 @@ export const BUILTIN_CARD_ORDER = Object.freeze([
   'terminal',
   'codex',
   'spec',
+  /* After `spec` and before `claude`: the two headless conversation adapters
+     sit together, and both of them depend on `codex` — registered ahead of
+     both — refusing their markers explicitly (`codex.ts`). */
+  'assistant',
   'claude',
   'wave-report',
   'file-viewer',
@@ -57,6 +62,7 @@ export function registerAvailableBuiltinCards(registry: CardRegistry): void {
     terminal: BuiltinRegistrar.of(TERMINAL_CARD_ENTRY),
     codex: BuiltinRegistrar.of(CODEX_CARD_ENTRY),
     spec: BuiltinRegistrar.of(SPEC_CARD_ENTRY),
+    assistant: BuiltinRegistrar.of(ASSISTANT_CARD_ENTRY),
     claude: BuiltinRegistrar.of(CLAUDE_CARD_ENTRY),
     'wave-report': BuiltinRegistrar.of(WAVE_REPORT_CARD_ENTRY),
     'file-viewer': BuiltinRegistrar.of(FILE_VIEWER_CARD_ENTRY),

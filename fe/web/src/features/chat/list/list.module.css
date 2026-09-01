@@ -79,8 +79,47 @@
     animation: chat-pulse var(--motion-pulse) ease-in-out infinite;
   }
 
+  /* Two things on one line, in the order the aria-label says them: what the
+     conversation is called, then — on the routes that show rows from more than
+     one wave — where it lives. Two ranks and two tones, not two columns: the
+     wave is the crumb (§3.3's `--text-xs` job), so the row still reads as one
+     name with a note after it, and a list of conversations from one wave does
+     not turn into a list of repeated wave titles.
+
+     Both truncate. `min-inline-size: 0` on each child is what lets them: a flex
+     item's automatic minimum size is its content, so without it the name would
+     push the wave out of the row rather than ellipsing. Neither may be
+     `flex-shrink: 0` — a long name would then clip the wave entirely.
+
+     But "share it in proportion to their length", which is what two equal
+     `flex: 0 1 auto` items do, is the wrong rule here, and it brought the
+     defect this pair was written to fix back in another shape. Flex distributes
+     shrinkage **weighted by flex base size**, so the longer item keeps more of
+     what it asked for: a 60-character wave title next to `Assistant` in this
+     270px column takes ~228px and leaves the name ~38px — about five
+     characters. Every row under such a wave then reads `Rena…` `Fix …` `Add …`
+     followed by the same long crumb, which is exactly the "N rows a reader
+     cannot tell apart" that `list/public.tsx` describes.
+
+     The row's identity is the conversation's name; the crumb is a note after
+     it. So the crumb gets a bound (`max-inline-size`) rather than a louder
+     shrink factor: a cap is a fact about the layout that holds whatever the two
+     strings happen to be, while a bigger `flex-shrink` only changes the ratio
+     and still hands most of a very long crumb the width. 40% is the largest
+     share that still leaves the name the majority of the line; below its own
+     content width the crumb is not capped at all, so a short crumb next to a
+     long name is unaffected and the name still ellipses first there. */
   .label {
+    display: flex;
+    gap: var(--space-2);
+    align-items: baseline;
     min-inline-size: 0;
+    overflow: hidden;
+  }
+
+  .name {
+    min-inline-size: 0;
+    flex: 0 1 auto;
     overflow: hidden;
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
@@ -90,7 +129,48 @@
     text-overflow: ellipsis;
   }
 
-  .rowActive .label {
+  .wave {
+    /* A floor as well as a ceiling, and the floor is about the separator.
+       Shrinkage is weighted by base size, so the *shorter* crumb is the one
+       that gets squeezed to nothing: a one-word wave beside a 60-character
+       conversation name is handed about 8px — enough for the `·` below and
+       nothing else. The crumb then reads as a lone dot after the name, which
+       says "something was cut" about a string that would have fitted in two
+       more characters. 6ch is the dot, its 4px gap and about four characters of
+       `--text-xs` — a short wave name whole, or a longer one visibly truncated
+       rather than erased. Below its own content width it never binds (a short
+       crumb is simply shown at its size), and it is an order under the 40%
+       ceiling at every width this panel takes, so the two cannot fight. */
+    min-inline-size: 6ch;
+    flex: 0 1 auto;
+    max-inline-size: 40%;
+    overflow: hidden;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  /* A boundary the eye can find once both halves are ellipsed.
+     `Assis…` followed by 4px and `Very long wave title` is two strings only if
+     you already know it is two strings — the size step and the tone step are
+     both small by design (the crumb is meant to be quiet), and an ellipsis at
+     the join removes the one cue a reader had, the word ending. The dot is
+     decorative and is generated content, so it is outside `textContent` and
+     outside the `aria-label` the button already spells out in words; nothing
+     reads it aloud. It sits inside `.wave`, so it is clipped with the crumb
+     rather than surviving a crumb that has vanished — and because it is
+     *first*, while clipping happens at the inline end, "clipped with" needed
+     the floor above to be true: without it the dot is the one part of the crumb
+     that always survives. */
+  .wave::before {
+    content: '·';
+    margin-inline-end: var(--space-1);
+  }
+
+  .rowActive .name {
     font-weight: var(--weight-semibold);
     color: var(--text);
   }
