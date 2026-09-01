@@ -32,6 +32,7 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, type ReactNode } from 'react';
 
 import type { CardFilesPort, DirectoryListingWire, GitChangedFileWire, GitDiffWire } from '../../../../core/domain/fs.ts';
+import { joinDirectoryPath } from '../../ui/directory-browser/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import type { PaneSearchAdapter, PaneTheme } from './code-pane.tsx';
 
@@ -75,11 +76,6 @@ function parentPath(path: string): string | null {
   const index = trimmed.lastIndexOf('/');
   if (index <= 0) return index === 0 ? '/' : null;
   return trimmed.slice(0, index);
-}
-
-function joinPath(base: string, name: string): string {
-  if (base === '') return name;
-  return base.endsWith('/') ? base + name : `${base}/${name}`;
 }
 
 function messageOf(error: unknown, fallback: string): string {
@@ -145,12 +141,23 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
   const [diffLoading, setDiffLoading] = useState(false);
 
   /*
-   * The listing. A folder that cannot be listed climbs to its parent once
-   * rather than showing an error: the common cause is a directory that has been
-   * moved or deleted under a card that outlived it, and the useful answer there
-   * is the nearest folder that does exist. It only climbs while the failing
-   * folder is not the card's own — otherwise a card pointed at a deleted path
-   * would walk itself up to `/`.
+   * The listing — and exactly one climb, from the card's own path only.
+   *
+   * A card can be created on a *file*. `seedNav` puts that path in `folderPath`
+   * as well as in `selectedPath`, and `listDirectory` answers 400 for a file, so
+   * the card's own path is the one place a listing failure is expected rather
+   * than informative: the parent is the folder that file lives in, which is what
+   * the left column is for. `selectedPath` is deliberately left alone in that
+   * branch — the file stays selected, and the effect below reads it into the
+   * pane beside the listing, which is the whole content of a file card. The
+   * other reason a card's own folder fails to list is that it was moved or
+   * deleted under a card that outlived it, and the nearest folder that does
+   * exist is the useful answer there too.
+   *
+   * Anything else shows the error instead. A folder the reader navigated *into*
+   * deserves to be told why it could not be read, and because only the card's
+   * own path may climb, a chain of unreadable ancestors stops after one step
+   * rather than walking the card up to `/`.
    */
   useEffect(() => {
     if (files === null) return;
@@ -172,12 +179,8 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
       .catch((error: unknown) => {
         if (cancelled) return;
         const parent = parentPath(folderPath);
-        if (folderPath !== path && parent !== null && parent !== folderPath) {
-          setNav((current) => ({
-            ...current,
-            folderPath: parent,
-            selectedPath: current.selectedPath === folderPath ? parent : current.selectedPath,
-          }));
+        if (folderPath === path && parent !== null && parent !== folderPath) {
+          setNav((current) => ({ ...current, folderPath: parent }));
           return;
         }
         setListing(null);
@@ -262,7 +265,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
     const selectedFile = changedFiles.find((file) => file.path === diffSelected);
     setDiffLoading(true);
     setDiffError(null);
-    files.gitDiff(joinPath(gitRoot, diffSelected), selectedFile?.old_path)
+    files.gitDiff(joinDirectoryPath(gitRoot, diffSelected), selectedFile?.old_path)
       .then((result) => { if (!cancelled) setDiff(result); })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -311,7 +314,7 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
               : entries.length === 0
                 ? <p className="fv-state">Empty directory</p>
                 : entries.map((entry) => {
-                  const entryPath = joinPath(listingPath, entry.name);
+                  const entryPath = joinDirectoryPath(listingPath, entry.name);
                   return (
                     <button
                       key={entry.name}

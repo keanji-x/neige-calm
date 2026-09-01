@@ -53,7 +53,7 @@ import {
 import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
 import { DELETE_CARD_COPY, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
-import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
+import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
@@ -1574,7 +1574,18 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   );
   const [cardDraft, setCardDraft] = useState<CardAddMenuEntry | null>(null);
   const [creatingCard, setCreatingCard] = useState(false);
-  const [cardCreateError, setCardCreateError] = useState<string | null>(null);
+  /*
+   * A failed create has to be sayable with no dialog on screen.
+   *
+   * A kind with no fields (`terminal`) never opens one — `pickCardKind` posts on
+   * the spot — so a message that only `NewCardForm` renders is a message the
+   * reader of that path never sees: the `+` menu closes and nothing happens at
+   * all. Routing it through the same `useOperationFeedback` the delete path uses
+   * gives it a route-level surface, and the dialog keeps rendering the very same
+   * `error` inline while it is open, so the two cannot disagree about what went
+   * wrong (and it is never printed twice — see the render).
+   */
+  const cardCreateFeedback = useOperationFeedback();
   const newCardFieldRef = useRef<HTMLInputElement | null>(null);
 
   const createCardOfKind = async (entry: CardAddMenuEntry, values: NewCardValues) => {
@@ -1617,22 +1628,21 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
      to it — the same landing `onOpenCard` gives a row that already exists. */
   const submitNewCard = (entry: CardAddMenuEntry, values: NewCardValues) => {
     setCreatingCard(true);
-    setCardCreateError(null);
-    void createCardOfKind(entry, values)
-      .then((card) => {
-        setCardDraft(null);
-        goSameWave(wave.id, { card: card.id });
-      })
-      .catch((error: unknown) => {
-        setCardCreateError(errorMessage(error, `Could not create the ${entry.label} card.`));
-      })
+    void cardCreateFeedback
+      .run(
+        createCardOfKind(entry, values).then((card) => {
+          setCardDraft(null);
+          goSameWave(wave.id, { card: card.id });
+        }),
+        `Could not create the ${entry.label} card.`,
+      )
       .finally(() => { setCreatingCard(false); });
   };
 
   /* A kind with nothing to ask is created on the spot; one with fields opens
      the form. The menu itself never creates anything — see `AddCardMenu`. */
   const pickCardKind = (entry: CardAddMenuEntry) => {
-    setCardCreateError(null);
+    cardCreateFeedback.clear();
     if (entry.fields.length === 0) submitNewCard(entry, {});
     else setCardDraft(entry);
   };
@@ -1762,7 +1772,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           key={cardDraft.type}
           entry={cardDraft}
           submitting={creatingCard}
-          error={cardCreateError}
+          error={cardCreateFeedback.error}
           listDirectory={listDirectory}
           firstFieldRef={newCardFieldRef}
           onCancel={() => setCardDraft(null)}
@@ -1781,6 +1791,10 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       onCancel={cardDeletion.cancel}
     />
     <OperationFeedback feedback={cardDeletion.feedback} />
+    {/* Only while the dialog is closed: `NewCardForm` renders the same `error`
+        inline, and a fieldless kind never opens the dialog at all — which is
+        precisely the path that had no surface of any kind. */}
+    {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback} />}
     {chat.drawer}
     </>
   );

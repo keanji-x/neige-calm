@@ -159,6 +159,33 @@ describe('FileViewer', () => {
       await waitFor(() => { expect(gitDiff).toHaveBeenCalledWith('/repo/src/main.rs', undefined); });
     });
 
+    /* `<parent>/<name>` is `ui/directory-browser`'s rule (`joinDirectoryPath`),
+       imported rather than re-implemented here — `core/domain/fs.ts`'s own
+       header names that module as its owner. These are the two edges the rule
+       exists for, pinned on this caller so a second copy cannot creep back with
+       different answers. */
+    it('joins against the repository root at the two edges of the shared rule', async () => {
+      const gitDiff = vi.fn(() => Promise.resolve({
+        path: 'main.rs', status: 'modified', head_text: 'was', working_text: 'is', truncated: false,
+      }));
+      renderViewer(port({
+        gitDiff,
+        gitStatus: () => Promise.resolve({ repo_root: '/', files: [{ path: 'main.rs', status: 'modified' }] }),
+      }));
+      await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
+      // The filesystem root takes no second slash…
+      await waitFor(() => { expect(gitDiff).toHaveBeenCalledWith('/main.rs', undefined); });
+
+      cleanup();
+      renderViewer(port({
+        gitDiff,
+        gitStatus: () => Promise.resolve({ repo_root: '/repo/', files: [{ path: 'main.rs', status: 'modified' }] }),
+      }));
+      await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
+      // …and a trailing one is not doubled either.
+      await waitFor(() => { expect(gitDiff).toHaveBeenCalledWith('/repo/main.rs', undefined); });
+    });
+
     it('carries old_path so a rename can be diffed against what it was', async () => {
       const gitDiff = vi.fn(() => Promise.resolve({
         path: 'src/new.rs', status: 'renamed', head_text: 'was', working_text: 'is', truncated: false,
@@ -187,6 +214,51 @@ describe('FileViewer', () => {
       await userEvent.click(await screen.findByRole('tab', { name: 'Diff' }));
       expect(await screen.findByText('No working-tree changes')).toBeTruthy();
     });
+  });
+
+  /*
+   * ── The card's own path, when the listing refuses it ──────────────────────
+   *
+   * A card created on a *file* is the case that needs the climb: `seedNav` puts
+   * the file's path in `folderPath`, and `listDirectory` answers 400 for a file.
+   * Without the climb the card sits on that listing error forever and shows
+   * nothing at all — not the folder the file is in, and not the file either.
+   */
+  it('shows a card opened on a file, listing the folder it lives in', async () => {
+    const listDirectory = vi.fn((requested: string) => (requested === '/repo'
+      ? Promise.resolve({
+        path: '/repo', parent: '/', entries: [{ name: 'notes.md', is_dir: false }],
+      })
+      : Promise.reject(new Error('/repo/notes.md is not a directory'))));
+    renderViewer(port({
+      listDirectory,
+      readFile: () => Promise.resolve({
+        path: '/repo/notes.md', size: 4, text: 'body', truncated: false,
+      }),
+    }), '/repo/notes.md');
+
+    const pane = await screen.findByTestId('code-pane');
+    expect(pane.getAttribute('data-path')).toBe('/repo/notes.md');
+    expect(pane.textContent).toBe('body');
+    // And the climb landed: the left column is the file's own folder.
+    expect(screen.getByRole('button', { name: /notes\.md/ })).toBeTruthy();
+    expect(listDirectory.mock.calls.map(([requested]) => requested))
+      .toEqual(['/repo/notes.md', '/repo']);
+  });
+
+  /* Only the card's own path climbs. A folder the reader walked *into* is told
+     why it could not be read — and one climb per unreadable ancestor would
+     otherwise walk the card all the way up to `/`. */
+  it('reports a folder the reader navigated into rather than climbing back out', async () => {
+    const listDirectory = vi.fn((requested: string) => (requested === '/repo'
+      ? Promise.resolve({ path: '/repo', parent: '/', entries: [{ name: 'src', is_dir: true }] })
+      : Promise.reject(new Error('Permission denied'))));
+    renderViewer(port({ listDirectory }));
+
+    await userEvent.click(await screen.findByRole('button', { name: /src/ }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', 'Permission denied');
+    expect(listDirectory.mock.calls.map(([requested]) => requested))
+      .toEqual(['/repo', '/repo/src']);
   });
 
   /* A host assembled without the port is a real configuration, and the card has
