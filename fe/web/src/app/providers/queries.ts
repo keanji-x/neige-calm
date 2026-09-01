@@ -110,6 +110,53 @@ export const queryKeys = Object.freeze({
      no event carries a cove id and no cached row can supply one — so this key
      must keep the cove id in second position for that prefix to reach it. */
   coveConversations: (coveId: string) => ['cove-conversations', coveId] as const,
+  /**
+   * The prefix `coveConversations` extends — the only shape the event bridge
+   * can name, and therefore the only thing that keeps this list live.
+   *
+   * `COVE_CONVERSATIONS` in `core/events/invalidation-plan` is the bare key by
+   * construction: no conversation-writing event carries a `cove_id`, and a cove
+   * chat wave's detail is never fetched, so no cached row can supply one
+   * either. Naming the prefix here is what lets the adapter map that plan key
+   * instead of dropping it — without this entry the cove drawer's `state` dots
+   * never move until something else refetches the list.
+   *
+   * A prefix invalidation reaches whichever cove's list is cached — at most the
+   * open drawer's — and costs nothing when none is.
+   */
+  coveConversationsPrefix: () => ['cove-conversations'] as const,
+  /**
+   * One wave's conversation list (#1189 §4.1), keyed by its wave.
+   *
+   * `GET /api/waves/{wave_id}/conversations` is per-wave, and unlike the cove
+   * list the id *is* derivable from the events: the plan emits
+   * `['wave-conversations', waveId]` whenever `derivedWaveId` resolves one.
+   *
+   * **The query that registers this key lands in S5; the mapping is here
+   * first, and that is deliberate, not dead code.** Invalidating a key with no
+   * mounted query is a no-op in TanStack Query — it marks nothing and refetches
+   * nothing — so the adapter may know a key before a query claims it. The
+   * reverse order is the one that breaks: a query that mounts against a key no
+   * adapter arm maps is silently never invalidated, which is exactly the defect
+   * this pair of entries fixes for the cove list.
+   */
+  waveConversations: (waveId: string) => ['wave-conversations', waveId] as const,
+  /**
+   * The prefix `waveConversations` extends, for the events that cannot name a
+   * wave.
+   *
+   * The three `runtime.*` kinds carry only a `card_id`, and
+   * `findWaveOwningCard` answers from the cached wave details — so a card in a
+   * wave nobody has open resolves to null and the plan emits the bare key. That
+   * is the honest "some wave's list may have changed", and dropping it here
+   * would leave a genuinely open list stale for precisely the transitions that
+   * move a row's `state`.
+   *
+   * It is a fallback and not the house shape: invalidating this prefix on every
+   * runtime tick would refetch the list of every wave the user has open, which
+   * is why the plan keys by wave whenever it can.
+   */
+  waveConversationsPrefix: () => ['wave-conversations'] as const,
 });
 
 export function harnessItemsQueryOptions(transport: ApiTransportPort, cardId: string, unauthorized: UnauthorizedChannel) {
