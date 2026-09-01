@@ -10,6 +10,7 @@
   {
     "id": "E2E-INV-INFRA-017",
     "locations": [
+      "crates/calm-server/src/bin/replay.rs:112-115",
       "crates/calm-server/src/bin/replay.rs:130-159",
       "crates/calm-server/src/bin/replay.rs:226-245",
       "crates/calm-server/src/bin/replay.rs:277-284",

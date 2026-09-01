@@ -352,8 +352,10 @@
     #1148 第二轮：原来只登记了 dev_routes 的构造，而 statement 的关键词是 ONLY。现在四段合起来
     才让这个词有证据 —— 130-159 是 `--assert` 提前 return、其余路径才进 `run_serve` 的门控，
     241-245 是 `/dev/*` 三条路由的构造，277-284 是它被 merge 进 `--serve` 的 router 的唯一一处，
-    main.rs:185-192 是生产 router 的全部 merge 面（其中没有 dev_routes）。
-  source: crates/calm-server/src/bin/replay.rs:130-159,226-245,277-284
+    main.rs:185-192 是生产 router 的全部 merge 面（其中没有 dev_routes）。#1148 第三轮：再补
+    112-115 —— `--serve`/`--assert` 二选一的前置门控（缺任一即 exit 2），是「只有 replay --serve
+    这条路径能走到挂载点」的入口证据，此前未登记。
+  source: crates/calm-server/src/bin/replay.rs:112-115,130-159,226-245,277-284
     crates/calm-server/src/main.rs:185-192
   authoritative_test: NONE
   owner_slice: none/e2e/infra
@@ -389,10 +391,11 @@
   family: seed-helpers
   statement: >
     The shared seed helper `createWaveInCove` posts every wave it mints through one body
-    literal — `cove_id`, `cwd`, `attach_folder`, and an inert dark theme sentinel — so no
-    caller of this helper can seed a wave that omits a field the kernel requires.
+    literal — `cove_id`, `title`, `cwd`, `attach_folder`, and an inert dark theme sentinel —
+    so every caller of this helper sends exactly that key set, and no caller can vary it.
   why: >
-    #250 PR2 made cwd required; #177 made theme required end-to-end. Funnelling this helper's
+    #250 PR2 put cwd into this body (since #1131 the server takes it as optional); #177 made
+    theme required end-to-end. Funnelling this helper's
     callers through one literal is what keeps the shared seed path from drifting away from the
     server's accepted body. Scope is exactly this helper: specs that inline their own
     `POST /api/waves` body (terminal-clean-exit, wheel-mode-edge, new-terminal-card and others)
@@ -401,8 +404,15 @@
     a Rust-side fact proven by crates/calm-server/tests/cases/theme_required.rs and has no
     oracle entry of its own; this entry deliberately does not claim it, because nothing in
     the cited TypeScript can witness a rejection.
+    #1148 第三轮:两处据实收口。(a) 原 `authoritative_test` 指的 reset.ts:105 是 helper 自己的
+    `request.post`,既不是 `it` 也没有断言,按 SCHEMA.md:15「无测试写 NONE」改为 NONE。
+    (b) statement 原来枚举 `cove_id`/`cwd`/`attach_folder`/theme 四个键、并声称「no caller can
+    seed a wave that omits a field the kernel requires」,两头都不准:`title`(reset.ts:108 实际有传)
+    是服务端必填却没被枚举,而 `cwd` 自 #1131 起在 `crates/calm-server/src/routes/waves.rs:195-214`
+    是 `Option<String>`(可选)。现在枚举补上 `title`,并把断言收回到本条真正的载体 —— helper body
+    字面量的形状本身;kernel 的必填集是服务端契约,这段 TypeScript 见证不了,另开 issue 立条目。
   source: web/e2e/helpers/reset.ts:88-93,101-112
-  authoritative_test: web/e2e/helpers/reset.ts:105
+  authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features

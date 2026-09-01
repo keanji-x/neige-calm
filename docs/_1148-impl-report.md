@@ -288,3 +288,57 @@ cd fe && npm run typecheck     → exit 0
 账本对账不变：`anchor-baseline.json` **174** 行 = `ANCHOR_BASELINE_MAXIMUM` **174**；
 `anchor-pending.json` **30** 行 = `ANCHOR_PENDING_MAXIMUM` **30** = `ANCHOR_PENDING_IDS` **30**
 （集合相等，无多余无缺失）。本轮两个账本一行未增。
+
+---
+
+# 第四轮（收口轮，本 PR 最后一轮修复）
+
+第三轮双通道结论分歧：subagent 判 1 条阻断，codex 判 5 条。裁决（见 `docs/_1148-fix-brief-r3.md`）：
+codex 这轮把标准提到「statement 的每个分句、连同传递性数据流都必须有被引行」，该标准全库无一条条目满足
+（包括本来就绿的 638 条），按它执行等于重写整个语料；因此本轮只收口 codex 结论里**事实性**的部分，
+标准升级另开 issue。本轮同样是纯 oracle YAML 文档改动，validator 逻辑一行未动。
+
+| # | 条目 | 改法 |
+| --- | --- | --- |
+| D1 | `INV-REPORT-BACKLINK-010` | source 第三段 `846`（`pending: taskActionMutation.isPending`，与本条无关）→ `949-952`（`hasRenderedBlocks={reportCard?.blocks != null}`，「只在当前报告确有结构化 blocks 时」的真载体）。最终 `WaveReportPage.tsx:637-642,704-708,949-952` |
+| D2 | `E2E-INV-INFRA-019` | (a) `authoritative_test: reset.ts:105` → `NONE` —— 该行是 helper 自己的 `request.post`，无 `it`、无断言，按 `SCHEMA.md:15`「无测试写 NONE」。(b) statement 枚举补 `title`（`reset.ts:108` 实际有传、服务端必填），并把「no caller … omits a field the kernel requires」改成「every caller of this helper sends exactly that key set, and no caller can vary it」——不再声称 kernel 的必填集；why 里「#250 PR2 made cwd required」同步改为「put cwd into this body（自 #1131 起服务端取 `Option<String>`，见 `crates/calm-server/src/routes/waves.rs:195-214`）」。source 不变（`88-93,101-112` 已含 `108`） |
+| D3 | `INV-A11Y-010` | 被引的 `Sidebar.tsx:271-283` 里的 `displayTitle` 是父作用域 map 中的同名变量；喂给 `:658` 那个 span 的是 `WaveRow` 自己在 `:633` 算出的同名变量。source `271-283,653-660` → `271-283,633-660` |
+| D4 | `INV-NEWTASK-ISSUEDEV-020` | `authoritative_test` 并入 `NewTaskForm.issueDev.test.tsx:174-203`（用 `toEqual` 钉死整个 create body 含 `workflow_input` 恰四键、无 notes），原 `:277` 只证明 raw JSON 能带 notes。最终 `:77,174-203,277` |
+| D5 | `E2E-INV-INFRA-017` | source 补 `replay.rs:112-115`（`--serve`/`--assert` 二选一的前置门控，缺任一 exit 2），最终四段 → 五段：`replay.rs:112-115,130-159,226-245,277-284` + `main.rs:185-192`；`anchor-unsupported.yaml` 的 `locations` 同步补同一段（该表要求登记集与实际集**严格相等**，改完实跑校验通过） |
+
+自我更正：第三轮报告里把 `E2E-INV-INFRA-019` 的 `reset.ts:105` 记为「自指而非错指、只记账不改」，
+判断错了 —— `authoritative_test` 的语义是「锁定它的测试」，helper 自身的 `request.post` 不是测试，
+应写 `NONE`。本轮已改。
+
+## 已识别、明确不在本 PR 范围（另开 issue）
+
+1. **`authoritative_test` 只被检查存在性与区间合法性，不检查语义** —— 与 `source-anchor` 修之前同类的债。
+   本 PR 过程中已实际抓到 **3 条错指**：`CAP-REPORT-SHELL-014`（指 unsupported-block 用例）、
+   `INV-REPORT-BACKLINK-010`（指 report.md loading fallback 用例）、`E2E-INV-INFRA-019`（指向非测试的
+   helper 自身代码）。另 `app-dataflow.yaml` 有 **5 条**共用 `:1` 的「文件级指针」约定，同属这一类。
+2. **`isGeneric()` 只覆盖 4 条候选通路里的 2 条**（`:332` 展示文案、`:352` 反引号整片段；形状扫描
+   `:341-345` 与全局散文扫描 `:354-356` 从不查停用表）。量化结果见上一节：补全会翻转 4 条并要把
+   `ANCHOR_BASELINE_MAXIMUM` 从 174 抬到 178，超出本 PR 判据。
+3. **「statement 的每个分句都要有被引行」这个更强标准的可行性与代价** —— 本轮 codex 通道按此标准对
+   6 条中的 5 条提出引用缺口，说明全库大面积不满足；是否采纳、怎么分批迁移，需要单独评估。
+
+另记一条本轮观察、不在范围内：`E2E-INV-INFRA-017` 的「ONLY / never production」是全称否定，原理上
+不可能由任何引用区间锁住 —— 当前靠 grep 枚举成立，没有 fail-closed 门禁会在有人往 `main.rs` 加
+`/dev/x` 时变红。该条已 `intentional_omission: true` + `authoritative_test: NONE` 如实声明，到此为止。
+`web/e2e/helpers/reset.ts:95` 的注释「#250 PR 2: cwd is required」也已随 #1131 过期，属源码注释、本轮不动。
+
+## 门禁（第四轮）
+
+```
+cd fe && npx vitest run --project platform-independent
+  → Test Files 39 passed | 1 skipped (40)；Tests 912 passed | 1 skipped (913)
+cd fe && npx vitest run tools/oracle
+  → Test Files 1 passed (1)；Tests 90 passed (90)
+cd fe && npm run lint:js       → exit 0
+cd fe && npm run typecheck     → exit 0
+```
+
+另实跑 `validateOracle(defaultOracleOptions(repoRoot))`：**VIOLATIONS 0**（全库）。
+账本对账（实跑读数）：`anchor-baseline.json` **174** 条 = `ANCHOR_BASELINE_MAXIMUM` **174**；
+`anchor-pending.json` **30** 条 = `ANCHOR_PENDING_MAXIMUM` **30** = `ANCHOR_PENDING_IDS` 冻结集 **30** 个 id
+（集合相等，无多余无缺失）。本轮两个账本一行未动，被改的 5 条均不在两个账本里（即本来就绿、改后仍绿）。

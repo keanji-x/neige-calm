@@ -999,7 +999,10 @@
     "cites block <id>" 目标提示只在当前报告确实有结构化 blocks 时才渲染。
   why: >
     "does not promise a block target for a flat v1 report" —— 扁平报告里没有块锚点,承诺一个跳不到的目标是谎言。
-  source: web/src/pages/WaveReportPage.tsx:637-642,704-708,846
+    #1148 第三轮:原来第三段引的 846 是 `pending: taskActionMutation.isPending`,与本条无关;
+    「只在当前报告确有结构化 blocks 时」的真载体是 949-952 那个
+    `hasRenderedBlocks={reportCard?.blocks != null}` 的传参点,已重指。
+  source: web/src/pages/WaveReportPage.tsx:637-642,704-708,949-952
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2559,2596,2618
   owner_slice: features/report/shell
   intentional_omission: false
@@ -3579,8 +3582,11 @@
     (`workflow_input` 要么是 `JSON.parse(rawJson)` 要么是 `derivedWorkflowInput`,别无第三个来源,
     这就是「raw JSON 是唯一能送 notes 的路径」的正面载体),757-781 是那个 raw JSON textarea 本身。
     「表单不提供 notes 控件」是证明不存在类,锚不住是正常的,由 authoritative_test:77 钉住。
+    #1148 第三轮:补登 174-203 —— :277 只证明 raw JSON 能带 notes,不锁「派生对象恰有四键、不含
+    notes」;174-203 用 `toEqual` 钉死整个 create body(含 `workflow_input` 的四个键),才是这一句的
+    精确断言。
   source: web/src/shared/components/NewTaskForm.tsx:369-382,386-387,456-470,757-781
-  authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,277
+  authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,174-203,277
   owner_slice: features/wave/create
   intentional_omission: true
   runtime_layer: features
