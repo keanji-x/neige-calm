@@ -509,16 +509,34 @@ async fn an_assistant_may_not_declare_a_task_block() {
 /// schedulable row regardless of the writer).
 ///
 /// What removing the P2 guard actually does, verified by mutation: step 2's
-/// write is no longer stopped at the guard, runs into the task projection, and
-/// the projection immediately tries to emit a dispatch-request for the newly
-/// released task — where the *role gate* refuses it with "only spec cards (or
-/// User/Kernel) may emit dispatch-request events (actor=AiCodex(<assistant
-/// card>))". So the row does not appear, because the whole write rolls back at
-/// that second, independent layer. That message is the evidence §7 P2 asks
-/// for — the assistant's edit reached the point of dispatching a worker — and
-/// it is why step 2 asserts P2's own message and not just an error code: with
-/// only the code asserted, the mutation would still be red, but for the wrong
-/// reason, and the deeper refusal would go unrecorded.
+/// write is no longer stopped at the guard and runs into the task projection.
+/// Because this particular edit *changes the projected key set*, the write
+/// emits `Event::PlanUpdated` (`wave_report.rs`, guarded by
+/// `!task_projection.changed_keys.is_empty()`), and the in-tx *role gate*
+/// refuses that event with "only spec cards (or User/Kernel) may emit
+/// dispatch-request events (actor=AiCodex(<assistant card>))". So the row does
+/// not appear, because the whole write rolls back at that second, independent
+/// layer.
+///
+/// Read that message precisely, and do not over-read it: `role_gate.rs`
+/// handles `PlanUpdated` in the *same match arm* as `CodexWorkerRequested` /
+/// `TerminalWorkerRequested` and reuses one `NotSpecForDispatch` string for
+/// all three. The mutation therefore does **not** exercise the real
+/// worker-request emission path; what it shows is that the released task
+/// reached wave-level plan authority, no more than that.
+///
+/// **And that second layer is not a reason to drop P2 — it is strictly
+/// narrower.** It exists only when the edit changes the projected key set. A
+/// tamper that leaves the key set alone — an assistant rewriting an existing
+/// task's `goal` text, say — projects no `changed_keys`, emits no
+/// `PlanUpdated`, never reaches the role gate at all. For that whole class of
+/// edit P2 is the only defence there is: delete P2 and such a write lands.
+/// Anyone reading this fixture later (S3 included) must not conclude
+/// "the mutation was still refused, so P2 is redundant".
+///
+/// This is also why step 2 asserts P2's own message and not just an error
+/// code: with only the code asserted, the mutation would still be red, but for
+/// the wrong reason, and the fixture would silently stop pinning P2.
 #[tokio::test]
 async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
     let boot = boot().await;
@@ -564,10 +582,12 @@ async fn an_assistant_may_not_flip_a_spec_task_to_ready() {
     .expect_err("an assistant releasing a spec-declared task must be refused");
     // The refusal must be P2's own, by message and not just by code. Delete
     // the P2 guard and this write does not merely change error code: it runs
-    // all the way into the task projection and is stopped only by the
-    // dispatch-request role gate, whose message
-    // ("only spec cards (or User/Kernel) may emit dispatch-request events")
-    // is itself the proof that the edit reached the dispatch path.
+    // all the way into the task projection, emits `PlanUpdated`, and is
+    // stopped only by the role gate's shared dispatch-request arm ("only spec
+    // cards (or User/Kernel) may emit dispatch-request events"). That backstop
+    // fires only because *this* edit changes the projected key set, so
+    // asserting P2's own message is what keeps the fixture pinned on P2 rather
+    // than on the narrower layer behind it.
     assert!(
         err.message
             .contains("an assistant may not modify task block"),

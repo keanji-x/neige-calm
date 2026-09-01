@@ -263,13 +263,20 @@ impl PrincipalDecisionGate {
     /// Liveness is checked explicitly, mirroring
     /// [`enforce_role_resolving_session`]: `session_get_tx` is a plain
     /// `WHERE id = ?1` with no state filter, so a `superseded`/`exited`
-    /// row still resolves and still carries its `card_id`. The old
-    /// root-session criterion got liveness for free (the `waves.root_session_id`
-    /// pointer moves off a session when it is superseded); the card criterion
-    /// does not, so the check has to be written down. Production reaches this
-    /// state on every resume: `session_supersede_replace_tx` leaves the old
-    /// row in place — same card, same wave, state `superseded` — and repoints
-    /// root at the successor.
+    /// row still resolves and still carries its `card_id`. Production reaches
+    /// this state on every resume: `session_supersede_active_tx` — reached
+    /// through `session_supersede_and_start_tx` — only flips
+    /// `worker_sessions.state` to `superseded`. The row stays, bound to the
+    /// same card on the same wave, so both halves of the card criterion still
+    /// admit the predecessor.
+    ///
+    /// Moving `waves.root_session_id` is a *separate and conditional* path,
+    /// not part of the supersede: `session_repoint_current_links_tx` calls
+    /// `session_mark_wave_root_tx` only when the successor is a `Planner` in
+    /// an active-authority state. So the old root-session criterion got
+    /// liveness for free only on that path (a Planner resume moves the pointer
+    /// off the predecessor); the card criterion never gets it, on any path, so
+    /// the check has to be written down.
     ///
     /// Every unresolvable step denies: no session row, a session that is no
     /// longer an active authority, a cardless session, an unknown card, an
@@ -727,10 +734,15 @@ mod tests {
     }
 
     /// The predecessor row a resume leaves behind must not keep recording
-    /// rights. `session_supersede_replace_tx` keeps the old row bound to the
-    /// same card on the same wave — so the card criterion alone still admits
-    /// it — and only moves `waves.root_session_id`. The old root criterion got
-    /// this for free; the card criterion has to check it explicitly.
+    /// rights. `session_supersede_active_tx` (reached through
+    /// `session_supersede_and_start_tx`) only flips the old row's state to
+    /// `superseded`; the row keeps its `card_id` on the same wave, so the card
+    /// criterion alone still admits it. Moving `waves.root_session_id` off the
+    /// predecessor is a different path — `session_repoint_current_links_tx` →
+    /// `session_mark_wave_root_tx` — and runs only when the successor is an
+    /// active-authority `Planner`. The old root criterion therefore got this
+    /// for free only on that path; the card criterion has to check it
+    /// explicitly, on every path.
     #[tokio::test]
     async fn recorder_grant_refuses_a_session_that_is_no_longer_an_active_authority() {
         for state in [

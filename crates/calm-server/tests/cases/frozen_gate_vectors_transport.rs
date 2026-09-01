@@ -657,13 +657,17 @@ impl PrincipalFixture {
                 ),
                 // #1189 §3.6 liveness — the *superseded* predecessor of
                 // `session-root` on the very same Spec card. This is what a
-                // resume leaves behind: `session_supersede_replace_tx` keeps
-                // the old row (same `card_id`, same wave), flips it to
-                // `superseded`, and repoints `waves.root_session_id` at the
-                // successor. Both halves of the card criterion still admit
-                // it, so `decide_recorder`'s liveness check is the only thing
-                // between it and the report. `ws_one_active_per_card` is
-                // partial, so it coexists with the running row.
+                // resume leaves behind: `session_supersede_active_tx` (via
+                // `session_supersede_and_start_tx`) only flips the old row to
+                // `superseded` and keeps it, same `card_id` on the same wave.
+                // Repointing `waves.root_session_id` at the successor is a
+                // separate, conditional path — `session_repoint_current_links_tx`
+                // → `session_mark_wave_root_tx`, and only when the successor is
+                // an active-authority `Planner`. Both halves of the card
+                // criterion still admit the predecessor, so `decide_recorder`'s
+                // liveness check is the only thing between it and the report.
+                // `ws_one_active_per_card` is partial, so it coexists with the
+                // running row.
                 (
                     "session-planner-superseded",
                     &spec,
