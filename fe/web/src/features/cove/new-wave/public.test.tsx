@@ -94,9 +94,11 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
 /**
  * The folder chip while nothing is chosen.
  *
- * Named, not labelled: unset the chip renders a folder mark and no text at
- * all, so its name is its own `aria-label` — which is also the only thing a
- * screen reader has to go on there.
+ * Named, not labelled: the chip carries its own `aria-label` rather than
+ * sitting in a labelled field, and unset that label is the same sentence its
+ * text shows. Once a folder is chosen the two part company — the text is the
+ * basename, the name is the whole path — which is why this helper is only
+ * good for the unset state.
  */
 function folderChip(): HTMLButtonElement {
   return screen.getByRole('button', { name: FOLDER_PLACEHOLDER });

@@ -22,9 +22,9 @@
   /* `className` lands on astryx's input wrapper, so the input itself is a
      descendant. The `ui` layer sorts after `astryx` in entry.css, which is why
      one declaration wins over the component's own `--font-family-body` without
-     a specificity fight. Mono is not decoration here: a path is one of the two
-     values fe-design.md §14 allows it for, and column-aligned separators are
-     what make a long path scannable. */
+     a specificity fight. Mono is not decoration here: a path is read by its
+     separators, and a proportional font puts every `/` at a different offset
+     down a list of them. */
   .path input {
     font-family: var(--font-mono);
     font-size: var(--text-md);

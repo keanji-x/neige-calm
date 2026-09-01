@@ -37,12 +37,16 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   // #1131 body: the kernel keys its managed-workspace branch on the absence of
   // `cwd`, so a control that defaulted to `$HOME` or to `""` would silently
   // move every wave onto the attached branch.
-  await expect(dialog.getByLabel('Folder')).toBeVisible();
-  // #1209 — Blank is the default and is left alone here: this case is the
-  // pre-template create, and the assertions below say the picker added no
+  // #1228 — the control names itself ("Choose a folder"), so there is no outer
+  // label to find it by: unset it is a chip whose text, `title` and accessible
+  // name are that one sentence.
+  await expect(dialog.getByRole('button', { name: 'Choose a folder' })).toBeVisible();
+  // #1209 — no template is the default and is left alone here: this case is
+  // the pre-template create, and the assertions below say the picker added no
   // field to it. The picker is collapsed, so "what is selected" is read off
-  // the trigger's accessible name rather than a checked row.
-  await expect(dialog.getByRole('button', { name: 'Start from Blank' })).toBeVisible();
+  // the trigger's accessible name rather than a checked row — and unset that
+  // name is the question, not a choice (#1228).
+  await expect(dialog.getByRole('button', { name: 'Choose a template' })).toBeVisible();
   await dialog.getByLabel(TASK_LABEL).fill(title);
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
@@ -53,7 +57,7 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   expect(body).toHaveProperty('theme');
   expect(body).not.toHaveProperty('cwd');
   expect(body).not.toHaveProperty('attach_folder');
-  // `toMatchObject` above would not notice these, and Blank must not send
+  // `toMatchObject` above would not notice these, and no-template must not send
   // them: the kernel 400s an empty `workflow_id` and the body is
   // `deny_unknown_fields`.
   expect(body).not.toHaveProperty('workflow_id');
@@ -96,7 +100,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   const dialog = page.getByRole('dialog', { name: 'New wave' });
   const title = `FE e2e template wave ${Date.now()}`;
   await dialog.getByLabel(TASK_LABEL).fill(title);
-  await dialog.getByRole('button', { name: /^Start from/ }).click();
+  await dialog.getByRole('button', { name: /^Choose a template$|^Template: / }).click();
 
   /* #1209 — the option says what the template pre-sets, and it says it from
      the kernel's own plan: `small-change` seeds inspect → implement → verify.
@@ -131,7 +135,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   // Another template's tasks are not in this card.
   await expect(taskCard).not.toContainText('gather-facts');
   await option.click();
-  await expect(dialog.getByRole('button', { name: 'Start from Small change' })).toBeVisible();
+  await expect(dialog.getByRole('button', { name: 'Template: Small change' })).toBeVisible();
 
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),

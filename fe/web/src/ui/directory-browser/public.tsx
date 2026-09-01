@@ -27,10 +27,15 @@
 //     loading row cannot be found by `role="status"` alone any more — the
 //     test names it by its text instead. The row is still a live region; it
 //     is just no longer the only one.
-//   * The path input's own font comes from astryx (`--font-family-body`). A
-//     path is one of the two things `fe-design.md:869` allows mono in a field
-//     for, so the module overrides it — which works without a specificity
-//     fight because the `ui` layer sorts after `astryx` in `entry.css`.
+//   * The path input's own font comes from astryx (`--font-family-body`), and
+//     the module overrides it to `--font-mono` — which works without a
+//     specificity fight because the `ui` layer sorts after `astryx` in
+//     `entry.css`. Mono is for the value, not for the look: a path is read by
+//     its separators, and a proportional font puts every `/` at a different
+//     offset down a list of them. (An earlier draft of this comment cited
+//     "fe-design.md:869" for the rule, copied from `new-wave/public.tsx`. That
+//     citation is dangling — the design doc is 188 lines since #1181 trimmed
+//     it, and it carries no rule about mono in fields at all.)
 //
 // ## The parent button is new, and it is not a new behaviour
 //

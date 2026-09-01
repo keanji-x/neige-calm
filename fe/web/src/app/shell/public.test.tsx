@@ -37,8 +37,10 @@ function memoryStorage() {
    the field unreachable by screen reader and by voice control. */
 const TASK_LABEL = 'What this wave should do';
 
-/* The folder chip's name, restated for the same reason as `TASK_LABEL`: unset
-   the chip has no text, so this string is the only handle on it. */
+/* The folder chip's copy, restated for the same reason as `TASK_LABEL`: it is
+   user-facing text, and a test that imported it from the component could not
+   fail when the component silently changed it. Unset it is the chip's text,
+   its `title` and its accessible name at once. */
 const FOLDER_PLACEHOLDER = 'Choose a folder';
 
 /* The template chip, matched on either of the two things it can say: it asks
