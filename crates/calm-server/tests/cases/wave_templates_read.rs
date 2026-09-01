@@ -67,6 +67,7 @@ struct Boot {
     app: axum::Router,
     plugin_host: Arc<PluginHost>,
     plugin_id: String,
+    repo: Arc<dyn Repo>,
     _tmp: TempDir,
 }
 
@@ -160,6 +161,7 @@ async fn boot(running: bool) -> Boot {
         app,
         plugin_host,
         plugin_id,
+        repo,
         _tmp: tmp,
     }
 }
@@ -267,6 +269,64 @@ async fn bound_template_carries_the_plugin_input_schema() {
     assert!(
         row(&body, ISSUE_DEVELOPMENT).get("input_schema").is_none(),
         "a stopped plugin must drop the schema, matching resolve_trusted_workflow: {body}"
+    );
+}
+
+/// #1209 — the picker's tooltip lists what a template will pre-set, and the
+/// only honest source for that is the template's own plan. These assertions
+/// are on the *content*, not the count: a read that returned three empty
+/// objects, or the wrong template's tasks, would pass a length check.
+#[tokio::test]
+async fn every_template_lists_the_tasks_its_report_pre_sets() {
+    let boot = boot(false).await;
+    let (status, body) = list_templates(boot.app).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let keys = |id: &str| -> Vec<String> {
+        row(&body, id)["tasks"]
+            .as_array()
+            .unwrap_or_else(|| panic!("`{id}` must carry a tasks array: {body}"))
+            .iter()
+            .map(|task| task["key"].as_str().expect("task key string").to_string())
+            .collect()
+    };
+    assert_eq!(
+        keys(ISSUE_DEVELOPMENT),
+        vec![
+            "inspect-issue",
+            "review-design-a",
+            "review-design-b",
+            "implement-change",
+            "open-pr",
+            "review-pr-a",
+            "review-pr-b",
+            "merge",
+        ],
+        "issue-development must advertise its eight pre-set tasks, in plan order"
+    );
+    assert_eq!(keys(SMALL_CHANGE), vec!["inspect", "implement", "verify"]);
+    assert_eq!(keys(INVESTIGATION), vec!["gather-facts", "write-findings"]);
+
+    // Every task carries a non-empty goal: the key alone is a slug, and the
+    // tooltip's whole value is saying what the step is for.
+    for entry in body.as_array().expect("array body") {
+        for task in entry["tasks"].as_array().expect("tasks array") {
+            let goal = task["goal"].as_str().expect("goal string");
+            assert!(!goal.trim().is_empty(), "empty goal in {entry}");
+        }
+    }
+    // Verbatim from `workflow_templates.rs`, not a paraphrase minted here.
+    assert_eq!(
+        row(&body, INVESTIGATION)["tasks"][1]["goal"],
+        "Write findings, remaining unknowns, and recommended next steps into this wave report. Do not open a PR or merge."
+    );
+
+    // Listing tasks must stay a read. The template *waves* are created by the
+    // create path, in a cove; if listing ever reached for a stored report
+    // instead of the constants, that seed would show up right here.
+    assert!(
+        boot.repo.coves_list().await.expect("coves list").is_empty(),
+        "listing wave templates must not write anything"
     );
 }
 

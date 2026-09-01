@@ -3,6 +3,11 @@ import { createCove } from './helpers/seed.js';
 
 const createdCoveIds: string[] = [];
 
+/* #1209 — the Task field's accessible name. Visually hidden after the astryx
+   rewrite (one line, prompt in the placeholder), so the browser-level check
+   that it is still *named* is exactly this locator resolving. */
+const TASK_LABEL = 'What this wave should do';
+
 function captureBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
   page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
@@ -26,13 +31,13 @@ test('creates a wave from the cove page and persists it', async ({ page, request
 
   const dialog = page.getByRole('dialog', { name: 'New wave' });
   const title = `FE e2e wave ${Date.now()}`;
-  await expect(dialog.getByLabel('Task')).toBeVisible();
+  await expect(dialog.getByLabel(TASK_LABEL)).toBeVisible();
   await expect(dialog.getByLabel('Folder')).toHaveCount(0);
   // #1209 — Blank is the default and is left alone here: this case is the
   // pre-template create, and the assertions below say the picker added no
   // field to it.
   await expect(dialog.getByRole('radio', { name: 'Blank' })).toBeChecked();
-  await dialog.getByLabel('Task').fill(title);
+  await dialog.getByLabel(TASK_LABEL).fill(title);
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
     dialog.getByRole('button', { name: 'Create wave' }).click(),
@@ -84,8 +89,22 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   await page.getByRole('button', { name: 'New wave', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'New wave' });
   const title = `FE e2e template wave ${Date.now()}`;
-  await dialog.getByLabel('Task').fill(title);
+  await dialog.getByLabel(TASK_LABEL).fill(title);
   await dialog.getByRole('radio', { name: 'Small change' }).click();
+
+  /* #1209 — the row says what the template pre-sets, and it says it from the
+     kernel's own plan: `small-change` seeds inspect → implement → verify.
+     Hovering opens the card in a real browser, which is the part jsdom cannot
+     prove (the layer is a `popover`, hidden by the UA stylesheet until then). */
+  const tasksTrigger = dialog.getByText('3 tasks');
+  await expect(tasksTrigger).toBeVisible();
+  await tasksTrigger.hover();
+  const taskCard = page.getByRole('dialog').filter({ hasText: 'implement' });
+  await expect(taskCard).toBeVisible();
+  await expect(taskCard).toContainText('verify');
+  // Another template's tasks are not in this card.
+  await expect(taskCard).not.toContainText('gather-facts');
+
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
     dialog.getByRole('button', { name: 'Create wave' }).click(),

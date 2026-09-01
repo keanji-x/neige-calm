@@ -50,6 +50,24 @@ pub fn workflow_template_report(key: &str) -> Option<WaveReportPayload> {
     }
 }
 
+/// The task blocks a template's seeded report ships with, before rendering.
+///
+/// #1209 — `GET /api/wave-templates` lists "what this template will pre-set"
+/// through this function rather than through a second hand-written table. It is
+/// the same `&[PlanTaskInput]` slice `workflow_template_report` renders into
+/// fences, so the list and the report cannot disagree by construction.
+///
+/// Pure, like `workflow_template_report`: constants only, no database and no
+/// template-wave lookup, so listing the tasks never triggers the lazy seed.
+pub fn workflow_template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
+    match key {
+        ISSUE_DEVELOPMENT => Some(issue_development_tasks()),
+        SMALL_CHANGE => Some(small_change_tasks()),
+        INVESTIGATION => Some(investigation_tasks()),
+        _ => None,
+    }
+}
+
 /// Placeholder so `require_task_gates` does not treat these as scheduled
 /// work. Spec must replace the block with a real `gate` from the target
 /// repo before setting `ready: true`. Never an executed shell command.
@@ -103,87 +121,91 @@ fn issue_development_report() -> WaveReportPayload {
     report_from_tasks(
         "Issue development",
         ISSUE_DEVELOPMENT_INTRO,
-        &[
-            task(
-                "inspect-issue",
-                "Read the bound workflow input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the wave cwd.",
-                "The issue requirements and constraints are captured for the wave AND the wave cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
-                &[],
-                Some(json!({ "tools": ["gh.issue.view"] })),
-                Some("inspect does not produce a repo change to verify"),
-            ),
-            task(
-                "review-design-a",
-                "Review the proposed design for correctness before implementation.",
-                "Channel a records a design verdict.",
-                &["inspect-issue"],
-                Some(json!({
-                    "channel": "a",
-                    "reviewer_role": "design-correctness"
-                })),
-                Some("design review does not produce a repo change to verify"),
-            ),
-            task(
-                "review-design-b",
-                "Review the proposed design for failure paths before implementation.",
-                "Channel b records a design verdict.",
-                &["inspect-issue"],
-                Some(json!({
-                    "channel": "b",
-                    "reviewer_role": "design-failure-path"
-                })),
-                Some("design review does not produce a repo change to verify"),
-            ),
-            task(
-                "implement-change",
-                "Create a worktree, implement the change, and commit the result.",
-                "The change is committed in the wave worktree.",
-                &["review-design-a", "review-design-b"],
-                Some(json!({ "tools": ["git.worktree.add", "git.commit"] })),
-                Some(AUTHOR_REAL_GATE),
-            ),
-            task(
-                "open-pr",
-                "Open a pull request and check its diff/check status.",
-                "A pull request exists with readable diff and check status.",
-                &["implement-change"],
-                Some(json!({
-                    "tools": ["gh.pr.create", "gh.pr.list", "gh.pr.diff", "gh.pr.checks"]
-                })),
-                Some("opening a PR is verified by forge status, not a local toolchain gate"),
-            ),
-            task(
-                "review-pr-a",
-                "Review the pull request for correctness.",
-                "Channel a records a PR verdict.",
-                &["open-pr"],
-                Some(json!({
-                    "channel": "a",
-                    "reviewer_role": "pr-correctness"
-                })),
-                Some("PR review does not produce a repo change to verify"),
-            ),
-            task(
-                "review-pr-b",
-                "Review the pull request for failure paths.",
-                "Channel b records a PR verdict.",
-                &["open-pr"],
-                Some(json!({
-                    "channel": "b",
-                    "reviewer_role": "pr-failure-path"
-                })),
-                Some("PR review does not produce a repo change to verify"),
-            ),
-            task(
-                "merge",
-                "Merge the pull request and close the issue only after merge fence F4 has converged AND any merge_policy-required ratify grant is held; under hold-for-ratify with no grant yet, park at the merge_hold ratify request instead of merging.",
-                "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the wave is parked at the merge_hold ratify request with no merge performed.",
-                &["review-pr-a", "review-pr-b"],
-                Some(json!({ "tools": ["gh.pr.merge", "gh.issue.close"] })),
-                Some("merge is gated by review fence F4 and forge, not a local toolchain gate"),
-            ),
-        ],
+        &issue_development_tasks(),
     )
+}
+
+fn issue_development_tasks() -> Vec<PlanTaskInput> {
+    vec![
+        task(
+            "inspect-issue",
+            "Read the bound workflow input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the wave cwd.",
+            "The issue requirements and constraints are captured for the wave AND the wave cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
+            &[],
+            Some(json!({ "tools": ["gh.issue.view"] })),
+            Some("inspect does not produce a repo change to verify"),
+        ),
+        task(
+            "review-design-a",
+            "Review the proposed design for correctness before implementation.",
+            "Channel a records a design verdict.",
+            &["inspect-issue"],
+            Some(json!({
+                "channel": "a",
+                "reviewer_role": "design-correctness"
+            })),
+            Some("design review does not produce a repo change to verify"),
+        ),
+        task(
+            "review-design-b",
+            "Review the proposed design for failure paths before implementation.",
+            "Channel b records a design verdict.",
+            &["inspect-issue"],
+            Some(json!({
+                "channel": "b",
+                "reviewer_role": "design-failure-path"
+            })),
+            Some("design review does not produce a repo change to verify"),
+        ),
+        task(
+            "implement-change",
+            "Create a worktree, implement the change, and commit the result.",
+            "The change is committed in the wave worktree.",
+            &["review-design-a", "review-design-b"],
+            Some(json!({ "tools": ["git.worktree.add", "git.commit"] })),
+            Some(AUTHOR_REAL_GATE),
+        ),
+        task(
+            "open-pr",
+            "Open a pull request and check its diff/check status.",
+            "A pull request exists with readable diff and check status.",
+            &["implement-change"],
+            Some(json!({
+                "tools": ["gh.pr.create", "gh.pr.list", "gh.pr.diff", "gh.pr.checks"]
+            })),
+            Some("opening a PR is verified by forge status, not a local toolchain gate"),
+        ),
+        task(
+            "review-pr-a",
+            "Review the pull request for correctness.",
+            "Channel a records a PR verdict.",
+            &["open-pr"],
+            Some(json!({
+                "channel": "a",
+                "reviewer_role": "pr-correctness"
+            })),
+            Some("PR review does not produce a repo change to verify"),
+        ),
+        task(
+            "review-pr-b",
+            "Review the pull request for failure paths.",
+            "Channel b records a PR verdict.",
+            &["open-pr"],
+            Some(json!({
+                "channel": "b",
+                "reviewer_role": "pr-failure-path"
+            })),
+            Some("PR review does not produce a repo change to verify"),
+        ),
+        task(
+            "merge",
+            "Merge the pull request and close the issue only after merge fence F4 has converged AND any merge_policy-required ratify grant is held; under hold-for-ratify with no grant yet, park at the merge_hold ratify request instead of merging.",
+            "Either the PR is merged (F4 converged and any policy-required ratify grant held) and the issue is closed, or — hold-for-ratify with no grant yet — the wave is parked at the merge_hold ratify request with no merge performed.",
+            &["review-pr-a", "review-pr-b"],
+            Some(json!({ "tools": ["gh.pr.merge", "gh.issue.close"] })),
+            Some("merge is gated by review fence F4 and forge, not a local toolchain gate"),
+        ),
+    ]
 }
 
 fn small_change_report() -> WaveReportPayload {
@@ -197,33 +219,37 @@ fn small_change_report() -> WaveReportPayload {
             "tests), and setting `ready: true`. Do not mint duplicate tasks. Prose blocks ",
             "are NOT a plan to activate: maintain them per this document's own contract.\n"
         ),
-        &[
-            task(
-                "inspect",
-                "Read the requested change and the current code that it touches. Record constraints in this report before writing.",
-                "The change request and the current code path are captured in the wave report.",
-                &[],
-                None,
-                Some("inspect does not produce a repo change to verify"),
-            ),
-            task(
-                "implement",
-                "Implement the change and commit it.",
-                "The change is committed in the wave worktree.",
-                &["inspect"],
-                None,
-                Some(AUTHOR_REAL_GATE),
-            ),
-            task(
-                "verify",
-                "Run the repository's standard tests and record the result.",
-                "The repository toolchain's standard test/verification command passed.",
-                &["implement"],
-                None,
-                Some(AUTHOR_REAL_GATE),
-            ),
-        ],
+        &small_change_tasks(),
     )
+}
+
+fn small_change_tasks() -> Vec<PlanTaskInput> {
+    vec![
+        task(
+            "inspect",
+            "Read the requested change and the current code that it touches. Record constraints in this report before writing.",
+            "The change request and the current code path are captured in the wave report.",
+            &[],
+            None,
+            Some("inspect does not produce a repo change to verify"),
+        ),
+        task(
+            "implement",
+            "Implement the change and commit it.",
+            "The change is committed in the wave worktree.",
+            &["inspect"],
+            None,
+            Some(AUTHOR_REAL_GATE),
+        ),
+        task(
+            "verify",
+            "Run the repository's standard tests and record the result.",
+            "The repository toolchain's standard test/verification command passed.",
+            &["implement"],
+            None,
+            Some(AUTHOR_REAL_GATE),
+        ),
+    ]
 }
 
 fn investigation_report() -> WaveReportPayload {
@@ -238,25 +264,29 @@ fn investigation_report() -> WaveReportPayload {
             "Do not mint duplicate tasks. Prose blocks are NOT a plan to activate: ",
             "maintain them per this document's own contract.\n"
         ),
-        &[
-            task(
-                "gather-facts",
-                "Read the code, docs, history, and any bound input needed to answer the question. Do not modify the repository.",
-                "The relevant facts, file paths, and open questions are captured for the write-findings task.",
-                &[],
-                None,
-                Some("investigation is read-only; no repo change to verify"),
-            ),
-            task(
-                "write-findings",
-                "Write findings, remaining unknowns, and recommended next steps into this wave report. Do not open a PR or merge.",
-                "The report records findings and does not include a forge merge or pull request.",
-                &["gather-facts"],
-                None,
-                Some("findings are report prose; no repo change to verify"),
-            ),
-        ],
+        &investigation_tasks(),
     )
+}
+
+fn investigation_tasks() -> Vec<PlanTaskInput> {
+    vec![
+        task(
+            "gather-facts",
+            "Read the code, docs, history, and any bound input needed to answer the question. Do not modify the repository.",
+            "The relevant facts, file paths, and open questions are captured for the write-findings task.",
+            &[],
+            None,
+            Some("investigation is read-only; no repo change to verify"),
+        ),
+        task(
+            "write-findings",
+            "Write findings, remaining unknowns, and recommended next steps into this wave report. Do not open a PR or merge.",
+            "The report records findings and does not include a forge merge or pull request.",
+            &["gather-facts"],
+            None,
+            Some("findings are report prose; no repo change to verify"),
+        ),
+    ]
 }
 
 /// Pre-S5 git-forge `spec_instructions`, adapted off the deleted prompt
@@ -483,8 +513,44 @@ mod tests {
                     .any(|template| template.key == key)
             );
             assert!(workflow_template_report(key).is_some());
+            assert!(workflow_template_tasks(key).is_some());
         }
         assert!(!is_workflow_template_key("missing-workflow"));
         assert!(workflow_template_report("missing-workflow").is_none());
+        assert!(workflow_template_tasks("missing-workflow").is_none());
+    }
+
+    /// #1209 — the picker's tooltip lists a template's pre-set tasks, and it
+    /// reads them from `workflow_template_tasks`. That is only honest while the
+    /// list is the *same* slice the report renders: a task added to the report
+    /// but not to the list (or a list entry that seeds nothing) would make the
+    /// tooltip promise something the forked report does not contain.
+    ///
+    /// Both directions are checked — every listed key is fenced into the body,
+    /// and the body fences exactly as many task blocks as the list has entries.
+    #[test]
+    fn listed_tasks_are_exactly_the_report_task_blocks() {
+        for key in WORKFLOW_TEMPLATE_KEYS {
+            let tasks = workflow_template_tasks(key).expect("known key");
+            let body = workflow_template_report(key).expect("known key").body;
+            assert!(!tasks.is_empty(), "{key} lists no tasks");
+            for task in &tasks {
+                assert!(
+                    body.contains(&format!("\"key\": \"{}\"", task.key)),
+                    "{key}: listed task {} is not in the seeded report",
+                    task.key
+                );
+                assert!(
+                    body.contains(&task.goal),
+                    "{key}: listed goal for {} is not the seeded goal",
+                    task.key
+                );
+            }
+            assert_eq!(
+                body.matches("\"key\": \"").count(),
+                tasks.len(),
+                "{key}: the report seeds a different number of tasks than the list advertises"
+            );
+        }
     }
 }

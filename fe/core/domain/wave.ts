@@ -192,12 +192,22 @@ export type NewWaveBody = Readonly<{
  *
  * There is no `description`, on purpose. The kernel has no such fact (#1209
  * §"权威源散在三处"), so a description here would be a fourth authority for
- * what a template is. The titles are self-describing.
+ * what a template is. What the picker shows instead is `tasks` — the plan the
+ * template *already* contains, surfaced rather than re-described.
  */
 export const waveTemplateSchema = z.object({
   id: z.string(),
   title: z.string(),
   input_schema: z.unknown().optional(),
+  /**
+   * The tasks the template pre-sets, in plan order — the same `task` blocks
+   * the created wave's report is seeded with.
+   *
+   * Required, not `.default([])`: the server sends it for every template, and
+   * a default would let a genuinely broken read render as "this template
+   * pre-sets nothing", which is a lie the user cannot tell from the truth.
+   */
+  tasks: z.array(z.object({ key: z.string(), goal: z.string() })),
 });
 export type WaveTemplate = z.infer<typeof waveTemplateSchema>;
 

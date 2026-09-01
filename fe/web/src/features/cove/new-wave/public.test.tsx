@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,6 +7,15 @@ import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
 import { NewWaveForm } from './public.tsx';
 
 afterEach(cleanup);
+
+/*
+ * The Task field's accessible name. It is visually hidden — the field is one
+ * line and the placeholder already says what it wants — so the name is
+ * spelled out here deliberately: an unnamed textbox is unusable by screen
+ * reader and by voice control, and this is the assertion that would catch its
+ * removal.
+ */
+const TASK_LABEL = 'What this wave should do';
 
 /** The bound template, shaped as the read endpoint returns it. */
 const ISSUE_DEV: WaveTemplate = {
@@ -17,11 +26,29 @@ const ISSUE_DEV: WaveTemplate = {
     properties: { issue_url: { type: 'string' } },
     required: ['issue_url', 'repo', 'issue_number'],
   },
+  tasks: [
+    { key: 'inspect-issue', goal: 'Read the bound workflow input and view the source issue.' },
+    { key: 'review-design-a', goal: 'Review the proposed design for correctness.' },
+    { key: 'open-pr', goal: 'Open a pull request and check its diff.' },
+    { key: 'merge', goal: 'Merge the pull request and close the issue.' },
+  ],
 };
 /** Unbound templates: no `input_schema`, therefore no fields, therefore no
     `workflow_input` on the wire. */
-const SMALL_CHANGE: WaveTemplate = { id: 'small-change', title: 'Small change' };
-const INVESTIGATION: WaveTemplate = { id: 'investigation', title: 'Investigation' };
+const SMALL_CHANGE: WaveTemplate = {
+  id: 'small-change',
+  title: 'Small change',
+  tasks: [
+    { key: 'inspect', goal: 'Read the requested change and the code it touches.' },
+    { key: 'implement', goal: 'Implement the change and commit it.' },
+    { key: 'verify', goal: "Run the repository's standard tests." },
+  ],
+};
+const INVESTIGATION: WaveTemplate = {
+  id: 'investigation',
+  title: 'Investigation',
+  tasks: [{ key: 'gather-facts', goal: 'Read the code, docs and history.' }],
+};
 const TEMPLATES = [ISSUE_DEV, SMALL_CHANGE, INVESTIGATION];
 
 function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) {
@@ -43,7 +70,7 @@ function submitButton(): HTMLButtonElement {
 }
 
 async function fillTitle(value = 'Ship the thing') {
-  await userEvent.type(screen.getByLabelText('Task'), value);
+  await userEvent.type(screen.getByLabelText(TASK_LABEL), value);
 }
 
 describe('NewWaveForm asks for a task and what the wave starts from', () => {
@@ -92,17 +119,20 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
   });
 
   /*
-   * Single line, not a textarea. The value becomes the wave's `title`, and
-   * every other surface renders it as one truncated line — sidebar, wave list,
-   * page header — while the wave page edits it through the single-line
-   * `EditableTitle`. `getByRole('textbox')` is true of both elements, so this
-   * asserts the tag itself; anything weaker would stay green on a textarea.
+   * Single line, not a textarea, and named without a visible label row. The
+   * value becomes the wave's `title`, and every other surface renders it as
+   * one truncated line — sidebar, wave list, page header — while the wave page
+   * edits it through the single-line `EditableTitle`.
+   * `getByRole('textbox')` is true of both elements, so this asserts the tag
+   * itself; anything weaker would stay green on a textarea.
    */
-  it('asks for the task on one line, in the form\'s own sans', () => {
+  it('asks for the task on one line, named but with no label row', () => {
     renderForm();
-    const task = screen.getByLabelText('Task');
+    const task = screen.getByLabelText<HTMLInputElement>(TASK_LABEL);
     expect(task).toHaveProperty('tagName', 'INPUT');
     expect(task).toHaveProperty('type', 'text');
+    // The row the user asked us to reclaim: the prompt lives in the box.
+    expect(task.placeholder).toBe('What should this wave do?');
   });
 
   it('flips the label and blocks submit while submitting', () => {
@@ -176,7 +206,7 @@ describe('Start from — an unbound template is id-only', () => {
   });
 });
 
-describe('Start from — issue development expands in place', () => {
+describe('Start from — issue development expands under the group', () => {
   async function chooseIssueDev() {
     await fillTitle();
     await userEvent.click(screen.getByRole('radio', { name: 'Issue development' }));
@@ -187,6 +217,8 @@ describe('Start from — issue development expands in place', () => {
     await chooseIssueDev();
     expect(submitButton().disabled).toBe(true);
     expect(screen.getByText(/Paste the GitHub issue/)).toBeTruthy();
+    // An untouched field is not yet wrong, and must not be announced as such.
+    expect(screen.getByLabelText('Issue URL').getAttribute('aria-invalid')).toBeNull();
 
     await userEvent.type(screen.getByLabelText('Issue URL'), 'not a url');
     expect(submitButton().disabled).toBe(true);
@@ -227,20 +259,19 @@ describe('Start from — issue development expands in place', () => {
   });
 
   /*
-   * The expanded fields belong to one row of the group, and a reader who lands
-   * on the panel has to be told which. `aria-controls` on the radio plus a
-   * `group` labelled by that radio is the association; without it the panel is
-   * a set of orphan fields sitting between two alternatives.
+   * The expanded fields belong to one alternative in the group, and a reader
+   * who lands on them has to be told which. astryx's `RadioListItem` takes no
+   * children and exposes no hook for `aria-controls` on its radio, so the
+   * association is carried the other way: the panel is a `group` whose
+   * accessible name is the chosen template's title. Without it the fields are
+   * orphans sitting under a list of alternatives.
    */
-  it('ties the expanded panel to the radio that opened it', async () => {
+  it('names the expanded panel after the template that opened it', async () => {
     renderForm();
     await chooseIssueDev();
-    const radio = screen.getByRole('radio', { name: 'Issue development' });
-    const panelId = radio.getAttribute('aria-controls');
-    expect(panelId).toBeTruthy();
-    const panel = screen.getByRole('group');
-    expect(panel.id).toBe(panelId);
-    expect(panel.getAttribute('aria-labelledby')).toBe(radio.closest('label')?.id);
+    const panel = screen.getByRole('group', { name: 'Issue development' });
+    expect(within(panel).getByLabelText('Issue URL')).toBeTruthy();
+    expect(within(panel).getByRole('checkbox')).toBeTruthy();
   });
 
   /*
@@ -250,7 +281,7 @@ describe('Start from — issue development expands in place', () => {
    */
   it('offers issue development with no fields when nothing is bound to it', async () => {
     const { props } = renderForm({
-      templates: [{ id: 'issue-development', title: 'Issue development' }],
+      templates: [{ id: 'issue-development', title: 'Issue development', tasks: ISSUE_DEV.tasks }],
     });
     await chooseIssueDev();
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
@@ -266,11 +297,72 @@ describe('Start from — issue development expands in place', () => {
    */
   it('refuses to submit a bound template it cannot collect input for', async () => {
     renderForm({
-      templates: [{ id: 'future-template', title: 'Future template', input_schema: { type: 'object' } }],
+      templates: [{
+        id: 'future-template',
+        title: 'Future template',
+        input_schema: { type: 'object' },
+        tasks: [{ key: 'do-it', goal: 'Do the future thing.' }],
+      }],
     });
     await fillTitle();
     await userEvent.click(screen.getByRole('radio', { name: 'Future template' }));
     expect(submitButton().disabled).toBe(true);
     expect(screen.getByText(/needs input this version cannot collect/)).toBeTruthy();
+  });
+});
+
+/*
+ * #1209 — "what does this template actually give me", answered on the row.
+ *
+ * The content is the template's own pre-set tasks, not authored copy: #1209
+ * ruled out adding a `description` to the kernel's template table, and a
+ * second prose source in the client would have been the same mistake one layer
+ * up. These tests therefore assert the *task* text, per template, which is the
+ * only thing that distinguishes "shows the plan" from "shows a blurb".
+ */
+describe('Start from — each template says which tasks it pre-sets', () => {
+  it('names the count on the row and lists that template\'s tasks behind it', () => {
+    renderForm();
+    // Distinct counts per template, so a trigger that showed the *list's*
+    // length instead of its own row's would be caught here.
+    expect(screen.getByText('4 tasks')).toBeTruthy();
+    expect(screen.getByText('3 tasks')).toBeTruthy();
+    expect(screen.getByText('1 task')).toBeTruthy();
+
+    // Every task key of the bound template, and its goal, is available.
+    for (const task of ISSUE_DEV.tasks) {
+      expect(screen.getByText(task.key)).toBeTruthy();
+      expect(screen.getByText(task.goal)).toBeTruthy();
+    }
+    // And each list belongs to its own template — investigation's single task
+    // is not in issue-development's card.
+    const cards = screen.getAllByRole('dialog', { hidden: true });
+    expect(cards).toHaveLength(TEMPLATES.length);
+    const issueDevCard = cards.find((card) => card.textContent?.includes('inspect-issue'));
+    expect(issueDevCard?.textContent).not.toContain('gather-facts');
+  });
+
+  /*
+   * A hover-only affordance does not exist for a keyboard or a touch user. The
+   * trigger has to be a tab stop, and the card it opens has to be what
+   * assistive technology is pointed at when that stop is reached.
+   */
+  it('puts the task list on a tab stop, not on hover alone', async () => {
+    renderForm();
+    const trigger = screen.getByText('1 task');
+    expect(trigger.getAttribute('tabindex')).toBe('0');
+
+    const describedBy = trigger.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    const card = document.getElementById(describedBy ?? '');
+    expect(card?.textContent).toContain('gather-facts');
+
+    // Reachable in practice, not just in attributes: tabbing from the field
+    // walks into the group and onto the trigger.
+    await userEvent.tab();
+    for (let step = 0; step < 8 && document.activeElement !== trigger; step += 1) {
+      await userEvent.tab();
+    }
+    expect(document.activeElement).toBe(trigger);
   });
 });

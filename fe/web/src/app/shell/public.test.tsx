@@ -29,6 +29,12 @@ function memoryStorage() {
   };
 }
 
+/* The Task field's accessible name after #1209's astryx rewrite: the label is
+   visually hidden (the field is one line and the placeholder already says what
+   it wants), so the name is spelled out here on purpose — losing it would make
+   the field unreachable by screen reader and by voice control. */
+const TASK_LABEL = 'What this wave should do';
+
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 
@@ -36,11 +42,12 @@ const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'use
    matter: one template bound to a running plugin (an `input_schema`, therefore
    fields) and one that is not. */
 const TEMPLATES = [
-  { id: 'small-change', title: 'Small change' },
+  { id: 'small-change', title: 'Small change', tasks: [{ key: 'inspect', goal: 'Read the change.' }] },
   {
     id: 'issue-development',
     title: 'Issue development',
     input_schema: { type: 'object', required: ['issue_url', 'repo', 'issue_number'] },
+    tasks: [{ key: 'inspect-issue', goal: 'Read the bound issue.' }],
   },
 ];
 
@@ -126,12 +133,12 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await screen.findByRole('dialog', { name: 'New wave' });
     await act(async () => { await new Promise((resolve) => { requestAnimationFrame(() => resolve(null)); }); });
 
-    expect(document.activeElement).toBe(screen.getByLabelText('Task'));
+    expect(document.activeElement).toBe(screen.getByLabelText(TASK_LABEL));
 
     // The consequence, stated as behaviour: the space in "Read it" is what used
     // to close the dialog.
     await userEvent.keyboard('Read it');
-    expect(screen.getByLabelText<HTMLInputElement>('Task').value).toBe('Read it');
+    expect(screen.getByLabelText<HTMLInputElement>(TASK_LABEL).value).toBe('Read it');
     expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
   });
 
@@ -145,7 +152,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
     expect(screen.queryByLabelText('Cove')).toBeNull();
     expect(screen.queryByLabelText('Folder')).toBeNull();
-    await userEvent.type(screen.getByLabelText('Task'), 'Read it');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
@@ -168,7 +175,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
-    await userEvent.type(screen.getByLabelText('Task'), 'Fix the thing');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Fix the thing');
     // `findBy`: the row only exists once the template read has landed.
     await userEvent.click(await screen.findByRole('radio', { name: 'Issue development' }));
     await userEvent.type(
@@ -194,7 +201,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
-    await userEvent.type(screen.getByLabelText('Task'), 'Tiny fix');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Tiny fix');
     await userEvent.click(await screen.findByRole('radio', { name: 'Small change' }));
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
@@ -214,7 +221,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
     await waitFor(() => expect(sent.some((r) => r.path === '/api/wave-templates')).toBe(true));
-    await userEvent.type(screen.getByLabelText('Task'), 'Read it anyway');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it anyway');
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     expect(createdWaveBodies(sent)[0]).toMatchObject({ cove_id: 'c2', title: 'Read it anyway' });

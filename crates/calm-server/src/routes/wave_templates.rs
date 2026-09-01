@@ -12,6 +12,14 @@
 //!   through the same [`resolve_trusted_workflow`] the create path uses. Absent
 //!   when no running trusted plugin declares that id, which is exactly the set
 //!   of templates that would be rejected for carrying `workflow_input`.
+//! * `tasks` — [`crate::workflow_templates::workflow_template_tasks`], the same
+//!   `PlanTaskInput` slice the seeded report is rendered from. The picker shows
+//!   it so "what does this template give me" is answered with the template's
+//!   own content instead of a prose description nobody owns (see below).
+//!
+//! `tasks` is read from a pure constant function, never from the template
+//! wave's stored report: the template waves are seeded lazily, and a *read* of
+//! the picker list must not be able to trigger a write.
 //!
 //! Deliberately **no `description`**: `workflow_templates.rs` has no such
 //! field, and #1209 records that template facts are already spread across three
@@ -33,7 +41,7 @@
 use crate::error::{ErrorBody, Result};
 use crate::routes::waves::resolve_trusted_workflow;
 use crate::state::{AppState, RouteState};
-use crate::workflow_templates::WORKFLOW_TEMPLATES;
+use crate::workflow_templates::{WORKFLOW_TEMPLATES, workflow_template_tasks};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use serde_json::Value;
@@ -60,6 +68,24 @@ pub struct WaveTemplate {
     /// sending `workflow_input` for it is a 400 on create.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
+    /// The tasks this template pre-sets, in plan order. Always present and
+    /// never empty for a real template — a template *is* its task list — so the
+    /// client can show it without a "no tasks" branch that could never render.
+    pub tasks: Vec<WaveTemplateTask>,
+}
+
+/// One pre-set task, projected from the template's own `PlanTaskInput`.
+///
+/// `key` and `goal` only: those are the two facts a person choosing a starting
+/// point needs, and both are verbatim from the seeded plan. Acceptance
+/// criteria, dependencies and gate advice belong to the wave's report once it
+/// exists, not to the chooser.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WaveTemplateTask {
+    /// The task block's `key` in the seeded report.
+    pub key: String,
+    /// What that task is for, verbatim from the template.
+    pub goal: String,
 }
 
 #[utoipa::path(
@@ -83,10 +109,23 @@ pub(crate) async fn list_wave_templates(
         let input_schema = resolve_trusted_workflow(&s, template.key)
             .await
             .and_then(|manifest| manifest.input_schema.clone());
+        // `unwrap_or_default` is unreachable for a `WORKFLOW_TEMPLATES` key and
+        // stays a default rather than a panic: both tables are keyed off the
+        // same constants, and `listed_tasks_are_exactly_the_report_task_blocks`
+        // fails loudly if one ever grows an entry the other lacks.
+        let tasks = workflow_template_tasks(template.key)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|task| WaveTemplateTask {
+                key: task.key,
+                goal: task.goal,
+            })
+            .collect();
         templates.push(WaveTemplate {
             id: template.key.to_string(),
             title: template.title.to_string(),
             input_schema,
+            tasks,
         });
     }
     Ok(Json(templates))

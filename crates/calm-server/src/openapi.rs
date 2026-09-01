@@ -171,6 +171,7 @@ use utoipa::OpenApi;
         BacklinkQuote,
         WaveBacklinksResponse,
         crate::routes::wave_templates::WaveTemplate,
+        crate::routes::wave_templates::WaveTemplateTask,
         WaveFsCardMeta,
         WaveFsRunStatus,
         WaveFsRunVerdictSummary,
