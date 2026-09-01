@@ -1382,10 +1382,23 @@ mod tests {
         // they are relative to a cwd we deliberately do not control.
         let err =
             resolve_command("mytool", &[".".to_string(), "bin".to_string()], "bin:.").unwrap_err();
-        assert!(
-            err.contains("SKIPPED"),
-            "the reason must say the entries were skipped: {err}"
-        );
+        // The load-bearing half: no relative candidate was ever STAT'd, so no
+        // relative candidate could ever have been RETURNED. Asserting only on
+        // the word "SKIPPED" passes with the skip deleted — that literal is in
+        // the format string unconditionally.
+        for relative in ["\"./mytool\"", "\"bin/mytool\""] {
+            assert!(
+                !err.contains(relative),
+                "a relative candidate was searched: {err}"
+            );
+        }
+        // …and the operator is told which entries were dropped, and why.
+        for entry in ["\".\"", "\"bin\""] {
+            assert!(
+                err.contains(entry),
+                "the reason must name the skipped entry {entry}: {err}"
+            );
+        }
         assert!(
             err.contains("working directory"),
             "the reason must say WHY: {err}"
