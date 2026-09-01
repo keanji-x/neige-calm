@@ -105,10 +105,17 @@ type ConversationStore = Readonly<{
  * by its waves before it listed conversations from the server (#1098), and
  * Today is the only registry-backed surface now, with `'all'`. It is left
  * standing rather than deleted here because deleting it is not one line — the
- * same sweep takes `ConversationPanelSource`'s `'card'` arm, `store.start`, and
- * the `scope` arm of the open-request consume with it, and that is a change to
- * the Today → wave path this very slice is being reviewed for. Recorded here so
- * nobody reads a live decision into an arm nothing selects (#1189 review).
+ * same sweep takes `ConversationPanelSource`'s `'card'` arm, `store.start` and
+ * the `scope` arm of the open-request consume with it, which is a wider edit
+ * than a review fix should carry.
+ *
+ * What that sweep would **not** change is behaviour, and an earlier version of
+ * this note claimed otherwise. The live Today → wave path runs through the
+ * `rows !== null` branch of that consume (`useConversationPanel`); the `scope`
+ * branch below it is only reachable when the source is `'card'`, which nothing
+ * selects. So the reason to defer is size and blast radius, not risk to the
+ * path this slice is about. Recorded here so nobody reads a live decision into
+ * an arm nothing selects (#1189 review).
  */
 type ConversationListIntent = Readonly<
   { kind: 'all' } | { kind: 'waves'; waveIds: readonly string[] }
@@ -150,6 +157,62 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message !== '' ? error.message : fallback;
 }
 
+/**
+ * Everything about the open conversation that does *not* come from its turns.
+ *
+ * Split out only so the row below can be derived twice from one expression —
+ * see `useConversationStore` for why there are two.
+ */
+type ConversationFacts = Readonly<{
+  cardId: string;
+  waveId: string;
+  waveTitle: string | undefined;
+  cardTitle: string | null;
+  kind: ConversationKind;
+  state: ConversationState | null;
+  working: boolean;
+  /** The row's own time, used when no turn has supplied a later one. */
+  fallbackUpdatedAt: number;
+}>;
+
+/**
+ * The conversation row these turns describe.
+ *
+ * Three of its fields — the derived `title`, `updatedAt` and `turns` — are
+ * statements *about the turns*, and are therefore only ever as true as the set
+ * they are computed from. That is the whole reason this is a function of the
+ * turns rather than a closure over the one list in scope: the drawer shows a
+ * message the moment you press Enter, and "shown" and "happened" are not the
+ * same claim (`useConversationStore`).
+ */
+function describeConversation(
+  facts: ConversationFacts, turns: readonly ConversationTurn[],
+): Conversation {
+  return {
+    id: facts.cardId, waveId: facts.waveId,
+    /* Absent, not `''`: a cove conversation's wave is hidden and has no title
+       to show. `ChatList` renders the difference; `''` would render a blank. */
+    ...(facts.waveTitle === undefined ? {} : { waveTitle: facts.waveTitle }),
+    title: facts.cardTitle
+      ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
+    kind: facts.kind,
+    /* A server-listed conversation's state is the server's to report —
+       `run_status_for` writes `turn_pending`, never `running`, for a headless
+       harness, and everything outside the four live states arrives as `null`.
+       The local phase still wins while a turn is in flight, because the list
+       would otherwise sit on the state the last fetch happened to catch.
+       Which kinds those are is a total table (`CONVERSATION_STATE_SOURCE`) and
+       not a `=== 'shared-chat'` test: this branch is silent, and a new kind
+       falling into the `else` would swap the server's reading for an invented
+       `'idle'` with nothing to notice it. */
+    state: CONVERSATION_STATE_SOURCE[facts.kind] === 'server'
+      ? (facts.working ? 'turn_pending' : facts.state)
+      : (facts.working ? 'running' : 'idle'),
+    updatedAt: turns.at(-1)?.atMs ?? facts.fallbackUpdatedAt,
+    turns: turns.length,
+  };
+}
+
 export function useConversationStore(
   transport: ApiTransportPort,
   unauthorized: UnauthorizedChannel,
@@ -172,6 +235,14 @@ export function useConversationStore(
   const run = useQuery({ ...specRunQueryOptions(transport, cardId, unauthorized), enabled: scope !== null });
   const mutations = useSpecMutations(transport, cardId, unauthorized);
   const [echoes, setEchoes] = useState<readonly ConversationTurn[]>([]);
+  /**
+   * The echo whose `POST /spec/input` has not been answered yet, if any.
+   *
+   * One id and not a set, because `sendingRef` already refuses a second send
+   * while one is in flight — at most one turn is ever unanswered, and a field
+   * that could hold two would be describing a state this store cannot reach.
+   */
+  const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [interruptPending, setInterruptPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -191,6 +262,7 @@ export function useConversationStore(
   }, [serverTurns]);
   useEffect(() => {
     setEchoes([]);
+    setUnconfirmedEchoId(null);
     setActionError(null);
     sendingRef.current = false;
     setSending(false);
@@ -201,38 +273,80 @@ export function useConversationStore(
     () => [...serverTurns, ...echoes].sort((left, right) => left.atMs - right.atMs),
     [echoes, serverTurns],
   );
+  /*
+   * The same turns, minus the one nobody has agreed to yet.
+   *
+   * `reconcileUserEchoes` drops an echo once the server sends the message back,
+   * so every echo still standing is either in flight or already confirmed by
+   * the 200 its own POST returned; this removes the first kind. `serverTurns`
+   * needs no filter — it *is* the server's account.
+   */
+  const confirmedEchoes = useMemo(
+    () => unconfirmedEchoId === null
+      ? echoes
+      : echoes.filter((turn) => turn.id !== unconfirmedEchoId),
+    [echoes, unconfirmedEchoId],
+  );
+  const confirmedTurns = useMemo(
+    () => [...serverTurns, ...confirmedEchoes].sort((left, right) => left.atMs - right.atMs),
+    [confirmedEchoes, serverTurns],
+  );
   /* An echo is a message you already sent, so it belongs after everything the
      server has confirmed. Keep `buildTranscript`'s positional pairing intact:
      a completed action retains the started row's place even when its end time
      is later than an interleaved message. A completed tail thought stops being
      the tail as soon as the user speaks again. */
   const transcript = useMemo(() => mergeTranscript(serverEntries, echoes), [echoes, serverEntries]);
+  const confirmedTranscript = useMemo(
+    () => mergeTranscript(serverEntries, confirmedEchoes), [confirmedEchoes, serverEntries],
+  );
   const phase = run.data?.phase ?? null;
   const working = phase === 'issuing_turn' || phase === 'turn_running';
   const stopping = phase === 'issuing_interrupt' || interruptPending;
-  const conversation = useMemo<Conversation | null>(() => waveId === undefined ? null : {
-    id: cardId, waveId,
-    /* Absent, not `''`: a cove conversation's wave is hidden and has no title
-       to show. `ChatList` renders the difference; `''` would render a blank. */
-    ...(waveTitle === undefined ? {} : { waveTitle }),
-    title: cardTitle ?? conversationNameFrom(turns.find((turn) => turn.author === 'you')?.text ?? ''),
-    kind: scopeKind,
-    /* A server-listed conversation's state is the server's to report —
-       `run_status_for` writes `turn_pending`, never `running`, for a headless
-       harness, and everything outside the four live states arrives as `null`.
-       The local phase still wins while a turn is in flight, because the list
-       would otherwise sit on the state the last fetch happened to catch.
-       Which kinds those are is a total table (`CONVERSATION_STATE_SOURCE`) and
-       not a `=== 'shared-chat'` test: this branch is silent, and a new kind
-       falling into the `else` would swap the server's reading for an invented
-       `'idle'` with nothing to notice it. */
-    state: CONVERSATION_STATE_SOURCE[scopeKind] === 'server'
-      ? (working ? 'turn_pending' : scopeState)
-      : (working ? 'running' : 'idle'),
-    updatedAt: turns.at(-1)?.atMs ?? scopeUpdatedAt ?? 0, turns: turns.length,
-  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, turns, waveId, waveTitle, working]);
+  const facts = useMemo<ConversationFacts | null>(() => waveId === undefined ? null : {
+    cardId, waveId, waveTitle, cardTitle: cardTitle ?? null, kind: scopeKind,
+    state: scopeState, working, fallbackUpdatedAt: scopeUpdatedAt ?? 0,
+  }, [cardId, cardTitle, scopeKind, scopeState, scopeUpdatedAt, waveId, waveTitle, working]);
+  /**
+   * What the reader is looking at: every turn, echoes included.
+   *
+   * This is the optimistic row. Pressing Enter has to put the message on the
+   * screen and name the drawer after it immediately — that is the whole point
+   * of an echo — and this route replaces the open row in its own list with this
+   * value so the panel behind the drawer agrees with the drawer.
+   */
+  const conversation = useMemo(
+    () => facts === null ? null : describeConversation(facts, turns), [facts, turns],
+  );
+  /**
+   * What the tab will still believe once the drawer is gone: confirmed turns
+   * only.
+   *
+   * The registry is not a view, it is a **memory** — nothing refreshes it, it
+   * has no `forget`, and Today reads it for the life of the tab. So the one
+   * thing that may never enter it is a fact that is not yet a fact.
+   *
+   * The shape that got in: an assistant card is minted `title: null` and the
+   * only name it ever has is the one derived from its first message, and an
+   * echo's `atMs` is `Date.now()` on the *browser's* clock. Send the first
+   * message on a fresh conversation, close the drawer while the POST is still
+   * in flight, and let the POST fail — the drawer's `catch` drops the echo, but
+   * `scope` is null by then, so the effect below no longer runs and nothing
+   * revisits the entry. Today was left naming a conversation after a message
+   * that never left the browser, and holding it at the top of the list on a
+   * clock reading nobody else shares.
+   *
+   * Deriving the remembered row from the confirmed turns closes it at the
+   * source rather than by repair: the false value is never written, so there is
+   * nothing for the failure path to undo, and the rule holds for any future
+   * writer of this entry rather than for the one that was found.
+   */
+  const durableConversation = useMemo(
+    () => facts === null ? null : describeConversation(facts, confirmedTurns),
+    [confirmedTurns, facts],
+  );
   useEffect(() => {
-    if (conversation === null) return;
+    if (durableConversation === null) return;
     /*
      * A server-listed conversation is not remembered *here*.
      *
@@ -247,11 +361,13 @@ export function useConversationStore(
      * it carries that defence itself: only the named wave's rows are written,
      * here and in the effect below.
      */
-    if (serverRows !== null && (rememberOn === null || conversation.waveId !== rememberOn)) return;
-    // Remember the full transcript so reopening the conversation preserves its
-    // activity lines and looks identical to the route the user just left.
-    registry.remember(conversation, transcript);
-  }, [conversation, registry, rememberOn, serverRows, transcript]);
+    if (serverRows !== null && (rememberOn === null || durableConversation.waveId !== rememberOn)) return;
+    /* Remember the transcript so reopening the conversation preserves its
+       activity lines and looks identical to the route the user just left — the
+       confirmed one, for the reason `durableConversation` gives: a message that
+       may still fail is not part of what this conversation *is*. */
+    registry.remember(durableConversation, confirmedTranscript);
+  }, [confirmedTranscript, durableConversation, registry, rememberOn, serverRows]);
   useEffect(() => {
     /*
      * A `'rows'` route that named a wave remembers **every** row it lists.
@@ -343,10 +459,38 @@ export function useConversationStore(
     seq.current += 1;
     const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
     setEchoes((current) => [...current, echo]);
-    void mutations.send(text).catch((error: unknown) => {
+    setUnconfirmedEchoId(echo.id);
+    void mutations.send(text).then(() => {
+      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+      /*
+       * The answer can outlive the drawer, and the effects above cannot.
+       *
+       * Closing the drawer takes `scope` to null, so `durableConversation`
+       * becomes null and this store stops writing to the registry — including
+       * for a turn that lands a moment later and *is* now a fact. Nothing else
+       * would ever supply it: an assistant row is `title: null` on the wire for
+       * good, so the name would be lost for the life of the tab rather than
+       * merely delayed. So the confirmation is written straight through.
+       *
+       * Only into an entry that already exists, which is what keeps this on the
+       * right side of the `rememberOn` defence above: on a cove route the open
+       * conversation is never remembered, so there is nothing here to find. And
+       * only the absent direction of the name, exactly as the batch remember
+       * below does it — a title the server sends is the server's.
+       */
+      const known = registry.conversations.find((candidate) => candidate.id === cardId);
+      if (known === undefined) return;
+      registry.remember({
+        ...known,
+        title: known.title ?? conversationNameFrom(text),
+        updatedAt: Math.max(known.updatedAt, echo.atMs),
+        turns: (known.turns ?? 0) + 1,
+      }, [...registry.turnsOf(cardId), echo]);
+    }).catch((error: unknown) => {
       setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
       setActionError(errorMessage(error, 'Could not send the message.'));
     }).finally(() => {
+      setUnconfirmedEchoId((current) => current === echo.id ? null : current);
       sendingRef.current = false;
       setSending(false);
     });

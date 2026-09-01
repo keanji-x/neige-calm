@@ -53,6 +53,11 @@ function assistantRow(overrides: Partial<Row> = {}): Row {
   };
 }
 
+/** The card a `/api/cards/{id}/…` request is about. */
+function pathCardId(path: string): string {
+  return decodeURIComponent(path.split('/')[3] ?? '');
+}
+
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
@@ -89,12 +94,18 @@ function setup(reply?: Reply) {
       if (request.path === CONVERSATIONS) return ok([assistantRow()]);
       if (request.path === BARE_CONVERSATIONS) return ok([]);
       if (request.path.includes('/harness/items')) return ok([]);
-      if (request.path.endsWith('/spec/run')) return ok({ card_id: SPEC_CARD.id, runtime_id: 'r', phase: 'idle' });
+      /* Both card endpoints echo **the card in the path**, which is what the
+         kernel does (`cards.rs`'s `/spec/input` answers with the card it just
+         accepted input for). A fixture answering with a fixed id is a server
+         that does not exist: nothing here reads the field today, so it is not
+         a false green yet — it is a trap laid for the first case that does,
+         which would then pass against a reply about the wrong conversation. */
+      if (request.path.endsWith('/spec/run')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r', phase: 'idle' });
       /* Answering an open conversation's send. The shape matters: an
          off-schema body is refused by the transport, the optimistic echo is
          rolled back, and the name derived from that echo — what the test
          below is about — never exists. */
-      if (request.path.endsWith('/spec/input')) return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
+      if (request.path.endsWith('/spec/input')) return ok({ card_id: pathCardId(request.path), runtime_id: 'r' });
       if (request.path === '/api/settings') return ok({});
       return ok([]);
     },
@@ -303,6 +314,93 @@ describe('wave conversations', () => {
     expect(row.textContent).toBe('rename this conversationTest wave');
     /* Not the kind label it would have fallen back to. */
     expect(screen.queryByRole('button', { name: /^Conversation Assistant,/ })).toBeNull();
+  });
+
+  /*
+   * And the name it did **not** earn, which is the same carry-over read from
+   * the other side.
+   *
+   * An echo goes on the screen the instant Enter is pressed, named and timed
+   * from the browser's own clock, and it is not yet a fact — the POST can still
+   * fail. Two rules that are each right compose into a wrong one: the effect
+   * above remembers the open conversation, and the batch remember below the
+   * drawer carries an entry's name and time forward rather than letting a
+   * `title: null` row undo them. Close the drawer while the POST is in flight
+   * and the optimistic values are what get carried; when the POST then fails,
+   * `scope` is already null, so the `catch` that drops the echo reaches nothing
+   * and the registry — which has no `forget` — keeps them for the life of the
+   * tab. Today was left naming a conversation after a message that never left
+   * the browser, and holding it above rows that really were touched.
+   *
+   * **The order is the test.** Rejecting before the drawer closes exercises the
+   * `scope !== null` path, where the open conversation is simply re-remembered
+   * without the echo and everything corrects itself; that arrangement is green
+   * with or without the fix. The gap is only reachable while the drawer is shut
+   * and the request is still out.
+   */
+  it('[G5] does not keep a name, or a time, from a message that failed to send', async () => {
+    let rejectInput!: () => void;
+    const settled = new Promise<void>((resolve) => { rejectInput = resolve; });
+    /* A row this tab has genuinely just seen activity on, timed a second ago on
+       the same clock the echo would use. It is what makes the *time* half of
+       this assertable at all: `updatedAt: 30` sorts below everything, so a row
+       carrying a leaked `Date.now()` and a row carrying its own honest time are
+       in the same place on Today unless something recent sits between them. */
+    const touchedAt = Date.now() - 1000;
+    const { router } = setup(async (request) => {
+      if (request.path === CONVERSATIONS) {
+        return ok([assistantRow(), assistantRow({
+          id: 'conv-assistant-2', title: 'Recently touched', updatedAt: touchedAt,
+        })]);
+      }
+      if (request.path.endsWith('/spec/input')) {
+        await settled;
+        return { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } };
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    await write('a message that never lands');
+    /* The premise, and the reason this bug was invisible: the optimistic name
+       really is derived and really is on screen. The drawer is right to show
+       it — you did type it — and that is exactly why the registry must not
+       take it. */
+    await screen.findByRole('complementary', { name: 'a message that never lands' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    /*
+     * Shut, with the POST still out: this is the window, and releasing the
+     * rejection before this point would test a different code path.
+     *
+     * "Shut" is read off the panel rather than off `[data-nc-drawer]`, which
+     * stays in the document for one exit animation and therefore forever under
+     * jsdom (`ui/drawer`: the element is held mounted until `animationend`).
+     * The list's `aria-current` is the route's own answer to "is a conversation
+     * open", and it is exactly the state the store reads — `scope` is null the
+     * moment no row is current, which is what stops the effects.
+     */
+    await waitFor(() => expect(
+      document.querySelector('[data-nc-role="row"][aria-current="true"]'),
+    ).toBeNull());
+    await act(async () => { rejectInput(); await Promise.resolve(); });
+
+    await act(async () => { await router.navigate({ to: '/' }); });
+    const rows = () => screen.getAllByRole('button', { name: /^Conversation / })
+      .map((row) => row.getAttribute('aria-label') ?? '');
+    /* The kind label, because there is still no name — not the sentence that
+       was never sent. `0 turns` is the same fact said twice: the count is the
+       length of the confirmed turns, and a conversation whose only message
+       failed has had none. */
+    await screen.findByRole('button', {
+      name: 'Conversation Assistant, on Test wave, 0 turns',
+    });
+    expect(screen.queryByRole('button', { name: /never lands/ })).toBeNull();
+    /* And it did not float to the top on a clock only this browser read: the
+       row that really was touched a second ago is still above it. */
+    const listed = rows();
+    expect(listed.indexOf('Conversation Recently touched, on Test wave'))
+      .toBeLessThan(listed.indexOf('Conversation Assistant, on Test wave, 0 turns'));
   });
 
   /*

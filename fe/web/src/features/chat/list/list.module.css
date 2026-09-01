@@ -88,9 +88,27 @@
 
      Both truncate. `min-inline-size: 0` on each child is what lets them: a flex
      item's automatic minimum size is its content, so without it the name would
-     push the wave out of the row rather than ellipsing. The name shrinks last
-     (`flex-shrink: 0` is wrong here too — a long name would then clip the wave
-     entirely), so the two share what there is in proportion to their length. */
+     push the wave out of the row rather than ellipsing. Neither may be
+     `flex-shrink: 0` — a long name would then clip the wave entirely.
+
+     But "share it in proportion to their length", which is what two equal
+     `flex: 0 1 auto` items do, is the wrong rule here, and it brought the
+     defect this pair was written to fix back in another shape. Flex distributes
+     shrinkage **weighted by flex base size**, so the longer item keeps more of
+     what it asked for: a 60-character wave title next to `Assistant` in this
+     270px column takes ~228px and leaves the name ~38px — about five
+     characters. Every row under such a wave then reads `Rena…` `Fix …` `Add …`
+     followed by the same long crumb, which is exactly the "N rows a reader
+     cannot tell apart" that `list/public.tsx` describes.
+
+     The row's identity is the conversation's name; the crumb is a note after
+     it. So the crumb gets a bound (`max-inline-size`) rather than a louder
+     shrink factor: a cap is a fact about the layout that holds whatever the two
+     strings happen to be, while a bigger `flex-shrink` only changes the ratio
+     and still hands most of a very long crumb the width. 40% is the largest
+     share that still leaves the name the majority of the line; below its own
+     content width the crumb is not capped at all, so a short crumb next to a
+     long name is unaffected and the name still ellipses first there. */
   .label {
     display: flex;
     gap: var(--space-2);
@@ -114,6 +132,7 @@
   .wave {
     min-inline-size: 0;
     flex: 0 1 auto;
+    max-inline-size: 40%;
     overflow: hidden;
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
@@ -121,6 +140,20 @@
     color: var(--text-3);
     white-space: nowrap;
     text-overflow: ellipsis;
+  }
+
+  /* A boundary the eye can find once both halves are ellipsed.
+     `Assis…` followed by 4px and `Very long wave title` is two strings only if
+     you already know it is two strings — the size step and the tone step are
+     both small by design (the crumb is meant to be quiet), and an ellipsis at
+     the join removes the one cue a reader had, the word ending. The dot is
+     decorative and is generated content, so it is outside `textContent` and
+     outside the `aria-label` the button already spells out in words; nothing
+     reads it aloud. It sits inside `.wave`, so it is clipped with the crumb
+     rather than surviving a crumb that has vanished. */
+  .wave::before {
+    content: '·';
+    margin-inline-end: var(--space-1);
   }
 
   .rowActive .name {
