@@ -26,8 +26,9 @@
 //
 // ## Names, since the visible text is never the whole value
 //
-//   * The name is the placeholder, and once there is a value the placeholder
-//     *and* the full path — set through `aria-label`, because neither half can
+//   * The name is the purpose phrase (the call site's placeholder, or a
+//     mode-aware default), and once there is a value that phrase *and* the
+//     full path — set through `aria-label`, because neither half can
 //     come from the contents: the visible text is a basename, and a reader who
 //     hears only "app" learns neither which `app` nor what the control is for.
 //     Dropping the purpose half was the first cut of this and it was wrong;
@@ -65,7 +66,7 @@ export interface DirectoryFieldProps {
   id?: string; placeholder?: string; mode?: DirectoryMode;
 }
 
-export function DirectoryField({ value, onChange, listDirectory, id, placeholder = 'Choose a directory…', mode = 'directory' }: DirectoryFieldProps): ReactNode {
+export function DirectoryField({ value, onChange, listDirectory, id, placeholder, mode = 'directory' }: DirectoryFieldProps): ReactNode {
   const [browsing, setBrowsing] = useState(false);
   const dialog = useDialogView();
   const initialPath = mode === 'file' && value ? value.slice(0, value.lastIndexOf('/')) || '/' : value || null;
@@ -77,10 +78,22 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps -- capture value and callbacks only when browsing toggles; value changes must not repush the child view.
   }, [browsing, dialog]);
-  /* Purpose first, then value — and the placeholder's trailing ellipsis goes
-     with it, because "Choose a directory…: /srv/app" is the punctuation of a
-     control that is still waiting for something. */
-  const name = value === '' ? placeholder : `${placeholder.replace(/…$/, '')}: ${value}`;
+  /* What this control is for, in one phrase, and the only string it has that
+     is not a path: it is the chip's text while there is no value, the first
+     half of the accessible name once there is one, and the hover string in
+     both states.
+
+     The default is mode-aware because the name is now built from it: a file
+     picker that calls itself "Choose a directory" is a wrong name, not a
+     stale placeholder, and it used to be neither because nothing read it out.
+     A caller that passes `''` falls back to the same default rather than
+     naming the control ": /srv/app" — or nothing at all when it is empty.
+     The trailing ellipsis is dropped: it is the "this opens something"
+     convention, and "Choose a directory…: /srv/app" is the punctuation of a
+     control still waiting for input. */
+  const purpose = (placeholder ?? '').replace(/…$/u, '').trim()
+    || (mode === 'file' ? 'Choose a file' : 'Choose a directory');
+  const name = value === '' ? purpose : `${purpose}: ${value}`;
   /* The one attribute astryx's prop surface has no room for; see the header. */
   const nativeTitle: { title: string } = { title: name };
   return (
@@ -104,7 +117,7 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
            becoming the row. The identifying segment is the last one; the whole
            path is in both the name and the title, one hover or one screen
            reader away. */
-        label={value === '' ? placeholder : basenameOf(value)}
+        label={value === '' ? purpose : basenameOf(value)}
         onClick={() => setBrowsing(true)}
       />
       {browsing && !dialog && (
