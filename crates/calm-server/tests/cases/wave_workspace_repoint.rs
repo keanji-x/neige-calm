@@ -35,6 +35,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use axum::body::Body;
+use axum::extract::FromRef;
 use axum::http::{Request, StatusCode};
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
@@ -58,6 +59,19 @@ struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
     workspace_root: PathBuf,
+    /// #1147 S3 — the registry the route's in-memory fence acts on.
+    ///
+    /// Held so tests can install a REAL `SpecHarness` into it. Without one the
+    /// whole `harness.get` / `shutdown` / `remove` half of the fence is dead
+    /// code under test: it was measured that deleting it turned no test red,
+    /// which is exactly the shape this slice has been caught by twice.
+    harness: calm_server::harness::HarnessRegistry,
+    /// Kept so a test can call an operation directly, for guards no HTTP
+    /// request can reach — see `a_non_user_actor_may_not_change_a_workspace`.
+    state: AppState,
+    roles: CardRoleCache,
+    waves: WaveCoveCache,
+    shared_codex: Arc<calm_server::shared_codex_appserver::SharedCodexAppServer>,
     #[allow(dead_code)]
     tmp: TempDir,
 }
@@ -86,20 +100,20 @@ async fn boot() -> Boot {
         events.clone(),
         WriteContext::new(roles.clone(), waves.clone()),
     ));
+    let shared_codex = SharedCodexAppServer::new_fake_running_with_pending(sqlx_repo.clone(), None);
     let state = AppState::from_parts(
         repo,
         events,
         daemon,
         plugin,
         Arc::new(CodexClient::new_stub()),
-        Some(roles),
-        Some(waves),
+        Some(roles.clone()),
+        Some(waves.clone()),
     )
-    .with_shared_codex_appserver(SharedCodexAppServer::new_fake_running_with_pending(
-        sqlx_repo.clone(),
-        None,
-    ))
+    .with_shared_codex_appserver(shared_codex.clone())
     .with_workspace_root(workspace_root.clone());
+    let harness = state.harness.clone();
+    let state_for_tests = state.clone();
     let app = routes::router()
         .layer(axum::middleware::from_fn(
             calm_server::actor::actor_middleware,
@@ -109,8 +123,58 @@ async fn boot() -> Boot {
         app,
         repo: sqlx_repo,
         workspace_root,
+        harness,
+        state: state_for_tests,
+        roles,
+        waves,
+        shared_codex,
         tmp,
     }
+}
+
+/// Install a real `SpecHarness` in the registry under the wave's live
+/// spec-harness runtime, and return that runtime id.
+///
+/// `run_unstarted_for_test` builds the handle without spawning the run loop, so
+/// the test gets a genuine `SpecHarness` — one whose `shutdown()` really runs —
+/// with no background task to race the assertions.
+async fn install_live_harness(b: &Boot, wave_id: &str) -> String {
+    let runtime_id: String = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id LIMIT 1",
+    )
+    .bind(wave_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    let card_id: String = sqlx::query_scalar("SELECT card_id FROM worker_sessions WHERE id=?1")
+        .bind(&runtime_id)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    let repo: Arc<dyn Repo> = b.repo.clone();
+    let (harness, _observations) = calm_server::harness::SpecHarness::run_unstarted_for_test(
+        calm_server::harness::SpecHarnessParams {
+            runtime_id: runtime_id.clone(),
+            wave_id: wave_id.to_string().into(),
+            card_id: card_id.into(),
+            thread_id: None,
+            repo,
+            events: calm_server::event::EventBus::new(),
+            card_role_cache: b.roles.clone(),
+            wave_cove_cache: b.waves.clone(),
+            daemon: b.shared_codex.clone(),
+            config: Default::default(),
+            snapshot: calm_server::harness::HarnessSnapshot::initial(0, Vec::new()),
+        },
+        8,
+    );
+    b.harness.insert(runtime_id.clone(), harness);
+    assert!(
+        b.harness.get(&runtime_id).is_some(),
+        "premise: the registry now holds a live harness for {runtime_id}"
+    );
+    runtime_id
 }
 
 fn theme() -> Value {
@@ -212,6 +276,17 @@ async fn repoint(b: &Boot, wave_id: &str) -> (StatusCode, String) {
     repoint_to(b, wave_id, &target).await
 }
 
+/// Every `spec-harness-start` payload submitted so far, oldest first.
+async fn harness_start_payloads(b: &Boot) -> Vec<String> {
+    sqlx::query_scalar(
+        "SELECT payload_json FROM operations WHERE kind='spec-harness-start' \
+         ORDER BY created_at_ms, id",
+    )
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap()
+}
+
 fn trash_entries(workspace_root: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(workspace_root.join(".trash")) else {
         return Vec::new();
@@ -260,22 +335,30 @@ fn commit_count(path: &Path) -> String {
 /// are both ways the server could have taken ownership of a user's repository,
 /// and both show up here as a diff.
 fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
-    /// Git's own transient lock files, which are not repository content and are
-    /// not evidence of anything the server did.
+    /// Git's **own** transient lock files under `.git/`, by exact name.
     ///
-    /// Measured on CI (git 2.55) and NOT reproducible on this host (git 2.39):
-    /// git's background maintenance creates `.git/objects/maintenance.lock`
-    /// after a commit and removes it moments later, so a before/after
-    /// fingerprint pair straddling that window reports
-    /// `removed: .git/objects/maintenance.lock` and the assertion fails on a
-    /// file the server never saw. `user_repo` also turns maintenance off; this
-    /// filter is the half that does not depend on remembering to.
+    /// Measured on CI (git 2.55) and not reproducible on this host (git 2.39):
+    /// background maintenance creates `.git/objects/maintenance.lock` after a
+    /// commit and removes it moments later, so a before/after pair straddling
+    /// that window reports `removed: …maintenance.lock` and blames the server
+    /// for a file it never saw. `user_repo` also turns maintenance off; this is
+    /// the half that does not depend on remembering to.
     ///
-    /// Deliberately narrow: `.git/info/exclude` and `.git/neige-workspace` are
-    /// exactly how the server takes ownership of a repository, and both are
-    /// still compared byte for byte.
-    fn is_git_lock(rel: &Path) -> bool {
-        rel.extension().is_some_and(|ext| ext == "lock")
+    /// **Named, and rooted at `.git/`, on purpose.** The first version matched
+    /// any `*.lock` anywhere, which was strictly wrong: it blinded the
+    /// fingerprint to `.git/config.lock` and `.git/index.lock` — the exact
+    /// files `workspace_materialize::clear_our_stale_git_locks` deletes — so
+    /// the one production routine that removes files from a repository became
+    /// invisible to the assertion whose entire job is "the server did not touch
+    /// the user's repository". It also hid a work-tree `Cargo.lock`. An
+    /// unexpected `*.lock` must fail this assertion, not be waved through.
+    fn is_transient_git_lock(rel: &Path) -> bool {
+        const NAMES: [&str; 2] = ["maintenance.lock", "gc.pid.lock"];
+        rel.starts_with(".git")
+            && rel
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| NAMES.contains(&name))
     }
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
@@ -285,7 +368,7 @@ fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
         entries.sort();
         for path in entries {
             let rel = path.strip_prefix(root).unwrap().to_path_buf();
-            if is_git_lock(&rel) {
+            if is_transient_git_lock(&rel) {
                 continue;
             }
             let meta = std::fs::symlink_metadata(&path).unwrap();
@@ -452,13 +535,7 @@ async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     // `force_new_thread: true`. A resumed thread keeps the cwd it was minted
     // with, so `force_new_thread: false` would leave the spec agent working in
     // the trashed directory while every worker uses the new one.
-    let payloads: Vec<String> = sqlx::query_scalar(
-        "SELECT payload_json FROM operations WHERE kind='spec-harness-start' \
-         ORDER BY created_at_ms, id",
-    )
-    .fetch_all(b.repo.pool())
-    .await
-    .unwrap();
+    let payloads = harness_start_payloads(&b).await;
     let last: Value = serde_json::from_str(payloads.last().expect("a harness start")).unwrap();
     assert_eq!(
         last["cwd"].as_str(),
@@ -1006,6 +1083,26 @@ async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_ro
     std::fs::create_dir_all(&plain).unwrap();
     std::fs::write(plain.join("notes.txt"), b"just a folder\n").unwrap();
 
+    // Premise, asserted rather than assumed: git discovery walks UPWARD, so
+    // this test is only meaningful while no ANCESTOR of the temp dir is a work
+    // tree. A stray `.git` in `$TMPDIR` — which really does turn up on shared
+    // dev boxes — makes every tempdir "inside a repository" and turns the 400
+    // below into a 201, which reads as "the guard is broken" when it is the
+    // fixture's world that changed. Fail here instead, naming the cause.
+    let discovery = Command::new("git")
+        .arg("-C")
+        .arg(&plain)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .unwrap();
+    assert!(
+        !discovery.status.success(),
+        "premise broken: {plain:?} resolves to a Git work tree at {}. Some \
+         ancestor of $TMPDIR contains a `.git` — remove it; this test needs a \
+         directory that is genuinely outside every repository.",
+        String::from_utf8_lossy(&discovery.stdout).trim()
+    );
+
     let (status, body) = request(
         b.app.clone(),
         "POST",
@@ -1509,4 +1606,239 @@ async fn a_workspace_lease_never_freezes_the_launchpad() {
     // …and it is still not user-repointable.
     let (status, body) = repoint(&b, &wave).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "body={body}");
+}
+
+// ---------------------------------------------------------------------------
+// The in-memory half of the fence, and the promises made on the refusal paths
+// ---------------------------------------------------------------------------
+
+/// The database fence alone is not enough, and this is the test that says so.
+///
+/// `maybe_issue_turn` reads no durable state, so an observation that was
+/// already enqueued before the fence transaction committed still becomes a
+/// turn — writing into the directory about to be renamed, and (a process's cwd
+/// follows the inode on Linux) into `.trash` afterwards. The route therefore
+/// also takes the live handle out of the registry and shuts it down.
+///
+/// This exists because that half was **dead code under test**: no fixture ever
+/// put a `SpecHarness` in the registry, so deleting `harness.get` +
+/// `shutdown()` + `remove` turned nothing red — measured. `install_live_harness`
+/// is what makes the assertion reachable.
+#[tokio::test]
+async fn the_fence_also_takes_the_live_harness_out_of_the_registry() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let runtime_id = install_live_harness(&b, &wave).await;
+
+    let (status, body) = repoint_to(&b, &wave, &target).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    assert!(
+        b.harness.get(&runtime_id).is_none(),
+        "the fenced runtime {runtime_id} is still live in the registry, so an \
+         observation enqueued before the fence committed could still become a \
+         turn in the directory that just moved to the trash"
+    );
+}
+
+/// A refusal must put the harness back — on the OLD path.
+///
+/// The route's promise is "a refusal leaves nothing behind except a re-opened
+/// harness". Tearing the harness down and then returning 409 without the
+/// restart would leave the wave alive but its spec agent dead, which is worse
+/// than the change the caller was denied.
+#[tokio::test]
+async fn a_refusal_after_the_fence_reopens_the_harness_on_the_old_path() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    install_live_harness(&b, &wave).await;
+    let starts_before = harness_start_payloads(&b).await.len();
+
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    calm_server::routes::waves::install_workspace_repoint_race_hook_for_test(
+        &wave,
+        calm_server::routes::waves::WorkspaceRepointRaceHook {
+            entered: entered.clone(),
+            release: release.clone(),
+        },
+    );
+    let app = b.app.clone();
+    let wave_for_task = wave.clone();
+    let target_for_task = target.clone();
+    let patch = tokio::spawn(async move {
+        request(
+            app,
+            "PATCH",
+            &format!("/api/waves/{wave_for_task}"),
+            Some(json!({"workspace": {
+                "kind": "attached",
+                "path": target_for_task.to_string_lossy(),
+                "attach_folder": true,
+            }})),
+        )
+        .await
+    });
+    entered.notified().await;
+    std::fs::write(
+        path.join("agent-output.md"),
+        b"the turn was still running\n",
+    )
+    .unwrap();
+    release.notify_one();
+
+    let (status, body) = patch.await.unwrap();
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+
+    let payloads = harness_start_payloads(&b).await;
+    assert!(
+        payloads.len() > starts_before,
+        "a refusal that tore the harness down must start it again; no new \
+         `spec-harness-start` was submitted"
+    );
+    let last: Value = serde_json::from_str(payloads.last().unwrap()).unwrap();
+    assert_eq!(
+        last["cwd"].as_str(),
+        Some(path.to_string_lossy().as_ref()),
+        "the restart must use the OLD path — nothing moved. payload={last}"
+    );
+    assert_eq!(
+        workspace_row(&b, &wave).await.0,
+        "managed",
+        "and the row must be untouched"
+    );
+}
+
+/// A shutdown that fails must not swallow the wave's spec agent.
+///
+/// By this point the fence transaction has COMMITTED: every runtime is
+/// superseded. The shape this replaces removed the registry entry first and
+/// then used `?`, so a failing shutdown returned 500 with the runtimes
+/// superseded, the entry gone, and the restart skipped — the spec agent was
+/// dead with nothing left that would ever start it again.
+///
+/// The failure is injected (`fail_workspace_repoint_shutdown_for_test`):
+/// `SpecHarness::shutdown` only fails on a persistence error that an
+/// integration test cannot provoke without dismantling the very runtime row
+/// the fence needs. Same deterministic-injection posture S5 used for N16.
+#[tokio::test]
+async fn a_failed_harness_shutdown_still_completes_the_repoint() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    install_live_harness(&b, &wave).await;
+    let starts_before = harness_start_payloads(&b).await.len();
+    calm_server::routes::waves::fail_workspace_repoint_shutdown_for_test(&wave);
+
+    let (status, body) = repoint_to(&b, &wave, &target).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a shutdown failure must not abort a re-point whose fence already \
+         committed; body={body}"
+    );
+
+    let (kind, path, _) = workspace_row(&b, &wave).await;
+    assert_eq!(kind, "attached");
+    assert_eq!(PathBuf::from(path), target);
+
+    let payloads = harness_start_payloads(&b).await;
+    assert!(
+        payloads.len() > starts_before,
+        "the spec agent must have been restarted; leaving it superseded with no \
+         restart is the failure mode this test exists for"
+    );
+}
+
+/// Moving a directory is a human decision.
+///
+/// This is the only thing standing between an **agent** and pointing a wave at
+/// any repository on the box. Issue #985 drew that line for
+/// `automation_policy`; a workspace re-point is strictly more destructive.
+/// Every other test in this file runs as the user, so without this one the
+/// guard has no fixture at all.
+///
+/// `ai:codex` is not an arbitrary choice, and the reason is worth knowing:
+/// `Actor::to_actor_id` maps `"user"` → `User`, `"ai:codex"` → `AiCodex`, and
+/// **everything else — including `ai:spec` — to `User`** by a documented
+/// defensive default. So `ai:codex` is the only header value that reaches a
+/// non-`User` `ActorId` at all, and a test written with `ai:spec` passes
+/// vacuously while looking correct (measured: it returned 200 and moved the
+/// workspace). That is not a hole this slice opened or should close here —
+/// `actor.rs`'s module doc is explicit that the header is a *declared*, not
+/// authenticated, identity and "plumbing, not a security boundary", and #985's
+/// identical guard has exactly the same reach. What this test pins is that the
+/// guard is wired and fires, not that the header cannot be lied about.
+#[tokio::test]
+async fn a_non_user_actor_may_not_change_a_workspace() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let (wave, managed_path) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let target_before = fingerprint(&target);
+
+    // Called directly rather than over HTTP, and that is the finding rather
+    // than a shortcut. Measured: driving this through `PATCH` with
+    // `X-Calm-Actor: ai:codex` DOES answer 403 — but with
+    // `"AiCodex/AiClaude/AiSpec actor has empty card id"`, a different and
+    // older guard. `Actor::to_actor_id` maps every header string except
+    // `"ai:codex"` to `User`, and `"ai:codex"` carries an empty card id that
+    // the outer guard rejects first, so no HTTP request can produce a caller
+    // this check would be the first to stop. A test written over the route
+    // therefore passes with this guard deleted — it did, and that is why it is
+    // written this way.
+    // A live harness, so the refusal can be told apart from the OTHER
+    // `Forbidden` this call can produce. Deleting the user-only guard does not
+    // make the operation succeed — it makes it fail later, inside the write
+    // transaction's role gate, AFTER the fence has committed and the harness
+    // has been torn down. Both answers are 403, so a test that only checks the
+    // status (or even only `matches!(.., Forbidden(_))`) passes either way;
+    // measured, twice. What actually differs is *when* it refuses.
+    let runtime_id = install_live_harness(&b, &wave).await;
+
+    let wave_row = b.repo.wave_get(&wave).await.unwrap().unwrap();
+    let result = calm_server::routes::waves::repoint_wave_workspace_for_test(
+        &calm_server::state::RouteState::from_ref(&b.state),
+        &calm_server::state::WorkerState::from_ref(&b.state),
+        &calm_server::actor::Actor("ai:codex".into()),
+        &wave_row,
+        &calm_server::model::WaveWorkspacePatch {
+            kind: calm_server::model::WaveWorkspaceKind::Attached,
+            path: target.to_string_lossy().into_owned(),
+            attach_folder: true,
+        },
+    )
+    .await;
+    let error = result.expect_err("a non-user actor must be refused");
+    assert!(
+        matches!(error, calm_server::error::CalmError::Forbidden(_)),
+        "expected Forbidden, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("user-only"),
+        "the refusal must be THIS guard's, not the write transaction's role \
+         gate answering the same 403 four steps later: {error}"
+    );
+    assert!(
+        b.harness.get(&runtime_id).is_some(),
+        "the refusal must land BEFORE the fence: runtime {runtime_id} was torn \
+         out of the registry, which means the request got as far as superseding \
+         the wave's runtimes before something else refused it"
+    );
+
+    let (kind, path, frozen) = workspace_row(&b, &wave).await;
+    assert_eq!(kind, "managed");
+    assert_eq!(PathBuf::from(path), managed_path);
+    assert_eq!(frozen, None);
+    assert!(trash_entries(&b.workspace_root).is_empty());
+    assert_eq!(
+        diff(&target_before, &fingerprint(&target)),
+        Vec::<String>::new(),
+        "the user's repository must not have been touched"
+    );
 }

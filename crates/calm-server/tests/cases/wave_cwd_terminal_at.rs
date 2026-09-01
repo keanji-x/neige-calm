@@ -756,10 +756,20 @@ async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
 /// refused at that gate with a 400 — which is the #1147 defect made eager,
 /// since the pre-S2 omitted branch stored exactly this path and every
 /// `kind: codex` worker on such a wave then died in `git rev-parse` with
-/// nothing but `spawn-failed`. Which of the two refusals applies is decided by
-/// a precondition probe and pinned exactly, not tolerated as an either/or.
-/// Neither refusal is the managed branch and neither writes a row — that is
-/// the property under test.
+/// nothing but `spawn-failed`.
+///
+/// The refusal pinned here is the 400 at the workspace gate. This used to be a
+/// `if home_is_work_tree { 409 } else { 400 }` either/or, and the 409 arm never
+/// ran: a home directory is not a Git work tree on the machines this suite
+/// runs on. All the conditional did was hide which behaviour the test actually
+/// holds. The probe survives as a *precondition assertion*: where HOME
+/// really is a work tree, this fails loudly with an explanation instead of
+/// silently exercising a different code path under the same test name.
+///
+/// The probe builds its git command the way the server does
+/// (`neige_git_command`, which scrubs `GIT_DIR` / `GIT_WORK_TREE` /
+/// `GIT_CEILING_DIRECTORIES` / `GIT_CONFIG_*`). A bare `git` here would be
+/// answering a question the server never asks.
 #[tokio::test]
 async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_refused() {
     let boot = boot().await;
@@ -767,24 +777,23 @@ async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_refused() {
     assert!(
         home.starts_with('/'),
         "fixture HOME/default_cwd must be absolute so this hits the workspace \
-         gate or the claim path, not the not-absolute 400; got `{home}`"
+         gate, not the not-absolute 400; got `{home}`"
     );
-    // Precondition probe (not the assertion): does this machine's HOME satisfy
-    // the S3 attached-workspace gate?
-    let home_is_work_tree = std::process::Command::new("git")
+    let home_is_work_tree = calm_server::test_seams::neige_git_command_for_test()
         .arg("-C")
         .arg(&home)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .map(|out| out.status.success())
         .unwrap_or(false);
-    let expected_status = if home_is_work_tree {
-        // Reaches the claim scan: unclaimed + `attach_folder: false` → 409.
-        StatusCode::CONFLICT
-    } else {
-        // Refused at the attached-workspace gate, before the scan.
-        StatusCode::BAD_REQUEST
-    };
+    assert!(
+        !home_is_work_tree,
+        "precondition: this test pins the attached-workspace gate's 400, which \
+         requires HOME (`{home}`) not to be a Git work tree. It is one here, so \
+         the request would instead reach the claim scan and 409. Re-point HOME \
+         for the suite, or split this into two tests — do not weaken the \
+         assertion back into an either/or."
+    );
 
     let (status, body) = post(
         boot.app.clone(),
@@ -799,9 +808,18 @@ async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_refused() {
     )
     .await;
     assert_eq!(
-        status, expected_status,
-        "explicit HOME must be refused, never taken down the managed branch; \
-         home_is_work_tree={home_is_work_tree} body = {body}"
+        status,
+        StatusCode::BAD_REQUEST,
+        "explicit HOME must be refused at the attached-workspace gate, never \
+         taken down the managed branch; body = {body}"
+    );
+    // The server's own words, not git's — git's stderr is locale-dependent
+    // (this box answers in Chinese), so pinning that would make the test fail
+    // on a different `LANG` for no behavioural reason.
+    assert!(
+        body.to_string().contains("is not inside a Git work tree"),
+        "the 400 must come from the attached-workspace gate, not from some \
+         other rejection that happens to share the status; body = {body}"
     );
     assert_eq!(
         boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),

@@ -95,3 +95,22 @@ pub async fn acquire_workspace_lease_for_test(
     tx.commit().await?;
     Ok(())
 }
+
+/// #1147 S3 — build git commands in a test exactly the way the server does.
+///
+/// `neige_git_command` is `pub(crate)` and deliberately so: every git spawn on
+/// the workspace path must go through it, and nothing outside the crate has a
+/// reason to spawn git *as the server*. A test that probes "would the server
+/// consider this path a Git work tree?" is the exception. A bare `git` there
+/// answers a different question — `GIT_DIR`, `GIT_WORK_TREE`,
+/// `GIT_CEILING_DIRECTORIES` and the `GIT_CONFIG_*` family are all present in
+/// hook and CI environments and all redirect the answer — so a test probe that
+/// does not scrub them can disagree with the server it is predicting, and a
+/// precondition assertion that can be wrong about the production behaviour is
+/// worse than none.
+///
+/// `fixtures`-only, like the rest of this module.
+#[cfg(feature = "fixtures")]
+pub fn neige_git_command_for_test() -> std::process::Command {
+    crate::workspace_materialize::neige_git_command()
+}

@@ -2028,6 +2028,52 @@ async fn wait_at_workspace_repoint_race_hook(wave_id: &str) {
     let _ = wave_id;
 }
 
+/// Test seam for the shutdown-failure branch of the fence.
+///
+/// `SpecHarness::shutdown` fails only on a persistence error deep inside the
+/// run loop, which an integration test cannot provoke without dismantling the
+/// runtime row the fence needs. The branch is still worth covering — it is the
+/// one that used to kill a wave's spec agent outright — so the failure is
+/// injected here, the same deterministic-injection posture S5 used for N16
+/// rather than a multi-threaded hammer. `fixtures`-only; a release build
+/// compiles the bare `shutdown()` call.
+#[cfg(feature = "fixtures")]
+fn workspace_repoint_shutdown_failures() -> &'static StdMutex<HashMap<String, ()>> {
+    static FAILURES: OnceLock<StdMutex<HashMap<String, ()>>> = OnceLock::new();
+    FAILURES.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn fail_workspace_repoint_shutdown_for_test(wave_id: &str) {
+    workspace_repoint_shutdown_failures()
+        .lock()
+        .expect("workspace repoint shutdown failure mutex")
+        .insert(wave_id.to_string(), ());
+}
+
+async fn shutdown_fenced_harness(
+    harness: &crate::harness::SpecHarness,
+    wave_id: &str,
+) -> Result<()> {
+    #[cfg(feature = "fixtures")]
+    {
+        let forced = workspace_repoint_shutdown_failures()
+            .lock()
+            .expect("workspace repoint shutdown failure mutex")
+            .remove(wave_id)
+            .is_some();
+        if forced {
+            return Err(CalmError::Internal(
+                "injected spec harness shutdown failure (#1147 S3 test seam)".into(),
+            ));
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = wave_id;
+    harness.shutdown().await
+}
+
 /// What the fence transaction decided, carried out to the filesystem half.
 struct RepointFence {
     /// The workspace as read *inside* the transaction — the authority, not the
@@ -2106,6 +2152,30 @@ async fn repoint_wave_workspace(
     wave: &Wave,
     requested: &WaveWorkspacePatch,
 ) -> Result<Response> {
+    // Issue #985's rule, applied to a strictly more destructive field: moving
+    // a directory is a human decision. This is the only thing between an agent
+    // and pointing a wave at any repository on the box.
+    //
+    // **Reachability, stated exactly** (same posture as S5's guard 4). Through
+    // HTTP this is unreachable today, and not because it is redundant: the
+    // only header form that maps to a non-`User` `ActorId` is `ai:codex`
+    // (`Actor::to_actor_id` sends every other string to `User` by a documented
+    // defensive default), and that form carries an empty card id, which a
+    // guard further out already 403s. So the header cannot produce a caller
+    // this check would be the first to stop.
+    //
+    // It lives here, inside the operation rather than in the PATCH envelope,
+    // precisely so it is not vacuous: an internal caller holding a real
+    // `ActorId::AiCodex(card)` gets it, and it has a fixture
+    // (`a_non_user_actor_may_not_change_a_workspace`, through
+    // `repoint_wave_workspace_for_test`) that constructs the caller HTTP
+    // cannot.
+    if !matches!(actor.to_actor_id(), ActorId::User) {
+        return Err(CalmError::Forbidden(
+            "wave workspace changes are user-only".into(),
+        ));
+    }
+
     // Scope (design §更换与冻结). `managed → attached` is the transition; there
     // is no `managed → managed` because a managed path is derived from the
     // cove and wave ids, so "re-allocate" would always re-derive the same
@@ -2233,9 +2303,45 @@ async fn repoint_wave_workspace(
     // still become a turn — writing into a directory that is about to be
     // renamed, and (because a process's cwd follows the inode on Linux)
     // continuing to write into `.trash` afterwards until the GC erases it.
+    //
+    // # A shutdown failure must NOT abort this function
+    //
+    // `get` then `remove`-on-success, and the error is logged rather than
+    // propagated. Both halves of that are load bearing, and the shape this
+    // replaces got both wrong: it removed the entry FIRST and then used `?`,
+    // so a failing shutdown returned 500 having already (a) committed the
+    // fence — every runtime superseded — and (b) dropped the registry entry.
+    // The restart below never ran, and the wave's spec agent was dead for
+    // good: superseded in the database, absent from the registry, with
+    // nothing left that would ever start it again. This route's whole promise
+    // is that a refusal leaves nothing behind except a re-opened harness, and
+    // that promise has to hold on the failure paths too.
+    //
+    // Keeping the entry on failure is deliberate: the run loop may still be
+    // alive, and the restart below goes through `reserve_replacing`, which
+    // supersedes whatever occupies the slot. Dropping it here would strand
+    // that loop with no handle. Continuing is also safe rather than merely
+    // convenient — the durable fence already stops any NEW turn, and an
+    // in-flight turn that refused to stop is exactly what the pre-move
+    // re-check below exists to catch.
     for runtime_id in &fence.superseded_runtime_ids {
-        if let Some(harness) = w.harness.remove(runtime_id) {
-            harness.shutdown().await?;
+        let Some(harness) = w.harness.get(runtime_id) else {
+            continue;
+        };
+        let outcome = shutdown_fenced_harness(&harness, &wave_id).await;
+        match outcome {
+            Ok(()) => {
+                let _ = w.harness.remove(runtime_id);
+            }
+            Err(error) => tracing::error!(
+                wave_id,
+                runtime_id,
+                error = %error,
+                "workspace repoint: shutting the fenced spec harness down failed. \
+                 Continuing: the database fence already refuses new turns, the \
+                 pre-move re-check catches anything an in-flight turn writes, and \
+                 the registry entry is left for the restart to supersede."
+            ),
         }
     }
 
@@ -2367,6 +2473,24 @@ async fn repoint_wave_workspace(
     restart_spec_harness_at(s, actor, &updated, &updated.workspace.path).await;
 
     Ok(Json(updated).into_response())
+}
+
+/// #1147 S3 — reach the re-point with a caller HTTP cannot produce.
+///
+/// The user-only guard's only non-`User` HTTP form (`ai:codex`) is stopped
+/// further out by the empty-card-id check, so an integration test driving the
+/// route can never distinguish "my guard fired" from "the outer one did". This
+/// calls the operation directly with a chosen actor. `fixtures`-only.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn repoint_wave_workspace_for_test(
+    s: &RouteState,
+    w: &WorkerState,
+    actor: &Actor,
+    wave: &Wave,
+    requested: &WaveWorkspacePatch,
+) -> Result<Response> {
+    repoint_wave_workspace(s, w, actor, wave, requested).await
 }
 
 /// Render a parked [`FolderConflict`] as the structured 409 the create route
@@ -2523,28 +2647,41 @@ pub(crate) async fn update_wave(
     // success at the wire, so the combination is a 400 rather than an
     // ordering puzzle nobody can reason about.
     if let Some(workspace) = p.workspace.as_ref() {
-        let mixes_other_fields = p.title.is_some()
-            || p.sort.is_some()
-            || p.archived_at.is_some()
-            || p.pinned_at.is_some()
-            || p.lifecycle.is_some()
-            || p.task_budget.is_some()
-            || p.require_task_gates.is_some()
-            || p.spec_task_ceiling.is_some()
-            || p.automation_policy.is_some()
-            || p.tree_task_budget.is_some();
+        // Destructured rather than enumerated as `p.title.is_some() || …`.
+        // The rule is "the workspace travels alone", so it has to consider
+        // EVERY other field, and a hand-written list silently stops being
+        // exhaustive the day someone adds one — the omission would read as
+        // "that field may ride along", which is the opposite of the rule.
+        // Binding every field by name makes the next addition a compile
+        // error here instead.
+        let WavePatch {
+            workspace: _,
+            title,
+            sort,
+            archived_at,
+            pinned_at,
+            lifecycle,
+            task_budget,
+            require_task_gates,
+            spec_task_ceiling,
+            automation_policy,
+            tree_task_budget,
+        } = &p;
+        let mixes_other_fields = title.is_some()
+            || sort.is_some()
+            || archived_at.is_some()
+            || pinned_at.is_some()
+            || lifecycle.is_some()
+            || task_budget.is_some()
+            || require_task_gates.is_some()
+            || spec_task_ceiling.is_some()
+            || automation_policy.is_some()
+            || tree_task_budget.is_some();
         if mixes_other_fields {
             return Err(CalmError::BadRequest(
                 "wave workspace changes must be sent on their own; a workspace re-point moves \
                  directories on disk and cannot share a transaction with row edits"
                     .into(),
-            ));
-        }
-        // Issue #985's rule, applied to a strictly more destructive field:
-        // moving a directory is a human decision.
-        if !matches!(actor.to_actor_id(), ActorId::User) {
-            return Err(CalmError::Forbidden(
-                "wave workspace changes are user-only".into(),
             ));
         }
         return repoint_wave_workspace(&s, &w, &actor, &existing, workspace).await;
