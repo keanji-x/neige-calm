@@ -4,6 +4,7 @@ import type { KernelCardInput } from '../registry.js';
 import { createCardRegistry } from '../registry.js';
 import { CLAUDE_CARD_ENTRY } from './claude.ts';
 import { CODEX_CARD_ENTRY } from './codex.ts';
+import { FILE_VIEWER_CARD_ENTRY } from './file-viewer.tsx';
 import { partitionWaveCards } from './headless-filter.js';
 import type { BuiltinCardType } from './register.js';
 import { BUILTIN_CARD_ORDER, registerAvailableBuiltinCards } from './register.js';
@@ -17,7 +18,7 @@ declare module '../registry.js' {
   }
 }
 
-const LANDED = ['terminal', 'codex', 'spec', 'claude', 'wave-report'] as const;
+const LANDED = ['terminal', 'codex', 'spec', 'claude', 'wave-report', 'file-viewer'] as const;
 
 describe('builtin card composition contract', () => {
   it('[INV-CARD-225] pins the eight-item order tuple', () => {
@@ -31,7 +32,7 @@ describe('builtin card composition contract', () => {
     expect(new Set(BUILTIN_CARD_ORDER).size).toBe(8);
   });
 
-  it('registers only the entries that exist, with no placeholders for the three that do not', () => {
+  it('registers only the entries that exist, with no placeholders for the two that do not', () => {
     const registry = createCardRegistry();
     registerAvailableBuiltinCards(registry);
     expect(registry.entries().map((entry) => entry.type)).toEqual([...LANDED]);
@@ -46,6 +47,7 @@ describe('builtin card composition contract', () => {
     expect(registry.get('spec')).toBe(SPEC_CARD_ENTRY);
     expect(registry.get('claude')).toBe(CLAUDE_CARD_ENTRY);
     expect(registry.get('wave-report')).toBe(WAVE_REPORT_CARD_ENTRY);
+    expect(registry.get('file-viewer')).toBe(FILE_VIEWER_CARD_ENTRY);
   });
 
   it('[INV-CARD-225] keeps the landed entries in tuple-relative order across the skipped holes', () => {
@@ -55,19 +57,19 @@ describe('builtin card composition contract', () => {
     const tupleIndexes = registered.map((type) => BUILTIN_CARD_ORDER.indexOf(type as never));
     expect(tupleIndexes).not.toContain(-1);
     expect([...tupleIndexes]).toEqual([...tupleIndexes].sort((left, right) => left - right));
-    // With codex landed the first five slots are contiguous; the hole that is
-    // still real is the tail — file-viewer (5), iframe (6) and plugin-iframe
-    // (7) are unregistered, so `wave-report` at index 4 is the last entry.
+    // With file-viewer landed the first six slots are contiguous; the hole that
+    // is still real is the tail — iframe (6) and plugin-iframe (7) are
+    // unregistered, so `file-viewer` at index 5 is the last entry.
     // Asserted as *tuple* indexes rather than 0..n, so a later slice that lands
     // one of those three out of tuple position turns this red.
-    expect(tupleIndexes).toEqual([0, 1, 2, 3, 4]);
+    expect(tupleIndexes).toEqual([0, 1, 2, 3, 4, 5]);
     // The hole is a suffix, and the assertion above only pins that while the
     // unlanded set really is the tail. Pin the other side too, from the tuple
     // itself: every skipped type sits after every registered one.
     const skipped = BUILTIN_CARD_ORDER
       .map((type, index) => ({ type, index }))
       .filter(({ type }) => !(registered as readonly string[]).includes(type));
-    expect(skipped.map(({ type }) => type)).toEqual(['file-viewer', 'iframe', 'plugin-iframe']);
+    expect(skipped.map(({ type }) => type)).toEqual(['iframe', 'plugin-iframe']);
     expect(Math.min(...skipped.map(({ index }) => index))).toBeGreaterThan(Math.max(...tupleIndexes));
   });
 
@@ -200,6 +202,7 @@ describe('builtin card composition contract', () => {
       spec: { id: 'probe-spec', kind: 'codex', payload: { spec_harness: true } },
       claude: { id: 'probe-claude', kind: 'claude', payload: { terminal_id: 't2' } },
       'wave-report': { id: 'probe-report', kind: 'wave-report', payload: null },
+      'file-viewer': { id: 'probe-file', kind: 'file-viewer', payload: { path: '/tmp/probe.txt' } },
     });
 
     it('probes every entry the production boot registers, and only those', () => {

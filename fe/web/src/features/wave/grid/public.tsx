@@ -9,13 +9,15 @@ export function WaveStage({ children }: { children: ReactNode }) {
 }
 
 export function CardGridOverlay({
-  open, items, host, activeCardId, onClose,
+  open, items, host, activeCardId, onClose, onRemoveCard,
 }: {
   open: boolean;
   items: readonly BoardHostItem[];
   host: CardHost;
   activeCardId: string | null;
   onClose?: () => void;
+  /** Reveals the × on every deletable card head; the caller owns the confirm. */
+  onRemoveCard?: (cardId: string) => void;
 }) {
   // Keep-alive after the first open (INV-CARD-106: setVisible(false) must
   // not unmount). Do not mount at all until then — a closed overlay still
@@ -49,7 +51,15 @@ export function CardGridOverlay({
       inert={!open}
     >
       {everOpened
-        ? <BoardHost host={host} items={items} activeCardId={activeCardId} visible={open} />
+        ? (
+          <BoardHost
+            host={host}
+            items={items}
+            activeCardId={activeCardId}
+            visible={open}
+            onRemoveCard={onRemoveCard}
+          />
+        )
         : null}
     </div>
   );

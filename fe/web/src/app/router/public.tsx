@@ -21,8 +21,8 @@ import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import {
   toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
-import type { BoardHostItem, CardHost, CardRegistry } from '../../systems/cards/public.js';
-import { isSpecHarnessPayload, partitionWaveCards } from '../../systems/cards/public.js';
+import type { BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry } from '../../systems/cards/public.js';
+import { cardAddMenuEntries, isSpecHarnessPayload, partitionWaveCards } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
@@ -31,6 +31,7 @@ import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { WavePage } from '../../features/wave/page/public.tsx';
 import { CardGridOverlay, WaveStage } from '../../features/wave/grid/public.tsx';
+import { AddCardMenu, NewCardForm, type NewCardValues } from '../../features/wave/new-card/public.tsx';
 import { ChatList } from '../../features/chat/list/public.tsx';
 import {
   ChatComposer, ChatFooterError, ChatFooterNotice, ChatFooterRemedy, ChatThread,
@@ -49,9 +50,10 @@ import {
   type Conversation, type ConversationKind, type ConversationState, type ConversationTurn,
   type TranscriptEntry,
 } from '../../../../core/domain/conversation.ts';
-import { ConfirmDialog } from '../../ui/dialog/public.tsx';
-import { DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
-import { OperationFeedback, useDeleteConfirm } from '../../ui/operation-feedback/public.tsx';
+import { ConfirmDialog, Dialog } from '../../ui/dialog/public.tsx';
+import { createDirectoryLister } from '../providers/directory.ts';
+import { DELETE_CARD_COPY, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
+import { OperationFeedback, useDeleteConfirm, useOperationFeedback } from '../../ui/operation-feedback/public.tsx';
 import { Drawer } from '../../ui/drawer/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
@@ -1464,6 +1466,11 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
         card: slot.card,
         title: slot.wire.title ?? slot.wire.kind,
         originalIndex: slot.originalIndex,
+        /* The kernel's bit, carried straight through: the board decides whether
+           to draw a × from this, and the CARDS panel reads the same field off
+           the same wire row, so the two surfaces cannot disagree about which
+           cards are the kernel's. */
+        deletable: slot.wire.deletable,
       }));
   }, [cardRegistry, cards]);
   /*
@@ -1520,6 +1527,158 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     if (compactViewport || routePanel === null) return;
     goSameWave(wave.id, { panel: undefined }, { replace: true });
   }, [compactViewport, goSameWave, routePanel, wave.id]);
+  /*
+   * One confirm for both delete gestures.
+   *
+   * The CARDS panel row and the card's own head on the board are two entry
+   * points to the same irreversible act on the same row, so they share one
+   * dialog and one copy (INV-DUP-010) rather than each growing their own.
+   *
+   * Nothing here navigates on success. The delete drops the row from the
+   * detail cache, `gridItems` loses it on the next render, and the
+   * `knownCard` effect above — which exists for cards this build's registry
+   * cannot draw — bounces `?card=<deleted>` off the URL for the same reason it
+   * always did. A `go()` here would be a second, racing route write.
+   */
+  const cardDeletion = useDeleteConfirm(
+    (cardId, signal) => waveMutations.removeCard(wave.id, cardId, signal),
+  );
+
+  /*
+   * ── Adding a card ─────────────────────────────────────────────────────────
+   *
+   * The menu is the registry's own list (`cardAddMenuEntries`), so this route
+   * never decides *what* can be created — only *how*, which is the one part it
+   * is allowed to know: which endpoint a kind takes is a fact about the kernel,
+   * and `systems/cards` sits below `app/**` and holds no transport.
+   *
+   * Two doors, and the kind's own create strategy says which one it takes:
+   *
+   *   - `atomic` — the kernel writes the row and spawns a runtime in one call,
+   *     through an endpoint named after the kind (`terminal-cards`,
+   *     `codex-cards`). A worker card has a daemon behind it, so there is no
+   *     generic form of this create and the mapping below is explicit.
+   *   - `generic` — the row is all there is (`file-viewer`), so it goes through
+   *     `POST /api/waves/:id/cards` with the kind's own `buildPayload`, and the
+   *     kind on the wire is the entry's `claim`, which is why `registerCard`
+   *     refuses a generic entry that does not claim one exactly.
+   *
+   * A kind whose strategy this table does not handle throws rather than falling
+   * back to a guess: a silent "create nothing" on a menu item the reader picked
+   * is the worst of the three outcomes.
+   */
+  const addMenuEntries = useMemo(() => cardAddMenuEntries(cardRegistry), [cardRegistry]);
+  const listDirectory = useMemo(
+    () => createDirectoryLister(transport, unauthorized),
+    [transport, unauthorized],
+  );
+  const [cardDraft, setCardDraft] = useState<CardAddMenuEntry | null>(null);
+  const [creatingCard, setCreatingCard] = useState(false);
+  /*
+   * A failed create has to be sayable with no dialog on screen.
+   *
+   * A kind with no fields (`terminal`) never opens one — `pickCardKind` posts on
+   * the spot — so a message that only `NewCardForm` renders is a message the
+   * reader of that path never sees: the `+` menu closes and nothing happens at
+   * all. Routing it through the same `useOperationFeedback` the delete path uses
+   * gives it a route-level surface, and the dialog keeps rendering the very same
+   * `error` inline while it is open, so the two cannot disagree about what went
+   * wrong (and it is never printed twice — see the render).
+   */
+  const cardCreateFeedback = useOperationFeedback();
+  const newCardFieldRef = useRef<HTMLInputElement | null>(null);
+  /*
+   * A create that lands after the reader has left must not steer them.
+   *
+   * `submitNewCard` navigates on success, and the post outlives this route body
+   * whenever the reader moves on while it is in flight — the navigation would
+   * then yank them back to a wave they deliberately left. The shape is the one
+   * `useDeleteConfirm` already uses (INV-CONFIRM-001): one `AbortController`
+   * per attempt, aborted when this body unmounts, and read before the
+   * navigation and before every state write. The card is still created — the
+   * kernel's write is not the reader's problem — but nothing here acts on it.
+   */
+  const activeCardCreate = useRef<AbortController | null>(null);
+  useEffect(() => () => { activeCardCreate.current?.abort(); }, []);
+
+  const createCardOfKind = async (entry: CardAddMenuEntry, values: NewCardValues) => {
+    /* Empty is absent, not `""`. The kernel reads an empty `cwd` as "no
+       directory given" for codex but an empty `title` is a real, blank title —
+       so the drop happens here, once, rather than in each branch. */
+    const given = (key: string): string | undefined => {
+      const value = (values[key] ?? '').trim();
+      return value === '' ? undefined : value;
+    };
+    const title = given('title');
+    /* Read at click time from `<html data-theme>` rather than through
+       `useTheme()`: subscribing here would re-render the wave subtree on every
+       theme toggle and remount any live terminal under it (#177). */
+    const theme = readHostThemeRgb();
+    if (entry.type === 'terminal') {
+      return waveMutations.createTerminal(wave.id, { theme, ...(title === undefined ? {} : { title }) });
+    }
+    if (entry.type === 'codex') {
+      const cwd = given('cwd');
+      return waveMutations.createCodex(wave.id, {
+        theme,
+        ...(title === undefined ? {} : { title }),
+        ...(cwd === undefined ? {} : { cwd }),
+      });
+    }
+    const registered = cardRegistry.get(entry.type);
+    const strategy = registered?.create;
+    if (strategy?.mode !== 'generic' || registered?.claim?.mode !== 'exact') {
+      throw new Error(`CardCreateUnsupported(${entry.type})`);
+    }
+    return waveMutations.createCard(wave.id, {
+      kind: registered.claim.kind,
+      payload: strategy.buildPayload(values),
+      ...(title === undefined ? {} : { title }),
+    });
+  };
+
+  /* Opening the new card is the point of creating one, so the create navigates
+     to it — the same landing `onOpenCard` gives a row that already exists. */
+  const submitNewCard = (entry: CardAddMenuEntry, values: NewCardValues) => {
+    /* Landing on the card you just made is a gesture, and only the newest
+       gesture may own it. A second create supersedes the first, so the first is
+       aborted here rather than merely forgotten — forgetting it left it holding
+       a live `goSameWave` that steers a reader who has since gone elsewhere.
+       The superseded attempt's card is still created server-side; the abort only
+       stops it steering, and stops its `finally` clearing a busy state that now
+       belongs to the newer attempt. Unmount still aborts whatever is current. */
+    activeCardCreate.current?.abort();
+    const controller = new AbortController();
+    activeCardCreate.current = controller;
+    setCreatingCard(true);
+    void cardCreateFeedback
+      .run(
+        createCardOfKind(entry, values).then((card) => {
+          if (controller.signal.aborted) return;
+          setCardDraft(null);
+          goSameWave(wave.id, { card: card.id });
+        }),
+        `Could not create the ${entry.label} card.`,
+        () => controller.signal.aborted,
+      )
+      .finally(() => {
+        /* Only the attempt that still owns the busy state may clear it. Both
+           ways of losing ownership — unmount and being superseded above —
+           abort, so `aborted` is the whole test; an identity check against
+           `activeCardCreate.current` would never fire on a live controller. */
+        if (controller.signal.aborted) return;
+        activeCardCreate.current = null;
+        setCreatingCard(false);
+      });
+  };
+
+  /* A kind with nothing to ask is created on the spot; one with fields opens
+     the form. The menu itself never creates anything — see `AddCardMenu`. */
+  const pickCardKind = (entry: CardAddMenuEntry) => {
+    cardCreateFeedback.clear();
+    if (entry.fields.length === 0) submitNewCard(entry, {});
+    else setCardDraft(entry);
+  };
   const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
@@ -1563,25 +1722,16 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
          it too, so the reader can hand the destination to somebody else. */
       onOpenTask={openReportAnchor}
       onOpenOutline={openReportAnchor}
-      cardsAction={
-        <PanelAction
-          label="New terminal"
-          onClick={() => {
-            void waveMutations.createTerminal(wave.id, { theme: readHostThemeRgb() }).then((card) => {
-              go({ name: 'wave', waveId: wave.id, cardId: card.id, from: routeFrom });
-            });
-          }}
-        >
-          <Icon name="plus" />
-        </PanelAction>
-      }
+      cardsAction={<AddCardMenu entries={addMenuEntries} onSelect={pickCardKind} />}
       onOpenCard={(cardId) => { go({ name: 'wave', waveId: wave.id, cardId, from: routeFrom }); }}
+      onDeleteCard={cardDeletion.request}
       board={
         <CardGridOverlay
           open={knownCard}
           items={gridItems}
           host={cardRuntime.host}
           activeCardId={requestedCardId}
+          onRemoveCard={cardDeletion.request}
           onClose={knownCard
             ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
             : undefined}
@@ -1642,6 +1792,42 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       })}
     />
     </WaveStage>
+    {/* Keyed by kind: switching kinds is a different form, and a shared mount
+        would carry the previous kind's typed values into it. */}
+    <Dialog
+      open={cardDraft !== null}
+      onClose={() => setCardDraft(null)}
+      title={cardDraft === null ? '' : `New ${cardDraft.label} card`}
+      initialFocusRef={newCardFieldRef}
+    >
+      {cardDraft !== null && (
+        <NewCardForm
+          key={cardDraft.type}
+          entry={cardDraft}
+          submitting={creatingCard}
+          error={cardCreateFeedback.error}
+          listDirectory={listDirectory}
+          firstFieldRef={newCardFieldRef}
+          onCancel={() => setCardDraft(null)}
+          onSubmit={(values) => submitNewCard(cardDraft, values)}
+        />
+      )}
+    </Dialog>
+    <ConfirmDialog
+      open={cardDeletion.open}
+      title={DELETE_CARD_COPY.title}
+      description={DELETE_CARD_COPY.description}
+      confirmLabel={DELETE_CARD_COPY.confirmLabel}
+      confirmBusyLabel="Deleting…"
+      confirmState={cardDeletion.pending ? 'busy' : 'ready'}
+      onConfirm={cardDeletion.confirm}
+      onCancel={cardDeletion.cancel}
+    />
+    <OperationFeedback feedback={cardDeletion.feedback} />
+    {/* Only while the dialog is closed: `NewCardForm` renders the same `error`
+        inline, and a fieldless kind never opens the dialog at all — which is
+        precisely the path that had no surface of any kind. */}
+    {cardDraft === null && <OperationFeedback feedback={cardCreateFeedback} />}
     {chat.drawer}
     </>
   );

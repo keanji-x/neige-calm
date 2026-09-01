@@ -61,6 +61,13 @@ export type WavePageProps = Readonly<{
   /** The Cards module head's `+`, composed by `app/router`. */
   cardsAction?: ReactNode;
   onOpenCard?: (cardId: string) => void;
+  /**
+   * Supplying this reveals a delete on every row the kernel says is deletable —
+   * the same shape `features/wave/row` uses for a wave. The caller owns the
+   * confirm, because the board offers the identical gesture on the card's own
+   * head and the two must not each grow a dialog of their own.
+   */
+  onDeleteCard?: (cardId: string) => void;
   /** Reveal a task's block in the document — the same landing the outline, a
    *  `neige://` link and a backlink all use. */
   onOpenTask?: (blockId: string) => void;
@@ -123,7 +130,7 @@ type MobilePanelKind = 'outline' | 'cards' | 'tasks' | 'conversations';
 export function WavePage({
   wave, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation,
-  cardsAction, onOpenCard, onOpenTask, onOpenOutline, board, onCloseBoard,
+  cardsAction, onOpenCard, onDeleteCard, onOpenTask, onOpenOutline, board, onCloseBoard,
   panel = null, onOpenPanel, onClosePanel,
   mobileBackLabel = 'Pages', onMobileBack,
   onRenameWave, onDeleteWave,
@@ -489,11 +496,27 @@ export function WavePage({
                   <ul className={styles.cards} data-nc-card-inventory="">
                     {cards.map((card) => {
                       const title = card.title ?? null;
+                      /*
+                        The delete is a **sibling** of the row button, not a
+                        child of it: nesting one interactive element inside
+                        another is invalid HTML and trips axe's
+                        `nested-interactive`. Same construction, same hover
+                        reveal and same trailing column as `features/wave/row`'s
+                        panel variant — a card row and a wave row are the same
+                        kind of row in the same kind of card.
+
+                        `deletable === false` is the kernel saying it owns this
+                        row (the wave report, the spec harness). Those rows say
+                        `kernel-owned` where the × would be, so the absent
+                        control has a reason printed next to it rather than
+                        being a hole the reader has to explain.
+                      */
+                      const removable = onDeleteCard !== undefined && card.deletable;
                       return (
-                        <li key={card.id}>
+                        <li key={card.id} className={styles.cardItem}>
                           <button
                             type="button"
-                            className={styles.cardRow}
+                            className={`${styles.cardRow} ${removable ? styles.cardRowRemovable : ''}`}
                             onClick={() => onOpenCard?.(card.id)}
                           >
                             <span className={styles.cardKind}>{title ?? card.kind}</span>
@@ -505,6 +528,18 @@ export function WavePage({
                               {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
                             </span>
                           </button>
+                          {removable && (
+                            <button
+                              type="button"
+                              data-nc-role="icon"
+                              className={styles.cardRemove}
+                              aria-label={`Delete card ${title ?? card.kind}`}
+                              title="Delete card"
+                              onClick={() => onDeleteCard(card.id)}
+                            >
+                              <Icon name="close" size="sm" />
+                            </button>
+                          )}
                         </li>
                       );
                     })}

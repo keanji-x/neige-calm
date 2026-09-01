@@ -127,8 +127,30 @@ describe('CODEX_CARD_ENTRY', () => {
     expect((CODEX_CARD_ENTRY as CardEntry<CodexCard>).claim).toBeUndefined();
   });
 
-  it('is kernel-minted-only — worker cards come from a task row, not a gesture', () => {
-    expect(CODEX_CARD_ENTRY.create).toEqual({ mode: 'kernel-minted-only' });
+  /*
+   * This used to assert `kernel-minted-only`, on the reading that a worker card
+   * comes from a task row rather than a gesture. That was a statement about the
+   * front-end, not about the kernel: `POST /api/waves/:id/codex-cards` has
+   * always minted one atomically, and the panel now offers it. What the kernel
+   * genuinely reserves to itself is the *spec harness* — a `codex` row with a
+   * harness payload — and that is a different entry (`SPEC_CARD_ENTRY`), which
+   * keeps its `kernel-minted-only` and its own assertion.
+   */
+  it('is user-creatable through the kind\'s own atomic endpoint', () => {
+    expect(CODEX_CARD_ENTRY.create.mode).toBe('atomic');
+  });
+
+  it('offers a title and a working directory, and nothing about codex itself', () => {
+    /* Read through the interface, like the claim case above: the literal is
+       checked with `satisfies`, so the constant's own type narrows every field
+       to what it happens to declare and would make these assertions tautologies. */
+    const addPanel = (CODEX_CARD_ENTRY as CardEntry<CodexCard>).addPanel;
+    expect(addPanel?.label).toBe('codex');
+    expect(addPanel?.fields?.map((field) => [field.key, field.kind]))
+      .toEqual([['title', 'text'], ['cwd', 'directory']]);
+    // Model and permission mode are answered inside codex's own slash-command
+    // UX; collecting them here would be a second, unchangeable answer.
+    expect(addPanel?.fields?.some((field) => field.required === true)).toBe(false);
   });
 
   it('registers as a surface-owning built-in', () => {

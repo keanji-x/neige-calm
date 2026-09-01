@@ -35,6 +35,10 @@ function ok(body: unknown): ApiTransportResponse {
 const systemCove = { id: 'sys', name: 'system', color: '#000', sort: 0, kind: 'system', created_at: 1, updated_at: 1 };
 const userCove = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
+const baseWaveWire = {
+  id: 'w1', cove_id: 'c1', title: 'Ship it', sort: 1, lifecycle: 'working', cwd: '/tmp',
+  archived_at: null, pinned_at: null, terminal_at: null, created_at: 1, updated_at: 2,
+};
 
 describe('E2E-INV-SHELL-003 the system cove never reaches the workspace surface', () => {
   it('filters a system cove out of the list the shell renders', async () => {
@@ -163,6 +167,99 @@ describe('delete mutation wiring', () => {
     controller.abort();
     await expect(result.current.remove('c1', controller.signal)).rejects.toBeInstanceOf(ApiError);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.coves() });
+  });
+});
+
+/*
+ * ── What the card mutations do to the cache ────────────────────────────────
+ *
+ * The row the board draws comes out of `['wave', waveId]`, and both of these
+ * write it directly rather than waiting for the refetch they also queue. That is
+ * not an optimisation in either direction:
+ *
+ *   * `removeCard` — the card's surface is unmounted by this write, and a
+ *     terminal card left on screen for the length of a round-trip keeps a PTY
+ *     attached to a card the kernel has already torn down.
+ *   * the creates — the caller navigates to `?card=<id>` in the same tick, and
+ *     the board can only draw a card the detail cache already holds.
+ *
+ * Nothing here is observing `['wave', waveId]`, so the invalidation these
+ * mutations queue cannot refetch: what the assertions read is the write itself.
+ */
+describe('card mutation cache writes', () => {
+  const cardWire = (id: string) => ({
+    id, wave_id: 'w1', kind: 'terminal', title: null, sort: 1, payload: {},
+    deletable: true, created_at: 1, updated_at: 2,
+  });
+  const detail = {
+    wave: { ...baseWaveWire }, cards: [cardWire('card-a'), cardWire('card-b')], overlays: [],
+  };
+
+  function mounted(transport: ApiTransportPort) {
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client }, children);
+    const { result } = renderHook(() => useWaveMutations(transport, unauthorized), { wrapper });
+    return { client, result };
+  }
+
+  it('drops the deleted row from the cached wave detail without waiting for a refetch', async () => {
+    let reads = 0;
+    const transport: ApiTransportPort = {
+      send: (request) => {
+        if (request.method === 'GET') { reads += 1; return new Promise<ApiTransportResponse>(() => undefined); }
+        return Promise.resolve(ok(undefined));
+      },
+    };
+    const { client, result } = mounted(transport);
+    client.setQueryData(queryKeys.waveDetail('w1'), detail);
+
+    await act(() => result.current.removeCard('w1', 'card-a'));
+
+    const after = client.getQueryData<typeof detail>(queryKeys.waveDetail('w1'));
+    expect(after?.cards.map((card) => card.id)).toEqual(['card-b']);
+    // And it was this write, not a re-read: the detail was never fetched at all.
+    expect(reads).toBe(0);
+  });
+
+  it('leaves a detail it has no copy of alone rather than inventing one', async () => {
+    const transport: ApiTransportPort = { send: () => Promise.resolve(ok(undefined)) };
+    const { client, result } = mounted(transport);
+    await act(() => result.current.removeCard('w1', 'card-a'));
+    expect(client.getQueryData(queryKeys.waveDetail('w1'))).toBeUndefined();
+  });
+
+  it('writes a created card into the cached detail so the board can draw it at once', async () => {
+    const created = cardWire('card-new');
+    const transport: ApiTransportPort = {
+      send: (request) => (request.method === 'POST'
+        ? Promise.resolve(ok(created))
+        : new Promise<ApiTransportResponse>(() => undefined)),
+    };
+    const { client, result } = mounted(transport);
+    client.setQueryData(queryKeys.waveDetail('w1'), detail);
+
+    await act(() => result.current.createCard('w1', { kind: 'file-viewer', payload: { path: '/x' } }));
+
+    expect(client.getQueryData<typeof detail>(queryKeys.waveDetail('w1'))?.cards.map((card) => card.id))
+      .toEqual(['card-a', 'card-b', 'card-new']);
+  });
+
+  /* A replayed create answers with a row the cache already holds. Appending it
+     again would put the same card on the board twice. */
+  it('does not duplicate a card the cached detail already carries', async () => {
+    const transport: ApiTransportPort = {
+      send: (request) => (request.method === 'POST'
+        ? Promise.resolve(ok(cardWire('card-b')))
+        : new Promise<ApiTransportResponse>(() => undefined)),
+    };
+    const { client, result } = mounted(transport);
+    client.setQueryData(queryKeys.waveDetail('w1'), detail);
+
+    await act(() => result.current.createCodex('w1', { theme: { fg: [0, 0, 0], bg: [1, 1, 1] } }));
+
+    expect(client.getQueryData<typeof detail>(queryKeys.waveDetail('w1'))?.cards.map((card) => card.id))
+      .toEqual(['card-a', 'card-b']);
   });
 });
 

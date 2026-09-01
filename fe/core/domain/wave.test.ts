@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  activeWavesOn, isRunning, isWaitingForUser, lifecycleLabel, toWave,
+  activeWavesOn, createCardOperation, createCodexCardOperation, createTerminalCardOperation,
+  deleteCardOperation, isRunning, isWaitingForUser, lifecycleLabel, toWave,
   NEUTRAL_ACTIVITY, UNTITLED_WAVE_LABEL, waveDisplayTitle, waveLifecycleSchema, waveWireSchema, wavesInCoveOperation,
   userVisibleWaves,
   type Wave,
@@ -55,6 +56,49 @@ describe('wave wire decode', () => {
 
   it('percent-encodes the cove id into the list path', () => {
     expect(wavesInCoveOperation('a/b').path).toBe('/api/coves/a%2Fb/waves');
+  });
+});
+
+/*
+ * The card writes, as requests.
+ *
+ * These three are the whole contract between the browser and the kernel for
+ * adding and removing a card, and a wrong verb or a wrong path is a defect no
+ * caller-side test can see: the mutation hooks report whatever the operation
+ * says. The ids are percent-encoded because a wave id or a card id is an opaque
+ * kernel string, and one containing `/` would otherwise address a different
+ * route entirely.
+ */
+describe('card operations', () => {
+  const theme = { fg: [1, 2, 3], bg: [4, 5, 6] } as const;
+
+  it('deletes a card by id on DELETE /api/cards/:id', () => {
+    const operation = deleteCardOperation('card 1/2');
+    expect(operation.method).toBe('DELETE');
+    expect(operation.path).toBe('/api/cards/card%201%2F2');
+    expect('body' in operation).toBe(false);
+  });
+
+  it('mints a codex card on the kind\'s own atomic endpoint, carrying the body verbatim', () => {
+    const body = { theme, title: 'Codex', cwd: '/srv' };
+    const operation = createCodexCardOperation('w/1', body);
+    expect(operation.method).toBe('POST');
+    expect(operation.path).toBe('/api/waves/w%2F1/codex-cards');
+    expect(operation.body).toBe(body);
+  });
+
+  it('mints a terminal card on its own atomic endpoint, not the generic one', () => {
+    const operation = createTerminalCardOperation('w1', { theme });
+    expect(operation.method).toBe('POST');
+    expect(operation.path).toBe('/api/waves/w1/terminal-cards');
+  });
+
+  it('writes a runtime-less card through the generic create with its kind and payload', () => {
+    const body = { kind: 'file-viewer', payload: { path: '/repo/notes.md' }, title: 'Notes' };
+    const operation = createCardOperation('w/1', body);
+    expect(operation.method).toBe('POST');
+    expect(operation.path).toBe('/api/waves/w%2F1/cards');
+    expect(operation.body).toBe(body);
   });
 });
 

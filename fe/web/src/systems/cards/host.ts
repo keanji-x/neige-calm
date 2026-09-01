@@ -4,6 +4,7 @@ import {
 } from './lifecycle.js';
 import type {
   CardController,
+  CardFilesPort,
   CardGeometry,
   CardHostCapabilities,
   CardLifecycleWriter,
@@ -40,6 +41,12 @@ export interface CardControllerErrorContext {
 
 export interface CardHostOptions {
   onControllerError?(error: unknown, context: CardControllerErrorContext): void;
+  /**
+   * The filesystem reads every card mounted on this host may make. Supplied by
+   * `app/composition` from the app's own transport; omitted, cards see `null`
+   * and say so (see `CardHostCapabilities.files`).
+   */
+  files?: CardFilesPort;
 }
 
 function connectController(
@@ -132,6 +139,7 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
         cardId: card.id,
         lifecycle,
         slots,
+        files: options.files ?? null,
         emit(command: CardRuntimeCommand) {
           if (command.type === 'refresh') writer.bumpRefresh();
         },
@@ -174,4 +182,4 @@ export function createCardHost(registry: CardRegistry, options: CardHostOptions 
   });
 }
 
-export type { CardHostCapabilities, CardSlotStore } from './contracts.js';
+export type { CardFilesPort, CardHostCapabilities, CardSlotStore } from './contracts.js';

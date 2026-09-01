@@ -8,9 +8,11 @@ import { TerminalSurface } from '../../terminal/surface.tsx';
 import type { CardHostCapabilities } from '../contracts.ts';
 import { CardHead } from '../ui/card-head.tsx';
 
-export function TerminalCardView({ card, host, fallbackTitle = 'terminal' }: {
+export function TerminalCardView({ card, host, onRemove, fallbackTitle = 'terminal' }: {
   card: { readonly id: string; readonly title: string | null; readonly terminalId: string | null };
   host: CardHostCapabilities;
+  /** The board's delete, already resolved — see `CardComponentProps.onRemove`. */
+  onRemove?: () => void;
   /**
    * Head label when the kernel row carries no title. Claude and codex worker
    * cards share this renderer (they are PTYs too) and must not announce
@@ -34,6 +36,8 @@ export function TerminalCardView({ card, host, fallbackTitle = 'terminal' }: {
         className="card-drag-handle"
         title={card.title || fallbackTitle}
         status={live ? <span className="live-dot" role="img" aria-label="status Working" /> : undefined}
+        onClose={onRemove}
+        closeAriaLabel={`Delete card ${card.title || fallbackTitle}`}
       />
       <div className="term-body">
         {live

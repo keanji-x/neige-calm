@@ -29,6 +29,17 @@ export type BoardHostItem = Readonly<{
   card: RegisteredCard;
   title: string;
   originalIndex: number;
+  /**
+   * The kernel's `deletable` bit, carried through unchanged. `false` is the
+   * kernel saying it owns this row, and a card head that offered a × the kernel
+   * would refuse is worse than one that offers nothing — the refusal would
+   * arrive as an error on a gesture the UI had already promised.
+   *
+   * Optional, and absent means deletable: a wire payload from a pre-#229 server
+   * omits the field, and the same "undefined is user-deletable" reading is what
+   * `cardWireSchema`'s `.default(true)` already encodes.
+   */
+  deletable?: boolean;
 }>;
 
 function cardWithTitle(item: BoardHostItem): RegisteredCard {
@@ -39,11 +50,17 @@ function cardWithTitle(item: BoardHostItem): RegisteredCard {
   return { ...card, title: item.title };
 }
 
-export function BoardHost({ host, items, activeCardId, visible }: {
+export function BoardHost({ host, items, activeCardId, visible, onRemoveCard }: {
   host: CardHost;
   items: readonly BoardHostItem[];
   activeCardId: string | null;
   visible: boolean;
+  /**
+   * Supplying this puts a × on the head of every deletable card. The board does
+   * not delete anything itself — the caller owns the confirm and the mutation,
+   * exactly as the CARDS panel's row does, so both gestures land on one dialog.
+   */
+  onRemoveCard?: (cardId: string) => void;
 }) {
   const { width, containerRef, mounted } = useContainerWidth();
   const [stored, setStored] = useState<StoredPositions>(EMPTY_POSITIONS);
@@ -118,6 +135,9 @@ export function BoardHost({ host, items, activeCardId, visible }: {
                 item={item}
                 focused={visible && item.card.id === activeCardId}
                 visible={visible}
+                onRemove={onRemoveCard === undefined || item.deletable === false
+                  ? undefined
+                  : () => onRemoveCard(item.card.id)}
               />
             </div>
           ))}
@@ -127,11 +147,12 @@ export function BoardHost({ host, items, activeCardId, visible }: {
   );
 }
 
-function BoardCell({ host, item, focused, visible }: {
+function BoardCell({ host, item, focused, visible, onRemove }: {
   host: CardHost;
   item: BoardHostItem;
   focused: boolean;
   visible: boolean;
+  onRemove?: () => void;
 }) {
   const mountedRef = useRef<MountedCard | null>(null);
   const cardRef = useRef(item.card);
@@ -162,12 +183,21 @@ function BoardCell({ host, item, focused, visible }: {
   if (Component === undefined || capabilities === null) {
     return (
       <div className="term">
-        <CardHead className="card-drag-handle" title={item.title} />
+        {/* An unknown card is exactly the one a reader most needs to be able to
+            get rid of: no entry claims it, so nothing else on this board can
+            act on it. The × is drawn here rather than left to the (absent)
+            component. */}
+        <CardHead
+          className="card-drag-handle"
+          title={item.title}
+          onClose={onRemove}
+          closeAriaLabel={`Delete card ${item.title}`}
+        />
         <div className="term-body">
           <p className="term-line">{Component === undefined ? 'Unknown card' : item.title}</p>
         </div>
       </div>
     );
   }
-  return <Component card={cardRef.current} host={capabilities} />;
+  return <Component card={cardRef.current} host={capabilities} onRemove={onRemove} />;
 }
