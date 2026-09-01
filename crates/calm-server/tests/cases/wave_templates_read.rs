@@ -110,8 +110,7 @@ async fn boot(running: bool) -> Boot {
         .to_string(),
     )
     .expect("manifest parses");
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     repo.plugin_install(NewPlugin {
         id: plugin_id.clone(),
         version: "0.1.0".into(),
