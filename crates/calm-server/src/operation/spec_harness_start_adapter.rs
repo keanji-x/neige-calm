@@ -205,6 +205,11 @@ pub enum HarnessProfile {
     #[default]
     Spec,
     PlainChat,
+    /// #1189 — a wave-scoped assistant conversation. Minted lazily like a
+    /// plain chat, but it is an MCP-authenticated `CardRole::Assistant` card on
+    /// an ordinary wave: it reads and writes that wave's report through the
+    /// block channel and has no lifecycle / plan / review / admin authority.
+    Assistant,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -237,7 +242,7 @@ pub struct SpecHarnessStartOperationPayload {
     /// `abandoned_running_operations_on_boot` re-drives payloads written by
     /// older binaries.
     #[serde(default)]
-    pub create_card: Option<PlainChatCardSeed>,
+    pub create_card: Option<LazyMintCardSeed>,
     /// #1098 slice 3, round-3 Y1 — SHA-256 (lower-case hex) of the cove
     /// conversation's first message, set only by
     /// `POST /api/coves/{cove_id}/conversations`.
@@ -262,16 +267,77 @@ pub struct SpecHarnessStartOperationPayload {
     pub first_message_sha256: Option<String>,
 }
 
-/// The user-supplied part of a lazily minted plain-chat card. Everything the
-/// kernel owns (kind, role, `deletable`, the persisted `harness_profile`
-/// marker) is pinned by the adapter and deliberately absent here.
+/// The user-supplied part of a lazily minted conversation card — a cove chat
+/// (`HarnessProfile::PlainChat`) or a wave assistant (`HarnessProfile::Assistant`).
+/// Everything the kernel owns (kind, role, `deletable`, the persisted
+/// `harness_profile` marker) is pinned by the adapter and deliberately absent
+/// here.
+///
+/// Named for the mint, not for one profile: #1189 gave the branch a second
+/// caller, and a `PlainChat`-shaped name on the assistant path would have been
+/// the kind of stale label that makes the next reader assume the branch is
+/// single-purpose.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct PlainChatCardSeed {
+pub struct LazyMintCardSeed {
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     pub sort: Option<f64>,
+    /// The caller's `Idempotency-Key`, so [`SpecHarnessStartAdapter::validate`]
+    /// can **recompute** the deterministic card id and refuse anything it did
+    /// not derive itself (§4.3). Required on the assistant profile; see the
+    /// guard for why the cove profile does not read it.
+    ///
+    /// It lives on the seed rather than on the payload root so the cove route,
+    /// which does not set it, keeps writing byte-identical
+    /// `operations.payload_json` — a changed payload hash would turn an
+    /// in-flight retry across a deploy into a spurious 409.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
 }
+
+/// Which session row a profile writes.
+///
+/// `Assistant` is `CodexCard`, NOT `SharedSpec`, and the difference is a
+/// safety property rather than bookkeeping: `derive_session_identity`
+/// (`calm-truth/src/db/sqlite/session_row.rs`) maps `SharedSpec` to
+/// `WorkerContract::Planner`, and `session_repoint_current_links_tx`
+/// (`session_mirror.rs`) makes every live Planner session the wave's
+/// `root_session_id`. An assistant session under `SharedSpec` would therefore
+/// displace the spec card's session as the wave's planning authority the
+/// moment it started.
+fn session_kind_for(profile: HarnessProfile) -> WorkerSessionKind {
+    match profile {
+        HarnessProfile::Spec => WorkerSessionKind::SharedSpec,
+        HarnessProfile::PlainChat | HarnessProfile::Assistant => WorkerSessionKind::CodexCard,
+    }
+}
+
+/// The `(role, harness_profile marker)` pair the lazy-mint branch pins onto a
+/// freshly created conversation card.
+///
+/// Kept as one function returning both halves because they must never disagree:
+/// the role decides what the card's MCP token may call, the marker decides
+/// which list the card appears in, and a card with one of each flavour is
+/// invisible in the UI while holding the other flavour's authority.
+///
+/// `Spec` is rejected here rather than silently defaulted — `validate` already
+/// refuses that profile on the mint branch, and this is the fail-closed twin so
+/// a future caller that skips `validate` cannot mint a spec card either.
+fn minted_card_shape(profile: HarnessProfile) -> Result<(CardRole, &'static str)> {
+    match profile {
+        HarnessProfile::PlainChat => Ok((CardRole::Worker, "plain_chat")),
+        HarnessProfile::Assistant => Ok((CardRole::Assistant, ASSISTANT_HARNESS_PROFILE_MARKER)),
+        HarnessProfile::Spec => Err(CalmError::BadRequest(
+            "the spec profile does not mint its own card".into(),
+        )),
+    }
+}
+
+/// The persisted `payload.harness_profile` value of a wave assistant card.
+/// Read by `plain_chat::card_is_wave_assistant` and by the wave conversation
+/// list predicate; those three places are the whole contract.
+pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = "assistant";
 
 pub(crate) fn render_spec_developer_instructions(
     wave_id: &str,
@@ -352,18 +418,64 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         // checks below are the fail-closed replacement, and they must stay
         // strictly narrower than the ordinary branch — a caller must not be
         // able to conjure a chat card onto an arbitrary wave.
-        if payload.create_card.is_some() {
-            if payload.profile != HarnessProfile::PlainChat {
-                return Err(CalmError::BadRequest(format!(
-                    "card {} can only be minted by this operation under the plain-chat profile",
-                    payload.spec_card_id
-                )));
-            }
-            if wave.purpose.as_deref() != Some(crate::COVE_CHAT_PURPOSE) {
-                return Err(CalmError::Forbidden(format!(
-                    "wave {} is not a cove chat wave; chat cards are only minted there",
-                    wave.id
-                )));
+        if let Some(seed) = payload.create_card.as_ref() {
+            // Guard ① — which profiles may mint at all. `Spec` never can: a
+            // spec card is minted with its wave, and letting this branch write
+            // one would hand a caller the wave's lifecycle authority.
+            //
+            // Guard ② — where. The two profiles answer it differently, and the
+            // assistant answer is the stronger one (#1189 §4.3): instead of
+            // asking what KIND of wave this is, the adapter recomputes the
+            // deterministic card id from `(wave_id, idempotency_key)` and
+            // refuses any id it did not derive itself. A forged id, an id
+            // derived for somebody else's wave, and an id conjured out of
+            // nothing all fail the same comparison, so the assistant branch
+            // needs no wave-shape allowlist to stay closed.
+            match payload.profile {
+                HarnessProfile::Spec => {
+                    return Err(CalmError::BadRequest(format!(
+                        "card {} can only be minted by this operation under the plain-chat or assistant profile",
+                        payload.spec_card_id
+                    )));
+                }
+                HarnessProfile::PlainChat => {
+                    // Deliberately NOT migrated to the derived-id guard. The
+                    // cove flavour's id is derived from `(cove_id, key)`, and
+                    // recomputing it here would mean binding the key into the
+                    // cove route's operation payload — changing a live payload
+                    // hash for no gain, since this check is already exact for
+                    // that flavour: a cove chat card belongs on a cove chat
+                    // wave and nowhere else.
+                    if wave.purpose.as_deref() != Some(crate::COVE_CHAT_PURPOSE) {
+                        return Err(CalmError::Forbidden(format!(
+                            "wave {} is not a cove chat wave; chat cards are only minted there",
+                            wave.id
+                        )));
+                    }
+                }
+                HarnessProfile::Assistant => {
+                    // Fail closed on a missing key: without it there is nothing
+                    // to recompute from, and "no key" must not read as "no
+                    // check". Only `POST /api/waves/{id}/conversations` sets
+                    // it, and that route requires the header.
+                    let Some(idempotency_key) = seed.idempotency_key.as_deref() else {
+                        return Err(CalmError::BadRequest(format!(
+                            "card {} cannot be minted without the idempotency key its id is derived from",
+                            payload.spec_card_id
+                        )));
+                    };
+                    let expected = crate::conversation_keys::derive_wave_conversation_keys(
+                        wave.id.as_str(),
+                        idempotency_key,
+                    )
+                    .card_id;
+                    if payload.spec_card_id.as_str() != expected {
+                        return Err(CalmError::Forbidden(format!(
+                            "card {} is not the conversation id derived for wave {} under this idempotency key",
+                            payload.spec_card_id, wave.id
+                        )));
+                    }
+                }
             }
             // An existing row means this is not a first mint. A genuine retry
             // is deduplicated far earlier, by the operation idempotency key in
@@ -414,12 +526,33 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     card.id
                 )));
             }
+            // Re-start paths (`/spec/reset`, `/spec/input` lazy recovery) reach
+            // here with an existing assistant card; the marker + role pair is
+            // what makes the profile legitimate, exactly as for plain chat.
+            HarnessProfile::Assistant
+                if crate::plain_chat::card_is_wave_assistant(
+                    &card,
+                    self.card_role_cache.get(&card.id),
+                    true,
+                ) =>
+            {
+                CardRole::Assistant
+            }
+            HarnessProfile::Assistant => {
+                return Err(CalmError::BadRequest(format!(
+                    "card {} is not marked as a wave assistant",
+                    card.id
+                )));
+            }
         };
         if self.card_role_cache.get(&card.id) != Some(expected_role) {
             let message = match payload.profile {
                 HarnessProfile::Spec => format!("card {} is not a spec card", card.id),
                 HarnessProfile::PlainChat => {
                     format!("card {} is not marked for plain chat", card.id)
+                }
+                HarnessProfile::Assistant => {
+                    format!("card {} is not marked as a wave assistant", card.id)
                 }
             };
             return Err(CalmError::BadRequest(message));
@@ -451,16 +584,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let wave_id = payload.wave_id;
         let report_card_id = payload.report_card_id;
         let defer_runtime_start = payload.force_new_thread;
-        let session_kind = match payload.profile {
-            HarnessProfile::Spec => WorkerSessionKind::SharedSpec,
-            HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
-        };
+        let session_kind = session_kind_for(payload.profile);
         // #1098 §5.6 — mint the chat card in this very transaction, so the
         // card and its session row commit together and compensation can undo
         // both. The SELECT below then reads the row we just wrote and every
         // downstream step is unchanged.
         let mut post_commit_events = Vec::new();
         if let Some(seed) = payload.create_card.as_ref() {
+            let (minted_role, minted_marker) = minted_card_shape(payload.profile)?;
             let scope = card_scope(
                 self.repo.as_ref(),
                 card_id.clone(),
@@ -476,12 +607,20 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     sort: seed.sort,
                     // Pinned by the kernel, not by the caller. Note the absent
                     // `spec_harness` key (INV-CHAT-016) and the unchanged
-                    // `schemaVersion`: a chat card is a v1 codex card that
-                    // carries one extra marker, not a new payload dialect.
-                    payload: json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+                    // `schemaVersion`: a conversation card is a v1 codex card
+                    // that carries one extra marker, not a new payload dialect.
+                    //
+                    // The marker and the role both track the profile (#1189
+                    // §4.2). Hard-coding either one would mint an assistant
+                    // conversation that is a plain-chat worker card in the
+                    // database, and the three readers that decide what an
+                    // assistant may do — the authorization gate, this
+                    // endpoint's list predicate, and the CARDS panel filter —
+                    // all read exactly these two columns.
+                    payload: json!({"schemaVersion": 1, "harness_profile": minted_marker}),
                     title: seed.title.clone(),
                 },
-                CardRole::Worker,
+                minted_role,
                 // Deleting a single conversation is its own issue; until it
                 // exists the card is kernel-owned so `DELETE /api/cards/:id`
                 // cannot orphan a live harness.
@@ -631,13 +770,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let reset_harness_items = payload.reset_harness_items;
         let force_new_thread = payload.force_new_thread;
         let profile = payload.profile;
-        let session_kind = match profile {
-            HarnessProfile::Spec => WorkerSessionKind::SharedSpec,
-            HarnessProfile::PlainChat => WorkerSessionKind::CodexCard,
-        };
+        let session_kind = session_kind_for(profile);
+        // The role handed to `thread_start_for_card`, which is what the MCP
+        // transport later resolves this thread's tool surface from. It must be
+        // the role the card actually carries — see `minted_card_shape`.
         let card_role = match profile {
             HarnessProfile::Spec => CardRole::Spec,
             HarnessProfile::PlainChat => CardRole::Worker,
+            HarnessProfile::Assistant => CardRole::Assistant,
         };
         let card_id = output.output_string("card_id", "spec harness")?;
         let wave_id = output.output_string("wave_id", "spec harness")?;
@@ -697,17 +837,29 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
             }
             thread_id
         } else {
-            let developer_instructions = if matches!(profile, HarnessProfile::PlainChat) {
-                None
-            } else {
-                let bound_workflow = self.bound_workflow(&wave_id).await?;
-                Some(render_spec_developer_instructions(
+            let developer_instructions = match profile {
+                // A plain chat is a bare codex thread: no kernel prompt, no
+                // MCP tools to describe.
+                HarnessProfile::PlainChat => None,
+                // The assistant gets its own prompt, not the spec one: the spec
+                // prompt is mostly lifecycle/plan/verdict instructions for
+                // tools the assistant is forbidden to call, and a workflow
+                // binding drives the wave's plan, which is likewise not the
+                // assistant's business.
+                HarnessProfile::Assistant => Some(crate::spec_card::render_system_prompt(
+                    crate::spec_card::ASSISTANT_SYSTEM_PROMPT_TEMPLATE,
                     &wave_id,
-                    bound_workflow.as_ref().map(|bound| &bound.descriptor),
-                    bound_workflow
-                        .as_ref()
-                        .and_then(|bound| bound.input.as_ref()),
-                ))
+                )),
+                HarnessProfile::Spec => {
+                    let bound_workflow = self.bound_workflow(&wave_id).await?;
+                    Some(render_spec_developer_instructions(
+                        &wave_id,
+                        bound_workflow.as_ref().map(|bound| &bound.descriptor),
+                        bound_workflow
+                            .as_ref()
+                            .and_then(|bound| bound.input.as_ref()),
+                    ))
+                }
             };
             let (raw, hashed) = mint_card_mcp_token_pair();
             new_mcp_token_hash = Some(hashed);
@@ -723,8 +875,17 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 approval_policy: "never".into(),
                 sandbox_mode: "workspace-write".into(),
                 developer_instructions,
+                // The assistant needs the same channel-3 MCP credentials as the
+                // spec harness — the block channel is its only write surface,
+                // and `neige` is how it reads the wave. WHICH tools that token
+                // can reach is not decided here: `tools/list` filters on
+                // `ToolDescriptor::visible_to_roles` and every write handler
+                // re-checks `require_role*`, both resolved from the card's
+                // persisted role. So the §3.1 whitelist rides on
+                // `minted_card_shape`'s role, and a third `ThreadConfig`
+                // variant would carry nothing the kernel actually reads.
                 config: match profile {
-                    HarnessProfile::Spec => ThreadConfig::McpShell {
+                    HarnessProfile::Spec | HarnessProfile::Assistant => ThreadConfig::McpShell {
                         socket_path: PathBuf::from(&socket_path),
                         raw_token: raw,
                     },
@@ -1810,7 +1971,7 @@ mod tests {
             reset_harness_items: false,
             force_new_thread: false,
             profile: HarnessProfile::PlainChat,
-            create_card: create_card.then(PlainChatCardSeed::default),
+            create_card: create_card.then(LazyMintCardSeed::default),
             first_message_sha256: None,
         })
         .expect("payload serializes");

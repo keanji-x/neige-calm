@@ -343,7 +343,7 @@ export interface paths {
          *
          *     None of this can produce a second conversation: the **card id** is a pure
          *     function of `(cove_id, Idempotency-Key)` and the `#N` suffix touches only
-         *     the *operation* key (see [`derive_conversation_keys`] and its golden test).
+         *     the *operation* key (see `conversation_keys::derive_cove_conversation_keys` and its golden test).
          */
         post: operations["create_cove_conversation"];
         delete?: never;
@@ -1010,6 +1010,42 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["create_codex_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/waves/{wave_id}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_wave_conversations"];
+        put?: never;
+        /**
+         * Mint a wave assistant conversation and deliver its first message.
+         * @description The `Idempotency-Key` contract, the first-message claim and both of its
+         *     known gaps are identical to `create_cove_conversation`, whose doc comment is
+         *     the long-form statement of all of them; this handler differs only in the
+         *     profile it mints under and the namespace its ids come from. The gaps are
+         *     restated in brief where they bite:
+         *
+         *     * the first-message claim asks "has this CARD ever had a user message
+         *       enqueued?", not "has THIS request's message landed?", so a foreign
+         *       `POST /api/cards/{id}/spec/input` between a failed send and its retry
+         *       satisfies the claim;
+         *     * the evidence is written non-transactionally, so a send whose audit write
+         *       fails is re-sent on retry.
+         *
+         *     Both are tracked on #1098 and deliberately unchanged here: fixing them means
+         *     folding the first message into the mint operation, which would change both
+         *     endpoints at once and belongs in one dedicated change rather than being
+         *     half-done on the newer of the two.
+         */
+        post: operations["create_wave_conversation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1698,6 +1734,15 @@ export interface components {
              */
             workflow_input?: Record<string, never> | null;
         };
+        /** @description Body of `POST /api/waves/{wave_id}/conversations`: the first message. */
+        NewWaveConversationBody: {
+            /**
+             * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+             *     (non-blank after trim, at most 32768 chars) and validated *before*
+             *     anything is minted, so a rejected message leaves no card behind.
+             */
+            text: string;
+        };
         Overlay: {
             entity_id: string;
             /** @description `"wave"` or `"card"`. */
@@ -2153,6 +2198,47 @@ export interface components {
             backlinks: components["schemas"]["WaveBacklink"][];
             skipped_sources: number;
             truncated: boolean;
+        };
+        /**
+         * @description One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
+         *
+         *     Its own type rather than a reuse of [`CoveConversationSummary`], which is
+         *     what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
+         *     the cove type's contract says "`waveTitle` is absent because every row lives
+         *     on one hidden wave", and on a wave that reasoning is simply not true. Two
+         *     lists with different contracts should not share one name just because their
+         *     current fields coincide.
+         */
+        WaveConversationSummary: {
+            /**
+             * @description The assistant card's id. This is the conversation's identity everywhere,
+             *     and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+             *     address.
+             */
+            id: string;
+            /**
+             * @description Always `"wave-assistant"`, derived from the card's persisted marker.
+             *     A distinct value from the cove list's `"shared-chat"` on purpose: the
+             *     frontend branches on it, and a shared value would route assistant rows
+             *     through the cove chat's presentation.
+             */
+            kind: string;
+            state?: null | components["schemas"]["WorkerSessionState"];
+            /**
+             * @description The conversation's own name, or null before it has one. Never the
+             *     wave's title.
+             */
+            title?: string | null;
+            /**
+             * Format: int64
+             * @description The session's last update, falling back to the card's own.
+             */
+            updatedAt: number;
+            /**
+             * @description The wave this conversation lives on. Always the wave in the request
+             *     path; carried so a client holding a bare row can navigate.
+             */
+            waveId: string;
         };
         /**
          * @description What a Wave detail page renders: the wave itself plus its cards and
@@ -5770,6 +5856,139 @@ export interface operations {
             };
             /** @description Daemon spawn failed (rows are persisted; sweeper reaps within ~60s) */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_wave_conversations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Assistant conversations on this wave, newest activity first. The wave's spec card, report card and dispatched worker cards are never listed here. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveConversationSummary"][];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_wave_conversation: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.
+                 *
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**, with the same four arms as `POST /api/coves/{cove_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation.
+                 */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description Wave id */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewWaveConversationBody"];
+            };
+        };
+        responses: {
+            /** @description Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveConversationSummary"];
+                };
+            };
+            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The wave does not take assistant conversations: it is a cove chat wave (whose conversations are created through the cove endpoint) or a kernel template overlay wave */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /**
+             * @description Distinguished by the body's `code`:
+             *     * `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).
+             *     * `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Shared codex app-server not running — retry shortly */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

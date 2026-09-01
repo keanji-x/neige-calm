@@ -532,11 +532,15 @@ pub async fn force_spec_phase(
                         WorkerSessionInit {
                             id: runtime_id_for_tx,
                             card_id: card_id_for_tx,
-                            kind: if crate::plain_chat::card_is_plain_chat(&card, Some(role), true)
-                            {
-                                WorkerSessionKind::CodexCard
-                            } else {
+                            // Only a real spec card gets the `SharedSpec` kind:
+                            // that kind maps to `WorkerContract::Planner`,
+                            // which makes the session the wave's root
+                            // authority. Both conversation flavours are
+                            // ordinary codex-card sessions.
+                            kind: if role == CardRole::Spec {
                                 WorkerSessionKind::SharedSpec
+                            } else {
+                                WorkerSessionKind::CodexCard
                             },
                             agent_provider: Some(AgentProvider::Codex),
                             // Deliberately `Idle`, not the `Starting` that
