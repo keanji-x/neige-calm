@@ -57,6 +57,15 @@ use utoipa::{IntoParams, ToSchema};
 /// this at every card-emit site so the event row's `scope_*` columns
 /// carry the full ancestor chain. Looking up the wave outside the txn
 /// is fine — wave rows are immutable wrt their parent cove.
+///
+/// # ⚠️ Do not call this from inside a transaction that has written `waves`
+///
+/// This reads through the **pool**, i.e. a second connection. Since #1147 S6
+/// every terminal-row creation writes `waves` (the workspace freeze), so calling
+/// this after one — in the same transaction, before it commits — deadlocks the
+/// task against its own lock. Use [`card_scope_tx`], whose doc comment states
+/// the general rule and its measurement. Resolving the scope *before* the write,
+/// which is what most adapters do, is equally correct.
 pub(crate) async fn card_scope(
     repo: &dyn RepoRead,
     card: CardId,
@@ -70,6 +79,62 @@ pub(crate) async fn card_scope(
         card,
         wave: w.id,
         cove: w.cove_id,
+    })
+}
+
+/// The in-transaction twin of [`card_scope`].
+///
+/// # The rule, stated at its real width (#1147 S6)
+///
+/// **A transaction must not read, off the pool, any table it has itself written,
+/// before it commits.** The pool hands out a *second* connection; under SQLite's
+/// shared cache (which every in-memory test database uses) locks are per table,
+/// so that read blocks on a lock only the caller can release and the task waits
+/// on itself forever in `sqlx_sqlite::statement::unlock_notify::wait`.
+///
+/// `waves` is not special — it is merely the table S6 added to the write set of
+/// every terminal-creating transaction (each terminal row freezes its wave's
+/// workspace). `cards` and `terminals` were already in that set. Measured:
+/// `ClaudeRestartAdapter::prepare_tx` created the terminal row and then read
+/// `waves` through [`card_scope`], and hung
+/// `post_claude_restart_recreates_missing_terminal_row_and_resumes_session`
+/// forever.
+///
+/// Scope of the hang, stated precisely rather than generously: in-memory
+/// shared-cache databases deadlock hard. A file-backed production database runs
+/// WAL, where the pool connection reads a snapshot instead of blocking — so
+/// production gets a *pre-write read*, not a hang. Neither is acceptable and the
+/// fix is the same, but do not call this "test-only" and do not claim production
+/// hangs.
+///
+/// # No mechanical enforcement
+///
+/// Nothing scans for violations. The coverage is a single 20-second wall clock
+/// on a single flow
+/// (`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`),
+/// which makes a regression *on that flow* a legible red test instead of a
+/// wedged job. A new adapter that mints a terminal row and then reads `waves`
+/// off `self.repo` will hang CI with no diagnosis and no test naming the cause.
+/// The tree was swept once, at S6 — every other adapter resolves its scope
+/// BEFORE creating the card, which is equally correct — and a sweep is a
+/// measurement of one moment, not a guarantee.
+///
+/// So: any `prepare_tx` that mints a card + terminal resolves its scope through
+/// this function, or resolves it before the write.
+pub(crate) async fn card_scope_tx(
+    tx: &mut crate::operation::Tx<'_>,
+    card: CardId,
+    wave: WaveId,
+) -> Result<EventScope> {
+    let cove: Option<(String,)> = sqlx::query_as("SELECT cove_id FROM waves WHERE id = ?1")
+        .bind(wave.as_str())
+        .fetch_optional(&mut **tx)
+        .await?;
+    let (cove,) = cove.ok_or_else(|| CalmError::NotFound(format!("wave {wave}")))?;
+    Ok(EventScope::Card {
+        card,
+        wave,
+        cove: cove.into(),
     })
 }
 

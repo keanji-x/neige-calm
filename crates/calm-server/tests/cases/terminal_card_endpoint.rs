@@ -52,6 +52,14 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+/// #1147 S6 — every wave has a materialized workspace, and a terminal card with
+/// no `cwd` now lands in it. A fixture wave with an empty `workspace_path` is
+/// not a state any creation route can produce, and the kernel refuses to open a
+/// terminal in one rather than inheriting the server's cwd — so these fixtures
+/// carry a path, exactly as production waves do.
+const FIXTURE_WORKSPACE: &str = "/neige-fixture-workspace";
+
 struct Boot {
     app: axum::Router,
     state: AppState,
@@ -100,7 +108,7 @@ async fn boot() -> Boot {
             cove_id: cove.id,
             title: "endpoint-test".into(),
             sort: None,
-            cwd: String::new(),
+            cwd: FIXTURE_WORKSPACE.into(),
             workflow_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -255,7 +263,7 @@ async fn boot_with_bad_supervisor(bad_sock: PathBuf) -> Boot {
             cove_id: cove.id,
             title: "endpoint-test".into(),
             sort: None,
-            cwd: String::new(),
+            cwd: FIXTURE_WORKSPACE.into(),
             workflow_id: None,
             plugin_scope: None,
             attach_folder: false,
@@ -946,8 +954,9 @@ async fn post_terminal_card_atomic_defaults_program_to_shell() {
     let (status, card) = post(
         boot.app.clone(),
         format!("/api/waves/{}/terminal-cards", boot.wave_id),
-        // Only required field (#177): theme. Every other field falls
-        // back to its default (program → $SHELL, cwd → $HOME, env → {}).
+        // Only required field (#177): theme. Every other field falls back to
+        // its default (program → $SHELL, cwd → the wave's workspace since
+        // #1147 S6, env → {}).
         json!({ "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
@@ -977,4 +986,8 @@ async fn post_terminal_card_atomic_defaults_program_to_shell() {
             term.program
         );
     }
+    assert_eq!(
+        term.cwd, FIXTURE_WORKSPACE,
+        "#1147 S6 — the default cwd is the wave's workspace, not $HOME"
+    );
 }
