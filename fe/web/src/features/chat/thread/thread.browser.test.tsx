@@ -2962,9 +2962,19 @@ describe('the reply’s type, through Astryx’s markdown', () => {
    * container's own text nodes. What is under test is that the *variables*
    * reach Astryx's block, so the block has to be found or the case has to fail.
    */
-  function paintedBlock(selector: string): HTMLElement {
-    const found = replies()[0].querySelector<HTMLElement>(selector);
-    expect(found, `no ${selector} inside the reply — markdown did not render`).not.toBeNull();
+  /* Two functions rather than one taking a selector: `architecture/
+     no-class-dom-query` requires every runtime query to be a static string, and
+     a test file is not exempt from a rule whose point is that a selector built
+     at runtime fails closed. */
+  function paintedParagraph(): HTMLElement {
+    const found = replies()[0].querySelector<HTMLElement>('[role="paragraph"], p');
+    expect(found, 'no paragraph inside the reply — markdown did not render').not.toBeNull();
+    return found!;
+  }
+
+  function paintedHeading(): HTMLElement {
+    const found = replies()[0].querySelector<HTMLElement>('h4');
+    expect(found, 'no h4 inside the reply — markdown did not render the heading').not.toBeNull();
     return found!;
   }
 
@@ -2987,7 +2997,7 @@ describe('the reply’s type, through Astryx’s markdown', () => {
 
   it('paints the reply in the report’s serif at the drawer’s step, not Astryx’s body sans', () => {
     render(<RailPane turns={MARKDOWN_REPLY} />);
-    const painted = getComputedStyle(paintedBlock('[role="paragraph"], p'));
+    const painted = getComputedStyle(paintedParagraph());
 
     /* All three overridden variables, because all three are separately
        droppable: an earlier version of this case read family and size only, and
@@ -3015,7 +3025,7 @@ describe('the reply’s type, through Astryx’s markdown', () => {
    */
   it('paints the reply’s own headings in the same serif, not the display sans', () => {
     render(<RailPane turns={MARKDOWN_REPLY} />);
-    const heading = getComputedStyle(paintedBlock('h4'));
+    const heading = getComputedStyle(paintedHeading());
 
     expect(heading.fontFamily).toBe(probe({ fontFamily: 'var(--font-serif)' }).fontFamily);
     expect(heading.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-display)' }).fontFamily);
