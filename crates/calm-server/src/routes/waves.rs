@@ -195,10 +195,13 @@ async fn wait_at_wave_delete_teardown_hook(wave_id: &str) {
 pub struct CreateWaveRequest {
     #[schema(value_type = String)]
     pub cove_id: crate::ids::CoveId,
-    /// Issue #1211 — the title is no longer the wave's intent, so the client
-    /// may omit it entirely (the wave then gets the server-side default name
-    /// and the spec agent renames it via `calm.wave.rename`). The type stays
-    /// `String`: the empty string has always been a legal title and the
+    /// Issue #1211 — on this user-driven create path the title is no longer
+    /// the wave's intent, so the client may omit it entirely. Omitting it
+    /// stores the **empty string** — there is no server-side default; the
+    /// `Untitled wave` a user sees in a list is the frontend's display
+    /// fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec agent then names the wave via `calm.wave.rename`,
+    /// which only succeeds while the stored title is still blank. The type
+    /// stays `String`: the empty string has always been a legal title and the
     /// server applies no non-empty validation.
     #[serde(default)]
     #[schema(required = false)]
@@ -1495,11 +1498,14 @@ async fn create_wave_structure(
                         wave_id: wave_id.clone(),
                         kind: "codex".into(),
                         sort: None,
-                        // #1211 S1: the wave title is no longer the wave's
-                        // intent, so create seeds no `prompt` here. The
-                        // parameter stays because child waves still pass the
-                        // task goal their parent spec declared
-                        // (`operation/child_wave_adapter.rs`).
+                        // #1211 S1: on this user-driven create path the wave
+                        // title is no longer the wave's intent, so create
+                        // seeds no `prompt` here. The parameter stays because
+                        // child waves still pass the task goal their parent
+                        // spec declared (`operation/child_wave_adapter.rs`) —
+                        // that is machine-written intent, not a title a human
+                        // typed, and it stays the seed both at child-wave
+                        // start and on `/spec/reset`.
                         payload: spec_harness_card_payload(None),
                     },
                     CardRole::Spec,
@@ -1694,9 +1700,13 @@ async fn start_spec_harness(
     spec_card_id: String,
     report_card_id: String,
 ) -> Result<()> {
-    // #1211 S1: no goal is seeded at create. The title defaults to `Untitled`
-    // and the spec agent names the wave once it knows what the work is, so
-    // there is nothing here that could stand in for the user's intent.
+    // #1211 S1: no goal is seeded on this user-driven create path. An omitted
+    // title is stored as the empty string (`Untitled wave` is only what the
+    // frontend shows for a blank one) and the spec agent names the wave once it knows
+    // what the work is, so there is nothing here that could stand in for the
+    // user's intent. Child waves do NOT come through here — they start their
+    // harness with the parent spec's declared task goal
+    // (`scheduler/mod.rs`, `operation/child_wave_adapter.rs`).
     let request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),

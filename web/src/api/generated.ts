@@ -1346,10 +1346,13 @@ export interface components {
             sort?: number | null;
             theme: components["schemas"]["RequestTheme"];
             /**
-             * @description Issue #1211 — the title is no longer the wave's intent, so the client
-             *     may omit it entirely (the wave then gets the server-side default name
-             *     and the spec agent renames it via `calm.wave.rename`). The type stays
-             *     `String`: the empty string has always been a legal title and the
+             * @description Issue #1211 — on this user-driven create path the title is no longer
+             *     the wave's intent, so the client may omit it entirely. Omitting it
+             *     stores the **empty string** — there is no server-side default; the
+             *     `Untitled wave` a user sees in a list is the frontend's display
+             *     fallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec agent then names the wave via `calm.wave.rename`,
+             *     which only succeeds while the stored title is still blank. The type
+             *     stays `String`: the empty string has always been a legal title and the
              *     server applies no non-empty validation.
              */
             title?: string;

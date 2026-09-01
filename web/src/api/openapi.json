@@ -5091,7 +5091,7 @@
           },
           "title": {
             "type": "string",
-            "description": "Issue #1211 — the title is no longer the wave's intent, so the client\nmay omit it entirely (the wave then gets the server-side default name\nand the spec agent renames it via `calm.wave.rename`). The type stays\n`String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
+            "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe wave's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled wave` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec agent then names the wave via `calm.wave.rename`,\nwhich only succeeds while the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
           },
           "workflow_id": {
             "type": [

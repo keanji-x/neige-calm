@@ -147,8 +147,10 @@ export type NewWaveBody = Readonly<{
   cove_id: string;
   /**
    * Issue #1211 — optional. The title is no longer the wave's intent: omit it
-   * and the kernel stores its default name until the spec agent renames the
-   * wave. Present values (including `""`) are still accepted verbatim.
+   * and the kernel stores the **empty string** — it has no default name of its
+   * own; `UNTITLED_WAVE_LABEL` below is this layer's display fallback for a
+   * blank title. It stays blank until the spec agent renames the wave via
+   * `calm.wave.rename`. Present values (including `""`) are accepted verbatim.
    */
   title?: string;
   /**

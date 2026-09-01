@@ -16,9 +16,14 @@
 //! already has an owner for its name; an agent that could rename at will could
 //! quietly relabel work the user is tracking by that label.
 //!
-//! The check is re-read **inside the write transaction**, not just at the
-//! entry gate: two turns of the same agent (or an agent racing the user's
-//! PATCH) would otherwise both read "empty" and both write.
+//! There is exactly ONE gate, and it lives inside the write transaction. The
+//! reads this handler does before the transaction only fetch the card and the
+//! wave to build the `EventScope`; they check nothing. That is deliberate:
+//! `write_with_actor_events_typed` opens the tx with `BEGIN IMMEDIATE`, so the
+//! writer lock is already held when the title is re-read, and two concurrent
+//! renames serialise — the second one sees the non-empty title the first one
+//! wrote and is refused. A pre-tx copy of the check would decide nothing and
+//! would only be a second place for the rule to drift.
 //!
 //! ## Refusals are values, not errors
 //!
@@ -61,10 +66,12 @@ use std::sync::Arc;
 
 pub const TOOL_WAVE_RENAME: &str = "calm.wave.rename";
 
-/// Carried out of the write transaction inside `CalmError::Conflict` so the
-/// in-tx refusal and the pre-tx refusal land on one response shape. The
-/// prefix cannot collide with a genuine conflict message from the row
-/// writers below it — none of them start with this marker.
+/// A refusal is decided inside the write transaction, where the only error
+/// channel out is `CalmError`. This marker carries it through
+/// `CalmError::Conflict` so the handler can turn it back into the `{"ok":
+/// false, "refused": …}` value instead of an RPC error. The prefix cannot
+/// collide with a genuine conflict message from the row writers below it —
+/// none of them start with this marker.
 const REFUSED_MARKER: &str = "calm.wave.rename refused: ";
 
 pub fn register_into(registry: &mut ToolRegistry) {
@@ -192,10 +199,11 @@ async fn wave_rename(
             let title = title_for_tx.clone();
             let message = message_for_tx.clone();
             Box::pin(async move {
-                // Re-read under the write lock. The pre-tx read above is only
-                // a cheap early exit; THIS is the check that holds, because
-                // two concurrent turns would both have seen an empty title
-                // outside the transaction.
+                // The only gate. Nothing above this transaction checks the
+                // title — the pre-tx reads exist to build the event scope.
+                // `BEGIN IMMEDIATE` already holds the writer lock here, so a
+                // second concurrent rename waits and then reads the title the
+                // first one committed.
                 let current = wave_get_tx(tx, &wave_id).await?;
                 if !current.title.trim().is_empty() {
                     return Err(refusal("already_named", &current.title));
