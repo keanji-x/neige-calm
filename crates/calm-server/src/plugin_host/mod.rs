@@ -1190,7 +1190,8 @@ impl PluginHost {
                 // (the lock wait, the spawn, and every emission either performs)
                 // rather than a named step inside it, so an await added here
                 // later is covered without anyone remembering to cover it.
-                match tokio::time::timeout(self.app_autospawn_wall, self.autospawn_one(&plug.id)).await
+                match tokio::time::timeout(self.app_autospawn_wall, self.autospawn_one(&plug.id))
+                    .await
                 {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => {

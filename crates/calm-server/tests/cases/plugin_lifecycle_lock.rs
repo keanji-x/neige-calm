@@ -798,10 +798,12 @@ async fn a12a_every_pair_of_entry_points_settles() {
             // operator may start a disabled plugin by hand), so "Running while
             // disabled" is a legitimate terminal for any pair containing one of
             // them and asserting against it would be asserting a falsehood.
-            let enabled_aware = |op| {
-                matches!(op, Op::Enable | Op::Disable | Op::Reload | Op::Uninstall)
-            };
-            if enabled_aware(a) && enabled_aware(b) && let Some(p) = row.as_ref() {
+            let enabled_aware =
+                |op| matches!(op, Op::Enable | Op::Disable | Op::Reload | Op::Uninstall);
+            if enabled_aware(a)
+                && enabled_aware(b)
+                && let Some(p) = row.as_ref()
+            {
                 assert!(
                     p.enabled || !running,
                     "{a:?} + {b:?} left a TORN terminal: the row says \
@@ -1884,7 +1886,9 @@ struct UnreadableDb {
 impl LifecycleDb for UnreadableDb {
     async fn enabled_row(&self, _id: &str) -> Result<Option<bool>, CalmError> {
         self.failures.fetch_add(1, Ordering::SeqCst);
-        Err(CalmError::Internal("injected permanent read failure".into()))
+        Err(CalmError::Internal(
+            "injected permanent read failure".into(),
+        ))
     }
 
     async fn set_enabled(&self, id: &str, enabled: bool) -> Result<(), CalmError> {
@@ -1938,7 +1942,11 @@ async fn a18_exhausted_respawn_retries_publish_a_terminal_state() {
         db.failures.load(Ordering::SeqCst)
     );
 
-    let st = fx.host.status(ID).await.expect("a terminal entry must exist");
+    let st = fx
+        .host
+        .status(ID)
+        .await
+        .expect("a terminal entry must exist");
     let reason = match &st.status {
         PluginRuntimeStatus::Unavailable { reason } => reason.clone(),
         other => panic!(
@@ -1955,11 +1963,7 @@ async fn a18_exhausted_respawn_retries_publish_a_terminal_state() {
     // And it stays there: nothing retries behind the operator's back.
     sleep(Duration::from_secs(1)).await;
     let ev = state_events(&fx).await;
-    assert_eq!(
-        ev.last().map(String::as_str),
-        Some("unavailable"),
-        "{ev:?}"
-    );
+    assert_eq!(ev.last().map(String::as_str), Some("unavailable"), "{ev:?}");
 }
 
 // ===========================================================================

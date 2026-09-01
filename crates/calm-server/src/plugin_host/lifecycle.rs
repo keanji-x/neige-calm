@@ -21,9 +21,13 @@
 //!   that step and returns the fresh row; the caller renders it. That read
 //!   point is load-bearing (it is what makes `enable` report `running`), so it
 //!   is preserved exactly.
-//! * The leading `plugin_get_by_id` 404 probes are preserved. `reload`'s is the
+//! * The leading 404 probes are preserved. `reload`'s is the
 //!   only one that is load-bearing *on its own*: without it an unknown id
-//!   reaches the manifest read and returns a 400. The other three are today
+//!   reaches the manifest read and returns a 400. (#1196 S1 review P0-1 moved
+//!   `reload`'s probe onto [`LifecycleDb::enabled_row`] so that it can only
+//!   answer "does this row exist" and can no longer hand a stale `Plugin` to the
+//!   decision below it; the 404 it produces is byte-identical. The other three
+//!   still call `plugin_row_or_404` and discard its result.) The other three are today
 //!   redundant with the repo layer — `plugin_update_enabled` and
 //!   `plugin_delete` both raise `NotFound` on `rows_affected() == 0`
 //!   (`calm-truth/src/db/sqlite/out_of_domain.rs:414` / `:470`), formatting the

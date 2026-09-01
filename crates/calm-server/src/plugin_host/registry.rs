@@ -543,7 +543,11 @@ mod tests {
     fn insert_refuses_a_guard_for_another_id() {
         let reg = PluginRegistry::empty();
         // The guard is for `test.valid`; the manifest is `test.second`.
-        reg.insert(&g("test.valid"), Manifest::parse(SECOND_VALID).unwrap(), None);
+        reg.insert(
+            &g("test.valid"),
+            Manifest::parse(SECOND_VALID).unwrap(),
+            None,
+        );
     }
 
     /// The other half: the id the entry is filed under is the guard's, so a
