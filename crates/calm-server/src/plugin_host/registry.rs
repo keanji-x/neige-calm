@@ -81,6 +81,35 @@ impl PluginRegistry {
         }
     }
 
+    /// #1196 S0a — **build-time** construction (设计 §2.3「建表期 vs 运行期」).
+    ///
+    /// Seeding a registry that no [`super::PluginHost`] owns yet is a different
+    /// operation from mutating a live one: there is no lifecycle guard to hold
+    /// because there is nothing to race with. Those writes go here; the runtime
+    /// mutators ([`Self::insert`] / [`Self::remove`] / [`Self::set_exposes_tools`])
+    /// are `pub(crate)` and grow a `&LifecycleGuard` parameter in S1.
+    ///
+    /// The builder is **consuming**: once [`PluginRegistryBuilder::build`] hands
+    /// back a `PluginRegistry`, the build-time write path is gone.
+    pub fn builder() -> PluginRegistryBuilder {
+        PluginRegistryBuilder {
+            inner: Inner::default(),
+        }
+    }
+
+    /// One-shot form of [`Self::builder`] for the common "seed N manifests"
+    /// shape.
+    pub fn from_manifests<I>(entries: I) -> Self
+    where
+        I: IntoIterator<Item = (Manifest, Option<PathBuf>)>,
+    {
+        let mut b = Self::builder();
+        for (manifest, install_path) in entries {
+            b = b.with(manifest, install_path);
+        }
+        b.build()
+    }
+
     /// Walk `dir` one level deep, treating each subdirectory as a candidate
     /// plugin. Loads `<subdir>/manifest.json` for each; on parse or validation
     /// failure, logs a warning via `tracing::warn!` and skips that plugin —
@@ -191,9 +220,17 @@ impl PluginRegistry {
     }
 
     /// Install or overwrite a manifest. Used by Slice D's `/api/plugins/install`
-    /// after the file copy completes, and by tests that want to seed entries
-    /// without touching the filesystem.
-    pub fn insert(&self, manifest: Manifest, install_path: Option<PathBuf>) {
+    /// after the file copy completes.
+    ///
+    /// #1196 S0a — **runtime** write. Deliberately `pub(crate)`: #1196 S1 gives
+    /// this method a `&LifecycleGuard` parameter, and only the crate-internal
+    /// call sites (routes + host) can ever hold one. Everything that writes the
+    /// registry *before* a [`super::PluginHost`] exists must go through
+    /// [`PluginRegistry::builder`] / [`PluginRegistry::from_manifests`] instead
+    /// — see the design doc §2.3 ("建表期 vs 运行期"). Do NOT re-widen this to
+    /// `pub` and do NOT add a `insert_unlocked` escape hatch: the signature is
+    /// the only thing that forces the migration.
+    pub(crate) fn insert(&self, manifest: Manifest, install_path: Option<PathBuf>) {
         let mut inner = self.inner.write().unwrap();
         let id = manifest.id.clone();
         if let Some(p) = install_path {
@@ -221,7 +258,14 @@ impl PluginRegistry {
     ///    `false` instead is what neutralizes that race.
     ///
     /// Returns whether the entry existed (and was therefore updated).
-    pub fn set_exposes_tools(&self, id: &str, tools: Vec<super::manifest::ExposedTool>) -> bool {
+    ///
+    /// #1196 S0a — **runtime** write, `pub(crate)` for the same reason as
+    /// [`Self::insert`].
+    pub(crate) fn set_exposes_tools(
+        &self,
+        id: &str,
+        tools: Vec<super::manifest::ExposedTool>,
+    ) -> bool {
         let mut inner = self.inner.write().unwrap();
         match inner.manifests.get_mut(id) {
             Some(manifest) => {
@@ -233,7 +277,10 @@ impl PluginRegistry {
     }
 
     /// Remove a manifest. Returns the previous entry, if any.
-    pub fn remove(&self, id: &str) -> Option<Manifest> {
+    ///
+    /// #1196 S0a — **runtime** write, `pub(crate)` for the same reason as
+    /// [`Self::insert`].
+    pub(crate) fn remove(&self, id: &str) -> Option<Manifest> {
         let mut inner = self.inner.write().unwrap();
         inner.install_paths.remove(id);
         inner.manifests.remove(id)
@@ -252,6 +299,41 @@ impl PluginRegistry {
 impl Default for PluginRegistry {
     fn default() -> Self {
         Self::empty()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Build-time construction (#1196 S0a)
+// ---------------------------------------------------------------------------
+
+/// Consuming builder for a registry that is being *assembled*, before any
+/// [`super::PluginHost`] owns it. See [`PluginRegistry::builder`].
+///
+/// Note there is no `build_ref` / `as_registry` — `build` moves `self`, so a
+/// caller cannot keep writing through the builder after the registry is live.
+#[derive(Default)]
+pub struct PluginRegistryBuilder {
+    inner: Inner,
+}
+
+impl PluginRegistryBuilder {
+    /// Seed one manifest. Last write wins on duplicate ids, matching the
+    /// runtime [`PluginRegistry::insert`] this replaces.
+    #[must_use]
+    pub fn with(mut self, manifest: Manifest, install_path: Option<PathBuf>) -> Self {
+        let id = manifest.id.clone();
+        if let Some(p) = install_path {
+            self.inner.install_paths.insert(id.clone(), p);
+        }
+        self.inner.manifests.insert(id, manifest);
+        self
+    }
+
+    /// Freeze the accumulated manifests into a live registry.
+    pub fn build(self) -> PluginRegistry {
+        PluginRegistry {
+            inner: Arc::new(RwLock::new(self.inner)),
+        }
     }
 }
 

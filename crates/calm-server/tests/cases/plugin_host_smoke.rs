@@ -69,8 +69,7 @@ async fn boot_host_with_min_kernel(
     });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     let repo: Arc<dyn calm_server::db::Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")

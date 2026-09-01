@@ -1559,8 +1559,7 @@ mod tests {
             "permissions": {}
         });
         let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
-        let registry = PluginRegistry::empty();
-        registry.insert(manifest, Some(install_dir.clone()));
+        let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
         if seed_plugin_row {
             repo.plugin_install(NewPlugin {
                 id: plugin_id.to_string(),

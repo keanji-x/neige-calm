@@ -62,8 +62,7 @@ async fn boot_host(
         "entrypoint": { "command": "bin/stub", "env": env_map }, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
 
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -356,8 +355,7 @@ async fn no_kernel_callbacks_capability_installs_method_not_found_drainer() {
             "kv_quota_bytes": 1048576
         }, "theme": {"fg": [216,219,226], "bg": [15,20,24]} });
     let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     let events = EventBus::new();
     // Seed the plugins row before spawn (FK for plugin_tokens).
     repo.plugin_install(calm_server::model::NewPlugin {

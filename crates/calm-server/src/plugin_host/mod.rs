@@ -34,7 +34,7 @@ pub use mcp::{
     ResourceContent, ResourceContents, RpcError,
 };
 pub use process::PluginProcess;
-pub use registry::PluginRegistry;
+pub use registry::{PluginRegistry, PluginRegistryBuilder};
 pub use resources::{ResourceError, read_ui_resource};
 pub use version::{KERNEL_VERSION, KernelTooOld, check_min_kernel_version};
 
@@ -267,6 +267,30 @@ pub struct PluginHostStatus {
     pub pid: Option<u32>,
 }
 
+/// #1196 S0a — the crash-window / respawn-backoff knobs, lifted out of module
+/// constants into an injectable value. `Default` reproduces today's constants
+/// byte-for-byte, so a host built without [`PluginHost::with_backoff_schedule`]
+/// behaves exactly as before.
+#[derive(Debug, Clone)]
+pub struct BackoffConfig {
+    /// Respawn delays indexed by `attempts - 1`, clamped to the last entry.
+    pub schedule_ms: Vec<u64>,
+    /// Sliding window over which crashes are counted.
+    pub crash_window: Duration,
+    /// Crashes within `crash_window` that stop the respawn loop.
+    pub crash_window_limit: u32,
+}
+
+impl Default for BackoffConfig {
+    fn default() -> Self {
+        Self {
+            schedule_ms: BACKOFF_SCHEDULE_MS.to_vec(),
+            crash_window: CRASH_WINDOW,
+            crash_window_limit: CRASH_WINDOW_LIMIT,
+        }
+    }
+}
+
 pub struct PluginHost {
     pub registry: Arc<PluginRegistry>,
     /// Narrowed (PR #41) from `Arc<dyn Repo>` to `Arc<dyn RouteRepo>` —
@@ -343,6 +367,16 @@ pub struct PluginHost {
     /// production emitter rather than a fixture that re-implements it: remove
     /// the lock from `emit_state` and the mark reaches 2, failing that test.
     state_emit_peak: std::sync::atomic::AtomicUsize,
+    /// #1196 S0a — crash-loop / respawn-backoff tunables, defaulted to the
+    /// [`CRASH_WINDOW`] / [`CRASH_WINDOW_LIMIT`] / [`BACKOFF_SCHEDULE_MS`]
+    /// constants and overridable via [`Self::with_backoff_schedule`].
+    ///
+    /// They are fields rather than constants because the crash-window test
+    /// that #1196 S1 owes (acceptance 13) lives in `tests/` — an external
+    /// crate, for which the lib's `#[cfg(test)]` is invisible. A builder was
+    /// chosen over extra `new_full` parameters deliberately: `new_full` has
+    /// ~106 call sites in this crate and none of them should have to move.
+    backoff: BackoffConfig,
 }
 
 /// Per-id emission lock plus its concurrency probe.
@@ -668,12 +702,55 @@ impl PluginHost {
             spawn_order: std::sync::Mutex::new(HashMap::new()),
             state_emit: std::sync::Mutex::new(HashMap::new()),
             state_emit_peak: std::sync::atomic::AtomicUsize::new(0),
+            backoff: BackoffConfig::default(),
         }
+    }
+
+    /// #1196 S0a — post-construction override of the crash-window / respawn
+    /// backoff tunables. Deliberately a builder rather than `new_full`
+    /// parameters: `new_full` has ~106 call sites in this crate, and none of
+    /// them need to know about this seam.
+    ///
+    /// `schedule_ms` must be non-empty — the respawn path indexes it and falls
+    /// back to its last element.
+    #[must_use]
+    pub fn with_backoff_schedule(
+        mut self,
+        schedule_ms: Vec<u64>,
+        crash_window: Duration,
+        crash_window_limit: u32,
+    ) -> Self {
+        assert!(
+            !schedule_ms.is_empty(),
+            "backoff schedule must have at least one entry"
+        );
+        self.backoff = BackoffConfig {
+            schedule_ms,
+            crash_window,
+            crash_window_limit,
+        };
+        self
     }
 
     /// Convenience accessor — most call sites only need the registry handle.
     pub fn registry(&self) -> &Arc<PluginRegistry> {
         &self.registry
+    }
+
+    /// #1196 S0a — **runtime** registry write, routed through the host.
+    ///
+    /// [`PluginRegistry::insert`] is `pub(crate)`, so writes from outside this
+    /// crate that happen *after* a host exists (integration tests that mutate a
+    /// running registry) come through here. S1 gives this method a
+    /// `&LifecycleGuard` parameter; today it is a pure pass-through and changes
+    /// no behavior.
+    pub fn registry_insert(&self, manifest: manifest::Manifest, install_path: Option<PathBuf>) {
+        self.registry.insert(manifest, install_path);
+    }
+
+    /// #1196 S0a — **runtime** registry removal. See [`Self::registry_insert`].
+    pub fn registry_remove(&self, id: &str) -> Option<manifest::Manifest> {
+        self.registry.remove(id)
     }
 
     /// Lock the process table. Poison recovery via `into_inner`: the guarded
@@ -2075,7 +2152,7 @@ impl PluginHost {
                     return;
                 }
             };
-            if entry.window_started.elapsed() > CRASH_WINDOW {
+            if entry.window_started.elapsed() > self.backoff.crash_window {
                 entry.window_started = Instant::now();
                 entry.crashes_in_window = 0;
             }
@@ -2085,7 +2162,7 @@ impl PluginHost {
             };
             (
                 entry.crashes_in_window,
-                entry.crashes_in_window >= CRASH_WINDOW_LIMIT,
+                entry.crashes_in_window >= self.backoff.crash_window_limit,
             )
         };
 
@@ -2110,10 +2187,12 @@ impl PluginHost {
 
         // Backoff then respawn. Index by (attempts - 1) clamped to the table.
         let idx = (attempts as usize).saturating_sub(1);
-        let delay_ms = BACKOFF_SCHEDULE_MS
+        let delay_ms = self
+            .backoff
+            .schedule_ms
             .get(idx)
             .copied()
-            .unwrap_or(*BACKOFF_SCHEDULE_MS.last().unwrap());
+            .unwrap_or_else(|| *self.backoff.schedule_ms.last().expect("non-empty schedule"));
         tracing::info!(
             plugin_id = %id,
             delay_ms,

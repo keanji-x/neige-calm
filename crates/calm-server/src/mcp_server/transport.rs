@@ -1220,23 +1220,34 @@ mod connector_tool_routing_tests {
         Manifest::parse(&manifest.to_string()).expect("connector manifest parses")
     }
 
-    /// Registry in the post-materialization state: manifest parsed from disk,
-    /// then `set_exposes_tools` applied exactly as `spawn_admitted` does.
-    fn registry_after_materialization(id: &str, allow: &[&str], served: &[&str]) -> PluginRegistry {
-        let registry = PluginRegistry::empty();
-        let manifest = connector_manifest(id, allow);
+    /// One connector in the post-materialization state: manifest parsed from
+    /// disk, then the tools `spawn_admitted` would have materialized folded
+    /// into `exposes_tools`.
+    ///
+    /// #1196 S0a — this used to `insert` + `set_exposes_tools` on an already
+    /// built registry, a shape neither the build-time builder nor the runtime
+    /// (guard-taking) entry can serve. Materializing into the `Manifest` before
+    /// it ever reaches a registry makes it a plain build-time seed. The
+    /// resulting registry contents are identical.
+    fn materialized_connector(id: &str, allow: &[&str], served: &[&str]) -> Manifest {
+        let mut manifest = connector_manifest(id, allow);
         let block = manifest.mcp_http.clone().expect("mcp_http block");
-        registry.insert(manifest, None);
         let upstream: Vec<Value> = served
             .iter()
             .map(|name| json!({ "name": name, "inputSchema": { "type": "object" } }))
             .collect();
-        let tools = crate::plugin_host::connector::materialize_http_tools(id, &block, &upstream);
-        assert!(
-            registry.set_exposes_tools(id, tools),
-            "materialization must find the seeded entry"
-        );
-        registry
+        manifest.exposes_tools =
+            crate::plugin_host::connector::materialize_http_tools(id, &block, &upstream);
+        manifest
+    }
+
+    /// Registry seeded with every connector in one build-time pass.
+    fn registry_after_materialization(connectors: &[(&str, &[&str], &[&str])]) -> PluginRegistry {
+        PluginRegistry::from_manifests(
+            connectors
+                .iter()
+                .map(|(id, allow, served)| (materialized_connector(id, allow, served), None)),
+        )
     }
 
     fn running(ids: &[&str]) -> BTreeSet<String> {
@@ -1245,11 +1256,11 @@ mod connector_tool_routing_tests {
 
     #[test]
     fn unbound_wave_sees_allowlisted_connector_tools_and_nothing_else() {
-        let registry = registry_after_materialization(
+        let registry = registry_after_materialization(&[(
             CONNECTOR_ID,
             &[UNDERSCORE_TOOL, OTHER_TOOL],
             &[UNDERSCORE_TOOL, OTHER_TOOL, DENIED_TOOL],
-        );
+        )]);
         // `WavePluginScope::All` is what an UNBOUND wave resolves to
         // (`plugin_scope_for_wave`: no wave / no `plugin_scope` → All).
         let names: Vec<String> = plugin_tool_descriptors_from(
@@ -1278,8 +1289,11 @@ mod connector_tool_routing_tests {
 
     #[test]
     fn stopped_connector_tools_are_invisible() {
-        let registry =
-            registry_after_materialization(CONNECTOR_ID, &[UNDERSCORE_TOOL], &[UNDERSCORE_TOOL]);
+        let registry = registry_after_materialization(&[(
+            CONNECTOR_ID,
+            &[UNDERSCORE_TOOL],
+            &[UNDERSCORE_TOOL],
+        )]);
         // Same registry, empty running set — the ONLY thing that changed.
         let names: Vec<String> =
             plugin_tool_descriptors_from(registry.list(), &running(&[]), &WavePluginScope::All)
@@ -1294,11 +1308,11 @@ mod connector_tool_routing_tests {
 
     #[test]
     fn underscore_bearing_connector_tool_routes_uniquely() {
-        let registry = registry_after_materialization(
+        let registry = registry_after_materialization(&[(
             CONNECTOR_ID,
             &[UNDERSCORE_TOOL, OTHER_TOOL],
             &[UNDERSCORE_TOOL, OTHER_TOOL],
-        );
+        )]);
         let minted = format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
         let route = plugin_tool_route(&registry, &minted, &running(&[CONNECTOR_ID]))
             .expect("route resolution must not be ambiguous")
@@ -1322,19 +1336,21 @@ mod connector_tool_routing_tests {
     /// split, no matter how many `_` the TOOL name contains.
     #[test]
     fn prefix_sibling_connector_cannot_shadow_the_route() {
-        let registry =
-            registry_after_materialization(CONNECTOR_ID, &[UNDERSCORE_TOOL], &[UNDERSCORE_TOOL]);
-
         let sibling = "mcp";
         let near_miss = format!("wisburg_{UNDERSCORE_TOOL}");
-        registry.insert(connector_manifest(sibling, &[&near_miss]), None);
-        let tools = crate::plugin_host::connector::materialize_http_tools(
-            sibling,
-            &connector_manifest(sibling, &[&near_miss]).mcp_http.unwrap(),
-            &[json!({ "name": near_miss })],
+        let sibling_manifest = materialized_connector(sibling, &[&near_miss], &[&near_miss]);
+        assert_eq!(
+            sibling_manifest.exposes_tools.len(),
+            1,
+            "sibling tool must materialize"
         );
-        assert_eq!(tools.len(), 1, "sibling tool must materialize");
-        assert!(registry.set_exposes_tools(sibling, tools));
+        let registry = PluginRegistry::from_manifests([
+            (
+                materialized_connector(CONNECTOR_ID, &[UNDERSCORE_TOOL], &[UNDERSCORE_TOOL]),
+                None,
+            ),
+            (sibling_manifest, None),
+        ]);
 
         let minted = format!("plugin.{CONNECTOR_ID}_{UNDERSCORE_TOOL}");
         let sibling_minted = format!("plugin.{sibling}_{near_miss}");

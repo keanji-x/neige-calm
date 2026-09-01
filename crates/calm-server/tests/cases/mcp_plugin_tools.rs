@@ -873,8 +873,8 @@ async fn boot_plugin_host(
         "permissions": {}
     });
     let manifest: Manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    // #1196 S0a — build-time seeding: three manifests, one consuming builder.
+    let registry_builder = PluginRegistry::builder().with(manifest, Some(install_dir.clone()));
     let colliding_manifest_json = json!({
         "manifest_version": 1,
         "id": COLLIDING_PLUGIN_ID,
@@ -895,7 +895,8 @@ async fn boot_plugin_host(
     });
     let colliding_manifest: Manifest =
         Manifest::parse(&colliding_manifest_json.to_string()).expect("manifest parses");
-    registry.insert(colliding_manifest, Some(colliding_install_dir.clone()));
+    let registry_builder =
+        registry_builder.with(colliding_manifest, Some(colliding_install_dir.clone()));
 
     // #891 slice ④ — trusted stub plugin owning WORKFLOW_ID and exposing one
     // tool, so bound-wave scoping has an "owning plugin" to resolve.
@@ -927,7 +928,9 @@ async fn boot_plugin_host(
     });
     let trusted_manifest: Manifest =
         Manifest::parse(&trusted_manifest_json.to_string()).expect("manifest parses");
-    registry.insert(trusted_manifest, Some(trusted_install_dir.clone()));
+    let registry = registry_builder
+        .with(trusted_manifest, Some(trusted_install_dir.clone()))
+        .build();
 
     repo.plugin_install(NewPlugin {
         id: PLUGIN_ID.into(),
