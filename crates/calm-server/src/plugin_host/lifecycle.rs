@@ -21,9 +21,13 @@
 //!   that step and returns the fresh row; the caller renders it. That read
 //!   point is load-bearing (it is what makes `enable` report `running`), so it
 //!   is preserved exactly.
-//! * The leading `plugin_get_by_id` 404 probes are preserved. `reload`'s is the
+//! * The leading 404 probes are preserved. `reload`'s is the
 //!   only one that is load-bearing *on its own*: without it an unknown id
-//!   reaches the manifest read and returns a 400. The other three are today
+//!   reaches the manifest read and returns a 400. (#1196 S1 review P0-1 moved
+//!   `reload`'s probe onto [`LifecycleDb::enabled_row`] so that it can only
+//!   answer "does this row exist" and can no longer hand a stale `Plugin` to the
+//!   decision below it; the 404 it produces is byte-identical. The other three
+//!   still call `plugin_row_or_404` and discard its result.) The other three are today
 //!   redundant with the repo layer — `plugin_update_enabled` and
 //!   `plugin_delete` both raise `NotFound` on `rows_affected() == 0`
 //!   (`calm-truth/src/db/sqlite/out_of_domain.rs:414` / `:470`), formatting the
@@ -40,11 +44,78 @@
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 
+use async_trait::async_trait;
+
 use super::{HostError, KERNEL_VERSION, Manifest, PluginHost, check_min_kernel_version};
+use crate::db::RouteRepo;
 use crate::error::CalmError;
 use crate::model::{NewPlugin, Plugin};
 
 type Result<T> = std::result::Result<T, CalmError>;
+
+// ---------------------------------------------------------------------------
+// #1196 S1 — the narrow lifecycle DB port
+// ---------------------------------------------------------------------------
+
+/// The two plugin-row operations the lifecycle machinery performs, isolated
+/// from the ~100-method `RouteRepo` behind a port narrow enough to fake.
+///
+/// **Why this exists** (design §4 acceptance 15/16). Two things are otherwise
+/// untestable:
+///
+/// * the supervisor's third segment must **fail closed** on a plugin-row read
+///   failure — keep `Crashed`, release the lock, retry — and prove that when
+///   the read recovers it still honours `enabled`. `SqlxRepo` is the only
+///   `RouteRepo` implementation in the repo (`MockRepo` was deliberately
+///   deleted in #4) and `pool().close()` is a *permanent* failure, so it cannot
+///   express "fails once, then works";
+/// * `disable`'s internal order (stop first, DB write second) is invisible from
+///   outside: both orders leave the same final state. A fake that observes
+///   `PluginHost::status` at the instant `set_enabled` is called sees the
+///   difference directly — `None` under the new order, `Some(Running)` under
+///   the old one. A DB barrier cannot do this here: `tests/` run on
+///   `sqlite::memory:`, where `journal_mode = WAL` is a no-op and readers get
+///   no snapshot isolation, so a held write transaction merely parks the
+///   `UPDATE` and both orders look identical.
+///
+/// `pub` and `#[async_trait]` are both load-bearing: the acceptance tests are
+/// an external crate, and `dyn LifecycleDb` needs the trait object shape the
+/// rest of the repo's async traits use.
+#[async_trait]
+pub trait LifecycleDb: Send + Sync {
+    /// `Ok(None)` — no such plugin row. `Ok(Some(enabled))` — the row's
+    /// `enabled` bit. `Err` — the read itself failed and the caller must not
+    /// guess.
+    async fn enabled_row(&self, id: &str) -> Result<Option<bool>>;
+
+    /// Set the row's `enabled` bit. Propagates the repo's own `NotFound` for a
+    /// missing row, which is what keeps the enable/disable endpoints' 404
+    /// contract byte-identical.
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<()>;
+}
+
+/// Production implementation: straight delegation to the host's repo.
+pub(super) struct RepoLifecycleDb {
+    repo: Arc<dyn RouteRepo>,
+}
+
+impl RepoLifecycleDb {
+    pub(super) fn new(repo: Arc<dyn RouteRepo>) -> Self {
+        Self { repo }
+    }
+}
+
+#[async_trait]
+impl LifecycleDb for RepoLifecycleDb {
+    async fn enabled_row(&self, id: &str) -> Result<Option<bool>> {
+        Ok(self.repo.plugin_get_by_id(id).await?.map(|p| p.enabled))
+    }
+
+    async fn set_enabled(&self, id: &str, enabled: bool) -> Result<()> {
+        self.repo.plugin_update_enabled(id, enabled).await?;
+        Ok(())
+    }
+}
 
 impl PluginHost {
     // -----------------------------------------------------------------------
@@ -62,6 +133,13 @@ impl PluginHost {
     /// check → materialize the install tree → `plugin_install` → registry
     /// insert. Nothing before `materialize_install_tree` writes anything, so a
     /// refusal is fully inert.
+    ///
+    /// #1196 §2.3 — **where the guard is taken matters.** It goes after the
+    /// min-kernel check and before the duplicate-id probe. Taking it on the
+    /// first line would mean "this id is busy AND the manifest needs a newer
+    /// kernel" answers 409 instead of today's 422 — an error code silently
+    /// changed by the lock. Nothing above the guard writes anything, so
+    /// "`Busy` implies no side effects" still holds.
     pub async fn install(&self, manifest: Manifest, src_path: &StdPath) -> Result<Plugin> {
         // Issue #45: refuse to install a plugin we can never spawn. Doing this
         // at install time (vs only at spawn time) avoids littering the DB and
@@ -80,6 +158,15 @@ impl PluginHost {
                 manifest.id, err.required, err.actual,
             )));
         }
+
+        // ---- THE guard. Everything below is one critical section. ---------
+        // This is what closes design §1.2 race 2: the duplicate-id probe and
+        // the insert used to be a TOCTOU pair over an `ON CONFLICT DO UPDATE`,
+        // so two concurrent installs of one id could both pass the probe and
+        // the loser would overwrite the winner's row.
+        let guard = self
+            .try_lock_lifecycle(&manifest.id)
+            .map_err(spawn_error_to_calm)?;
 
         // Reject reinstall while the previous row is still around. The
         // uninstall path is the only way to clear it; idempotent-by-conflict
@@ -120,7 +207,7 @@ impl PluginHost {
         // implicitly: the manifest carries the perms, and the
         // registry/permission checker reads them directly on every callback —
         // no separate "granted" table to update in M3.
-        self.registry_insert(manifest, Some(install_dir));
+        self.registry_insert(&guard, manifest, Some(install_dir));
 
         // The row returned here is `plugin_install`'s own return value, NOT a
         // re-read: install has no runtime step, and the route never re-read
@@ -140,9 +227,18 @@ impl PluginHost {
     /// error to the caller so the UI can show it immediately rather than
     /// waiting for a state event.
     pub async fn enable(self: &Arc<Self>, id: &str) -> Result<Plugin> {
+        // #1196 §2.3 — the 404 probe stays **before** the guard, for the same
+        // reason `install`'s min-kernel check does. Part of this endpoint's
+        // unknown-id 404 is raised by the write below (`plugin_update_enabled`
+        // reports `NotFound` on `rows_affected() == 0`), so a guard taken ahead
+        // of the probe would turn "unknown id AND busy" into a 409 — an error
+        // code silently changed by the lock, exactly the install 422→409
+        // regression one endpoint over. The probe is a pure read, so keeping it
+        // outside the guard does not weaken "Busy implies no side effects".
         self.plugin_row_or_404(id).await?;
-        self.repo.plugin_update_enabled(id, true).await?;
-        if let Err(e) = self.spawn(id).await {
+        let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
+        self.lifecycle_db.set_enabled(id, true).await?;
+        if let Err(e) = self.spawn_under(&guard, None).await {
             return Err(spawn_error_to_calm(e));
         }
         self.plugin_row_or_404(id).await
@@ -152,23 +248,39 @@ impl PluginHost {
     // disable
     // -----------------------------------------------------------------------
 
-    /// Flip `enabled = false` and stop.
+    /// Stop, then flip `enabled = false`.
     ///
-    /// **The DB write comes first, before the stop.** That is today's order and
-    /// S0 keeps it: flipping it is a behavior change that belongs to S1
-    /// (design §2.6), where it is witnessed by acceptance 16.
+    /// **#1196 §2.6 — the order is reversed from S0's, and the order is the
+    /// point.** Writing the DB first leaves, whenever the stop then fails,
+    /// `enabled = false` beside a plugin that is still running — and the next
+    /// boot's autospawn skips it *because* it is disabled, so nothing ever
+    /// reconciles. Stopping first fails the other way: if the DB write fails we
+    /// are left stopped but still `enabled = true`, and the next boot brings it
+    /// back. That is the same philosophy `enable` already follows (a failed
+    /// spawn leaves `enabled = true` on purpose).
     ///
     /// The stop is best-effort: `NotFound` means the host wasn't running this
     /// plugin (already exited / never spawned); benign for the flip-to-disabled
-    /// outcome we're trying to achieve.
+    /// outcome we're trying to achieve. **No other stop error may reach the DB
+    /// write** — that is what makes the supervisor's epoch check authoritative
+    /// over the `enabled` bit (design §2.6).
     pub async fn disable(self: &Arc<Self>, id: &str) -> Result<Plugin> {
+        // #1196 §2.3 — the 404 probe stays **before** the guard, for the same
+        // reason `install`'s min-kernel check does. Part of this endpoint's
+        // unknown-id 404 is raised by the write below (`plugin_update_enabled`
+        // reports `NotFound` on `rows_affected() == 0`), so a guard taken ahead
+        // of the probe would turn "unknown id AND busy" into a 409 — an error
+        // code silently changed by the lock, exactly the install 422→409
+        // regression one endpoint over. The probe is a pure read, so keeping it
+        // outside the guard does not weaken "Busy implies no side effects".
         self.plugin_row_or_404(id).await?;
-        self.repo.plugin_update_enabled(id, false).await?;
-        match self.stop(id).await {
+        let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
+        match self.stop_under(&guard).await {
             Ok(()) => {}
             Err(HostError::NotFound(_)) => {}
             Err(e) => return Err(CalmError::Internal(format!("stop failed: {e}"))),
         }
+        self.lifecycle_db.set_enabled(id, false).await?;
         self.plugin_row_or_404(id).await
     }
 
@@ -185,10 +297,20 @@ impl PluginHost {
     /// into a 500 — with the plugin row already stopped but not deleted.
     /// `plugin_delete` is the one write whose failure is reported.
     pub async fn uninstall(self: &Arc<Self>, id: &str) -> Result<()> {
+        // #1196 §2.3 — probe before guard. `plugin_delete` raises the unknown-id
+        // `NotFound` itself (`rows_affected() == 0`), so taking the guard first
+        // would answer 409 for an id that does not exist and happens to be
+        // busy, where today the endpoint answers 404. Pure read, no side
+        // effects, so "Busy implies nothing happened" is untouched.
         self.plugin_row_or_404(id).await?;
+        let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
         // Stop first so the process can't write into the state we're about to
         // delete out from under it. NotFound is fine (already stopped).
-        match self.stop(id).await {
+        //
+        // #1196 §2.4 — `NotFound` no longer hides an in-flight spawn. Such a
+        // spawn would hold this very guard, so by the time we are here it has
+        // finished (and `stop_under` removes it) or unwound.
+        match self.stop_under(&guard).await {
             Ok(()) => {}
             Err(HostError::NotFound(_)) => {}
             Err(e) => return Err(CalmError::Internal(format!("stop failed: {e}"))),
@@ -201,7 +323,7 @@ impl PluginHost {
         let _ = self.repo.plugin_kv_clear(id).await;
         let _ = self.repo.overlays_clear_by_plugin(id).await;
         self.repo.plugin_delete(id).await?;
-        self.registry_remove(id);
+        self.registry_remove(&guard);
 
         // The on-disk tree is left in place: removing it would race with any
         // observers (the user pointing the install at a checked-out repo loses
@@ -218,13 +340,44 @@ impl PluginHost {
     /// republish it to registry + DB, and **respawn only if the row said
     /// `enabled`**.
     ///
-    /// The `enabled` bit and the install path both come from the row read
-    /// **before** the stop — that pre-read row is the one that decides whether
-    /// to respawn. An unconditional respawn would resurrect a disabled plugin.
+    /// The `enabled` bit and the install path both come from a row read
+    /// **inside the guard** — that row is the one that decides whether to
+    /// respawn. An unconditional respawn would resurrect a disabled plugin.
+    ///
+    /// **#1196 S1 review P0-1 — the probe may not supply decision values.** The
+    /// pre-guard probe below is an *existence* probe and nothing else. The
+    /// reachable interleaving it used to create: the probe reads `enabled =
+    /// true`, a concurrent `disable` takes the guard, stops the plugin and
+    /// commits `enabled = false`, releases; this reload then takes the guard and
+    /// respawns on the **stale** bit — terminal state `DB disabled + runtime
+    /// Running`, with nothing left to reconcile it. That is #1169 race 3 one
+    /// endpoint over. It applies to `install_path` too: an `install` that
+    /// re-materialized the tree in the same window would be read past.
+    ///
+    /// Why the probe goes through [`LifecycleDb::enabled_row`] rather than
+    /// [`Self::plugin_row_or_404`]: the port hands back an `Option<bool>` we
+    /// immediately discard, so there is no `Plugin` in scope before the guard
+    /// and the defect is not *expressible* here any more — which is a stronger
+    /// statement than "remember to re-read". It also gives the acceptance suite
+    /// the seam it needs to open the window deterministically (`a17`).
+    ///
+    /// The 404 shape is byte-identical to the probe it replaces: `enabled_row`
+    /// answers `Ok(None)` for a missing row, and the message is the same
+    /// `plugin {id}` this module has always produced.
     pub async fn reload(self: &Arc<Self>, id: &str) -> Result<Plugin> {
+        // #1196 §2.3 — probe before guard. `reload`'s 404 is the one that is
+        // load-bearing on its own: without the probe an unknown id falls
+        // through to the manifest read and returns a 400. Behind the guard it
+        // would instead return 409 whenever the id were busy. Pure read, and
+        // its VALUE is deliberately dropped on the floor.
+        if self.lifecycle_db.enabled_row(id).await?.is_none() {
+            return Err(CalmError::NotFound(format!("plugin {id}")));
+        }
+        let guard = self.try_lock_lifecycle(id).map_err(spawn_error_to_calm)?;
+        // The decision row. Read here, inside the guard, and NOT before it.
         let plug = self.plugin_row_or_404(id).await?;
         // Stop first (NotFound is fine — could have crashed).
-        match self.stop(id).await {
+        match self.stop_under(&guard).await {
             Ok(()) => {}
             Err(HostError::NotFound(_)) => {}
             Err(e) => return Err(CalmError::Internal(format!("stop failed: {e}"))),
@@ -269,10 +422,10 @@ impl PluginHost {
         // the detail endpoint from lying.
         let manifest_value = serde_json::to_value(&manifest)
             .map_err(|e| CalmError::Internal(format!("manifest re-serialize after reload: {e}")))?;
-        self.registry_insert(manifest, Some(install_dir));
+        self.registry_insert(&guard, manifest, Some(install_dir));
         self.repo.plugin_update_manifest(id, manifest_value).await?;
         if plug.enabled
-            && let Err(e) = self.spawn(id).await
+            && let Err(e) = self.spawn_under(&guard, None).await
         {
             return Err(spawn_error_to_calm(e));
         }
@@ -334,6 +487,12 @@ pub(crate) fn spawn_error_to_calm(e: HostError) -> CalmError {
         unsupported @ HostError::UnsupportedForKind { .. } => {
             CalmError::BadRequest(unsupported.to_string())
         }
+        // #1196 §2.5 / §5 R8 — 409 with its OWN code. Mapping this to the
+        // catch-all 500 below would be actively harmful, not merely imprecise:
+        // `enable` writes `enabled = true` before spawning, so a 500 here
+        // states a permanent kernel fault for a request that in fact did
+        // nothing and can simply be repeated.
+        busy @ HostError::LifecycleBusy(_) => CalmError::PluginBusy(busy.to_string()),
         other => CalmError::Internal(format!("spawn failed: {other}")),
     }
 }

@@ -1962,7 +1962,7 @@
             }
           },
           "409": {
-            "description": "Plugin id already installed",
+            "description": "Plugin id already installed (`plugin_conflict`), or another lifecycle operation holds this id (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2107,6 +2107,16 @@
               }
             }
           },
+          "409": {
+            "description": "Another lifecycle operation holds this plugin (`plugin_busy`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal error",
             "content": {
@@ -2220,6 +2230,16 @@
               }
             }
           },
+          "409": {
+            "description": "Another lifecycle operation holds this plugin (`plugin_busy`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "500": {
             "description": "Stop failed / internal error",
             "content": {
@@ -2272,7 +2292,7 @@
             }
           },
           "409": {
-            "description": "Workflow id already registered by a running trusted plugin",
+            "description": "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2419,7 +2439,7 @@
             }
           },
           "409": {
-            "description": "Workflow id already registered by a running trusted plugin",
+            "description": "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2551,6 +2571,16 @@
           },
           "404": {
             "description": "Plugin not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another lifecycle operation holds this plugin (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5164,7 +5194,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_kernel_too_old`,\n`spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
+            "description": "Stable machine-readable code — one of `not_found`, `conflict`,\n`idempotency_collision`, `idempotency_key_exhausted`,\n`bad_request`, `unauthorized`,\n`forbidden`, `plugin_install`, `plugin_permission`,\n`plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,\n`spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,\n`codex_app_server`, `service_unavailable`, `internal`,\n`forbidden_tool`, `not_a_card_tool`, `tool_call_failed`."
           },
           "error": {
             "type": "string",

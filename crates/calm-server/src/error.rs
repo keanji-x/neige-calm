@@ -24,7 +24,7 @@ pub struct ErrorBody {
     /// `idempotency_collision`, `idempotency_key_exhausted`,
     /// `bad_request`, `unauthorized`,
     /// `forbidden`, `plugin_install`, `plugin_permission`,
-    /// `plugin_conflict`, `plugin_kernel_too_old`,
+    /// `plugin_conflict`, `plugin_busy`, `plugin_kernel_too_old`,
     /// `spec_harness_dormant`, `db_error`, `io_error`, `serde_error`,
     /// `codex_app_server`, `service_unavailable`, `internal`,
     /// `forbidden_tool`, `not_a_card_tool`, `tool_call_failed`.
@@ -96,6 +96,21 @@ pub enum CalmError {
     #[error("plugin conflict: {0}")]
     PluginConflict(String),
 
+    /// 409 — #1196 §2.5: another lifecycle operation (install / enable /
+    /// disable / uninstall / reload / spawn / stop / restart / token rotation)
+    /// currently holds this plugin id's lifecycle lock, so the request was
+    /// refused **without doing anything at all**.
+    ///
+    /// Deliberately distinct from [`CalmError::PluginConflict`], which is also
+    /// a 409: `plugin_conflict` means "this will never work as asked" (the id
+    /// is already installed, the workflow id is taken) and the client must
+    /// change the request, whereas `plugin_busy` means "try again in a moment"
+    /// and the identical request will succeed. A client that cannot tell the
+    /// two apart either retries forever or gives up on a transient refusal, so
+    /// the distinction lives in the error *code*, not in the message text.
+    #[error("plugin busy: {0}")]
+    PluginBusy(String),
+
     /// 422 — manifest is structurally valid but its `min_kernel_version`
     /// demands a kernel newer than the one we are. Distinct from
     /// `PluginInstall` (which is a 400 "your input is malformed") because
@@ -163,6 +178,7 @@ impl CalmError {
             CalmError::PluginInstall(_) => "plugin_install",
             CalmError::PluginPermission(_) => "plugin_permission",
             CalmError::PluginConflict(_) => "plugin_conflict",
+            CalmError::PluginBusy(_) => "plugin_busy",
             CalmError::PluginKernelTooOld(_) => "plugin_kernel_too_old",
             CalmError::SpecResetUnsupportedInSharedMode(_) => {
                 "spec_reset_unsupported_in_shared_mode"
@@ -184,6 +200,7 @@ impl CalmError {
             | CalmError::IdempotencyCollision(_)
             | CalmError::IdempotencyKeyExhausted(_)
             | CalmError::PluginConflict(_)
+            | CalmError::PluginBusy(_)
             | CalmError::SpecHarnessDormant(_) => StatusCode::CONFLICT,
             CalmError::BadRequest(_) | CalmError::PluginInstall(_) => StatusCode::BAD_REQUEST,
             CalmError::Unauthorized => StatusCode::UNAUTHORIZED,
@@ -296,6 +313,7 @@ impl From<CalmError> for calm_truth::TruthError {
             | CalmError::PluginInstall(m)
             | CalmError::PluginPermission(m)
             | CalmError::PluginConflict(m)
+            | CalmError::PluginBusy(m)
             | CalmError::PluginKernelTooOld(m)
             | CalmError::SpecResetUnsupportedInSharedMode(m)
             | CalmError::SpecHarnessDormant(m)

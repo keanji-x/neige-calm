@@ -347,7 +347,15 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         .validate()
         .expect("schema-less mutation stays a valid manifest");
     // `install_path = None` keeps the registry's existing on-disk path.
-    fx.plugin_host.registry_insert(schemaless, None);
+    // #1196 S1 — a runtime registry write needs the id's lifecycle guard; the
+    // test takes the real one (`try_lock_lifecycle` is `pub` for exactly this).
+    {
+        let g = fx
+            .plugin_host
+            .try_lock_lifecycle(&schemaless.id)
+            .expect("lifecycle lock is free");
+        fx.plugin_host.registry_insert(&g, schemaless, None);
+    }
 
     // Bound + input against a schema-less plugin → 400 fail-closed.
     let no_schema_dir = wave_cwd_tempdir("wf-input-noschema").expect("no-schema input cwd");
@@ -377,14 +385,15 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     );
 
     // Schema-less bound create without input stays valid (design §1.4 row 4).
-    fx.plugin_host.registry_insert(
-        {
-            let mut schemaless = read_manifest();
-            schemaless.input_schema = None;
-            schemaless
-        },
-        None,
-    );
+    {
+        let mut schemaless = read_manifest();
+        schemaless.input_schema = None;
+        let g = fx
+            .plugin_host
+            .try_lock_lifecycle(&schemaless.id)
+            .expect("lifecycle lock is free");
+        fx.plugin_host.registry_insert(&g, schemaless, None);
+    }
     let no_input_dir = wave_cwd_tempdir("wf-noschema-ok").expect("schema-less bind cwd");
     let (status, body) = post_wave(
         app.clone(),
@@ -402,7 +411,14 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     assert_eq!(body["workflow_input"], Value::Null);
 
     // Restore the shipped manifest for the remaining cases.
-    fx.plugin_host.registry_insert(read_manifest(), None);
+    {
+        let shipped = read_manifest();
+        let g = fx
+            .plugin_host
+            .try_lock_lifecycle(&shipped.id)
+            .expect("lifecycle lock is free");
+        fx.plugin_host.registry_insert(&g, shipped, None);
+    }
 
     let missing_dir = wave_cwd_tempdir("wf-missing").expect("missing workflow cwd");
     let (status, body) = post_wave(

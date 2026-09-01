@@ -17,6 +17,7 @@ use std::sync::{Arc, RwLock};
 
 use thiserror::Error;
 
+use super::LifecycleGuard;
 use super::manifest::{Manifest, ManifestError};
 
 /// Filename the loader looks for inside each plugin subdirectory.
@@ -235,13 +236,54 @@ impl PluginRegistry {
     /// — see the design doc §2.3 ("建表期 vs 运行期"). Do NOT re-widen this to
     /// `pub` / `pub(crate)` and do NOT add a `insert_unlocked` escape hatch: the
     /// signature is the only thing that forces the migration.
-    pub(in crate::plugin_host) fn insert(&self, manifest: Manifest, install_path: Option<PathBuf>) {
+    /// #1196 S1 — takes the [`LifecycleGuard`] for the id being written. Only
+    /// [`super::PluginHost::try_lock_lifecycle`] /
+    /// [`super::PluginHost::await_lifecycle`] can produce one, so the registry
+    /// and the live process table are now behind the same lock: an in-flight
+    /// spawn's `set_exposes_tools` and a concurrent uninstall's `remove` can no
+    /// longer interleave (design §1.2 races 1 and 4).
+    ///
+    /// **#1196 S1 review P0-2 — the key is read off the guard, like every other
+    /// mutator here.** It used to be `manifest.id` with the guard ignored, which
+    /// made the guard a bare capability token: holding `A`'s guard was enough to
+    /// write `B`'s entry, and `try_lock_lifecycle` is `pub`, so that was
+    /// expressible — not merely un-prevented. `remove` and `set_exposes_tools`
+    /// already keyed off the guard; `emit_state_under` does too. This was the
+    /// one hole.
+    ///
+    /// The `assert_eq!` is what keeps the key and the stored manifest from ever
+    /// disagreeing (an entry filed under `A` whose manifest says `B` would be a
+    /// worse bug than the one being fixed). It is a panic rather than a silent
+    /// no-op or a `Result` because it is provably unreachable in-tree — both
+    /// production call sites (`install`, `reload`) take the guard on exactly the
+    /// id they then write, and `reload` re-checks `manifest.id != id` before
+    /// getting here — and because a caller that *did* trip it has already lost
+    /// the invariant the lock exists to hold; carrying on would corrupt the
+    /// registry quietly.
+    ///
+    /// Residual, stated honestly: a `LifecycleGuard` does not carry the identity
+    /// of the [`super::PluginHost`] whose map minted it, so a guard from a second
+    /// host over the same id is still accepted. Every process has one host;
+    /// closing that needs the guard to carry a host token, which is #1196 S2
+    /// material, not this fix.
+    pub(in crate::plugin_host) fn insert(
+        &self,
+        guard: &LifecycleGuard,
+        manifest: Manifest,
+        install_path: Option<PathBuf>,
+    ) {
+        let id = guard.id();
+        assert_eq!(
+            id, manifest.id,
+            "registry insert under the wrong lifecycle guard: the lock is held \
+             for `{id}` but the manifest being written is `{}`",
+            manifest.id
+        );
         let mut inner = self.inner.write().unwrap();
-        let id = manifest.id.clone();
         if let Some(p) = install_path {
-            inner.install_paths.insert(id.clone(), p);
+            inner.install_paths.insert(id.to_string(), p);
         }
-        inner.manifests.insert(id, manifest);
+        inner.manifests.insert(id.to_string(), manifest);
     }
 
     /// #1164 §2.7(2)(3) — replace ONLY the `exposes_tools` field of an
@@ -256,21 +298,36 @@ impl PluginRegistry {
     ///    workflows — with nothing to notice until the next reload. Confining
     ///    the write to one field caps the worst case at "stale tool list".
     ///
-    /// 2. **No-op when `id` is absent.** Uninstall removes the registry entry
-    ///    while an in-flight spawn may still be running (§5 R12: there is no
-    ///    per-plugin lifecycle lock). If materialization inserted, it would
-    ///    RESURRECT the uninstalled manifest into the registry. Returning
-    ///    `false` instead is what neutralizes that race.
+    /// 2. **No-op when `id` is absent.** If materialization inserted, it would
+    ///    RESURRECT a manifest that `uninstall` removed.
+    ///
+    ///    Honest status after #1196 S1: this arm no longer neutralizes a *race*.
+    ///    The old comment here said "§5 R12: there is no per-plugin lifecycle
+    ///    lock" — S1 is that lock, and it contradicts the paragraph that follows
+    ///    it, so it is gone. An in-flight spawn holds `id`'s guard from before
+    ///    its registry lookup until after this call, and `uninstall` cannot take
+    ///    that guard meanwhile, so the entry cannot vanish under a spawn. What
+    ///    the `false` arm now covers is the fail-closed residue: an id that was
+    ///    never in the registry to begin with, and any future caller reaching
+    ///    here outside a spawn's lookup→write span. The caller
+    ///    (`spawn_mcp_http`) reads the `false` and abandons the spawn with a
+    ///    terminal `Unavailable` rather than inserting a live entry, which is
+    ///    the behaviour worth keeping either way.
     ///
     /// Returns whether the entry existed (and was therefore updated).
     ///
     /// #1196 S0a — **runtime** write, `pub(in crate::plugin_host)` for the same
     /// reason as [`Self::insert`].
+    /// #1196 S1 — takes the [`LifecycleGuard`], and reads the id **off it**.
+    /// Property 2 below stops being a race-neutralizer and becomes a plain
+    /// invariant: an uninstall cannot be inside its own critical section while
+    /// this one is running.
     pub(in crate::plugin_host) fn set_exposes_tools(
         &self,
-        id: &str,
+        guard: &LifecycleGuard,
         tools: Vec<super::manifest::ExposedTool>,
     ) -> bool {
+        let id = guard.id();
         let mut inner = self.inner.write().unwrap();
         match inner.manifests.get_mut(id) {
             Some(manifest) => {
@@ -285,7 +342,8 @@ impl PluginRegistry {
     ///
     /// #1196 S0a — **runtime** write, `pub(in crate::plugin_host)` for the same
     /// reason as [`Self::insert`].
-    pub(in crate::plugin_host) fn remove(&self, id: &str) -> Option<Manifest> {
+    pub(in crate::plugin_host) fn remove(&self, guard: &LifecycleGuard) -> Option<Manifest> {
+        let id = guard.id();
         let mut inner = self.inner.write().unwrap();
         inner.install_paths.remove(id);
         inner.manifests.remove(id)
@@ -369,6 +427,13 @@ fn load_one(manifest_path: &Path) -> Result<Manifest, LoadOneError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A lifecycle guard for `id`, over a throwaway mutex. These unit tests
+    /// exercise the registry in isolation; there is no host and nothing to
+    /// race, so the guard is a pure capability token here.
+    fn g(id: &str) -> LifecycleGuard {
+        LifecycleGuard::for_test(id)
+    }
     use std::fs;
 
     const VALID: &str = r#"{
@@ -445,16 +510,60 @@ mod tests {
     fn insert_and_remove_in_memory() {
         let reg = PluginRegistry::empty();
         let m = Manifest::parse(VALID).unwrap();
-        reg.insert(m.clone(), Some(PathBuf::from("/tmp/fake")));
+        reg.insert(
+            &g("test.valid"),
+            m.clone(),
+            Some(PathBuf::from("/tmp/fake")),
+        );
         assert_eq!(reg.len(), 1);
         assert_eq!(
             reg.install_path("test.valid"),
             Some(PathBuf::from("/tmp/fake"))
         );
-        let prev = reg.remove("test.valid").expect("had entry");
+        let prev = reg.remove(&g("test.valid")).expect("had entry");
         assert_eq!(prev.id, m.id);
         assert!(reg.is_empty());
         assert!(reg.install_path("test.valid").is_none());
+    }
+
+    // -----------------------------------------------------------------
+    // #1196 S1 review P0-2 — every mutator is bound to the guard's id
+    // -----------------------------------------------------------------
+
+    /// Holding `A`'s guard must not let you write `B`'s entry. `insert` used to
+    /// key off `manifest.id` and ignore the guard entirely, so this wrote
+    /// `test.second` under `test.valid`'s lock — with `try_lock_lifecycle`
+    /// being `pub`, that was expressible from outside the module.
+    ///
+    /// Mutation witness: restore `let id = manifest.id.clone();` in
+    /// [`PluginRegistry::insert`] and this test stops panicking, i.e. goes red
+    /// on the missing panic.
+    #[test]
+    #[should_panic(expected = "registry insert under the wrong lifecycle guard")]
+    fn insert_refuses_a_guard_for_another_id() {
+        let reg = PluginRegistry::empty();
+        // The guard is for `test.valid`; the manifest is `test.second`.
+        reg.insert(
+            &g("test.valid"),
+            Manifest::parse(SECOND_VALID).unwrap(),
+            None,
+        );
+    }
+
+    /// The other half: the id the entry is filed under is the guard's, so a
+    /// matching pair still round-trips and `remove`/`set_exposes_tools` — which
+    /// have always keyed off the guard — find it.
+    #[test]
+    fn insert_files_the_entry_under_the_guards_id() {
+        let reg = PluginRegistry::empty();
+        reg.insert(
+            &g("test.valid"),
+            Manifest::parse(VALID).unwrap(),
+            Some("/tmp/fake".into()),
+        );
+        assert!(reg.get("test.valid").is_some());
+        assert!(reg.set_exposes_tools(&g("test.valid"), vec![]));
+        assert!(reg.remove(&g("test.valid")).is_some());
     }
 
     // -----------------------------------------------------------------
@@ -474,9 +583,13 @@ mod tests {
     #[test]
     fn set_exposes_tools_replaces_only_that_field() {
         let reg = PluginRegistry::empty();
-        reg.insert(Manifest::parse(VALID).unwrap(), Some("/tmp/fake".into()));
+        reg.insert(
+            &g("test.valid"),
+            Manifest::parse(VALID).unwrap(),
+            Some("/tmp/fake".into()),
+        );
 
-        assert!(reg.set_exposes_tools("test.valid", vec![tool("a"), tool("b")]));
+        assert!(reg.set_exposes_tools(&g("test.valid"), vec![tool("a"), tool("b")]));
 
         let after = reg.get("test.valid").expect("still registered");
         assert_eq!(
@@ -498,19 +611,21 @@ mod tests {
         );
     }
 
-    /// §2.7(3): the no-op is what stops an in-flight spawn from resurrecting a
-    /// manifest that uninstall already removed (risk R12).
+    /// §2.7(3): the no-op is what stops a spawn tail from resurrecting a
+    /// manifest that uninstall already removed. #1196 S1 downgraded this from a
+    /// race neutralizer to a fail-closed residue — see the method doc — but the
+    /// behaviour it pins is unchanged and still read by `spawn_mcp_http`.
     #[test]
     fn set_exposes_tools_is_a_noop_for_an_absent_id() {
         let reg = PluginRegistry::empty();
-        reg.insert(Manifest::parse(VALID).unwrap(), None);
+        reg.insert(&g("test.valid"), Manifest::parse(VALID).unwrap(), None);
 
-        // Uninstall removed it while a spawn was on the wire.
-        reg.remove("test.valid");
+        // Uninstall removed it.
+        reg.remove(&g("test.valid"));
         assert!(reg.is_empty());
 
         assert!(
-            !reg.set_exposes_tools("test.valid", vec![tool("a")]),
+            !reg.set_exposes_tools(&g("test.valid"), vec![tool("a")]),
             "must report that nothing was updated"
         );
         assert!(
@@ -524,8 +639,12 @@ mod tests {
     #[test]
     fn list_returns_all() {
         let reg = PluginRegistry::empty();
-        reg.insert(Manifest::parse(VALID).unwrap(), None);
-        reg.insert(Manifest::parse(SECOND_VALID).unwrap(), None);
+        reg.insert(&g("test.valid"), Manifest::parse(VALID).unwrap(), None);
+        reg.insert(
+            &g("test.second"),
+            Manifest::parse(SECOND_VALID).unwrap(),
+            None,
+        );
         let mut ids: Vec<String> = reg.list().into_iter().map(|m| m.id).collect();
         ids.sort();
         assert_eq!(
