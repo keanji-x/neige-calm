@@ -21,7 +21,7 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
-import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
+import { useCompactViewport } from '../../ui/viewport/public.ts';
 import styles from './today.module.css';
 
 /**
@@ -115,19 +115,6 @@ function isoDate(day: Date): ISODateString {
   const month = String(day.getMonth() + 1).padStart(2, '0');
   const date = String(day.getDate()).padStart(2, '0');
   return `${day.getFullYear()}-${month}-${date}` as ISODateString;
-}
-
-function useCompactViewport(): boolean {
-  const [compact, setCompact] = useState(() => globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY).matches ?? false);
-  useEffect(() => {
-    const media = globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY);
-    if (media === undefined) return;
-    const sync = () => setCompact(media.matches);
-    sync();
-    media.addEventListener('change', sync);
-    return () => media.removeEventListener('change', sync);
-  }, []);
-  return compact;
 }
 
 export function TodayPage({

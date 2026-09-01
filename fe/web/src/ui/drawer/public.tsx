@@ -11,26 +11,11 @@
 
 import { useEffect, useRef, type ReactNode } from 'react';
 
-import { RAIL_COLLAPSE_QUERY } from '../../styles/breakpoints.ts';
 import { Icon } from '../icon/public.tsx';
 import { MobileHeader } from '../mobile-header/public.tsx';
 import { useState } from '../state/public.ts';
+import { useCompactViewport } from '../viewport/public.ts';
 import styles from './drawer.module.css';
-
-function useCompactViewport(): boolean {
-  const [compact, setCompact] = useState(
-    () => globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY).matches ?? false,
-  );
-  useEffect(() => {
-    const media = globalThis.matchMedia?.(RAIL_COLLAPSE_QUERY);
-    if (media === undefined) return;
-    const sync = () => setCompact(media.matches);
-    sync();
-    media.addEventListener?.('change', sync);
-    return () => media.removeEventListener?.('change', sync);
-  }, []);
-  return compact;
-}
 
 /**
  * The marker on the drawer's seam — the strip of page between the card's
