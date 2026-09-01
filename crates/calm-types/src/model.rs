@@ -429,6 +429,43 @@ pub struct CardRuntimeView {
     pub thread_status: Option<String>,
 }
 
+/// One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
+///
+/// Its own type rather than a reuse of [`CoveConversationSummary`], which is
+/// what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
+/// the cove type's contract says "`waveTitle` is absent because every row lives
+/// on one hidden wave", and on a wave that reasoning is simply not true. Two
+/// lists with different contracts should not share one name just because their
+/// current fields coincide.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, ToSchema, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "fe/core/api/generated/wire.ts")]
+pub struct WaveConversationSummary {
+    /// The assistant card's id. This is the conversation's identity everywhere,
+    /// and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+    /// address.
+    pub id: String,
+    /// The wave this conversation lives on. Always the wave in the request
+    /// path; carried so a client holding a bare row can navigate.
+    pub wave_id: String,
+    /// The conversation's own name, or null before it has one. Never the
+    /// wave's title.
+    pub title: Option<String>,
+    /// Always `"wave-assistant"`, derived from the card's persisted marker.
+    /// A distinct value from the cove list's `"shared-chat"` on purpose: the
+    /// frontend branches on it, and a shared value would route assistant rows
+    /// through the cove chat's presentation.
+    pub kind: String,
+    /// The live session's state, or **null when the card has no session row**.
+    ///
+    /// Nullable for the same reason as the cove list's: the query LEFT JOINs so
+    /// a card whose session is gone (failed start, superseded runtime, shut
+    /// down harness) stays visible. Never fill it with an invented value.
+    pub state: Option<WorkerSessionState>,
+    /// The session's last update, falling back to the card's own.
+    pub updated_at: i64,
+}
+
 /// One row of `GET /api/coves/{cove_id}/conversations` (#1098 §5.5).
 ///
 /// Deliberately absent:

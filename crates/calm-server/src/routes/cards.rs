@@ -75,9 +75,17 @@ pub(crate) async fn card_scope(
 
 /// Whether the persisted card shape is allowed to use the headless harness
 /// routes. Unknown/malformed profile values deliberately fail closed.
+///
+/// #1189 added the assistant arm, and it is not decoration: this predicate
+/// gates `POST /api/cards/{id}/spec/input`, which is how a wave conversation's
+/// messages — including the first one, sent by
+/// `POST /api/waves/{id}/conversations` — reach the harness. Without it the
+/// endpoint mints a card it can then never talk to.
 pub(crate) fn card_runs_headless_harness(card: &Card, role: CardRole) -> bool {
     card.kind == "codex"
-        && (role == CardRole::Spec || crate::plain_chat::card_is_plain_chat(card, Some(role), true))
+        && (role == CardRole::Spec
+            || crate::plain_chat::card_is_plain_chat(card, Some(role), true)
+            || crate::plain_chat::card_is_wave_assistant(card, Some(role), true))
 }
 
 pub(crate) async fn interrupt_shared_card_active_turn(
@@ -1325,11 +1333,23 @@ async fn reset_spec_harness_card(
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {}", card.wave_id)))?;
 
-    // #1098 §5.3: marked chat cards use the PlainChat profile and must not
-    // inherit the wave title as a spec goal.
-    let plain_chat =
-        crate::plain_chat::card_is_plain_chat(&card, s.write.verify_role(&card.id), true);
-    let goal = (!plain_chat).then(|| wave.title.trim().to_string());
+    // #1098 §5.3 / #1189: a marked conversation card restarts under its OWN
+    // profile. Restarting an assistant under `Spec` would re-mint its thread
+    // with the spec prompt and the spec role — the card row would still say
+    // `assistant`, so the thread and the card would disagree about what the
+    // session may do.
+    //
+    // Neither flavour inherits the wave title as a goal: a seeded
+    // `Observation::WaveGoal` makes the agent speak before the user does.
+    let role = s.write.verify_role(&card.id);
+    let profile = if crate::plain_chat::card_is_plain_chat(&card, role, true) {
+        HarnessProfile::PlainChat
+    } else if crate::plain_chat::card_is_wave_assistant(&card, role, true) {
+        HarnessProfile::Assistant
+    } else {
+        HarnessProfile::Spec
+    };
+    let goal = (profile == HarnessProfile::Spec).then(|| wave.title.trim().to_string());
     let start_request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
@@ -1340,11 +1360,7 @@ async fn reset_spec_harness_card(
         goal: goal.filter(|goal| !goal.is_empty()),
         reset_harness_items: true,
         force_new_thread: true,
-        profile: if plain_chat {
-            HarnessProfile::PlainChat
-        } else {
-            HarnessProfile::Spec
-        },
+        profile,
         create_card: None,
         first_message_sha256: None,
     };

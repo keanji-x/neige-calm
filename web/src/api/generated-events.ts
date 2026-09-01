@@ -402,6 +402,53 @@ workflow_input: unknown,
  */
 terminal_at: number | null, workspace: WaveWorkspace, created_at: number, updated_at: number, };
 
+/**
+ * One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
+ *
+ * Its own type rather than a reuse of [`CoveConversationSummary`], which is
+ * what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
+ * the cove type's contract says "`waveTitle` is absent because every row lives
+ * on one hidden wave", and on a wave that reasoning is simply not true. Two
+ * lists with different contracts should not share one name just because their
+ * current fields coincide.
+ */
+export type WaveConversationSummary = { 
+/**
+ * The assistant card's id. This is the conversation's identity everywhere,
+ * and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+ * address.
+ */
+id: string, 
+/**
+ * The wave this conversation lives on. Always the wave in the request
+ * path; carried so a client holding a bare row can navigate.
+ */
+waveId: string, 
+/**
+ * The conversation's own name, or null before it has one. Never the
+ * wave's title.
+ */
+title: string | null, 
+/**
+ * Always `"wave-assistant"`, derived from the card's persisted marker.
+ * A distinct value from the cove list's `"shared-chat"` on purpose: the
+ * frontend branches on it, and a shared value would route assistant rows
+ * through the cove chat's presentation.
+ */
+kind: string, 
+/**
+ * The live session's state, or **null when the card has no session row**.
+ *
+ * Nullable for the same reason as the cove list's: the query LEFT JOINs so
+ * a card whose session is gone (failed start, superseded runtime, shut
+ * down harness) stays visible. Never fill it with an invented value.
+ */
+state: WorkerSessionState | null, 
+/**
+ * The session's last update, falling back to the card's own.
+ */
+updatedAt: number, };
+
 export type WaveFsCardMeta = { created_at: number, deletable: boolean, id: CardId, kind: string, role: CardRole, sort: number, updated_at: number, };
 
 export type WaveFsHookEvent = { created_at: number, event_id: number, hook_kind: string, kind: string, payload: unknown, };

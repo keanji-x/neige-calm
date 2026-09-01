@@ -15,7 +15,8 @@ use crate::harness::HarnessPhaseTag;
 use crate::model::{
     Card, CardPatch, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
     CovePatch, CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove,
-    NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin, Terminal, Wave, WaveDetail, WavePatch,
+    NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin, Terminal, Wave, WaveConversationSummary,
+    WaveDetail, WavePatch,
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::cards::{
@@ -77,6 +78,9 @@ use utoipa::OpenApi;
         crate::routes::cove_folders::resolve_path,
         // ---- waves ----
         crate::routes::wave_templates::list_wave_templates,
+        // ---- wave conversations (#1189) ----
+        crate::routes::wave_conversations::list_wave_conversations,
+        crate::routes::wave_conversations::create_wave_conversation,
         crate::routes::waves::list_waves_by_cove,
         crate::routes::waves::list_waves_window,
         crate::routes::waves::get_wave_detail,
@@ -199,6 +203,8 @@ use utoipa::OpenApi;
         SendSpecInputResponse,
         CoveConversationSummary,
         crate::routes::cove_conversations::NewCoveConversationBody,
+        WaveConversationSummary,
+        crate::routes::wave_conversations::NewWaveConversationBody,
         InterruptSpecCardResponse,
         GetSpecRunResponse,
         HarnessPhaseTag,

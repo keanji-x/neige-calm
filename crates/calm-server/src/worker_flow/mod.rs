@@ -337,7 +337,12 @@ impl WorkerFlowDriver {
             .await
             .map_err(|e| CoreError::Internal(format!("card_get: {e}")))?
             .ok_or_else(|| CoreError::NotFound(format!("card {}", runtime.card_id)))?;
-        if crate::plain_chat::card_is_plain_chat(&card, None, false) {
+        // Both conversation flavours are excluded (#1189 widened this from
+        // plain chat alone). An assistant session is a `CodexCard` runtime with
+        // a codex provider, so `source_kind_for_runtime` classifies it as a
+        // worker rollout source and the flow would start ingesting a
+        // conversation as if it were a dispatched task.
+        if crate::plain_chat::card_is_lazy_conversation(&card) {
             self.cancel_card(&runtime.card_id).await;
             return Ok(());
         }

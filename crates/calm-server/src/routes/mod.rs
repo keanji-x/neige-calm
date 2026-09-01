@@ -11,6 +11,7 @@ pub mod claude;
 pub mod claude_cards;
 pub mod codex;
 pub mod codex_cards;
+pub mod conversations_shared;
 pub mod cove_conversations;
 pub mod cove_folders;
 pub mod coves;
@@ -24,6 +25,7 @@ pub mod theme;
 pub mod threads;
 pub mod today;
 pub mod version;
+pub mod wave_conversations;
 pub mod wave_report_blocks;
 pub mod wave_templates;
 pub mod waves;
@@ -57,6 +59,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(cove_conversations::router())
         .merge(cove_folders::router())
         .merge(waves::router())
+        .merge(wave_conversations::router())
         .merge(wave_report_blocks::router())
         .merge(wave_templates::router())
         .merge(cards::router())
