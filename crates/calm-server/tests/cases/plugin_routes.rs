@@ -694,13 +694,28 @@ async fn reload_unknown_id_returns_404_not_manifest_read_error() {
     );
 }
 
-/// Nail 7: reload respawns **only if the pre-stop row said `enabled`**. An
+/// Nail 6: reload respawns **only if the pre-stop row said `enabled`**. An
 /// unconditional respawn resurrects a plugin the operator disabled.
 ///
 /// The assertion is on the host's runtime table, not just the HTTP code:
 /// `PluginHost::spawn` is awaited to completion inside `reload`, so if the
 /// guard is gone the id has a live (or admission-reserved) entry by the time
 /// the response is built.
+///
+/// Which assertion actually witnesses that is worth stating, because two of
+/// the three below do not:
+///
+/// * the `status(id).is_none()` *before* the reload is a **precondition**, and
+///   today a vacuous one — `install` has no runtime step at all, so it can
+///   never fail. It is kept as documentation of the starting state, not as a
+///   gate;
+/// * `det["state"] == "disabled"` is rendered by `build_detail` from
+///   `PluginHost::status(id)`, i.e. the *same* read as a trailing
+///   `status(id).is_none()` would be — a trailing per-id probe could therefore
+///   never be the assertion that fires first, and pinned nothing extra;
+/// * so the witness is the trailing `list_running()`: a different host method
+///   over the whole live table, which is strictly stronger — it also catches a
+///   respawn landing under an id other than the one we query.
 #[tokio::test]
 async fn reload_disabled_plugin_does_not_spawn() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
@@ -733,11 +748,15 @@ async fn reload_disabled_plugin_does_not_spawn() {
         "a disabled plugin must still read `disabled` after reload"
     );
 
-    // The load-bearing assertion: nothing was spawned.
+    // The load-bearing assertion: nothing at all is running. Orthogonal to the
+    // `det["state"]` check above (that one reads `status(id)`; this one reads
+    // the whole live table via a different method).
+    let running = state.plugin.list_running().await;
     assert!(
-        state.plugin.status("test.reload.disabled").await.is_none(),
-        "reload of a disabled plugin must not spawn it — the `if plug.enabled` \
-         guard in PluginHost::reload is gone"
+        running.is_empty(),
+        "reload of a disabled plugin must not spawn anything — the \
+         `if plug.enabled` guard in PluginHost::reload is gone; running: {:?}",
+        running.iter().map(|s| &s.id).collect::<Vec<_>>()
     );
 }
 
