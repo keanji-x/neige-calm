@@ -43,6 +43,11 @@ function renderForm() {
       submitting={false}
       error={null}
       templates={TEMPLATES}
+      /* #1147 S3 — the folder picker's port. Never exercised here: this file
+         is about the Start from menu's top layer. It is passed because the
+         prop is required, which is deliberate — an optional one would let a
+         call site render a picker that silently lists nothing. */
+      listDirectory={vi.fn(() => Promise.resolve({ path: '/', parent: null, entries: [] }))}
       titleRef={{ current: null }}
       onCancel={vi.fn()}
       onSubmit={vi.fn()}

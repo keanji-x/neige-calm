@@ -33,6 +33,8 @@ use serde_json::{Value, json};
 use tokio::time::timeout;
 use tower::ServiceExt;
 
+use crate::support::git_helpers::attached_repo_fixture;
+
 async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value, String) {
     let resp = app
         .oneshot(
@@ -114,7 +116,7 @@ async fn create_wave(boot: &Boot) -> (String, String) {
         json!({
             "cove_id": boot.cove_id,
             "title": "probe wave",
-            "cwd": "/tmp/issue-682-force-spec-phase",
+            "cwd": attached_repo_fixture("issue-682-force-spec-phase"),
             "attach_folder": true,
             "theme": { "fg": [255, 255, 255], "bg": [0, 0, 0] },
         }),

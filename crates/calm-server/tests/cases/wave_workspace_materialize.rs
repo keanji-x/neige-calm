@@ -33,6 +33,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use crate::support::git_helpers::attached_repo_fixture;
+
 struct Boot {
     app: axum::Router,
     cove_id: String,
@@ -180,7 +182,14 @@ async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
 #[tokio::test]
 async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
     let b = boot().await;
-    let target = b._tmp.path().join("users-own-dir");
+    // #1147 S3 — an attached `cwd` must be inside a Git work tree now, so
+    // point at a *sub-directory* of one. `git rev-parse` accepts it, and
+    // `target/.git` still not existing is exactly what proves the server did
+    // not `git init` the directory the user pointed at.
+    let user_repo = PathBuf::from(attached_repo_fixture(
+        "workspace-materialize-users-own-repo",
+    ));
+    let target = user_repo.join("users-own-dir");
     std::fs::create_dir_all(&target).unwrap();
     let (status, body) = post(
         b.app.clone(),

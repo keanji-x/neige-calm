@@ -45,7 +45,8 @@ use crate::forge_trust::trusted_forge_plugin;
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{
     Card, CardPatch, CardRole, CoveKind, FolderConflict, FolderConflictKind, NewCard, NewOverlay,
-    NewWave, RequestTheme, Wave, WaveDetail, WavePatch, new_id,
+    NewWave, RequestTheme, Wave, WaveDetail, WavePatch, WaveWorkspace, WaveWorkspaceKind,
+    WaveWorkspacePatch, new_id,
 };
 use crate::operation::spec_harness_start_adapter::SpecHarnessStartOperationPayload;
 use crate::operation::workspace_lease::{
@@ -80,6 +81,7 @@ use crate::workflow_templates::{
     WORKFLOW_TEMPLATES, is_workflow_template_key, workflow_template_report,
 };
 use crate::workspace_recycle;
+use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -825,6 +827,24 @@ pub(crate) async fn create_wave(
         )));
     }
     let normalized_cwd = normalize_path(&p.cwd);
+    // #1147 S3 — design D3: "Attached 创建只做校验：绝对路径、目录存在、是 Git
+    // 仓库". Until this slice only the first third existed, which was
+    // survivable while the new FE had no way to attach anything; this slice
+    // adds that way, so the gap closes with it.
+    //
+    // **Before the transaction, deliberately.** `materialize_workspace` runs
+    // *after* the wave transaction commits (the managed path needs the wave
+    // id), and `materialize_failure_fails_the_create` pins the consequence: a
+    // failure there leaves an orphan wave row behind. Validating an attached
+    // target needs none of that ordering — the path came in the request — so
+    // it happens here, where the answer is a 400 and no row exists at all.
+    // `materialize_workspace` checks it again as the single contract point for
+    // every other create entry.
+    if !cwd_omitted {
+        crate::workspace_materialize::validate_attached_workspace(std::path::Path::new(
+            &normalized_cwd,
+        ))?;
+    }
     // Stamp the normalized cwd back onto the body before the wave row
     // is minted — the `cove_folder.path` we may attach below is also
     // the normalized form, so storing them in the same shape keeps
@@ -1001,6 +1021,7 @@ impl FolderConflictSlot {
 }
 
 /// Issue #275 — what the wave-create transaction does about `cove_folders`.
+#[derive(Clone)]
 enum FolderClaim {
     /// Don't scan, don't insert. The system cove is exempt from the claim
     /// namespace entirely, and `ensure_cove_chat_wave_inner` derives its
@@ -1014,6 +1035,126 @@ enum FolderClaim {
         attach: bool,
         conflict: FolderConflictSlot,
     },
+}
+
+/// Which route is asking, purely so the refusal message names it. The RULES do
+/// not vary — that is the point of there being one function.
+#[derive(Clone, Copy)]
+enum FolderClaimIntent {
+    Create,
+    /// #1147 S3 — `PATCH /api/waves/{id}` pointing a wave at an existing
+    /// repository.
+    Repoint,
+}
+
+impl FolderClaimIntent {
+    fn label(self) -> &'static str {
+        match self {
+            FolderClaimIntent::Create => "wave create",
+            FolderClaimIntent::Repoint => "wave workspace",
+        }
+    }
+}
+
+/// #1147 S3 — whether this pass may actually mint a `cove_folders` row.
+///
+/// The re-point runs the claim rules **twice**, and the first pass must not
+/// write. Its transaction commits (it is also the fence), so a claim minted
+/// there survives a later refusal — and the re-point can still refuse after it,
+/// on the pre-move re-check. That would leave the caller a 409 plus a claim
+/// they never got a wave for, in a route whose whole promise is "a refusal
+/// changes nothing".
+///
+/// Measured, not reasoned about: with the first pass allowed to mint, deleting
+/// the authoritative second pass turned **no test red** — because the claim was
+/// already in the table. That is what surfaced this.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FolderClaimPass {
+    /// Report the same conflicts, write nothing. Fail-fast only.
+    ScanOnly,
+    /// Report conflicts AND mint the claim. Must share a transaction with the
+    /// write it authorises.
+    Authoritative,
+}
+
+/// Issue #275's claim rules, in one place.
+///
+/// Extracted verbatim from `create_wave_structure` by #1147 S3 so that pointing
+/// an existing wave at a directory obeys exactly the same rules as creating one
+/// there. A second copy would be a second set of rules the moment either is
+/// touched, and the invariant these enforce — *at most one claim covers any
+/// path* — is not one that survives two implementations.
+///
+/// Must run first in its transaction: every branch either rolls the tx back or
+/// leaves the claim table consistent for the write that follows.
+async fn enforce_folder_claim_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    claim: &FolderClaim,
+    cove_id: &str,
+    normalized_cwd: &str,
+    intent: FolderClaimIntent,
+    pass: FolderClaimPass,
+) -> Result<()> {
+    let FolderClaim::Enforce { attach, conflict } = claim else {
+        return Ok(());
+    };
+    let existing = cove_folders_list_all_tx(tx).await?;
+    match find_owner(&existing, normalized_cwd) {
+        // Some other cove already covers this cwd. `Descendant` is the right
+        // label from the cwd's point of view: the cwd is a descendant of an
+        // existing folder owned by another cove.
+        Some(f) if f.cove_id.as_str() != cove_id => Err(conflict.park(FolderConflict {
+            folder_id: f.id,
+            cove_id: f.cove_id.clone(),
+            conflict_path: f.path.clone(),
+            conflict_kind: FolderConflictKind::Descendant,
+        })),
+        // Same cove already covers it — `attach_folder` is a no-op.
+        //
+        // #275 behavior change. Before that fix the insert ran unconditionally
+        // on the scan result, so this arm fell through into
+        // `cove_folder_create_tx`:
+        //   - cwd == the existing claim → UNIQUE(path) → 409 for re-claiming
+        //     your own folder;
+        //   - cwd under the existing claim → a second, overlapping row, minted
+        //     from plain HTTP with no concurrency at all.
+        // The latter is the larger hole in the "at most one claim covers any
+        // path" invariant — bigger and far easier to reach than the
+        // scan/insert TOCTOU. Pinned by `post_api_waves_attach_folder_*` in
+        // `tests/cases/wave_cwd_terminal_at.rs`.
+        Some(_) => Ok(()),
+        None if *attach => {
+            // No claim covers the cwd and the caller wants to mint one. Check
+            // the *reverse* overlap first: an existing folder that is a
+            // descendant of the proposed cwd (`/a/b` exists, claim `/a`).
+            // Refused for the same reason the cove_folders route refuses it —
+            // silently widening a narrower claim would make resolution
+            // ambiguous.
+            if let Some(f) = existing
+                .iter()
+                .find(|f| is_descendant_of(normalized_cwd, &f.path))
+            {
+                return Err(conflict.park(FolderConflict {
+                    folder_id: f.id,
+                    cove_id: f.cove_id.clone(),
+                    conflict_path: f.path.clone(),
+                    conflict_kind: FolderConflictKind::Ancestor,
+                }));
+            }
+            if pass == FolderClaimPass::Authoritative {
+                cove_folder_create_tx(tx, cove_id, normalized_cwd).await?;
+            }
+            Ok(())
+        }
+        // Nothing covers the cwd and the caller didn't opt in to attach.
+        // Refuse so accidentally typing a stray path doesn't create a
+        // "homeless" wave.
+        None => Err(CalmError::Conflict(format!(
+            "{}: cwd `{normalized_cwd}` is not claimed by any cove. Set \
+             `attach_folder: true` to claim it for cove `{cove_id}`.",
+            intent.label()
+        ))),
+    }
 }
 
 struct CreateWaveOptions {
@@ -1247,77 +1388,15 @@ async fn create_wave_structure(
                 // row because they share this BEGIN IMMEDIATE tx. Must
                 // stay first: every branch below either rolls the tx back
                 // or leaves the claim table consistent for `wave_create_tx`.
-                if let FolderClaim::Enforce { attach, conflict } = &folder_claim {
-                    let existing = cove_folders_list_all_tx(tx).await?;
-                    match find_owner(&existing, &normalized_cwd_for_tx) {
-                        // Some other cove already covers this cwd.
-                        // `Descendant` is the right label from the cwd's
-                        // point of view: the cwd is a descendant of an
-                        // existing folder owned by another cove.
-                        Some(f) if f.cove_id.as_str() != cove_id_for_attach => {
-                            return Err(conflict.park(FolderConflict {
-                                folder_id: f.id,
-                                cove_id: f.cove_id.clone(),
-                                conflict_path: f.path.clone(),
-                                conflict_kind: FolderConflictKind::Descendant,
-                            }));
-                        }
-                        // Same cove already covers it — `attach_folder` is a
-                        // no-op, create the wave only.
-                        //
-                        // #275 behavior change. Before this fix the insert
-                        // ran unconditionally on the scan result, so this
-                        // arm fell through into `cove_folder_create_tx`:
-                        //   - cwd == the existing claim → UNIQUE(path) →
-                        //     409 for re-claiming your own folder;
-                        //   - cwd under the existing claim → a second,
-                        //     overlapping row, minted from plain HTTP with
-                        //     no concurrency at all.
-                        // The latter is the larger hole in the "at most one
-                        // claim covers any path" invariant — bigger and far
-                        // easier to reach than the scan/insert TOCTOU.
-                        // Pinned by `post_api_waves_attach_folder_*` in
-                        // `tests/cases/wave_cwd_terminal_at.rs`.
-                        Some(_) => {}
-                        None if *attach => {
-                            // No claim covers the cwd and the caller wants
-                            // to mint one. Check the *reverse* overlap
-                            // first: an existing folder that is a
-                            // descendant of the proposed cwd (`/a/b`
-                            // exists, claim `/a`). Refused for the same
-                            // reason the cove_folders route refuses it —
-                            // silently widening a narrower claim would
-                            // make resolution ambiguous.
-                            if let Some(f) = existing
-                                .iter()
-                                .find(|f| is_descendant_of(&normalized_cwd_for_tx, &f.path))
-                            {
-                                return Err(conflict.park(FolderConflict {
-                                    folder_id: f.id,
-                                    cove_id: f.cove_id.clone(),
-                                    conflict_path: f.path.clone(),
-                                    conflict_kind: FolderConflictKind::Ancestor,
-                                }));
-                            }
-                            cove_folder_create_tx(
-                                tx,
-                                &cove_id_for_attach,
-                                &normalized_cwd_for_tx,
-                            )
-                            .await?;
-                        }
-                        // Nothing covers the cwd and the caller didn't opt
-                        // in to attach. Refuse so accidentally typing a
-                        // stray path doesn't create a "homeless" wave.
-                        None => {
-                            return Err(CalmError::Conflict(format!(
-                                "wave create: cwd `{normalized_cwd_for_tx}` is not claimed by \
-                                 any cove. Set `attach_folder: true` to claim it for cove \
-                                 `{cove_id_for_attach}`."
-                            )));
-                        }
-                    }
-                }
+                enforce_folder_claim_tx(
+                    tx,
+                    &folder_claim,
+                    &cove_id_for_attach,
+                    &normalized_cwd_for_tx,
+                    FolderClaimIntent::Create,
+                    FolderClaimPass::Authoritative,
+                )
+                .await?;
 
                 let wave =
                     wave_create_tx(tx, p, purpose, &workspace_plan, write_for_tx.cove_cache())
@@ -1906,6 +1985,640 @@ pub(crate) fn spec_harness_layout_payload(
     })
 }
 
+// ---------------------------------------------------------------------------
+// #1147 S3 — changing a wave's workspace
+// ---------------------------------------------------------------------------
+
+/// Test seam for the ONE timing predicate in this design.
+///
+/// Fires in the exact window design §更换与冻结 step 2 exists to close: after
+/// the fence transaction has committed, before the pre-move re-check. A test
+/// installs a hook here, writes into the workspace when it is signalled, and
+/// then requires the re-point to answer 409. Delete the re-check and that test
+/// goes red — which is the point, because no static assertion about the
+/// database can stand in for it.
+///
+/// `fixtures`-only, exactly like `wave_delete_teardown_hooks` above; a release
+/// build compiles no call, no arguments, and no map.
+#[cfg(feature = "fixtures")]
+#[derive(Clone)]
+pub struct WorkspaceRepointRaceHook {
+    pub entered: std::sync::Arc<Notify>,
+    pub release: std::sync::Arc<Notify>,
+}
+
+#[cfg(feature = "fixtures")]
+fn workspace_repoint_race_hooks() -> &'static StdMutex<HashMap<String, WorkspaceRepointRaceHook>> {
+    static HOOKS: OnceLock<StdMutex<HashMap<String, WorkspaceRepointRaceHook>>> = OnceLock::new();
+    HOOKS.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn install_workspace_repoint_race_hook_for_test(wave_id: &str, hook: WorkspaceRepointRaceHook) {
+    workspace_repoint_race_hooks()
+        .lock()
+        .expect("workspace repoint hook mutex")
+        .insert(wave_id.to_string(), hook);
+}
+
+async fn wait_at_workspace_repoint_race_hook(wave_id: &str) {
+    #[cfg(feature = "fixtures")]
+    {
+        let hook = workspace_repoint_race_hooks()
+            .lock()
+            .expect("workspace repoint hook mutex")
+            .remove(wave_id);
+        if let Some(hook) = hook {
+            hook.entered.notify_one();
+            hook.release.notified().await;
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = wave_id;
+}
+
+/// Test seam for the shutdown-failure branch of the fence.
+///
+/// `SpecHarness::shutdown` fails only on a persistence error deep inside the
+/// run loop, which an integration test cannot provoke without dismantling the
+/// runtime row the fence needs. The branch is still worth covering — it is the
+/// one that used to kill a wave's spec agent outright — so the failure is
+/// injected here, the same deterministic-injection posture S5 used for N16
+/// rather than a multi-threaded hammer. `fixtures`-only; a release build
+/// compiles the bare `shutdown()` call.
+#[cfg(feature = "fixtures")]
+fn workspace_repoint_shutdown_failures() -> &'static StdMutex<HashMap<String, ()>> {
+    static FAILURES: OnceLock<StdMutex<HashMap<String, ()>>> = OnceLock::new();
+    FAILURES.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn fail_workspace_repoint_shutdown_for_test(wave_id: &str) {
+    workspace_repoint_shutdown_failures()
+        .lock()
+        .expect("workspace repoint shutdown failure mutex")
+        .insert(wave_id.to_string(), ());
+}
+
+async fn shutdown_fenced_harness(
+    harness: &crate::harness::SpecHarness,
+    wave_id: &str,
+) -> Result<()> {
+    #[cfg(feature = "fixtures")]
+    {
+        let forced = workspace_repoint_shutdown_failures()
+            .lock()
+            .expect("workspace repoint shutdown failure mutex")
+            .remove(wave_id)
+            .is_some();
+        if forced {
+            return Err(CalmError::Internal(
+                "injected spec harness shutdown failure (#1147 S3 test seam)".into(),
+            ));
+        }
+    }
+    #[cfg(not(feature = "fixtures"))]
+    let _ = wave_id;
+    harness.shutdown().await
+}
+
+/// What the fence transaction decided, carried out to the filesystem half.
+struct RepointFence {
+    /// The workspace as read *inside* the transaction — the authority, not the
+    /// unlocked read the route did to answer 404.
+    old_workspace: WaveWorkspace,
+    /// Every runtime the fence superseded, so the process-side shutdown below
+    /// knows which live handles to kill and the compensating restart knows
+    /// something was torn down.
+    superseded_runtime_ids: Vec<String>,
+}
+
+/// #1147 S3 — point a wave at a repository the user already has
+/// (design §更换与冻结, transition `managed → attached`).
+///
+/// # Why this is not a column write
+///
+/// SQLite transactions do not isolate the filesystem, so "check inside the
+/// transaction" cannot close the window between the check and the move. The
+/// spec harness is deliberately *not* frozen at this point and has run
+/// `sandbox-mode: workspace-write` since its first message, and the dispatcher
+/// pushes observations that start fresh turns. Three steps, none optional:
+///
+/// 1. **A real fence, in the same transaction as the criteria.** Every active
+///    runtime of the wave is marked `superseded`, which is the state
+///    `dispatcher::harness_runtime_id_for_spec_card` reads
+///    (`session_projection_active_for_card`, `state IN
+///    ('starting','running','idle','turn_pending')`) before it will deliver an
+///    observation. After this commit a push has nowhere to land. An
+///    `interrupt` would not do: it is asynchronous and says nothing about the
+///    *next* turn. The in-memory half — `HarnessRegistry::remove` +
+///    `shutdown()` — follows immediately, because `maybe_issue_turn` reads no
+///    database state and would otherwise turn an already-queued observation
+///    into a turn.
+/// 2. **The criteria are re-evaluated before anything irreversible.** Anything
+///    the in-flight turn wrote between the fence and here makes this a 409
+///    with nothing moved and no column changed.
+/// 3. **The move asserts its own preconditions.** The old managed directory
+///    goes through S5's [`workspace_recycle::recycle_wave_workspace`] — the
+///    single controlled entry point — which re-checks `kind == Managed`,
+///    canonical containment in the workspace root, the exact
+///    `<root>/<cove>/<wave>` depth, and our ownership marker, and renames into
+///    `.trash` rather than deleting. The `WaveWorkspace` handed to it is the
+///    OLD value, read inside the fence transaction, so it describes the
+///    directory being reclaimed rather than the row's new state.
+///
+/// # Order: write the row, then move the directory
+///
+/// The opposite order is what S5 chose for `DELETE`, and for the opposite
+/// reason. There, a failure after the move would leave a wave row whose
+/// directory is unreachable. Here the failure that actually happens is a
+/// **claim conflict**: `cove_folders` is scanned twice — once in the fence
+/// transaction to fail fast, once authoritatively in the write transaction —
+/// and a claim minted by a concurrent request in between must be able to abort
+/// this whole request cleanly. Moving first would make that abort leave the
+/// old workspace in the trash while the row still points at it, and the next
+/// retry would then fail its emptiness check forever (a missing path is not
+/// provably empty). Writing first makes every abort a clean 409.
+///
+/// The price, stated: a crash between the commit and the rename leaves the old
+/// managed directory on disk with no row naming it. That is a leak, not a
+/// loss, and unlike S5's it is a **derivable** one —
+/// `managed_workspace_path(root, cove_id, wave_id)` still names it — so a
+/// future sweep can find it without any new bookkeeping.
+///
+/// # What a refusal leaves behind
+///
+/// Nothing on disk and nothing in the row. The one visible effect is that the
+/// spec harness was torn down, so this function restarts it on the **old**
+/// path before returning. That restart is the same operation
+/// `POST /api/cards/{id}/reset` performs routinely, and harness items are
+/// persisted per card, so the user's transcript survives.
+async fn repoint_wave_workspace(
+    s: &RouteState,
+    w: &WorkerState,
+    actor: &Actor,
+    wave: &Wave,
+    requested: &WaveWorkspacePatch,
+) -> Result<Response> {
+    // Issue #985's rule, applied to a strictly more destructive field: moving
+    // a directory is a human decision. This is the only thing between an agent
+    // and pointing a wave at any repository on the box.
+    //
+    // **Reachability, stated exactly** (same posture as S5's guard 4). Through
+    // HTTP this is unreachable today, and not because it is redundant: the
+    // only header form that maps to a non-`User` `ActorId` is `ai:codex`
+    // (`Actor::to_actor_id` sends every other string to `User` by a documented
+    // defensive default), and that form carries an empty card id, which a
+    // guard further out already 403s. So the header cannot produce a caller
+    // this check would be the first to stop.
+    //
+    // It lives here, inside the operation rather than in the PATCH envelope,
+    // precisely so it is not vacuous: an internal caller holding a real
+    // `ActorId::AiCodex(card)` gets it, and it has a fixture
+    // (`a_non_user_actor_may_not_change_a_workspace`, through
+    // `repoint_wave_workspace_for_test`) that constructs the caller HTTP
+    // cannot.
+    if !matches!(actor.to_actor_id(), ActorId::User) {
+        return Err(CalmError::Forbidden(
+            "wave workspace changes are user-only".into(),
+        ));
+    }
+
+    // Scope (design §更换与冻结). `managed → attached` is the transition; there
+    // is no `managed → managed` because a managed path is derived from the
+    // cove and wave ids, so "re-allocate" would always re-derive the same
+    // directory. Answered explicitly rather than accepted as a no-op, so a
+    // client that asks for it learns that instead of believing it worked.
+    if requested.kind != WaveWorkspaceKind::Attached {
+        return Err(CalmError::BadRequest(
+            "wave workspace: only `attached` is a target — pointing a wave at a repository \
+             you already have. There is no `managed` target: a managed workspace's path is \
+             derived from the wave, so re-allocating one would produce the same directory."
+                .into(),
+        ));
+    }
+
+    // The system cove's launchpad path is kernel-maintained
+    // (`today_launchpad_ensure_tx` re-derives it on every `ensure`) and is the
+    // documented exception to the freeze latch. A user PATCH must not touch
+    // it. Same scope decision as S5's row-layer 403 on DELETE: the whole
+    // system cove, not a `purpose = launchpad` carve-out.
+    let cove = s.repo.cove_get(wave.cove_id.as_str()).await?;
+    if cove.as_ref().is_none_or(|c| c.kind == CoveKind::System) {
+        return Err(CalmError::Forbidden(format!(
+            "wave {} belongs to the system cove; its workspace is kernel-maintained",
+            wave.id
+        )));
+    }
+
+    // Validate the target BEFORE any write. Design D3, and the whole reason
+    // #1147 exists: a path that does not exist or is not a Git work tree must
+    // fail here with git's own words, not four steps later as a worker's
+    // `spawn-failed`.
+    let new_path = normalize_path(&requested.path);
+    crate::workspace_materialize::validate_attached_workspace(std::path::Path::new(&new_path))?;
+
+    let workspace_root = s.workspace_root.clone();
+    let wave_id = wave.id.to_string();
+    let cove_id = wave.cove_id.as_str().to_string();
+
+    // ---- Step 1: criteria + fence, in one BEGIN IMMEDIATE -----------------
+    let fence_conflict = FolderConflictSlot::default();
+    let fence_wave_id = wave_id.clone();
+    let fence_cove_id = cove_id.clone();
+    let fence_path = new_path.clone();
+    let fence_claim = FolderClaim::Enforce {
+        attach: requested.attach_folder,
+        conflict: fence_conflict.clone(),
+    };
+    let fence = crate::db::write_in_tx_typed(s.repo.as_ref(), move |tx| {
+        let wave_id = fence_wave_id.clone();
+        let cove_id = fence_cove_id.clone();
+        let new_path = fence_path.clone();
+        let claim = fence_claim.clone();
+        Box::pin(async move {
+            // Authoritative re-read. The route's unlocked read answered 404
+            // and scoped the event; every decision below comes from here.
+            let old_workspace = crate::db::sqlite::wave_workspace_read_tx(tx, &wave_id).await?;
+            if old_workspace.kind != WaveWorkspaceKind::Managed {
+                return Err(CalmError::Conflict(format!(
+                    "wave {wave_id} already has an attached workspace ({}); an attached \
+                     repository belongs to you, and the server never moves, initializes or \
+                     deletes one — so it is also never re-pointed away from",
+                    old_workspace.path
+                )));
+            }
+            if let Some(frozen_at) = old_workspace.frozen_at {
+                return Err(CalmError::Conflict(format!(
+                    "wave {wave_id} workspace was frozen at {frozen_at}; a workspace is a \
+                     default that can be changed only before any work happens in it"
+                )));
+            }
+            // The one predicate that does not enumerate writers: it asks the
+            // disk. Runs under the writer lock so it is decided together with
+            // the fence, and is repeated after the commit because SQLite
+            // isolates none of it.
+            let verdict = workspace_pristine(std::path::Path::new(&old_workspace.path));
+            if !verdict.is_pristine() {
+                return Err(CalmError::Conflict(
+                    verdict.conflict_message(std::path::Path::new(&old_workspace.path)),
+                ));
+            }
+            // Fail fast on the claim rules, WITHOUT minting anything: this
+            // transaction commits (it is also the fence), so a row written
+            // here would survive a later refusal. The write transaction runs
+            // the same rules authoritatively. Running them here as well means
+            // the common conflict is answered before the harness is torn down.
+            enforce_folder_claim_tx(
+                tx,
+                &claim,
+                &cove_id,
+                &new_path,
+                FolderClaimIntent::Repoint,
+                FolderClaimPass::ScanOnly,
+            )
+            .await?;
+            // THE FENCE. Every active runtime of this wave, not just the spec
+            // harness: "no new turn may acquire the old path" is a statement
+            // about the wave, and a rule with one named exception is the shape
+            // this design line keeps being hurt by.
+            let runtime_ids: Vec<String> = sqlx::query_scalar(
+                "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+                 AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+            )
+            .bind(&wave_id)
+            .fetch_all(&mut **tx)
+            .await?;
+            for runtime_id in &runtime_ids {
+                crate::db::sqlite::session_mark_superseded_runtime_tx(tx, runtime_id)
+                    .await
+                    .map_err(|e| CalmError::Internal(format!("workspace repoint fence: {e}")))?;
+            }
+            Ok(RepointFence {
+                old_workspace,
+                superseded_runtime_ids: runtime_ids,
+            })
+        })
+    })
+    .await;
+    let fence = match fence {
+        Ok(fence) => fence,
+        Err(error) => return folder_conflict_response(&fence_conflict, error),
+    };
+
+    // The in-memory half of the fence. `maybe_issue_turn` consults no durable
+    // state, so without this an observation enqueued before the commit would
+    // still become a turn — writing into a directory that is about to be
+    // renamed, and (because a process's cwd follows the inode on Linux)
+    // continuing to write into `.trash` afterwards until the GC erases it.
+    //
+    // # A shutdown failure must NOT abort this function
+    //
+    // `get` then `remove`-on-success, and the error is logged rather than
+    // propagated. Both halves of that are load bearing, and the shape this
+    // replaces got both wrong: it removed the entry FIRST and then used `?`,
+    // so a failing shutdown returned 500 having already (a) committed the
+    // fence — every runtime superseded — and (b) dropped the registry entry.
+    // The restart below never ran, and the wave's spec agent was dead for
+    // good: superseded in the database, absent from the registry, with
+    // nothing left that would ever start it again. This route's whole promise
+    // is that a refusal leaves nothing behind except a re-opened harness, and
+    // that promise has to hold on the failure paths too.
+    //
+    // Keeping the entry on failure is deliberate: the run loop may still be
+    // alive, and the restart below goes through `reserve_replacing`, which
+    // supersedes whatever occupies the slot. Dropping it here would strand
+    // that loop with no handle. Continuing is also safe rather than merely
+    // convenient — the durable fence already stops any NEW turn, and an
+    // in-flight turn that refused to stop is exactly what the pre-move
+    // re-check below exists to catch.
+    for runtime_id in &fence.superseded_runtime_ids {
+        let Some(harness) = w.harness.get(runtime_id) else {
+            continue;
+        };
+        let outcome = shutdown_fenced_harness(&harness, &wave_id).await;
+        match outcome {
+            Ok(()) => {
+                let _ = w.harness.remove(runtime_id);
+            }
+            Err(error) => tracing::error!(
+                wave_id,
+                runtime_id,
+                error = %error,
+                "workspace repoint: shutting the fenced spec harness down failed. \
+                 Continuing: the database fence already refuses new turns, the \
+                 pre-move re-check catches anything an in-flight turn writes, and \
+                 the registry entry is left for the restart to supersede."
+            ),
+        }
+    }
+
+    let old_path = std::path::PathBuf::from(&fence.old_workspace.path);
+
+    // Deterministic race window for the timing test. No-op in production.
+    wait_at_workspace_repoint_race_hook(&wave_id).await;
+
+    // ---- Step 2: re-check before anything irreversible --------------------
+    let verdict = workspace_pristine(&old_path);
+    if let PristineVerdict::Dirty { .. } = &verdict {
+        restart_spec_harness_at(s, actor, wave, &fence.old_workspace.path).await;
+        return Err(CalmError::Conflict(verdict.conflict_message(&old_path)));
+    }
+
+    // ---- The write: claim + workspace, one transaction --------------------
+    let new_workspace = WaveWorkspace {
+        kind: WaveWorkspaceKind::Attached,
+        path: new_path.clone(),
+        // Frozen, one-way. Two independent reasons, either sufficient:
+        // `attached → *` is not a legal transition, so an unfrozen attached
+        // row has no legal use; and S4 pins "no attached wave is ever
+        // unfrozen" over the whole table, because an unfrozen attached row is
+        // exactly what a future PATCH branch that forgot to check `kind` would
+        // relocate — i.e. would move a real user repository.
+        frozen_at: Some(crate::model::now_ms()),
+    };
+    let scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: wave.cove_id.clone(),
+    };
+    let actor_id = actor.to_actor_id();
+    let write_conflict = FolderConflictSlot::default();
+    let write_claim = FolderClaim::Enforce {
+        attach: requested.attach_folder,
+        conflict: write_conflict.clone(),
+    };
+    let write_wave_id = wave_id.clone();
+    let write_cove_id = cove_id.clone();
+    let write_workspace = new_workspace.clone();
+    let written =
+        write_with_actor_events_typed(s.repo.as_ref(), None, &s.events, &s.write, move |tx| {
+            let scope = scope.clone();
+            let wave_id = write_wave_id.clone();
+            let cove_id = write_cove_id.clone();
+            let workspace = write_workspace.clone();
+            let claim = write_claim.clone();
+            let actor_id = actor_id.clone();
+            Box::pin(async move {
+                // Authoritative, and atomic with the workspace write because
+                // they share this `BEGIN IMMEDIATE`.
+                enforce_folder_claim_tx(
+                    tx,
+                    &claim,
+                    &cove_id,
+                    &workspace.path,
+                    FolderClaimIntent::Repoint,
+                    FolderClaimPass::Authoritative,
+                )
+                .await?;
+                crate::db::sqlite::wave_workspace_write_tx(tx, &wave_id, &workspace).await?;
+                let wave = wave_get_tx(tx, &WaveId::from(wave_id)).await?;
+                let events = vec![(
+                    actor_id,
+                    scope,
+                    Event::WaveUpdated(crate::event::WaveUpdatedPayload::new(wave.clone(), None)),
+                )];
+                Ok((wave, events))
+            })
+        })
+        .await;
+    let (updated, _ids) = match written {
+        Ok(written) => written,
+        Err(error) => {
+            // Nothing moved and nothing was written — put the harness back
+            // where it was and report.
+            restart_spec_harness_at(s, actor, wave, &fence.old_workspace.path).await;
+            return folder_conflict_response(&write_conflict, error);
+        }
+    };
+
+    // ---- Step 3: the old managed directory goes to the trash --------------
+    let decision = workspace_recycle::recycle_wave_workspace(
+        &workspace_root,
+        cove.as_ref().map(|c| c.kind),
+        &wave_id,
+        // The OLD workspace value, read inside the fence transaction. The row
+        // now says `attached`, so re-reading it here would make guard 1 refuse
+        // and leave the directory behind forever.
+        &fence.old_workspace,
+        crate::model::now_ms(),
+    );
+    match decision {
+        // Never materialized, or already reclaimed. Nothing to move.
+        Ok(workspace_recycle::RecycleDecision::Refused(
+            workspace_recycle::RecycleRefusal::PathMissing,
+        ))
+        | Ok(workspace_recycle::RecycleDecision::Trashed { .. }) => {}
+        // The row has already moved, so this is a leak, not a failure of the
+        // re-point: the wave is correctly attached to the user's repository
+        // and the stale managed directory is at a path that is still
+        // derivable. Loud, and not a 500 — telling the caller the request
+        // failed would be a lie.
+        Ok(workspace_recycle::RecycleDecision::Refused(refusal)) => {
+            tracing::error!(
+                wave_id,
+                path = %fence.old_workspace.path,
+                reason = refusal.tag(),
+                "workspace repoint: the wave now points at the user's repository, but its old \
+                 managed directory could not be reclaimed and is leaked on disk"
+            );
+        }
+        Err(error) => {
+            tracing::error!(
+                wave_id,
+                path = %fence.old_workspace.path,
+                error = %error,
+                "workspace repoint: the wave now points at the user's repository, but moving \
+                 its old managed directory to the trash failed; it is leaked on disk"
+            );
+        }
+    }
+    workspace_recycle::gc_trash_best_effort(&workspace_root, crate::model::now_ms());
+
+    // Re-open the spec thread on the new cwd. `force_new_thread` is the only
+    // mechanism that re-reads `cwd`: a resumed codex thread keeps the cwd it
+    // was minted with, so resuming here would leave the spec agent in the
+    // directory that just went to the trash.
+    restart_spec_harness_at(s, actor, &updated, &updated.workspace.path).await;
+
+    Ok(Json(updated).into_response())
+}
+
+/// #1147 S3 — reach the re-point with a caller HTTP cannot produce.
+///
+/// The user-only guard's only non-`User` HTTP form (`ai:codex`) is stopped
+/// further out by the empty-card-id check, so an integration test driving the
+/// route can never distinguish "my guard fired" from "the outer one did". This
+/// calls the operation directly with a chosen actor. `fixtures`-only.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub async fn repoint_wave_workspace_for_test(
+    s: &RouteState,
+    w: &WorkerState,
+    actor: &Actor,
+    wave: &Wave,
+    requested: &WaveWorkspacePatch,
+) -> Result<Response> {
+    repoint_wave_workspace(s, w, actor, wave, requested).await
+}
+
+/// Render a parked [`FolderConflict`] as the structured 409 the create route
+/// returns, so a client sees the same body whichever route it reached the
+/// claim rules through.
+///
+/// `FolderConflictSlot::park` stashes the body and returns a plain `Conflict`
+/// whose message is only a fallback; without this the caller would get the bare
+/// string and lose `folder_id` / `cove_id` / `conflict_kind` — which is exactly
+/// what the FE needs to say *which* cove already owns the directory.
+fn folder_conflict_response(slot: &FolderConflictSlot, error: CalmError) -> Result<Response> {
+    match slot.take() {
+        Some(body) => Ok((StatusCode::CONFLICT, Json(body)).into_response()),
+        None => Err(error),
+    }
+}
+
+/// Re-open the wave's spec harness thread at `cwd`.
+///
+/// Best effort, and deliberately so: it mirrors `start_spec_harness`, whose
+/// failures are warnings ("the wave exists but the spec agent is inert")
+/// rather than a failed request. Turning a harness hiccup into a 500 here
+/// would be worse than useless — the workspace has already moved and the row
+/// already says so, so the caller must not be told the whole operation failed.
+///
+/// `idempotency_key: None`, like every other non-launchpad spec-harness start
+/// (`routes/waves.rs::start_spec_harness`, `routes/cards.rs`'s reset). The
+/// launchpad and child-wave call sites need a workspace digest in their keys
+/// because they are re-driven with the same key; this one is minted per
+/// request and cannot collide.
+async fn restart_spec_harness_at(s: &RouteState, actor: &Actor, wave: &Wave, cwd: &str) {
+    // Same resolution the dispatcher uses (`resolve_spec_card`): the role
+    // cache, not a `cards.kind` guess.
+    let cards = match s.repo.cards_by_wave(wave.id.as_str()).await {
+        Ok(cards) => cards,
+        Err(error) => {
+            tracing::warn!(wave_id = %wave.id, error = %error, "workspace repoint: spec card lookup failed");
+            return;
+        }
+    };
+    let spec_card_id = cards.into_iter().find_map(|card| {
+        (s.write.verify_role(&card.id) == Some(CardRole::Spec)).then(|| card.id.to_string())
+    });
+    let Some(spec_card_id) = spec_card_id else {
+        // Template waves (`as_template`) never start a harness. Nothing to
+        // re-anchor.
+        return;
+    };
+    let request = SpecHarnessStartOperationPayload {
+        actor: actor.to_actor_id(),
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(spec_card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: cwd.to_string(),
+        goal: None,
+        // The transcript is NOT reset: harness items are persisted per card,
+        // so re-opening the thread costs the agent its in-thread context, not
+        // the user's history.
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile: Default::default(),
+        create_card: None,
+        first_message_sha256: None,
+    };
+    let hash = match stable_payload_hash(
+        &serde_json::json!({"actor": actor.as_str(), "request": &request}),
+    ) {
+        Ok(hash) => hash,
+        Err(error) => {
+            tracing::warn!(wave_id = %wave.id, error = %error, "workspace repoint: payload hash failed");
+            return;
+        }
+    };
+    let payload = match serde_json::to_value(&request) {
+        Ok(payload) => payload,
+        Err(error) => {
+            tracing::warn!(wave_id = %wave.id, error = %error, "workspace repoint: payload encode failed");
+            return;
+        }
+    };
+    match s
+        .operation_runtime
+        .submit(
+            "spec-harness-start",
+            OperationKey {
+                operation_key: new_id(),
+                idempotency_key: None,
+                payload_hash: hash,
+            },
+            payload,
+        )
+        .await
+    {
+        Ok(op) => match s.operation_runtime.wait(&op).await {
+            Ok(result)
+                if matches!(
+                    result.outcome,
+                    OperationOutcome::Succeeded { .. }
+                        | OperationOutcome::SucceededViaCollision { .. }
+                ) => {}
+            other => tracing::warn!(
+                wave_id = %wave.id,
+                cwd,
+                outcome = ?other.map(|r| r.outcome),
+                "workspace repoint: spec harness restart did not succeed; the workspace is \
+                 correct but the spec agent is inert"
+            ),
+        },
+        Err(error) => tracing::warn!(
+            wave_id = %wave.id,
+            cwd,
+            error = %error,
+            "workspace repoint: spec harness restart submission failed"
+        ),
+    }
+}
+
 #[utoipa::path(
     patch,
     path = "/api/waves/{id}",
@@ -1914,16 +2627,20 @@ pub(crate) fn spec_harness_layout_payload(
     request_body = WavePatch,
     responses(
         (status = 200, description = "Wave updated", body = Wave),
+        (status = 400, description = "Unsupported workspace change", body = ErrorBody),
+        (status = 403, description = "Workspace change refused (system cove)", body = ErrorBody),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 409, description = "Workspace is frozen, attached, or no longer empty", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
 pub(crate) async fn update_wave(
     State(s): State<RouteState>,
+    State(w): State<WorkerState>,
     actor: Actor,
     Path(id): Path<String>,
     Json(p): Json<WavePatch>,
-) -> Result<Json<Wave>> {
+) -> Result<Response> {
     // Need cove_id for the scope. Wave rows are immutable wrt their
     // parent cove, so reading outside the txn is safe (same rationale as
     // the delete path below).
@@ -1932,6 +2649,54 @@ pub(crate) async fn update_wave(
         .wave_get(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
+
+    // #1147 S3 — a workspace change is a filesystem move bracketed by two
+    // transactions, not a column write, so it does not compose with the
+    // mechanical row patch below. Mixing them would make a partial failure
+    // ("the title changed, the workspace did not") indistinguishable from
+    // success at the wire, so the combination is a 400 rather than an
+    // ordering puzzle nobody can reason about.
+    if let Some(workspace) = p.workspace.as_ref() {
+        // Destructured rather than enumerated as `p.title.is_some() || …`.
+        // The rule is "the workspace travels alone", so it has to consider
+        // EVERY other field, and a hand-written list silently stops being
+        // exhaustive the day someone adds one — the omission would read as
+        // "that field may ride along", which is the opposite of the rule.
+        // Binding every field by name makes the next addition a compile
+        // error here instead.
+        let WavePatch {
+            workspace: _,
+            title,
+            sort,
+            archived_at,
+            pinned_at,
+            lifecycle,
+            task_budget,
+            require_task_gates,
+            spec_task_ceiling,
+            automation_policy,
+            tree_task_budget,
+        } = &p;
+        let mixes_other_fields = title.is_some()
+            || sort.is_some()
+            || archived_at.is_some()
+            || pinned_at.is_some()
+            || lifecycle.is_some()
+            || task_budget.is_some()
+            || require_task_gates.is_some()
+            || spec_task_ceiling.is_some()
+            || automation_policy.is_some()
+            || tree_task_budget.is_some();
+        if mixes_other_fields {
+            return Err(CalmError::BadRequest(
+                "wave workspace changes must be sent on their own; a workspace re-point moves \
+                 directories on disk and cannot share a transaction with row edits"
+                    .into(),
+            ));
+        }
+        return repoint_wave_workspace(&s, &w, &actor, &existing, workspace).await;
+    }
+
     // The guard fires on *mentioning* `lifecycle`, not on changing it: a PATCH
     // that re-sends the wave's current lifecycle is 403 too. That is
     // deliberate — the chat wave has no lifecycle the user may drive, so
@@ -2043,7 +2808,7 @@ pub(crate) async fn update_wave(
         || p.automation_policy.is_some()
         || p.tree_task_budget.is_some();
     if lifecycle_change.is_none() && !patch_has_other_changes {
-        return Ok(Json(existing));
+        return Ok(Json(existing).into_response());
     }
 
     // When a lifecycle change is part of the patch we emit *two*
@@ -2116,7 +2881,7 @@ pub(crate) async fn update_wave(
             })
         })
         .await?;
-    Ok(Json(wave))
+    Ok(Json(wave).into_response())
 }
 
 async fn snapshot_wave_deletion(

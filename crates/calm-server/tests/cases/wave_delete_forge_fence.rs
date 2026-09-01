@@ -21,6 +21,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::common;
+use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
     app: axum::Router,
@@ -118,15 +119,17 @@ async fn delete(app: axum::Router, uri: &str) -> StatusCode {
 }
 
 async fn create_wave(boot: &Boot, title: &str) -> String {
-    let cwd = boot.tmp.path().join(format!("cwd-{title}"));
-    std::fs::create_dir_all(&cwd).expect("wave cwd");
+    // #1147 S3 — an attached `cwd` must be a real Git work tree now. These
+    // fence tests never look at the directory, only at the wave/operation
+    // rows, so any real repository will do.
+    let cwd = attached_repo_fixture(&format!("wave-delete-forge-fence-{title}"));
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
             "cove_id": boot.cove_id.clone(),
             "title": title,
-            "cwd": cwd.to_string_lossy().to_string(),
+            "cwd": cwd,
             "attach_folder": true,
             "theme": {"fg": [216, 219, 226], "bg": [15, 20, 24]}
         }),

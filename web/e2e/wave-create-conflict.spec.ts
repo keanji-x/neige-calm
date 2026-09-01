@@ -2,7 +2,7 @@
 // owning cove (#250 PR 3 fix-loop "B1" — `formatSubmitError` resolves
 // `conflict.cove_id` → cove name via the local `useCovesQuery` cache).
 //
-// Scenario covered: cove A owns `/srv/proj/blocked-<ts>`. The user
+// Scenario covered: cove A owns a per-run path under `$HOME`. The user
 // opens cove B's page, types that exact path as cwd, overrides the
 // auto-match banner via "Use a different cove", picks cove B in the
 // radio + dropdown (so `attach_folder: true` will fire against B),
@@ -19,6 +19,11 @@
 // seed.
 
 import { test, expect } from '@playwright/test';
+import {
+  attachedWorkspacePath,
+  cleanupAttachedWorkspaces,
+  createGitWorkTree,
+} from './helpers/attached-workspace';
 
 // Coves seeded via REST get tracked here so the afterEach hook can
 // `DELETE /api/coves/<id>` them. Without cleanup, leftover coves
@@ -42,13 +47,23 @@ test.afterEach(async ({ request }) => {
     }
   }
   createdCoveIds.length = 0;
+  cleanupAttachedWorkspaces();
 });
 
 test('NewTaskForm surfaces conflicting cove name in 409 error', async ({ page }) => {
   const ts = Date.now();
   const coveAName = `E2E conflict cove-A ${ts}`;
   const coveBName = `E2E conflict cove-B ${ts}`;
-  const blockedPath = `/srv/proj/blocked-${ts}`;
+  // #1147 S3 — this path is submitted, so it has to clear
+  // `validate_attached_workspace` (exists + inside a Git work tree)
+  // BEFORE the request can reach the folder-claim scan that produces
+  // the 409 this spec is about. A non-existent path would now 400 with
+  // "attached workspace: … does not exist" — a different failure that
+  // does not name cove A, so the spec would fail rather than silently
+  // pass on the wrong error. See `helpers/attached-workspace.ts`.
+  const blockedPath = createGitWorkTree(
+    attachedWorkspacePath(`neige-e2e-conflict-${ts}`),
+  );
 
   // Step 1 — seed cove A + the conflicting folder claim via REST.
   // Use a distinctive name so the assertion can grep for it without

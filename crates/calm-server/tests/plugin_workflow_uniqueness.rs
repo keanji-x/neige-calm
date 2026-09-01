@@ -331,7 +331,8 @@ async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<P
     let plugins_data_dir = root.join("plugins-data");
     std::fs::create_dir_all(&plugins_data_dir).expect("create plugins data dir");
 
-    let registry = PluginRegistry::empty();
+    // #1196 S0a — build-time seeding accumulates in the builder.
+    let mut registry_builder = PluginRegistry::builder();
     for plugin_id in [TRUSTED_A, TRUSTED_B, UNTRUSTED_C, TRUSTED_D] {
         let install_dir = plugins_dir.join(plugin_id);
         let bin_dir = install_dir.join("bin");
@@ -353,7 +354,7 @@ async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<P
         });
         let manifest: Manifest =
             Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
-        registry.insert(manifest, Some(install_dir.clone()));
+        registry_builder = registry_builder.with(manifest, Some(install_dir.clone()));
 
         repo.plugin_install(NewPlugin {
             id: plugin_id.into(),
@@ -367,6 +368,7 @@ async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<P
         .expect("seed plugin row");
     }
 
+    let registry = registry_builder.build();
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     Arc::new(PluginHost::new_full(
         Arc::new(registry),

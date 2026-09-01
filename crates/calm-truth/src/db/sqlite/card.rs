@@ -571,22 +571,46 @@ pub async fn terminal_delete_tx(tx: &mut Transaction<'_, Sqlite>, id: &str) -> R
 /// pre-checks, same `NotFound` / `Conflict` mapping — but composable inside
 /// `Repo::write_with_event` closures alongside the card write.
 ///
-/// Currently only invoked from `card_with_terminal_create_tx`; the standalone
-/// `RepoOutOfDomain::terminal_create` path still talks to the pool directly so
-/// the existing `POST /api/cards/:id/terminal` recipe keeps its behavior
-/// untouched until #13 PR2 swaps it out.
+/// Invoked from the three `card_with_*_create_tx` composites and, directly,
+/// from `claude_restart_adapter` — which is why the freeze below lives here and
+/// not on the composites.
+///
+/// The standalone `RepoOutOfDomain::terminal_create` still talks to the pool.
+/// It has **no production caller** (the `POST /api/cards/:id/terminal` write
+/// route it was built for is gone; `routes/terminal.rs` is read-only now), only
+/// test fixtures, so it is not a second write entry in production — but a
+/// fixture that reaches it does bypass the freeze. Fixtures needing a terminal
+/// row that behaves like production must go through a `card_with_*_create_tx`.
+///
+/// # #1147 S6 — this is freeze point 2 ("terminal persistence")
+///
+/// A `terminals` row stores a `cwd` string. Nothing re-anchors it: the spawn
+/// paths read the row, not the wave, so once this row exists the wave's
+/// workspace can no longer move without leaving a terminal pointed at a
+/// directory that has been renamed into `.trash/`. Design §更换与冻结 therefore
+/// lists terminal persistence as a freeze point, and requires the freeze to sit
+/// at the real low-level write entry rather than depend on an enumeration of
+/// call sites — S2 hung a guard on four composites and still missed
+/// `claude_restart_adapter`, which reaches this function directly.
+///
+/// It is deliberately unconditional in the *card kind*: codex, claude and
+/// terminal cards all persist a `cwd` here, and all three are the durable
+/// consumer the design names. The one exception — the system cove's launchpad
+/// wave, which the kernel re-points on every `ensure` — lives inside
+/// [`wave_workspace_freeze_tx`] as a SQL clause, so it cannot be forgotten here.
 pub async fn terminal_create_tx(
     tx: &mut Transaction<'_, Sqlite>,
     p: NewTerminal,
 ) -> Result<Terminal> {
     // Parent card must exist; surface as NotFound to mirror MockRepo.
-    let owner: Option<(String,)> = sqlx::query_as("SELECT id FROM cards WHERE id = ?1")
+    // `wave_id` comes back on the same read because the freeze below needs it.
+    let owner: Option<(String,)> = sqlx::query_as("SELECT wave_id FROM cards WHERE id = ?1")
         .bind(p.card_id.as_str())
         .fetch_optional(&mut **tx)
         .await?;
-    if owner.is_none() {
+    let Some((wave_id,)) = owner else {
         return Err(CalmError::NotFound(format!("card {}", p.card_id)));
-    }
+    };
     // Per-card uniqueness — surface as Conflict to mirror MockRepo
     // (the schema also enforces this via UNIQUE on terminals.card_id).
     let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM terminals WHERE card_id = ?1")
@@ -624,6 +648,51 @@ pub async fn terminal_create_tx(
     .bind(now)
     .execute(&mut **tx)
     .await?;
+    // #1147 S6 — freeze point 2, closing gap N17. After this statement the row
+    // above is a durable, un-re-anchorable copy of a directory, so the wave's
+    // workspace must stop being movable in the SAME transaction: a freeze that
+    // could commit separately from the row it protects is not a freeze.
+    //
+    // # The deadlock N17 recorded, re-measured
+    //
+    // N17 said the `UPDATE waves` here never returns. It does return — measured
+    // with printf probes on
+    // `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`,
+    // which logged `UPDATE ok` twice and then hung. The hang is one step later,
+    // and it is the mirror image of what N17 described: this transaction now
+    // holds the shared-cache WRITE lock on `waves`, and
+    // `ClaudeRestartAdapter::prepare_tx` went on to read `waves` through
+    // `card_scope`, which uses the *pool* — a second connection — while this
+    // transaction is still open. The task then waits on itself forever in
+    // `sqlx_sqlite::statement::unlock_notify::wait`.
+    //
+    // So the rule for anyone adding a caller is not "do not freeze here", and
+    // it is not about `waves` either. The general rule, of which this is one
+    // instance:
+    //
+    //   **A transaction must not read, off the pool, any table it has itself
+    //   written, before it commits.** The pool is a second connection; under
+    //   shared cache it blocks on a lock only the caller can release.
+    //
+    // `waves` is simply the table S6 added to this transaction's write set;
+    // `cards`, `terminals` and the event tables were already in it, and a pool
+    // read of any of them from inside these flows would hang the same way. What
+    // S6 changed is which reads are now unsafe, not what the rule is.
+    //
+    // **This rule has no mechanical enforcement.** Nothing scans for it. The
+    // whole of its coverage is one wall clock on one flow
+    // (`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`),
+    // which turns a wedged CI job into a legible red test for THAT flow only. A
+    // new adapter that creates a terminal row and then reads `waves` (or
+    // `cards`) through `self.repo` will still hang CI with no diagnosis. The
+    // tree was swept once, at S6: every other adapter (codex, claude,
+    // claude-worker, terminal, terminal-worker) resolves its scope BEFORE
+    // creating the card, which is equally correct. That sweep is a measurement
+    // of one moment, not a guarantee.
+    //
+    // The in-transaction readers exist for this: `card_scope_tx`
+    // (`calm-server/src/routes/cards.rs`), `wave_workspace_read_tx`.
+    super::wave_workspace::wave_workspace_freeze_tx(tx, &wave_id, now).await?;
     Ok(Terminal {
         id,
         card_id: p.card_id,

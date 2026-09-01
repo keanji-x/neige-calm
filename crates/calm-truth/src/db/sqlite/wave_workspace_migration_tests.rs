@@ -203,9 +203,40 @@ async fn workspace_writer_sets_kind_path_and_stamp_together() {
     assert_eq!(row.1, "/home/kenji/neige-calm");
     assert_eq!(row.2, Some(wave.created_at));
 
+    // #1147 S3 — the freeze latch. This row is frozen (attached waves are
+    // minted frozen), and the writer now refuses it. That refusal is the whole
+    // reason `PATCH /api/waves/{id}` can be believed when it says a workspace
+    // is immutable: the latch lives at the bottom write, not at the route.
+    let mut tx = repo.pool.begin().await.expect("begin");
+    let refused = super::wave_workspace::wave_workspace_write_tx(
+        &mut tx,
+        wave.id.as_str(),
+        &WaveWorkspace {
+            kind: WaveWorkspaceKind::Managed,
+            path: "/srv/neige-workspaces/cove-1/w".into(),
+            frozen_at: None,
+        },
+    )
+    .await;
+    let refusal = refused.expect_err("a frozen workspace must be refused by the writer itself");
+    assert!(
+        refusal.to_string().contains("frozen"),
+        "the refusal must say the workspace is frozen, got {refusal}"
+    );
+    tx.rollback().await.expect("rollback");
+
+    // Open the latch to exercise the rewrite. Raw SQL on purpose: the writer
+    // has no un-freeze path — by design, `wave_workspace_freeze_tx` can only
+    // ever write a stamp — so a fixture that needs an unfrozen row has to say
+    // so out of band. Registered in `tests/wave_write_point_registry.rs`.
+    sqlx::query("UPDATE waves SET workspace_frozen_at = NULL WHERE id = ?1")
+        .bind(wave.id.as_str())
+        .execute(&repo.pool)
+        .await
+        .expect("clear the freeze stamp");
+
     // Re-pointing through the writer moves both columns together; that is the
-    // whole point of it being one statement. (S1 has no route that does this;
-    // the assertion pins the mechanism S3 will lean on.)
+    // whole point of it being one statement.
     let mut tx = repo.pool.begin().await.expect("begin");
     super::wave_workspace::wave_workspace_write_tx(
         &mut tx,

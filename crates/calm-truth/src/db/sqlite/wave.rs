@@ -350,6 +350,25 @@ pub async fn wave_update_tx(
     .execute(&mut **tx)
     .await?;
 
+    // #1147 S3 — freeze point 3 of 4 (design §更换与冻结): "the wave leaves
+    // Draft". Draft is the state in which nothing has been dispatched, so it
+    // is the last moment at which the workspace is provably free of durable
+    // consumers. The instant the wave starts planning/executing, the
+    // scheduler, the forge and every worker take the path as a given.
+    //
+    // The condition is `w.lifecycle != Draft`, not `p.lifecycle == Some(x)`:
+    // an already-non-Draft wave being patched for any other reason is *also*
+    // past the point of no return, and a predicate that only fires on the
+    // transition would leave every wave whose transition happened before this
+    // slice unfrozen forever. The freeze is idempotent and monotonic, so
+    // re-asserting it on every non-Draft patch costs one no-op UPDATE.
+    //
+    // This is the low-level entry: `routes/waves.rs::update_wave`, the MCP
+    // tool and `wave_lifecycle.rs` all funnel through here.
+    if w.lifecycle != WaveLifecycle::Draft {
+        super::wave_workspace::wave_workspace_freeze_tx(tx, w.id.as_str(), w.updated_at).await?;
+    }
+
     // Issue #644 — scheduler budget + gate policy (migration 0041).
     // These columns deliberately do NOT live on the `Wave` struct while
     // the plan is inert (PR-A): keeping them off the struct leaves every

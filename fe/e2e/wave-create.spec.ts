@@ -32,7 +32,12 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   const dialog = page.getByRole('dialog', { name: 'New wave' });
   const title = `FE e2e wave ${Date.now()}`;
   await expect(dialog.getByLabel(TASK_LABEL)).toBeVisible();
-  await expect(dialog.getByLabel('Folder')).toHaveCount(0);
+  // #1147 S3 — the Folder control is present and **optional**. This test walks
+  // the default path (nothing picked), which must stay byte-identical to the
+  // #1131 body: the kernel keys its managed-workspace branch on the absence of
+  // `cwd`, so a control that defaulted to `$HOME` or to `""` would silently
+  // move every wave onto the attached branch.
+  await expect(dialog.getByLabel('Folder')).toBeVisible();
   // #1209 — Blank is the default and is left alone here: this case is the
   // pre-template create, and the assertions below say the picker added no
   // field to it. The picker is collapsed, so "what is selected" is read off

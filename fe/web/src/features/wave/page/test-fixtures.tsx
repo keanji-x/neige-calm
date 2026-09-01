@@ -7,7 +7,10 @@ import { render, type RenderResult } from '@testing-library/react';
 import { vi } from 'vitest';
 
 import { NEUTRAL_ACTIVITY, type CardWire, type Wave } from '../../../../../core/domain/wave.ts';
+import { useState } from '../../../ui/state/public.ts';
 import { WavePage, type WavePageProps } from './public.tsx';
+
+type Panel = NonNullable<WavePageProps['panel']>;
 
 export function wave(overrides: Partial<Wave> = {}): Wave {
   return {
@@ -26,6 +29,26 @@ export function card(overrides: Partial<CardWire> = {}): CardWire {
   };
 }
 
+/*
+ * `WavePage` is a pure renderer: since #1191 §2.4 the secondary panel is a prop
+ * fed from `?panel=`, so these suites need something to hold it. This holder is
+ * *only* a holder — the production owner is `app/router`'s
+ * `useWavePanelNavigation`, and `app/router/mobile-report-navigation.test.tsx`
+ * drives that one through a real router. A test that passes `panel` explicitly
+ * opts out and gets the fixed value it asked for.
+ */
+function PanelHost({ props }: { props: WavePageProps }) {
+  const [panel, setPanel] = useState<Panel | null>(props.panel ?? null);
+  return (
+    <WavePage
+      {...props}
+      panel={panel}
+      onOpenPanel={(next) => { setPanel(next); props.onOpenPanel?.(next); }}
+      onClosePanel={() => { setPanel(null); props.onClosePanel?.(); }}
+    />
+  );
+}
+
 export function renderPage(overrides: Partial<WavePageProps> = {}): RenderResult {
   const props: WavePageProps = {
     wave: wave(),
@@ -37,5 +60,5 @@ export function renderPage(overrides: Partial<WavePageProps> = {}): RenderResult
     onDeleteWave: vi.fn(),
     ...overrides,
   };
-  return render(<WavePage {...props} />);
+  return render(<PanelHost props={props} />);
 }

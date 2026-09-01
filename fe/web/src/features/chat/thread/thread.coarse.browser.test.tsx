@@ -16,10 +16,29 @@
  *
  * The way out is a browser context, not a page: `@vitest/browser-playwright`
  * takes `contextOptions`, and a project of its own gets a context of its own.
- * `vitest.config.ts` opens this one with `hasTouch` + `isMobile` and a phone
- * viewport, and the first case below asserts the three media queries that make
- * the rest of the file mean anything — including that `pointer: none` is
- * *false*, which is the shape of poisoning this arrangement exists to avoid.
+ * `vitest.config.ts` opens this one with `hasTouch` + `isMobile` and a tablet
+ * viewport, and the first case below asserts the media queries that make the
+ * rest of the file mean anything — including that `pointer: none` is *false*,
+ * which is the shape of poisoning this arrangement exists to avoid.
+ *
+ * ── The device is a tablet and not a phone (#1191) ───────────────────────
+ *
+ * It was a 420 × 900 phone until #1191's mobile IA landed, and the change is a
+ * ruling between two features that are each right. `pointer: coarse` is *a
+ * finger*, not *a narrow screen*; a handset was simply the cheapest device that
+ * has one. #1191 turns the drawer's whole page seam off under
+ * `@media (width < 60rem)` — a full-width mobile Chat has no seam beside the
+ * card, and conversation history moves to the Report's Conversations list — so
+ * at a phone width the rail this file measures is deliberately not painted, and
+ * the three geometry cases below read 0 for a product reason rather than a
+ * regression. A tablet in portrait is the device where both invariants hold at
+ * once: a finger on the glass and a seam to reach into.
+ *
+ * So: **do not put this project back at a phone viewport to "fix" a failure
+ * here.** If the rail stops rendering at 1024 wide, the seam is gone for some
+ * other reason and that is the bug. The reverse contract — that a phone-width
+ * page paints no seam at all — is pinned in `ui/drawer/mobile.browser.test.tsx`
+ * against the rule that does it, so the two halves cannot both drift.
  *
  * ── What that lets go ────────────────────────────────────────────────────
  *
@@ -89,8 +108,12 @@ const DRAWER_BLOCK_INSETS = 20 + 28;
  * `overflow: hidden`. A hand-rolled pane renders no rail at all and every case
  * below would pass vacuously.
  *
- * The host is 380 wide because this is a phone: the context's viewport is 420,
- * and a fixture wider than the screen would put the seam off the side of it.
+ * The host is 380 wide because that is a drawer card's own inline size, not
+ * because it is all the room there is: the page is 1024 wide (see the header),
+ * so the seam sits well inside the screen with the fixture at its natural size.
+ * Nothing below turns on the number — every claim is about the seam's block
+ * axis — but a host wider than the viewport would push the seam off the side,
+ * so it stays a card.
  */
 function RailPane({ turns, paneHeight = 400 }: {
   turns: readonly ConversationTurn[];
@@ -189,7 +212,7 @@ type LiftSite = { media: readonly string[]; where: string };
  * all three were measured to matter: `not (pointer: fine)` and the list
  * `(pointer: fine), (pointer: coarse)` both hold on this context, and
  * `((pointer: fine) or (orientation: landscape))` does *not* hold here yet
- * applies to the same phone turned on its side. `any-pointer` counts alongside
+ * applies to the same tablet turned on its side. `any-pointer` counts alongside
  * `pointer`: a device with no fine pointer at all can satisfy neither, in any
  * orientation, which is exactly the claim being made.
  * The rejection is coarser than the grammar, deliberately, and the cost is
@@ -222,9 +245,9 @@ function narrowsToFine(condition: string): boolean {
  *   stylesheet's one real fine block, left this case green with the rail fully
  *   magnified under a finger.
  * - **The text half** closes every device state that is not *this* one. A
- *   `matches` reading is a snapshot of one 420 × 900 portrait phone, and
+ *   `matches` reading is a snapshot of one 1024 × 1366 portrait tablet, and
  *   `@media (pointer: coarse) and (orientation: landscape)` is false on it
- *   while being a rule the same finger gets the instant the phone is turned.
+ *   while being a rule the same finger gets the instant the tablet is turned.
  *   The invariant is "a finger can never reach it", not "a finger does not
  *   reach it from here", so a non-match is evidence only when what fails is the
  *   device's *pointer* rather than some state it can be put into.
@@ -407,13 +430,10 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * context: coarse true, fine false, none false.
    *
    * The screen is asserted for the same reason `isMobile` is set with a
-   * viewport: `isMobile` on a desktop-sized page is a handset claim with no
-   * screen behind it, and the 320px cap two cases below is a block-axis fact
-   * that only means anything against a real one. It is `screen`, not
-   * `innerWidth`: the runner puts every suite in a 414 × 896 iframe whatever
-   * the context says, so the inner box reads the same in *both* projects and
-   * would be green on a desktop context. Measured — this project 420 × 900
-   * with `maxTouchPoints` 1, the plain `browser` project 1280 × 720 with 0.
+   * viewport: `isMobile` on a host-sized page is a device claim with no screen
+   * behind it, and the 320px cap two cases below is a block-axis fact that only
+   * means anything against a real one. Measured — this project 1024 × 1366 with
+   * `maxTouchPoints` 1, the plain `browser` project 1280 × 720 with 0.
    *
    * **Both screen axes, and `isMobile` itself, because the name of this case
    * promises all three.** The height is the one the cap is read against, and
@@ -424,20 +444,33 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * running the page in mobile emulation, and the two things that says so are
    * measured here: legacy `window.orientation` exists only under it (present
    * and 0 with `isMobile`, absent without), and `screen.orientation` reports
-   * the orientation the 420 × 900 box actually has rather than the host's —
+   * the orientation the 1024 × 1366 box actually has rather than the host's —
    * `portrait-primary` with it, and `landscape-primary` on the identical
    * viewport without it.
+   *
+   * **And the *inner* box, which is a separate setting and the one #1191 turns
+   * on.** `screen` is the Playwright context; the suite itself runs in an
+   * iframe Vitest sizes from `browser.viewport`, and that defaults to 414 × 896
+   * however wide the page behind it is. `@media (width < 60rem)` — the rule
+   * that takes the drawer's seam away on mobile — is evaluated against *this*
+   * box, so with only the context widened every geometry case below still reads
+   * 0. Asserted as the media condition itself rather than as a number, because
+   * that condition is the thing the rail's existence here depends on.
    */
   it('runs in a context that reports a coarse pointer and nothing else', () => {
     expect(matchMedia('(pointer: coarse)').matches).toBe(true);
     expect(matchMedia('(pointer: fine)').matches).toBe(false);
     expect(matchMedia('(pointer: none)').matches).toBe(false);
     expect(matchMedia('(any-pointer: coarse)').matches).toBe(true);
-    expect(screen.width).toBe(420);
-    expect(screen.height).toBe(900);
+    expect(screen.width).toBe(1024);
+    expect(screen.height).toBe(1366);
     expect(navigator.maxTouchPoints).toBeGreaterThan(0);
     expect('orientation' in window).toBe(true);
     expect(screen.orientation.type).toBe('portrait-primary');
+    /* Coarse **and wide**: the seam the rail mounts in exists only above the
+       60rem breakpoint (#1191). */
+    expect(matchMedia('(width >= 60rem)').matches).toBe(true);
+    expect(window.innerWidth).toBeGreaterThanOrEqual(960);
   });
 
   /*
@@ -641,8 +674,8 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * descending into every grouping rule still hid `@keyframes` and `@property`;
    * reading condition text instead of asking the engine let the three media
    * forms below through; asking only the engine let the landscape form through,
-   * because it is the one that is false on this phone and true on the same
-   * phone turned; and matching `cssText` raw let the escaped spelling through,
+   * because it is the one that is false on this tablet and true on the same
+   * tablet turned; and matching `cssText` raw let the escaped spelling through,
    * which is the same property under a name the serialisation keeps verbatim
    * and which is now reported as undecidable rather than decoded.
    * `@supports (color: red)` and `@container (min-width: 1px)` are written to
@@ -880,8 +913,8 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * `--nc-rail-max` is 320px and the reason is on the property: a full-height
    * column of ink in the seam is scrollbar-shaped and gets dragged. What
    * nothing in this repository said until now is that **the cap is reached at
-   * half the conversation length on a phone**, because the pitch is more than
-   * twice as tall.
+   * half the conversation length under a finger**, because the coarse pitch is
+   * more than twice as tall.
    *
    * Measured, both branches, same 320px cap, at rest:
    *
@@ -892,9 +925,11 @@ describe('the exchange rail on a coarse pointer, as the engine lays it out', () 
    * shoulders of 32px, so 256px of the cap is dots. Neither branch is wrong —
    * the track is a scrollport, `safe center` hands the overflow to the end, and
    * every dot stays reachable, which is asserted below rather than assumed. But
-   * a reader on a phone meets the rail's second scroll at a *twelve*-exchange
-   * conversation, which is an ordinary one, and that is worth having written
-   * down somewhere that fails when it stops being true.
+   * a reader on a touchscreen meets the rail's second scroll at a
+   * *twelve*-exchange conversation, which is an ordinary one, and that is worth
+   * having written down somewhere that fails when it stops being true. (On a
+   * *phone* the question does not arise: #1191 takes the seam and the rail with
+   * it, and history is read from the Report's Conversations list instead.)
    *
    * The cap is read off the engine rather than repeated here, so a change to
    * `--nc-rail-max` moves this case's arithmetic with it and the thresholds are

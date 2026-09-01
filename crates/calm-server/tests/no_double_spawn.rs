@@ -2848,22 +2848,19 @@ async fn init_git_repo_for_wave(boot: &Boot, name: &str) -> PathBuf {
     std::fs::write(repo_path.join("README.md"), "initial\n").expect("write readme");
     run_git(&repo_path, ["add", "README.md"]);
     run_git(&repo_path, ["commit", "-m", "initial"]);
-    // #1147 S1 — same reason as `scheduler.rs`: go through the production
-    // single writer so `cwd` and `workspace_path` cannot drift apart in a
-    // fixture-only state.
-    let mut tx = boot.repo.pool().begin().await.unwrap();
-    calm_server::db::sqlite::wave_workspace_write_tx(
-        &mut tx,
-        &boot.wave_id,
-        &calm_server::model::WaveWorkspace {
-            kind: calm_server::model::WaveWorkspaceKind::Attached,
-            path: repo_path.to_string_lossy().into_owned(),
-            frozen_at: Some(1),
-        },
+    // #1147 S3 — written directly rather than through the production writer:
+    // this forces "attached, frozen, pointing at a real repository", and the
+    // writer refuses a frozen row (the freeze latch) while `boot()`'s wave may
+    // already carry a stamp. Registered in
+    // `calm-truth/tests/wave_write_point_registry.rs`.
+    sqlx::query(
+        "UPDATE waves SET workspace_kind='attached', workspace_path=?1, workspace_frozen_at=1 WHERE id=?2",
     )
+    .bind(repo_path.to_string_lossy().as_ref())
+    .bind(&boot.wave_id)
+    .execute(boot.repo.pool())
     .await
     .unwrap();
-    tx.commit().await.unwrap();
     repo_path
 }
 

@@ -1047,8 +1047,7 @@ mod tests {
                 .unwrap();
 
             let event_bus = Arc::new(EventBus::new());
-            let registry = Arc::new(PluginRegistry::empty());
-            registry.insert(manifest, None);
+            let registry = Arc::new(PluginRegistry::from_manifests([(manifest, None)]));
             let mcp = stub_mcp_client().await;
             let subs = Arc::new(Mutex::new(Vec::new()));
 

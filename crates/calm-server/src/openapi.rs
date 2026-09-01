@@ -16,7 +16,7 @@ use crate::model::{
     Card, CardPatch, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
     CovePatch, CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, NewCard, NewCove,
     NewCoveFolder, NewOverlay, NewWave, Overlay, Plugin, Terminal, Wave, WaveConversationSummary,
-    WaveDetail, WavePatch,
+    WaveDetail, WavePatch, WaveWorkspacePatch,
 };
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::cards::{
@@ -165,6 +165,7 @@ use utoipa::OpenApi;
         NewWave,
         CreateWaveRequest,
         WavePatch,
+        WaveWorkspacePatch,
         TodayLaunchpad,
         WavesWindowQuery,
         WaveFsLsQuery,

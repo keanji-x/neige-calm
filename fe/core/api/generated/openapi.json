@@ -3148,8 +3148,38 @@
               }
             }
           },
+          "400": {
+            "description": "Unsupported workspace change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace change refused (system cove)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace is frozen, attached, or no longer empty",
             "content": {
               "application/json": {
                 "schema": {
@@ -5719,14 +5749,14 @@
       },
       "NewTerminalCardBody": {
         "type": "object",
-        "description": "Body for `POST /api/waves/:wave_id/terminal-cards`.\n\nDeliberately omits `kind` (always `\"terminal\"`) and `payload` (the kernel\npersists schema payload and projects identity from `runtimes`). Empty\n`program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to\n`$HOME` then the server's cwd. `env` is merged into the daemon's environment\nas additional vars on top of `TERM` / `COLORTERM` / inherited.",
+        "description": "Body for `POST /api/waves/:wave_id/terminal-cards`.\n\nDeliberately omits `kind` (always `\"terminal\"`) and `payload` (the kernel\npersists schema payload and projects identity from `runtimes`). Empty\n`program` falls back to `$SHELL` then `/bin/sh`; empty `cwd` falls back to\nthe wave's workspace (#1147 S6). `env` is merged into the daemon's environment\nas additional vars on top of `TERM` / `COLORTERM` / inherited.",
         "required": [
           "theme"
         ],
         "properties": {
           "cwd": {
             "type": "string",
-            "description": "Empty string or missing → `$HOME` (then cwd of server)."
+            "description": "Empty string or missing → the wave's workspace path (#1147 S6)."
           },
           "env": {
             "type": "object",
@@ -7347,6 +7377,17 @@
             ],
             "format": "int64",
             "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a\nwave with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
+          },
+          "workspace": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveWorkspacePatch",
+                "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::waves::update_wave` and **never** by\n`wave_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
+              }
+            ]
           }
         }
       },
@@ -7511,6 +7552,29 @@
           "managed",
           "attached"
         ]
+      },
+      "WaveWorkspacePatch": {
+        "type": "object",
+        "description": "#1147 S3 — point a wave at a repository the user already has.\n\nThe only transition this expresses is `managed → attached`. There is no\n`managed → managed`: a managed path is *derived*\n(`<workspace-root>/<cove_id>/<wave_id>`, see\n`workspace_materialize::managed_workspace_path`) from a wave's cove and id,\nneither of which can change, so \"re-allocate a managed workspace\" would\nalways re-derive the same path — an in-place reset, not a change. And a\ncaller-supplied *managed* path is worse than useless: S5's recycle guard 2\nrequires exactly `<root>/<cove>/<wave>` depth, so any other path produces a\nrow whose directory can never be reclaimed.\n\n`attached → *` stays refused (an attached repository belongs to the user;\nthe server never moves, initializes or deletes it), which makes this a\none-way door — and the write below stamps `frozen_at` to say so.",
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "attach_folder": {
+            "type": "boolean",
+            "description": "Claim `path` for this wave's cove in the same transaction, exactly as\n`POST /api/waves`'s field of the same name does (issue #275 rules:\nequal / ancestor / descendant of any existing claim is a structured\n409). Default `false`: an unclaimed path is refused rather than\nsilently making a homeless wave."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WaveWorkspaceKind",
+            "description": "Must be `attached`. `managed` is a documented 400, not a silent no-op."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to an existing Git work tree. Validated — existence and\ngit-ness included — *before* anything is written, because \"the path was\nwrong\" surfacing later as a worker's `spawn-failed` is the defect\n#1147 was opened on."
+          }
+        },
+        "additionalProperties": false
       },
       "WavesWindowQuery": {
         "type": "object",

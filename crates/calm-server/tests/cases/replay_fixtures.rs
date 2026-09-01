@@ -323,7 +323,11 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
             cove_id: cove.id.clone(),
             title: "replay-terminal".into(),
             sort: None,
-            cwd: String::new(),
+            // #1147 S6 — the dispatcher's terminal worker defaults its cwd to
+            // the wave's workspace, and the kernel refuses to open a terminal
+            // in an empty one. Production waves always have a path; so does
+            // this fixture.
+            cwd: "/neige-fixture-workspace".into(),
             workflow_id: None,
             plugin_scope: None,
             attach_folder: false,

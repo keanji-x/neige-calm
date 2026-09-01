@@ -1,12 +1,24 @@
-// The new-wave form: a task, and what the wave starts from.
+// The new-wave form: a task, what the wave starts from, and optionally the
+// folder it runs in.
 //
 // Presentational + local form state — it never calls an API. The caller owns
 // POST /api/waves, `submitting`, `error`, and the template list itself.
 //
 // `cove_id` is not a form field. The dialog opens from a cove page `+` (or the
 // rail's per-cove `+`); the caller already knows which cove and sends it on
-// the request. Binding a folder is out of scope: the kernel defaults omitted
-// `cwd` to `$HOME` and does not claim it.
+// the request.
+//
+// ## The folder is optional and empty by default (#1147 S3)
+//
+// Left empty, the draft carries no `cwd` at all and the caller's POST omits
+// `cwd` / `attach_folder`, which is the kernel's *managed*-workspace branch: it
+// allocates a directory under the workspace root, `git init`s it, and owns it.
+// Filled in, the wave is *attached* to a repository the user already has, which
+// the kernel never creates, moves or deletes. Create time is the only entry
+// into that choice — `managed → attached` after the fact exists as an API and
+// has no UI — so an always-visible optional field is the whole feature, not a
+// shortcut for one. Without it, attached workspaces are unreachable from the
+// product.
 //
 // ## Built from `@astryxdesign/core`
 //
@@ -127,6 +139,8 @@ import { VStack } from '@astryxdesign/core/VStack';
 
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
 import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
+import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
+import { DirectoryField } from '../../../ui/schema-form/fields/DirectoryField/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import styles from './new-wave.module.css';
 
@@ -135,6 +149,13 @@ export type NewWaveDraft = Readonly<{
   /** Absent for Blank — never `null` or `''`, which the kernel 400s. */
   workflow_id?: string;
   workflow_input?: Readonly<Record<string, unknown>>;
+  /**
+   * Absolute path, **or the key is absent**. Absent is not "the empty string":
+   * the caller distinguishes the two to decide whether the request carries
+   * `cwd` / `attach_folder` at all, and an empty string is a legal-looking
+   * value that would take the attached branch with a path that cannot work.
+   */
+  cwd?: string;
 }>;
 
 export type NewWaveFormProps = Readonly<{
@@ -151,6 +172,14 @@ export type NewWaveFormProps = Readonly<{
    * go" has an answer on screen.
    */
   templatesError?: string | null;
+  /**
+   * The folder picker's read port. Injected: `ui/` primitives never reach a
+   * transport, and `features/**` may not import `app/**` — so the port is
+   * created at the composition layer (`app/providers/directory.ts`) and passed
+   * down. Required, not optional: a call site that forgot it would render a
+   * picker that silently lists nothing.
+   */
+  listDirectory: ListDirectory;
   /*
    * The dialog's opening focus target. Without one the dialog falls back to its
    * first focusable, which is the header's Close button — so a reader who
@@ -196,6 +225,22 @@ const BLANK_LABEL = 'Blank';
 const TASK_LABEL = 'What this wave should do';
 const TASK_PLACEHOLDER = 'What should this wave do?';
 
+/**
+ * The Folder field's name and supporting copy.
+ *
+ * Visible, unlike the task's: the whole point of the control is that a reader
+ * who does not know about attached workspaces has to be able to see the choice
+ * exists and what leaving it alone means. It is *not* `isOptional` on the
+ * `Field` — that appends "∙ Optional" to the label, and the description below
+ * already says it in a sentence that also says what the default does.
+ */
+const FOLDER_LABEL = 'Folder';
+const FOLDER_PLACEHOLDER = 'Neige picks one for this wave';
+const FOLDER_HINT = 'Optional. Leave it empty and Neige creates a workspace for this wave. '
+  + 'Choose your own repository and Neige never moves or deletes it.';
+/** The way back to the managed default, which exists nowhere else. */
+const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
+
 /** Mirrors the enum in the bound plugin's `input_schema`. */
 type MergePolicy = 'hold-for-ratify' | 'auto-merge';
 
@@ -211,13 +256,16 @@ function needsInput(template: WaveTemplate | undefined): boolean {
 }
 
 export function NewWaveForm({
-  submitting, error, templates, templatesError = null, titleRef, onCancel, onSubmit,
+  submitting, error, templates, templatesError = null, listDirectory,
+  titleRef, onCancel, onSubmit,
 }: NewWaveFormProps) {
   const fieldId = useId();
   const [title, setTitle] = useState('');
   const [selected, setSelected] = useState<string>(BLANK);
   const [issueUrl, setIssueUrl] = useState('');
   const [autoMerge, setAutoMerge] = useState(false);
+  const [cwd, setCwd] = useState('');
+  const folderId = `${fieldId}-folder`;
   const triggerId = `${fieldId}-start-from-trigger`;
   const startFromLabelId = `${fieldId}-start-from-label`;
   const startFromStatusId = `${fieldId}-start-from-status`;
@@ -253,14 +301,20 @@ export function NewWaveForm({
       : undefined;
 
   function buildDraft(): NewWaveDraft {
-    if (effectiveSelection === BLANK) return { title: title.trim() };
-    if (parsedIssue === null) return { title: title.trim(), workflow_id: effectiveSelection };
+    /* Spread, not `cwd: folder || undefined`: the caller keys the whole
+       managed-vs-attached decision on whether the key is *there*, and
+       `cwd: undefined` is a different object from no `cwd` for anything that
+       inspects the draft before it is serialized — including the tests. */
+    const folder = cwd.trim();
+    const base = { title: title.trim(), ...(folder === '' ? {} : { cwd: folder }) };
+    if (effectiveSelection === BLANK) return base;
+    if (parsedIssue === null) return { ...base, workflow_id: effectiveSelection };
     // The kernel applies no schema defaults, so `merge_policy` always travels
     // explicitly. Unchecked is `hold-for-ratify`: the default direction is
     // "wait for a human", and flipping it would auto-merge by omission.
     const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
     return {
-      title: title.trim(),
+      ...base,
       workflow_id: effectiveSelection,
       workflow_input: { ...parsedIssue, merge_policy: mergePolicy },
     };
@@ -382,6 +436,43 @@ export function NewWaveForm({
             />
           </div>
         )}
+      </Field>
+
+      {/* The folder, #1147 S3. A real `<label htmlFor>` and *not* the
+          `isGroupLabel` span the picker above needs: this field wraps one
+          control, and `DirectoryField` is frozen — it takes `id` and nothing
+          else, so `aria-labelledby` is not on the table. A `<label>` pointing
+          at a button replaces the button's contents as its accessible name,
+          which is what is wanted here: the name is "Folder", and the path (or
+          the placeholder) is the value it holds, not part of its name.
+
+          `DirectoryField`, not a text input plus a picker of our own: it is
+          the frozen wrapper that pushes `DirectoryBrowser` into the
+          *surrounding* dialog rather than opening a second one, and this form
+          is always hosted in a dialog. */}
+      <Field label={FOLDER_LABEL} inputID={folderId} description={FOLDER_HINT}>
+        <VStack gap={1} align="start">
+          <DirectoryField
+            id={folderId}
+            value={cwd}
+            onChange={setCwd}
+            listDirectory={listDirectory}
+            placeholder={FOLDER_PLACEHOLDER}
+          />
+          {/* Create time is the only entry into the attached choice, so the way
+              *back* to the managed default has to exist here too — there is no
+              later screen for it. Ghost, not a second primary: it undoes a
+              choice, it does not make one. */}
+          {cwd !== '' && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              label={FOLDER_CLEAR_LABEL}
+              onClick={() => setCwd('')}
+            />
+          )}
+        </VStack>
       </Field>
 
       {/* The action row is a plain horizontal stack, so it is astryx's:

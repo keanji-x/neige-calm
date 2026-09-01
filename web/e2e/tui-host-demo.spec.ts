@@ -65,8 +65,12 @@ test('split-pane TUI copies via OSC 52 and card wheel does not scroll the page',
     data: {
       cove_id: cove.id,
       title,
-      cwd: `/tmp/playwright-tui-host-${cove.id}`,
-      attach_folder: true,
+      // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+      // This spec is about the TUI host renderer, not working
+      // directories (the terminal card below still passes its own
+      // `cwd: '/tmp'`, which is a real directory inside the kernel).
+      // See `helpers/reset.ts::createWaveInCove` for why the invented
+      // `/tmp/playwright-tui-host-<id>` attached path was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

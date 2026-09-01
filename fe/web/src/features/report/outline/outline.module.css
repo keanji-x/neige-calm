@@ -134,6 +134,15 @@
     background: var(--accent);
   }
 
+  /* The desktop margin rail has no mobile analogue: at phone width it would
+     compete with the report for the same horizontal space. Mobile exposes the
+     same anchors as a full-width list from the Wave actions menu instead. */
+  @media (width < 60rem) {
+    .rail {
+      display: none;
+    }
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .row,
     .text,
