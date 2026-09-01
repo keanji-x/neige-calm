@@ -1057,8 +1057,19 @@
    * costs.
    */
   .reply {
-    /* Astryx's namespace, not ours — see the note above. */
+    /*
+     * Astryx's namespace, not ours — see the note above.
+     *
+     * `--font-family-heading` is here for the same reason the body one is, and
+     * leaving it out was a real bug rather than an omission: Astryx's markdown
+     * headings take *that* variable (`Markdown.tsx:253`), which the app-wide
+     * bridge maps to `--font-display`, i.e. the sans. `base.css` sets
+     * `.calm-prose h1/h2/h3` in `--font-serif` — the report's headings are in
+     * the report's family — so a reply whose `##` came out sans was the same
+     * split voice this file's `.reply` note exists to close, one element deeper.
+     */
     --font-family-body: var(--font-serif);
+    --font-family-heading: var(--font-serif);
     --text-body-size: var(--text-md);
     --text-body-leading: var(--leading-loose);
 

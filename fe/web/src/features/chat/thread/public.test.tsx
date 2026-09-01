@@ -327,7 +327,13 @@ describe('ChatThread', () => {
     /* `##` is one level below `#`, and `#` starts at `h3` — see the case below. */
     expect(reply.querySelector('h4')?.textContent).toBe('Findings');
     expect([...reply.querySelectorAll('li')].map((item) => item.textContent)).toEqual(['first', 'second']);
-    expect(reply.querySelector('pre, code')).toBeTruthy();
+    /* The fence is a *block* and it still holds its source. `pre, code` alone
+       passed on an implementation that dropped the code and emitted an empty
+       inline `<code>`, which is the shape a weak assertion here would let
+       through — the point of a fence is the code inside it. */
+    const fence = reply.querySelector('pre');
+    expect(fence).toBeTruthy();
+    expect(fence?.textContent).toContain('const a = 1;');
     /* The source characters are gone, not merely re-styled. */
     expect(reply.textContent).not.toContain('##');
     expect(reply.textContent).not.toContain('```');

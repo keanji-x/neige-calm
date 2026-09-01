@@ -90,8 +90,7 @@ S1 的可见行为变化只有一处，需明确接受：**live 脉冲点从「�
 
 新增覆盖：
 - agent 回复里的 markdown（标题／列表／围栏代码）真的渲染成对应元素，而不是纯文本；
-- 纯文本回复的换行仍然逐字保留（今天靠 `.reply` 的 `white-space: pre-wrap`，markdown 子树里必须由 markdown 自己的段落负责，两者不能同时生效）；
-- 回复子树内 `--font-family-body` 解析到 serif（token 覆盖真的生效，而不是只写了 CSS）；
+- 回复子树内 `--font-family-body`、`--font-family-heading`、`--text-body-size`、`--text-body-leading` 四个 astryx 变量都解析到我们的值（token 覆盖真的生效，而不是只写了 CSS）。**四个分别可删，所以分别断言**：标题走的是 `--font-family-heading`（桥把它映到 `--font-display`，即 sans），正文的覆盖不可能让它红；断言必须落在 markdown 真正产出的块上，落回 `.reply` 容器就等于在断言迁移前的实现；
 - `you` 行不走 markdown（用户输入的 `*` `#` 不该被解释）。
 
 ## 5. 待决

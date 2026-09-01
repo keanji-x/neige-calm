@@ -2943,17 +2943,34 @@ describe('the exchange rail, as the engine lays it out', () => {
 describe('the reply’s type, through Astryx’s markdown', () => {
   const MARKDOWN_REPLY: ConversationTurn[] = [
     { id: 'you-0', author: 'you', text: 'Ask', atMs: 0 },
-    { id: 'agent-0', author: 'agent', text: 'An answer that runs long enough to wrap.', atMs: 1 },
+    {
+      id: 'agent-0',
+      author: 'agent',
+      text: '## A heading\n\nAn answer that runs long enough to wrap.',
+      atMs: 1,
+    },
   ];
 
-  /** The block Astryx actually painted the words into — not `.reply`, which is
-   *  now only the box around it. */
-  function paintedReply(): HTMLElement {
-    const reply = replies()[0];
-    return (reply.querySelector<HTMLElement>('[role="paragraph"], p') ?? reply);
+  /**
+   * The block Astryx actually painted the words into — **and never `.reply`
+   * itself**, which is only the box around it.
+   *
+   * There was a `?? reply` fallback here and it made the whole case vacuous:
+   * with it, the pre-markdown implementation — `<p className={styles.reply}>` —
+   * passes every assertion below, because `.reply` carries the plain
+   * `font-family`/`font-size` declarations that are still in the rule for the
+   * container's own text nodes. What is under test is that the *variables*
+   * reach Astryx's block, so the block has to be found or the case has to fail.
+   */
+  function paintedBlock(selector: string): HTMLElement {
+    const found = replies()[0].querySelector<HTMLElement>(selector);
+    expect(found, `no ${selector} inside the reply — markdown did not render`).not.toBeNull();
+    return found!;
   }
 
-  function probe(styles: Partial<CSSStyleDeclaration>): CSSStyleDeclaration {
+  function probe(styles: Partial<CSSStyleDeclaration>): {
+    fontFamily: string; fontSize: string; lineHeight: string;
+  } {
     const element = document.createElement('div');
     Object.assign(element.style, styles);
     document.body.append(element);
@@ -2962,22 +2979,46 @@ describe('the reply’s type, through Astryx’s markdown', () => {
     const snapshot = {
       fontFamily: computed.fontFamily,
       fontSize: computed.fontSize,
-    } as CSSStyleDeclaration;
+      lineHeight: computed.lineHeight,
+    };
     element.remove();
     return snapshot;
   }
 
   it('paints the reply in the report’s serif at the drawer’s step, not Astryx’s body sans', () => {
     render(<RailPane turns={MARKDOWN_REPLY} />);
-    const painted = getComputedStyle(paintedReply());
+    const painted = getComputedStyle(paintedBlock('[role="paragraph"], p'));
 
-    const wanted = probe({ fontFamily: 'var(--font-serif)', fontSize: 'var(--text-md)' });
+    /* All three overridden variables, because all three are separately
+       droppable: an earlier version of this case read family and size only, and
+       deleting `--text-body-leading` left it green. */
+    const wanted = probe({
+      fontFamily: 'var(--font-serif)',
+      fontSize: 'var(--text-md)',
+      lineHeight: 'var(--leading-loose)',
+    });
     expect(painted.fontFamily).toBe(wanted.fontFamily);
     expect(painted.fontSize).toBe(wanted.fontSize);
+    expect(painted.lineHeight).toBe(wanted.lineHeight);
 
     /* And the sans the app-wide bridge would otherwise have handed it is a
        different answer, so the line above cannot pass by falling through. */
     expect(painted.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-sans)' }).fontFamily);
+  });
+
+  /*
+   * Headings take a *different* Astryx variable (`--font-family-heading`), which
+   * the app-wide bridge maps to `--font-display` — the sans. `base.css` sets
+   * `.calm-prose h1/h2/h3` in `--font-serif`, so a reply whose `##` came out
+   * sans is the split voice `.reply` exists to close, one element deeper. This
+   * is its own case because the body override cannot fail it and did not.
+   */
+  it('paints the reply’s own headings in the same serif, not the display sans', () => {
+    render(<RailPane turns={MARKDOWN_REPLY} />);
+    const heading = getComputedStyle(paintedBlock('h4'));
+
+    expect(heading.fontFamily).toBe(probe({ fontFamily: 'var(--font-serif)' }).fontFamily);
+    expect(heading.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-display)' }).fontFamily);
   });
 });
 
