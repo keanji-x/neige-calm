@@ -105,15 +105,21 @@ CSS 内建值、本仓遍地都是的领域词。查表时统一小写。只作�
 
 变异验证（先 commit，再 `git apply` patch，读具体是哪条测试红）：
 
-| 变异（注释掉的实现分支） | 变红的测试 |
+| 变异（改掉的实现分支） | 变红的测试（除 `accepts all real oracle data without exceptions` 外，它对任何变异都红） |
 | --- | --- |
-| `wordShaped` / `pathShaped` 整个 `if`（反引号整片段） | `anchor class backtick-path-range-miss is the only violation, as range-miss`、`anchor class backtick-word-range-miss is the only violation, as range-miss`、`extracts display copy and backtick fragments…` |
-| 展示文案抽取循环 | `anchor class display-copy-range-miss is the only violation, as range-miss`、`anchor class display-copy-with-identifier produces no violation`、`anchor class display-copy-placeholder produces no violation`、`anchor class display-copy-case-insensitive produces no violation`、`anchor class display-copy-typography-split produces no violation`、`extracts display copy and backtick fragments…` |
-| `caseInsensitive` 传参（改为空集） | `anchor class display-copy-case-insensitive produces no violation` |
+| 反引号整片段整个 `if` 短路 | `anchor class backtick-path-range-miss …`、`anchor class backtick-word-range-miss …`、`extracts display copy and backtick fragments…` |
+| 只短路 `wordShaped` | `anchor class backtick-word-range-miss …`、`extracts display copy and backtick fragments…` |
+| 只短路 `pathShaped` | `anchor class backtick-path-range-miss …`、`extracts display copy and backtick fragments…` |
+| 展示文案抽取循环改成空迭代 | `anchor class display-copy-range-miss …`、`anchor class display-copy-with-identifier produces no violation`、`extracts display copy and backtick fragments…` |
+| `caseInsensitive` 传参改成空集 | `anchor class display-copy-case-insensitive produces no violation` |
 | `UNMATCHABLE_RUN_PATTERN` 去掉占位符段 | `anchor class display-copy-placeholder produces no violation`、`extracts display copy and backtick fragments…` |
 | `UNMATCHABLE_RUN_PATTERN` 去掉非 ASCII 段 | `anchor class display-copy-typography-split produces no violation`、`extracts display copy and backtick fragments…` |
-| `isGeneric` 停用表（反引号侧） | `anchor class generic-word-not-anchored produces no violation`、`extracts display copy and backtick fragments…` |
-| `isGeneric` 停用表（展示文案侧） | `anchor class generic-display-copy-not-anchored produces no violation` |
+| 去掉 `isGeneric`（反引号侧） | `anchor class generic-word-not-anchored produces no violation`、`extracts display copy and backtick fragments…` |
+| 去掉 `isGeneric`（展示文案侧） | `anchor class generic-display-copy-not-anchored produces no violation` |
+
+注意「展示文案抽取循环」那一行只红了 3 条：`display-copy-placeholder` / `-case-insensitive` /
+`-typography-split` 是绿向 fixture，抽不出 anchor 时会走 `identifiers.length === 0` 的静默通过捷径，
+所以钉住它们各自分支的是上面下面几行的定向变异，不是这一行 —— 这正是每类判据都要有自己变异的原因。
 
 另有一条集合相等的元测试 `anchor classes: every fixture directory is exercised, in both directions`，
 保证新加 fixture 目录不会漏跑。
