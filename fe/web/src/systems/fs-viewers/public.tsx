@@ -233,18 +233,20 @@ export function FileViewer({ path, files, theme, slots }: FileViewerProps) {
    * `folderPath` is a dependency here, so the moment it changes, everything the
    * previous folder produced describes a repository the card has already left —
    * and showing one repository's changed files under another's path is the
-   * defect. Three things prevent it, and only one of them is a line in this
-   * effect, which is why they are named rather than restated as belt-and-braces
-   * assignments that no test could tell apart:
+   * defect. Three things prevent it — two are lines in this effect and the
+   * third is elsewhere — which is why they are named rather than restated as
+   * belt-and-braces assignments that no test could tell apart:
    *
    *   1. `diffSelected` is dropped *before* the read (below). That is the line
-   *      that matters, and it is the one under test — the diff effect keys on
-   *      the selection, so clearing it empties the pane in the same tick.
-   *   2. the list renders its `diffListLoading` branch until the new status
-   *      answers, so the previous folder's rows are off screen regardless of
-   *      what `changedFiles` still holds;
-   *   3. `gitRoot` cannot be read while there is no selection, because the
-   *      diff effect returns early on `diffSelected === null`.
+   *      that matters most, and it is under test — the diff effect keys on the
+   *      selection, so clearing it empties the pane in the same tick.
+   *   2. `setDiffListLoading(true)`, also a line in this effect (below), makes
+   *      the list render its loading branch until the new status answers, so
+   *      the previous folder's rows are off screen regardless of what
+   *      `changedFiles` still holds. This one is under test too.
+   *   3. the one that is not a line here: `gitRoot` cannot be read while there
+   *      is no selection, because the diff effect returns early on
+   *      `diffSelected === null`.
    *
    * An earlier revision also cleared `gitRoot`, `changedFiles` and `diff` here.
    * Deleting all three left the whole suite green — they were unreachable

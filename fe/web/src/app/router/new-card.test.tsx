@@ -38,9 +38,10 @@ function ok(body: unknown): ApiTransportResponse {
 function setup({ createFails = false, deferCreate = false } = {}) {
   const requests: ApiRequest[] = [];
   const cards: CardWire[] = [];
-  /* Held open so the reader can leave the wave *while* the create is in
-     flight — the window the route has to survive. */
-  const release: { current: (() => void) | null } = { current: null };
+  /* Held open so the reader can act *while* a create is in flight — the window
+     the route has to survive. One entry per POST, in the order they were sent,
+     so a test can release an older attempt before a newer one. */
+  const releases: (() => void)[] = [];
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
@@ -68,7 +69,7 @@ function setup({ createFails = false, deferCreate = false } = {}) {
         cards.push(created);
         if (!deferCreate) return Promise.resolve(ok(created));
         return new Promise<ApiTransportResponse>((resolve) => {
-          release.current = () => { resolve(ok(created)); };
+          releases.push(() => { resolve(ok(created)); });
         });
       }
       return Promise.resolve(ok([]));
@@ -85,14 +86,24 @@ function setup({ createFails = false, deferCreate = false } = {}) {
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
   return {
-    requests, router, release,
+    requests, router, releases,
     posts: () => requests.filter((request) => request.method === 'POST'),
   };
 }
 
 async function pickKind(label: string) {
-  await userEvent.click(await screen.findByRole('button', { name: 'Add card' }));
-  await userEvent.click(await screen.findByRole('menuitem', { name: label }));
+  const trigger = await screen.findByRole('button', { name: 'Add card' });
+  /* The `+` toggles a popover, and picking two kinds in a row is a real gesture
+     here. The close of the previous cycle does not reliably land before the
+     next click in this environment, and a reopen that arrives inside that
+     window is read as a close — so the click is retried until the menu is
+     actually showing, rather than assumed to have opened. */
+  await waitFor(async () => {
+    if (screen.queryByRole('menuitem', { name: label }) !== null) return;
+    await userEvent.click(trigger);
+    expect(screen.queryByRole('menuitem', { name: label })).not.toBeNull();
+  });
+  await userEvent.click(screen.getByRole('menuitem', { name: label }));
 }
 
 beforeEach(() => {
@@ -162,10 +173,10 @@ describe('adding a card from the CARDS module', () => {
    * assertion is about where the reader is, not about the request.
    */
   it('does not navigate when a create lands after the reader left the wave', async () => {
-    const { router, release, posts } = setup({ deferCreate: true });
+    const { router, releases, posts } = setup({ deferCreate: true });
     await pickKind('terminal');
     await waitFor(() => { expect(posts()).toHaveLength(1); });
-    expect(release.current).toBeTypeOf('function');
+    expect(releases).toHaveLength(1);
 
     // The reader moves on while the create is still in flight: this unmounts
     // the wave route body that owns the pending create.
@@ -173,11 +184,49 @@ describe('adding a card from the CARDS module', () => {
     await waitFor(() => { expect(router.state.location.pathname).toBe('/'); });
 
     await act(async () => {
-      release.current?.();
+      releases[0]?.();
       await new Promise((done) => { setTimeout(done, 0); });
     });
 
     expect(router.state.location.pathname).toBe('/');
+    expect(router.state.location.searchStr).not.toContain('card=');
+  });
+
+  /*
+   * The other end of the same rule: a superseded attempt must not clear the
+   * busy state that now belongs to the attempt that superseded it.
+   *
+   * A fieldless kind creates straight off the menu, with no submit button to
+   * disable, so a reader can start a second one before the first has landed.
+   * The second takes ownership — the first is aborted — and when the first
+   * lands anyway it must keep its hands off `creatingCard`, or the form goes
+   * back to reading `Create codex` while a create is still in flight and the
+   * reader is invited to fire a third. The dialog is here only as the readout:
+   * a kind with fields draws the busy label, and it is the only place the
+   * route says out loud whether it still thinks a create is running.
+   */
+  it('keeps reporting the create in flight when a superseded attempt lands', async () => {
+    const { router, releases, posts } = setup({ deferCreate: true });
+    await pickKind('terminal');
+    await waitFor(() => { expect(posts()).toHaveLength(1); });
+    // A second gesture before the first answers: this one now owns the landing.
+    await pickKind('terminal');
+    await waitFor(() => { expect(posts()).toHaveLength(2); });
+
+    // Open a kind with fields purely to read the busy state off its submit.
+    await pickKind('codex');
+    expect(await screen.findByRole('button', { name: 'Creating…' })).toBeTruthy();
+
+    await act(async () => {
+      releases[0]?.();
+      await new Promise((done) => { setTimeout(done, 0); });
+    });
+
+    // The second create is still out there, so the form must still say so.
+    expect(screen.getByRole('button', { name: 'Creating…' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Create codex' })).toBeNull();
+    // And the superseded attempt does not steer either: landing on the card you
+    // just made belongs to the newest gesture, not to the one it replaced.
     expect(router.state.location.searchStr).not.toContain('card=');
   });
 

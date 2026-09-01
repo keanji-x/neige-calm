@@ -1640,6 +1640,14 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   /* Opening the new card is the point of creating one, so the create navigates
      to it — the same landing `onOpenCard` gives a row that already exists. */
   const submitNewCard = (entry: CardAddMenuEntry, values: NewCardValues) => {
+    /* Landing on the card you just made is a gesture, and only the newest
+       gesture may own it. A second create supersedes the first, so the first is
+       aborted here rather than merely forgotten — forgetting it left it holding
+       a live `goSameWave` that steers a reader who has since gone elsewhere.
+       The superseded attempt's card is still created server-side; the abort only
+       stops it steering, and stops its `finally` clearing a busy state that now
+       belongs to the newer attempt. Unmount still aborts whatever is current. */
+    activeCardCreate.current?.abort();
     const controller = new AbortController();
     activeCardCreate.current = controller;
     setCreatingCard(true);
@@ -1654,7 +1662,11 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
         () => controller.signal.aborted,
       )
       .finally(() => {
-        if (controller.signal.aborted || activeCardCreate.current !== controller) return;
+        /* Only the attempt that still owns the busy state may clear it. Both
+           ways of losing ownership — unmount and being superseded above —
+           abort, so `aborted` is the whole test; an identity check against
+           `activeCardCreate.current` would never fire on a live controller. */
+        if (controller.signal.aborted) return;
         activeCardCreate.current = null;
         setCreatingCard(false);
       });
