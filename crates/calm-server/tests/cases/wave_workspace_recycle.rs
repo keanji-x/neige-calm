@@ -199,6 +199,12 @@ fn user_repo(at: &Path) -> PathBuf {
         vec!["init", "-b", "main"],
         vec!["config", "user.name", "user"],
         vec!["config", "user.email", "user@example.com"],
+        // #1147 S3 — keep git from touching this repository behind our back;
+        // background maintenance after a commit leaves a lock file that a
+        // fingerprint pair can straddle. Measured on CI (git 2.55), invisible
+        // on a 2.39 host.
+        vec!["config", "gc.auto", "0"],
+        vec!["config", "maintenance.auto", "false"],
     ] {
         let status = Command::new("git")
             .arg("-C")
@@ -260,6 +266,22 @@ async fn attached_wave(b: &Boot, cove_id: &str, title: &str, path: &Path) -> Str
 /// ways the server could have taken ownership of a user's repository, and both
 /// show up here as a diff.
 fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    /// Git's own transient lock files — not repository content, and not
+    /// evidence of anything the server did.
+    ///
+    /// Added by #1147 S3, which hit this for real: on CI (git 2.55) background
+    /// maintenance creates `.git/objects/maintenance.lock` after a commit and
+    /// removes it moments later, so a before/after pair straddling that window
+    /// reports `removed: .git/objects/maintenance.lock`. This suite has the
+    /// same shape and had the same latent flake; fixed here too rather than
+    /// waiting for it to fire.
+    ///
+    /// Deliberately narrow: `.git/info/exclude` and `.git/neige-workspace` are
+    /// exactly how the server takes ownership of a repository, and both are
+    /// still compared byte for byte.
+    fn is_git_lock(rel: &Path) -> bool {
+        rel.extension().is_some_and(|ext| ext == "lock")
+    }
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"))
@@ -268,6 +290,9 @@ fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
         entries.sort();
         for path in entries {
             let rel = path.strip_prefix(root).unwrap().to_path_buf();
+            if is_git_lock(&rel) {
+                continue;
+            }
             let meta = std::fs::symlink_metadata(&path).unwrap();
             if meta.file_type().is_symlink() {
                 let target = std::fs::read_link(&path).unwrap();

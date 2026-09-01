@@ -260,6 +260,23 @@ fn commit_count(path: &Path) -> String {
 /// are both ways the server could have taken ownership of a user's repository,
 /// and both show up here as a diff.
 fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    /// Git's own transient lock files, which are not repository content and are
+    /// not evidence of anything the server did.
+    ///
+    /// Measured on CI (git 2.55) and NOT reproducible on this host (git 2.39):
+    /// git's background maintenance creates `.git/objects/maintenance.lock`
+    /// after a commit and removes it moments later, so a before/after
+    /// fingerprint pair straddling that window reports
+    /// `removed: .git/objects/maintenance.lock` and the assertion fails on a
+    /// file the server never saw. `user_repo` also turns maintenance off; this
+    /// filter is the half that does not depend on remembering to.
+    ///
+    /// Deliberately narrow: `.git/info/exclude` and `.git/neige-workspace` are
+    /// exactly how the server takes ownership of a repository, and both are
+    /// still compared byte for byte.
+    fn is_git_lock(rel: &Path) -> bool {
+        rel.extension().is_some_and(|ext| ext == "lock")
+    }
     fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
         let mut entries: Vec<_> = std::fs::read_dir(dir)
             .unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"))
@@ -268,6 +285,9 @@ fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
         entries.sort();
         for path in entries {
             let rel = path.strip_prefix(root).unwrap().to_path_buf();
+            if is_git_lock(&rel) {
+                continue;
+            }
             let meta = std::fs::symlink_metadata(&path).unwrap();
             if meta.file_type().is_symlink() {
                 let target = std::fs::read_link(&path).unwrap();
@@ -310,6 +330,14 @@ fn user_repo(at: &Path) -> PathBuf {
     std::fs::create_dir_all(at).unwrap();
     git(at, &["init", "-b", "main"]);
     with_identity(at);
+    // Keep git from touching this repository behind our back. Since 2.5x a
+    // commit can kick off background maintenance, which leaves
+    // `.git/objects/maintenance.lock` around for a moment — long enough for a
+    // fingerprint pair to straddle it and blame the server. Measured on CI
+    // (git 2.55); this host runs 2.39 and never showed it, which is the whole
+    // reason it reached CI.
+    git(at, &["config", "gc.auto", "0"]);
+    git(at, &["config", "maintenance.auto", "false"]);
     std::fs::write(at.join("README.md"), b"the user's own work\n").unwrap();
     git(at, &["add", "-A"]);
     git(at, &["commit", "-q", "--no-verify", "-m", "user commit"]);
