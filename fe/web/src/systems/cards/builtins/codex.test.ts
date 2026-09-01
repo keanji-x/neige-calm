@@ -141,12 +141,16 @@ describe('CODEX_CARD_ENTRY', () => {
   });
 
   it('offers a title and a working directory, and nothing about codex itself', () => {
-    expect(CODEX_CARD_ENTRY.addPanel.label).toBe('codex');
-    expect(CODEX_CARD_ENTRY.addPanel.fields.map((field) => [field.key, field.kind]))
+    /* Read through the interface, like the claim case above: the literal is
+       checked with `satisfies`, so the constant's own type narrows every field
+       to what it happens to declare and would make these assertions tautologies. */
+    const addPanel = (CODEX_CARD_ENTRY as CardEntry<CodexCard>).addPanel;
+    expect(addPanel?.label).toBe('codex');
+    expect(addPanel?.fields?.map((field) => [field.key, field.kind]))
       .toEqual([['title', 'text'], ['cwd', 'directory']]);
     // Model and permission mode are answered inside codex's own slash-command
     // UX; collecting them here would be a second, unchangeable answer.
-    expect(CODEX_CARD_ENTRY.addPanel.fields.some((field) => field.required === true)).toBe(false);
+    expect(addPanel?.fields?.some((field) => field.required === true)).toBe(false);
   });
 
   it('registers as a surface-owning built-in', () => {

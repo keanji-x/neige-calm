@@ -1,0 +1,372 @@
+/*
+ * The file viewer's own surface.
+ *
+ * `@layer ui` and not `features`: this is a system's component, composed by a
+ * card rather than by a route, so it must sort below anything a feature says
+ * about the same box. The card's *chrome* — `.term`, `.card-head` and the
+ * grid cell around them — stays where every other card's chrome is
+ * (`styles/wave-grid.css`), because that is what makes a file card the same
+ * object on the board as a terminal.
+ *
+ * CodeMirror paints itself: its `.cm-*` rules are injected at runtime and are
+ * not ours to layer. What is here is the frame around it.
+ */
+@layer ui {
+  /* The card's own box, inside the shared `.term` chrome: the head is the grid
+     cell's drag handle and the viewer takes the rest, which only works if the
+     card is a column that lets its body shrink. */
+  .fv-card {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    overflow: hidden;
+  }
+
+  .fv-body {
+    display: grid;
+    grid-template-columns: minmax(0, 12rem) minmax(0, 1fr);
+    min-block-size: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .fv-tree {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    border-inline-end: 1px solid var(--hairline);
+  }
+
+  .fv-tree-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-3);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .fv-up {
+    display: grid;
+    place-items: center;
+    inline-size: var(--control-h-sm);
+    block-size: var(--control-h-sm);
+    flex: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .fv-up:disabled {
+    color: var(--text-4);
+    cursor: default;
+  }
+
+  .fv-up:hover:not(:disabled),
+  .fv-up:focus-visible:not(:disabled) {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  /* The path is machine identity (§2.2), so it is mono — and it is read from
+     its trailing end, which is the part that says where you are. */
+  .fv-cwd {
+    min-inline-size: 0;
+    overflow: hidden;
+    direction: rtl;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    white-space: nowrap;
+    text-align: start;
+    text-overflow: ellipsis;
+  }
+
+  .fv-tree-list {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    flex: 1;
+    padding: var(--space-2);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .fv-entry {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+    cursor: pointer;
+    text-align: start;
+  }
+
+  .fv-entry:hover,
+  .fv-entry:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  .fv-entry-name {
+    min-inline-size: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .fv-entry-selected {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+
+  .fv-main {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    min-block-size: 0;
+  }
+
+  .fv-toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-3);
+    border-block-end: 1px solid var(--hairline);
+  }
+
+  .fv-tabs {
+    display: flex;
+    gap: var(--space-1);
+    flex: none;
+  }
+
+  .fv-tab,
+  .fv-tab-active {
+    padding-inline: var(--space-3);
+    padding-block: var(--space-1);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    cursor: pointer;
+  }
+
+  .fv-tab:hover,
+  .fv-tab:focus-visible {
+    color: var(--text);
+  }
+
+  .fv-tab-active {
+    background: var(--overlay-hover-strong);
+    color: var(--text);
+  }
+
+  /* The current file, on the trailing edge and read from its end. */
+  .fv-selection {
+    min-inline-size: 0;
+    overflow: hidden;
+    direction: rtl;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    white-space: nowrap;
+    text-align: start;
+    text-overflow: ellipsis;
+  }
+
+  .fv-code-wrap {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .fv-diff {
+    display: grid;
+    grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+    min-block-size: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .fv-changes {
+    display: flex;
+    flex-direction: column;
+    min-block-size: 0;
+    padding: var(--space-2);
+    border-inline-end: 1px solid var(--hairline);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .fv-change {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-2);
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-2);
+    cursor: pointer;
+    text-align: start;
+  }
+
+  .fv-change:hover,
+  .fv-change:focus-visible {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  .fv-change-name {
+    min-inline-size: 0;
+    overflow: hidden;
+    direction: rtl;
+    white-space: nowrap;
+    text-align: start;
+    text-overflow: ellipsis;
+  }
+
+  .fv-change-selected {
+    background: var(--accent-soft);
+    color: var(--text);
+  }
+
+  /* One letter wide, in the row's leading column. Colour reinforces the letter
+     and never replaces it — the letter is the carrier, and the row's `title`
+     carries the whole word. */
+  .fv-status {
+    inline-size: 1em;
+    flex: none;
+    font-weight: var(--weight-semibold);
+    color: var(--text-3);
+    text-align: center;
+  }
+
+  .fv-status[data-nc-fs-status='added'],
+  .fv-status[data-nc-fs-status='untracked'] {
+    color: var(--success);
+  }
+
+  .fv-status[data-nc-fs-status='deleted'] {
+    color: var(--error);
+  }
+
+  .fv-diff-pane {
+    display: flex;
+    flex-direction: column;
+    min-inline-size: 0;
+    min-block-size: 0;
+    overflow: auto;
+  }
+
+  .fv-image-wrap {
+    display: grid;
+    place-items: center;
+    min-block-size: 0;
+    flex: 1;
+    padding: var(--space-6);
+    overflow: auto;
+  }
+
+  .fv-image {
+    max-inline-size: 100%;
+    max-block-size: 100%;
+  }
+
+  /* The three one-line states — waiting, empty, failed — share a shape so the
+     pane never changes size as it moves between them. */
+  .fv-state,
+  .fv-empty,
+  .fv-error,
+  .fv-banner {
+    padding: var(--space-4);
+    font-size: var(--text-xs);
+    line-height: var(--leading-tight);
+    color: var(--text-3);
+  }
+
+  .fv-error {
+    color: var(--error);
+  }
+
+  .fv-banner {
+    border-block-end: 1px solid var(--hairline);
+    color: var(--text-2);
+  }
+
+  /* Over the editor's trailing corner, where it covers the least text. */
+  .fv-search-bar {
+    position: absolute;
+    inset-block-start: var(--space-2);
+    inset-inline-end: var(--space-4);
+    z-index: var(--z-overlay);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    background: var(--paper);
+    box-shadow: var(--shadow-float);
+  }
+
+  .fv-search-count {
+    min-inline-size: 4ch;
+    font-variant-numeric: tabular-nums;
+    font-size: var(--text-xs);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+    text-align: end;
+  }
+
+  /* CodeMirror's merge view paints its own two panes; what is ours is the box
+     it fills and the fact that an absent side is labelled rather than blank. */
+  .fv-merge {
+    min-block-size: 0;
+    flex: 1;
+    font-size: var(--text-xs);
+  }
+
+  .fv-merge[data-nc-fs-empty-left]::before {
+    content: 'Not in HEAD';
+    display: block;
+    padding: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  .fv-merge[data-nc-fs-empty-right]::before {
+    content: 'Deleted in the working tree';
+    display: block;
+    padding: var(--space-4);
+    font-size: var(--text-xs);
+    color: var(--text-3);
+  }
+
+  /* CodeMirror's search panel is replaced by an empty node (see `emptyPanel` in
+     `systems/fs-viewers/code-pane.tsx`) — the bar over the editor is React's.
+     The node still has to be taken out of the layout, and the panel *strip*
+     CodeMirror wraps it in has to go with it, or the editor keeps a blank rail
+     where a search box used to be. */
+  .fv-code-search-panel-empty {
+    display: none;
+  }
+
+  .fv-code-search-panels-empty {
+    display: none;
+  }
+}

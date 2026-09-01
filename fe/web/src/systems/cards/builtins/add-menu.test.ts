@@ -22,7 +22,7 @@ function builtinMenu() {
 describe('cardAddMenuEntries', () => {
   it('offers exactly the built-ins that declared an add-panel entry', () => {
     expect(builtinMenu().map((entry) => [entry.type, entry.label]))
-      .toEqual([['terminal', 'terminal'], ['codex', 'codex']]);
+      .toEqual([['terminal', 'terminal'], ['codex', 'codex'], ['file-viewer', 'file']]);
   });
 
   /*
@@ -64,7 +64,10 @@ describe('cardAddMenuEntries', () => {
         ? Object.freeze({ mode: 'catalog' as const, catalog: 'fixture' })
         : Object.freeze({ mode: 'kernel-minted-only' as const }),
     addPanel: Object.freeze({ label: 'fixture' }),
-  } as CardEntry);
+  /* The fixture types are deliberately not in `CardDataMap` — a fixture kind
+     that declared itself there would be a card kind of the product. The cast is
+     what a registry of heterogeneous entries costs at a test's boundary. */
+  } as unknown as CardEntry);
 
   it('drops a kernel-minted-only entry that asked to be in the menu', () => {
     const registry = createCardRegistry();

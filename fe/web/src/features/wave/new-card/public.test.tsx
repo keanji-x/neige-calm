@@ -20,7 +20,7 @@ const CODEX: CardAddMenuEntry = Object.freeze({
   ]),
 });
 
-const listDirectory: ListDirectory = () => Promise.resolve({ path: '/', entries: [] });
+const listDirectory: ListDirectory = () => Promise.resolve({ path: '/', parent: null, entries: [] });
 
 describe('AddCardMenu', () => {
   it('lists one item per registry row and reports the picked entry', async () => {

@@ -7,7 +7,10 @@
 // and the browser's own path-joining rule is the composition layer. The shell
 // creates it once and hands it down as a plain function.
 
-import { listDirectoryOperation, toDirectoryListing } from '../../../../core/domain/fs.ts';
+import {
+  gitDiffOperation, gitStatusOperation, listDirectoryOperation, rawFileUrl, readFileOperation,
+  toDirectoryListing, type CardFilesPort,
+} from '../../../../core/domain/fs.ts';
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { joinDirectoryPath, type ListDirectory } from '../../ui/directory-browser/public.tsx';
@@ -30,4 +33,31 @@ export function createDirectoryLister(
     await runOperation(transport, listDirectoryOperation(path), unauthorized),
     joinDirectoryPath,
   );
+}
+
+/**
+ * The same reads, as the port a card is handed.
+ *
+ * It sits beside `createDirectoryLister` for the same reason that one is here:
+ * a card is rendered inside `systems/**`, which may not reach a transport, so
+ * the composition layer is the only place that can hold both. What a card gets
+ * is plain functions — no query client, no cache — because a card's reads are
+ * driven by its own state (which file, which tab) rather than by a route, and
+ * folding them into TanStack keys would put a second cache in front of a
+ * filesystem that is already the source of truth.
+ *
+ * Failures propagate as the rejected promise each caller renders; `ApiError` is
+ * an `Error`, so a pane can print `reason.message` directly.
+ */
+export function createCardFilesPort(
+  transport: ApiTransportPort,
+  unauthorized: UnauthorizedChannel,
+): CardFilesPort {
+  return Object.freeze({
+    listDirectory: (path) => runOperation(transport, listDirectoryOperation(path), unauthorized),
+    readFile: (path) => runOperation(transport, readFileOperation(path), unauthorized),
+    gitStatus: (path) => runOperation(transport, gitStatusOperation(path), unauthorized),
+    gitDiff: (path, oldPath) => runOperation(transport, gitDiffOperation(path, oldPath), unauthorized),
+    rawUrl: rawFileUrl,
+  });
 }
