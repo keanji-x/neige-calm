@@ -327,15 +327,27 @@ mod tests {
         panic!("{what}: {stragglers:?} still alive");
     }
 
+    /// `kill_on_drop` is a PARAMETER, not a constant, because it is precisely
+    /// what makes some of these assertions vacuous.
+    ///
+    /// It reaches the DIRECT child only, so a test whose observable is the
+    /// leader can be satisfied by it entirely and proves nothing about the
+    /// group sweep. Each test therefore either observes a DESCENDANT (flag on,
+    /// exactly as production sets it) or turns the flag off so
+    /// `GroupChild::drop` is the only mechanism left.
     #[cfg(unix)]
-    fn group_leader_command(script: &std::path::Path, arg: &str) -> tokio::process::Command {
+    fn group_leader_command(
+        script: &std::path::Path,
+        arg: &str,
+        kill_on_drop: bool,
+    ) -> tokio::process::Command {
         use std::process::Stdio;
         let mut cmd = tokio::process::Command::new(script);
         cmd.arg(arg)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .kill_on_drop(true);
+            .kill_on_drop(kill_on_drop);
         set_process_group_leader(&mut cmd);
         cmd
     }
@@ -376,6 +388,15 @@ mod tests {
     /// reason. Occupying the only blocking thread guarantees the task cannot
     /// have finished, so the deadline branch is forced.
     ///
+    /// **`kill_on_drop` is deliberately OFF here.** With it on, the leader dies
+    /// from the direct-child fallback inside `tokio::process::Child::drop` and
+    /// this passes with the group sweep deleted — round 3 shipped exactly that
+    /// vacuity, stayed green under its own stated mutation, and the commit
+    /// message claimed a fix that a `git checkout --` had already reverted out
+    /// of the tree. Off, `GroupChild::drop` is the only thing that can kill
+    /// anything here. (The production shape, flag on, is covered by the
+    /// descendant-observing tests alongside this one.)
+    ///
     /// Mutation witness: empty `GroupChild`'s `Drop` body (`self.pgid = None;`).
     #[cfg(unix)]
     #[test]
@@ -399,8 +420,11 @@ mod tests {
             });
             tokio::time::sleep(Duration::from_millis(50)).await;
 
-            let cmd =
-                group_leader_command(&script, &tmp.path().join("gc.pid").display().to_string());
+            let cmd = group_leader_command(
+                &script,
+                &tmp.path().join("gc.pid").display().to_string(),
+                false,
+            );
             let past = tokio::time::Instant::now();
             assert_eq!(
                 spawn_within(cmd, past).await.err(),
@@ -411,6 +435,16 @@ mod tests {
             // Let the queued spawn finally run. Nobody is holding its result.
             drop(release);
             let _ = hog.await;
+
+            // …and WAIT for it to have run. `hog` finishing only frees the
+            // thread; it says nothing about the spawn task, so scanning here
+            // could find an empty `/proc` and pass before the code under test
+            // had executed at all. This barrier is queued AFTER the spawn on a
+            // pool with exactly one thread, so FIFO ordering means it cannot
+            // complete until the spawn task has.
+            tokio::task::spawn_blocking(|| {})
+                .await
+                .expect("ordering barrier");
 
             assert_all_gone(&needle, "an unclaimed spawn leaked its process group").await;
         });
@@ -432,7 +466,9 @@ mod tests {
         let needle = script.display().to_string();
         let pidfile = tmp.path().join("gc.pid");
 
-        let cmd = group_leader_command(&script, &pidfile.display().to_string());
+        // Flag ON, i.e. exactly the production shape: the observable below is a
+        // DESCENDANT, which `kill_on_drop` cannot reach.
+        let cmd = group_leader_command(&script, &pidfile.display().to_string(), true);
         let child = spawn_within(cmd, tokio::time::Instant::now() + Duration::from_secs(10))
             .await
             .expect("within the deadline")
