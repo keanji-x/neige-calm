@@ -66,12 +66,14 @@ import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/publ
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
 import {
+  renderedMobilePanel,
   useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
   useWavePanelNavigation, validateWaveSearch, type WaveSearch,
 } from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { useCompactViewport } from '../../ui/viewport/public.ts';
 
 export const APP_BASEPATH = '/next';
 
@@ -1379,6 +1381,9 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
    * hand-edited URL means — and it means the card, the older deep-linkable one.
    */
   const routePanel = useRoutePanel();
+  /* The one viewport question the application asks (§3.2); here it decides
+     whether `?panel=` describes anything at all — see the effect below. */
+  const compactViewport = useCompactViewport();
   /*
    * `?from=` is a property of *this* visit to the report, so every move that
    * stays on this wave has to hand it back explicitly — `go` clears whatever it
@@ -1494,6 +1499,27 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     // this route shipped with.
     goSameWave(wave.id, { card: undefined }, { replace: true });
   }, [goSameWave, knownCard, requestedCardId, wave.id]);
+  /*
+   * `?panel=` is a *compact* concept, and above the breakpoint it does not just
+   * sit there unused — it takes the desktop panel down with it.
+   *
+   * `WavePage` derives `mobilePanelOpen` from this prop alone and puts `inert` +
+   * `aria-hidden` on the desktop panel surface while it is open; on desktop the
+   * mobile list is `display: none`. A shared `?panel=cards` link opened on a
+   * laptop therefore rendered a panel that is fully visible and completely
+   * unreachable by keyboard or screen reader — nothing to see, nothing to fix
+   * from the page.
+   *
+   * Two halves, and neither is sufficient. The URL is corrected here so it stops
+   * describing a state this viewport cannot be in — a `replace`, because
+   * widening the window is not a place the reader can go Back to — and the
+   * *injection* below is gated on the viewport as well, because on a cold start
+   * this effect has not run yet when the first paint happens.
+   */
+  useEffect(() => {
+    if (compactViewport || routePanel === null) return;
+    goSameWave(wave.id, { panel: undefined }, { replace: true });
+  }, [compactViewport, goSameWave, routePanel, wave.id]);
   const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
@@ -1564,7 +1590,10 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       onCloseBoard={knownCard
         ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
         : undefined}
-      panel={requestedCardId === null ? routePanel : null}
+      /* Gated on the viewport, not only on the card: the effect above cannot
+         have run yet on a desktop cold start, and one render with the panel
+         "open" is one render with the desktop panel `inert`. */
+      panel={renderedMobilePanel(routePanel, { compact: compactViewport, cardOpen: requestedCardId !== null })}
       onOpenPanel={(kind) => { openPanel(wave.id, kind); }}
       onClosePanel={() => { closePanel(wave.id); }}
       /* `?from=` is the whole memory of how the reader got here; absent means

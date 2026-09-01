@@ -27,7 +27,7 @@ import { useState } from '../../ui/state/public.ts';
 import {
   ApiError, useCoveMutations, useWaveMutations, useWorkspace,
 } from '../providers/queries.ts';
-import { routeParamFromPath, useCurrentPath, useGo, useGoSameWave } from '../router/navigation.ts';
+import { routeParamFromPath, useCurrentPath, useGo, useWavePanelNavigation } from '../router/navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { useCompactViewport } from '../../ui/viewport/public.ts';
 import { DOCK_ITEMS, dockSelection, type MobileSection } from './dock.ts';
@@ -109,7 +109,9 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const waveMutations = useWaveMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
   const go = useGo();
-  const goSameWave = useGoSameWave();
+  // The report's panel is a history *destination* (§1.1), so the shell leaves
+  // it the same way the report does — see `clearReportPanel`.
+  const { closePanel } = useWavePanelNavigation();
   const readError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
 
@@ -201,13 +203,24 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   };
 
   /*
-   * Leaving the report layer drops `?panel=` (#1191 §2.1). It is a `replace`
-   * and not `closePanel()`'s history dance because the reader is not stepping
-   * back inside the report — they are walking off it — and it is guarded on
-   * actually being on a wave so a Today/Settings dock press does not navigate.
+   * Leaving the report layer drops `?panel=` (#1191 §2.1), and it is
+   * `closePanel()` — the same marker double-branch the report's own Back uses
+   * (§1.1) — not a bare `replace`.
+   *
+   * An unconditional `replace` was the §0.3 defect on this second exit: opening
+   * a panel is a `push`, `replace` does not merge with the entry before it, so
+   * every "open a panel, then press Back to Pages" cycle left one more
+   * identical `/wave/w1` on the stack and cost the reader one more hardware
+   * Back to escape the report. The exit is genuinely reachable with a panel
+   * open — the report's Back button lives in `<main>`, which is only `inert`
+   * while a sheet is showing — and
+   * `mobile-report-navigation.test.tsx` drives the three-cycle gesture.
+   *
+   * Still guarded on actually being on a wave, so a Today/Settings dock press
+   * does not navigate.
    */
   const clearReportPanel = () => {
-    if (routeWaveId !== undefined) goSameWave(routeWaveId, { panel: undefined }, { replace: true });
+    if (routeWaveId !== undefined) closePanel(routeWaveId);
   };
 
   /*

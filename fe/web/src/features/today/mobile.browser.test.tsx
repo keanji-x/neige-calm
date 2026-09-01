@@ -9,7 +9,16 @@ import { TodayPage } from './public.tsx';
 afterEach(() => { document.body.replaceChildren(); });
 
 describe('Today mobile presentation', () => {
-  it('renders only the Astryx calendar surface', async () => {
+  /*
+   * The four `not.toContain('Waiting on you' / 'Running' / 'Recent' /
+   * 'Terminal')` assertions this used to carry are deleted on purpose
+   * (#1191 §5). Today's mobile presentation is missing those sections, and
+   * asserting their *absence* made restoring them a test failure — a mine laid
+   * for whoever does B2. What the phone width has to keep proving is that the
+   * calendar surface renders and is a grid; that it is currently the only
+   * thing there is a fact about the backlog, not a contract.
+   */
+  it('renders the Astryx calendar surface at phone width', async () => {
     await page.viewport(390, 844);
     const { container } = render(
       <TodayPage
@@ -21,10 +30,6 @@ describe('Today mobile presentation', () => {
     );
 
     expect(page.getByRole('heading', { name: 'Today' })).toBeTruthy();
-    expect(container.textContent).not.toContain('Waiting on you');
-    expect(container.textContent).not.toContain('Running');
-    expect(container.textContent).not.toContain('Recent');
-    expect(container.textContent).not.toContain('Terminal');
     expect(container.querySelector('[role="grid"]')).not.toBeNull();
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     await page.screenshot({ path: '../../../../test-results/mobile-today.png' });

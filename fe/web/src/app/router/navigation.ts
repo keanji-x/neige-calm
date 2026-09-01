@@ -233,6 +233,31 @@ export function validateWaveSearch(search: Record<string, unknown>): WaveSearch 
   });
 }
 
+/**
+ * The panel a *renderer* may open, given what else is true of this visit.
+ *
+ * `?panel=` is a compact-viewport concept. Above the breakpoint the mobile list
+ * is `display: none`, but the surface still counts as open: `WavePage` derives
+ * `mobilePanelOpen` from this value alone and puts `inert` + `aria-hidden` on
+ * the *desktop* panel, so a shared `?panel=cards` link opened on a laptop drew
+ * a panel that was fully visible and unreachable by keyboard or screen reader.
+ *
+ * It is a pure function, and exported, for one reason: the route also corrects
+ * the URL in an effect, and an effect flushes inside `act` — so no jsdom test
+ * can ever observe the frame this guard exists for. Here the decision is
+ * directly assertable, and a mutant that drops the viewport term is red.
+ *
+ * `cardOpen` folds in the older exclusion (§0.1): a live `?card=` owns the
+ * surface, so the panel is closed whatever the URL says.
+ */
+export function renderedMobilePanel(
+  panel: MobilePanel | null,
+  visit: Readonly<{ compact: boolean; cardOpen: boolean }>,
+): MobilePanel | null {
+  if (!visit.compact || visit.cardOpen) return null;
+  return panel;
+}
+
 /** The block anchor the current URL points at, or `null`. */
 export function useRouteHash(): string | null {
   const hash = useRouterState({ select: (state) => state.location.hash });
@@ -268,13 +293,28 @@ export function routeParamFromPath(path: string, prefix: '/cove/' | '/wave/'): s
   }
 }
 
-/** The whitelisted three fields as they stand in `location`. */
+/**
+ * The whitelisted three fields **exactly as they stand in `location`** — each
+ * one parsed and validated on its own, and deliberately *not* run through
+ * `buildWaveSearch`.
+ *
+ * The card/panel exclusion is a rule about the URL a navigation *produces*, not
+ * about the one it reads. Enforcing it here dropped `panel` on the way in, so a
+ * patch that cleared `card` afterwards had nothing left to keep: the §1.4 row
+ * for the illegal-`?card=` bounce ("panel kept, from kept, hash kept") lost the
+ * panel whenever both were present, which is precisely the URL that bounce
+ * exists to repair. The output of `sameWaveSearch` is still built by
+ * `buildWaveSearch`, so the pair can never *leave* here together.
+ */
 export function waveSearchFromLocation(location: SearchCarrier): WaveSearch {
-  return buildWaveSearch({
-    card: cardIdFromLocation(location) ?? undefined,
-    panel: panelFromLocation(location) ?? undefined,
-    from: fromFromLocation(location) ?? undefined,
-  });
+  const search: { card?: string; panel?: MobilePanel; from?: WaveSource } = {};
+  const card = cardIdFromLocation(location);
+  const panel = panelFromLocation(location);
+  const from = fromFromLocation(location);
+  if (card !== null) search.card = card;
+  if (panel !== null) search.panel = panel;
+  if (from !== null) search.from = from;
+  return search;
 }
 
 /**

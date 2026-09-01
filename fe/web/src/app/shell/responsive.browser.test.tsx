@@ -55,7 +55,18 @@ describe('responsive shell layout', () => {
     expect(panel.left).toBe(0);
     expect(panel.right).toBe(window.innerWidth);
     expect(panel.width).toBe(list.width);
-    expect(panel.bottom).toBe(dock.top);
+    /*
+     * The panel reserves the dock's strip with `padding-block-end`
+     * (`shell.module.css`), so its *border* box legitimately reaches the bottom
+     * of the viewport — the sheet's background is meant to run under the
+     * floating pill. What must clear the dock is the content box, which is
+     * where the list is laid out. Comparing the border box to `dock.top` was
+     * the assertion's own bug, and it contradicted the `dock.bottom <
+     * window.innerHeight` line below it: a floating pill cannot both sit off
+     * the bottom edge and have the panel stop at its top.
+     */
+    const panelStyle = getComputedStyle(document.querySelector('[data-testid="mobile-panel"]')!);
+    expect(panel.bottom - parseFloat(panelStyle.paddingBlockEnd)).toBe(dock.top);
     expect(dock.left).toBeGreaterThan(0);
     expect(dock.right).toBeLessThan(window.innerWidth);
     expect(dock.bottom).toBeLessThan(window.innerHeight);

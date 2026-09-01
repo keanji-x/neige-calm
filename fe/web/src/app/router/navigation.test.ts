@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   cardIdFromLocation, cardIdFromSearchString, fromFromLocation, fromFromSearchString,
   hasPanelPushedMarker, panelFromLocation, panelFromSearchString, pathFor,
-  sameWaveSearch, validateWaveSearch,
+  renderedMobilePanel, sameWaveSearch, validateWaveSearch,
 } from './navigation.ts';
 
 describe('cardIdFromSearchString', () => {
@@ -117,6 +117,24 @@ describe('sameWaveSearch', () => {
     const location = { pathname: '/wave/w1', searchStr: '?panel=cards&from=pages' };
     expect(sameWaveSearch(location, 'w1', { card: 'c9' })).toEqual({ card: 'c9', from: 'pages' });
   });
+
+  /*
+   * §1.4's first row, and the one combination the two neighbours above miss:
+   * they cover a card that never parsed and a card being *set*, never a card
+   * being *cleared* off a URL that carries both.
+   *
+   * The card/panel exclusion belongs to the search this builds, not to the one
+   * it reads. Applied while reading, `?card=bad&panel=tasks` normalises to the
+   * card alone, and the bounce's `{ card: undefined }` then has no panel left
+   * to keep — the reader loses the panel they were in because a *different*
+   * parameter was unopenable.
+   */
+  it('[#1191 §1.4] keeps the panel when the illegal-card bounce clears the card', () => {
+    const location = { pathname: '/wave/w1', searchStr: '?card=bad&panel=tasks&from=cove' };
+    expect(sameWaveSearch(location, 'w1', { card: undefined })).toEqual({ panel: 'tasks', from: 'cove' });
+    // Reading alone still never emits the pair: the patch is what releases it.
+    expect(sameWaveSearch(location, 'w1', {})).toEqual({ card: 'bad', from: 'cove' });
+  });
 });
 
 describe('hasPanelPushedMarker', () => {
@@ -127,5 +145,25 @@ describe('hasPanelPushedMarker', () => {
     expect(hasPanelPushedMarker({})).toBe(false);
     expect(hasPanelPushedMarker(null)).toBe(false);
     expect(hasPanelPushedMarker(undefined)).toBe(false);
+  });
+});
+
+describe('renderedMobilePanel', () => {
+  /*
+   * The half of the desktop fix that no integration test can see: the route
+   * also clears `?panel=` from the URL in an effect, and effects flush inside
+   * `act`, so by the time jsdom can query the DOM the URL is already honest.
+   * A real browser paints that frame — with the desktop panel `inert` and
+   * `aria-hidden` behind a `display: none` mobile list — so the guard is
+   * asserted where it is decidable.
+   */
+  it('[#1191] refuses to open a panel above the compact breakpoint', () => {
+    expect(renderedMobilePanel('cards', { compact: false, cardOpen: false })).toBeNull();
+    expect(renderedMobilePanel('cards', { compact: true, cardOpen: false })).toBe('cards');
+  });
+
+  it('[#1191 §0.1] yields the surface to a live card overlay', () => {
+    expect(renderedMobilePanel('tasks', { compact: true, cardOpen: true })).toBeNull();
+    expect(renderedMobilePanel(null, { compact: true, cardOpen: false })).toBeNull();
   });
 });
