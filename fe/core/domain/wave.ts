@@ -145,7 +145,12 @@ export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: rea
 
 export type NewWaveBody = Readonly<{
   cove_id: string;
-  title: string;
+  /**
+   * Issue #1211 — optional. The title is no longer the wave's intent: omit it
+   * and the kernel stores its default name until the spec agent renames the
+   * wave. Present values (including `""`) are still accepted verbatim.
+   */
+  title?: string;
   /**
    * Issue #1131 — optional. The new FE omits it; the kernel then stores
    * `$HOME` and does not insert a `cove_folders` row. Present values

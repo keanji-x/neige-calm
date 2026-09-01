@@ -195,6 +195,13 @@ async fn wait_at_wave_delete_teardown_hook(wave_id: &str) {
 pub struct CreateWaveRequest {
     #[schema(value_type = String)]
     pub cove_id: crate::ids::CoveId,
+    /// Issue #1211 — the title is no longer the wave's intent, so the client
+    /// may omit it entirely (the wave then gets the server-side default name
+    /// and the spec agent renames it via `calm.wave.rename`). The type stays
+    /// `String`: the empty string has always been a legal title and the
+    /// server applies no non-empty validation.
+    #[serde(default)]
+    #[schema(required = false)]
     pub title: String,
     pub sort: Option<f64>,
     /// Issue #1131 — omitted / null → persist `default_cwd()` (`$HOME`, else
@@ -1444,7 +1451,6 @@ async fn create_wave_structure(
                         .await?;
                 let wave_id = wave.id.clone();
                 let cove_id = wave.cove_id.clone();
-                let goal = wave.title.trim().to_string();
 
                 let fork_snapshot = if let Some(source_wave_id) = fork_report_from.as_deref() {
                     let source_id = WaveId::from(source_wave_id.to_string());
@@ -1489,7 +1495,12 @@ async fn create_wave_structure(
                         wave_id: wave_id.clone(),
                         kind: "codex".into(),
                         sort: None,
-                        payload: spec_harness_card_payload((!goal.is_empty()).then_some(goal)),
+                        // #1211 S1: the wave title is no longer the wave's
+                        // intent, so create seeds no `prompt` here. The
+                        // parameter stays because child waves still pass the
+                        // task goal their parent spec declared
+                        // (`operation/child_wave_adapter.rs`).
+                        payload: spec_harness_card_payload(None),
                     },
                     CardRole::Spec,
                     false,
@@ -1683,7 +1694,9 @@ async fn start_spec_harness(
     spec_card_id: String,
     report_card_id: String,
 ) -> Result<()> {
-    let goal = wave.title.trim().to_string();
+    // #1211 S1: no goal is seeded at create. The title defaults to `Untitled`
+    // and the spec agent names the wave once it knows what the work is, so
+    // there is nothing here that could stand in for the user's intent.
     let request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
@@ -1691,7 +1704,7 @@ async fn start_spec_harness(
         report_card_id: Some(report_card_id),
         sort: None,
         cwd: wave.workspace.path.clone(),
-        goal: (!goal.is_empty()).then_some(goal),
+        goal: None,
         reset_harness_items: false,
         force_new_thread: false,
         profile: Default::default(),

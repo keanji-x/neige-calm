@@ -1404,8 +1404,10 @@ async fn reset_spec_harness_card(
     // `assistant`, so the thread and the card would disagree about what the
     // session may do.
     //
-    // Neither flavour inherits the wave title as a goal: a seeded
-    // `Observation::WaveGoal` makes the agent speak before the user does.
+    // #1211 S1: no profile inherits the wave title as a goal. A seeded
+    // `Observation::WaveGoal` makes the agent speak before the user does, and
+    // the title is no longer the wave's intent anyway — it defaults to
+    // `Untitled` until the spec agent names the wave.
     let role = s.write.verify_role(&card.id);
     let profile = if crate::plain_chat::card_is_plain_chat(&card, role, true) {
         HarnessProfile::PlainChat
@@ -1414,7 +1416,6 @@ async fn reset_spec_harness_card(
     } else {
         HarnessProfile::Spec
     };
-    let goal = (profile == HarnessProfile::Spec).then(|| wave.title.trim().to_string());
     let start_request = SpecHarnessStartOperationPayload {
         actor: actor.to_actor_id(),
         wave_id: wave.id.to_string(),
@@ -1422,7 +1423,7 @@ async fn reset_spec_harness_card(
         report_card_id: None,
         sort: None,
         cwd: wave.workspace.path.clone(),
-        goal: goal.filter(|goal| !goal.is_empty()),
+        goal: None,
         reset_harness_items: true,
         force_new_thread: true,
         profile,
