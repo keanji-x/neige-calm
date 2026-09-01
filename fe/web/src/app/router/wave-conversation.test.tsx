@@ -156,7 +156,9 @@ const derivedRow = (waveId: string, request: ApiRequest): Row => ({
 
 async function openDraft() {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
-  await screen.findByRole('complementary', { name: 'New conversation' });
+  /* The draft drawer's title, since #1191 renamed it off the action's label:
+     the `+` is still "New conversation", the drawer it opens is "Untitled". */
+  await screen.findByRole('complementary', { name: 'Untitled' });
 }
 
 function messageField(): HTMLElement {
