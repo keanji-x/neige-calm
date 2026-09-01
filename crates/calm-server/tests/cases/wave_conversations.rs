@@ -21,7 +21,7 @@ use axum::http::{Request, StatusCode};
 use calm_server::auth::Principal;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::prelude::*;
-use calm_server::db::sqlite::{SqlxRepo, card_with_codex_create_tx};
+use calm_server::db::sqlite::{SqlxRepo, card_create_with_id_tx, card_with_codex_create_tx};
 use calm_server::event::EventBus;
 use calm_server::model::{CardRole, NewCove, RequestTheme};
 use calm_server::operation::OperationKey;
@@ -208,6 +208,33 @@ impl Boot {
         )
         .await
         .expect("mint codex worker card");
+        tx.commit().await.unwrap();
+        card_id
+    }
+
+    /// A codex card carrying only HALF of the `(role, marker)` pair the list
+    /// predicate requires — the shape production never mints (the mint writes
+    /// both halves from one `minted_card_shape` call) and therefore the shape a
+    /// predicate that dropped one conjunct would leak.
+    async fn mint_half_marked_card(&self, wave_id: &str, role: CardRole, marker: &str) -> String {
+        let card_id = calm_server::model::new_id();
+        let mut tx = self.repo.pool().begin().await.unwrap();
+        card_create_with_id_tx(
+            &mut tx,
+            card_id.clone(),
+            calm_server::model::NewCard {
+                wave_id: calm_server::ids::WaveId::from(wave_id.to_string()),
+                title: None,
+                kind: "codex".into(),
+                sort: None,
+                payload: json!({"schemaVersion": 1, "harness_profile": marker}),
+            },
+            role,
+            true,
+            &self.card_role_cache,
+        )
+        .await
+        .expect("mint half-marked card");
         tx.commit().await.unwrap();
         card_id
     }
@@ -520,11 +547,24 @@ async fn a_spec_card_id_the_adapter_did_not_derive_is_refused() {
 /// production transaction. A predicate widened to "a codex card on this wave"
 /// picks up the spec card and the worker; one widened to "not a report card"
 /// picks up both as well.
+///
+/// The two half-marked decoys cover the remaining shape: the predicate is a
+/// CONJUNCTION of role and marker, and every decoy above is missing both halves,
+/// so dropping either conjunct leaves the list correct anyway. A card with the
+/// assistant role but a plain-chat marker fails if the marker conjunct goes; a
+/// card with the assistant marker but a worker role fails if the role conjunct
+/// goes.
 #[tokio::test]
 async fn the_list_returns_assistant_conversations_and_nothing_else() {
     let b = boot().await;
     let wave_id = b.create_wave("assistant-list").await;
     let worker_card = b.mint_codex_worker_card(&wave_id).await;
+    let role_only_card = b
+        .mint_half_marked_card(&wave_id, CardRole::Assistant, "plain_chat")
+        .await;
+    let marker_only_card = b
+        .mint_half_marked_card(&wave_id, CardRole::Worker, "assistant")
+        .await;
 
     // The fixture is only meaningful if the decoys really are there.
     let roles: Vec<String> = sqlx::query_scalar("SELECT role FROM cards WHERE wave_id = ?1")
@@ -539,6 +579,17 @@ async fn the_list_returns_assistant_conversations_and_nothing_else() {
         b.card_role(&worker_card).await,
         "worker",
         "the worker decoy must be a real codex worker card"
+    );
+    // The half-marked decoys really are half-marked.
+    assert_eq!(b.card_role(&role_only_card).await, "assistant");
+    assert_eq!(
+        b.card_marker(&role_only_card).await.as_deref(),
+        Some("plain_chat")
+    );
+    assert_eq!(b.card_role(&marker_only_card).await, "worker");
+    assert_eq!(
+        b.card_marker(&marker_only_card).await.as_deref(),
+        Some("assistant")
     );
 
     let (status, empty) = b.list_conversations(&wave_id).await;
@@ -575,6 +626,117 @@ async fn the_list_returns_assistant_conversations_and_nothing_else() {
         !listed.contains(&worker_card.as_str()),
         "the codex worker card leaked into the conversation list"
     );
+    assert!(
+        !listed.contains(&role_only_card.as_str()),
+        "a card with the assistant role but the plain-chat marker leaked in — \
+         the marker conjunct is not being applied"
+    );
+    assert!(
+        !listed.contains(&marker_only_card.as_str()),
+        "a card with the assistant marker but the worker role leaked in — \
+         the role conjunct is not being applied"
+    );
+    b.shutdown_harnesses().await;
+}
+
+/// `POST /api/cards/{id}/spec/reset` restarts an assistant under the ASSISTANT
+/// profile.
+///
+/// The arm in `routes::cards::reset_spec_harness_card` that selects
+/// `HarnessProfile::Assistant` had no caller in the suite: delete it and the
+/// card falls through to `HarnessProfile::Spec`, which `validate` refuses
+/// (`card ... is not a spec card`) — so the assertions below are the reset arm
+/// itself, not incidental coverage.
+///
+/// Both halves of the card's identity are re-read afterwards because reset
+/// re-enters the start adapter: a restart that rewrote the role or the marker
+/// would leave a card the list predicate or the authorization gate no longer
+/// recognises.
+#[tokio::test]
+async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile() {
+    let b = boot().await;
+    let wave_id = b.create_wave("assistant-reset").await;
+    let (status, created) = b
+        .create_conversation(&wave_id, "idem-reset", "hello assistant")
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let card_id = created["id"].as_str().unwrap().to_string();
+    let thread_before: Option<String> =
+        sqlx::query_scalar("SELECT thread_id FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+
+    let (status, body) = b
+        .request(
+            "POST",
+            &format!("/api/cards/{card_id}/spec/reset"),
+            None,
+            None,
+        )
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "reset must accept an assistant conversation: body={body}"
+    );
+
+    assert_eq!(
+        b.card_role(&card_id).await,
+        "assistant",
+        "reset must not rewrite the conversation's role"
+    );
+    assert_eq!(
+        b.card_marker(&card_id).await.as_deref(),
+        Some("assistant"),
+        "reset must not rewrite the conversation's marker"
+    );
+    // The profile actually taken, observed rather than asserted about: the Spec
+    // arm writes a `SharedSpec` session, which is `WorkerContract::Planner` and
+    // takes over `waves.root_session_id`.
+    let contracts: Vec<String> =
+        sqlx::query_scalar("SELECT contract FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        contracts.iter().all(|contract| contract == "executor"),
+        "reset restarted the assistant as a planner: {contracts:?}"
+    );
+    let root: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    let assistant_sessions: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM worker_sessions WHERE card_id = ?1")
+            .bind(&card_id)
+            .fetch_all(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        !assistant_sessions
+            .iter()
+            .any(|id| root.as_deref() == Some(id.as_str())),
+        "the reset assistant displaced the spec card as the wave's root session"
+    );
+    // A reset is a hard restart: a new thread, and the card still listed.
+    let thread_after: Option<String> = sqlx::query_scalar(
+        "SELECT thread_id FROM worker_sessions WHERE card_id = ?1 \
+           AND state IN ('starting','running','idle','turn_pending')",
+    )
+    .bind(&card_id)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    assert!(thread_after.is_some());
+    assert_ne!(thread_after, thread_before, "reset must mint a new thread");
+    let (status, rows) = b.list_conversations(&wave_id).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows.as_array().unwrap().len(), 1, "rows={rows}");
     b.shutdown_harnesses().await;
 }
 

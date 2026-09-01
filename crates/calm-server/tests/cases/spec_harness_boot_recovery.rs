@@ -57,6 +57,36 @@ fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
     )
 }
 
+/// A wave's spec card, minted with the role production gives it.
+///
+/// `Repo::card_create` defaults to `CardRole::Worker`, which used to be
+/// invisible in the replay tests below: `spawn_recovered_harness` replayed the
+/// spec push stream regardless of role. #1189 gated that replay on
+/// `CardRole::Spec` — the same role the live pusher resolves
+/// (`Dispatcher::resolve_spec_card`) — so a Worker-role row no longer stands in
+/// for a spec card, and these fixtures have to write the role they mean.
+async fn seed_spec_card_row(repo: &SqlxRepo, wave_id: &WaveId) -> calm_server::model::Card {
+    let mut tx = repo.pool().begin().await.unwrap();
+    let card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        NewCard {
+            wave_id: wave_id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1}),
+        },
+        CardRole::Spec,
+        false,
+        repo.card_role_cache(),
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    card
+}
+
 fn sqlite_url(tmp: &TempDir, name: &str) -> String {
     format!("sqlite://{}?mode=rwc", tmp.path().join(name).display())
 }
@@ -845,16 +875,7 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            wave_id: wave.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_spec_card_row(&repo, &wave.id).await;
     let bus = EventBus::new();
     let role_cache = calm_server::card_role_cache::CardRoleCache::new();
     let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
@@ -1395,16 +1416,7 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         })
         .await
         .unwrap();
-    let card = repo
-        .card_create(NewCard {
-            wave_id: wave.id.clone(),
-            title: None,
-            kind: "codex".into(),
-            sort: None,
-            payload: json!({"schemaVersion": 1}),
-        })
-        .await
-        .unwrap();
+    let card = seed_spec_card_row(&repo, &wave.id).await;
 
     // One gated and one ungated tasks row.
     let mk_task = |key: &str, gate: Option<String>| calm_server::model::Task {
@@ -1627,4 +1639,332 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
     );
     let handle = registry.get(&runtime_id).expect("recovered harness");
     handle.shutdown().await.unwrap();
+}
+
+/// #1189 A1 — a kernel restart mid-conversation.
+///
+/// Two halves of one bug, on one ordinary (non-cove-chat) wave:
+///
+/// * **the selector.** `session_projection_recover_harnesses_on_boot`'s second
+///   `OR` arm was written for cove chat (`executor` + `role = 'worker'` +
+///   `plain_chat`) and a wave assistant matches none of its three conjuncts. A
+///   restart during an assistant turn therefore left the `worker_sessions` row
+///   alive with no run loop behind it: `GET /spec/run` answers dormant and the
+///   user's reply never arrives.
+/// * **the replay.** `spawn_recovered_harness` called
+///   `replay_harness_events_since` for every role. That function replays the
+///   SPEC push stream — task completions, report edits, gate verdicts — which
+///   the live dispatcher only ever pushes to the card whose role is
+///   `CardRole::Spec` (`Dispatcher::resolve_spec_card`). A freshly minted
+///   assistant starts at watermark 0, so the first recovery would have queued
+///   the wave's entire spec backlog into a conversation.
+///
+/// The fixture keeps all four recovery classes side by side so a fix that
+/// widened the selector too far is red as well: the real codex worker must stay
+/// out, and the cove chat must stay in.
+#[tokio::test]
+async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlog() {
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let cove = repo
+        .cove_create(NewCove {
+            name: "assistant-recovery".into(),
+            color: "#111111".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id.clone(),
+            title: "assistant recovery".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    // A cove chat wave alongside it: the #1098 recovery class must keep working.
+    let chat_wave = repo
+        .wave_create(NewWave {
+            workflow_input: None,
+            cove_id: cove.id.clone(),
+            title: "cove chat".into(),
+            sort: None,
+            cwd: "/tmp".into(),
+            workflow_id: None,
+            plugin_scope: None,
+            attach_folder: false,
+            theme: calm_server::routes::theme::RequestTheme::default_dark(),
+        })
+        .await
+        .unwrap();
+    sqlx::query("UPDATE waves SET purpose = 'cove-chat' WHERE id = ?1")
+        .bind(chat_wave.id.as_str())
+        .execute(repo.pool())
+        .await
+        .unwrap();
+
+    let mut tx = repo.pool().begin().await.unwrap();
+    let mk = |wave_id: WaveId, payload: serde_json::Value| NewCard {
+        wave_id,
+        title: None,
+        kind: "codex".into(),
+        sort: None,
+        payload,
+    };
+    // The spec card: the only legitimate recipient of the spec push stream.
+    let spec_card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        mk(wave.id.clone(), json!({"schemaVersion": 1})),
+        CardRole::Spec,
+        false,
+        repo.card_role_cache(),
+    )
+    .await
+    .unwrap();
+    // The wave assistant, exactly as `spec_harness_start_adapter` mints it.
+    let assistant_card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        mk(
+            wave.id.clone(),
+            json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+        ),
+        CardRole::Assistant,
+        false,
+        repo.card_role_cache(),
+    )
+    .await
+    .unwrap();
+    // A real dispatched codex worker on the same wave: never harness-recovered.
+    let worker_card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        mk(wave.id.clone(), json!({"schemaVersion": 1})),
+        CardRole::Worker,
+        true,
+        repo.card_role_cache(),
+    )
+    .await
+    .unwrap();
+    let chat_card = card_create_with_id_tx(
+        &mut tx,
+        new_id(),
+        mk(
+            chat_wave.id.clone(),
+            json!({"schemaVersion": 1, "harness_profile": "plain_chat"}),
+        ),
+        CardRole::Worker,
+        false,
+        repo.card_role_cache(),
+    )
+    .await
+    .unwrap();
+
+    let mut snapshot = HarnessSnapshot::initial(0, vec![]);
+    snapshot.phase = HarnessPhaseTag::Idle;
+    let spec_runtime_id = new_id();
+    let assistant_runtime_id = new_id();
+    let worker_runtime_id = new_id();
+    let chat_runtime_id = new_id();
+    for (runtime_id, card_id, kind) in [
+        (
+            &spec_runtime_id,
+            spec_card.id.as_str(),
+            WorkerSessionKind::SharedSpec,
+        ),
+        (
+            &assistant_runtime_id,
+            assistant_card.id.as_str(),
+            WorkerSessionKind::CodexCard,
+        ),
+        (
+            &worker_runtime_id,
+            worker_card.id.as_str(),
+            WorkerSessionKind::CodexCard,
+        ),
+        (
+            &chat_runtime_id,
+            chat_card.id.as_str(),
+            WorkerSessionKind::CodexCard,
+        ),
+    ] {
+        let mut snapshot = snapshot.clone();
+        snapshot.last_thread_id = Some(format!("thread-{card_id}"));
+        session_start_runtime_tx(
+            &mut tx,
+            WorkerSessionInit {
+                id: runtime_id.clone(),
+                card_id: card_id.to_string(),
+                kind,
+                agent_provider: Some(AgentProvider::Codex),
+                // `turn_pending` is the state the bug bites in: a turn was in
+                // flight when the kernel went down.
+                status: WorkerSessionState::TurnPending,
+                terminal_run_id: None,
+                thread_id: Some(format!("thread-{card_id}")),
+                session_id: None,
+                active_turn_id: None,
+                handle_state_json: Some(serde_json::to_value(&snapshot).unwrap()),
+                spawn_op_id: None,
+                now_ms: now_ms(),
+            },
+        )
+        .await
+        .unwrap();
+    }
+    tx.commit().await.unwrap();
+
+    // Spec-push backlog accumulated on the wave while the kernel was down.
+    let bus = EventBus::new();
+    let role_cache = repo.card_role_cache().clone();
+    let cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&cove_cache).await.unwrap();
+    let scope = EventScope::Wave {
+        wave: wave.id.clone(),
+        cove: cove.id.clone(),
+    };
+    repo.log_pure_event(
+        ActorId::User,
+        scope.clone(),
+        None,
+        &bus,
+        &role_cache,
+        &cove_cache,
+        Event::TaskCompleted {
+            idempotency_key: format!("{}:only", wave.id.as_str()),
+            result: json!({ "ok": true }),
+            artifacts: Vec::new(),
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+    repo.log_pure_event(
+        ActorId::User,
+        scope,
+        None,
+        &bus,
+        &role_cache,
+        &cove_cache,
+        Event::WaveReportEdited {
+            wave_id: wave.id.clone(),
+            card_id: spec_card.id.clone(),
+            author: EditAuthor::User,
+            author_plugin_id: None,
+            edit_id: new_id(),
+            summary_before: String::new(),
+            summary_after: String::new(),
+            body_before: "before".into(),
+            body_after: "after".into(),
+            agent_message: None,
+        },
+    )
+    .await
+    .unwrap();
+
+    // The selector itself, before any harness is built.
+    let mut selected = repo
+        .session_projection_recover_harnesses_on_boot()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|runtime| runtime.id)
+        .collect::<Vec<_>>();
+    selected.sort();
+    let mut expected = vec![
+        spec_runtime_id.clone(),
+        assistant_runtime_id.clone(),
+        chat_runtime_id.clone(),
+    ];
+    expected.sort();
+    assert_eq!(
+        selected, expected,
+        "boot recovery must select the spec harness, the wave assistant and the \
+         cove chat — and must not select the dispatched codex worker \
+         ({worker_runtime_id})"
+    );
+
+    let registry = HarnessRegistry::new();
+    let recovered = recover_harnesses_on_boot(
+        repo.clone(),
+        EventBus::new(),
+        role_cache.clone(),
+        cove_cache.clone(),
+        SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None),
+        &registry,
+    )
+    .await
+    .unwrap();
+    assert_eq!(recovered, 3, "spec + assistant + cove chat");
+    assert!(
+        registry.get(&assistant_runtime_id).is_some(),
+        "the assistant must come back REGISTERED; a dormant runtime is a user \
+         waiting forever for a reply"
+    );
+    assert!(registry.get(&spec_runtime_id).is_some());
+    assert!(registry.get(&chat_runtime_id).is_some());
+    assert!(
+        registry.get(&worker_runtime_id).is_none(),
+        "a dispatched codex worker is not a harness"
+    );
+
+    let stored = |runtime_id: String| {
+        let repo = repo.clone();
+        async move {
+            let runtime = repo
+                .session_projection_by_id(&runtime_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let snapshot: HarnessSnapshot = serde_json::from_value(
+                runtime
+                    .handle_state_json
+                    .expect("recovered runtime keeps its handle state"),
+            )
+            .unwrap();
+            snapshot.pending_queue
+        }
+    };
+
+    let spec_queue = stored(spec_runtime_id.clone()).await;
+    assert_eq!(
+        spec_queue.len(),
+        2,
+        "the spec still catches up on its own backlog: {spec_queue:?}"
+    );
+    assert!(
+        spec_queue
+            .iter()
+            .any(|obs| matches!(obs, Observation::TaskCompleted { .. }))
+    );
+    assert!(
+        spec_queue
+            .iter()
+            .any(|obs| matches!(obs, Observation::ReportEdited { .. }))
+    );
+
+    let assistant_queue = stored(assistant_runtime_id.clone()).await;
+    assert!(
+        assistant_queue.is_empty(),
+        "the assistant was handed the SPEC's backlog on recovery — it would open \
+         the conversation by reporting somebody else's task results: \
+         {assistant_queue:?}"
+    );
+    let chat_queue = stored(chat_runtime_id.clone()).await;
+    assert!(
+        chat_queue.is_empty(),
+        "a cove chat is not a spec-push recipient either: {chat_queue:?}"
+    );
+
+    for runtime_id in [&spec_runtime_id, &assistant_runtime_id, &chat_runtime_id] {
+        if let Some(handle) = registry.get(runtime_id) {
+            handle.shutdown().await.unwrap();
+        }
+    }
 }

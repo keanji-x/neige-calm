@@ -525,6 +525,22 @@ pub fn render_worker_prompt_for_e2e(wave_id: &str, codex: bool) -> String {
     render_system_prompt(role.prompt_template(), wave_id)
 }
 
+/// Test-only seam (#1189): the exact `developer_instructions` string a wave
+/// assistant's `thread/start` must carry.
+///
+/// Exposed rather than re-spelled in the test on purpose. An integration test
+/// that asserted on a substring ("contains `assistant`") would stay green if the
+/// assistant profile were wired to the SPEC prompt, which is one of the two
+/// mutations #1189's A2 gate has to catch; a test that re-declared the template
+/// would stay green if the adapter stopped rendering the placeholder. Handing
+/// out the rendered string makes the assertion an equality against production's
+/// own value.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn render_assistant_prompt_for_test(wave_id: &str) -> String {
+    render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, wave_id)
+}
+
 /// Roles that legitimately need role-specific Codex setup.
 /// Carved out of [`crate::model::CardRole`] so the seeding helper can
 /// only ever be handed a value that maps to a system-prompt template

@@ -169,9 +169,17 @@ mod tests {
     /// two goldens that happen to differ.
     ///
     /// The same `(id, key)` pair fed to both flavours must not produce the same
-    /// card id. This is the unit-level twin of G1: it fails the moment someone
-    /// "simplifies" the two namespaces into one shared prefix, without needing
-    /// a booted server to notice.
+    /// card id. It fails the moment someone "simplifies" the two namespaces
+    /// into one shared prefix.
+    ///
+    /// G1 is pinned HERE, at the unit layer, because the route layer cannot
+    /// construct the collision: the cove endpoint hashes a `cove_id` and the
+    /// wave endpoint hashes a `wave_id`, and no request can make one id be the
+    /// other. An end-to-end test would therefore be green under a merged
+    /// namespace too — it would only ever exercise `(cove-1, key)` against
+    /// `(wave-1, key)`, which differ whatever the prefix is. Feeding one
+    /// literal id to both derivations is the only shape that actually
+    /// distinguishes "separate namespaces" from "different inputs".
     #[test]
     fn the_two_namespaces_never_derive_the_same_card_id() {
         let cove = derive_cove_conversation_keys("id-1", "key-a");

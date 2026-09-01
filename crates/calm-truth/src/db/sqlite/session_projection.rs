@@ -502,10 +502,26 @@ impl WorkerSessionProjectionRepo for SqlxRepo {
                WHERE ws.provider = ?1
                  AND (
                        ws.contract = ?2
+                       -- #1098 — a cove chat. Executor contract, worker role,
+                       -- `plain_chat` marker.
                        OR (ws.contract = 'executor'
                            AND c.role = 'worker'
                            AND c.kind = 'codex'
                            AND json_extract(c.payload, '$.harness_profile') = 'plain_chat')
+                       -- #1189 — a wave assistant. Structurally a sibling of the
+                       -- clause above (same executor contract, its own role +
+                       -- marker pair) and NOT covered by it: an assistant
+                       -- matches neither `contract = 'planner'` nor
+                       -- `role = 'worker'` nor the `plain_chat` marker, so
+                       -- without this arm a kernel restart mid-turn leaves the
+                       -- `worker_sessions` row running with no harness in
+                       -- memory — `GET /spec/run` answers dormant and the user
+                       -- waits forever for a reply that no longer has a run
+                       -- loop behind it.
+                       OR (ws.contract = 'executor'
+                           AND c.role = 'assistant'
+                           AND c.kind = 'codex'
+                           AND json_extract(c.payload, '$.harness_profile') = 'assistant')
                  )
                  AND ws.state IN ('starting','running','idle','turn_pending')
                  AND ws.thread_id IS NOT NULL

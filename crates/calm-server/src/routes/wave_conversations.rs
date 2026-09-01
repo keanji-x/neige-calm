@@ -104,8 +104,8 @@ pub(crate) async fn list_wave_conversations(
     request_body = NewWaveConversationBody,
     responses(
         (status = 201, description = "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).", body = WaveConversationSummary),
-        (status = 400, description = "Missing/blank `Idempotency-Key`, or empty/over-long text", body = ErrorBody),
-        (status = 403, description = "The wave does not take assistant conversations: it is a cove chat wave (whose conversations are created through the cove endpoint) or a kernel template overlay wave", body = ErrorBody),
+        (status = 400, description = "Missing/blank `Idempotency-Key`, empty/over-long text, or the wave carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template waves with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.", body = ErrorBody),
+        (status = 403, description = "The wave is a cove chat wave; its conversations are created through the cove endpoint.", body = ErrorBody),
         (status = 404, description = "Wave not found", body = ErrorBody),
         (status = 409, description = "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.", body = ErrorBody),
         (status = 500, description = "Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it.", body = ErrorBody),

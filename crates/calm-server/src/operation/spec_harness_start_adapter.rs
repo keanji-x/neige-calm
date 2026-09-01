@@ -771,9 +771,22 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let force_new_thread = payload.force_new_thread;
         let profile = payload.profile;
         let session_kind = session_kind_for(profile);
-        // The role handed to `thread_start_for_card`, which is what the MCP
-        // transport later resolves this thread's tool surface from. It must be
-        // the role the card actually carries — see `minted_card_shape`.
+        // The role argument of `thread_start_for_card`. Stated plainly because
+        // it is easy to mistake for a security boundary and it is not one:
+        // `SharedCodexAppServer::thread_start_for_card` takes it as `_role`
+        // (`shared_codex_appserver.rs`) and production reads it nowhere — the
+        // only consumer is the `fixtures`-gated `started_thread_params_for_test`
+        // capture. The thread's actual tool surface is resolved per MCP request
+        // by `resolve_thread_identity` (`mcp_server/transport.rs`), which walks
+        // thread → session → `card_identity_get_by_session` and takes the role
+        // from the card's PERSISTED `role` column — the one `minted_card_shape`
+        // pins.
+        //
+        // It is also unreachable on the conversation profiles as they are
+        // driven today: both mint with `force_new_thread: true`, which takes the
+        // `thread_start_mint_for_card` path below — that call has no role
+        // parameter at all. Kept correct anyway so the fixtures capture cannot
+        // be read as evidence of a role the card does not carry.
         let card_role = match profile {
             HarnessProfile::Spec => CardRole::Spec,
             HarnessProfile::PlainChat => CardRole::Worker,

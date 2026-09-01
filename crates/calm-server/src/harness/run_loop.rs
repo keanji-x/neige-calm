@@ -1090,16 +1090,51 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             return Ok(());
         }
     }
-    let plain_chat = match inner.repo.card_get(inner.card_id.as_str()).await? {
-        Some(card) => crate::plain_chat::card_is_plain_chat(
-            &card,
-            inner.repo.card_role_get(card.id.as_str()).await?,
-            true,
-        ),
-        None => false,
-    };
+    // Two independent per-turn decisions that used to ride on one boolean
+    // (#1189 review A6). Splitting them is the whole point:
+    //
+    // * `skip_transcript_refresh` — skip the wave-level
+    //   `snapshot_transcripts_for_cards_in_wave` WRITE transaction below.
+    // * `skip_wave_diff` — issue the turn with no "wave state changes since
+    //   your last turn" block at all.
+    //
+    // A cove chat skips both: it lives alone on a hidden scaffolding wave, so
+    // there is nothing to snapshot and nothing to diff.
+    //
+    // A wave assistant skips only the first, and the asymmetry is deliberate.
+    //   - Skipping the WRITE: the refresh commits a wave-scoped wave-vcs
+    //     commit before every turn, and #1189's premise is N conversations on
+    //     one wave, so keeping it would multiply that write by N and make every
+    //     assistant turn contend for the same sqlite write lock as the spec
+    //     harness's own per-turn refresh. Nothing is lost: the spec harness of
+    //     that same wave still refreshes each turn, and card transcript paths
+    //     are also committed by the ordinary event-driven commit path, so the
+    //     assistant is reading a HEAD somebody else keeps current rather than
+    //     one nobody maintains.
+    //   - Keeping the DIFF: this is what the assistant must not lose. It is the
+    //     wave's report patch plus the paths that changed since this
+    //     conversation's last turn — for a card whose entire job is answering
+    //     questions about the wave and editing its report, that block is the
+    //     context, not decoration. `since_last_turn_block` with no
+    //     `current_override` simply reads the wave's current head, so dropping
+    //     the refresh costs at most the freshness a concurrent refresh would
+    //     have added, never the block itself.
+    let (skip_transcript_refresh, skip_wave_diff) =
+        match inner.repo.card_get(inner.card_id.as_str()).await? {
+            Some(card) => {
+                let role = inner.repo.card_role_get(card.id.as_str()).await?;
+                if crate::plain_chat::card_is_plain_chat(&card, role, true) {
+                    (true, true)
+                } else if crate::plain_chat::card_is_wave_assistant(&card, role, true) {
+                    (true, false)
+                } else {
+                    (false, false)
+                }
+            }
+            None => (false, false),
+        };
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
-    let refresh_head = if plain_chat {
+    let refresh_head = if skip_transcript_refresh {
         None
     } else {
         let refresh_repo = Arc::clone(&inner.repo);
@@ -1133,7 +1168,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    let diff = if plain_chat {
+    let diff = if skip_wave_diff {
         wave_vcs::SinceLastTurnBlock::empty()
     } else {
         diff_with_timeout(inner, refresh_head.as_ref()).await

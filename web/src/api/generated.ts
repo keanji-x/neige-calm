@@ -5938,7 +5938,7 @@ export interface operations {
                     "application/json": components["schemas"]["WaveConversationSummary"];
                 };
             };
-            /** @description Missing/blank `Idempotency-Key`, or empty/over-long text */
+            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the wave carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template waves with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -5947,7 +5947,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
-            /** @description The wave does not take assistant conversations: it is a cove chat wave (whose conversations are created through the cove endpoint) or a kernel template overlay wave */
+            /** @description The wave is a cove chat wave; its conversations are created through the cove endpoint. */
             403: {
                 headers: {
                     [name: string]: unknown;

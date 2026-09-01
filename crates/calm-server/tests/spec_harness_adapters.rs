@@ -238,6 +238,34 @@ async fn seed_plain_chat_card(
     tx.commit().await.unwrap();
 }
 
+/// The wave-assistant twin of [`seed_plain_chat_card`]: the same shape the
+/// #1189 mint writes — `CardRole::Assistant` plus the `assistant` marker.
+async fn seed_assistant_card(
+    repo: &SqlxRepo,
+    role_cache: &CardRoleCache,
+    wave: &Wave,
+    card_id: &str,
+) {
+    let mut tx = repo.pool().begin().await.unwrap();
+    card_create_with_id_tx(
+        &mut tx,
+        card_id.to_string(),
+        NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: json!({"schemaVersion": 1, "harness_profile": "assistant"}),
+        },
+        CardRole::Assistant,
+        false,
+        role_cache,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+}
+
 #[test]
 fn legacy_start_payload_defaults_to_spec_profile() {
     let mut payload = serde_json::to_value(SpecHarnessStartOperationPayload {
@@ -797,6 +825,102 @@ async fn plain_chat_thread_start_has_no_mcp_config() {
         wave_root_session_id(&repo, wave.id.as_str())
             .await
             .is_none()
+    );
+}
+
+/// #1189 A2 — the assistant's `thread/start` is the plain chat's opposite, item
+/// for item.
+///
+/// The sibling above pins `(None, true, None)`: no developer instructions,
+/// `ThreadConfig::NoMcp`. This one pins `(Some(assistant prompt), false, None)`
+/// on the SAME observable, which is the only place in the process where the two
+/// profiles are distinguishable.
+///
+/// Why not assert on `card_mcp_tokens` / `worker_sessions.mcp_token_hash`
+/// instead: those rows prove nothing here. `mint_card_mcp_token_pair()` and the
+/// `new_mcp_token_hash` write in `spec_harness_start_adapter` run for EVERY
+/// profile — the plain-chat sibling above asserts the same non-null hash — and
+/// the profile decides only whether the raw token reaches `ThreadConfig`. Move
+/// `HarnessProfile::Assistant` into the `NoMcp` arm and every token-row
+/// assertion in the suite stays green while the assistant's only write channel
+/// is severed. `is_no_mcp` in this tuple is the assertion that turns red.
+#[tokio::test]
+async fn assistant_thread_start_carries_mcp_config_and_the_assistant_prompt() {
+    let (state, repo, role_cache) = state_with_fake_daemon().await;
+    let wave = seed_wave(&repo).await;
+    let card_id = new_id();
+    seed_assistant_card(&repo, &role_cache, &wave, &card_id).await;
+    let payload = serde_json::to_value(SpecHarnessStartOperationPayload {
+        actor: calm_server::ids::ActorId::User,
+        wave_id: wave.id.to_string(),
+        spec_card_id: CardId::from(card_id.clone()),
+        report_card_id: None,
+        sort: None,
+        cwd: wave.workspace.path.clone(),
+        goal: None,
+        reset_harness_items: false,
+        force_new_thread: true,
+        profile: HarnessProfile::Assistant,
+        create_card: None,
+        first_message_sha256: None,
+    })
+    .unwrap();
+    let op_id = state
+        .operation_runtime
+        .submit("spec-harness-start", key(), payload)
+        .await
+        .unwrap();
+    let outcome = wait_op(&state, &op_id).await;
+    assert!(
+        matches!(outcome, OperationOutcome::Succeeded { .. }),
+        "assistant start failed: {outcome:?}"
+    );
+
+    let expected_prompt =
+        calm_server::spec_card::render_assistant_prompt_for_test(wave.id.as_str());
+    assert_eq!(
+        state
+            .shared_codex_appserver
+            .started_thread_params_for_test(),
+        vec![(Some(expected_prompt), false, None)],
+        // `false` is `is_no_mcp`: the assistant must get ThreadConfig::McpShell.
+        // The prompt is pinned by equality, not by a substring, so wiring the
+        // assistant to the SPEC prompt is red here too.
+        "assistant thread/start must carry MCP config and the assistant prompt"
+    );
+
+    // The rest of the mint contract, restated as the plain-chat sibling's
+    // point-for-point opposite.
+    let card = repo
+        .card_get(&card_id)
+        .await
+        .unwrap()
+        .expect("assistant card after thread start");
+    assert_eq!(
+        card.payload["harness_profile"], "assistant",
+        "thread start must not lose the boot-recovery marker"
+    );
+    assert_eq!(
+        role_cache.get(&card.id),
+        Some(CardRole::Assistant),
+        "the persisted role is what the MCP tool gate reads"
+    );
+    assert!(card_mcp_hash(&repo, &card_id).await.is_some());
+    let runtime = repo
+        .session_projection_active_for_card(&card_id)
+        .await
+        .unwrap()
+        .expect("assistant runtime");
+    assert_eq!(
+        runtime.kind,
+        WorkerSessionKind::CodexCard,
+        "SharedSpec would make this a Planner session"
+    );
+    assert!(
+        wave_root_session_id(&repo, wave.id.as_str())
+            .await
+            .is_none(),
+        "the assistant must not become the wave's root session"
     );
 }
 
