@@ -2843,6 +2843,39 @@
         }
       }
     },
+    "/api/wave-templates": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "list_wave_templates",
+        "responses": {
+          "200": {
+            "description": "Selectable wave templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WaveTemplate"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves": {
       "get": {
         "tags": [
@@ -7173,6 +7206,26 @@
             "items": {
               "$ref": "#/components/schemas/BlockVerdict"
             }
+          }
+        }
+      },
+      "WaveTemplate": {
+        "type": "object",
+        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `workflow_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
+        "required": [
+          "id",
+          "title"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Template key. Passed back verbatim as `workflow_id` on\n`POST /api/waves` — see the seam note on this module."
+          },
+          "input_schema": {
+            "description": "JSON Schema for `workflow_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `workflow_input` for it is a 400 on create."
+          },
+          "title": {
+            "type": "string"
           }
         }
       },

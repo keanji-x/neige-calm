@@ -33,6 +33,65 @@
      wave's `title`, which the sidebar, the wave list and the page header all
      render as one truncated line. */
 
+  /* #1209 — "Start from". One card with hairline-separated rows, not four
+     free-floating radios: the rows are alternatives to each other, and the
+     shared edge is what says so. Only one hairline runs between any two rows
+     (`+ .row`), so the card's own border is never doubled. */
+  .list {
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  .row + .row {
+    border-block-start: 1px solid var(--hairline);
+  }
+
+  /* The selected row keeps its tint while its panel is open, so the panel
+     reads as belonging to the row above it rather than to the card. */
+  .rowOn {
+    background: var(--overlay-hover-faint);
+  }
+
+  /* The label is the hit target and it spans the row: clicking anywhere on the
+     row picks it, which is what a list of alternatives promises. */
+  .rowLabel {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    min-block-size: var(--control-h-lg);
+    padding-inline: var(--space-6);
+    cursor: pointer;
+  }
+
+  .row:hover {
+    background: var(--overlay-hover);
+  }
+
+  /* Indented and rule-led: the fields belong to the row above, and the inset
+     rule carries that without a second box. */
+  .expand {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    margin-inline: var(--space-6) var(--space-6);
+    margin-block-end: var(--space-6);
+    padding-inline-start: var(--space-6);
+    border-inline-start: 1px solid var(--hairline);
+  }
+
+  .check {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    cursor: pointer;
+  }
+
+  .hint {
+    color: var(--text-3);
+    font-size: var(--text-xs);
+  }
+
   .error {
     border: 1px solid var(--warn-border);
     border-radius: var(--radius-sm);

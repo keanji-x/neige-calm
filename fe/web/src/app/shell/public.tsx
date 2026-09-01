@@ -12,8 +12,13 @@
 // strings. The rail is a sibling of the outlet, so a dialog living inside the
 // cove route was unreachable from it; the shell is the nearest place that sees
 // both, and it already holds `useWorkspace` + `useWaveMutations`, which is
-// everything the dialog needs. The form is title-only; `cove_id` is the
-// opener's cove (hidden), and the POST omits `cwd` / `attach_folder`.
+// everything the dialog needs. `cove_id` is the opener's cove (hidden), and
+// the POST omits `cwd` / `attach_folder`.
+//
+// #1209 added the template picker, so the shell also owns the
+// `GET /api/wave-templates` read — for the same reason it owns the mutations,
+// and because `features/**` may not import `app/**`. That read is
+// non-blocking by construction: the dialog opens, and creates, without it.
 
 import { Outlet } from '@tanstack/react-router';
 import { createContext, useContext, useEffect, useRef } from 'react';
@@ -24,7 +29,7 @@ import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/pub
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import {
-  ApiError, useCoveMutations, useWaveMutations, useWorkspace,
+  ApiError, useCoveMutations, useWaveMutations, useWaveTemplates, useWorkspace,
 } from '../providers/queries.ts';
 import { useCurrentPath, useGo } from '../router/navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
@@ -105,6 +110,17 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
   const newWaveTitleRef = useRef<HTMLInputElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  /*
+   * #1209 — the dialog's template list. Read here rather than inside the form
+   * because `features/**` must not import `app/**`, and read unconditionally
+   * rather than on open so the picker is populated the moment the dialog
+   * appears instead of shifting a row into place after it.
+   *
+   * Nothing downstream of it is allowed to gate creation: `data ?? []` means a
+   * pending or failed read is Blank-only, which is exactly the pre-#1209
+   * dialog. The failure is passed along as a notice, not as an error.
+   */
+  const waveTemplates = useWaveTemplates(transport, unauthorized);
 
   // Both wave mutations need the cove id to invalidate the right list, and the
   // rail only knows wave ids; the workspace read already has the mapping.
@@ -124,6 +140,11 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
       cove_id: newWaveCoveId,
       title: draft.title,
       theme: readHostThemeRgb(),
+      // Spread, not two optional fields: Blank leaves both keys absent, and
+      // `workflow_id: undefined` is not the same request as no `workflow_id`
+      // for anything that inspects the object before it is serialized.
+      ...(draft.workflow_id === undefined ? {} : { workflow_id: draft.workflow_id }),
+      ...(draft.workflow_input === undefined ? {} : { workflow_input: draft.workflow_input }),
     }).then((wave) => {
       setNewWaveCoveId(null);
       go({ name: 'wave', waveId: wave.id });
@@ -186,6 +207,8 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
             titleRef={newWaveTitleRef}
             submitting={creating}
             error={createError}
+            templates={waveTemplates.templates}
+            templatesError={waveTemplates.error}
             onCancel={() => setNewWaveCoveId(null)}
             onSubmit={submitNewWave}
           />
