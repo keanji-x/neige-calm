@@ -789,6 +789,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wave-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_wave_templates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -2488,6 +2504,48 @@ export interface components {
             schemaVersion: number;
             summary: string;
             taskDiagnostics: components["schemas"]["BlockVerdict"][];
+        };
+        /**
+         * @description One selectable starting point for a new wave.
+         *
+         *     "Blank" is not in this list and never will be: it is the *absence* of a
+         *     template (`POST /api/waves` with no `workflow_id`), so the client renders it
+         *     as its own default option rather than the server minting a pseudo-row for
+         *     something that has no key, no title source, and no report to fork.
+         */
+        WaveTemplate: {
+            /**
+             * @description Template key. Passed back verbatim as `workflow_id` on
+             *     `POST /api/waves` — see the seam note on this module.
+             */
+            id: string;
+            /**
+             * @description JSON Schema for `workflow_input`, from the manifest of the running
+             *     trusted plugin bound to `id`. Absent means the template takes no input;
+             *     sending `workflow_input` for it is a 400 on create.
+             */
+            input_schema?: unknown;
+            /**
+             * @description The tasks this template pre-sets, in plan order. Always present and
+             *     never empty for a real template — a template *is* its task list — so the
+             *     client can show it without a "no tasks" branch that could never render.
+             */
+            tasks: components["schemas"]["WaveTemplateTask"][];
+            title: string;
+        };
+        /**
+         * @description One pre-set task, projected from the template's own `PlanTaskInput`.
+         *
+         *     `key` and `goal` only: those are the two facts a person choosing a starting
+         *     point needs, and both are verbatim from the seeded plan. Acceptance
+         *     criteria, dependencies and gate advice belong to the wave's report once it
+         *     exists, not to the chooser.
+         */
+        WaveTemplateTask: {
+            /** @description What that task is for, verbatim from the template. */
+            goal: string;
+            /** @description The task block's `key` in the seeded report. */
+            key: string;
         };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
@@ -4861,6 +4919,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["VersionInfo"];
+                };
+            };
+        };
+    };
+    list_wave_templates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Selectable wave templates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplate"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };

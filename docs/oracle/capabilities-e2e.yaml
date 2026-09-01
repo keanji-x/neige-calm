@@ -4891,8 +4891,8 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/cove/new-wave/public.tsx:25-33,61-62; fe/web/src/app/shell/public.tsx:150
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:106
+  source: fe/web/src/features/cove/new-wave/public.tsx:147-158,303-309; fe/web/src/app/shell/public.tsx:174
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:160
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4912,8 +4912,8 @@
     no-op when this cove already covers the path (same-cove arm), so a second wave in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-cove case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/shell/public.tsx:138-153
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:161
+  source: fe/web/src/app/shell/public.tsx:159-176
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:197
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4932,8 +4932,8 @@
     Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
     the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
     break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:103-115
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:161-175
+  source: fe/web/src/features/cove/new-wave/public.tsx:440-462
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:197-210
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui

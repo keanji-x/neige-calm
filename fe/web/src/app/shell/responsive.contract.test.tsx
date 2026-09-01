@@ -14,6 +14,9 @@ vi.mock('../providers/queries.ts', () => ({
   }),
   useCoveMutations: () => ({ create: vi.fn(), remove: vi.fn() }),
   useWaveMutations: () => ({ setPinned: vi.fn(), create: vi.fn(), remove: vi.fn() }),
+  // #1209 — the dialog's template read. Blank-only is a working state, so the
+  // rail contract needs nothing more than the degraded shape here.
+  useWaveTemplates: () => ({ templates: [], error: null }),
   ApiError: class ApiError extends Error {},
 }));
 vi.mock('../router/navigation.ts', () => ({ useCurrentPath: () => '/', useGo: () => vi.fn() }));

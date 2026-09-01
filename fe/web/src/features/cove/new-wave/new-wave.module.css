@@ -1,99 +1,50 @@
+/* What is left after the form moved onto `@astryxdesign/core` (#1209): only
+   what no astryx component owns — this app's type/colour on the form root, the
+   bound-input panel's inset rule, and making the Start from trigger fill its
+   field the way the text inputs above it do. Every control's look — inputs,
+   menu, checkbox, buttons, status messages, the task hover-card's surface —
+   comes from astryx and is deliberately not restated here, and so is every
+   flex box: the form root is `VStack as="form" gap={2}` and the action row is
+   `HStack gap={1} justify="end"`, which is why neither has a rule below. */
 @layer features {
+  /* Layout deliberately absent: `VStack` owns the column and the gap. What is
+     left is the two things astryx cannot know — the dialog's text colour and
+     the app's sans stack, both from `styles/tokens.css`. */
   .form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
     color: var(--text);
     font-family: var(--font-sans);
   }
 
-  .field {
+  /* The collapsed Start from row. astryx sizes a `Button` to its label, but
+     this one stands where a field's control stands, so it spans the field and
+     pushes its chevron to the far edge — the shape every other picker in the
+     dialog has. The `features` layer sorts after `astryx`, so this wins
+     without a specificity fight. */
+  .trigger {
+    inline-size: 100%;
+    justify-content: space-between;
+  }
+
+  /* Indented and rule-led: the fields belong to the template named above them,
+     and the inset rule carries that without a second box around them. */
+  .panel {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
-    min-width: 0;
+    gap: var(--space-4);
+    padding-inline-start: var(--space-6);
+    border-inline-start: 1px solid var(--hairline);
   }
 
-  .label {
-    color: var(--text-2);
-    font-size: var(--text-base);
-  }
-
-  /* Rule, box and colour come from base.css's one text-field recipe.
-     Size is §6.8's dialog variant: `--control-h-lg` tall, no block padding. */
-  .input {
-    block-size: var(--control-h-lg);
-    padding-block: 0;
-    font: inherit;
-    font-size: var(--text-base);
-    width: 100%;
-  }
-
-  /* No `.textarea`: the Task field is a single-line input. The value is the
-     wave's `title`, which the sidebar, the wave list and the page header all
-     render as one truncated line. */
-
-  /* The Folder field's supporting line: what "empty" means, and what picking a
-     folder commits to. Secondary text, one step down from the label. */
-  .hint {
-    color: var(--text-2);
-    font-size: var(--text-xs);
-    margin: 0;
-  }
-
-  /* The way back to the default. Only rendered once a folder is chosen, and
-     styled as a quiet inline action rather than a second primary button. */
-  .clear {
-    align-self: flex-start;
-    border: 0;
-    background: none;
-    padding: 0;
-    color: var(--accent);
-    cursor: pointer;
-    font: inherit;
-    font-size: var(--text-xs);
-    text-decoration: underline;
-  }
-
-  .error {
-    border: 1px solid var(--warn-border);
-    border-radius: var(--radius-sm);
-    background: var(--warn-soft);
-    color: var(--warn-text);
-    padding: var(--space-2);
-    font-size: var(--text-base);
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-2);
-  }
-
-  .cancel,
-  .submit {
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--text-2);
-    padding: var(--space-1) var(--space-3);
-    cursor: pointer;
-    font: inherit;
-    font-size: var(--text-base);
-  }
-
-  .submit {
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-
-  .cancel:hover,
-  .submit:hover {
-    background: var(--overlay-hover);
-  }
-
-  .submit:disabled {
-    cursor: not-allowed;
-    opacity: 0.5;
+  /* The hover-card's scroll box. `HoverCard` takes no max-height, and drops
+     the `className`/`style` it accepts before they reach the rendered layer,
+     so the ceiling has to live on the content we hand it. `display: block`
+     because the layer is phrasing content (a `<span>`) by design — astryx
+     renders it inline-safe so it stays valid inside a paragraph. */
+  .taskScroll {
+    display: block;
+    max-inline-size: 28rem;
+    max-block-size: 14rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
   }
 }

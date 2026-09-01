@@ -77,6 +77,7 @@ use utoipa::OpenApi;
         crate::routes::cove_folders::delete_folder,
         crate::routes::cove_folders::resolve_path,
         // ---- waves ----
+        crate::routes::wave_templates::list_wave_templates,
         // ---- wave conversations (#1189) ----
         crate::routes::wave_conversations::list_wave_conversations,
         crate::routes::wave_conversations::create_wave_conversation,
@@ -174,6 +175,8 @@ use utoipa::OpenApi;
         WaveBacklink,
         BacklinkQuote,
         WaveBacklinksResponse,
+        crate::routes::wave_templates::WaveTemplate,
+        crate::routes::wave_templates::WaveTemplateTask,
         WaveFsCardMeta,
         WaveFsRunStatus,
         WaveFsRunVerdictSummary,

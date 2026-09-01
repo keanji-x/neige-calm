@@ -1,7 +1,7 @@
 import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { CoveWire } from '../../../../core/domain/cove.ts';
-import { wireEventSchema, type WireEvent } from '../../../../core/api/schemas.ts';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
 import type { CacheWrite } from '../../../../core/events/invalidation-plan.ts';
 import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
 import type { EventEffect } from '../../../../core/events/reducer.ts';
@@ -41,6 +41,9 @@ describe('query invalidation adapter', () => {
     expect(mapPlannedQueryKey(['spec-run', 'card-1'])).toEqual(queryKeys.specRun('card-1'));
     expect(mapPlannedQueryKey(['wave-report', 'w1'])).toEqual(queryKeys.waveReport('w1'));
     expect(mapPlannedQueryKey(['wave-report'])).toEqual(queryKeys.waveReportPrefix());
+    expect(mapPlannedQueryKey(['cove-conversations'])).toEqual(queryKeys.coveConversationsPrefix());
+    expect(mapPlannedQueryKey(['wave-conversations'])).toEqual(queryKeys.waveConversationsPrefix());
+    expect(mapPlannedQueryKey(['wave-conversations', 'w1'])).toEqual(queryKeys.waveConversations('w1'));
     for (const dropped of [['wave-files'], ['wave-files', 'w1'], ['waves-range'], ['wave-backlinks'], ['nope']]) {
       expect(mapPlannedQueryKey(dropped)).toBeNull();
     }
@@ -164,19 +167,103 @@ describe('query invalidation adapter', () => {
     expect(calls).toEqual([{ op: 'invalidate', queryKey: queryKeys.coves() }]);
   });
 
+  /*
+   * The harness kinds, end to end and by exact list.
+   *
+   * The payloads go through `wireEventSchema` rather than a cast, and that is
+   * load-bearing here: `wave_id` is a *required* field on all four of these on
+   * the wire, and an earlier version of this test cast a `{ card_id }` stub
+   * instead — which planned `['wave-conversations', undefined]`, mapped to
+   * nothing, and froze the missing conversation arms into the expectation as if
+   * a bare `spec-run` were the correct answer for `harness.phase.changed`.
+   */
   it('turns each real harness plan into its exact live query invalidations', () => {
+    const base = { runtime_id: 'r-1', card_id: 'card-1', wave_id: 'wave-1' } as const;
     const expected = [
-      ['harness.item.added', [queryKeys.harnessItems('card-1')]],
-      ['harness.phase.changed', [queryKeys.specRun('card-1')]],
-      ['harness.transcript.cleared', [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')]],
-      ['harness.user_message.enqueued', [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')]],
+      [
+        { ...base, item_db_id: 1, item_uuid: null, item_type: null, turn_id: null, method: 'x' },
+        'harness.item.added', [queryKeys.harnessItems('card-1')],
+      ],
+      [
+        { ...base, old_phase: 'idle', new_phase: 'turn_running' },
+        'harness.phase.changed',
+        [queryKeys.specRun('card-1'), queryKeys.coveConversationsPrefix(), queryKeys.waveConversations('wave-1')],
+      ],
+      [
+        base, 'harness.transcript.cleared',
+        [queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1')],
+      ],
+      [
+        { ...base, char_count: 3 }, 'harness.user_message.enqueued',
+        [
+          queryKeys.harnessItems('card-1'), queryKeys.specRun('card-1'),
+          queryKeys.coveConversationsPrefix(), queryKeys.waveConversations('wave-1'),
+        ],
+      ],
     ] as const;
-    for (const [ev, keys] of expected) {
-      const plan = invalidationPlanFor({ ev, data: { card_id: 'card-1' } } as WireEvent);
+    for (const [data, ev, keys] of expected) {
+      const plan = invalidationPlanFor(wireEventSchema.parse({ ev, data }));
       const { calls, client } = recordingClient();
       applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
       expect(calls).toEqual(keys.map((queryKey) => ({ op: 'invalidate', queryKey })));
     }
+  });
+
+  /*
+   * The whole chain for the conversation lists: real event → plan → adapter →
+   * `invalidateQueries`.
+   *
+   * The two set assertions in `invalidation-plan.test.ts` close the planner
+   * from both sides, and they were green while this key reached no query at
+   * all: `mapPlannedQueryKey` had no `cove-conversations` arm, so
+   * `applyEventEffects` dropped the planned key at its `mapped !== null` guard
+   * and every cove drawer's `state` dot sat still. A planner-only assertion
+   * cannot see that seam, so these assert on what the *client* was told.
+   *
+   * Each case is asserted as an exact call list rather than a `toContainEqual`:
+   * "the key is in there somewhere" is what let the seam open in the first
+   * place.
+   */
+  it('drives the conversation-list keys all the way onto the query client', () => {
+    const event = wireEventSchema.parse({
+      ev: 'runtime.started',
+      data: {
+        runtime_id: 'r-1', card_id: 'card-1', kind: 'codex',
+        agent_provider: 'codex', status: 'starting',
+      },
+    });
+    const plan = invalidationPlanFor(event, { findWaveOwningCard: () => 'wave-1' });
+    const { calls, client } = recordingClient();
+    applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    expect(calls).toEqual([
+      { op: 'invalidate', queryKey: queryKeys.waveDetail('wave-1') },
+      { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
+      { op: 'invalidate', queryKey: queryKeys.waveReport('wave-1') },
+      { op: 'invalidate', queryKey: queryKeys.coveConversationsPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.waveConversations('wave-1') },
+    ]);
+  });
+
+  /*
+   * The unresolvable-card fallback, also end to end. A `runtime.*` event whose
+   * card belongs to no cached wave detail plans the bare `wave-conversations`
+   * prefix, and that arity must reach the client too — dropping it would leave
+   * an open list stale for exactly the transitions that move a row's `state`.
+   */
+  it('drives the bare wave-conversations prefix onto the client when no wave resolves', () => {
+    const event = wireEventSchema.parse({
+      ev: 'runtime.status_changed',
+      data: { runtime_id: 'r-1', card_id: 'card-1', old_status: 'starting', new_status: 'running' },
+    });
+    const plan = invalidationPlanFor(event, { findWaveOwningCard: () => null });
+    const { calls, client } = recordingClient();
+    applyEventEffects(client, [{ type: 'invalidate', keys: plan.invalidate }]);
+    expect(calls).toEqual([
+      { op: 'invalidate', queryKey: queryKeys.overlaysByKind('card') },
+      { op: 'invalidate', queryKey: queryKeys.waveReportPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.coveConversationsPrefix() },
+      { op: 'invalidate', queryKey: queryKeys.waveConversationsPrefix() },
+    ]);
   });
 
   it('turns a real wave.deleted plan into cove-list plus overlay invalidation and a detail removal', () => {

@@ -31,6 +31,12 @@ function memoryStorage() {
   };
 }
 
+/* The Task field's accessible name after #1209's astryx rewrite: the label is
+   visually hidden (the field is one line and the placeholder already says what
+   it wants), so the name is spelled out here on purpose — losing it would make
+   the field unreachable by screen reader and by voice control. */
+const TASK_LABEL = 'What this wave should do';
+
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
 
@@ -43,7 +49,20 @@ const CONFLICT = {
   folder_id: 4, cove_id: 'c1', conflict_path: '/srv/app', conflict_kind: 'descendant',
 };
 
-function harness(options: { waveCreate?: ApiTransportResponse } = {}) {
+/* #1209 — what `GET /api/wave-templates` returns, in the two shapes that
+   matter: one template bound to a running plugin (an `input_schema`, therefore
+   fields) and one that is not. */
+const TEMPLATES = [
+  { id: 'small-change', title: 'Small change', tasks: [{ key: 'inspect', goal: 'Read the change.' }] },
+  {
+    id: 'issue-development',
+    title: 'Issue development',
+    input_schema: { type: 'object', required: ['issue_url', 'repo', 'issue_number'] },
+    tasks: [{ key: 'inspect-issue', goal: 'Read the bound issue.' }],
+  },
+];
+
+function harness(options: { templates?: unknown; waveCreate?: ApiTransportResponse } = {}) {
   const sent: ApiRequest[] = [];
   const transport: ApiTransportPort = {
     send(request: ApiRequest): Promise<ApiTransportResponse> {
@@ -51,6 +70,14 @@ function harness(options: { waveCreate?: ApiTransportResponse } = {}) {
       const posted = request.body as { cove_id?: string } | undefined;
       if (request.method === 'POST' && request.path === '/api/waves' && options.waveCreate) {
         return Promise.resolve(options.waveCreate);
+      }
+      if (request.path === '/api/wave-templates') {
+        // `undefined` here is the read failing outright — the branch the
+        // dialog must survive.
+        const templates = options.templates;
+        return templates === undefined
+          ? Promise.resolve({ status: 500, statusText: 'Server Error', body: { message: 'boom' } })
+          : Promise.resolve({ status: 200, statusText: 'OK', body: templates });
       }
       const body = request.path === '/api/coves' ? [COVE, OTHER]
         : request.path.startsWith('/api/fs/listdir') ? LISTING
@@ -121,17 +148,17 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await screen.findByRole('dialog', { name: 'New wave' });
     await act(async () => { await new Promise((resolve) => { requestAnimationFrame(() => resolve(null)); }); });
 
-    expect(document.activeElement).toBe(screen.getByLabelText('Task'));
+    expect(document.activeElement).toBe(screen.getByLabelText(TASK_LABEL));
 
     // The consequence, stated as behaviour: the space in "Read it" is what used
     // to close the dialog.
     await userEvent.keyboard('Read it');
-    expect(screen.getByLabelText<HTMLInputElement>('Task').value).toBe('Read it');
+    expect(screen.getByLabelText<HTMLInputElement>(TASK_LABEL).value).toBe('Read it');
     expect(screen.getByRole('dialog', { name: 'New wave' })).toBeTruthy();
   });
 
   it('posts the opener\'s cove_id and omits cwd / attach_folder with no folder chosen', async () => {
-    const { sent } = harness();
+    const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     // #1161 — establish the dialog is open *and exposed* first. The
     // `queryByLabelText` absence check below would pass vacuously against a
@@ -139,7 +166,12 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     // filtering, so it cannot stand in for this wait.
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
     expect(screen.queryByLabelText('Cove')).toBeNull();
-    await userEvent.type(await screen.findByLabelText('Task'), 'Read it');
+    /* #1147 S3 restated on top of #1209: the Folder control *is* here — this
+       assertion used to be `toBeNull()` — and it starts empty. Empty is what
+       "no folder chosen" looks like, and it is what the absence checks on the
+       body below are the consequence of. */
+    expect(screen.getByLabelText('Folder').textContent).toContain('Neige picks one');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
@@ -150,6 +182,10 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     expect(body).not.toHaveProperty('cwd');
     expect(body).not.toHaveProperty('attach_folder');
     expect(sent.some((request) => request.path.startsWith('/api/fs/listdir'))).toBe(false);
+    // #1209 — Blank is the default, and Blank means the key is not on the wire
+    // at all. `workflow_id: null` or `''` is a 400 from the kernel.
+    expect(body).not.toHaveProperty('workflow_id');
+    expect(body).not.toHaveProperty('workflow_input');
   });
 
   /*
@@ -159,10 +195,10 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
    * likely to pick. It is a no-op when this cove already covers the path.
    */
   it('posts the picked folder as cwd with attach_folder: true', async () => {
-    const { sent } = harness();
+    const { sent } = harness({ templates: TEMPLATES });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    await userEvent.type(await screen.findByLabelText('Task'), 'Read it');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
 
     await userEvent.click(await screen.findByLabelText('Folder'));
     // The picker pushes into the *same* dialog rather than opening a second
@@ -180,6 +216,38 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
       cove_id: 'c1', title: 'Read it', cwd: '/srv/app', attach_folder: true,
     });
     expect(sent.some((request) => request.path === '/api/fs/listdir')).toBe(true);
+    // Attaching a folder is orthogonal to #1209's template choice: staying on
+    // Blank must still keep `workflow_id` off the wire.
+    expect(body).not.toHaveProperty('workflow_id');
+  });
+
+  /*
+   * The two features on one request. The folder and the template are collected
+   * by different controls and translated by different branches of
+   * `submitNewWave`, and nothing else proves the second spread does not
+   * clobber the first.
+   */
+  it('carries a chosen folder and a chosen template on the same POST', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
+    expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
+    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
+
+    await userEvent.click(await screen.findByLabelText('Folder'));
+    await screen.findByDisplayValue('/srv/app/');
+    await userEvent.click(await screen.findByRole('button', { name: 'Select this directory' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
+
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    expect(createdWaveBodies(sent)[0]).toMatchObject({
+      cove_id: 'c1',
+      title: 'Read it',
+      workflow_id: 'small-change',
+      cwd: '/srv/app',
+      attach_folder: true,
+    });
   });
 
   /*
@@ -188,10 +256,13 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
    * not which folder, not which cove, not what to do instead.
    */
   it('renders the structured folder conflict, not the word Conflict', async () => {
-    harness({ waveCreate: { status: 409, statusText: 'Conflict', body: CONFLICT } });
+    harness({
+      templates: TEMPLATES,
+      waveCreate: { status: 409, statusText: 'Conflict', body: CONFLICT },
+    });
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
-    await userEvent.type(await screen.findByLabelText('Task'), 'Read it');
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     // The request, its rejection, and the re-render are three ticks the click
     // does not await; the default 1s window is not enough under a loaded suite.
@@ -201,5 +272,77 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     expect(alert.textContent).toContain('cove “Work”');
     expect(alert.textContent).not.toContain('c1');
     expect(alert.textContent).not.toBe('Conflict');
+  });
+
+  /*
+   * #1209, through the shell rather than the form: the form builds a draft,
+   * but only this wiring decides what reaches the wire. A form-level test
+   * cannot see `submitNewWave` dropping a field on the way to the POST.
+   */
+  it('carries the chosen template onto the create POST', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    await screen.findByRole('dialog', { name: 'New wave' });
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Fix the thing');
+    /* `findBy`: the picker's trigger is there from the first paint, but the
+       option only exists once the template read has landed — so the wait is on
+       the option inside the opened menu, not on the trigger. */
+    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Issue development/ }));
+    await userEvent.type(
+      screen.getByLabelText('Issue URL'),
+      'https://github.com/keanji-x/neige-calm/issues/1209',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    expect(createdWaveBodies(sent)[0]).toMatchObject({
+      cove_id: 'c2',
+      title: 'Fix the thing',
+      workflow_id: 'issue-development',
+      workflow_input: {
+        issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
+        repo: 'keanji-x/neige-calm',
+        issue_number: 1209,
+        merge_policy: 'hold-for-ratify',
+      },
+    });
+  });
+
+  it('sends an unbound template as an id with no workflow_input', async () => {
+    const { sent } = harness({ templates: TEMPLATES });
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    await screen.findByRole('dialog', { name: 'New wave' });
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Tiny fix');
+    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    const body = createdWaveBodies(sent)[0] as Record<string, unknown>;
+    expect(body).toMatchObject({ title: 'Tiny fix', workflow_id: 'small-change' });
+    expect(body).not.toHaveProperty('workflow_input');
+  });
+
+  /*
+   * The real failure mode, driven end to end: the template read 500s and the
+   * app's only wave-creation entry point still creates a wave. Asserted here
+   * and not only on the form because the degradation lives in the wiring —
+   * `data ?? []` plus a query that does not retry.
+   */
+  it('still creates a wave when the template read fails outright', async () => {
+    const { sent } = harness();
+    await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
+    await screen.findByRole('dialog', { name: 'New wave' });
+    /* Wait for the failure to *land*, not for the request to leave. Waiting on
+       `sent` only proves the query started: react-query could still be pending
+       when the submit runs, and then this case would silently be testing
+       "submits while the list is loading" — a different, easier branch.
+       The rendered notice is the first observable moment the 500 has been
+       consumed (`useWaveTemplates` turns `isError` into this string), so it is
+       what the wait is on. */
+    await screen.findByText(/Could not load templates/);
+    await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it anyway');
+    await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
+    await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
+    expect(createdWaveBodies(sent)[0]).toMatchObject({ cove_id: 'c2', title: 'Read it anyway' });
   });
 });

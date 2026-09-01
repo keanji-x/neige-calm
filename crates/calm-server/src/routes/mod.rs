@@ -27,6 +27,7 @@ pub mod today;
 pub mod version;
 pub mod wave_conversations;
 pub mod wave_report_blocks;
+pub mod wave_templates;
 pub mod waves;
 
 /// Full REST surface. Includes both protected (`protected_router`) and
@@ -60,6 +61,7 @@ pub fn protected_router() -> Router<AppState> {
         .merge(waves::router())
         .merge(wave_conversations::router())
         .merge(wave_report_blocks::router())
+        .merge(wave_templates::router())
         .merge(cards::router())
         .merge(overlays::router())
         .merge(plugins::router())
