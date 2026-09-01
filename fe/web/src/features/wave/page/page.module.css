@@ -190,6 +190,17 @@
     background: var(--error-soft);
   }
 
+  .mobilePanelButton,
+  .mobileReportChatFab,
+  .mobileWaveHeader,
+  .mobileListSurface {
+    display: none;
+  }
+
+  .desktopPanelSurface {
+    display: contents;
+  }
+
   @media (prefers-reduced-motion: reduce) {
     .headerDelete {
       transition: none;
@@ -854,5 +865,217 @@
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text-3);
+  }
+
+  /* Compact/mobile is a navigation redesign, not a squeezed desktop grid.
+     Report is the root page. The inventory becomes a right-pushed page, and a
+     selected card becomes a second list-detail page without loading Grid. */
+  @media (width < 60rem) {
+    .page {
+      --document-start: 0px;
+      gap: var(--space-6);
+      padding-block-end: calc(env(safe-area-inset-bottom) + var(--space-10));
+      padding-inline: var(--space-8);
+    }
+
+    .page > :first-child {
+      display: none;
+    }
+
+    .mobileWaveHeader {
+      display: contents;
+    }
+
+    .titleHeading {
+      overflow: visible;
+    }
+
+    .title {
+      white-space: normal;
+      text-overflow: clip;
+    }
+
+    .content {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 0;
+    }
+
+    .doc {
+      inline-size: 100%;
+      max-inline-size: var(--document-measure);
+      margin-inline: auto;
+    }
+
+    .mobilePanelButton {
+      display: grid;
+      place-items: center;
+      inline-size: var(--rail-w-collapsed);
+      min-block-size: var(--rail-w-collapsed);
+      border: 0;
+      border-radius: var(--radius-pill);
+      background: transparent;
+      box-shadow: none;
+      color: var(--text-2);
+      cursor: pointer;
+    }
+
+    .mobilePanelButton button {
+      /* Astryx's `lg` icon button is 36px. Mobile keeps its ghost appearance
+         but expands the actual button—not a fake wrapper—to the 44px target. */
+      inline-size: var(--rail-w-collapsed) !important;
+      min-inline-size: var(--rail-w-collapsed) !important;
+      block-size: var(--rail-w-collapsed) !important;
+      min-block-size: var(--rail-w-collapsed) !important;
+      background: transparent !important;
+      box-shadow: none !important;
+    }
+
+    .headerDelete {
+      display: none;
+    }
+
+    .needsInput,
+    .page [data-nc-lifecycle-tone] {
+      display: none;
+    }
+
+    .panel {
+      position: fixed;
+      inset: 0 0 calc(var(--mobile-dock-h, 0px) + env(safe-area-inset-bottom));
+      z-index: var(--z-overlay);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-8);
+      inline-size: 100%;
+      block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
+      min-block-size: calc(100dvh - var(--mobile-dock-h, 0px) - env(safe-area-inset-bottom));
+      max-block-size: none;
+      padding: 0;
+      overflow: hidden;
+      overscroll-behavior: contain;
+      background: var(--bg);
+      translate: 100% 0;
+      transition:
+        translate var(--motion-medium) ease-out,
+        visibility 0s linear var(--motion-medium);
+    }
+
+    .mobilePanelOpen {
+      visibility: visible;
+      translate: 0 0;
+      transition-delay: 0s;
+    }
+
+    .mobilePanelClosed {
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .mobileListSurface {
+      display: block;
+      inline-size: 100%;
+      block-size: 100%;
+      min-block-size: 0;
+      overflow: hidden;
+    }
+
+    .desktopPanelSurface {
+      display: none;
+    }
+
+    .mobileCardFacts {
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border-radius: var(--radius-md);
+      background: var(--surface-card);
+    }
+
+    .mobileCardFacts > div {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: var(--space-6);
+      min-block-size: calc(var(--rail-w-collapsed) + var(--space-4));
+      align-items: center;
+      padding-inline: var(--space-7);
+    }
+
+    .mobileCardFacts > div + div {
+      border-block-start: 1px solid var(--hairline);
+    }
+
+    .mobileCardFacts dt,
+    .mobileCardFacts dd {
+      min-inline-size: 0;
+      overflow: hidden;
+      font-size: var(--text-xs);
+      line-height: var(--leading-tight);
+      white-space: nowrap;
+      text-overflow: ellipsis;
+    }
+
+    .mobileCardFacts dt {
+      color: var(--text-3);
+    }
+
+    .mobileCardFacts dd {
+      color: var(--text);
+    }
+
+    .mobileConversationList {
+      min-inline-size: 0;
+    }
+
+    .mobileConversationList ul {
+      max-block-size: none !important;
+      margin-inline: 0 !important;
+      overflow: visible !important;
+    }
+
+    .mobileConversationList button {
+      min-block-size: var(--rail-w-collapsed) !important;
+      padding-inline: var(--space-4) !important;
+    }
+
+    .mobileConversationList > p {
+      min-block-size: var(--rail-w-collapsed);
+      font-size: var(--text-xs);
+      line-height: var(--leading-snug);
+      color: var(--text-3);
+    }
+
+    .mobileReportChatFab {
+      position: fixed;
+      inset-inline-end: var(--space-9);
+      inset-block-end: calc(env(safe-area-inset-bottom) + var(--space-9));
+      z-index: var(--z-sticky);
+      display: inline-flex;
+      min-block-size: calc(var(--rail-w-collapsed) + var(--space-6));
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-3);
+      padding-inline: var(--space-9);
+      border: 1px solid var(--accent);
+      border-radius: var(--radius-pill);
+      background: var(--accent);
+      color: var(--text-on-accent);
+      box-shadow: var(--shadow-float);
+      font-size: var(--text-md);
+      font-weight: var(--weight-medium);
+      line-height: var(--leading-none);
+      cursor: pointer;
+    }
+
+    .mobileReportChatFab svg {
+      inline-size: var(--space-9);
+      block-size: var(--space-9);
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .panel {
+        transition: none;
+      }
+    }
   }
 }

@@ -9,6 +9,26 @@ import { playwright } from '@vitest/browser-playwright';
 const setupFiles = ['./tools/vitest/build-constants.ts', './tools/vitest/dom-diagnostics.ts'];
 
 export default defineConfig({
+  resolve: {
+    dedupe: ['react', 'react-dom'],
+  },
+  optimizeDeps: {
+    include: [
+      '@tanstack/react-query',
+      '@tanstack/react-router',
+      '@astryxdesign/core/Button',
+      '@astryxdesign/core/Calendar',
+      '@astryxdesign/core/Card',
+      '@astryxdesign/core/Heading',
+      '@astryxdesign/core/Icon',
+      '@astryxdesign/core/IconButton',
+      '@astryxdesign/core/List',
+      '@astryxdesign/core/MetadataList',
+      '@astryxdesign/core/MoreMenu',
+      '@astryxdesign/core/SegmentedControl',
+      '@astryxdesign/core/TextInput',
+    ],
+  },
   test: {
     projects: [
       {
@@ -83,10 +103,48 @@ export default defineConfig({
        * coarse` matches, `pointer: none` does not, and the plain `browser`
        * project still reports `pointer: fine` with `pointer: none` false.
        *
-       * The viewport is a phone's, and it is not decoration: `isMobile` without
-       * a matching viewport is a desktop-sized page claiming to be a handset,
-       * and the rail's 320px cap is a block-axis fact that only means anything
-       * against a real screen height.
+       * ── The device is a tablet, and that is a ruling, not a preference ────
+       *
+       * This project ran at a phone's 420 × 900 until #1191, and it had to
+       * stop. `pointer: coarse` means *a finger*; it does not mean *a narrow
+       * screen*, and the two were conflated here only because a handset is the
+       * cheapest device that has one. #1191's mobile IA then made the
+       * difference load-bearing: `ui/drawer/drawer.module.css` turns the whole
+       * page seam off under `@media (width < 60rem)`, because a full-width
+       * mobile Chat has no seam beside the card for the desktop exchange rail
+       * to mount in. Both features are right, and at a phone width they are not
+       * simultaneously observable — the rail's geometry was being measured on a
+       * page that, since #1191, deliberately does not paint it, so all three
+       * geometry cases read 0.
+       *
+       * A tablet in portrait is where the rail's real invariants live: a finger
+       * on the glass *and* a seam to reach into. 1024 × 1366 is chosen, and
+       * every part of it is doing work —
+       *
+       *   - **1024 ≥ 60rem**, so the drawer keeps its desktop side-card shape
+       *     and the seam exists. This is the number #1191 turns on; do not put
+       *     this project back under it.
+       *   - **1366 tall**, because the rail's 320px cap is a block-axis fact
+       *     that only means anything against a real screen height — the reason
+       *     the old comment gave for pinning a viewport at all, which still
+       *     holds.
+       *   - **portrait**, not landscape, because one case in the file below
+       *     injects `@media (pointer: coarse) and (orientation: landscape)` as
+       *     a rule that is false *here* and true on the same device turned. In
+       *     landscape that fixture would match and would stop binding the half
+       *     of the sweep it exists for.
+       *
+       * `isMobile` stays: a tablet is a mobile-emulation device too (it is what
+       * Playwright's own iPad descriptors set), and it is what makes
+       * `screen.orientation` report the emulated box rather than the host's.
+       *
+       * **Two viewports, and they are different things.** `contextOptions.
+       * viewport` sizes the Playwright *page*, which is what `screen` and the
+       * media features are read off. `browser.viewport` sizes the *iframe*
+       * Vitest puts each suite in, which defaults to 414 × 896 whatever the
+       * context says — and it is the iframe, not the screen, that `@media
+       * (width < 60rem)` is evaluated against. Measured: widening the context
+       * alone leaves all three geometry cases at 0.
        */
       {
         test: {
@@ -106,11 +164,15 @@ export default defineConfig({
           browser: {
             enabled: true,
             headless: true,
+            /* The suite's iframe. Left at the 414 × 896 default, every case
+               below is laid out under `@media (width < 60rem)` however wide the
+               page behind it is. */
+            viewport: { width: 1024, height: 1366 },
             provider: defineBrowserProvider(playwright({
               contextOptions: {
                 hasTouch: true,
                 isMobile: true,
-                viewport: { width: 420, height: 900 },
+                viewport: { width: 1024, height: 1366 },
               },
             })),
             instances: [{ browser: 'chromium' }],

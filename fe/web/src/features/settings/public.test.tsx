@@ -1,12 +1,23 @@
 // @vitest-environment jsdom
 import { act, cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY } from '../../../../core/domain/settings.ts';
 import { SettingsPage, type SettingsPageProps } from './public.tsx';
 
-afterEach(cleanup);
+beforeEach(() => {
+  vi.stubGlobal('matchMedia', vi.fn(() => ({
+    matches: false,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  })));
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
   return {
@@ -55,15 +66,14 @@ describe('Settings network form', () => {
     expect(onSave).toHaveBeenCalledWith({ [HTTPS_PROXY_KEY]: 'http://edge:8080' });
   });
 
-  // CR-6 — in flight the button is *busy*, not `disabled`. A real `disabled`
-  // element is not focusable, and focus is on Save at exactly that moment, so
-  // disabling it would throw focus to <body> mid-action. The block has to come
-  // from `aria-disabled` + the handler, and the state has to stay announceable.
+  // CR-6 — in flight the button is *busy*, not `disabled`. Astryx announces
+  // that with aria-busy and its spinner; the handler remains the activation
+  // guard, so focus is not thrown to <body> mid-action.
   it('flips the save label and blocks the button while saving, without disabling it', () => {
     render(<SettingsPage {...props({ saving: true })} />);
     const save = screen.getByRole('button', { name: 'Saving…' });
     expect(save.hasAttribute('disabled')).toBe(false);
-    expect(save.getAttribute('aria-disabled')).toBe('true');
+    expect(save.getAttribute('aria-disabled')).toBeNull();
     expect(save.getAttribute('aria-busy')).toBe('true');
     expect(save.dataset.ncState).toBe('busy');
   });
@@ -72,9 +82,8 @@ describe('Settings network form', () => {
     render(<SettingsPage {...props()} />);
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge');
     const save = screen.getByRole('button', { name: 'Save' });
-    const labels = save.querySelectorAll('span > span');
-    expect(labels[0]?.getAttribute('aria-hidden')).toBe('false');
-    expect(labels[1]?.getAttribute('aria-hidden')).toBe('true');
+    expect(save.textContent).toContain('Save');
+    expect(screen.queryByRole('button', { name: 'Saving…' })).toBeNull();
     expect(save.dataset.ncState).toBeUndefined();
   });
 
@@ -160,11 +169,36 @@ describe('Settings states', () => {
     vi.useFakeTimers();
     try {
       render(<SettingsPage {...props({ savedAt: 1234, savedNoticeMs: 10 })} />);
-      expect(screen.getByRole('status').textContent).toBe('Saved.');
+      expect(screen.getByText('Saved.').getAttribute('role')).toBe('status');
       act(() => { vi.advanceTimersByTime(20); });
-      expect(screen.queryByRole('status')).toBeNull();
+      expect(screen.queryByText('Saved.')).toBeNull();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  /*
+   * The e2e locator, pinned where it can actually run (`fe e2e` needs the real
+   * stack). `settings-roundtrip.spec.ts` reads `[data-nc-settings-saved]` and
+   * then asserts its text, because `role="status"` resolves to three elements
+   * on this page — each Astryx `Button` renders an unconditional empty live
+   * region with that role. Locating by the anchor and asserting the text are
+   * two independent claims; filtering the role by 'Saved.' would collapse them
+   * into one and could never distinguish "the save succeeded" from "the string
+   * happens to be on the page".
+   *
+   * Both halves are load-bearing: the anchor must appear *only* after a save,
+   * and it must carry that text. Deleting the attribute, or dropping the
+   * `showSaved &&` guard so the notice is always mounted, must turn this red.
+   */
+  it('exposes the saved notice at the anchor the e2e spec locates, and only after a save', () => {
+    const { unmount } = render(<SettingsPage {...props({ savedAt: null })} />);
+    expect(document.querySelectorAll('[data-nc-settings-saved]')).toHaveLength(0);
+    unmount();
+
+    render(<SettingsPage {...props({ savedAt: 1234 })} />);
+    const anchored = document.querySelectorAll('[data-nc-settings-saved]');
+    expect(anchored).toHaveLength(1);
+    expect(anchored[0]?.textContent).toBe('Saved.');
   });
 });

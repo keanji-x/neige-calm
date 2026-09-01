@@ -41,6 +41,17 @@
     grid-template-columns: var(--rail-w) minmax(0, 1fr);
   }
 
+  /* Desktop keeps the existing rail as a direct grid child. The wrappers only
+     become real boxes in the compact/mobile presentation below. */
+  .navigation,
+  .navigationPanel {
+    display: contents;
+  }
+
+  .mobileDock {
+    display: none;
+  }
+
   .main {
     /*
      * Container for `--panel-span` (25cqi). The trailing card and the
@@ -141,14 +152,112 @@
     overflow: auto;
   }
 
-  /* Below 60rem the rail becomes a 44px icon strip — it does not disappear.
-     900px is an ordinary split-screen width, and navigation may not evaporate
-     there. The number is declared once in styles/breakpoints.ts
-     (RAIL_COLLAPSE_REM); this query and the shell's must match it. */
+  /* The existing compact breakpoint is also the mobile presentation boundary:
+     one breakpoint, two stable modes. Desktop keeps the three-column working
+     surface; compact/mobile makes Report the page and moves workspace
+     navigation into an explicit right-side layer. */
   @media (width < 60rem) {
-    .shell:not(.shellExpanded):not(.shellCollapsed) {
-      grid-template-columns: var(--rail-w-collapsed) minmax(0, 1fr);
+    .shell,
+    .shellCollapsed,
+    .shellExpanded {
+      --mobile-dock-h: calc(var(--rail-w-collapsed) + var(--space-6) * 2);
+      grid-template-columns: minmax(0, 1fr);
     }
+
+    .shellMobileSecondary {
+      --mobile-dock-h: 0px;
+    }
+
+    .navigation {
+      position: fixed;
+      inset: 0;
+      z-index: var(--z-modal);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .navigationOpen {
+      visibility: visible;
+      pointer-events: auto;
+    }
+
+    .navigationPanel {
+      position: relative;
+      grid-column: 1;
+      grid-row: 1;
+      display: flex;
+      min-block-size: 0;
+      box-sizing: border-box;
+      padding-block-end: calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
+      background: var(--bg);
+    }
+
+    .main {
+      --panel-span: 100cqi;
+    }
+
+    .main[aria-hidden='true'] [data-nc-mobile-report-chat] {
+      display: none !important;
+    }
+
+    .stage {
+      padding-block-start: env(safe-area-inset-top);
+      padding-block-end: calc(var(--mobile-dock-h) + env(safe-area-inset-bottom));
+    }
+
+    .mobileDock {
+      position: fixed;
+      inset-inline-start: 50%;
+      inset-block-end: calc(env(safe-area-inset-bottom) + var(--space-4));
+      z-index: var(--z-toast);
+      display: grid;
+      /* `--mobile-dock-count` is set by the shell from `DOCK_ITEMS.length`
+         (#1191 §3.3); the fallback keeps the strip laid out if the element is
+         ever rendered without it. */
+      grid-template-columns: repeat(var(--mobile-dock-count, 4), minmax(0, 1fr));
+      inline-size: min(calc(100% - var(--space-10) * 2), 17.5rem);
+      block-size: calc(var(--mobile-dock-h) - var(--space-4));
+      padding: var(--space-1) var(--space-3);
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-pill);
+      background: color-mix(in oklab, var(--paper) 88%, transparent);
+      backdrop-filter: blur(18px) saturate(1.12);
+      box-shadow: var(--shadow-float);
+      isolation: isolate;
+      translate: -50% 0;
+      transform: translateZ(0);
+    }
+
+    .mobileDockHidden {
+      display: none;
+    }
+
+    .mobileDockItem {
+      position: relative;
+      z-index: var(--z-raised);
+      display: flex;
+      min-inline-size: 0;
+      min-block-size: var(--rail-w-collapsed);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-0);
+      border-radius: var(--radius-md);
+      font-size: var(--text-xs);
+      line-height: var(--leading-none);
+      color: var(--text-3);
+      cursor: pointer;
+      backface-visibility: hidden;
+      transform: translateZ(0);
+    }
+
+    .mobileDockItem[aria-current='page'] {
+      color: var(--accent);
+      font-weight: var(--weight-medium);
+    }
+
   }
 
   /* 44 − 2×10 = 24px cannot hold a 28px control, so the collapsed strip drops

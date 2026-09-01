@@ -62,13 +62,18 @@ import {
   useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
-import { AppShell, useRequestNewWave } from '../shell/public.tsx';
+import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
-import { useGo, useRouteCardId, useRouteHash, useRouteParam } from './navigation.ts';
+import {
+  renderedMobilePanel,
+  useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
+  useWavePanelNavigation, validateWaveSearch, type WaveSearch,
+} from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { useCompactViewport } from '../../ui/viewport/public.ts';
 
 export const APP_BASEPATH = '/next';
 
@@ -415,10 +420,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   const waveRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/wave/$waveId',
-    validateSearch: (search: Record<string, unknown>): { card?: string } => {
-      const card = search.card;
-      return typeof card === 'string' && card !== '' ? { card } : {};
-    },
+    validateSearch: (search: Record<string, unknown>): WaveSearch => validateWaveSearch(search),
     component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
   });
 
@@ -980,13 +982,15 @@ function useConversationPanel(
        CARDS modules already use, which is why this needed no new mechanism. */
     action: source.kind === 'elsewhere'
       ? undefined
-      : <PanelAction label="New conversation" onClick={start}><Icon name="plus" size="sm" /></PanelAction>,
+      : <PanelAction label="New conversation" onClick={start}><Icon name="chat" size="sm" /></PanelAction>,
+    startConversation: source.kind === 'elsewhere' ? undefined : start,
     drawer: (
       <Drawer
         open={open !== null || draftOpen}
         /* A draft has no name yet, and naming it after the words being typed
            would rename the drawer on every keystroke. */
-        title={open !== null ? conversationName(open) : draftOpen ? 'New conversation' : ''}
+        title={open !== null ? conversationName(open) : draftOpen ? 'Untitled' : ''}
+        mobileBackLabel={source.kind === 'card' ? 'Report' : 'Conversations'}
         onClose={closeDrawer}
         footer={draftOpen ? (
           <>
@@ -1362,8 +1366,31 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   cardRuntime: CardRuntime;
 }) {
   const waveMutations = useWaveMutations(transport, unauthorized);
+  const openMobileSection = useOpenMobileSection();
   const go = useGo();
+  const goSameWave = useGoSameWave();
+  const { openPanel, closePanel } = useWavePanelNavigation();
   const requestedCardId = useRouteCardId();
+  /*
+   * The URL is read, validated and turned into props **here**, in `app/**`:
+   * `features-no-app` is an error-level dependency-cruiser rule, so `WavePage`
+   * cannot reach the router at all and stays a pure renderer (#1191 §2.4).
+   *
+   * A live `?card=` wins over `?panel=`. The two describe one surface and
+   * `buildWaveSearch` already refuses to emit both, so this only decides what a
+   * hand-edited URL means — and it means the card, the older deep-linkable one.
+   */
+  const routePanel = useRoutePanel();
+  /* The one viewport question the application asks (§3.2); here it decides
+     whether `?panel=` describes anything at all — see the effect below. */
+  const compactViewport = useCompactViewport();
+  /*
+   * `?from=` is a property of *this* visit to the report, so every move that
+   * stays on this wave has to hand it back explicitly — `go` clears whatever it
+   * is not given (#1191 §1.3). Crossing to another wave drops it, because the
+   * return path belonged to the wave being left.
+   */
+  const routeFrom = useRouteFrom() ?? undefined;
   const cardRegistry = cardRuntime.registry;
   // `showWave: false` — on a wave's own page the wave's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
@@ -1466,8 +1493,33 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     && gridItems.some((item) => item.card.id === requestedCardId);
   useEffect(() => {
     if (requestedCardId === null || knownCard) return;
-    go({ name: 'wave', waveId: wave.id }, { replace: true });
-  }, [go, knownCard, requestedCardId, wave.id]);
+    // Bouncing an unopenable `?card=` must drop *only* that parameter: the
+    // panel, the return surface and the block anchor describe where the reader
+    // is, not which card they asked for. Clearing them here was a regression
+    // this route shipped with.
+    goSameWave(wave.id, { card: undefined }, { replace: true });
+  }, [goSameWave, knownCard, requestedCardId, wave.id]);
+  /*
+   * `?panel=` is a *compact* concept, and above the breakpoint it does not just
+   * sit there unused — it takes the desktop panel down with it.
+   *
+   * `WavePage` derives `mobilePanelOpen` from this prop alone and puts `inert` +
+   * `aria-hidden` on the desktop panel surface while it is open; on desktop the
+   * mobile list is `display: none`. A shared `?panel=cards` link opened on a
+   * laptop therefore rendered a panel that is fully visible and completely
+   * unreachable by keyboard or screen reader — nothing to see, nothing to fix
+   * from the page.
+   *
+   * Two halves, and neither is sufficient. The URL is corrected here so it stops
+   * describing a state this viewport cannot be in — a `replace`, because
+   * widening the window is not a place the reader can go Back to — and the
+   * *injection* below is gated on the viewport as well, because on a cold start
+   * this effect has not run yet when the first paint happens.
+   */
+  useEffect(() => {
+    if (compactViewport || routePanel === null) return;
+    goSameWave(wave.id, { panel: undefined }, { replace: true });
+  }, [compactViewport, goSameWave, routePanel, wave.id]);
   const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
@@ -1482,10 +1534,19 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   const openReportLink = (target: ReportLinkTarget) => {
     if (target.waveId === wave.id) {
       if (target.blockId !== null) revealReportAnchor(target.blockId);
-      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+      // Same wave: landing on a block is a move *within* the report, so the
+      // return surface survives and the panel closes (the document is now what
+      // the reader is looking at).
+      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined, from: routeFrom });
       return;
     }
+    // Another wave: a real navigation. Nothing carries over.
     go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+  };
+
+  const openReportAnchor = (blockId: string) => {
+    revealReportAnchor(blockId);
+    go({ name: 'wave', waveId: wave.id, blockId, from: routeFrom });
   };
 
   return (
@@ -1497,26 +1558,24 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
       /* Derived from the report's own blocks, so the panel and the document
          cannot disagree about what tasks exist. */
       tasks={tasks}
-      onOpenTask={(blockId) => {
-        /* The same landing the outline and every backlink use: scroll to the
-           block and flash it. The URL carries the anchor too, so the reader can
-           hand the link to somebody else. */
-        revealReportAnchor(blockId);
-        go({ name: 'wave', waveId: wave.id, blockId });
-      }}
+      outlineItems={outline}
+      /* Tasks and the mobile Outline share one anchor landing. The URL carries
+         it too, so the reader can hand the destination to somebody else. */
+      onOpenTask={openReportAnchor}
+      onOpenOutline={openReportAnchor}
       cardsAction={
         <PanelAction
           label="New terminal"
           onClick={() => {
             void waveMutations.createTerminal(wave.id, { theme: readHostThemeRgb() }).then((card) => {
-              go({ name: 'wave', waveId: wave.id, cardId: card.id });
+              go({ name: 'wave', waveId: wave.id, cardId: card.id, from: routeFrom });
             });
           }}
         >
           <Icon name="plus" />
         </PanelAction>
       }
-      onOpenCard={(cardId) => { go({ name: 'wave', waveId: wave.id, cardId }); }}
+      onOpenCard={(cardId) => { go({ name: 'wave', waveId: wave.id, cardId, from: routeFrom }); }}
       board={
         <CardGridOverlay
           open={knownCard}
@@ -1524,13 +1583,27 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           host={cardRuntime.host}
           activeCardId={requestedCardId}
           onClose={knownCard
-            ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
+            ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
             : undefined}
         />
       }
       onCloseBoard={knownCard
-        ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
+        ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
         : undefined}
+      /* Gated on the viewport, not only on the card: the effect above cannot
+         have run yet on a desktop cold start, and one render with the panel
+         "open" is one render with the desktop panel `inert`. */
+      panel={renderedMobilePanel(routePanel, { compact: compactViewport, cardOpen: requestedCardId !== null })}
+      onOpenPanel={(kind) => { openPanel(wave.id, kind); }}
+      onClosePanel={() => { closePanel(wave.id); }}
+      /* `?from=` is the whole memory of how the reader got here; absent means
+         Pages, which is the default this route shipped with (§1.2). The cove to
+         return to is the wave's own, not a stored restore id. */
+      mobileBackLabel={routeFrom === 'cove' ? 'Waves' : 'Pages'}
+      onMobileBack={() => {
+        if (routeFrom === 'cove') openMobileSection('coves', wave.coveId);
+        else openMobileSection('pages');
+      }}
       report={<ReportDocument
         report={report}
         rail={<ReportOutline items={outline} />}
@@ -1550,12 +1623,17 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           <ReportBacklinks
             waveId={wave.id}
             backlinks={backlinks}
-            onOpen={(waveId, blockId) => { go({ name: 'wave', waveId, blockId }); }}
+            onOpen={(waveId, blockId) => {
+              // Same wave keeps the return surface; a backlink into another wave
+              // is a departure and carries nothing.
+              go({ name: 'wave', waveId, blockId, from: waveId === wave.id ? routeFrom : undefined });
+            }}
           />
         )
         : undefined}
       conversationList={chat.list}
       conversationAction={chat.action}
+      onStartConversation={chat.startConversation}
       onRenameWave={(title) => waveMutations.patch(wave.id, wave.coveId, { title }).then(() => undefined)}
       onDeleteWave={(signal) => waveMutations.remove(wave.id, wave.coveId, signal).then(() => {
         if (signal.aborted) return;

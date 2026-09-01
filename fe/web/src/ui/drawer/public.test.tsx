@@ -13,6 +13,7 @@ function open(props: Partial<Parameters<typeof Drawer>[0]> = {}) {
     <Drawer
       open={props.open ?? true}
       title={props.title ?? 'Why the resolver drops a hop'}
+      mobileBackLabel={props.mobileBackLabel}
       onClose={props.onClose ?? vi.fn()}
       footer={props.footer}
     >
@@ -86,6 +87,25 @@ describe('Drawer', () => {
     expect(close.textContent).not.toContain('›');
     close.click();
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('uses the standard compact Header with Back on the left', () => {
+    const onClose = vi.fn();
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })));
+    try {
+      open({ title: 'Untitled', mobileBackLabel: 'Report', onClose });
+      expect(screen.getByRole('heading', { name: 'Untitled' })).toBeTruthy();
+      const back = screen.getByRole('button', { name: 'Back to Report' });
+      expect(screen.queryByRole('button', { name: 'Close conversation' })).toBeNull();
+      back.click();
+      expect(onClose).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('puts the footer outside the scrolling body', () => {

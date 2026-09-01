@@ -32,7 +32,11 @@ test('persists network and appearance settings across reloads', async ({ page, r
   await page.goto('/next/settings');
   await page.getByLabel('HTTP proxy').fill(proxy);
   await page.getByRole('button', { name: 'Save', exact: true }).click();
-  await expect(page.getByRole('status')).toHaveText('Saved.');
+  // Located by its own anchor, not by `role="status"`: each Astryx `Button`
+  // ships an unconditional empty live region with that role, so the role alone
+  // resolves to three elements here. Filtering them by 'Saved.' would make the
+  // locator and the assertion the same claim; the anchor keeps them separate.
+  await expect(page.locator('[data-nc-settings-saved]')).toHaveText('Saved.');
   expect(await readHttpProxy(request)).toBe(proxy);
 
   await page.reload();

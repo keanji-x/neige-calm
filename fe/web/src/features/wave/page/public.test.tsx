@@ -9,6 +9,11 @@ import { card, renderPage, wave } from './test-fixtures.tsx';
 
 afterEach(cleanup);
 
+async function openCards(): Promise<void> {
+  await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+  await userEvent.click(screen.getByRole('menuitem', { name: 'Cards' }));
+}
+
 describe('WavePage header', () => {
   it('shows the wave title and the lifecycle badge', () => {
     renderPage({ wave: wave({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
@@ -96,7 +101,7 @@ describe('WavePage task inventory', () => {
   it('has no Folder module: nobody chooses a wave cwd any more', () => {
     renderPage({ tasks: [] });
     expect(screen.queryByText('Folder')).toBeNull();
-    expect(screen.getByText('Tasks')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
   });
 
   it('says no tasks are declared yet when the report has none', () => {
@@ -317,6 +322,99 @@ describe('WavePage task inventory', () => {
 });
 
 describe('WavePage card inventory', () => {
+  it('separates Cards, Tasks, and Delete in the Wave actions menu', async () => {
+    const onOpenTask = vi.fn();
+    renderPage({
+      tasks: [{
+        blockId: 'task-1', key: 'mobile-layout', state: 'ready', declaration: null,
+        status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+      }],
+      onOpenTask,
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Cards' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Tasks' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Conversations' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Delete wave' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Tasks' }));
+    expect(screen.getByRole('heading', { name: 'Tasks' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Cards' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'mobile-layout' }));
+    expect(onOpenTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('moves the mobile Outline into its own list and returns to the selected report anchor', async () => {
+    const onOpenOutline = vi.fn();
+    renderPage({
+      outlineItems: [{
+        blockId: 'section-1', label: 'What changed', number: 1,
+        children: [{ blockId: 'benchmark', label: 'Read path benchmark' }],
+      }],
+      onOpenOutline,
+    });
+    await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Outline' }));
+    expect(screen.getByRole('heading', { name: 'Outline' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Read path benchmark' }));
+    expect(onOpenOutline).toHaveBeenCalledWith('benchmark');
+    /*
+     * The panel closes because the anchor navigation drops `?panel=` (#1191
+     * §1.4) — one move, not a local flag plus a navigation. The page is a pure
+     * renderer of `panel`, so the closing is asserted where the URL is real:
+     * `app/router/mobile-report-navigation.test.tsx`.
+     */
+  });
+
+  it('keeps quick Chat floating on Report and leaves Conversations as history only', async () => {
+    const onQuickChat = vi.fn();
+    renderPage({
+      conversationList: <button type="button">Previous conversation</button>,
+      conversationAction: <button type="button" aria-label="New conversation" onClick={onQuickChat}>Chat</button>,
+      onStartConversation: onQuickChat,
+    });
+    const reportChat = document.querySelector<HTMLButtonElement>('[data-nc-mobile-report-chat]');
+    expect(reportChat).toBeTruthy();
+    expect(reportChat?.textContent).toBe('Chat');
+    await userEvent.click(reportChat!);
+    expect(onQuickChat).toHaveBeenCalledOnce();
+    await userEvent.click(screen.getByRole('button', { name: 'Wave actions' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Conversations' }));
+    expect(screen.getByRole('heading', { name: 'Conversations' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Previous conversation' })).toBeTruthy();
+    expect(document.querySelector('[data-nc-mobile-report-chat]')).toBeNull();
+  });
+
+  it('treats the compact inventory as a pushed page with an explicit return to Report', async () => {
+    const { container } = renderPage({ cards: [card({ id: 'k1', title: 'Build log' })] });
+    const panel = container.querySelector('[data-nc-mobile-page]');
+    expect(panel?.getAttribute('data-nc-mobile-page')).toBe('closed');
+
+    await openCards();
+    expect(panel?.getAttribute('data-nc-mobile-page')).toBe('open');
+    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
+    expect(panel?.getAttribute('data-nc-mobile-page')).toBe('closed');
+  });
+
+  /*
+   * The shell used to reach in through a `window` event to shut this panel.
+   * It is a prop now: whoever owns the URL takes `?panel=` away, and the page
+   * renders what it is given — including a POP the reader triggered with the
+   * hardware Back button, which no event bus could have delivered.
+   */
+  it('renders whatever panel it is handed, and closes when that becomes null', () => {
+    const props = {
+      wave: wave(), cards: [card({ id: 'k1', title: 'Build log' })], tasks: [],
+      onRenameWave: vi.fn(), onDeleteWave: vi.fn(),
+    };
+    const { container, rerender } = render(<WavePage {...props} panel="cards" />);
+    expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
+    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+    rerender(<WavePage {...props} panel={null} />);
+    expect(container.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
+  });
+
   // §5.3 caps an empty state at one short sentence, so the old
   // "This wave has no cards yet" became "No cards yet." The assertion is on the
   // rendered string because that string *is* the contract here.
@@ -351,6 +449,21 @@ describe('WavePage card inventory', () => {
     });
     await userEvent.click(screen.getByRole('button', { name: /^Build log/ }));
     expect(onOpenCard).toHaveBeenCalledWith('k1');
+  });
+
+  it('opens a mobile Card detail page without entering Grid', async () => {
+    const onOpenCard = vi.fn();
+    renderPage({ cards: [card({ id: 'k1', title: 'Build log' })], onOpenCard });
+    await openCards();
+    const cardRow = screen.getByRole('button', { name: 'Build log' });
+    await userEvent.click(cardRow);
+    expect(onOpenCard).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
+    expect(screen.getByRole('heading', { name: 'Build log' })).toBeTruthy();
+    expect(screen.getByText('Card ID').nextElementSibling?.textContent).toBe('k1');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Back to Cards' }));
+    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
   });
 
   it('falls back to the kind when a card has no title', () => {

@@ -1,0 +1,28 @@
+@layer features {
+  .groups {
+    align-self: flex-start;
+    border-radius: var(--radius-pill) !important;
+  }
+
+  .groups [role='radio'] {
+    min-block-size: var(--control-h);
+    padding-inline: var(--space-4) !important;
+    border-radius: var(--radius-pill) !important;
+    font-size: var(--text-xs) !important;
+    font-weight: var(--weight-normal) !important;
+  }
+
+  .coveInitial {
+    display: grid;
+    place-items: center;
+    inline-size: var(--row-h-sm);
+    block-size: var(--row-h-sm);
+    border: 1px solid var(--hairline-strong);
+    border-radius: var(--radius-pill);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-none);
+    color: var(--text-3);
+  }
+}

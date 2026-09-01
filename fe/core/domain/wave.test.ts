@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   activeWavesOn, isRunning, isWaitingForUser, lifecycleLabel, toWave,
   NEUTRAL_ACTIVITY, UNTITLED_WAVE_LABEL, waveDisplayTitle, waveLifecycleSchema, waveWireSchema, wavesInCoveOperation,
+  userVisibleWaves,
   type Wave,
 } from './wave.js';
+import type { Cove } from './cove.js';
 
 const baseWire = {
   id: 'w1', cove_id: 'c1', title: 'Ship it', sort: 1,
@@ -124,5 +126,29 @@ describe('activeWavesOn', () => {
     const list = [wave({ id: 'b', createdAt: dayStart + 2 }), wave({ id: 'a', createdAt: dayStart + 1 })];
     activeWavesOn(list, day, now);
     expect(list.map((w) => w.id)).toEqual(['b', 'a']);
+  });
+});
+
+describe('userVisibleWaves', () => {
+  const userCove: Cove = {
+    id: 'c1', name: 'Work', color: '#123456', sort: 1, kind: 'user', createdAt: 0, updatedAt: 0,
+  };
+  const systemCove: Cove = {
+    id: 'sys', name: 'Kernel', color: '#000000', sort: 0, kind: 'system', createdAt: 0, updatedAt: 0,
+  };
+  const mine = wave({ id: 'w1', coveId: 'c1' });
+  const scaffolding = wave({ id: 'w-sys', coveId: 'sys' });
+  const archived = wave({ id: 'w2', coveId: 'c1', archivedAt: 1 });
+
+  it('[E2E-INV-SHELL-003] drops waves hosted by the system cove', () => {
+    // The wave itself is perfectly ordinary — not archived, user-shaped. Only
+    // its cove disqualifies it, which is the case `visibleWaves` alone misses.
+    expect(userVisibleWaves([mine, scaffolding], [userCove, systemCove]).map((w) => w.id))
+      .toEqual(['w1']);
+  });
+
+  it('drops archived waves and waves whose cove is absent from the list', () => {
+    expect(userVisibleWaves([mine, archived], [userCove]).map((w) => w.id)).toEqual(['w1']);
+    expect(userVisibleWaves([mine], [])).toEqual([]);
   });
 });

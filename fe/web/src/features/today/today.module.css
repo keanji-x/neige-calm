@@ -1,4 +1,22 @@
 @layer features {
+  .mobileToday {
+    display: flex;
+    flex: 1 1 auto;
+    min-block-size: 0;
+    flex-direction: column;
+    gap: var(--space-8);
+    overflow: auto;
+    padding: 0 var(--space-8) var(--space-8);
+    background: var(--bg);
+  }
+
+  @media (width < 60rem) {
+    .mobileToday button {
+      min-inline-size: var(--rail-w-collapsed);
+      min-block-size: var(--rail-w-collapsed);
+    }
+  }
+
   .page {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
