@@ -617,6 +617,18 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
         path,
         "the stored path must be unchanged after a refusal"
     );
+    // …and no claim was minted. The fence transaction COMMITS (it is also what
+    // supersedes the runtimes), so its claim pass has to be scan-only: a row
+    // written there would outlive this refusal and leave the caller a 409 plus
+    // a `cove_folders` claim they never got a wave for.
+    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cove_folders")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(
+        claims, 0,
+        "a refusal after the fence must leave no folder claim behind"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1288,9 +1300,41 @@ async fn leaving_draft_freezes_the_workspace_and_the_change_is_refused() {
         "once a wave is past Draft the scheduler, the forge and every worker \
          treat the path as given, so it must be frozen"
     );
+
+    let active_before: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+    )
+    .bind(&wave)
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        !active_before.is_empty(),
+        "premise: the wave has a live spec harness"
+    );
+
     let (status, body) = repoint(&b, &wave).await;
     assert_eq!(status, StatusCode::CONFLICT, "body={body}");
     assert!(trash_entries(&b.workspace_root).is_empty());
+
+    // The route checks `frozen_at` in the fence transaction, BEFORE the
+    // supersede. `wave_workspace_write_tx`'s latch would refuse this write
+    // anyway — that is the durable guarantee — but only after the harness has
+    // been torn down and restarted. Two layers, and this is what the outer one
+    // buys: a wave that was never going to move does not lose its agent.
+    let active_after: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+    )
+    .bind(&wave)
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        active_after, active_before,
+        "a frozen wave's re-point must be refused without disturbing its harness"
+    );
 }
 
 /// Freeze point 1: the first workspace lease, taken through the production

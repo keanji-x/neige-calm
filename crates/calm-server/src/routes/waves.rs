@@ -1053,6 +1053,27 @@ impl FolderClaimIntent {
     }
 }
 
+/// #1147 S3 — whether this pass may actually mint a `cove_folders` row.
+///
+/// The re-point runs the claim rules **twice**, and the first pass must not
+/// write. Its transaction commits (it is also the fence), so a claim minted
+/// there survives a later refusal — and the re-point can still refuse after it,
+/// on the pre-move re-check. That would leave the caller a 409 plus a claim
+/// they never got a wave for, in a route whose whole promise is "a refusal
+/// changes nothing".
+///
+/// Measured, not reasoned about: with the first pass allowed to mint, deleting
+/// the authoritative second pass turned **no test red** — because the claim was
+/// already in the table. That is what surfaced this.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FolderClaimPass {
+    /// Report the same conflicts, write nothing. Fail-fast only.
+    ScanOnly,
+    /// Report conflicts AND mint the claim. Must share a transaction with the
+    /// write it authorises.
+    Authoritative,
+}
+
 /// Issue #275's claim rules, in one place.
 ///
 /// Extracted verbatim from `create_wave_structure` by #1147 S3 so that pointing
@@ -1069,6 +1090,7 @@ async fn enforce_folder_claim_tx(
     cove_id: &str,
     normalized_cwd: &str,
     intent: FolderClaimIntent,
+    pass: FolderClaimPass,
 ) -> Result<()> {
     let FolderClaim::Enforce { attach, conflict } = claim else {
         return Ok(());
@@ -1116,7 +1138,9 @@ async fn enforce_folder_claim_tx(
                     conflict_kind: FolderConflictKind::Ancestor,
                 }));
             }
-            cove_folder_create_tx(tx, cove_id, normalized_cwd).await?;
+            if pass == FolderClaimPass::Authoritative {
+                cove_folder_create_tx(tx, cove_id, normalized_cwd).await?;
+            }
             Ok(())
         }
         // Nothing covers the cwd and the caller didn't opt in to attach.
@@ -1367,6 +1391,7 @@ async fn create_wave_structure(
                     &cove_id_for_attach,
                     &normalized_cwd_for_tx,
                     FolderClaimIntent::Create,
+                    FolderClaimPass::Authoritative,
                 )
                 .await?;
 
@@ -2161,13 +2186,20 @@ async fn repoint_wave_workspace(
                     verdict.conflict_message(std::path::Path::new(&old_workspace.path)),
                 ));
             }
-            // Fail fast on the claim rules. NOT authoritative — the write
-            // transaction runs the same check again, because this one is
-            // rolled back and a concurrent request can mint a claim in
-            // between. Running it here means the common conflict is answered
-            // before the harness is torn down.
-            enforce_folder_claim_tx(tx, &claim, &cove_id, &new_path, FolderClaimIntent::Repoint)
-                .await?;
+            // Fail fast on the claim rules, WITHOUT minting anything: this
+            // transaction commits (it is also the fence), so a row written
+            // here would survive a later refusal. The write transaction runs
+            // the same rules authoritatively. Running them here as well means
+            // the common conflict is answered before the harness is torn down.
+            enforce_folder_claim_tx(
+                tx,
+                &claim,
+                &cove_id,
+                &new_path,
+                FolderClaimIntent::Repoint,
+                FolderClaimPass::ScanOnly,
+            )
+            .await?;
             // THE FENCE. Every active runtime of this wave, not just the spec
             // harness: "no new turn may acquire the old path" is a statement
             // about the wave, and a rule with one named exception is the shape
@@ -2261,6 +2293,7 @@ async fn repoint_wave_workspace(
                     &cove_id,
                     &workspace.path,
                     FolderClaimIntent::Repoint,
+                    FolderClaimPass::Authoritative,
                 )
                 .await?;
                 crate::db::sqlite::wave_workspace_write_tx(tx, &wave_id, &workspace).await?;

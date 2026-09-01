@@ -200,11 +200,21 @@ S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「�
 而「任意路径至多被一条 claim 覆盖」这条不变量经不起两套实现。冲突返回**结构化 409**
 （`FolderConflict`，含 `folder_id` / `cove_id` / `conflict_kind`），与创建路径同一个 body。
 
-认领被查两遍，两遍作用不同，别当成重复：**栅栏事务里那遍在 supersede 之前**，
-所以一个本来就不会被接受的目标不会让用户白白丢掉正在跑的 agent（有测试：
-`a_directory_claimed_by_another_cove_is_a_structured_conflict` 断言活跃 runtime 前后不变）；
-**写事务里那遍才是权威的**，与工作区写入共享同一个 `BEGIN IMMEDIATE`，因为前一遍已经回滚，
-并发请求可以在两者之间抢走 claim。
+认领被查两遍，两遍作用不同，别当成重复：
+
+* **栅栏事务里那遍是 `ScanOnly`，且在 supersede 之前** —— 报同样的冲突，但**一行都不写**。
+  它买到的是「一个本来就不会被接受的目标，不让用户白白丢掉正在跑的 agent」
+  （`a_directory_claimed_by_another_cove_is_a_structured_conflict` 断言活跃 runtime 前后不变）。
+  必须 `ScanOnly`：这个事务**会提交**（它同时也是栅栏），在这里写下的 claim 会活过之后的拒绝
+  ——而重指在它之后还可能因为「移动前重检」而 409，那就会给调用方留下「409 + 一条没有对应
+  wave 的 claim」，恰好违背这条路由的全部承诺。
+* **写事务里那遍是 `Authoritative`**，与工作区写入共享同一个 `BEGIN IMMEDIATE`：前一遍已经回滚，
+  并发请求可以在两者之间抢走 claim。
+
+这条区分是**变异实测逼出来的**，不是推出来的：第一遍允许铸 claim 时，删掉权威的第二遍
+**零测试变红**——因为 claim 早就落库了。现在两遍各有单违规 fixture
+（第二遍：`a_pristine_wave_is_pointed_at_the_users_repository` 的 claim 断言；
+`ScanOnly`：`a_write_between_the_fence_and_the_move_is_refused` 断言拒绝后 `cove_folders` 为空）。
 
 **三步执行，缺一不可。** SQLite 事务对文件系统零隔离，「事务内查一次」关不掉检查与
 移动之间的窗口：spec harness 从第一条消息起就是 `workspace-write` 且此刻**刻意
