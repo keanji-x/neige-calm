@@ -32,6 +32,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::support::mcp::set_persisted_card_role;
 use calm_server::card_role_cache::CardRoleCache;
 use calm_server::db::RepoEventWrite;
 use calm_server::db::prelude::*;
@@ -55,6 +56,11 @@ use calm_types::worker::{
 use serde_json::{Value, json};
 
 const SPEC_SESSION_ID: &str = "spec-session";
+/// #1189 — the assistant's session is deliberately NOT the wave root, and
+/// it is bound to its own `CardRole::Assistant` card. Both facts are what
+/// the S2 recorder criterion actually reads.
+pub(crate) const ASSISTANT_SESSION_ID: &str = "assistant-session";
+pub(crate) const WORKER_SESSION_ID: &str = "worker-session";
 
 /// In-memory fixture: one cove → one wave → one spec card + one
 /// wave-report card + one worker card. Mirrors the post-`create_wave`
@@ -69,6 +75,7 @@ pub(crate) struct Boot {
     pub(crate) spec_card_id: CardId,
     pub(crate) report_card_id: CardId,
     pub(crate) worker_card_id: CardId,
+    pub(crate) assistant_card_id: CardId,
 }
 
 fn planner_session(id: &str, wave_id: WaveId, card_id: CardId) -> WorkerSession {
@@ -123,6 +130,38 @@ async fn seed_wave_root_session(
     })
     .await
     .expect("seed wave root session");
+}
+
+/// A live, card-bound, non-root session row. The recorder gate resolves
+/// session → card → {role, wave} against these rows, so a test identity
+/// without one is denied before any of the S2 behaviour is reached.
+///
+/// Contract is `Executor`, not `Planner`, and that is load-bearing:
+/// `session_mirror.rs:266-270` repoints `waves.root_session_id` at *any*
+/// session whose `contract == Planner` and whose state is an active
+/// authority. A Planner-contract session on the assistant card would
+/// therefore steal the wave root from the spec card the moment it went live
+/// — a shape that never occurs in production and that would make these tests
+/// a false reference for S3. Matches `frozen_gate_vectors_transport.rs`,
+/// which seeds its assistant sessions the same way.
+async fn seed_non_root_session(
+    repo: &dyn RepoEventWrite,
+    wave_id: &WaveId,
+    card_id: &CardId,
+    session_id: &str,
+) {
+    let mut session = planner_session(session_id, wave_id.clone(), card_id.clone());
+    session.contract = WorkerContract::Executor;
+    calm_server::db::write_in_tx_typed(repo, move |tx| {
+        Box::pin(async move {
+            session_insert_tx(tx, session)
+                .await
+                .map_err(CalmError::from)?;
+            Ok(())
+        })
+    })
+    .await
+    .expect("seed non-root session");
 }
 
 pub(crate) async fn boot() -> Boot {
@@ -197,11 +236,42 @@ pub(crate) async fn boot() -> Boot {
         })
         .await
         .unwrap();
+    let assistant_card = repo
+        .card_create(NewCard {
+            wave_id: wave.id.clone(),
+            title: None,
+            kind: "codex".into(),
+            sort: None,
+            payload: Value::Null,
+        })
+        .await
+        .unwrap();
+    set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec).await;
+    set_persisted_card_role(
+        repo.as_ref(),
+        assistant_card.id.as_str(),
+        CardRole::Assistant,
+    )
+    .await;
+    set_persisted_card_role(repo.as_ref(), worker_card.id.as_str(), CardRole::Worker).await;
     seed_wave_root_session(repo.as_ref(), &wave.id, &spec_card.id, SPEC_SESSION_ID).await;
+    seed_non_root_session(
+        repo.as_ref(),
+        &wave.id,
+        &assistant_card.id,
+        ASSISTANT_SESSION_ID,
+    )
+    .await;
+    seed_non_root_session(repo.as_ref(), &wave.id, &worker_card.id, WORKER_SESSION_ID).await;
 
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    card_role_cache.insert(
+        assistant_card.id.clone(),
+        CardRole::Assistant,
+        wave.id.clone(),
+    );
     card_role_cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
@@ -238,6 +308,7 @@ pub(crate) async fn boot() -> Boot {
         spec_card_id: spec_card.id,
         report_card_id: report_card.id,
         worker_card_id: worker_card.id,
+        assistant_card_id: assistant_card.id,
     }
 }
 
@@ -276,12 +347,26 @@ pub(crate) fn spec_identity(boot: &Boot) -> ToolCallIdentity {
     }
 }
 
+/// #1189 — an `CardRole::Assistant` caller on this wave: its own card, its
+/// own non-root session.
+pub(crate) fn assistant_identity(boot: &Boot) -> ToolCallIdentity {
+    ToolCallIdentity {
+        card_id: boot.assistant_card_id.as_str().to_string(),
+        role: CardRole::Assistant,
+        provider: AgentProvider::Codex,
+        session_id: ASSISTANT_SESSION_ID.to_string(),
+        wave_id: Some(boot.wave_id.as_str().to_string()),
+        cove_id: boot.cove_id.as_str().to_string(),
+        thread_id: "assistant-thread".to_string(),
+    }
+}
+
 pub(crate) fn worker_identity(boot: &Boot) -> ToolCallIdentity {
     ToolCallIdentity {
         card_id: boot.worker_card_id.as_str().to_string(),
         role: CardRole::Worker,
         provider: AgentProvider::Codex,
-        session_id: "worker-session".to_string(),
+        session_id: WORKER_SESSION_ID.to_string(),
         wave_id: Some(boot.wave_id.as_str().to_string()),
         cove_id: boot.cove_id.as_str().to_string(),
         thread_id: "worker-thread".to_string(),
@@ -1736,6 +1821,7 @@ async fn spec_from_different_wave_cannot_reach_this_wave_report() {
         })
         .await
         .unwrap();
+    set_persisted_card_role(boot.repo.as_ref(), spec2.id.as_str(), CardRole::Spec).await;
     seed_wave_root_session(boot.repo.as_ref(), &wave2.id, &spec2.id, "spec2-session").await;
     boot.ctx
         .write

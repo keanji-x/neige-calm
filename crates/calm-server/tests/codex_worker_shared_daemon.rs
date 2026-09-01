@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -167,6 +169,8 @@ async fn boot(start_shared: bool) -> Boot {
     let cache = CardRoleCache::new();
     repo.seed_card_role_cache(&cache).await.unwrap();
     cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    support::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec)
+        .await;
     cache.insert(
         report_card.id.clone(),
         CardRole::ReportCard,
