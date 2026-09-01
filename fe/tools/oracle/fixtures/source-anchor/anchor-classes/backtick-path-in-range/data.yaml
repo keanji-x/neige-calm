@@ -1,0 +1,13 @@
+- id: "INV-TEST-016"
+  kind: "invariant"
+  family: "fixture"
+  statement: '升级失败时必须探测 `/api/auth/whoami`'
+  source: "anchor-display-copy.ts:5"
+  why: "Anchor-class fixture"
+  authoritative_test: "NONE"
+  owner_slice: "styles/global"
+  intentional_omission: false
+  runtime_layer: "styles"
+  verification_owner: "unit"
+  test_tier: "static"
+  migration: "pending"

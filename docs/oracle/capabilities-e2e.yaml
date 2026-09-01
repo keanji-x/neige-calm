@@ -342,10 +342,22 @@
     `/dev/reset` and every other `/dev/*` hook must be mounted ONLY by the `replay --serve`
     binary, never by production calm-server.
   why: >
-    helpers/reset.ts:16-17 — dev-only by design doc §6.3; these endpoints bypass the actor /
-    lifecycle authorization surface.
-  source: web/e2e/helpers/reset.ts:16-17
-  authoritative_test: web/e2e/helpers/reset.ts:31
+    Dev-only by design doc §6.3; these endpoints bypass the actor / lifecycle authorization
+    surface. The carrier is Rust: `replay.rs` builds the `/dev/*` sub-router inline and merges it
+    only into the `--serve` router, so production `calm-server` (`main.rs`) has no code path that
+    can mount it. The former citation, helpers/reset.ts:31-33, only *calls* the endpoint — it
+    cannot witness who mounts it, which is the whole claim. Rust carries no TS/CSS anchor, so the
+    entry is registered in anchor-unsupported.yaml; authoritative_test is NONE because nothing
+    asserts the negative today (it is an architectural fact of where the router is built).
+    #1148 第二轮：原来只登记了 dev_routes 的构造，而 statement 的关键词是 ONLY。现在四段合起来
+    才让这个词有证据 —— 130-159 是 `--assert` 提前 return、其余路径才进 `run_serve` 的门控，
+    241-245 是 `/dev/*` 三条路由的构造，277-284 是它被 merge 进 `--serve` 的 router 的唯一一处，
+    main.rs:185-192 是生产 router 的全部 merge 面（其中没有 dev_routes）。#1148 第三轮：再补
+    112-115 —— `--serve`/`--assert` 二选一的前置门控（缺任一即 exit 2），是「只有 replay --serve
+    这条路径能走到挂载点」的入口证据，此前未登记。
+  source: crates/calm-server/src/bin/replay.rs:112-115,130-159,226-245,277-284
+    crates/calm-server/src/main.rs:185-192
+  authoritative_test: NONE
   owner_slice: none/e2e/infra
   intentional_omission: true
   runtime_layer: none
@@ -378,12 +390,29 @@
   kind: invariant
   family: seed-helpers
   statement: >
-    `POST /api/waves` requires both `cwd` and `theme`; a body missing `theme` is rejected 422.
+    The shared seed helper `createWaveInCove` posts every wave it mints through one body
+    literal — `cove_id`, `title`, `cwd`, `attach_folder`, and an inert dark theme sentinel —
+    so every caller of this helper sends exactly that key set, and no caller can vary it.
   why: >
-    helpers/reset.ts:95-104 — #250 PR2 made cwd required; #177 made `theme` required
-    end-to-end. Every wave-creating fixture in the suite carries an inert dark sentinel.
-  source: web/e2e/helpers/reset.ts:105-114
-  authoritative_test: web/e2e/helpers/reset.ts:105
+    #250 PR2 put cwd into this body (since #1131 the server takes it as optional); #177 made
+    theme required end-to-end. Funnelling this helper's
+    callers through one literal is what keeps the shared seed path from drifting away from the
+    server's accepted body. Scope is exactly this helper: specs that inline their own
+    `POST /api/waves` body (terminal-clean-exit, wheel-mode-edge, new-terminal-card and others)
+    do not go through it, and this entry does not claim anything about them. The server-side
+    contract itself (a body missing theme is rejected 422) is
+    a Rust-side fact proven by crates/calm-server/tests/cases/theme_required.rs and has no
+    oracle entry of its own; this entry deliberately does not claim it, because nothing in
+    the cited TypeScript can witness a rejection.
+    #1148 第三轮:两处据实收口。(a) 原 `authoritative_test` 指的 reset.ts:105 是 helper 自己的
+    `request.post`,既不是 `it` 也没有断言,按 SCHEMA.md:15「无测试写 NONE」改为 NONE。
+    (b) statement 原来枚举 `cove_id`/`cwd`/`attach_folder`/theme 四个键、并声称「no caller can
+    seed a wave that omits a field the kernel requires」,两头都不准:`title`(reset.ts:108 实际有传)
+    是服务端必填却没被枚举,而 `cwd` 自 #1131 起在 `crates/calm-server/src/routes/waves.rs:195-214`
+    是 `Option<String>`(可选)。现在枚举补上 `title`,并把断言收回到本条真正的载体 —— helper body
+    字面量的形状本身;kernel 的必填集是服务端契约,这段 TypeScript 见证不了,另开 issue 立条目。
+  source: web/e2e/helpers/reset.ts:88-93,101-112
+  authoritative_test: NONE
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -891,12 +920,12 @@
   kind: capability
   family: routing
   statement: >
-    The router must run under `basepath: '/calm'`, so the Today index route surfaces in the
-    browser URL as `/calm/` with no `/today` suffix.
+    The router must be created with `basepath` set to `/calm`, so the Today index route surfaces
+    in the browser URL as `/calm/` with no `/today` suffix.
   why: >
     a11y-wave-cove-ops.spec.ts:901-904 — the cove-delete handler navigates `go({name:'today'})`
     and the assertion has to match `/calm/(\?|$)`.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:896-908
+  source: web/src/app/router.tsx:153-161 web/e2e/a11y-wave-cove-ops.spec.ts:896-908
   authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:908
   owner_slice: app/router
   intentional_omission: false
@@ -965,7 +994,7 @@
   kind: capability
   family: user-menu
   statement: >
-    The sidebar must expose an avatar trigger with accessible name `Open user menu`; Enter
+    The sidebar must expose an avatar trigger with accessible name "Open user menu"; Enter
     opens a menu whose FIRST item is Settings, and Enter again routes to `/calm/settings`.
   why: >
     a11y-keyboard.spec.ts:851-858 — two Enters from the trigger is the documented keyboard
@@ -1438,8 +1467,9 @@
   kind: invariant
   family: cove-resolve
   statement: >
-    A sibling-prefix path that is NOT a filesystem descendant (`/work/repository` vs a
-    `/work/repo` claim) must MISS — both at the exact level and deeper.
+    A sibling-prefix path that is NOT a filesystem descendant (`siblingPrefix`, e.g.
+    /work-1700000000/repository, against a `claim` of /work-1700000000/repo) must MISS —
+    both at the exact level and deeper.
   why: >
     a11y-cwd-resolve.spec.ts:234-245 — dedicated regression guard for the `/`-boundary check;
     the failure mode silently swallows a whole sibling project into the wrong cove.
@@ -1758,11 +1788,15 @@
   kind: capability
   family: card-create
   statement: >
-    Activating the `terminal` menuitem must create a card immediately with no modal (zero
-    config) and persist a `kind: terminal` card row on the wave.
+    Activating the terminal menuitem must create a card immediately with no modal (zero config)
+    and persist a terminal card row on the wave — the spec polls `/api/waves` for that wave until
+    `containsTerminalCard` holds, so a UI-only success does not satisfy this.
   why: >
     a11y-keyboard.spec.ts:360-414 — terminal has no createSchema; the poll against
     `GET /api/waves/:id` proves keyboard activation reached the kernel, not just the UI.
+    #1148 A0 made `terminal` a stop word (it names a whole subsystem, so hitting it proves
+    nothing), which left this statement with no anchor at all; the poll's two real carriers
+    now do the anchoring.
   source: web/e2e/a11y-keyboard.spec.ts:386-414
   authoritative_test: web/e2e/a11y-keyboard.spec.ts:360
   owner_slice: systems/terminal/card
@@ -4056,11 +4090,18 @@
   kind: capability
   family: exit-badge
   statement: >
-    The exit badge must also cover signal and non-zero exits (`exit 137`, `signal`), not only
-    `exit 0`.
-  why: terminal-clean-exit.spec.ts:12-15 (#306) — the badge carries the full exit disposition.
-  source: web/e2e/terminal-clean-exit.spec.ts:10-15
-  authoritative_test: web/e2e/terminal-clean-exit.spec.ts:126
+    The exit badge must also cover signal and non-zero exits (`exit 137`, `signal_killed`), not
+    only `exit 0`.
+  why: >
+    #306 — the badge carries the full exit disposition: `badgeLabel` renders "signal" when
+    `signal_killed`, and `badgeKind` splits non-zero codes into the user-abort palette (130/141)
+    and the error palette. TEST GAP, recorded rather than papered over: nothing in the suite
+    asserts either branch. The only badge e2e (terminal-clean-exit.spec.ts:120-127) asserts
+    `exit 0` plus the success palette, i.e. exactly the case this statement says is not enough,
+    so citing it as the authoritative test would be circular. authoritative_test is NONE until a
+    test covers the signal / non-zero branches.
+  source: web/src/shared/components/CardExitBadge.tsx:22-25,46-72
+  authoritative_test: NONE
   owner_slice: systems/terminal/card
   intentional_omission: false
   runtime_layer: systems
@@ -4733,7 +4774,7 @@
   why: >
     wheel-wave-switch.spec.ts:92-95 — a real environment constraint that silently produces an
     empty terminal instead of a failure.
-  source: web/e2e/wheel-wave-switch.spec.ts:92-96
+  source: web/e2e/wheel-wave-switch.spec.ts:92-100
   authoritative_test: web/e2e/wheel-wave-switch.spec.ts:98
   owner_slice: none/e2e/infra
   intentional_omission: false

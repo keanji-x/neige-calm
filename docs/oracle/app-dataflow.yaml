@@ -893,7 +893,7 @@
     issue #189：axum 中间件把未认证的 upgrade 变成普通 HTTP 401，浏览器表现为
     "close 而无先前 open"。只有这一种形态才可能是 401 cookie 失效，需要走 unauthorized 流程；
     活连接掉线是网络问题，探测只会制造噪声。
-  source: web/src/api/events.ts:313-359
+  source: web/src/api/events.ts:313-359,558-566
   authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
   owner_slice: systems/events-transport/stream
   intentional_omission: false
