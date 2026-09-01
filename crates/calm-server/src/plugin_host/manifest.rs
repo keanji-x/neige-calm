@@ -268,6 +268,34 @@ impl McpHttpBlock {
 pub const CLI_QUERY_DEFAULT_TIMEOUT_MS: u64 = 20_000;
 pub const CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES: usize = 32_768;
 
+/// Ceiling on the effective `cli_query.max_output_bytes` (#1164 P3 r2 G1).
+///
+/// **Why a ceiling at all.** Without one the value was unbounded, and
+/// `usize::MAX` loaded — which made `cap + 1` in the capture path overflow: a
+/// debug panic, and in release a wrap to `take(0)` that returned an EMPTY
+/// stdout with `is_error: false`, i.e. silent data loss. The arithmetic is now
+/// saturating regardless, but a manifest that can ask for an unbounded answer
+/// is a memory bound nobody can reason about.
+///
+/// **Why 8 MiB.** This is ONE tool call's stdout, held whole in memory and then
+/// embedded in a JSON text block (which roughly doubles it) on its way to the
+/// agent — and an agent has to read it. Real query answers are kilobytes; the
+/// default is 32 KiB. 8 MiB is ~250× the default, so no legitimate author is
+/// squeezed, while the worst a manifest can cost per concurrent call stays in
+/// the tens of megabytes rather than "whatever the child felt like writing".
+///
+/// **Why this CLAMPS rather than refusing to parse** (r3 H7). A parse-time
+/// refusal is retroactive: `registry::load_from_dir` re-parses every installed
+/// manifest at boot and merely `warn!`s past one that fails, so raising or
+/// introducing a ceiling makes a connector that worked yesterday silently
+/// vanish. This module already argues exactly that against widening the
+/// `env_allow` denylist; adding the same hazard for a number would be
+/// inconsistent. A credential denylist has no safe fallback — forwarding the
+/// key anyway is the harm — whereas an over-large cap has an obviously correct
+/// one: give the author the maximum and say so. The memory bound holds either
+/// way, which is the only property that mattered.
+pub const CLI_QUERY_MAX_OUTPUT_BYTES_CEILING: usize = 8 * 1024 * 1024;
+
 /// `cli_query` top-level block. Present iff `kind == "cli-query"`.
 ///
 /// #1164 P1 parses and validates this block; the execution runtime lands in a
@@ -307,16 +335,50 @@ impl CliQueryBlock {
             .unwrap_or(CLI_QUERY_DEFAULT_TIMEOUT_MS)
     }
 
+    /// The cap the runtime actually uses: the manifest's value, defaulted when
+    /// absent or zero, and CLAMPED to [`CLI_QUERY_MAX_OUTPUT_BYTES_CEILING`].
+    ///
+    /// Clamped rather than refused so a manifest that used to load never stops
+    /// loading — see the ceiling's doc for why that asymmetry with the
+    /// `env_allow` denylist is deliberate.
     pub fn max_output_bytes(&self) -> usize {
-        self.max_output_bytes
+        let requested = self
+            .max_output_bytes
             .filter(|n| *n > 0)
-            .unwrap_or(CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES)
+            .unwrap_or(CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES);
+        if requested > CLI_QUERY_MAX_OUTPUT_BYTES_CEILING {
+            tracing::warn!(
+                requested,
+                ceiling = CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
+                "cli_query.max_output_bytes exceeds the ceiling and was clamped"
+            );
+            return CLI_QUERY_MAX_OUTPUT_BYTES_CEILING;
+        }
+        requested
     }
 }
 
 /// One hand-declared CLI tool. `args` is a fixed argv template: a `{{slot}}`
 /// element is replaced *wholesale* by one argument. No shell, no string
 /// concatenation (§2.3).
+///
+/// # A value cannot become two arguments — but it can become a flag
+///
+/// Whole-element substitution means a value is never re-split and never
+/// concatenated (partial forms like `--out={{x}}` are refused at manifest-parse
+/// time), so shell metacharacters and whitespace are inert: `; rm -rf /` is one
+/// literal argv element.
+///
+/// It can still be *option-shaped*: `{"path": "--output=/etc/cron.d/x"}` reaches
+/// the child as the literal element `--output=/etc/cron.d/x`, and a CLI that
+/// accepts options anywhere in its argv will read it as one. The kernel does
+/// **not** refuse leading dashes (that would break legitimate values) and does
+/// **not** insert `--` for you (many CLIs do not accept it).
+///
+/// **An author who wants positional-only values writes the separator into the
+/// template**: `"args": ["quote", "--", "{{symbol}}"]`. A literal `--` element
+/// passes validation like any other literal, and every CLI that follows the
+/// convention treats what follows as positional.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CliQueryTool {
     pub name: String,
@@ -896,6 +958,44 @@ impl CliQueryBlock {
                 "cli_query.tools",
                 "must declare at least one tool",
             ));
+        }
+        // #1164 P3 F1 — `env_allow` is a passthrough from the SERVICE
+        // environment, so a manifest that names a forge credential key would
+        // hand a manifest-authored, agent-callable connector the operator's git
+        // identity. Refused at parse time, which is the earliest and loudest
+        // place: install and reload both go through here, so such a manifest
+        // never becomes an enabled connector at all. `build_child_env` keeps a
+        // fail-closed filter for anything that reaches the runtime by another
+        // route.
+        //
+        // The denylist is the CREDENTIAL subset only (r2 G4). The wider forge
+        // passthrough set also carries `GH_HOST`/`NO_PROXY`/`no_proxy`, which
+        // grant nothing: refusing them made `"env_allow": ["no_proxy"]` — an
+        // ordinary need for a query CLI behind a proxy — a hard install failure
+        // whose reason falsely called it a credential, while `HTTP_PROXY` sailed
+        // through. Since `registry::load_from_dir` re-parses on boot, every key
+        // in this set can also retroactively invalidate an installed manifest,
+        // which is a cost only a real credential is worth paying.
+        //
+        // `secret_env` is deliberately NOT subject to this list either: those
+        // values come from the connector's own `secrets.json`, which the
+        // operator authored for this connector. Naming `GH_TOKEN` there sets it
+        // to whatever the operator put in that file — there is no escalation
+        // from the service identity, which is the thing this denylist protects.
+        for (i, key) in self.env_allow.iter().enumerate() {
+            if crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS
+                .contains(&key.as_str())
+            {
+                return Err(ManifestError::invalid(
+                    format!("cli_query.env_allow[{i}]"),
+                    format!(
+                        "`{key}` is a forge CREDENTIAL and may never be forwarded to a \
+                         cli-query connector: a query connector is authored in a manifest \
+                         and callable by any agent that can see its tools, so it must not \
+                         hold the operator's forge identity"
+                    ),
+                ));
+            }
         }
         for (i, tool) in self.tools.iter().enumerate() {
             tool.validate(i)?;
