@@ -1060,66 +1060,84 @@ async fn blank_workflow_id_is_rejected() {
 /// after the seed on purpose — the authoritative check has to live inside the
 /// transaction — and asserting "no side effect" for them would pin a promise
 /// the code does not make.
-#[tokio::test]
-async fn pre_transaction_4xx_with_template_does_not_seed() {
-    let non_repo = TempDir::new().expect("non-repo tempdir");
-    let legs: [(&str, Value, StatusCode); 3] = [
-        (
-            "cove 404",
-            json!({
-                "cove_id": "cove_does_not_exist",
-                "title": "unknown cove",
-                "theme": theme(),
-                "workflow_id": SMALL_CHANGE,
-            }),
-            StatusCode::NOT_FOUND,
-        ),
-        (
-            "relative cwd",
-            json!({
-                "cove_id": "",
-                "title": "relative cwd",
-                "cwd": "relative/not/absolute",
-                "attach_folder": false,
-                "theme": theme(),
-                "workflow_id": SMALL_CHANGE,
-            }),
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            // An absolute, existing directory that is not a git repository.
-            // `attach_folder` is deliberately left false: the guard keys off
-            // whether `cwd` was supplied at all, not off `attach_folder`.
-            "cwd is not a git repository",
-            json!({
-                "cove_id": "",
-                "title": "cwd not a repo",
-                "cwd": non_repo.path().display().to_string(),
-                "attach_folder": false,
-                "theme": theme(),
-                "workflow_id": SMALL_CHANGE,
-            }),
-            StatusCode::BAD_REQUEST,
-        ),
-    ];
-
-    for (name, body_template, expected) in legs {
-        let boot = boot().await;
-        let mut body_json = body_template.clone();
-        if body_json["cove_id"] == json!("") {
-            body_json["cove_id"] = json!(boot.cove_id);
-        }
-        let before = db_snapshot(&boot.repo).await;
-        let (status, body) = post(boot.app.clone(), "/api/waves", body_json).await;
-        assert_eq!(status, expected, "{name}: body={body}");
-        assert!(
-            seeded_templates(&boot.repo).await.is_empty(),
-            "{name}: a pre-transaction 4xx seeded template waves"
-        );
-        assert_eq!(
-            db_snapshot(&boot.repo).await,
-            before,
-            "{name}: a pre-transaction 4xx wrote to the database"
-        );
+/// Split into one test per leg on purpose: a single loop short-circuits on the
+/// first failing leg, so a mutation that breaks all three would only ever be
+/// observed on one of them and the other two would never have been shown to
+/// discriminate.
+async fn assert_pre_transaction_4xx_does_not_seed(
+    name: &str,
+    body_json: Value,
+    expected: StatusCode,
+) {
+    let boot = boot().await;
+    let mut body_json = body_json;
+    if body_json["cove_id"] == json!("") {
+        body_json["cove_id"] = json!(boot.cove_id);
     }
+    let before = db_snapshot(&boot.repo).await;
+    let (status, body) = post(boot.app.clone(), "/api/waves", body_json).await;
+    assert_eq!(status, expected, "{name}: body={body}");
+    assert!(
+        seeded_templates(&boot.repo).await.is_empty(),
+        "{name}: a pre-transaction 4xx seeded template waves"
+    );
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "{name}: a pre-transaction 4xx wrote to the database"
+    );
+}
+
+#[tokio::test]
+async fn pre_transaction_404_unknown_cove_with_template_does_not_seed() {
+    assert_pre_transaction_4xx_does_not_seed(
+        "cove 404",
+        json!({
+            "cove_id": "cove_does_not_exist",
+            "title": "unknown cove",
+            "theme": theme(),
+            "workflow_id": SMALL_CHANGE,
+        }),
+        StatusCode::NOT_FOUND,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn pre_transaction_400_relative_cwd_with_template_does_not_seed() {
+    assert_pre_transaction_4xx_does_not_seed(
+        "relative cwd",
+        json!({
+            "cove_id": "",
+            "title": "relative cwd",
+            "cwd": "relative/not/absolute",
+            "attach_folder": false,
+            "theme": theme(),
+            "workflow_id": SMALL_CHANGE,
+        }),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn pre_transaction_400_non_repo_cwd_with_template_does_not_seed() {
+    // An absolute, existing directory that is not a git repository.
+    // `attach_folder` is deliberately left false: the guard keys off whether
+    // `cwd` was supplied at all, not off `attach_folder`, and setting the
+    // latter would suggest the check lives on that field.
+    let non_repo = TempDir::new().expect("non-repo tempdir");
+    assert_pre_transaction_4xx_does_not_seed(
+        "cwd is not a git repository",
+        json!({
+            "cove_id": "",
+            "title": "cwd not a repo",
+            "cwd": non_repo.path().display().to_string(),
+            "attach_folder": false,
+            "theme": theme(),
+            "workflow_id": SMALL_CHANGE,
+        }),
+        StatusCode::BAD_REQUEST,
+    )
+    .await;
 }
