@@ -1,5 +1,5 @@
-// The directory field: the collapsed row that stands where a form control
-// stands, and the browse view behind it.
+// The directory field: the control that stands for a folder, and the browse
+// view behind it.
 //
 // This revision is the visual layer only (#1228) — the props surface, the
 // Dialog child-view push and the inline fallback are the frozen §6.7b contract
@@ -7,30 +7,33 @@
 // `<span>`s, which rendered as browser defaults ("/home/kenjiBrowse…" run
 // together) inside a dialog whose every other control is astryx's.
 //
-// The trigger is an astryx `Button` for the same reason the form around it is:
-// it is a plain control and astryx owns those. Three details are ours:
+// ## Two states, and only one of them is a row
 //
-//   * The value is the path, so it is mono, and it truncates — a field this
-//     wide cannot show a deep path. astryx's own label span already carries
-//     `overflow: hidden` + `text-overflow: ellipsis` + `min-width: 0`, so the
-//     module only has to make the row full-width for that to take effect.
-//   * The native `title` survives. It is part of the frozen contract — a
-//     truncated path has to be readable without opening the browser — but
-//     astryx drops `title` from `BaseProps` in favour of its `tooltip` prop,
-//     which would mount a floating layer on a control whose whole job is to
-//     open one. `Button` spreads its rest props onto the `<button>`, so the
-//     attribute is passed through as one, and the type-level omission is
-//     stepped around in exactly this one place rather than accepted as a
-//     behaviour change.
-//   * The placeholder is dimmed rather than absent. This field is optional at
-//     its only call site, and an empty control that looks broken is how an
-//     optional field gets filled in by accident.
+// Unset, the control is the folder mark and nothing else. A path is the only
+// thing this field has to say, and when it has no path a full-width box saying
+// so is a placeholder pretending to be a value: it takes a form row, it takes
+// the eye first among the controls beside it, and it says nothing. Set, the
+// mark is joined by the folder's own name — the segment that identifies it —
+// and the control grows to exactly that.
 //
-// `label` + `endContent`, and deliberately not `children`: astryx sets
-// `aria-label={label}` as soon as `children` differ from it (`Button.tsx`),
-// and this button's name is owned by the `<label for>` its call site puts on
-// it — an `aria-label` here would silently outrank that and rename the control
-// from "Folder" to whatever path it currently holds.
+// The `Browse…` affordance is gone with it. It labelled what the whole control
+// already is: a button that opens a picker, marked with a folder, carrying
+// `aria-haspopup="dialog"`. Two words to say "clickable" is the kind of thing
+// that reads as thorough and lands as noise.
+//
+// ## Names, since there is not always text to take one from
+//
+//   * The name is always the full path, or the placeholder while there is
+//     none — set through `aria-label`, because the visible text is the
+//     basename and a reader who hears only "app" learns nothing about *which*
+//     `app`. A call site therefore does not need to wrap this in a labelled
+//     field, and should not: an outer `<label for>` would outrank nothing here
+//     and only split one name into two.
+//   * The native `title` carries the same string for the pointer, so the full
+//     path is one hover away from the basename. astryx drops `title` from
+//     `BaseProps` in favour of its `tooltip` prop, which would mount a
+//     floating layer on a control whose whole job is to open one, so the
+//     attribute is passed through as a rest prop instead.
 
 import { useEffect, type ReactNode } from 'react';
 import { Button } from '@astryxdesign/core/Button';
@@ -40,6 +43,16 @@ import { useDialogView } from '../../../dialog/public.tsx';
 import { Icon } from '../../../icon/public.tsx';
 import { DirectoryBrowser, type DirectoryMode, type ListDirectory } from '../../../directory-browser/public.tsx';
 import styles from './directory-field.module.css';
+
+/**
+ * The segment that identifies a path: its last one, or `/` for the root, which
+ * has none. An empty value has no basename and renders no text at all.
+ */
+function basenameOf(path: string): string {
+  if (path === '') return '';
+  const trimmed = path.replace(/\/+$/, '');
+  return trimmed === '' ? '/' : trimmed.slice(trimmed.lastIndexOf('/') + 1);
+}
 
 export interface DirectoryFieldProps {
   value: string; onChange: (path: string) => void; listDirectory: ListDirectory;
@@ -66,13 +79,19 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
         type="button"
         id={id}
         variant="secondary"
+        size="sm"
         className={styles.trigger}
         aria-haspopup="dialog"
+        aria-label={value || placeholder}
         {...nativeTitle}
         data-nc-empty={value === '' || undefined}
         icon={<Icon name="folder" size="sm" />}
-        label={value || placeholder}
-        endContent={<span className={styles.browse}>Browse…</span>}
+        /* The basename, not the path: this control sits in a row of controls,
+           and a row cannot hold "/home/kenji/src/neige-calm" without becoming
+           the row. The identifying segment is the last one; the whole path is
+           in both the name and the title, one hover or one screen reader away.
+           Empty while unset — the mark is the whole control there. */
+        label={basenameOf(value)}
         onClick={() => setBrowsing(true)}
       />
       {browsing && !dialog && (

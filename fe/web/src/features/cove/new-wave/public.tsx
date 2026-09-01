@@ -226,18 +226,21 @@ const TASK_LABEL = 'What this wave should do';
 const TASK_PLACEHOLDER = 'What should this wave do?';
 
 /**
- * The Folder field's name and supporting copy.
+ * The folder control's name and its one line of supporting copy.
  *
- * Visible, unlike the task's: the whole point of the control is that a reader
- * who does not know about attached workspaces has to be able to see the choice
- * exists and what leaving it alone means. It is *not* `isOptional` on the
- * `Field` — that appends "∙ Optional" to the label, and the description below
- * already says it in a sentence that also says what the default does.
+ * The name is the control's own (`aria-label` on the chip, and its `title` for
+ * the pointer): unset, the chip is a folder mark with no text, and a mark that
+ * names nothing is a control only its author can use.
+ *
+ * The hint survived the row's collapse, cut from two sentences to one and shown
+ * only while the folder is unset. It is the one thing on this dialog that
+ * nothing else can say: that leaving the folder alone is not "no workspace" but
+ * "a workspace Neige makes". What it dropped is the half about attached
+ * repositories never being moved or deleted — that is a promise about a folder
+ * the reader has *already* chosen, and by then the path itself is on screen.
  */
-const FOLDER_LABEL = 'Folder';
-const FOLDER_PLACEHOLDER = 'Neige picks one for this wave';
-const FOLDER_HINT = 'Optional. Leave it empty and Neige creates a workspace for this wave. '
-  + 'Choose your own repository and Neige never moves or deletes it.';
+const FOLDER_PLACEHOLDER = 'Choose a folder for this wave';
+const FOLDER_HINT = 'Neige creates a workspace for this wave unless you choose a folder.';
 /** The way back to the managed default, which exists nowhere else. */
 const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
 
@@ -355,16 +358,35 @@ export function NewWaveForm({
         onChange={(value) => setTitle(value)}
       />
 
-      {/* `isGroupLabel` — i.e. a `<span>`, not a `<label>`. A `<label>` whose
+      {/* ── The two settings, as one row of chips ────────────────────────────
+          What this wave starts from and where it runs are the same *kind* of
+          thing: one optional choice each, both defaulted, both changing only
+          what the task above them is carried out on. They used to be two
+          stacked full-width rows — a label, a box the width of the dialog, and
+          for the folder a two-line paragraph under it — which gave two
+          secondary settings more of the dialog than the sentence the wave is
+          actually about. Same size, same variant, same row: the input is the
+          dialog, and these sit under it the way a composer's controls sit
+          under its text.
+
+          `isLabelHidden` on the field, not label-less: "Start from" is still
+          the trigger's name (the visually-hidden span is what
+          `aria-labelledby` points at), and it is still where the group's
+          status message lands. What is gone is the row it spent to say a word
+          the trigger already carries.
+
+          `isGroupLabel` — i.e. a `<span>`, not a `<label>`. A `<label>` whose
           `htmlFor` points at a button *replaces* that button's contents as its
           accessible name, so "Start from" would be all a screen reader hears
           and the current choice would go silent. The span is referenced
           instead, together with the trigger itself, so the name reads
           "Start from <choice>". */}
+      <HStack gap={1} align="center" className={styles.controls}>
       <Field
         label="Start from"
         labelID={startFromLabelId}
         isGroupLabel
+        isLabelHidden
         inputID={triggerId}
         statusVariant="detached"
         status={groupStatus && { ...groupStatus, messageID: startFromStatusId }}
@@ -375,6 +397,7 @@ export function NewWaveForm({
             id: triggerId,
             label: chosen?.title ?? BLANK_LABEL,
             variant: 'secondary',
+            size: 'sm',
             className: styles.trigger,
             'aria-labelledby': `${startFromLabelId} ${triggerId}`,
             'aria-describedby': groupStatus !== undefined ? startFromStatusId : undefined,
@@ -397,83 +420,84 @@ export function NewWaveForm({
             />
           ))}
         </DropdownMenu>
-
-        {issueDev && (
-          /* Back under the control it belongs to. With the alternatives
-             collapsed into one trigger row there is no longer a group of
-             radios for a form panel to be spliced into, so the fields sit
-             directly beneath the trigger — inside the same `Field`, which is
-             the DOM statement that they belong to this choice.
-             The group needs a *name*, not a second visible heading: the
-             trigger immediately above already reads the template's title, so
-             repeating it would be the same word twice in two rows. */
-          <div className={styles.panel} role="group" aria-label={chosen?.title ?? ''}>
-            <TextInput
-              label="Issue URL"
-              value={issueUrl}
-              width="100%"
-              placeholder="https://github.com/owner/repo/issues/123"
-              /* An unfinished field is not an error: until something has been
-                 typed the guidance is a description, and only a value that
-                 cannot be parsed turns into `status` (which is what sets
-                 `aria-invalid` and the alert). */
-              description={issueUrlBad ? undefined : parsedIssue === null
-                ? 'Paste the GitHub issue this wave works on.'
-                : `Issue #${parsedIssue.issue_number} in ${parsedIssue.repo}.`}
-              status={issueUrlBad
-                ? {
-                  type: 'error',
-                  message: 'Not a GitHub issue URL — expected https://github.com/owner/repo/issues/123.',
-                }
-                : undefined}
-              onChange={(value) => setIssueUrl(value)}
-            />
-            <CheckboxInput
-              label="Merge automatically once the gates converge"
-              description="Off: the wave waits for you to approve the merge."
-              value={autoMerge}
-              onChange={(checked) => setAutoMerge(checked)}
-            />
-          </div>
-        )}
       </Field>
 
-      {/* The folder, #1147 S3. A real `<label htmlFor>` and *not* the
-          `isGroupLabel` span the picker above needs: this field wraps one
-          control, and `DirectoryField` is frozen — it takes `id` and nothing
-          else, so `aria-labelledby` is not on the table. A `<label>` pointing
-          at a button replaces the button's contents as its accessible name,
-          which is what is wanted here: the name is "Folder", and the path (or
-          the placeholder) is the value it holds, not part of its name.
+      {/* The folder, #1147 S3, and no field around it: `DirectoryField` names
+          itself (`aria-label` — its visible text is a basename, and a reader
+          who hears only "app" learns nothing about which one), so a wrapping
+          `<label>` here would be a second name for one control. It is also the
+          frozen wrapper that pushes `DirectoryBrowser` into the *surrounding*
+          dialog rather than opening a second one, which is why this form does
+          not roll its own picker. */}
+      <DirectoryField
+        id={folderId}
+        value={cwd}
+        onChange={setCwd}
+        listDirectory={listDirectory}
+        placeholder={FOLDER_PLACEHOLDER}
+      />
+      {/* Create time is the only entry into the attached choice, so the way
+          *back* to the managed default has to exist here too — there is no
+          later screen for it. It appears beside the folder it undoes and only
+          once there is one; icon-only, because a control that undoes a choice
+          should not be wider than the choice. */}
+      {cwd !== '' && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          isIconOnly
+          icon={<Icon icon="close" size="sm" />}
+          label={FOLDER_CLEAR_LABEL}
+          onClick={() => setCwd('')}
+        />
+      )}
+      </HStack>
 
-          `DirectoryField`, not a text input plus a picker of our own: it is
-          the frozen wrapper that pushes `DirectoryBrowser` into the
-          *surrounding* dialog rather than opening a second one, and this form
-          is always hosted in a dialog. */}
-      <Field label={FOLDER_LABEL} inputID={folderId} description={FOLDER_HINT}>
-        <VStack gap={1} align="start">
-          <DirectoryField
-            id={folderId}
-            value={cwd}
-            onChange={setCwd}
-            listDirectory={listDirectory}
-            placeholder={FOLDER_PLACEHOLDER}
+      {/* The one line of supporting text in the dialog, and only while it has
+          something to support: unset is the state whose consequence is not
+          visible anywhere on screen — a wave with no folder still gets one,
+          Neige just makes it. Once a folder is chosen the path says what
+          happens, and the line goes. */}
+      {cwd === '' && <p className={styles.hint}>{FOLDER_HINT}</p>}
+
+      {issueDev && (
+        /* Under the row that chose it, named by the template it belongs to.
+           It is no longer inside the `Field` — that field is now one chip in a
+           horizontal row and a panel cannot live in it — so the statement of
+           belonging is adjacency plus the group's own accessible name, which
+           is the template's title. The group needs a *name*, not a second
+           visible heading: the trigger above already reads that title, and
+           repeating it would be the same word twice in two rows. */
+        <div className={styles.panel} role="group" aria-label={chosen?.title ?? ''}>
+          <TextInput
+            label="Issue URL"
+            value={issueUrl}
+            width="100%"
+            placeholder="https://github.com/owner/repo/issues/123"
+            /* An unfinished field is not an error: until something has been
+               typed the guidance is a description, and only a value that
+               cannot be parsed turns into `status` (which is what sets
+               `aria-invalid` and the alert). */
+            description={issueUrlBad ? undefined : parsedIssue === null
+              ? 'Paste the GitHub issue this wave works on.'
+              : `Issue #${parsedIssue.issue_number} in ${parsedIssue.repo}.`}
+            status={issueUrlBad
+              ? {
+                type: 'error',
+                message: 'Not a GitHub issue URL — expected https://github.com/owner/repo/issues/123.',
+              }
+              : undefined}
+            onChange={(value) => setIssueUrl(value)}
           />
-          {/* Create time is the only entry into the attached choice, so the way
-              *back* to the managed default has to exist here too — there is no
-              later screen for it. Ghost, not a second primary: it undoes a
-              choice, it does not make one. */}
-          {cwd !== '' && (
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              label={FOLDER_CLEAR_LABEL}
-              onClick={() => setCwd('')}
-            />
-          )}
-        </VStack>
-      </Field>
+          <CheckboxInput
+            label="Merge automatically once the gates converge"
+            description="Off: the wave waits for you to approve the merge."
+            value={autoMerge}
+            onChange={(checked) => setAutoMerge(checked)}
+          />
+        </div>
+      )}
 
       {/* The action row is a plain horizontal stack, so it is astryx's:
           `gap={1}` is 4px (the old `--space-2`) and `justify="end"` is the

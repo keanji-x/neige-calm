@@ -25,6 +25,13 @@ const LISTING: DirectoryListing = {
  */
 const TASK_LABEL = 'What this wave should do';
 
+/* The folder chip's name and the dialog's one hint line, restated here for the
+   same reason `TASK_LABEL` is: they are user-facing copy, and a test that
+   imported them from the component could not fail when the component silently
+   dropped them. */
+const FOLDER_PLACEHOLDER = 'Choose a folder for this wave';
+const FOLDER_HINT = 'Neige creates a workspace for this wave unless you choose a folder.';
+
 /** The bound template, shaped as the read endpoint returns it. */
 const ISSUE_DEV: WaveTemplate = {
   id: 'issue-development',
@@ -81,8 +88,19 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
  * inline; that it pushes into the *surrounding* dialog instead is the shell's
  * test, because only there is there a dialog to push into.
  */
+/**
+ * The folder chip while nothing is chosen.
+ *
+ * Named, not labelled: unset the chip renders a folder mark and no text at
+ * all, so its name is its own `aria-label` — which is also the only thing a
+ * screen reader has to go on there.
+ */
+function folderChip(): HTMLButtonElement {
+  return screen.getByRole('button', { name: FOLDER_PLACEHOLDER });
+}
+
 async function pickTheListedFolder(): Promise<void> {
-  await userEvent.click(screen.getByLabelText('Folder'));
+  await userEvent.click(folderChip());
   // The browser loads on mount and mirrors the listing into its path input;
   // `Select this directory` only enables once the two agree.
   await screen.findByDisplayValue('/srv/app/');
@@ -176,7 +194,13 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     await fillTitle();
     // Present, and empty: the placeholder is what an unset folder shows, and an
     // unset folder is the managed default.
-    expect(screen.getByLabelText('Folder').textContent).toContain('Neige picks one for this wave');
+    /* Unset, the chip is the mark and nothing else — no text, no row, no
+       placeholder pretending to be a value. Its name and its hover string are
+       what say what it is for. */
+    expect(folderChip().textContent).toBe('');
+    expect(folderChip().getAttribute('title')).toBe(FOLDER_PLACEHOLDER);
+    // The one line of supporting copy, and only while the folder is unset.
+    expect(screen.getByText(FOLDER_HINT)).toBeTruthy();
     // Empty means nothing was read: the picker only reaches its port on open.
     expect(props.listDirectory).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Cove')).toBeNull();
@@ -492,7 +516,7 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     }
     expect(order).toEqual([
       templateTrigger(),
-      screen.getByLabelText('Folder'),
+      folderChip(),
       screen.getByRole('button', { name: 'Cancel' }),
       submitButton(),
     ]);
@@ -609,7 +633,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
    */
   it('reads the directory through the injected port', async () => {
     const { props } = renderForm();
-    await userEvent.click(screen.getByLabelText('Folder'));
+    await userEvent.click(folderChip());
     await screen.findByDisplayValue('/srv/app/');
     expect(props.listDirectory).toHaveBeenCalled();
   });

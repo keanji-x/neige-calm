@@ -1,58 +1,28 @@
-/* The field row's visual layer (#1228). astryx's `Button` owns the control —
-   its fill, border, radius, focus ring and hover — so what is left is the three
-   things a generic button cannot know: that this one stands where a form
-   control stands (full width), that its value is a path (mono, and pushed apart
-   from the affordance), and that an empty value is a placeholder rather than a
-   value. The `ui` layer sorts after `astryx` in entry.css, so each of these
-   wins without a specificity fight. */
+/* The folder control's visual layer (#1228). astryx's `Button` owns the chip —
+   fill, border, radius, focus ring, hover — so what is left is the two things a
+   generic button cannot know: that this one holds a path (mono, and bounded so
+   a long name cannot stretch the row it sits in), and that with no path it is a
+   mark and not a row. The `ui` layer sorts after `astryx` in entry.css, so both
+   win without a specificity fight. */
 @layer ui {
-  /* `100%` on the wrapper and not only on the button: a call site is free to
-     lay this field out in a start-aligned column (the New wave dialog does, so
-     that the "use a workspace instead" ghost below it stays label-width), and
-     in one the wrapper shrinks to its content — leaving the button's own 100%
-     resolving against a box the size of the path it happens to hold. */
   .field {
     display: flex;
     flex-direction: column;
-    inline-size: 100%;
     gap: var(--space-4);
   }
 
-  /* Grid, replacing astryx's inline-flex, because the three marks want three
-     tracks: the folder stays with the value, the value takes everything that
-     is left (which is also what makes astryx's own ellipsis fire), and the
-     affordance sits on the far edge. A margin-auto on the affordance cannot do
-     this — astryx wraps `endContent` in a box of its own, and the margin would
-     resolve inside that box rather than across the row. The button's content
-     wrapper is `display: contents`, so its three spans are this grid's items;
-     the loading live region is `position: absolute` and takes no track. */
   .trigger {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    inline-size: 100%;
     font-family: var(--font-mono);
-    font-size: var(--text-md);
-    /* A `<button>`'s UA default is `center`, which a label sized to its own
-       content never showed: it only becomes visible once the value has a track
-       wider than itself, i.e. exactly here. */
-    text-align: start;
+    /* A folder name is a name, not prose: it may be long, and past this it is
+       the astryx label span's own ellipsis that finishes the job. */
+    max-inline-size: 14rem;
   }
 
-  /* astryx's end-content wrapper inherits colour, so this span is where the
-     affordance gets its own weight back — and where it stays legible when the
-     row is dimmed for an empty value. */
-  .browse {
-    color: var(--text-2);
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
-  }
-
-  /* Empty is a placeholder, not a value: the whole row drops to the muted step
-     — the folder mark included, because it draws in `currentColor` and a bright
-     icon next to grey text reads as a value that failed to load. */
+  /* Unset: astryx sizes the button to its label, and the label is empty, so
+     what is left is the icon in a box padded like a label that is not there.
+     Squaring it is what makes the empty state read as one mark rather than as
+     a control that failed to render its text. */
   .trigger[data-nc-empty] {
-    color: var(--text-3);
-    font-family: var(--font-sans);
-    font-size: var(--text-base);
+    padding-inline: var(--space-3);
   }
 }
