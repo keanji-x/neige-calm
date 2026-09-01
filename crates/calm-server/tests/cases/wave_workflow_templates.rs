@@ -15,8 +15,8 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EditAuthor, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::NewCove;
-use calm_server::plugin_host::{PluginHost, PluginRegistry};
+use calm_server::model::{NewCove, NewPlugin};
+use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
@@ -163,6 +163,56 @@ fn create_body(cove_id: &str, title: &str, extra: Value) -> Value {
         obj.extend(extra);
     }
     body
+}
+
+/// #1209 test #10/#12/#13 — a whole-database snapshot.
+///
+/// Every user table, every column, every row, rendered through SQLite's own
+/// `quote()` so NULL, text and integer stay distinguishable, ordered so the
+/// digest is stable. Deliberately **not** a hand-maintained list of tables or
+/// of overlay entity kinds: the failure mode these tests exist to catch is "a
+/// read quietly wrote something", and a snapshot that enumerates what it looks
+/// at silently stops covering whatever is added next. `seeded_templates` below
+/// is the opposite shape — it only sees `kind == "template"` overlays — which
+/// is why these tests do not reuse it.
+///
+/// (The #1209 design predicted this had to be assembled from `Repo` trait
+/// accessors because tests "cannot write raw SQL". Not so in this file:
+/// `Repo::sqlite_pool` is public and `spec_harness_ops_for_wave` above already
+/// uses it.)
+async fn db_snapshot(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
+    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master \
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> '_sqlx_migrations' \
+         ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("table list");
+    assert!(!tables.is_empty(), "snapshot found no tables to compare");
+    let mut snapshot = Vec::with_capacity(tables.len());
+    for table in tables {
+        let columns: Vec<String> =
+            sqlx::query_scalar(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("columns of {table}: {error}"));
+        let row_text = columns
+            .iter()
+            .map(|column| format!("quote(\"{column}\")"))
+            .collect::<Vec<_>>()
+            .join(" || '|' || ");
+        let digest: String = sqlx::query_scalar(&format!(
+            "SELECT coalesce(group_concat(row_text, char(10)), '') FROM \
+             (SELECT {row_text} AS row_text FROM \"{table}\" ORDER BY 1)"
+        ))
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("digest of {table}: {error}"));
+        snapshot.push((table, digest));
+    }
+    snapshot
 }
 
 async fn seeded_templates(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
@@ -579,11 +629,497 @@ async fn unknown_workflow_id_still_400s() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    // #1209 — three legs, because the interesting regression is not "some 400
+    // happened" but "the 400 was decided by the roster". Leg 2 is the one that
+    // catches restoring the registry wording (and with it the registry as the
+    // admission authority); a `.contains("missing-workflow")`-only assertion
+    // was green both before and after that change.
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(error.contains("known wave template"), "body={body}");
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("must reference a registered trusted workflow"),
+        !error.contains("registered trusted workflow"),
         "body={body}"
     );
+    assert!(error.contains("missing-workflow"), "body={body}");
+}
+
+/// #1209 test #8's fixture — a **running, trusted** plugin whose manifest
+/// declares the ids passed in.
+///
+/// Two things about it are load-bearing and must not be "tidied" into the
+/// shared `boot()`:
+///
+/// 1. **No `input_schema`.** Copying the stub in
+///    `tests/cases/wave_templates_read.rs` verbatim brings one along, and its
+///    `required` list makes a create *without* `workflow_input` fail the
+///    required-input check (`validate_workflow_input_binding`) — a 400 that
+///    arrives no matter what the admission rule is. Test #8 would then be green
+///    even with the pre-#1209 plugin fallback restored, i.e. green precisely
+///    when the thing it exists to detect is back.
+/// 2. **It is a separate boot.** `boot()` starts no plugins, and
+///    `create_accepts_exactly_the_listed_templates` depends on that (see its
+///    doc comment). Merging the two fixtures would break that test for reasons
+///    that have nothing to do with admission.
+async fn boot_with_trusted_plugin(declared_workflow_ids: &[&str]) -> Boot {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo: Arc<dyn Repo> = Arc::new(
+        SqlxRepo::open("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite"),
+    );
+    let cove = repo
+        .cove_create(NewCove {
+            name: "workflow-template-plugin-test".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let card_role_cache = CardRoleCache::new();
+    let wave_cove_cache = WaveCoveCache::new();
+    repo.seed_wave_cove_cache(&wave_cove_cache).await.unwrap();
+
+    // Mirrors `forge_trust::trusted_forge_plugin`'s default so the stub is
+    // trusted without mutating process env.
+    let plugin_id = std::env::var("NEIGE_TRUSTED_FORGE_PLUGINS")
+        .ok()
+        .and_then(|configured| {
+            configured
+                .split(',')
+                .map(str::trim)
+                .find(|id| !id.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "dev.neige.git-forge".to_string());
+    let plugins_dir = tmp.path().join("plugins");
+    let plugins_data_dir = tmp.path().join("plugins-data");
+    let install_dir = plugins_dir.join(&plugin_id);
+    let bin_dir = install_dir.join("bin");
+    std::fs::create_dir_all(&bin_dir).expect("create plugin bin dir");
+    std::fs::create_dir_all(&plugins_data_dir).expect("create plugin data dir");
+    std::os::unix::fs::symlink(
+        std::path::Path::new(env!("CARGO_BIN_EXE_plugin-host-stub-echo")),
+        bin_dir.join("stub"),
+    )
+    .expect("symlink stub plugin");
+
+    let workflows: Vec<Value> = declared_workflow_ids
+        .iter()
+        .map(|id| json!({ "id": id }))
+        .collect();
+    let manifest = Manifest::parse(
+        &json!({
+            "manifest_version": 1,
+            "id": plugin_id,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Trusted workflow owner",
+            "entrypoint": { "command": "bin/stub" },
+            // No `input_schema`: see this function's doc comment, point 1.
+            "workflows": workflows,
+            "permissions": {}
+        })
+        .to_string(),
+    )
+    .expect("manifest parses");
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
+    repo.plugin_install(NewPlugin {
+        id: plugin_id.clone(),
+        version: "0.1.0".into(),
+        install_path: install_dir.display().to_string(),
+        manifest: json!({}),
+        enabled: true,
+        user_config: json!({}),
+    })
+    .await
+    .expect("seed plugin row");
+
+    let plugin_host = Arc::new(PluginHost::new_full(
+        Arc::new(registry),
+        repo.clone(),
+        plugins_dir,
+        plugins_data_dir,
+        Vec::new(),
+        EventBus::new(),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
+    ));
+    plugin_host.spawn(&plugin_id).await.expect("spawn plugin");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(status) = plugin_host.status(&plugin_id).await
+            && matches!(status.status, PluginRuntimeStatus::Running)
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() <= deadline,
+            "plugin {plugin_id} did not reach Running within 5s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    let state = AppState::from_parts(
+        repo.clone(),
+        EventBus::new(),
+        Arc::new(DaemonClient {
+            data_dir: tmp.path().to_path_buf(),
+            proc_supervisor_sock: None,
+        }),
+        plugin_host,
+        Arc::new(common::fake_codex_client()),
+        Some(card_role_cache),
+        Some(wave_cove_cache),
+    );
+    let shared = SharedCodexAppServer::new_fake_running_with_pending(repo.clone(), None);
+    let state = state.with_shared_codex_appserver(shared);
+    let app = routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .with_state(state.clone());
+    Boot {
+        app,
+        state,
+        cove_id: cove.id.to_string(),
+        repo,
+        _tmp: tmp,
+    }
+}
+
+/// #1209 test #8 — **the test the whole slice rests on.**
+///
+/// A running, trusted plugin declares a workflow id that is not in the kernel's
+/// template roster. Before #1209 that made the id creatable (201, with
+/// `plugin_scope` stamped and nothing to fork); the create path asked the
+/// plugin registry first and only consulted the roster as a fallback. #1209
+/// inverts that: the roster is the admission test and the binding is an
+/// attribute, so this create is a 400 — and the plugin's running/trusted state
+/// cannot change that answer.
+///
+/// The mutation this must catch is restoring the fallback (an
+/// `.or_else(|| resolve_trusted_workflow(..))` inside `admit_template`, in any
+/// spelling). It then goes red on the **status code**, not on wording.
+/// Restoring only the old wording turns leg 2 of the error assertion red.
+#[tokio::test]
+async fn plugin_declared_non_template_workflow_id_is_rejected() {
+    const NOT_A_TEMPLATE: &str = "not-a-template";
+    let boot = boot_with_trusted_plugin(&[NOT_A_TEMPLATE, ISSUE_DEVELOPMENT]).await;
+
+    // Liveness control first: without it a broken fixture (plugin not running,
+    // not trusted, manifest not registered) would make the real assertion below
+    // pass for the wrong reason — an unbound id is rejected by *any* rule. This
+    // create proves the plugin really does bind, on this very app, right now.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "bound-control",
+            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert!(
+        !body["plugin_scope"].is_null(),
+        "fixture is not actually binding — the real assertion below would be \
+         vacuous; body={body}"
+    );
+
+    let before = db_snapshot(&boot.repo).await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "plugin-declared-non-template",
+            json!({ "workflow_id": NOT_A_TEMPLATE }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a running trusted plugin must not make a non-roster id creatable; body={body}"
+    );
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(error.contains("known wave template"), "body={body}");
+    assert!(
+        !error.contains("requires `workflow_input`"),
+        "rejected for input validation, not admission — the fixture's stub must \
+         not declare an input_schema; body={body}"
+    );
+    assert!(
+        !error.contains("registered trusted workflow"),
+        "body={body}"
+    );
+    assert!(error.contains(NOT_A_TEMPLATE), "body={body}");
+    // Cheap insurance, not a discriminating leg: a non-roster id does not seed
+    // under the correct code *or* under the named mutation. It does catch a
+    // fallback smuggled into the seeding branch (seed, then 500 on lookup).
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "an admission 400 must not write anything"
+    );
+}
+
+/// #1209 test #9 — the picker's list and create's accept set are one set.
+///
+/// **Premise, and it is load-bearing:** `boot()` starts no plugins. With no
+/// running trusted plugin, `resolve_trusted_workflow` is `None` for every id,
+/// so `validate_workflow_input_binding(None, None)` short-circuits `Ok(())` and
+/// `issue-development` never reaches the required-input arm. That is what makes
+/// `== 201` correct for *every* listed id. If this harness ever grows a plugin
+/// fixture, this case must keep using the no-plugin one; if the premise has to
+/// be relaxed, widen the assertion to an explicit allowance
+/// (`201 || (400 && "requires `workflow_input`")`) — do **not** weaken it to
+/// "the body does not say `known wave template`". That weaker form is green for
+/// a re-worded special case such as
+/// `if id == "investigation" { return Err(BadRequest("investigation is disabled")) }`,
+/// which is exactly the disguise this test exists to strip off.
+///
+/// The forward direction is universally quantified over the listed ids. The
+/// reverse ("create accepts nothing the list omits") is sampled here and
+/// carried structurally by there being a single fallible roster lookup
+/// (`workflow_template`), plus test #8 for the one concrete shape that
+/// historically reintroduced a second path. It is not a set-equality gate and
+/// is not claimed to be one.
+#[tokio::test]
+async fn create_accepts_exactly_the_listed_templates() {
+    let boot = boot().await;
+    let (status, listed) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    let ids: Vec<String> = listed
+        .as_array()
+        .expect("array body")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("id string").to_string())
+        .collect();
+    // An empty list would make the loop below vacuously true.
+    assert!(!ids.is_empty(), "the picker listed nothing: {listed}");
+
+    for id in &ids {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(
+                &boot.cove_id,
+                &format!("listed-{id}"),
+                json!({ "workflow_id": id }),
+            ),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "listed template `{id}` was not creatable: {body}"
+        );
+    }
+
+    for absent in ["definitely-not-a-template", "issue-development-x"] {
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(
+                &boot.cove_id,
+                &format!("absent-{absent}"),
+                json!({ "workflow_id": absent }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "`{absent}`: body={body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or("")
+                .contains("known wave template"),
+            "`{absent}`: body={body}"
+        );
+    }
+}
+
+/// #1209 test #10 (INV-1209-SEED) — reading the template list must not
+/// materialize seed state.
+///
+/// Seeding is asymmetric on purpose: a *write* that names a template seeds the
+/// three template waves; a *read* never does. Opening the New wave dialog would
+/// otherwise mint a system cove, three waves and three reports, irreversibly,
+/// and make "this database has never used a template" unobservable.
+///
+/// Both start states matter. Against an unseeded database only, a change that
+/// writes solely on the already-seeded branch stays green; against a seeded one
+/// only, a change that seeds stays green.
+///
+/// Only `GET /api/wave-templates` is exercised because it is the only
+/// wave-template read route on this branch — `GET /api/wave-templates/{id}`
+/// arrives with #1230 and this case must grow a leg for it at the merge.
+///
+/// Mutations that must turn this red: calling `ensure_workflow_templates` (or
+/// `ensure_system_cove`) from the GET; rewriting a seeded template's report
+/// summary in the GET; minting a wave with no overlay; writing only when
+/// already seeded; appending a single `log_pure_event` pure event. The last
+/// three are green against a `kind == "template"` overlay count, which is why
+/// this uses a whole-database digest instead.
+#[tokio::test]
+async fn listing_wave_templates_does_not_materialize_seed_state() {
+    // State A: nothing seeded.
+    let boot = boot().await;
+    assert!(
+        seeded_templates(&boot.repo).await.is_empty(),
+        "state A must start unseeded"
+    );
+    let before = db_snapshot(&boot.repo).await;
+    let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "listing templates wrote to an unseeded database"
+    );
+
+    // State B: seeded, with readable reports.
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "seed-for-inv-1209",
+            json!({ "workflow_id": SMALL_CHANGE }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    assert_eq!(
+        seeded_templates(&boot.repo).await.len(),
+        TEMPLATE_KEYS.len(),
+        "state B must start seeded"
+    );
+    let before = db_snapshot(&boot.repo).await;
+    let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "listing templates wrote to an already-seeded database"
+    );
+}
+
+/// #1209 test #12 — a whitespace-only `workflow_id` is rejected **by
+/// admission**.
+///
+/// #1209 deleted the dedicated `trim().is_empty()` guard: whitespace is simply
+/// not in the roster, so it takes the same path, the same status and the same
+/// message as any other unknown id. Nothing in the Rust suite covered this
+/// before, so deleting the guard would otherwise have deleted unpinned code.
+///
+/// The mutation this catches is the guard coming back as a *skip* —
+/// `if id.trim().is_empty() { /* treat as no template chosen */ }`, yielding
+/// 201, a null `plugin_scope` and no fork. `unknown_workflow_id_still_400s`
+/// sends `missing-workflow` and stays green through that change; this one does
+/// not. The request deliberately carries a valid `cove_id`, no `cwd` and no
+/// `workflow_input`, so no other validation can supply the 400.
+#[tokio::test]
+async fn blank_workflow_id_is_rejected() {
+    let boot = boot().await;
+    let before = db_snapshot(&boot.repo).await;
+    let (status, body) = post(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": boot.cove_id,
+            "title": "blank workflow id",
+            "theme": theme(),
+            "workflow_id": "   ",
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(error.contains("known wave template"), "body={body}");
+    assert!(error.contains("got `   `"), "body={body}");
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "a rejected create must not seed"
+    );
+}
+
+/// #1209 test #13 — a pre-transaction 4xx leaves no seed behind.
+///
+/// Template seeding used to run first, so `POST /api/waves` with a good
+/// template id and a bad `cove_id` minted a system cove, three template waves
+/// and three reports and *then* returned 404. #1209 moves the seed after every
+/// check this handler can make before opening the transaction. All three of
+/// those checks are covered here; the mutation of moving the seed block back to
+/// its old position turns all three red.
+///
+/// Explicitly **not** covered, and not an oversight: the in-transaction 400s
+/// (an explicit `fork_report_from` that is missing or cross-cove), the
+/// folder-claim 409, and post-commit materialize failures. Those are decided
+/// after the seed on purpose — the authoritative check has to live inside the
+/// transaction — and asserting "no side effect" for them would pin a promise
+/// the code does not make.
+#[tokio::test]
+async fn pre_transaction_4xx_with_template_does_not_seed() {
+    let non_repo = TempDir::new().expect("non-repo tempdir");
+    let legs: [(&str, Value, StatusCode); 3] = [
+        (
+            "cove 404",
+            json!({
+                "cove_id": "cove_does_not_exist",
+                "title": "unknown cove",
+                "theme": theme(),
+                "workflow_id": SMALL_CHANGE,
+            }),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            "relative cwd",
+            json!({
+                "cove_id": "",
+                "title": "relative cwd",
+                "cwd": "relative/not/absolute",
+                "attach_folder": false,
+                "theme": theme(),
+                "workflow_id": SMALL_CHANGE,
+            }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            // An absolute, existing directory that is not a git repository.
+            // `attach_folder` is deliberately left false: the guard keys off
+            // whether `cwd` was supplied at all, not off `attach_folder`.
+            "cwd is not a git repository",
+            json!({
+                "cove_id": "",
+                "title": "cwd not a repo",
+                "cwd": non_repo.path().display().to_string(),
+                "attach_folder": false,
+                "theme": theme(),
+                "workflow_id": SMALL_CHANGE,
+            }),
+            StatusCode::BAD_REQUEST,
+        ),
+    ];
+
+    for (name, body_template, expected) in legs {
+        let boot = boot().await;
+        let mut body_json = body_template.clone();
+        if body_json["cove_id"] == json!("") {
+            body_json["cove_id"] = json!(boot.cove_id);
+        }
+        let before = db_snapshot(&boot.repo).await;
+        let (status, body) = post(boot.app.clone(), "/api/waves", body_json).await;
+        assert_eq!(status, expected, "{name}: body={body}");
+        assert!(
+            seeded_templates(&boot.repo).await.is_empty(),
+            "{name}: a pre-transaction 4xx seeded template waves"
+        );
+        assert_eq!(
+            db_snapshot(&boot.repo).await,
+            before,
+            "{name}: a pre-transaction 4xx wrote to the database"
+        );
+    }
 }

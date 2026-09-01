@@ -434,15 +434,20 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    // #891 slice ② review fix — pin the trust-check wording so this case
-    // keeps discriminating the trust gate from input validation.
+    // #1209 — create's admission test is "is this id in the template roster",
+    // which has nothing to do with plugin trust. So this case no longer pins a
+    // trust-check wording (there is no such check on the create path any more);
+    // it pins that the 400 names the roster as the reason and names the
+    // rejected id. The observable consequence of the trust gate is carried by
+    // the "untrusted ⇒ 201 with a null plugin_scope" leg further down in this
+    // same test.
+    let error = body["error"].as_str().unwrap_or("");
+    assert!(error.contains("known wave template"), "body={body}");
     assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or("")
-            .contains("must reference a registered trusted workflow"),
+        !error.contains("registered trusted workflow"),
         "body={body}"
     );
+    assert!(error.contains("missing-workflow"), "body={body}");
 
     drop(trusted);
     let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "other.plugin");

@@ -15,14 +15,14 @@ pub const ISSUE_DEVELOPMENT: &str = "issue-development";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 
-pub const WORKFLOW_TEMPLATE_KEYS: [&str; 3] = [ISSUE_DEVELOPMENT, SMALL_CHANGE, INVESTIGATION];
-
 pub struct WorkflowTemplate {
     pub key: &'static str,
     pub title: &'static str,
 }
 
-pub const WORKFLOW_TEMPLATES: [WorkflowTemplate; 3] = [
+/// The template roster. `static`, not `const`, so [`workflow_template`] can
+/// hand out `&'static` borrows into it instead of into a per-use temporary.
+pub static WORKFLOW_TEMPLATES: [WorkflowTemplate; 3] = [
     WorkflowTemplate {
         key: ISSUE_DEVELOPMENT,
         title: "Issue development",
@@ -37,8 +37,24 @@ pub const WORKFLOW_TEMPLATES: [WorkflowTemplate; 3] = [
     },
 ];
 
-pub fn is_workflow_template_key(workflow_id: &str) -> bool {
-    WORKFLOW_TEMPLATE_KEYS.contains(&workflow_id)
+/// #1209 — the roster's single fallible lookup: "is this id a template, and
+/// if so which one". `POST /api/waves` admits an id iff this returns `Some`.
+///
+/// It derives from [`WORKFLOW_TEMPLATES`] rather than from a second array of
+/// keys, so "the list the picker shows" and "the set create accepts" cannot
+/// drift: there is nothing to keep in sync. The `WORKFLOW_TEMPLATE_KEYS`
+/// constant and the `is_workflow_template_key` predicate that used to walk it
+/// were exactly that second roster and are gone with this slice.
+///
+/// This is not the *only* place the roster is read — `list_wave_templates`
+/// iterates `WORKFLOW_TEMPLATES` directly, and so does the seeding loop. It is
+/// the only place that answers "is this arbitrary caller-supplied string one of
+/// them", which is the question `:779`'s deleted special case used to answer
+/// twice.
+pub fn workflow_template(key: &str) -> Option<&'static WorkflowTemplate> {
+    WORKFLOW_TEMPLATES
+        .iter()
+        .find(|template| template.key == key)
 }
 
 pub fn workflow_template_report(key: &str) -> Option<WaveReportPayload> {
@@ -507,17 +523,14 @@ mod tests {
 
     #[test]
     fn known_keys_round_trip() {
-        for key in WORKFLOW_TEMPLATE_KEYS {
-            assert!(is_workflow_template_key(key));
-            assert!(
-                WORKFLOW_TEMPLATES
-                    .iter()
-                    .any(|template| template.key == key)
-            );
+        for template in &WORKFLOW_TEMPLATES {
+            let key = template.key;
+            assert!(workflow_template(key).is_some());
+            assert_eq!(workflow_template(key).map(|found| found.key), Some(key));
             assert!(workflow_template_report(key).is_some());
             assert!(workflow_template_tasks(key).is_some());
         }
-        assert!(!is_workflow_template_key("missing-workflow"));
+        assert!(workflow_template("missing-workflow").is_none());
         assert!(workflow_template_report("missing-workflow").is_none());
         assert!(workflow_template_tasks("missing-workflow").is_none());
     }
@@ -557,7 +570,8 @@ mod tests {
     /// `small-change` alone.
     #[test]
     fn listed_tasks_are_exactly_the_report_task_blocks() {
-        for key in WORKFLOW_TEMPLATE_KEYS {
+        for template in &WORKFLOW_TEMPLATES {
+            let key = template.key;
             let tasks = workflow_template_tasks(key).expect("known key");
             let body = workflow_template_report(key).expect("known key").body;
             assert!(!tasks.is_empty(), "{key} lists no tasks");
