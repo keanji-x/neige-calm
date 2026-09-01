@@ -999,8 +999,8 @@
   why: >
     a11y-keyboard.spec.ts:851-858 — two Enters from the trigger is the documented keyboard
     path to Settings; item order is load-bearing for that.
-  source: web/e2e/a11y-keyboard.spec.ts:851-858
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:851
+  source: web/e2e/a11y-keyboard.spec.ts:874-881
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:874
   owner_slice: app/shell/sidebar
   intentional_omission: false
   runtime_layer: app
@@ -1304,8 +1304,8 @@
   why: >
     wave-create-browse-cwd.spec.ts:116-126 — the walker is `GET /api/fs/listdir` running in
     the kernel container; the trailing slash in the input value is part of the contract.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:116-126
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:119
+  source: web/e2e/wave-create-browse-cwd.spec.ts:125-135
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:128
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -1323,8 +1323,8 @@
   why: >
     wave-create-browse-cwd.spec.ts:128-163 — closes the loop Browse → input → POST body →
     kernel row.
-  source: web/e2e/wave-create-browse-cwd.spec.ts:128-163
-  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:131
+  source: web/e2e/wave-create-browse-cwd.spec.ts:137-172
+  authoritative_test: web/e2e/wave-create-browse-cwd.spec.ts:140
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui
@@ -1377,8 +1377,8 @@
   why: >
     a11y-keyboard.spec.ts:308-313 — the frontend's cache invalidation hangs off that event;
     a create that lands in the DB but emits nothing leaves every other surface stale.
-  source: web/e2e/a11y-keyboard.spec.ts:308-313
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:311
+  source: web/e2e/a11y-keyboard.spec.ts:331-336
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:334
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -1797,8 +1797,8 @@
     #1148 A0 made `terminal` a stop word (it names a whole subsystem, so hitting it proves
     nothing), which left this statement with no anchor at all; the poll's two real carriers
     now do the anchoring.
-  source: web/e2e/a11y-keyboard.spec.ts:386-414
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:360
+  source: web/e2e/a11y-keyboard.spec.ts:409-437
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:383
   owner_slice: systems/terminal/card
   intentional_omission: false
   runtime_layer: systems
@@ -1833,8 +1833,8 @@
   why: >
     a11y-keyboard.spec.ts:584-590 — codex is the only built-in with a createSchema; the nested
     DirectoryBrowser also carries role="dialog", so the outer must be addressable by name.
-  source: web/e2e/a11y-keyboard.spec.ts:584-593
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:531
+  source: web/e2e/a11y-keyboard.spec.ts:607-616
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:554
   owner_slice: ui/dialog/modal
   intentional_omission: false
   runtime_layer: ui
@@ -1905,8 +1905,8 @@
   why: >
     a11y-keyboard.spec.ts:663-673 — F2 is the documented Windows-convention shortcut;
     `startRename()` does queueMicrotask focus + `.select()` so typing replaces.
-  source: web/e2e/a11y-keyboard.spec.ts:663-675
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:632
+  source: web/e2e/a11y-keyboard.spec.ts:686-698
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:655
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -1922,8 +1922,8 @@
     `wave.updated`, and RETURN FOCUS to the display span.
   why: >
     a11y-keyboard.spec.ts:677-689 — losing focus after commit strands a keyboard user mid-page.
-  source: web/e2e/a11y-keyboard.spec.ts:676-689
-  authoritative_test: web/e2e/a11y-keyboard.spec.ts:689
+  source: web/e2e/a11y-keyboard.spec.ts:699-712
+  authoritative_test: web/e2e/a11y-keyboard.spec.ts:712
   owner_slice: features/wave/page
   intentional_omission: false
   runtime_layer: features
@@ -4774,8 +4774,8 @@
   why: >
     wheel-wave-switch.spec.ts:92-95 — a real environment constraint that silently produces an
     empty terminal instead of a failure.
-  source: web/e2e/wheel-wave-switch.spec.ts:92-100
-  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:98
+  source: web/e2e/wheel-wave-switch.spec.ts:95-103
+  authoritative_test: web/e2e/wheel-wave-switch.spec.ts:101
   owner_slice: none/e2e/infra
   intentional_omission: false
   runtime_layer: none
