@@ -1008,12 +1008,20 @@ jobs:
       - name: npm ci
         working-directory: fe
         run: npm ci
+      # `osc-probe-child` joins the compose binaries here (#1189 S6): mounted
+      # in as `codex`, it is the app-server stand-in the Rust suites already
+      # trust (tests/fixtures/osc-probe-child/appserver.rs). It is a `[[bin]]`
+      # of calm-server, so it builds from the same invocation and shares the
+      # cache. Without it `POST /api/waves/{id}/conversations` fails in the
+      # daemon preflight, *before* the card/session/token mint — and an e2e
+      # that only ever sees that 500 cannot tell a correct mint from a broken
+      # one.
       - name: cargo build --release (compose binaries)
-        run: cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
+        run: cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shim -p calm-proc-supervisor --bin calm-server --bin neige-codex-bridge --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --bin osc-probe-child --locked
       - name: write CI .env overrides
         run: |
           cat > .env <<'EOF'
-          CALM_CODEX_HOST_BIN=/bin/true
+          CALM_CODEX_HOST_BIN=${{ github.workspace }}/target/release/osc-probe-child
           CALM_EXTRA_MOUNT=/tmp
           CALM_WEB_DIST=/tmp
           CALM_PORT=4041
