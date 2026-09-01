@@ -39,6 +39,9 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 mod common;
+mod support;
+
+use support::git_helpers::attached_repo_fixture;
 
 /// Serializes intra-binary tests that toggle `FAKE_CODEX_CAPTURE_REQUESTS`
 /// (or any other process env read by the fake codex shim). Peer test
@@ -1676,7 +1679,7 @@ async fn wave_delete_shuts_down_active_spec_harness() {
         json!({
             "cove_id": cove.id,
             "title": "delete harness",
-            "cwd": "/tmp/spec-card-reset-harness-delete",
+            "cwd": attached_repo_fixture("spec-card-reset-harness-delete"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),
@@ -1731,7 +1734,7 @@ async fn acceptance_20_descendant_refusal_preserves_live_wave_runtime_and_termin
         json!({
             "cove_id": cove.id,
             "title": "live parent",
-            "cwd": "/tmp/descendant-refusal-runtime",
+            "cwd": attached_repo_fixture("descendant-refusal-runtime"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]}
         }),

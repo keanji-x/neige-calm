@@ -2424,25 +2424,40 @@ export interface components {
          */
         WaveWorkspaceKind: "managed" | "attached";
         /**
-         * @description #1147 S3 — the requested workspace, as a *kind* rather than a path.
+         * @description #1147 S3 — point a wave at a repository the user already has.
          *
-         *     The caller never names a directory. A managed workspace's path is
-         *     `<workspace-root>/<cove_id>/<wave_id>` and the server derives it
-         *     (`workspace_materialize::managed_workspace_path`); accepting a
-         *     caller-supplied path would produce rows that S5's recycle guard 2 refuses
-         *     on depth, i.e. workspaces that leak by construction — and that guard exists
-         *     precisely because S3 is the slice that writes `workspace_path`.
+         *     The only transition this expresses is `managed → attached`. There is no
+         *     `managed → managed`: a managed path is *derived*
+         *     (`<workspace-root>/<cove_id>/<wave_id>`, see
+         *     `workspace_materialize::managed_workspace_path`) from a wave's cove and id,
+         *     neither of which can change, so "re-allocate a managed workspace" would
+         *     always re-derive the same path — an in-place reset, not a change. And a
+         *     caller-supplied *managed* path is worse than useless: S5's recycle guard 2
+         *     requires exactly `<root>/<cove>/<wave>` depth, so any other path produces a
+         *     row whose directory can never be reclaimed.
          *
-         *     Modelled as a struct with one field rather than a bare `WaveWorkspaceKind`
-         *     so that `managed → attached` can add `path` here later without changing the
-         *     shape of anything already shipped.
+         *     `attached → *` stays refused (an attached repository belongs to the user;
+         *     the server never moves, initializes or deletes it), which makes this a
+         *     one-way door — and the write below stamps `frozen_at` to say so.
          */
         WaveWorkspacePatch: {
             /**
-             * @description Target kind. S3 implements `managed` only; `attached` is a documented
-             *     400 rather than a silent no-op.
+             * @description Claim `path` for this wave's cove in the same transaction, exactly as
+             *     `POST /api/waves`'s field of the same name does (issue #275 rules:
+             *     equal / ancestor / descendant of any existing claim is a structured
+             *     409). Default `false`: an unclaimed path is refused rather than
+             *     silently making a homeless wave.
              */
+            attach_folder?: boolean;
+            /** @description Must be `attached`. `managed` is a documented 400, not a silent no-op. */
             kind: components["schemas"]["WaveWorkspaceKind"];
+            /**
+             * @description Absolute path to an existing Git work tree. Validated — existence and
+             *     git-ness included — *before* anything is written, because "the path was
+             *     wrong" surfacing later as a worker's `spawn-failed` is the defect
+             *     #1147 was opened on.
+             */
+            path: string;
         };
         /**
          * @description Issue #250 PR 2 — calendar window query parameters for

@@ -61,6 +61,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::common;
+use crate::support::git_helpers::attached_repo_fixture;
 struct Boot {
     app: axum::Router,
     cove_id: String,
@@ -234,7 +235,7 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
     let (status, body) = post(
         app.clone(),
         "/api/waves",
-        json!({"cove_id": cove_id, "title": "inert wave", "cwd": "/tmp/issue-293-tolerant", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": cove_id, "title": "inert wave", "cwd": attached_repo_fixture("issue-293-tolerant"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
 
@@ -318,7 +319,7 @@ async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": title, "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": title, "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
@@ -373,7 +374,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "   ", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "   ", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // The wave create may still 500 because the daemon child fails to
@@ -415,7 +416,7 @@ async fn whitespace_title_does_not_stamp_prompt_on_spec_card() {
 async fn post_api_waves_persists_wave_cwd_and_attach_folder() {
     let boot = boot().await;
 
-    let cwd = "/tmp/issue-250-pr2-cwd-contract";
+    let cwd = attached_repo_fixture("issue-250-pr2-cwd-contract");
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
@@ -464,7 +465,7 @@ async fn post_api_waves_then_lifecycle_done_surfaces_terminal_at_in_get() {
         json!({
             "cove_id": boot.cove_id,
             "title": "wave-to-done",
-            "cwd": "/tmp/issue-250-pr2-to-done",
+            "cwd": attached_repo_fixture("issue-250-pr2-to-done"),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),

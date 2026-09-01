@@ -17,13 +17,19 @@
 //! 3. the move's own assertions — inherited from S5's
 //!    `recycle_wave_workspace`, exercised here end to end
 //!
-//! and the four refusals (frozen / attached / system cove / non-empty) each
-//! have one too. The freeze latch's system-cove exclusion has
+//! and the four refusals (frozen / already attached / system cove / non-empty)
+//! each have one too. The freeze latch's system-cove exclusion has
 //! `a_workspace_lease_never_freezes_the_launchpad`; the freeze point S3 does
 //! NOT implement has `a_terminal_card_does_not_freeze_the_workspace_yet_n17`.
+//!
+//! The transition is `managed → attached` and nothing else. There is no
+//! `managed → managed`: a managed path is derived from the wave's cove and id,
+//! so re-allocating one always re-derives the same directory
+//! (`a_managed_target_is_a_documented_400_not_a_silent_no_op`).
 
 #![cfg(unix)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -183,15 +189,27 @@ async fn workspace_row(b: &Boot, wave_id: &str) -> (String, String, Option<i64>)
     .unwrap()
 }
 
-/// `PATCH /api/waves/{id}` asking for a managed workspace.
-async fn repoint(b: &Boot, wave_id: &str) -> (StatusCode, String) {
+/// `PATCH /api/waves/{id}` pointing a wave at an existing repository.
+async fn repoint_to(b: &Boot, wave_id: &str, path: &Path) -> (StatusCode, String) {
     request(
         b.app.clone(),
         "PATCH",
         &format!("/api/waves/{wave_id}"),
-        Some(json!({"workspace": {"kind": "managed"}})),
+        Some(json!({"workspace": {
+            "kind": "attached",
+            "path": path.to_string_lossy(),
+            "attach_folder": true,
+        }})),
     )
     .await
+}
+
+/// The refusal tests do not care *where* the wave would have gone, only that
+/// it does not go: they all use a perfectly valid target so the refusal cannot
+/// be coming from target validation.
+async fn repoint(b: &Boot, wave_id: &str) -> (StatusCode, String) {
+    let target = user_repo(&b.tmp.path().join(format!("target-{wave_id}")));
+    repoint_to(b, wave_id, &target).await
 }
 
 fn trash_entries(workspace_root: &Path) -> Vec<PathBuf> {
@@ -222,12 +240,6 @@ fn with_identity(at: &Path) {
     git(at, &["config", "user.email", "fixture@example.com"]);
 }
 
-fn marker(path: &Path) -> Option<String> {
-    std::fs::read_to_string(path.join(".git").join("neige-workspace"))
-        .ok()
-        .map(|s| s.trim().to_string())
-}
-
 fn commit_count(path: &Path) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -236,6 +248,61 @@ fn commit_count(path: &Path) -> String {
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Every path under `root`, with file contents. Directories map to `None`,
+/// symlinks to their target, files to their exact bytes.
+///
+/// Comparing this before and after is the assertion that matters for an
+/// attached target: not "the directory still exists", but "not one byte
+/// moved". It deliberately includes `.git/` — a `.claude/worktrees/` line
+/// appearing in `.git/info/exclude`, or a `neige-workspace` marker showing up,
+/// are both ways the server could have taken ownership of a user's repository,
+/// and both show up here as a diff.
+fn fingerprint(root: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<PathBuf, Option<Vec<u8>>>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"))
+            .map(|e| e.unwrap().path())
+            .collect();
+        entries.sort();
+        for path in entries {
+            let rel = path.strip_prefix(root).unwrap().to_path_buf();
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            if meta.file_type().is_symlink() {
+                let target = std::fs::read_link(&path).unwrap();
+                out.insert(rel, Some(target.into_os_string().into_encoded_bytes()));
+            } else if meta.is_dir() {
+                out.insert(rel, None);
+                walk(root, &path, out);
+            } else {
+                out.insert(rel, Some(std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
+fn diff(
+    before: &BTreeMap<PathBuf, Option<Vec<u8>>>,
+    after: &BTreeMap<PathBuf, Option<Vec<u8>>>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (path, bytes) in before {
+        match after.get(path) {
+            None => out.push(format!("removed: {}", path.display())),
+            Some(other) if other != bytes => out.push(format!("changed: {}", path.display())),
+            Some(_) => {}
+        }
+    }
+    for path in after.keys() {
+        if !before.contains_key(path) {
+            out.push(format!("added: {}", path.display()));
+        }
+    }
+    out
 }
 
 /// A user-owned repository outside the managed root.
@@ -254,20 +321,41 @@ fn user_repo(at: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_pristine_managed_workspace_is_moved_to_trash_and_replaced() {
+async fn a_pristine_wave_is_pointed_at_the_users_repository() {
     let b = boot().await;
     let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let (wave, managed_path) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
+    let target_before = fingerprint(&target);
 
     // Something we can recognise later, invisible to the emptiness predicate
     // because it lives inside `.git/`.
-    std::fs::write(path.join(".git").join("fixture-witness"), b"old\n").unwrap();
+    std::fs::write(managed_path.join(".git").join("fixture-witness"), b"old\n").unwrap();
     assert!(trash_entries(&b.workspace_root).is_empty());
 
-    let (status, body) = repoint(&b, &wave).await;
+    let (status, body) = repoint_to(&b, &wave, &target).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
-    // The OLD directory is in the trash, not deleted.
+    // The row points at the user's repository, attached and frozen.
+    let (kind, path, frozen) = workspace_row(&b, &wave).await;
+    assert_eq!(kind, "attached");
+    assert_eq!(PathBuf::from(&path), target);
+    assert!(
+        frozen.is_some(),
+        "`attached -> *` is not a legal transition, so this is a one-way door and \
+         the row must say so; S4's `no_attached_wave_is_ever_unfrozen` pins the \
+         same thing over the whole table"
+    );
+
+    // The user's repository is byte-for-byte untouched: not initialized, not
+    // committed into, no `.git/info/exclude` line, no ownership marker.
+    assert_eq!(
+        diff(&target_before, &fingerprint(&target)),
+        Vec::<String>::new(),
+        "the server must not have touched the user's repository"
+    );
+
+    // The OLD managed directory is in the trash — moved, not deleted.
     let trashed = trash_entries(&b.workspace_root);
     assert_eq!(trashed.len(), 1, "expected exactly one trash entry");
     assert!(
@@ -283,28 +371,42 @@ async fn a_pristine_managed_workspace_is_moved_to_trash_and_replaced() {
         "old\n",
         "the old workspace must be MOVED, not deleted"
     );
-
-    // A NEW workspace is materialized at the derived path, with our marker and
-    // the one baseline commit — i.e. it is a workspace a worker can lease.
-    let new_path = workspace_path(&b, &wave).await;
-    assert_eq!(
-        new_path, path,
-        "a managed re-point re-derives <root>/<cove>/<wave>; the path is server-owned"
-    );
-    assert!(new_path.join(".git").is_dir());
-    assert_eq!(marker(&new_path).as_deref(), Some(wave.as_str()));
-    assert_eq!(commit_count(&new_path), "1");
     assert!(
-        !new_path.join(".git").join("fixture-witness").exists(),
-        "the replacement must be a fresh repository, not the old one"
+        !managed_path.exists(),
+        "the old managed directory must be gone from its original path"
     );
 
-    let (kind, _, frozen) = workspace_row(&b, &wave).await;
-    assert_eq!(kind, "managed");
+    // The claim was minted for this cove, so a second wave in the same
+    // repository does not have to re-argue ownership.
+    let claims: Vec<(String, String)> = sqlx::query_as("SELECT path, cove_id FROM cove_folders")
+        .fetch_all(b.repo.pool())
+        .await
+        .unwrap();
     assert_eq!(
-        frozen, None,
-        "a re-point does not freeze; the workspace stays a default until a \
-         durable cwd consumer appears"
+        claims,
+        vec![(target.to_string_lossy().into_owned(), cove.clone())],
+        "`attach_folder: true` must claim the directory for the wave's cove"
+    );
+}
+
+/// Frozen means frozen: the door only opens once.
+#[tokio::test]
+async fn a_second_repoint_is_refused_because_the_first_one_froze_it() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let first = user_repo(&b.tmp.path().join("first"));
+    let second = user_repo(&b.tmp.path().join("second"));
+
+    let (status, body) = repoint_to(&b, &wave, &first).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let (status, body) = repoint_to(&b, &wave, &second).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert_eq!(
+        PathBuf::from(workspace_row(&b, &wave).await.1),
+        first,
+        "the wave must still point at the first repository"
     );
 }
 
@@ -312,9 +414,10 @@ async fn a_pristine_managed_workspace_is_moved_to_trash_and_replaced() {
 async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     let b = boot().await;
     let cove = create_cove(&b, "c").await;
-    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let (wave, managed_path) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
 
-    let (status, body) = repoint(&b, &wave).await;
+    let (status, body) = repoint_to(&b, &wave, &target).await;
     assert_eq!(status, StatusCode::OK, "body={body}");
 
     // The re-point must submit a `spec-harness-start` carrying the NEW cwd and
@@ -331,8 +434,14 @@ async fn the_spec_harness_is_restarted_on_the_new_path_with_a_new_thread() {
     let last: Value = serde_json::from_str(payloads.last().expect("a harness start")).unwrap();
     assert_eq!(
         last["cwd"].as_str(),
-        Some(path.to_string_lossy().as_ref()),
-        "the restart must carry the wave's current workspace path; payload={last}"
+        Some(target.to_string_lossy().as_ref()),
+        "the restart must carry the wave's NEW workspace path, not the trashed \
+         one; payload={last}"
+    );
+    assert_ne!(
+        last["cwd"].as_str(),
+        Some(managed_path.to_string_lossy().as_ref()),
+        "payload={last}"
     );
     assert_eq!(
         last["force_new_thread"],
@@ -361,6 +470,7 @@ async fn the_fence_is_up_before_the_move_not_after_it() {
     let b = boot().await;
     let cove = create_cove(&b, "c").await;
     let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
 
     let active_before: Vec<String> = sqlx::query_scalar(
         "SELECT id FROM worker_sessions WHERE wave_id=?1 \
@@ -388,12 +498,17 @@ async fn the_fence_is_up_before_the_move_not_after_it() {
 
     let app = b.app.clone();
     let wave_for_task = wave.clone();
+    let target_for_task = target.clone();
     let patch = tokio::spawn(async move {
         request(
             app,
             "PATCH",
             &format!("/api/waves/{wave_for_task}"),
-            Some(json!({"workspace": {"kind": "managed"}})),
+            Some(json!({"workspace": {
+                "kind": "attached",
+                "path": target_for_task.to_string_lossy(),
+                "attach_folder": true,
+            }})),
         )
         .await
     });
@@ -441,6 +556,7 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
     let b = boot().await;
     let cove = create_cove(&b, "c").await;
     let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let target = user_repo(&b.tmp.path().join("my-project"));
 
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
@@ -454,12 +570,17 @@ async fn a_write_between_the_fence_and_the_move_is_refused() {
 
     let app = b.app.clone();
     let wave_for_task = wave.clone();
+    let target_for_task = target.clone();
     let patch = tokio::spawn(async move {
         request(
             app,
             "PATCH",
             &format!("/api/waves/{wave_for_task}"),
-            Some(json!({"workspace": {"kind": "managed"}})),
+            Some(json!({"workspace": {
+                "kind": "attached",
+                "path": target_for_task.to_string_lossy(),
+                "attach_folder": true,
+            }})),
         )
         .await
     });
@@ -768,19 +889,276 @@ async fn a_system_cove_wave_refuses_the_change() {
 }
 
 #[tokio::test]
-async fn an_attached_target_is_a_documented_400_not_a_silent_no_op() {
+async fn a_managed_target_is_a_documented_400_not_a_silent_no_op() {
     let b = boot().await;
     let cove = create_cove(&b, "c").await;
-    let (wave, _) = managed_wave(&b, &cove, "w").await;
+    let (wave, path) = managed_wave(&b, &cove, "w").await;
     let (status, body) = request(
         b.app.clone(),
         "PATCH",
         &format!("/api/waves/{wave}"),
-        Some(json!({"workspace": {"kind": "attached"}})),
+        Some(json!({"workspace": {"kind": "managed", "path": path.to_string_lossy()}})),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a managed path is derived from the wave, so `managed -> managed` would \
+         always re-derive the same directory; answering it explicitly beats \
+         letting a caller believe an in-place reset was a change. body={body}"
+    );
+    assert!(trash_entries(&b.workspace_root).is_empty());
+    assert_eq!(workspace_row(&b, &wave).await.0, "managed");
+}
+
+// ---------------------------------------------------------------------------
+// Target validation (design D3) — the same three checks on both routes
+// ---------------------------------------------------------------------------
+
+/// Failure has to surface HERE, with git's own words.
+///
+/// Without this, attaching a directory that does not exist is a 201, and the
+/// first `kind: codex` task then dies inside `git_repo_root_for_wave_cwd`
+/// leaving nothing but `spawn-failed` in `tasks.status_detail`. That is issue
+/// #1147's opening paragraph — so accepting it from the entry point this slice
+/// adds would have shipped the original defect through a new door.
+#[tokio::test]
+async fn attaching_a_path_that_does_not_exist_is_refused_on_both_routes() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let missing = b.tmp.path().join("no-such-directory");
+
+    let (status, body) = request(
+        b.app.clone(),
+        "POST",
+        "/api/waves",
+        Some(json!({
+            "cove_id": cove, "title": "w", "theme": theme(),
+            "cwd": missing.to_string_lossy(), "attach_folder": true,
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body.contains("does not exist"),
+        "the response must say what is wrong, not `spawn-failed`: {body}"
+    );
+    let waves: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM waves WHERE title='w'")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(waves, 0, "a refused create must leave no wave row");
+
+    let (wave, _) = managed_wave(&b, &cove, "patched").await;
+    let (status, body) = repoint_to(&b, &wave, &missing).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.contains("does not exist"), "{body}");
+    assert_eq!(workspace_row(&b, &wave).await.0, "managed");
     assert!(trash_entries(&b.workspace_root).is_empty());
+}
+
+#[tokio::test]
+async fn attaching_a_directory_that_is_not_a_git_work_tree_is_refused_on_both_routes() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    // A real directory, outside any repository, with no `.git`.
+    let plain = b.tmp.path().join("not-a-repo");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("notes.txt"), b"just a folder\n").unwrap();
+
+    let (status, body) = request(
+        b.app.clone(),
+        "POST",
+        "/api/waves",
+        Some(json!({
+            "cove_id": cove, "title": "w", "theme": theme(),
+            "cwd": plain.to_string_lossy(), "attach_folder": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(
+        body.contains("not inside a Git work tree"),
+        "the response must carry the real reason: {body}"
+    );
+
+    let (wave, _) = managed_wave(&b, &cove, "patched").await;
+    let (status, body) = repoint_to(&b, &wave, &plain).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.contains("not inside a Git work tree"), "{body}");
+    assert_eq!(workspace_row(&b, &wave).await.0, "managed");
+    assert!(trash_entries(&b.workspace_root).is_empty());
+}
+
+#[tokio::test]
+async fn attaching_a_file_rather_than_a_directory_is_refused() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let file = b.tmp.path().join("a-file");
+    std::fs::write(&file, b"not a directory\n").unwrap();
+    let (wave, _) = managed_wave(&b, &cove, "w").await;
+
+    let (status, body) = repoint_to(&b, &wave, &file).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");
+    assert!(body.contains("is not a directory"), "{body}");
+}
+
+/// A subdirectory of a repository is a legal cwd, deliberately.
+///
+/// `rev-parse --show-toplevel` succeeds there, and the worker path derives the
+/// repository root itself (`git_repo_root_for_wave_cwd`) — so refusing it
+/// would reject a directory work can actually happen in, for a reason nothing
+/// downstream cares about.
+#[tokio::test]
+async fn attaching_a_subdirectory_of_a_repository_is_allowed() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let repo = user_repo(&b.tmp.path().join("my-project"));
+    let sub = repo.join("crates");
+    std::fs::create_dir_all(&sub).unwrap();
+    let (wave, _) = managed_wave(&b, &cove, "w").await;
+
+    let (status, body) = repoint_to(&b, &wave, &sub).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(PathBuf::from(workspace_row(&b, &wave).await.1), sub);
+}
+
+// ---------------------------------------------------------------------------
+// The cove_folders claim rules — the same ones `POST /api/waves` uses
+// ---------------------------------------------------------------------------
+
+/// A directory another cove already claims comes back as the STRUCTURED 409,
+/// with nothing moved. Same body shape the create route returns, because both
+/// go through `enforce_folder_claim_tx`.
+#[tokio::test]
+async fn a_directory_claimed_by_another_cove_is_a_structured_conflict() {
+    let b = boot().await;
+    let owner = create_cove(&b, "owner").await;
+    let other = create_cove(&b, "other").await;
+    let repo = user_repo(&b.tmp.path().join("my-project"));
+
+    // `owner` claims it first, through the create route.
+    let (status, body) = request(
+        b.app.clone(),
+        "POST",
+        "/api/waves",
+        Some(json!({
+            "cove_id": owner, "title": "first", "theme": theme(),
+            "cwd": repo.to_string_lossy(), "attach_folder": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let (wave, managed_path) = managed_wave(&b, &other, "w").await;
+    let active_before: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+    )
+    .bind(&wave)
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap();
+    assert!(
+        !active_before.is_empty(),
+        "premise: the wave has a live spec harness"
+    );
+
+    let (status, body) = repoint_to(&b, &wave, &repo).await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    let conflict: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        conflict["cove_id"].as_str(),
+        Some(owner.as_str()),
+        "the 409 must name the cove that owns the directory, not just say \
+         `conflict`: {body}"
+    );
+    assert_eq!(
+        conflict["conflict_path"].as_str(),
+        Some(repo.to_string_lossy().as_ref())
+    );
+    assert!(conflict["conflict_kind"].is_string(), "{body}");
+
+    // Nothing happened.
+    let (kind, path, frozen) = workspace_row(&b, &wave).await;
+    assert_eq!(kind, "managed");
+    assert_eq!(PathBuf::from(path), managed_path);
+    assert_eq!(frozen, None);
+    assert!(trash_entries(&b.workspace_root).is_empty());
+    assert!(managed_path.join(".git").is_dir());
+
+    // …including the spec harness. The claim rules are checked in the fence
+    // transaction *before* the supersede, so a target that was never going to
+    // be accepted does not cost the user their running agent. Without that
+    // early check the conflict is still caught (the write transaction re-runs
+    // the same rules, authoritatively) but only after the harness has been
+    // torn down and restarted — a worse answer to the same question.
+    let active_after: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM worker_sessions WHERE wave_id=?1 \
+         AND state IN ('starting','running','idle','turn_pending') ORDER BY id",
+    )
+    .bind(&wave)
+    .fetch_all(b.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        active_after, active_before,
+        "a refused target must leave the running spec harness alone"
+    );
+}
+
+/// Without `attach_folder`, an unclaimed directory is refused rather than
+/// silently making a homeless wave — the same rule `POST /api/waves` has.
+#[tokio::test]
+async fn an_unclaimed_directory_without_attach_folder_is_refused() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let repo = user_repo(&b.tmp.path().join("my-project"));
+    let (wave, _) = managed_wave(&b, &cove, "w").await;
+
+    let (status, body) = request(
+        b.app.clone(),
+        "PATCH",
+        &format!("/api/waves/{wave}"),
+        Some(json!({"workspace": {"kind": "attached", "path": repo.to_string_lossy()}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "body={body}");
+    assert!(
+        body.contains("attach_folder"),
+        "the refusal must say how to proceed: {body}"
+    );
+    assert_eq!(workspace_row(&b, &wave).await.0, "managed");
+    assert!(trash_entries(&b.workspace_root).is_empty());
+}
+
+/// A directory this cove already claims is a no-op for the claim table, not a
+/// duplicate-row 409 — issue #275's rule, inherited for free.
+#[tokio::test]
+async fn a_directory_this_cove_already_claims_needs_no_new_claim() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let repo = user_repo(&b.tmp.path().join("my-project"));
+    let (status, body) = request(
+        b.app.clone(),
+        "POST",
+        "/api/waves",
+        Some(json!({
+            "cove_id": cove, "title": "first", "theme": theme(),
+            "cwd": repo.to_string_lossy(), "attach_folder": true,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let (wave, _) = managed_wave(&b, &cove, "second").await;
+    let (status, body) = repoint_to(&b, &wave, &repo).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let claims: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM cove_folders")
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap();
+    assert_eq!(claims, 1, "the second wave must not mint a duplicate claim");
 }
 
 #[tokio::test]
@@ -788,11 +1166,21 @@ async fn a_workspace_change_cannot_ride_along_with_row_edits() {
     let b = boot().await;
     let cove = create_cove(&b, "c").await;
     let (wave, _) = managed_wave(&b, &cove, "w").await;
+    // A target that would otherwise be accepted, so the 400 can only be coming
+    // from the mixing rule.
+    let target = user_repo(&b.tmp.path().join("my-project"));
     let (status, body) = request(
         b.app.clone(),
         "PATCH",
         &format!("/api/waves/{wave}"),
-        Some(json!({"title": "renamed", "workspace": {"kind": "managed"}})),
+        Some(json!({
+            "title": "renamed",
+            "workspace": {
+                "kind": "attached",
+                "path": target.to_string_lossy(),
+                "attach_folder": true,
+            },
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "body={body}");

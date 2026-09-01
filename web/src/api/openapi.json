@@ -7251,14 +7251,23 @@
       },
       "WaveWorkspacePatch": {
         "type": "object",
-        "description": "#1147 S3 — the requested workspace, as a *kind* rather than a path.\n\nThe caller never names a directory. A managed workspace's path is\n`<workspace-root>/<cove_id>/<wave_id>` and the server derives it\n(`workspace_materialize::managed_workspace_path`); accepting a\ncaller-supplied path would produce rows that S5's recycle guard 2 refuses\non depth, i.e. workspaces that leak by construction — and that guard exists\nprecisely because S3 is the slice that writes `workspace_path`.\n\nModelled as a struct with one field rather than a bare `WaveWorkspaceKind`\nso that `managed → attached` can add `path` here later without changing the\nshape of anything already shipped.",
+        "description": "#1147 S3 — point a wave at a repository the user already has.\n\nThe only transition this expresses is `managed → attached`. There is no\n`managed → managed`: a managed path is *derived*\n(`<workspace-root>/<cove_id>/<wave_id>`, see\n`workspace_materialize::managed_workspace_path`) from a wave's cove and id,\nneither of which can change, so \"re-allocate a managed workspace\" would\nalways re-derive the same path — an in-place reset, not a change. And a\ncaller-supplied *managed* path is worse than useless: S5's recycle guard 2\nrequires exactly `<root>/<cove>/<wave>` depth, so any other path produces a\nrow whose directory can never be reclaimed.\n\n`attached → *` stays refused (an attached repository belongs to the user;\nthe server never moves, initializes or deletes it), which makes this a\none-way door — and the write below stamps `frozen_at` to say so.",
         "required": [
-          "kind"
+          "kind",
+          "path"
         ],
         "properties": {
+          "attach_folder": {
+            "type": "boolean",
+            "description": "Claim `path` for this wave's cove in the same transaction, exactly as\n`POST /api/waves`'s field of the same name does (issue #275 rules:\nequal / ancestor / descendant of any existing claim is a structured\n409). Default `false`: an unclaimed path is refused rather than\nsilently making a homeless wave."
+          },
           "kind": {
             "$ref": "#/components/schemas/WaveWorkspaceKind",
-            "description": "Target kind. S3 implements `managed` only; `attached` is a documented\n400 rather than a silent no-op."
+            "description": "Must be `attached`. `managed` is a documented 400, not a silent no-op."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to an existing Git work tree. Validated — existence and\ngit-ness included — *before* anything is written, because \"the path was\nwrong\" surfacing later as a worker's `spawn-failed` is the defect\n#1147 was opened on."
           }
         },
         "additionalProperties": false

@@ -22,6 +22,8 @@ use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use crate::support::git_helpers::attached_repo_fixture;
+
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
@@ -402,7 +404,7 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
     // route: a managed one (title-only) and an attached one (explicit cwd), so
     // the property below is neither empty nor all-launchpad.
     let cove = create_cove(&b, "Atlas").await;
-    let attached_dir = TempDir::new().unwrap();
+    let attached_dir = attached_repo_fixture("today-launchpad-under-root");
     create_wave(
         &b,
         serde_json::json!({
@@ -417,7 +419,7 @@ async fn every_managed_wave_lives_under_the_workspace_root() {
         serde_json::json!({
             "cove_id": cove["id"],
             "title": "attached wave",
-            "cwd": attached_dir.path().to_string_lossy(),
+            "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -496,13 +498,13 @@ async fn no_attached_wave_is_ever_unfrozen() {
     // Both shapes in a *user* cove, minted through the production route —
     // otherwise the property is only tested against the row that motivated it.
     let cove = create_cove(&b, "Atlas").await;
-    let tmp = TempDir::new().unwrap();
+    let attached_dir = attached_repo_fixture("today-launchpad-never-unfrozen");
     create_wave(
         &b,
         serde_json::json!({
             "cove_id": cove["id"],
             "title": "user wave",
-            "cwd": tmp.path().to_string_lossy(),
+            "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -919,7 +921,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
     let cove = create_cove(&b, "Atlas").await;
-    let attached_dir = TempDir::new().unwrap();
+    let attached_dir = attached_repo_fixture("today-launchpad-shared-path");
     let managed_parent = create_wave(
         &b,
         serde_json::json!({
@@ -934,7 +936,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
         serde_json::json!({
             "cove_id": cove["id"],
             "title": "attached parent",
-            "cwd": attached_dir.path().to_string_lossy(),
+            "cwd": attached_dir.clone(),
             "attach_folder": true,
             "theme": {"fg": [255, 255, 255], "bg": [0, 0, 0]},
         }),
@@ -978,7 +980,7 @@ async fn no_two_waves_share_a_managed_workspace_path() {
          proves nothing about the scoping: {rows:?}"
     );
     let (shared_path, sharers) = &attached_sharing[0];
-    assert_eq!(shared_path, &attached_dir.path().to_string_lossy());
+    assert_eq!(shared_path, &attached_dir);
     assert!(
         sharers.contains(&attached_child) && sharers.len() == 2,
         "expected exactly the attached parent and its child on {shared_path}: \

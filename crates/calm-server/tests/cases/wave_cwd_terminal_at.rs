@@ -38,6 +38,23 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use crate::support::git_helpers::attached_repo_fixture;
+
+/// #1147 S3 — `POST /api/waves` now validates an explicit (attached) `cwd`
+/// *before* the cove-claim scan: absolute, existing, inside a Git work tree.
+/// The claim-semantics fixtures below used invented literals (`/workspace`,
+/// `/a/b`, `/srv/projects/alpha`) that never existed on any disk, so they now
+/// name real, shared, idempotent Git work trees instead. Every ancestor /
+/// descendant / disjoint relation the assertions depend on is reproduced by
+/// construction (`attached_sub` is a real directory *inside* the named
+/// fixture repository), and every assertion compares against the bound local
+/// rather than a literal.
+fn attached_sub(name: &str, sub: &str) -> String {
+    let path = std::path::PathBuf::from(attached_repo_fixture(name)).join(sub);
+    std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("create {path:?}: {e}"));
+    path.to_string_lossy().into_owned()
+}
+
 struct Boot {
     app: axum::Router,
     cove_id: String,
@@ -196,9 +213,12 @@ async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
 async fn post_api_waves_uses_existing_folder_claim() {
     let boot = boot().await;
 
-    // Pre-seed: the cove claims `/workspace` as a folder.
+    // Pre-seed: the cove claims the workspace root as a folder, and the
+    // wave's cwd is a real directory *under* it.
+    let claimed = attached_repo_fixture("cwd-terminal-existing-claim");
+    let cwd = attached_sub("cwd-terminal-existing-claim", "sub/dir");
     boot.repo
-        .cove_folder_create(&boot.cove_id, "/workspace")
+        .cove_folder_create(&boot.cove_id, &claimed)
         .await
         .unwrap();
 
@@ -208,7 +228,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
         json!({
             "cove_id": boot.cove_id,
             "title": "w-existing-claim",
-            "cwd": "/workspace/sub/dir",
+            "cwd": cwd.clone(),
             "attach_folder": false,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -222,7 +242,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "exactly one wave created");
-    assert_eq!(waves[0].workspace.path, "/workspace/sub/dir");
+    assert_eq!(waves[0].workspace.path, cwd);
     assert_eq!(waves[0].terminal_at, None);
     assert_eq!(waves[0].lifecycle, WaveLifecycle::Draft);
 
@@ -230,7 +250,7 @@ async fn post_api_waves_uses_existing_folder_claim() {
     // existing claim covers cwd).
     let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(folders.len(), 1);
-    assert_eq!(folders[0].path, "/workspace");
+    assert_eq!(folders[0].path, claimed);
 }
 
 /// Happy path 2: cwd is unclaimed, body sets `attach_folder = true`.
@@ -239,13 +259,14 @@ async fn post_api_waves_uses_existing_folder_claim() {
 async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
     let boot = boot().await;
 
+    let cwd = attached_repo_fixture("cwd-terminal-attach-alpha");
     let (status, _body) = post(
         boot.app.clone(),
         "/api/waves",
         json!({
             "cove_id": boot.cove_id,
             "title": "w-attach",
-            "cwd": "/srv/projects/alpha",
+            "cwd": cwd.clone(),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -256,12 +277,12 @@ async fn post_api_waves_with_attach_folder_creates_folder_and_wave() {
     // Folder claim landed.
     let folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(folders.len(), 1);
-    assert_eq!(folders[0].path, "/srv/projects/alpha");
+    assert_eq!(folders[0].path, cwd);
 
     // Wave row carries the same path.
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1);
-    assert_eq!(waves[0].workspace.path, "/srv/projects/alpha");
+    assert_eq!(waves[0].workspace.path, cwd);
 }
 
 /// Issue #275 — the cove already claims *exactly* this cwd and the caller
@@ -291,8 +312,9 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
         "this test only proves idempotency if folder enforcement is not bypassed"
     );
 
+    let cwd = attached_repo_fixture("cwd-terminal-reclaim-exact");
     boot.repo
-        .cove_folder_create(&boot.cove_id, "/workspace")
+        .cove_folder_create(&boot.cove_id, &cwd)
         .await
         .unwrap();
 
@@ -302,7 +324,7 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
         json!({
             "cove_id": boot.cove_id,
             "title": "w-reclaim-exact",
-            "cwd": "/workspace",
+            "cwd": cwd.clone(),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -328,11 +350,11 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
         "attach_folder on an already-owned exact path must not mint a second row; got {:?}",
         folders.iter().map(|f| &f.path).collect::<Vec<_>>()
     );
-    assert_eq!(folders[0].path, "/workspace");
+    assert_eq!(folders[0].path, cwd);
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed");
-    assert_eq!(waves[0].workspace.path, "/workspace");
+    assert_eq!(waves[0].workspace.path, cwd);
 }
 
 /// Issue #275 — the cove claims `/a` and the caller posts `cwd: "/a/b"`
@@ -352,8 +374,10 @@ async fn post_api_waves_attach_folder_is_idempotent_for_exact_same_cove_claim() 
 async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
     let boot = boot().await;
 
+    let claimed = attached_repo_fixture("cwd-terminal-overlap");
+    let cwd = attached_sub("cwd-terminal-overlap", "b");
     boot.repo
-        .cove_folder_create(&boot.cove_id, "/a")
+        .cove_folder_create(&boot.cove_id, &claimed)
         .await
         .unwrap();
 
@@ -363,7 +387,7 @@ async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
         json!({
             "cove_id": boot.cove_id,
             "title": "w-reclaim-descendant",
-            "cwd": "/a/b",
+            "cwd": cwd.clone(),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -384,14 +408,15 @@ async fn post_api_waves_attach_folder_does_not_mint_overlapping_descendant() {
     let paths: Vec<&str> = folders.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(
         paths,
-        vec!["/a"],
-        "attach_folder must not mint `/a/b` under a cove that already claims `/a` — \
-         two rows covering the same subtree is the corrupt state #275 exists to prevent"
+        vec![claimed.as_str()],
+        "attach_folder must not mint `{cwd}` under a cove that already claims \
+         `{claimed}` — two rows covering the same subtree is the corrupt state \
+         #275 exists to prevent"
     );
 
     let waves = boot.repo.waves_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed");
-    assert_eq!(waves[0].workspace.path, "/a/b");
+    assert_eq!(waves[0].workspace.path, cwd);
 }
 
 /// `attach_folder = false` with an unclaimed cwd is refused (409) —
@@ -406,7 +431,7 @@ async fn post_api_waves_rejects_unclaimed_cwd_without_attach_folder() {
         json!({
             "cove_id": boot.cove_id,
             "title": "w-orphan",
-            "cwd": "/unclaimed/path",
+            "cwd": attached_repo_fixture("cwd-terminal-unclaimed"),
             "attach_folder": false,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -438,8 +463,10 @@ async fn post_api_waves_attach_folder_conflict_rolls_back() {
 
     // Pre-seed the *other* cove with a folder that overlaps the cwd
     // we're about to try claiming.
+    let other_claim = attached_repo_fixture("cwd-terminal-shared");
+    let cwd = attached_sub("cwd-terminal-shared", "inner");
     boot.repo
-        .cove_folder_create(&boot.other_cove_id, "/shared/workspace")
+        .cove_folder_create(&boot.other_cove_id, &other_claim)
         .await
         .unwrap();
     let folders_before = boot.repo.cove_folders_list_all().await.unwrap().len();
@@ -451,7 +478,7 @@ async fn post_api_waves_attach_folder_conflict_rolls_back() {
         json!({
             "cove_id": boot.cove_id,
             "title": "w-conflict",
-            "cwd": "/shared/workspace/inner",
+            "cwd": cwd.clone(),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -491,8 +518,10 @@ async fn post_api_waves_attach_folder_conflict_rolls_back() {
 async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
     let boot = boot().await;
 
+    let other_claim = attached_repo_fixture("cwd-terminal-owned-by-other");
+    let cwd = attached_sub("cwd-terminal-owned-by-other", "sub");
     boot.repo
-        .cove_folder_create(&boot.other_cove_id, "/owned/by/other")
+        .cove_folder_create(&boot.other_cove_id, &other_claim)
         .await
         .unwrap();
 
@@ -502,7 +531,7 @@ async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
         json!({
             "cove_id": boot.cove_id,
             "title": "w-cross",
-            "cwd": "/owned/by/other/sub",
+            "cwd": cwd.clone(),
             "attach_folder": false,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -535,6 +564,15 @@ async fn post_api_waves_rejects_cwd_owned_by_another_cove() {
 /// mint a cove_folders row even when `attach_folder = true`, and
 /// must not poison the global descendant check for subsequent user
 /// coves. Regression for the `cwd: '/'` self-collision noticed in CI.
+///
+/// #1147 S3 — the literal `/` cannot be the system cwd any more: an explicit
+/// `cwd` is validated (absolute, exists, inside a Git work tree) *before* the
+/// system-cove exemption runs, and `/` is not inside a work tree. What made
+/// `/` the sharp case was that it is an **ancestor of every other cwd**, so
+/// the system cove is given a real repository root here and the user wave
+/// below is given a real directory *inside* it. The poison the regression is
+/// about is reproduced exactly: had the system cove claimed its root, the
+/// user create underneath it would 409.
 #[tokio::test]
 async fn post_api_waves_for_system_cove_skips_folder_claim() {
     let boot = boot().await;
@@ -546,6 +584,8 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
         "mint system cove: status={status}, body={body}",
     );
     let system_cove_id = body["id"].as_str().expect("system cove id").to_string();
+    let system_cwd = attached_repo_fixture("cwd-terminal-system-root");
+    let user_cwd = attached_sub("cwd-terminal-system-root", "beta");
 
     // POST a wave with the system cove + a `/` cwd + attach_folder=true.
     // Pre-fix this would claim `/` for the system cove and poison every
@@ -556,7 +596,7 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
         json!({
             "cove_id": system_cove_id,
             "title": "Today",
-            "cwd": "/",
+            "cwd": system_cwd.clone(),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -586,7 +626,7 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
         json!({
             "cove_id": boot.cove_id,
             "title": "user wave",
-            "cwd": "/srv/projects/beta",
+            "cwd": user_cwd.clone(),
             "attach_folder": true,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -598,7 +638,7 @@ async fn post_api_waves_for_system_cove_skips_folder_claim() {
     );
     let user_folders = boot.repo.cove_folders_by_cove(&boot.cove_id).await.unwrap();
     assert_eq!(user_folders.len(), 1);
-    assert_eq!(user_folders[0].path, "/srv/projects/beta");
+    assert_eq!(user_folders[0].path, user_cwd);
 }
 
 /// Issue #1131 — omitted `cwd` (and `attach_folder`) is not the same as
@@ -705,18 +745,46 @@ async fn post_api_waves_omitted_cwd_allocates_managed_and_skips_cove_folders() {
 }
 
 /// Explicit `cwd: $HOME` is *not* the omitted-cwd branch. A user cove
-/// with no claims still 409s when `attach_folder` is false — production
-/// only skips the scan when `cwd` is missing/`null`. Do not special-case
-/// HOME as a present path; that would poison every other cove via
+/// with no claims is still refused when `attach_folder` is false —
+/// production only skips the scan when `cwd` is missing/`null`. Do not
+/// special-case HOME as a present path; that would poison every other cove via
 /// longest-prefix if it ever claimed.
+///
+/// #1147 S3 — an explicit `cwd` is now validated (absolute, exists, inside a
+/// Git work tree) *before* the claim scan, and `$HOME` is a path this test
+/// does not own. On a machine whose HOME is not a work tree the request is
+/// refused at that gate with a 400 — which is the #1147 defect made eager,
+/// since the pre-S2 omitted branch stored exactly this path and every
+/// `kind: codex` worker on such a wave then died in `git rev-parse` with
+/// nothing but `spawn-failed`. Which of the two refusals applies is decided by
+/// a precondition probe and pinned exactly, not tolerated as an either/or.
+/// Neither refusal is the managed branch and neither writes a row — that is
+/// the property under test.
 #[tokio::test]
-async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_409() {
+async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_refused() {
     let boot = boot().await;
     let home = expected_default_cwd();
     assert!(
         home.starts_with('/'),
-        "fixture HOME/default_cwd must be absolute so this hits the claim path, not the 400; got `{home}`"
+        "fixture HOME/default_cwd must be absolute so this hits the workspace \
+         gate or the claim path, not the not-absolute 400; got `{home}`"
     );
+    // Precondition probe (not the assertion): does this machine's HOME satisfy
+    // the S3 attached-workspace gate?
+    let home_is_work_tree = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&home)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    let expected_status = if home_is_work_tree {
+        // Reaches the claim scan: unclaimed + `attach_folder: false` → 409.
+        StatusCode::CONFLICT
+    } else {
+        // Refused at the attached-workspace gate, before the scan.
+        StatusCode::BAD_REQUEST
+    };
 
     let (status, body) = post(
         boot.app.clone(),
@@ -730,7 +798,11 @@ async fn post_api_waves_explicit_home_cwd_without_attach_folder_is_409() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "body = {body}");
+    assert_eq!(
+        status, expected_status,
+        "explicit HOME must be refused, never taken down the managed branch; \
+         home_is_work_tree={home_is_work_tree} body = {body}"
+    );
     assert_eq!(
         boot.repo.waves_by_cove(&boot.cove_id).await.unwrap().len(),
         0
@@ -1246,22 +1318,28 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
 
     // Corrupt state: two claims cover `/a/b/c`, under different coves.
     // `ORDER BY path ASC` puts `/a` first; `/a/b` is the longer prefix.
+    // `ORDER BY path ASC` still puts the outer claim first: `<root>` is a
+    // strict prefix of `<root>/b`, so it sorts before it, exactly as `/a`
+    // sorted before `/a/b`.
+    let outer = attached_repo_fixture("cwd-terminal-agree");
+    let inner = attached_sub("cwd-terminal-agree", "b");
+    let cwd = attached_sub("cwd-terminal-agree", "b/c");
     boot.repo
-        .cove_folder_create(&boot.cove_id, "/a")
+        .cove_folder_create(&boot.cove_id, &outer)
         .await
         .unwrap();
     boot.repo
-        .cove_folder_create(&boot.other_cove_id, "/a/b")
+        .cove_folder_create(&boot.other_cove_id, &inner)
         .await
         .unwrap();
 
     // Resolver 1 — the endpoint the frontend calls.
-    let (status, body) = get(boot.app.clone(), "/api/coves/resolve?path=/a/b/c").await;
+    let (status, body) = get(boot.app.clone(), &format!("/api/coves/resolve?path={cwd}")).await;
     assert_eq!(status, StatusCode::OK);
     let resolved_cove = body["cove_id"].as_str().unwrap().to_string();
     assert_eq!(
         body["folder_path"].as_str().unwrap(),
-        "/a",
+        outer,
         "shared find_owner takes the first row in ORDER BY path ASC"
     );
     assert_eq!(resolved_cove, boot.cove_id);
@@ -1274,7 +1352,7 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
         json!({
             "cove_id": resolved_cove,
             "title": "w-agree",
-            "cwd": "/a/b/c",
+            "cwd": cwd.clone(),
             "attach_folder": false,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),
@@ -1296,7 +1374,7 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
     );
     let waves = boot.repo.waves_by_cove(&resolved_cove).await.unwrap();
     assert_eq!(waves.len(), 1, "the wave must have landed under that cove");
-    assert_eq!(waves[0].workspace.path, "/a/b/c");
+    assert_eq!(waves[0].workspace.path, cwd);
 
     // ...and the cove the resolver did NOT name must still be refused,
     // so "they agree" is not vacuously true by accepting everything.
@@ -1306,7 +1384,7 @@ async fn resolve_and_wave_create_agree_on_overlapping_rows() {
         json!({
             "cove_id": boot.other_cove_id,
             "title": "w-disagree",
-            "cwd": "/a/b/c",
+            "cwd": cwd.clone(),
             "attach_folder": false,
             "theme": {"fg": [216,219,226], "bg": [15,20,24]},
         }),

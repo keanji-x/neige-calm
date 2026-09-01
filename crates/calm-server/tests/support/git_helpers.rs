@@ -237,3 +237,49 @@ pub fn git_stdout<const N: usize>(repo: &Path, args: [&str; N]) -> String {
 pub fn is_hex_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
+
+/// #1147 S3 — a real Git work tree at a stable, name-derived path, for
+/// fixtures that need an **attached** wave and do not care where it points.
+///
+/// `POST /api/waves` now validates an attached `cwd` (absolute, exists, is a
+/// Git work tree) instead of accepting any string, because the FE entry point
+/// this slice adds is the first way a user can name one — and a path that only
+/// fails later, as a worker's `spawn-failed`, is the defect #1147 was opened
+/// on. Dozens of fixtures predate that check and pass literals like
+/// `/tmp/issue-250-pr2-test`, which were never valid workspaces; this makes
+/// them what they always claimed to be.
+///
+/// Idempotent and safe to share: the directory is keyed by `name` and re-init
+/// is a no-op, which matches how those literals were already shared across
+/// tests within a file.
+///
+/// Sharing has to survive *concurrent* first use, not just repeated use. The
+/// literals this replaces were shared across tests, and nextest runs every
+/// test in its own process with several binaries in flight at once, so two
+/// processes reach the un-initialized branch for the same key at the same
+/// time. Two `git init`s in one directory race on `.git/config`'s lock and one
+/// of them dies with `不能锁定配置文件 … 文件已存在`. So the repository is built
+/// off to the side and its `.git` is *renamed* into place: the winner's rename
+/// is atomic, the loser's fails because the destination is a non-empty
+/// directory, and the loser's repository is discarded — the winner's is
+/// identical, and no caller ever observes a half-initialized `.git`.
+pub fn attached_repo_fixture(name: &str) -> String {
+    let root = std::env::temp_dir().join("neige-attached-fixtures");
+    let path = root.join(name);
+    std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("create {path:?}: {e}"));
+    if !path.join(".git").is_dir() {
+        let staging = root.join(format!(".init-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).unwrap_or_else(|e| panic!("create {staging:?}: {e}"));
+        run_git(&staging, ["init", "-b", "main"]);
+        // Losing this rename is the expected outcome for every process but the
+        // first; the assertion that matters is made below, after the race.
+        let _ = std::fs::rename(staging.join(".git"), path.join(".git"));
+        let _ = std::fs::remove_dir_all(&staging);
+        assert!(
+            path.join(".git").is_dir(),
+            "attached_repo_fixture({name}): no `.git` at {path:?} after init"
+        );
+    }
+    path.to_string_lossy().into_owned()
+}

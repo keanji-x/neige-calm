@@ -1,4 +1,5 @@
 mod common;
+mod support;
 
 #[path = "cases/e2e_user_edit_spec_reaction.rs"]
 mod e2e_user_edit_spec_reaction;
