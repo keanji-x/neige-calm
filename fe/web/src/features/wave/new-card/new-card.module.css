@@ -37,27 +37,43 @@
   }
 
   /*
-   * Anchored to the trigger's trailing edge and hanging below it. Absolute, not
-   * fixed: unlike the rail's account menu this trigger is not inside a
-   * scroll/clip box it has to escape — the panel card is a static column — and
-   * absolute keeps the popup with the button when the page scrolls.
+   * ── Anchored to the trigger, and raised by shadow alone ──────────────────
+   *
+   * **No outline.** `ui/panel-card` states the rule for this whole column —
+   * "colour and radius, no outline… one boundary, one channel" — and this menu
+   * opens *on top of that card*, on the same `--surface-card`. A hairline plus a
+   * shadow was two channels for one boundary, and on a white panel it read as a
+   * pasted-on white box rather than as the card's own menu. The shadow is the
+   * one channel it needs, because being raised is the only thing that
+   * distinguishes it from the surface underneath.
+   *
+   * `--radius-md`, the panel's own radius, for the same reason: a 16px corner
+   * over a 12px card is a second corner language in one column.
+   *
+   * The trailing edge lines up with the trigger, which pulls itself 4px out of
+   * the module head — so the `+`, the menu and every row's × land on one
+   * column instead of the three different edges this had before (measured at
+   * 1440: menu 1404, trigger 1408, card 1416).
+   *
+   * Absolute, not fixed: unlike the rail's account menu this trigger is not
+   * inside a scroll/clip box it has to escape — the panel card is a static
+   * column — and absolute keeps the popup with the button as the page scrolls.
    */
   .menu {
     position: absolute;
     inset-block-start: calc(100% + var(--space-2));
-    inset-inline-end: 0;
+    inset-inline-end: calc(var(--space-2) * -1);
     z-index: var(--z-overlay);
     display: flex;
     flex-direction: column;
     min-inline-size: var(--menu-w-min);
     max-inline-size: var(--menu-w-max);
 
-    /* 4px items inside a 12px radius: the padding is what makes the two agree,
-       the same arithmetic as the rail's menu. */
-    padding: var(--space-6);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-lg);
-    background: var(--paper);
+    /* 4 + 8 = the panel's own 12px inset, so a menu item's word starts on the
+       same pixel as a card row's underneath it. */
+    padding: var(--space-2);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
     box-shadow: var(--shadow-float);
   }
 
@@ -65,7 +81,7 @@
     display: flex;
     align-items: center;
     block-size: var(--row-h-sm);
-    padding-inline: var(--space-3);
+    padding-inline: var(--space-4);
     border-radius: var(--radius-sm);
     font-size: var(--text-base);
     font-weight: var(--weight-normal);
@@ -81,7 +97,7 @@
   }
 
   .menuEmpty {
-    padding: var(--space-3);
+    padding: var(--space-4);
     font-size: var(--text-xs);
     line-height: var(--leading-tight);
     color: var(--text-3);
