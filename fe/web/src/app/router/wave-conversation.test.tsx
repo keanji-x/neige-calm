@@ -53,6 +53,22 @@ function assistantRow(overrides: Partial<Row> = {}): Row {
   };
 }
 
+/**
+ * One persisted transcript row, in the shape the harness serves.
+ *
+ * The two item types do not carry their text the same way — an agent message
+ * has `text`, a user message has `content` parts (`harnessItemToTurn`) — so the
+ * payload is the caller's to spell, and a row spelled the other way silently
+ * yields no turn at all.
+ */
+function harnessMessage(id: number, itemType: string, item: unknown) {
+  return {
+    id, runtime_id: 'r', card_id: ASSISTANT_CARD.id, wave_id: 'w1', thread_id: 't',
+    turn_id: null, item_uuid: null, item_type: itemType, method: 'item/completed',
+    params: JSON.stringify({ item, completedAtMs: id }), created_at_ms: id,
+  };
+}
+
 /** The card a `/api/cards/{id}/…` request is about. */
 function pathCardId(path: string): string {
   return decodeURIComponent(path.split('/')[3] ?? '');
@@ -401,6 +417,132 @@ describe('wave conversations', () => {
     const listed = rows();
     expect(listed.indexOf('Conversation Recently touched, on Test wave'))
       .toBeLessThan(listed.indexOf('Conversation Assistant, on Test wave, 0 turns'));
+  });
+
+  /*
+   * The premise the test above rests on, from underneath: **at most one echo is
+   * ever unanswered.**
+   *
+   * "Not yet a fact" is tracked by a single id, and that is only sound while a
+   * second send cannot start before the first is answered. `sendingRef` does
+   * not deliver that on its own. Walking to another conversation resets it —
+   * deliberately, the new conversation's composer must work — and the request
+   * left behind then settles into a store that has moved on. Clearing the
+   * send state unconditionally on the way out re-opens a composer whose *own*
+   * message is still in flight, and the store is then holding two unanswered
+   * echoes with one slot to name them: the older one is silently reclassified
+   * as confirmed and written into the registry as fact — the exact defect the
+   * test above pins, walked in through a different door.
+   *
+   * The second POST is what this asserts. A composer that re-opens is a symptom
+   * you can argue about; a third message this store had no right to accept is
+   * the state that produces the wrong registry write.
+   */
+  it('[G5] lets no stale request re-open a composer whose own message is still in flight', async () => {
+    const held = new Map<string, () => void>();
+    const release = (cardId: string) => held.get(cardId)?.();
+    const { requests } = setup(async (request) => {
+      if (!request.path.endsWith('/spec/input')) return undefined;
+      const cardId = pathCardId(request.path);
+      await new Promise<void>((resolve) => { held.set(cardId, resolve); });
+      return { status: 503, statusText: 'Service Unavailable', body: { code: 'unavailable', error: 'busy' } };
+    });
+    /* Conversation A, one message, request still out. */
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    await write('the first conversation speaks');
+    await waitFor(() => expect(held.has(ASSISTANT_CARD.id)).toBe(true));
+
+    /* Conversation B, on the same panel instance — the walk that resets
+       `sendingRef` so this composer works at all. */
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Conversation Spec chat' }));
+    await screen.findByRole('complementary', { name: 'Spec chat' });
+    await write('the second conversation speaks');
+    await waitFor(() => expect(held.has(SPEC_CARD.id)).toBe(true));
+    const sends = () => requests.filter((request) =>
+      request.path === `/api/cards/${SPEC_CARD.id}/spec/input`);
+    expect(sends()).toHaveLength(1);
+
+    /* A's request lands now, and it is answering for a conversation nobody is
+       looking at. */
+    await act(async () => { release(ASSISTANT_CARD.id); await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+
+    /* B's message is still unanswered, so B's composer is still closed: this
+       third message does not go out. */
+    await write('and a third the store must refuse');
+    await act(async () => { await Promise.resolve(); });
+    expect(sends()).toHaveLength(1);
+    /* Nor did A's failure surface under B's composer — it is not B's failure,
+       and B's reader never sent that message. */
+    expect(screen.queryByText(/busy|Could not send/)).toBeNull();
+  });
+
+  /*
+   * The other side of the write-through: it may not undo what arrived while it
+   * was waiting.
+   *
+   * `mutations.send` resolves two refreshes *after* its POST returned 200
+   * (`useSpecMutations` invalidates the item history and the run), and either
+   * refresh can land first. So the interval between "this message is a fact"
+   * and "the store may say so" is one in which the entry legitimately changes:
+   * the server's own copy of the message arrives, the agent's reply arrives
+   * with it, the effects write both into the registry — and then the drawer is
+   * closed and the second refresh finally settles.
+   *
+   * A callback merging into the list it captured when Enter was pressed writes
+   * the pre-send entry back: the reply is gone, the count is the one this
+   * browser could count on its own, and nothing will ever fetch them again for
+   * a conversation whose only surface is a wave the reader has left. The read
+   * and the write have to be the same moment, which is `updateExisting`.
+   *
+   * `2 turns` is the assertion, and it is one number that rejects both ways of
+   * getting this wrong: a captured snapshot says `1` (the echo, on top of an
+   * entry that knew nothing), and an atomic merge that appends its echo without
+   * noticing the server already sent that message back says `3`.
+   */
+  it('[G5] does not overwrite a refresh that landed while the send was still settling', async () => {
+    let releaseRun!: () => void;
+    const runSettled = new Promise<void>((resolve) => { releaseRun = resolve; });
+    let answered = false;
+    const { router } = setup(async (request) => {
+      if (request.path.startsWith(`/api/cards/${ASSISTANT_CARD.id}/harness/items`)) {
+        return ok(answered ? [
+          harnessMessage(1, 'userMessage', { content: [{ text: 'what does this repo do?' }] }),
+          harnessMessage(2, 'agentMessage', { text: 'it runs waves' }),
+        ] : []);
+      }
+      if (request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/input`) {
+        answered = true;
+        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r' });
+      }
+      /* The *second* of the two refreshes the send waits on, held open. The
+         first one — the history — is answered above and is what lands the new
+         facts in the registry while this one is still out. */
+      if (answered && request.path === `/api/cards/${ASSISTANT_CARD.id}/spec/run`) {
+        await runSettled;
+        return ok({ card_id: ASSISTANT_CARD.id, runtime_id: 'r', phase: 'idle' });
+      }
+      return undefined;
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Assistant' }));
+    await screen.findByRole('complementary', { name: 'Assistant' });
+    await write('what does this repo do?');
+    /* The window is open: the history refresh has landed — the agent's reply is
+       on screen and in the registry — and the send has not settled. */
+    await screen.findByText('it runs waves');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
+    await waitFor(() => expect(
+      document.querySelector('[data-nc-role="row"][aria-current="true"]'),
+    ).toBeNull());
+    await act(async () => { releaseRun(); await Promise.resolve(); });
+
+    await act(async () => { await router.navigate({ to: '/' }); });
+    await screen.findByRole('button', {
+      name: 'Conversation what does this repo do?, on Test wave, 2 turns',
+    });
   });
 
   /*

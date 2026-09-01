@@ -130,7 +130,18 @@
   }
 
   .wave {
-    min-inline-size: 0;
+    /* A floor as well as a ceiling, and the floor is about the separator.
+       Shrinkage is weighted by base size, so the *shorter* crumb is the one
+       that gets squeezed to nothing: a one-word wave beside a 60-character
+       conversation name is handed about 8px — enough for the `·` below and
+       nothing else. The crumb then reads as a lone dot after the name, which
+       says "something was cut" about a string that would have fitted in two
+       more characters. 6ch is the dot, its 4px gap and about four characters of
+       `--text-xs` — a short wave name whole, or a longer one visibly truncated
+       rather than erased. Below its own content width it never binds (a short
+       crumb is simply shown at its size), and it is an order under the 40%
+       ceiling at every width this panel takes, so the two cannot fight. */
+    min-inline-size: 6ch;
     flex: 0 1 auto;
     max-inline-size: 40%;
     overflow: hidden;
@@ -150,7 +161,10 @@
      decorative and is generated content, so it is outside `textContent` and
      outside the `aria-label` the button already spells out in words; nothing
      reads it aloud. It sits inside `.wave`, so it is clipped with the crumb
-     rather than surviving a crumb that has vanished. */
+     rather than surviving a crumb that has vanished — and because it is
+     *first*, while clipping happens at the inline end, "clipped with" needed
+     the floor above to be true: without it the dot is the one part of the crumb
+     that always survives. */
   .wave::before {
     content: '·';
     margin-inline-end: var(--space-1);

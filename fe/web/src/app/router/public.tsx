@@ -238,15 +238,43 @@ export function useConversationStore(
   /**
    * The echo whose `POST /spec/input` has not been answered yet, if any.
    *
-   * One id and not a set, because `sendingRef` already refuses a second send
-   * while one is in flight — at most one turn is ever unanswered, and a field
-   * that could hold two would be describing a state this store cannot reach.
+   * One id and not a set, and that is a claim about reachability rather than
+   * about this line: a second unanswered echo would make `confirmedEchoes`
+   * report the first one as confirmed, which is exactly the false fact the
+   * registry must never be told (`durableConversation`).
+   *
+   * What holds it to one is `sendingRef` **plus** `activeSend` below. On its
+   * own `sendingRef` does not: the `cardId` effect clears it so a second
+   * conversation can be written in while the first one's POST is still out, and
+   * an in-flight request that cleared it again on the way out — as this one
+   * unconditionally did — would re-open the composer over a *new* conversation
+   * whose own echo was still unanswered. Two unanswered echoes, one slot. The
+   * settle handlers below therefore touch the send state only while they are
+   * still the active request, which is what makes "at most one" true rather
+   * than merely intended.
    */
   const [unconfirmedEchoId, setUnconfirmedEchoId] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [interruptPending, setInterruptPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const sendingRef = useRef(false);
+  /**
+   * The send whose settling is still allowed to speak for this store.
+   *
+   * A request that is no longer this one has nothing true to say about
+   * `sending`, `sendingRef` or `actionError`: those describe the conversation
+   * the reader is in now, and it is not the conversation that request was sent
+   * to. (Its *own* result is still written through — see `send`.)
+   */
+  const activeSend = useRef<{ cardId: string; echoId: string } | null>(null);
+  /**
+   * Every echo id this store has minted, which is how a write-through tells an
+   * echo of its own apart from a user message the server sent back.
+   *
+   * Ids are `echo-N` off a counter that is never reset, so they stay unique
+   * across conversation switches for the life of the store.
+   */
+  const mintedEchoIds = useRef(new Set<string>());
   const seq = useRef(0);
   const items = useMemo(() => (history.data?.pages ?? []).flat(), [history.data]);
   const serverTurns = useMemo(() => [...items]
@@ -264,6 +292,10 @@ export function useConversationStore(
     setEchoes([]);
     setUnconfirmedEchoId(null);
     setActionError(null);
+    /* The send in flight, if any, belongs to the conversation being left: it
+       stops being the active one here, and stops being allowed to write the
+       state below. Its own answer is still delivered (`send`). */
+    activeSend.current = null;
     sendingRef.current = false;
     setSending(false);
     setInterruptPending(false);
@@ -458,6 +490,12 @@ export function useConversationStore(
     setActionError(null);
     seq.current += 1;
     const echo = { id: `echo-${seq.current}`, author: 'you' as const, text, atMs: Date.now() };
+    mintedEchoIds.current.add(echo.id);
+    const sentTo = cardId;
+    activeSend.current = { cardId: sentTo, echoId: echo.id };
+    /* Still ours to answer for. False from the moment the reader moved to
+       another conversation (the `cardId` effect) or started a later send. */
+    const stillActive = () => activeSend.current?.echoId === echo.id;
     setEchoes((current) => [...current, echo]);
     setUnconfirmedEchoId(echo.id);
     void mutations.send(text).then(() => {
@@ -470,27 +508,68 @@ export function useConversationStore(
        * for a turn that lands a moment later and *is* now a fact. Nothing else
        * would ever supply it: an assistant row is `title: null` on the wire for
        * good, so the name would be lost for the life of the tab rather than
-       * merely delayed. So the confirmation is written straight through.
+       * merely delayed. So the confirmation is written straight through — for
+       * the conversation it was *sent to*, which is not necessarily the one
+       * open now.
        *
-       * Only into an entry that already exists, which is what keeps this on the
-       * right side of the `rememberOn` defence above: on a cove route the open
-       * conversation is never remembered, so there is nothing here to find. And
-       * only the absent direction of the name, exactly as the batch remember
+       * Through `updateExisting`, not `remember`, because both halves of this
+       * write have to happen at the moment of the write rather than at the
+       * moment of the send. `mutations.send` resolves two refreshes after its
+       * POST returned 200 (`useSpecMutations`), and either of them can land a
+       * newer transcript, turn count or state in this entry first: merging into
+       * `registry.conversations` and `registry.turnsOf` as captured here would
+       * put the pre-send entry back and drop what just arrived. The
+       * "only into an entry that already exists" check is the same story —
+       * that is what keeps this on the right side of the `rememberOn` defence
+       * above (on a cove route the open conversation is never remembered, so
+       * there is nothing to find), and a decision made off a captured list is
+       * a decision made about a list that may no longer be the one being
+       * written to.
+       *
+       * Only the absent direction of the name, exactly as the batch remember
        * below does it — a title the server sends is the server's.
        */
-      const known = registry.conversations.find((candidate) => candidate.id === cardId);
-      if (known === undefined) return;
-      registry.remember({
-        ...known,
-        title: known.title ?? conversationNameFrom(text),
-        updatedAt: Math.max(known.updatedAt, echo.atMs),
-        turns: (known.turns ?? 0) + 1,
-      }, [...registry.turnsOf(cardId), echo]);
+      registry.updateExisting(sentTo, ({ conversation: known, turns: knownTurns }) => {
+        /*
+         * The refresh may already have brought this very message back.
+         *
+         * `POST /spec/input` is answered, the history query refetches, the
+         * server's own row for this message lands, and the effect above writes
+         * the transcript containing it — all before this promise settles.
+         * Appending the echo then would show the reader their message twice and
+         * count it twice. Matched by text through the same one-to-one rule the
+         * drawer reconciles echoes with (`reconcileUserEchoes`), and only
+         * against turns this store did *not* mint, so genuinely sending the
+         * same sentence twice still counts twice.
+         */
+        const serverSaid = knownTurns.filter((turn): turn is ConversationTurn =>
+          turn.author === 'you' && !mintedEchoIds.current.has(turn.id));
+        const recorded = reconcileUserEchoes(serverSaid, [echo]).length === 0;
+        return {
+          conversation: {
+            ...known,
+            title: known.title ?? conversationNameFrom(text),
+            updatedAt: Math.max(known.updatedAt, echo.atMs),
+            ...(recorded ? {} : { turns: (known.turns ?? 0) + 1 }),
+          },
+          turns: recorded ? knownTurns : [...knownTurns, echo],
+        };
+      });
     }).catch((error: unknown) => {
+      /* A failure belongs to the conversation that failed. Reported on another
+         one it is a sentence under a composer the reader never sent from, and
+         dropping the echo there would be dropping someone else's. */
+      if (!stillActive()) return;
       setEchoes((current) => current.filter((turn) => turn.id !== echo.id));
       setActionError(errorMessage(error, 'Could not send the message.'));
     }).finally(() => {
       setUnconfirmedEchoId((current) => current === echo.id ? null : current);
+      /* Re-opening the composer is a statement about the send in flight *now*.
+         Made unconditionally, this is what let a second unanswered echo exist:
+         the request left behind by a conversation switch cleared the flag of a
+         send that had not been answered yet. See `unconfirmedEchoId`. */
+      if (!stillActive()) return;
+      activeSend.current = null;
       sendingRef.current = false;
       setSending(false);
     });

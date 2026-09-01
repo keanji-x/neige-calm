@@ -32,7 +32,9 @@ import { afterEach, describe, expect, it } from 'vitest';
    imported first, and every override in the app then loses. */
 import '../../../styles/entry.css';
 
-import type { Conversation } from '../../../../../core/domain/conversation.ts';
+import {
+  CONVERSATION_NAME_MAX, type Conversation,
+} from '../../../../../core/domain/conversation.ts';
 import { ChatList } from './public.tsx';
 
 afterEach(() => { document.body.replaceChildren(); });
@@ -44,7 +46,18 @@ afterEach(() => { document.body.replaceChildren(); });
    draws — the defect is entirely about how little line there is to share. */
 const COLUMN = 270;
 
+/* The floor of that same track: `max(15rem, 25cqi)` is 240px on a narrow
+   window, and it is where the two halves are most contended. */
+const COLUMN_FLOOR = 240;
+
 const LONG_WAVE = 'Ship the conversation panel rewrite and its migration plan';
+
+/* A derived name is clipped to `CONVERSATION_NAME_MAX`, so this is the longest
+   one a row can carry, and the worst case for everything to its right. Padded
+   from the constant rather than typed out: a name one character short of the
+   bound would be testing a case the product can beat. */
+const LONGEST_NAME = 'Rework how the wave panel lists conversations'
+  .padEnd(CONVERSATION_NAME_MAX, '!');
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
   return {
@@ -56,22 +69,35 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
 /**
  * The real `ChatList`, in a column the width the panel gives it.
  *
- * The three boxes are reached **by position**, not by class: a CSS Module class
+ * The two boxes are reached **by position**, not by class: a CSS Module class
  * is a hashed runtime value and `architecture/no-class-dom-query` closes that
  * door on purpose, and adding `data-testid`s to a production row to measure it
  * would be putting test scaffolding in the product. The shape is `button >
  * span.label > (span.name, span.wave)` and it is one component away — a change
  * to it fails here loudly rather than silently, which is the right direction.
+ *
+ * "Loudly" is what the assertions below buy: the position assumption is checked
+ * against the fixture's own two strings before anything is measured. `::before`
+ * content is not a child, so today the arithmetic is right by accident as much
+ * as by design — put a badge between the name and the crumb and every geometric
+ * assertion in this file would go on passing while measuring the badge, with
+ * the crumb an unexamined third child. A count and two `textContent`s cost one
+ * line and turn that into a failure at the point of the change.
  */
-function draw(conversations: readonly Conversation[]) {
+function draw(conversations: readonly Conversation[], width = COLUMN) {
   const { getByRole } = render(
-    <div style={{ inlineSize: COLUMN }}>
+    <div style={{ inlineSize: width }}>
       <ChatList conversations={conversations} onOpen={() => undefined} />
     </div>,
   );
   const row = getByRole('button');
   const label = row.firstElementChild as HTMLElement;
-  const [name, wave] = [...label.children] as HTMLElement[];
+  const parts = [...label.children] as HTMLElement[];
+  expect(parts, 'the row is no longer `label > (name, wave)`').toHaveLength(2);
+  const [name, wave] = parts as [HTMLElement, HTMLElement];
+  const [only] = conversations as readonly [Conversation];
+  expect(name.textContent, 'the first child is not the conversation name').toBe(only.title);
+  expect(wave.textContent, 'the second child is not the wave crumb').toBe(only.waveTitle);
   return { row, label, name, wave };
 }
 
@@ -126,6 +152,35 @@ describe('a conversation row that names its wave', () => {
        name is the rest of the line less the gap — a majority, and by a margin
        that does not depend on which two strings these are. */
     expect(name.clientWidth / label.clientWidth).toBeGreaterThan(0.5);
+    expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
+    expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
+  });
+
+  /*
+   * The crumb's separator, at the width where it is the only thing left of it.
+   *
+   * The `·` is generated content at the crumb's inline *start* and clipping
+   * happens at the inline *end*, so the dot is the last part of the crumb to
+   * go — the opposite of the order that would be harmless. Shrinkage weighted
+   * by base size does the rest: the shorter the wave title, the less of the
+   * squeeze it absorbs, so the case that fails is the small one. The longest
+   * name a conversation can have, a one-word wave, the panel at its floor —
+   * every value here is a real bound rather than a chosen bad number — and the
+   * crumb is handed about eight pixels: a dot, alone, after a name. It reads as
+   * a mark of truncation over a string that needed two more characters, and the
+   * wave it was there to name is the part that vanished.
+   */
+  it('never leaves the separator standing where the wave title does not fit', async () => {
+    await browserPage.viewport(1200, 800);
+    const { row, label, name, wave } = draw([conversation({
+      title: LONGEST_NAME, waveTitle: 'Ops',
+    })], COLUMN_FLOOR);
+
+    /* The premise: the line really is over-subscribed, so the crumb is being
+       shrunk rather than merely fitting. */
+    expect(clipped(name), 'the premise: the name has to give').toBe(true);
+    /* And the crumb survives whole — the wave is named, not hinted at. */
+    expect(clipped(wave), 'the wave title was cut down to its separator').toBe(false);
     expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth + 1);
     expect(label.scrollWidth).toBeLessThanOrEqual(label.clientWidth + 1);
   });
