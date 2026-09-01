@@ -1443,3 +1443,80 @@ async fn a16_disable_stops_the_plugin_before_it_writes_the_row() {
          the stop then fails, and the next boot skips it *because* it is disabled"
     );
 }
+
+/// Acceptance 9/10, third predicate — a supervisor that wakes from its backoff
+/// onto a **different run instance** must leave it alone.
+///
+/// The `enabled` bit cannot catch this case (the plugin is still enabled) and
+/// neither can the registry check (it is still installed). Only the per-instance
+/// identity can: `run_epoch` (and the `Crashed`-state check) says "the entry in
+/// front of me is not the one I was supervising". Without it the old supervisor
+/// removes a healthy live entry and respawns over it, orphaning the running
+/// child.
+///
+/// The reload swaps the entrypoint from the crash stub to the echo stub, so the
+/// replacement instance is one that *stays* Running and a resurrection is
+/// visible as a changed pid.
+///
+/// Mutation witness: delete the `ok` predicate block at the top of
+/// `respawn_after_backoff` and the pid changes under you.
+#[tokio::test]
+async fn a9b_a_late_supervisor_leaves_a_newer_run_instance_alone() {
+    const BACKOFF: u64 = 2_500;
+    let fx = boot_with(BootOpts {
+        stub: CRASH_BIN,
+        backoff: Some((vec![BACKOFF], Duration::from_secs(300), 50)),
+        ..Default::default()
+    })
+    .await;
+
+    fx.host.spawn(ID).await.expect("spawn");
+    wait_for_status(
+        &fx.host,
+        ID,
+        |s| matches!(s, Some(PluginRuntimeStatus::Crashed { .. })),
+        Duration::from_secs(10),
+    )
+    .await;
+
+    // Point the manifest at a stub that stays up, then reload: that is a stop +
+    // a fresh spawn, so the live entry is a NEW run instance.
+    let dir = fx.plugins_dir.join(ID);
+    std::os::unix::fs::symlink(Path::new(ECHO_BIN), dir.join("bin").join("stub2")).unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        json!({
+            "manifest_version": 1,
+            "id": ID,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Lock Stub",
+            "entrypoint": { "command": "bin/stub2" },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fx.host.reload(ID).await.expect("reload onto the echo stub");
+    let pid = fx
+        .host
+        .status(ID)
+        .await
+        .expect("live after reload")
+        .pid
+        .expect("app plugin has a pid");
+
+    // Now let the ORIGINAL supervisor's backoff elapse.
+    sleep(Duration::from_millis(BACKOFF + 1_200)).await;
+
+    let after = fx.host.status(ID).await.expect("still live");
+    assert!(
+        matches!(after.status, PluginRuntimeStatus::Running),
+        "the newer instance must still be Running, got {:?}",
+        after.status
+    );
+    assert_eq!(
+        after.pid,
+        Some(pid),
+        "the stale supervisor respawned over a run instance that was not its own"
+    );
+}
