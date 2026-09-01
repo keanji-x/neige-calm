@@ -47,7 +47,7 @@ export function MobileHeader({ title, level = 2, backLabel, onBack, actions }: R
       ref={headerRef}
       className={styles.header}
       data-nc-mobile-header=""
-      data-scrolled={scrolled ? '' : undefined}
+      data-nc-mobile-scrolled={scrolled ? '' : undefined}
     >
       <span className={styles.leading}>
         {onBack !== undefined && (

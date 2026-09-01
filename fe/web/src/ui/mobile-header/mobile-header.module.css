@@ -16,7 +16,7 @@
     transition: background-color var(--motion-quick) ease-out, backdrop-filter var(--motion-quick) ease-out;
   }
 
-  .header[data-scrolled] {
+  .header[data-nc-mobile-scrolled] {
     background: color-mix(in oklab, var(--paper) 72%, transparent);
     backdrop-filter: blur(18px) saturate(1.12);
   }

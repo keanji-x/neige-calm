@@ -23,14 +23,14 @@ describe('MobileHeader scroll surface', () => {
     const host = document.querySelector<HTMLElement>('[data-testid="scroll-host"]')!;
     const header = document.querySelector<HTMLElement>('[data-nc-mobile-header]')!;
     const top = header.getBoundingClientRect().top;
-    expect(header.hasAttribute('data-scrolled')).toBe(false);
+    expect(header.hasAttribute('data-nc-mobile-scrolled')).toBe(false);
     expect(getComputedStyle(header).backdropFilter).toBe('none');
 
     host.scrollTop = 120;
     host.dispatchEvent(new Event('scroll'));
     await settlePaint();
 
-    expect(header.hasAttribute('data-scrolled')).toBe(true);
+    expect(header.hasAttribute('data-nc-mobile-scrolled')).toBe(true);
     expect(getComputedStyle(header).backdropFilter).toContain('blur');
     expect(Math.abs(header.getBoundingClientRect().top - top)).toBeLessThan(1);
   });
