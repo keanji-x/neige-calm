@@ -1091,6 +1091,83 @@ async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
     );
 }
 
+/// #1164 P3 r3 H3 — the REAP phase must be inside the sub-budget too.
+///
+/// The hanging-probe test above never reaches the reap: its child holds stdout
+/// open, so the drain expires first. This shape does reach it — stdout closes
+/// immediately, so the drain succeeds, and then the child lingers. Round 2 gave
+/// that phase its own 5 s grace on top of the 2 s sub-budget, so a probe wedged
+/// after EOF cost 7 s, the 5 s outer bring-up budget fired first, and the
+/// connector went `Unavailable`.
+///
+/// Mutation witness: bound the probe's `wait_and_release_group` with
+/// `timeout(Duration::from_secs(5), …)` instead of `timeout_at(deadline, …)`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_version_probe_that_lingers_after_closing_stdout_stays_in_the_sub_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = script(
+        tmp.path(),
+        "linger_version.sh",
+        "#!/bin/sh\necho 'mytool 9.9'\nexec 1>&-\nsleep 60\n",
+    );
+    let b = block(json!({
+        "command": p.display().to_string(),
+        "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+    }));
+    let started = std::time::Instant::now();
+    let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < VERSION_PROBE_BUDGET + Duration::from_secs(1),
+        "bring-up took {elapsed:?}: the reap phase is spending time outside the \
+         {VERSION_PROBE_BUDGET:?} sub-budget"
+    );
+    assert!(
+        elapsed < CLI_QUERY_BRINGUP_BUDGET,
+        "a lingering probe must never reach the outer budget: {elapsed:?}"
+    );
+    // It never exited, so there is no usable version line — the fallback.
+    assert!(
+        rt.fingerprint().starts_with("size="),
+        "{}",
+        rt.fingerprint()
+    );
+}
+
+/// …and the same on the CALL path: worst-case latency must be
+/// `cli_query.timeout_ms`, not `timeout_ms` plus a reap grace, because that is
+/// what the budget-expiry error text promises the caller.
+///
+/// `a_child_that_outlives_its_budget_is_killed_and_named` cannot see this
+/// either — its child holds stdout open, so the drain expires first and the
+/// reap is never reached.
+///
+/// Mutation witness: bound `tools_call`'s `wait_and_release_group` with
+/// `timeout(Duration::from_secs(5), …)` instead of `timeout_at(deadline, …)`.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_call_that_lingers_after_closing_its_output_still_honours_its_budget() {
+    let tmp = tempfile::tempdir().unwrap();
+    let p = script(
+        tmp.path(),
+        "linger_forever.sh",
+        "#!/bin/sh\necho partial\nexec 1>&- 2>&-\nsleep 30\n",
+    );
+    let rt = runtime_for(p, &[], 300, 4096);
+    let started = std::time::Instant::now();
+    let err = rt.tools_call("quote", json!({})).await.unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert!(err.message.contains("budget"), "{}", err.message);
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "the call took {elapsed:?} against a 300 ms budget; the reap phase is \
+         spending time outside cli_query.timeout_ms"
+    );
+}
+
 /// #1164 P3 r2 G5 — resolution only checks that SOME execute bit is set, so
 /// a file we cannot actually exec resolves, enables, publishes as `Running`
 /// and then fails every single call.
