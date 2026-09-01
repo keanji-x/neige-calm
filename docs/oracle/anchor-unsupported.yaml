@@ -8,6 +8,18 @@
     "expiry": "2026-12-31"
   },
   {
+    "id": "E2E-INV-INFRA-017",
+    "locations": [
+      "crates/calm-server/src/bin/replay.rs:112-115",
+      "crates/calm-server/src/bin/replay.rs:130-159",
+      "crates/calm-server/src/bin/replay.rs:226-245",
+      "crates/calm-server/src/bin/replay.rs:277-284",
+      "crates/calm-server/src/main.rs:185-192"
+    ],
+    "reason": "#1148 —— 「只有 replay --serve 挂 /dev/*」的载体在 Rust 侧（门控、构造、merge 点、生产 router 各一段），无 TS/CSS AST 锚点",
+    "expiry": "2026-12-31"
+  },
+  {
     "id": "GATE-WIRE-003",
     "locations": [
       ".cargo/config.toml:19-25"

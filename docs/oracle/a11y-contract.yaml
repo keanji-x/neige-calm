@@ -182,11 +182,21 @@
   kind: invariant
   family: wave-semantics
   statement: >
-    Sidebar "waiting on you" 行的 accessible name 必须只是 wave title；其 `title` 属性
-    （`<cove> · <title>`）纯属信息性，不得进入 name
+    Sidebar「Waiting on you」分区（`aria-label` 为该串的 section）里，行的 accessible name
+    由行按钮的可见内容算出：`side-wave-title` span 恒渲染 wave 标题，`side-wave-cove` span
+    只在该行解析到 cove 时才渲染（查不到时上游传 `cove` 为 null），所以 name 是「标题」或
+    「标题 + cove 名」两种形态之一；按钮不带 aria-label／aria-labelledby，传给它的 `title`
+    属性（`<cove> · <title>`）纯属信息性，不进入 name
   why: >
-    §2.2 明示 title attribute is informational only
-  source: web/src/shared/components/Sidebar.tsx:58-66
+    §2.2 明示 title attribute is informational only —— 这一半仍然成立，且是这条的真正约束：
+    只要行按钮不长出 aria-label，name 就等于渲染出来的文字。原文案还写着「name 必须只是 wave
+    title」，与实现相反：cove 名是同一个按钮里可见的 span，本来就该进 name（#1148 裁决：文案错，
+    不是代码缺陷；隐藏它反而会让屏幕阅读器听不到跨 cove 的消歧信息）。#1148 第二轮：cove span
+    是条件渲染，写成恒为两段是把条件渲染写成了恒真；source 同时并回 271-283，因为 `WaveRow`
+    是所有分区共用的，只引按钮那几行看不出这条限定在「Waiting on you」分区。#1148 第三轮：
+    271-283 里的 `displayTitle` 是父作用域 map 中的同名变量，真正喂给 :658 那个 span 的是
+    `WaveRow` 自己在 :633 算出的 `displayTitle`，故把 653-660 并成 633-660 纳入真载体。
+  source: web/src/shared/components/Sidebar.tsx:271-283,633-660
   authoritative_test: NONE
   owner_slice: app/shell/sidebar
   intentional_omission: false
@@ -1158,12 +1168,14 @@
   kind: capability
   family: list-keyboard
   statement: >
-    WaveList 中 Delete / Backspace 必须删除聚焦的卡片，**无确认弹窗**（与 grid 视图的
-    `×` 按钮行为一致）
+    WaveList 中 `Delete` 必须删除聚焦的卡片，**无确认弹窗**（与 grid 视图的
+    `×` 按钮行为一致）；`Backspace` 是刻意排除的，它是编辑键，不承担破坏性快捷键
   why: >
     §3.4 明示 "no confirmation, matching grid view's affordance"——两个视图的破坏性
-    操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型
-  source: web/src/WaveList.tsx:30-32,215-235
+    操作门槛必须对齐，否则键盘用户会遇到与鼠标用户不同的心智模型。Backspace 在编辑
+    控件里意味着退格，把它接成删除卡片会让键盘用户在输入过程中误删整张卡片，所以
+    契约只认 Delete
+  source: web/src/WaveList.tsx:234-240,258
   authoritative_test: NONE
   owner_slice: features/wave/list
   intentional_omission: false

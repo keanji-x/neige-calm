@@ -261,13 +261,14 @@
   kind: capability
   family: report-shell
   statement: >
-    同一 wave 上出现多张 wave-report 卡时,必须显示"Multiple report cards found. Showing the earliest."
-    横幅,并渲染 sort 最小的那一张。
+    同一 wave 上出现多张 wave-report 卡时,必须显示 `DuplicateReportBanner`
+    "Multiple report cards found. Showing the earliest." 横幅,并渲染 `selectReportCards`
+    按 sort 升序排完后的第一张(sort 最小的那一张)。
   why: >
     后端有 `idx_cards_one_report_per_wave` 唯一索引,但历史数据/竞态仍可能出现多张;静默挑一张会让用户
     看到"报告内容莫名其妙变了"。
-  source: web/src/pages/WaveReportPage.tsx:84-87,163-169,955-957
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:864
+  source: web/src/pages/WaveReportPage.tsx:118-120,197-202,779-781,1035-1037
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:1040,1051,1054-1055
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -998,8 +999,11 @@
     "cites block <id>" 目标提示只在当前报告确实有结构化 blocks 时才渲染。
   why: >
     "does not promise a block target for a flat v1 report" —— 扁平报告里没有块锚点,承诺一个跳不到的目标是谎言。
-  source: web/src/pages/WaveReportPage.tsx:637-642,846
-  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2338
+    #1148 第三轮:原来第三段引的 846 是 `pending: taskActionMutation.isPending`,与本条无关;
+    「只在当前报告确有结构化 blocks 时」的真载体是 949-952 那个
+    `hasRenderedBlocks={reportCard?.blocks != null}` 的传参点,已重指。
+  source: web/src/pages/WaveReportPage.tsx:637-642,704-708,949-952
+  authoritative_test: web/src/pages/WaveReportPage.test.tsx:2559,2596,2618
   owner_slice: features/report/shell
   intentional_omission: false
   runtime_layer: features
@@ -3566,12 +3570,23 @@
   kind: invariant
   family: new-task-form
   statement: >
-    issue-dev 刻意不提供 `notes` 字段;唯一能发 notes 的路径是 raw JSON 逃生口。
+    issue-dev 表单不提供 `notes` 输入控件,由结构化字段派生的 `derivedWorkflowInput` 对象字面量也
+    只有 `issue_url`、`repo`、`issue_number`、`merge_policy` 四个键、不含该键;唯一能发 notes 的
+    路径是 `rawJsonText` 这个 raw JSON 逃生口。
   why: >
-    源码注释(#891 signoff):"it duplicated the task-description free-text"。测试名把这一点写死:
-    "including a notes key, which raw JSON alone can carry"。
-  source: web/src/shared/components/NewTaskForm.tsx:369-373,626-632
-  authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,277
+    源码注释(#891 signoff):"it duplicated the task-description free-text"。两层是一件事的两半,
+    分开写会漏:authoritative_test:77 钉的是「表单没有 notes 字段」(控件层),:277 钉的是「raw JSON
+    覆盖派生字段、且只有它能带 notes」(payload 层)。source 从 JSDoc(369-373 全是 trivia,会被剥掉)
+    扩到 374-382 的对象字面量本身,那里才是「不含该键」的真正载体。#1148 第二轮:三个分句里只有
+    「派生对象只有四个键」一句有载体,于是补上另外两段 —— 456-470 是提交分支
+    (`workflow_input` 要么是 `JSON.parse(rawJson)` 要么是 `derivedWorkflowInput`,别无第三个来源,
+    这就是「raw JSON 是唯一能送 notes 的路径」的正面载体),757-781 是那个 raw JSON textarea 本身。
+    「表单不提供 notes 控件」是证明不存在类,锚不住是正常的,由 authoritative_test:77 钉住。
+    #1148 第三轮:补登 174-203 —— :277 只证明 raw JSON 能带 notes,不锁「派生对象恰有四键、不含
+    notes」;174-203 用 `toEqual` 钉死整个 create body(含 `workflow_input` 的四个键),才是这一句的
+    精确断言。
+  source: web/src/shared/components/NewTaskForm.tsx:369-382,386-387,456-470,757-781
+  authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,174-203,277
   owner_slice: features/wave/create
   intentional_omission: true
   runtime_layer: features

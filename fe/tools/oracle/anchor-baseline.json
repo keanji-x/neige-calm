@@ -7,7 +7,7 @@
   },
   {
     "id": "CAP-A11Y-045",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
   },
@@ -24,12 +24,6 @@
     "expiry": "2026-10-31"
   },
   {
-    "id": "CAP-A11Y-069",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
     "id": "CAP-A11Y-070",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -42,40 +36,16 @@
     "expiry": "2026-10-31"
   },
   {
-    "id": "CAP-A11Y-102",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
-    "id": "CAP-APP-036",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
     "id": "CAP-APP-038",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-10-31"
-  },
-  {
-    "id": "CAP-APP-063",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
   },
   {
     "id": "CAP-APP-097",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-12-31"
-  },
-  {
-    "id": "CAP-APP-101",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
   },
   {
     "id": "CAP-CARD-034",
@@ -96,40 +66,16 @@
     "expiry": "2026-10-31"
   },
   {
-    "id": "CAP-CHATHIST-005",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
     "id": "CAP-CRUMBS-021",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-12-31"
   },
   {
-    "id": "CAP-DIRPICK-014",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "CAP-SIDEBAR-016",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
-  },
-  {
-    "id": "CAP-SIDEBAR-018",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
-    "id": "CAP-SPECCONVO-017",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
   },
   {
     "id": "E2E-CAP-AXE-005",
@@ -150,22 +96,10 @@
     "expiry": "2026-10-31"
   },
   {
-    "id": "E2E-CAP-INFRA-001",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
     "id": "E2E-CAP-INFRA-032",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-12-31"
-  },
-  {
-    "id": "E2E-CAP-INFRA-033",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
   },
   {
     "id": "E2E-CAP-INFRA-037",
@@ -180,26 +114,8 @@
     "expiry": "2026-12-31"
   },
   {
-    "id": "E2E-CAP-RENAME-012",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
-    "id": "E2E-CAP-RENAME-017",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
-    "id": "E2E-CAP-REPORT-001",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
     "id": "E2E-CAP-REPORT-005",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-10-31"
   },
@@ -210,28 +126,10 @@
     "expiry": "2026-11-30"
   },
   {
-    "id": "E2E-CAP-SHELL-001",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
-    "id": "E2E-CAP-SHELL-007",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "E2E-CAP-SHELL-008",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
-  },
-  {
-    "id": "E2E-CAP-SHELL-009",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
   },
   {
     "id": "E2E-CAP-SPECCHAT-014",
@@ -246,18 +144,6 @@
     "expiry": "2026-11-30"
   },
   {
-    "id": "E2E-CAP-SYNC-007",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
-    "id": "E2E-CAP-SYNC-008",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "E2E-CAP-TERMTHEME-001",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -268,18 +154,6 @@
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-12-31"
-  },
-  {
-    "id": "E2E-CAP-THEME-011",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
-    "id": "E2E-CAP-WAVECREATE-001",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
   },
   {
     "id": "E2E-CAP-WAVECREATE-002",
@@ -300,18 +174,6 @@
     "expiry": "2026-11-30"
   },
   {
-    "id": "E2E-CAP-WAVECREATE-015",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
-    "id": "E2E-CAP-WAVECREATE-016",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "E2E-CAP-WAVEROW-025",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -325,7 +187,7 @@
   },
   {
     "id": "E2E-INV-AXE-015",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-10-31"
   },
@@ -367,7 +229,7 @@
   },
   {
     "id": "E2E-INV-ENV-006",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
   },
@@ -378,14 +240,8 @@
     "expiry": "2026-12-31"
   },
   {
-    "id": "E2E-INV-INFRA-019",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "E2E-INV-INFRA-030",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
   },
@@ -408,32 +264,8 @@
     "expiry": "2026-11-30"
   },
   {
-    "id": "E2E-INV-LIFECYCLE-007",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
     "id": "E2E-INV-MODAL-014",
     "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
-    "id": "E2E-INV-RENAME-009",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
-    "id": "E2E-INV-SHELL-003",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
-    "id": "E2E-INV-SPECCHAT-013",
-    "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-10-31"
   },
@@ -442,12 +274,6 @@
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
-  },
-  {
-    "id": "E2E-INV-SURFACE-018",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
   },
   {
     "id": "E2E-INV-SYNC-005",
@@ -478,12 +304,6 @@
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
-  },
-  {
-    "id": "E2E-INV-WAVECREATE-019",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
   },
   {
     "id": "E2E-INV-WHEEL-001",
@@ -720,12 +540,6 @@
     "expiry": "2026-12-31"
   },
   {
-    "id": "INV-A11Y-030",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
     "id": "INV-A11Y-035",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -733,7 +547,7 @@
   },
   {
     "id": "INV-A11Y-039",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-12-31"
   },
@@ -834,12 +648,6 @@
     "expiry": "2026-10-31"
   },
   {
-    "id": "INV-A11Y-104",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
     "id": "INV-A11Y-108",
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -882,24 +690,6 @@
     "expiry": "2026-12-31"
   },
   {
-    "id": "INV-APP-044",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-10-31"
-  },
-  {
-    "id": "INV-APP-053",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
-    "id": "INV-APP-062",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
     "id": "INV-APP-067",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -910,12 +700,6 @@
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-11-30"
-  },
-  {
-    "id": "INV-APP-075",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
   },
   {
     "id": "INV-APP-094",
@@ -930,14 +714,8 @@
     "expiry": "2026-11-30"
   },
   {
-    "id": "INV-APP-096",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-12-31"
-  },
-  {
     "id": "INV-APP-099",
-    "subtype": "not-in-file",
+    "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-10-31"
   },
@@ -1134,12 +912,6 @@
     "expiry": "2026-10-31"
   },
   {
-    "id": "INV-DUP-010",
-    "subtype": "not-in-file",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
     "id": "INV-ISSUEURL-004",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -1200,12 +972,6 @@
     "expiry": "2026-10-31"
   },
   {
-    "id": "INV-SPECCONVO-012",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
-  },
-  {
     "id": "INV-SPECRUN-005",
     "subtype": "range-miss",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
@@ -1240,12 +1006,6 @@
     "subtype": "not-in-file",
     "reason": "#997 已有 source-anchor 技术债，限期清理",
     "expiry": "2026-10-31"
-  },
-  {
-    "id": "INV-UI-DIALOG-017",
-    "subtype": "range-miss",
-    "reason": "#997 已有 source-anchor 技术债，限期清理",
-    "expiry": "2026-11-30"
   },
   {
     "id": "INV-UI-DIALOG-034",
