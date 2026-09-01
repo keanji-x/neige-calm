@@ -31,13 +31,13 @@ describe('INV-A11Y-061 navigation shape', () => {
   it('is a button and emits no native link', () => {
     const { container } = render(<WaveRow wave={wave()} onOpen={vi.fn()} nowMs={NOW} />);
     expect(container.querySelectorAll('a').length).toBe(0);
-    expect(screen.getByRole('button', { name: /^Wave Open wave/ }).tagName).toBe('BUTTON');
+    expect(screen.getByRole('button', { name: /^Track Open wave/ }).tagName).toBe('BUTTON');
   });
 
   it('opens through the callback, never a href', async () => {
     const onOpen = vi.fn();
     render(<WaveRow wave={wave()} onOpen={onOpen} nowMs={NOW} />);
-    await userEvent.click(screen.getByRole('button', { name: /^Wave Open wave/ }));
+    await userEvent.click(screen.getByRole('button', { name: /^Track Open wave/ }));
     expect(onOpen).toHaveBeenCalledWith('w1');
   });
 });
@@ -49,18 +49,18 @@ describe('accessible name', () => {
   it('names the lifecycle, and the attention state when there is one', () => {
     render(<WaveRow wave={wave({ lifecycle: 'blocked' })} coveName="Work" onOpen={vi.fn()} nowMs={NOW} />);
     expect(screen.getByRole('button', {
-      name: 'Wave Open wave, waiting on you, Blocked, in cove Work',
+      name: 'Track Open wave, waiting on you, Blocked, in area Work',
     })).toBeTruthy();
   });
 
   it('names the cove only when the surface supplies one', () => {
     render(<WaveRow wave={wave()} onOpen={vi.fn()} nowMs={NOW} />);
-    expect(screen.getByRole('button', { name: 'Wave Open wave, running, Working' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Track Open wave, running, Working' })).toBeTruthy();
   });
 
   it('uses the untitled label rather than an empty name', () => {
     render(<WaveRow wave={wave({ title: '   ' })} onOpen={vi.fn()} nowMs={NOW} />);
-    expect(screen.getByRole('button', { name: /^Wave Untitled wave/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Track Untitled track/ })).toBeTruthy();
   });
 });
 

@@ -28,7 +28,7 @@ function renderPage(overrides: Partial<Parameters<typeof CovePage>[0]> = {}) {
 describe('CovePage header', () => {
   it('shows the cove name, and nothing else', () => {
     const { container } = renderPage();
-    expect(screen.getByRole('button', { name: 'Rename cove' }).textContent).toBe('Work');
+    expect(screen.getByRole('button', { name: 'Rename area' }).textContent).toBe('Work');
     // No wave count. It answered a question nobody asks — you open a cove to
     // pick a wave, not to learn how many there are — and the list below already
     // says it, at a glance, with the names attached. No identity dot either: it
@@ -41,7 +41,8 @@ describe('CovePage header', () => {
   // decision. See the delete suite below.
   it('asks the caller to open the new-wave surface', async () => {
     const { props } = renderPage();
-    await userEvent.click(screen.getByRole('button', { name: 'New wave' }));
+    expect(screen.getByRole('heading', { name: 'Tracks' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'New track' }));
     expect(props.onRequestNewWave).toHaveBeenCalledTimes(1);
   });
 
@@ -50,8 +51,8 @@ describe('CovePage header', () => {
   // accessible name, so both are present, not either.
   it('gives each header icon a tooltip as well as an accessible name', () => {
     renderPage();
-    expect(screen.getByRole('button', { name: 'New wave' }).getAttribute('title')).toBe('New wave');
-    expect(screen.getByRole('button', { name: 'Delete cove Work' }).getAttribute('title')).toBe('Delete cove');
+    expect(screen.getByRole('button', { name: 'New track' }).getAttribute('title')).toBe('New track');
+    expect(screen.getByRole('button', { name: 'Delete area Work' }).getAttribute('title')).toBe('Delete area');
   });
 
   it('renders the wave list slot rather than its own list', () => {
@@ -68,28 +69,28 @@ describe('CovePage header', () => {
 describe('CovePage delete', () => {
   it('only opens the confirm; it does not delete on the header button', async () => {
     const { props } = renderPage();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     expect(screen.getByRole('dialog')).toBeTruthy();
     // §6.13's body is two sentences with different typography: what it costs,
     // then what to type. The count lands here, where it changes a decision.
-    expect(screen.getByText('This deletes 2 waves. This cannot be undone.')).toBeTruthy();
+    expect(screen.getByText('This deletes 2 tracks. This cannot be undone.')).toBeTruthy();
     expect(props.onDeleteCove).not.toHaveBeenCalled();
   });
 
   it('deletes once the name is typed and the confirm is accepted', async () => {
     const { props } = renderPage();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     expect(props.onDeleteCove).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   it('refuses to delete while the typed name does not match', async () => {
     const { props } = renderPage();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'work');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     // Case-sensitive, and no Unicode normalisation: the point of a typed
     // confirm is that you reproduced the name, not that you approximated it.
     expect(props.onDeleteCove).not.toHaveBeenCalled();
@@ -98,7 +99,7 @@ describe('CovePage delete', () => {
 
   it('closes without deleting when the confirm is cancelled', async () => {
     const { props } = renderPage();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(props.onDeleteCove).not.toHaveBeenCalled();
     expect(screen.queryByRole('dialog')).toBeNull();

@@ -73,7 +73,7 @@ describe('ReportBacklinks', () => {
 
   it('names a self-reference rather than repeating this wave’s own title', () => {
     render(<ReportBacklinks waveId="w-1" backlinks={PAGE} onOpen={vi.fn()} />);
-    expect(screen.getByText('This wave (self-reference)')).toBeTruthy();
+    expect(screen.getByText('This track (self-reference)')).toBeTruthy();
   });
 
   // A citation list that is quietly short is worse than one that admits it.

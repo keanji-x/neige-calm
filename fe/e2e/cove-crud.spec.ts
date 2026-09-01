@@ -20,9 +20,9 @@ test('creates and deletes a cove through the UI and persists both changes', asyn
   const name = `FE e2e CRUD ${Date.now()}`;
   await page.goto('/next/');
   const rail = page.locator('nav[aria-label="Workspace"]');
-  await rail.getByRole('button', { name: 'New cove' }).click();
-  await rail.getByRole('textbox', { name: 'Cove name' }).fill(name);
-  await rail.getByRole('textbox', { name: 'Cove name' }).press('Enter');
+  await rail.getByRole('button', { name: 'New area' }).click();
+  await rail.getByRole('textbox', { name: 'Area name' }).fill(name);
+  await rail.getByRole('textbox', { name: 'Area name' }).press('Enter');
 
   const row = rail.getByRole('button', { name, exact: true });
   await expect(row).toBeVisible();
@@ -37,10 +37,10 @@ test('creates and deletes a cove through the UI and persists both changes', asyn
 
   await row.click();
   await expect(page).toHaveURL(new RegExp(`/cove/${cove!.id}$`));
-  await rail.getByRole('button', { name: `Delete cove ${name}` }).click();
+  await rail.getByRole('button', { name: `Delete area ${name}` }).click();
   const dialog = page.getByRole('dialog', { name: `Delete ${name}?` });
   await dialog.getByLabel(`Type ${name} to confirm.`).fill(name);
-  await dialog.getByRole('button', { name: 'Delete cove', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Delete area', exact: true }).click();
   await expect(row).toHaveCount(0);
   await expect.poll(async () => {
     const response = await request.get('/api/coves');

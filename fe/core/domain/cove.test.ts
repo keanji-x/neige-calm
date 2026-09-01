@@ -118,7 +118,7 @@ describe('folder conflict decode', () => {
 
   it('names the owning cove, the path, and a different remedy per kind', () => {
     const descendant = folderConflictMessage(conflict, 'Atlas');
-    expect(descendant).toContain('cove “Atlas”');
+    expect(descendant).toContain('area “Atlas”');
     expect(descendant).toContain('/srv/app');
     expect(descendant).toContain('pick a different folder');
 
@@ -134,9 +134,9 @@ describe('folder conflict decode', () => {
 
   /* The cove may have been made in another tab, or deleted between the
      conflict and this render. A uuid on screen would be worse than a phrase. */
-  it('degrades to "another cove" rather than printing an id', () => {
+  it('degrades to "another area" rather than printing an id', () => {
     const message = folderConflictMessage(conflict, null);
-    expect(message).toContain('another cove');
+    expect(message).toContain('another area');
     expect(message).not.toContain('c2');
   });
 });

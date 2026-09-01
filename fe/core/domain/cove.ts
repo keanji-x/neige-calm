@@ -182,11 +182,11 @@ export function asFolderConflict(body: unknown): FolderConflict | null {
  * `equal` means this exact path is already claimed.
  */
 export function folderConflictMessage(conflict: FolderConflict, coveName: string | null): string {
-  const owner = coveName === null ? 'another cove' : `cove “${coveName}”`;
+  const owner = coveName === null ? 'another area' : `area “${coveName}”`;
   switch (conflict.conflict_kind) {
     case 'descendant':
       return `That folder is already claimed by ${owner} (${conflict.conflict_path}). `
-        + 'Start the wave in that cove, or pick a different folder.';
+        + 'Start the track in that area, or pick a different folder.';
     case 'ancestor':
       return `A narrower claim under ${conflict.conflict_path} (owned by ${owner}) blocks claiming `
         + 'this folder. Remove the inner claim first, or pick a different folder.';

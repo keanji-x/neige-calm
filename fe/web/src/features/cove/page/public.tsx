@@ -92,8 +92,8 @@ export function CovePage({
           <h1 className={styles.titleHeading}><EditableTitle
             value={cove.name}
             onCommit={onRenameCove}
-            editLabel="Rename cove"
-            inputLabel="Cove name"
+            editLabel="Rename area"
+            inputLabel="Area name"
             className={styles.title}
             isPageTitle
           /></h1>
@@ -116,8 +116,8 @@ export function CovePage({
             type="button"
             data-nc-role="icon"
             className={`${styles.headerAction} ${styles.headerDelete}`}
-            aria-label={`Delete cove ${cove.name}`}
-            title="Delete cove"
+            aria-label={`Delete area ${cove.name}`}
+            title="Delete area"
             onClick={() => deletion.request(cove.id)}
           >
             <Icon name="close" />
@@ -156,8 +156,8 @@ export function CovePage({
         <aside className={styles.panel} data-nc-panel="">
           <PanelCard>
             <PanelModule
-              title="Waves"
-              action={<PanelAction label="New wave" onClick={onRequestNewWave}><Icon name="plus" size="sm" /></PanelAction>}
+              title="Tracks"
+              action={<PanelAction label="New track" onClick={onRequestNewWave}><Icon name="plus" size="sm" /></PanelAction>}
             >
               {waveList}
             </PanelModule>

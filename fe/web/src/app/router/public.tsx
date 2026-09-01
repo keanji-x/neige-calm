@@ -1105,7 +1105,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const waveMutations = useWaveMutations(transport, unauthorized);
   const deletion = useDeleteConfirm((waveId, signal) => {
     const wave = workspace.waves.find((candidate) => candidate.id === waveId);
-    if (wave === undefined) throw new Error('This wave is no longer available.');
+    if (wave === undefined) throw new Error('This track is no longer available.');
     return waveMutations.remove(wave.id, wave.coveId, signal);
   });
   /* No `+`: a conversation attaches to a wave (the kernel's sessions hang off
@@ -1128,7 +1128,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
         for (const cove of workspace.coves) workspace.retryWaves(cove.id);
       }}
     />}
-    {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
+    {workspace.overlaysError !== null && <ErrorBox message={`Track activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
     {deletion.feedback.error !== null && <div role="alert" data-nc-error-box="">
       <span>{deletion.feedback.error}</span>
       <button type="button" data-nc-action="tertiary" onClick={deletion.feedback.clear}>Dismiss</button>
@@ -1224,7 +1224,7 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
     // as a flash of a wrong answer.
     if (workspace.covesLoading) return null;
     if (workspace.covesError !== null) return <ErrorBox message={workspace.covesError.message} onRetry={workspace.retryCoves} />;
-    return <PendingRoute label="Cove" owner="features/cove" missing />;
+    return <PendingRoute label="Area" owner="features/cove" missing />;
   }
   const waveError = workspace.waveErrorsByCove.get(cove.id);
   if (waveError !== null && waveError !== undefined && !workspace.wavesByCove.has(cove.id)) return <ErrorBox
@@ -1240,7 +1240,7 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
         message={waveError.message}
         onRetry={() => { workspace.retryWaves(cove.id); workspace.retryOverlays(); }}
       />}
-      {workspace.overlaysError !== null && <ErrorBox message={`Wave activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
+      {workspace.overlaysError !== null && <ErrorBox message={`Track activity is unavailable: ${workspace.overlaysError.message}`} onRetry={workspace.retryOverlays} />}
       {/* Without this the panel would render "No conversations yet." over a
           failed read, which is a different sentence from "we could not look". */}
       {conversationsQuery.error instanceof Error && <ErrorBox
@@ -1259,10 +1259,10 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
          * either way.
          */
         report={<ReportEmpty
-          lead="This cove has no document yet."
+          lead="This area has no notes yet."
           hints={[
-            'A cove document is written by hand — notes, decisions, links you want on the way in.',
-            'Each wave keeps its own report, which the agent writes as it works.',
+            'Area notes are written by hand — context, decisions, and links you want on the way in.',
+            'Each track keeps its own report, which the agent writes as it works.',
           ]}
         />}
         onRenameCove={(name) => coveMutations.rename(cove.id, { name }).then(() => undefined)}
@@ -1277,7 +1277,7 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
             waves={waves}
             coves={workspace.coves}
             variant="panel"
-            emptyMessage="This cove is quiet. Start a wave."
+            emptyMessage="This area is quiet. Start a track."
             onOpenWave={(waveId) => go({ name: 'wave', waveId })}
             /* No pin here. The trailing column in a panel row holds exactly one
                thing at a time — the status dot, becoming the delete on hover —
@@ -1331,7 +1331,7 @@ function WaveRoute({ transport, unauthorized, cardRuntime }: {
   if (!detail.data) {
     if (detail.isLoading || detail.isFetching) return null;
     if (detail.error instanceof Error) return <ErrorBox message={detail.error.message} onRetry={() => { void detail.refetch(); }} />;
-    return <PendingRoute label="Wave" owner="features/wave" missing />;
+    return <PendingRoute label="Track" owner="features/wave" missing />;
   }
   // `detail.data` can still be the previously-viewed wave while this one
   // fetches; rendering it under this URL would show the wrong wave.
@@ -1541,7 +1541,7 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           lead="Nothing written here yet."
           hints={[
             'The agent writes this report as it works — start a conversation and it fills in.',
-            'It stays with the wave, so it is here the next time you open it.',
+            'It stays with the track, so it is here the next time you open it.',
           ]}
         />}
       />}

@@ -37,14 +37,14 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     const pending = deferred<void>();
     renderPage({ onDeleteCove: () => pending.promise });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     // §6.13 — deleting a cove cascades to every wave inside it, so it is the
     // one operation in the product that earns a typed confirm. Confirm stays
     // `blocked` until the name matches; clicking it before that is a no-op, and
     // a suite that skips the typing is asserting against a dialog that never
     // armed.
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
 
     // Still mounted for the whole await.
     expect(screen.getByRole('dialog')).toBeTruthy();
@@ -65,14 +65,14 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     const pending = deferred<void>();
     renderPage({ onDeleteCove: () => pending.promise });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     // §6.13 — deleting a cove cascades to every wave inside it, so it is the
     // one operation in the product that earns a typed confirm. Confirm stays
     // `blocked` until the name matches; clicking it before that is a no-op, and
     // a suite that skips the typing is asserting against a dialog that never
     // armed.
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     pending.settle.reject(new Error('409'));
     await vi.waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
 
@@ -81,10 +81,10 @@ describe('INV-CONFIRM-001 the destructive confirm cannot strand', () => {
     // Reopening starts blocked again — the typed input is cleared with the
     // dialog, so a second attempt has to be re-armed rather than inheriting the
     // first one's confirmation.
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
-    expect(screen.getByRole('button', { name: 'Delete cove' })).toHaveProperty('disabled', true);
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    expect(screen.getByRole('button', { name: 'Delete area' })).toHaveProperty('disabled', true);
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
-    expect(screen.getByRole('button', { name: 'Delete cove' })).toHaveProperty('disabled', false);
+    expect(screen.getByRole('button', { name: 'Delete area' })).toHaveProperty('disabled', false);
   });
 });
 
@@ -92,7 +92,7 @@ describe('INV-A11Y-061 no anchor navigation', () => {
   it('renders no <a> element anywhere, confirm dialog included', async () => {
     const { container } = renderPage();
     expect(container.querySelectorAll('a')).toHaveLength(0);
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     expect(document.body.querySelectorAll('a')).toHaveLength(0);
   });
 });
@@ -102,9 +102,9 @@ describe('rename', () => {
     const onRenameCove = vi.fn();
     renderPage({ onRenameCove });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Rename cove' }));
-    await userEvent.clear(screen.getByLabelText('Cove name'));
-    await userEvent.type(screen.getByLabelText('Cove name'), '  Deep work  {Enter}');
+    await userEvent.click(screen.getByRole('button', { name: 'Rename area' }));
+    await userEvent.clear(screen.getByLabelText('Area name'));
+    await userEvent.type(screen.getByLabelText('Area name'), '  Deep work  {Enter}');
     expect(onRenameCove.mock.calls).toEqual([['Deep work']]);
 
     // Fresh mount: EditableTitle suppresses a synthesized click for 300ms after
@@ -113,8 +113,8 @@ describe('rename', () => {
     onRenameCove.mockClear();
     cleanup();
     renderPage({ onRenameCove });
-    await userEvent.click(screen.getByRole('button', { name: 'Rename cove' }));
-    await userEvent.type(screen.getByLabelText('Cove name'), '{Enter}');
+    await userEvent.click(screen.getByRole('button', { name: 'Rename area' }));
+    await userEvent.type(screen.getByLabelText('Area name'), '{Enter}');
     expect(onRenameCove).not.toHaveBeenCalled();
   });
 });

@@ -791,7 +791,7 @@ function harnessTurns(cardId: string) {
    * have. Both halves now happen only if the draft they were computed from is
    * still held, in one reducer step.
    */
-  it('leaves another cove\'s draft alone when a late create finally succeeds', async () => {
+  it('leaves another area\'s draft alone when a late create finally succeeds', async () => {
     let releaseFirst: ((response: ApiTransportResponse) => void) | null = null;
     const firstCreate = new Promise<ApiTransportResponse>((resolve) => { releaseFirst = resolve; });
     const { requests, router } = setup((request) => {

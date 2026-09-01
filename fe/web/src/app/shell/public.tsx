@@ -184,7 +184,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
         setCreateError(folderConflictMessage(conflict, owner?.name ?? null));
         return;
       }
-      setCreateError(error instanceof ApiError ? error.message : 'Could not create the wave.');
+      setCreateError(error instanceof ApiError ? error.message : 'Could not create the track.');
     }).finally(() => { setCreating(false); });
   };
 
@@ -235,7 +235,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           </RequestNewWaveContext.Provider>
         </div>
       </main>
-      <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
+      <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New track"
         initialFocusRef={newWaveTitleRef}>
         {newWaveCoveId !== null && (
           <NewWaveForm

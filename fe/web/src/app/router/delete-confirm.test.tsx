@@ -39,9 +39,9 @@ it('requires the shared confirmation before deleting a Today panel wave', async 
 
   await screen.findByRole('complementary');
   await userEvent.click(await within(screen.getByRole('complementary')).findByRole('button', { name: 'Delete Risky' }));
-  expect(screen.getByRole('dialog', { name: 'Delete this wave?' })).toBeTruthy();
+  expect(screen.getByRole('dialog', { name: 'Delete this track?' })).toBeTruthy();
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
   await waitFor(() => expect(screen.queryByRole('button', { name: 'Delete Risky' })).toBeNull());
   expect(document.activeElement).toBe(document.querySelector('[data-nc-page-title]'));
@@ -67,7 +67,7 @@ it('requires the shared confirmation before deleting from the CoveRoute panel', 
   </ThemeProvider></QueryClientProvider>);
   await userEvent.click(await screen.findByRole('button', { name: 'Delete Risky' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0);
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
 });
 
@@ -91,8 +91,8 @@ it('does not navigate on a delete success that arrives after cancellation', asyn
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await screen.findByRole('button', { name: 'Delete wave Risky' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Delete track Risky' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   await userEvent.click(screen.getByRole('button', { name: 'Account menu for You' }));
   await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
@@ -117,9 +117,9 @@ it('does not navigate on a cove delete success that arrives after cancellation',
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await within(await screen.findByRole('main')).findByRole('button', { name: 'Delete cove Work' }));
+  await userEvent.click(await within(await screen.findByRole('main')).findByRole('button', { name: 'Delete area Work' }));
   await userEvent.type(screen.getByRole('textbox', { name: 'Type Work to confirm.' }), 'Work');
-  await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
   await waitFor(() => expect(resolveDelete).toBeTypeOf('function'));
   await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   resolveDelete({ status: 204, statusText: 'No Content', body: undefined });
@@ -152,7 +152,7 @@ it('round-trips an encoded wave id through useGo, TanStack history, and useRoute
   // TanStack normalises %20 back to a space in memory history while retaining
   // the escapes that delimit the segment; useRouteParam still restores all of it.
   expect(router.state.location.pathname).toBe('/wave/a%2Fb %25');
-  expect(within(rail).getByRole('button', { name: /Wave Encoded wave/ }).getAttribute('aria-current')).toBe('page');
-  await screen.findByRole('button', { name: 'Rename wave' });
+  expect(within(rail).getByRole('button', { name: /Track Encoded wave/ }).getAttribute('aria-current')).toBe('page');
+  await screen.findByRole('button', { name: 'Rename track' });
   expect(requests.some((request) => request.path.includes('a%2Fb%20%25'))).toBe(true);
 });

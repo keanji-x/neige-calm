@@ -56,26 +56,26 @@ function renderSidebar(props: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 describe('INV-SIDEBAR-007 three sections, and pinning is not relocation', () => {
   const pinnedAndBlocked = wave({ id: 'both', title: 'Both', lifecycle: 'blocked', pinnedAt: 10 });
 
-  it('renders Waiting on you, then Pinned, then Coves', () => {
+  it('renders Waiting on you, then Pinned, then Areas', () => {
     renderSidebar({ waves: [pinnedAndBlocked] });
     const headings = screen.getAllByRole('heading').map((node) => node.textContent);
-    expect(headings).toEqual(['Waiting on you', 'Pinned', 'Coves']);
+    expect(headings).toEqual(['Waiting on you', 'Pinned', 'Areas']);
   });
 
   it('keeps a pinned wave in its cove list as well as in the Pinned section', () => {
     renderSidebar({ waves: [wave({ id: 'p', title: 'Pinned task', pinnedAt: 10 })] });
     // One row under Pinned (carries the cove name) and one inside the cove list.
-    expect(screen.getAllByRole('button', { name: /^Wave Pinned task/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /^Track Pinned task/ })).toHaveLength(2);
   });
 
   it('surfaces a pinned attention wave in Waiting on you too — three rows, not one', () => {
     renderSidebar({ waves: [pinnedAndBlocked] });
-    expect(screen.getAllByRole('button', { name: /^Wave Both/ })).toHaveLength(3);
+    expect(screen.getAllByRole('button', { name: /^Track Both/ })).toHaveLength(3);
   });
 
   it('drops a section entirely when it is empty rather than reordering the rest', () => {
     renderSidebar({ waves: [wave()] });
-    expect(screen.getAllByRole('heading').map((node) => node.textContent)).toEqual(['Coves']);
+    expect(screen.getAllByRole('heading').map((node) => node.textContent)).toEqual(['Areas']);
   });
 });
 
@@ -98,12 +98,12 @@ describe('INV-SIDEBAR-012 the pin button is always in the accessibility tree', (
   });
 });
 
-describe('INV-SIDEBAR-013 every cove row carries a permanent New wave control', () => {
+describe('INV-SIDEBAR-013 every cove row carries a permanent New track control', () => {
   const coves = [cove(), cove({ id: 'c2', name: 'Reading', sort: 2 })];
   const wavesByCove = new Map([['c1', []], ['c2', []]]);
 
   /*
-   * The rail now has one of these per cove, so `"New wave"` alone would be N
+   * The rail now has one of these per cove, so `"New track"` alone would be N
    * identically-named controls — a list a screen-reader user cannot choose
    * from. §4.4 also forbids the tooltip standing in for the accessible name, so
    * both are asserted: the name identifies the cove, the title is the sighted
@@ -112,11 +112,11 @@ describe('INV-SIDEBAR-013 every cove row carries a permanent New wave control', 
   it('names each one for its own cove and still carries a tooltip', () => {
     renderSidebar({ coves, wavesByCove });
     for (const coveName of ['Work', 'Reading']) {
-      const button = screen.getByRole('button', { name: `New wave in ${coveName}` });
-      expect(button.getAttribute('title')).toBe('New wave');
+      const button = screen.getByRole('button', { name: `New track in ${coveName}` });
+      expect(button.getAttribute('title')).toBe('New track');
       expect(button.tagName).toBe('BUTTON');
     }
-    expect(screen.queryByRole('button', { name: 'New wave' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'New track' })).toBeNull();
   });
 
   /*
@@ -126,10 +126,10 @@ describe('INV-SIDEBAR-013 every cove row carries a permanent New wave control', 
    * and `.coveNew` does not, so the two controls cannot silently converge on
    * one behaviour. The `browser` tier owns the rendered opacity.
    */
-  it('leaves the New wave control out of the hover-revealed class the delete uses', () => {
+  it('leaves the New track control out of the hover-revealed class the delete uses', () => {
     renderSidebar({ coves, wavesByCove });
-    const create = screen.getByRole('button', { name: 'New wave in Work' });
-    const remove = screen.getByRole('button', { name: 'Delete cove Work' });
+    const create = screen.getByRole('button', { name: 'New track in Work' });
+    const remove = screen.getByRole('button', { name: 'Delete area Work' });
     expect(create.className).not.toBe(remove.className);
     expect(create.className.split(/\s+/).some((token) => remove.className.split(/\s+/).includes(token)))
       .toBe(false);
@@ -137,9 +137,9 @@ describe('INV-SIDEBAR-013 every cove row carries a permanent New wave control', 
 
   /** The collapsed rail gets none: it has room for one glyph per cove, and that
    *  glyph is the cove. */
-  it('offers no New wave control in the collapsed icon strip', () => {
+  it('offers no New track control in the collapsed icon strip', () => {
     renderSidebar({ coves, wavesByCove, collapsed: true });
-    expect(screen.queryByRole('button', { name: /^New wave/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^New track/ })).toBeNull();
   });
 });
 
@@ -151,13 +151,13 @@ describe('E2E-INV-SHELL-003 the kernel system cove never reaches the rail', () =
       wavesByCove: new Map([['sys', [wave({ id: 'k', coveId: 'sys', title: 'Kernel' })]]]),
     });
     expect(screen.queryByRole('button', { name: /^System/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Wave Kernel/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Track Kernel/ })).toBeNull();
     // §5.3's strongest rule: when a region's emptiness has exactly one remedy,
     // render that remedy's own interface where the content would have been. So
     // there is no "No coves yet." sentence pointing at a button elsewhere —
     // the create field is already open in the first row's place.
     expect(screen.queryByText(/no coves/i)).toBeNull();
-    expect(screen.getByRole('textbox', { name: 'Cove name' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Area name' })).toBeTruthy();
   });
 });
 
@@ -182,7 +182,7 @@ describe('INV-A11Y-061 navigation shape', () => {
     const onGo = vi.fn();
     renderSidebar({ waves: [wave({ id: 'w9', title: 'Row' })], onGo });
     await userEvent.click(screen.getByRole('button', { name: /^Work/ }));
-    await userEvent.click(screen.getByRole('button', { name: /^Wave Row/ }));
+    await userEvent.click(screen.getByRole('button', { name: /^Track Row/ }));
     const targets: unknown[] = onGo.mock.calls.map((call) => (call as unknown[])[0]);
     expect(targets).toEqual([
       { name: 'cove', coveId: 'c1' },
@@ -194,7 +194,7 @@ describe('INV-A11Y-061 navigation shape', () => {
 describe('active row', () => {
   it('marks the open cove and the open wave with aria-current', () => {
     renderSidebar({ waves: [wave({ id: 'w9', title: 'Row' })], currentPath: '/wave/w9' });
-    expect(screen.getByRole('button', { name: /^Wave Row/ }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: /^Track Row/ }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('button', { name: /^Work/ }).getAttribute('aria-current')).toBeNull();
   });
 
@@ -208,7 +208,7 @@ describe('active row', () => {
   it('marks the open wave once, in its cove, not in the shortcut sections', () => {
     const open = wave({ id: 'w9', title: 'Row', lifecycle: 'blocked', pinnedAt: 10 });
     renderSidebar({ waves: [open], currentPath: '/wave/w9' });
-    const rows = screen.getAllByRole('button', { name: /^Wave Row/ });
+    const rows = screen.getAllByRole('button', { name: /^Track Row/ });
     expect(rows).toHaveLength(3);
     expect(rows.filter((row) => row.getAttribute('aria-current') === 'page')).toHaveLength(1);
   });

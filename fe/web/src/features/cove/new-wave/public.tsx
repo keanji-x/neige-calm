@@ -222,8 +222,8 @@ const BLANK_LABEL = 'Blank';
  * It is also no longer "Task". This value becomes the wave's `title`, and
  * calling it Task was a second name for a field that already had one.
  */
-const TASK_LABEL = 'What this wave should do';
-const TASK_PLACEHOLDER = 'What should this wave do?';
+const TASK_LABEL = 'What this track should accomplish';
+const TASK_PLACEHOLDER = 'What should this track accomplish?';
 
 /**
  * The Folder field's name and supporting copy.
@@ -235,8 +235,8 @@ const TASK_PLACEHOLDER = 'What should this wave do?';
  * already says it in a sentence that also says what the default does.
  */
 const FOLDER_LABEL = 'Folder';
-const FOLDER_PLACEHOLDER = 'Neige picks one for this wave';
-const FOLDER_HINT = 'Optional. Leave it empty and Neige creates a workspace for this wave. '
+const FOLDER_PLACEHOLDER = 'Neige picks a workspace for this track';
+const FOLDER_HINT = 'Optional. Leave it empty and Neige creates a workspace for this track. '
   + 'Choose your own repository and Neige never moves or deletes it.';
 /** The way back to the managed default, which exists nowhere else. */
 const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
@@ -297,7 +297,7 @@ export function NewWaveForm({
   const groupStatus = unsupportedInput
     ? { type: 'error' as const, message: 'This template needs input this version cannot collect yet.' }
     : templatesError !== null
-      ? { type: 'warning' as const, message: `${templatesError} You can still create a blank wave.` }
+      ? { type: 'warning' as const, message: `${templatesError} You can still create a blank track.` }
       : undefined;
 
   function buildDraft(): NewWaveDraft {
@@ -418,7 +418,7 @@ export function NewWaveForm({
                  cannot be parsed turns into `status` (which is what sets
                  `aria-invalid` and the alert). */
               description={issueUrlBad ? undefined : parsedIssue === null
-                ? 'Paste the GitHub issue this wave works on.'
+                  ? 'Paste the GitHub issue for this track.'
                 : `Issue #${parsedIssue.issue_number} in ${parsedIssue.repo}.`}
               status={issueUrlBad
                 ? {
@@ -430,7 +430,7 @@ export function NewWaveForm({
             />
             <CheckboxInput
               label="Merge automatically once the gates converge"
-              description="Off: the wave waits for you to approve the merge."
+              description="Off: this track waits for you to approve the merge."
               value={autoMerge}
               onChange={(checked) => setAutoMerge(checked)}
             />
@@ -483,7 +483,7 @@ export function NewWaveForm({
         <Button
           type="submit"
           variant="primary"
-          label={submitting ? 'Creating…' : 'Create wave'}
+          label={submitting ? 'Creating…' : 'Create track'}
           isDisabled={submitting || !valid}
         />
       </HStack>

@@ -41,7 +41,7 @@ export function WaveLifecycleBadge({ lifecycle, compact = false }: WaveLifecycle
       className={`${styles.badge} ${toneClass(tone)} ${compact ? styles.compact : ''}`}
       data-nc-lifecycle-tone={tone}
       role="img"
-      aria-label={`Wave lifecycle: ${label}`}
+      aria-label={`Track status: ${label}`}
     >
       {!compact && <span className={styles.dot} aria-hidden="true" />}
       <span className={styles.label}>{label}</span>

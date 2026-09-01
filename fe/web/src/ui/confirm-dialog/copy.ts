@@ -7,9 +7,9 @@
  * from drifting into a softer wording than the others.
  */
 export const DELETE_WAVE_COPY = Object.freeze({
-  title: 'Delete this wave?',
-  description: 'The wave, its cards, and their terminals are removed. This cannot be undone.',
-  confirmLabel: 'Delete wave',
+  title: 'Delete this track?',
+  description: 'The track, its cards, and their terminals are removed. This cannot be undone.',
+  confirmLabel: 'Delete track',
 });
 
 /**
@@ -26,13 +26,13 @@ export function deleteCoveCopy(coveName: string, waveCount: number | undefined) 
   return Object.freeze({
     title: `Delete ${coveName}?`,
     consequence: waveCount === undefined
-      ? 'The number of waves is not available. Every wave in this cove will be deleted. This cannot be undone.'
+      ? 'The number of tracks is not available. Every track in this area will be deleted. This cannot be undone.'
       : waveCount === 0
-      ? 'This deletes the cove. This cannot be undone.'
+      ? 'This deletes the area. This cannot be undone.'
       : waveCount === 1
-      ? 'This deletes 1 wave. This cannot be undone.'
-      : `This deletes ${waveCount} waves. This cannot be undone.`,
+      ? 'This deletes 1 track. This cannot be undone.'
+      : `This deletes ${waveCount} tracks. This cannot be undone.`,
     prompt: `Type ${coveName} to confirm.`,
-    confirmLabel: 'Delete cove',
+    confirmLabel: 'Delete area',
   });
 }

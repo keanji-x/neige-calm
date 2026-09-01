@@ -320,7 +320,7 @@ export function isTerminal(lifecycle: WaveLifecycle): boolean {
   return lifecycle === 'done' || lifecycle === 'canceled' || lifecycle === 'failed';
 }
 
-export const UNTITLED_WAVE_LABEL = 'Untitled wave';
+export const UNTITLED_WAVE_LABEL = 'Untitled track';
 
 /** #409 — one display fallback for waves created without a title. */
 export function waveDisplayTitle(title: string): string {

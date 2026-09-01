@@ -163,7 +163,7 @@ export function Sidebar({
     if (name === '') return;
     setCreatingCove(false);
     setCoveDraft('');
-    void writeFeedback.run(Promise.resolve(onCreateCove(name, randomCoveColor())), 'Could not create the cove.');
+    void writeFeedback.run(Promise.resolve(onCreateCove(name, randomCoveColor())), 'Could not create the area.');
   };
 
   const rowProps = {
@@ -171,7 +171,7 @@ export function Sidebar({
     onGo,
     nowMs,
     onSetPinned: (waveId: string, next: boolean) => {
-      void writeFeedback.run(Promise.resolve(onSetPinned(waveId, next)), 'Could not update the wave.');
+      void writeFeedback.run(Promise.resolve(onSetPinned(waveId, next)), 'Could not update the track.');
     },
     onDelete: waveConfirm.request,
   };
@@ -202,7 +202,7 @@ export function Sidebar({
         </button>
       </div>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
-      {activityError !== null && <ErrorBox message={`Wave activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
+      {activityError !== null && <ErrorBox message={`Track activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
       {readLoading && <div role="status">Loading workspace…</div>}
       <OperationFeedback feedback={writeFeedback} />
 
@@ -247,12 +247,12 @@ export function Sidebar({
 
           <div className={styles.section}>
             <div className={styles.sectionHead}>
-              <h2 className={styles.sectionTitle}>Coves</h2>
+              <h2 className={styles.sectionTitle}>Areas</h2>
               <button
                 type="button"
                 data-nc-role="icon"
                 className={styles.sectionAction}
-                aria-label="New cove"
+                aria-label="New area"
                 onClick={() => { setCoveDraft(''); setCreatingCove(true); }}
               >
                 <Icon name="plus" />
@@ -264,8 +264,8 @@ export function Sidebar({
                 ref={coveInputRef}
                 type="text"
                 className={styles.inlineCreate}
-                aria-label="Cove name"
-                placeholder="New cove…"
+                aria-label="Area name"
+                placeholder="New area…"
                 value={coveDraft}
                 onChange={(event) => setCoveDraft(event.target.value)}
                 /* §6.12 — an inline editor commits on blur, like the title
@@ -467,7 +467,7 @@ function CoveGroup({
           data-nc-role="icon"
           className={`${styles.chevron} ${expanded ? styles.chevronOpen : ''}`}
           aria-expanded={expanded}
-          aria-label={`${expanded ? 'Collapse' : 'Expand'} cove ${cove.name}`}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} area ${cove.name}`}
           onClick={() => onToggle(!expanded)}
         >
           {/* One stroked chevron that rotates, not a filled ▸/▾ pair. §2.6
@@ -479,7 +479,7 @@ function CoveGroup({
           type="button"
           data-nc-role="icon"
           className={styles.coveDelete}
-          aria-label={`Delete cove ${cove.name}`}
+          aria-label={`Delete area ${cove.name}`}
           onClick={() => onRequestDelete(cove.id)}
         >
           <Icon name="close" size="sm" />
@@ -493,8 +493,8 @@ function CoveGroup({
           type="button"
           data-nc-role="icon"
           className={styles.coveNew}
-          aria-label={`New wave in ${cove.name}`}
-          title="New wave"
+          aria-label={`New track in ${cove.name}`}
+          title="New track"
           onClick={() => onNewWave(cove.id)}
         >
           <Icon name="plus" size="sm" />

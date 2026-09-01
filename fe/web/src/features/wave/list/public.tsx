@@ -65,7 +65,7 @@ export function WaveList({
             <WaveRow
               wave={wave}
               variant={variant}
-              coveName={showCove ? cove?.name ?? 'Unknown cove' : undefined}
+              coveName={showCove ? cove?.name ?? 'Unknown area' : undefined}
               nowMs={nowMs}
               active={wave.id === activeWaveId}
               onOpen={onOpenWave}

@@ -23,13 +23,13 @@ function wave(overrides: Partial<Wave> = {}): Wave {
 }
 
 function titlesInOrder(): string[] {
-  return screen.getAllByRole('button', { name: /^Wave / }).map((node) => node.getAttribute('aria-label') ?? '');
+  return screen.getAllByRole('button', { name: /^Track / }).map((node) => node.getAttribute('aria-label') ?? '');
 }
 
 describe('WaveList', () => {
   it('renders the empty message when there are no waves', () => {
-    render(<WaveList waves={[]} coves={[]} onOpenWave={vi.fn()} emptyMessage="No waves in this cove yet." />);
-    expect(screen.getByText('No waves in this cove yet.')).toBeTruthy();
+    render(<WaveList waves={[]} coves={[]} onOpenWave={vi.fn()} emptyMessage="No tracks in this area yet." />);
+    expect(screen.getByText('No tracks in this area yet.')).toBeTruthy();
   });
 
   it('does not list archived waves', () => {
@@ -37,10 +37,10 @@ describe('WaveList', () => {
       waves={[wave({ title: 'Filed away', archivedAt: 42 })]}
       coves={[cove()]}
       onOpenWave={vi.fn()}
-      emptyMessage="No visible waves."
+      emptyMessage="No visible tracks."
     />);
     expect(screen.queryByRole('button', { name: /Filed away/ })).toBeNull();
-    expect(screen.getByText('No visible waves.')).toBeTruthy();
+    expect(screen.getByText('No visible tracks.')).toBeTruthy();
   });
 
   it('orders waiting before running before quiet', () => {
@@ -55,7 +55,7 @@ describe('WaveList', () => {
       emptyMessage="empty"
     />);
     expect(titlesInOrder().map((label) => label.split(',')[0])).toEqual([
-      'Wave Attention', 'Wave Running', 'Wave Quiet',
+      'Track Attention', 'Track Running', 'Track Quiet',
     ]);
   });
 
@@ -69,13 +69,13 @@ describe('WaveList', () => {
       onOpenWave={vi.fn()}
       emptyMessage="empty"
     />);
-    expect(titlesInOrder()[0]?.startsWith('Wave Needy')).toBe(true);
+    expect(titlesInOrder()[0]?.startsWith('Track Needy')).toBe(true);
   });
 
   it('opens the wave the row stands for', async () => {
     const onOpenWave = vi.fn();
     render(<WaveList waves={[wave()]} coves={[cove()]} onOpenWave={onOpenWave} emptyMessage="empty" />);
-    await userEvent.click(screen.getByRole('button', { name: /^Wave Alpha/ }));
+    await userEvent.click(screen.getByRole('button', { name: /^Track Alpha/ }));
     expect(onOpenWave).toHaveBeenCalledWith('w1');
   });
 
@@ -83,14 +83,14 @@ describe('WaveList', () => {
     const { unmount } = render(
       <WaveList waves={[wave()]} coves={[cove()]} onOpenWave={vi.fn()} emptyMessage="empty" />,
     );
-    expect(screen.getByRole('button', { name: 'Wave Alpha, Done' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Track Alpha, Done' })).toBeTruthy();
     unmount();
 
     render(<WaveList waves={[wave()]} coves={[cove()]} showCove onOpenWave={vi.fn()} emptyMessage="empty" />);
-    expect(screen.getByRole('button', { name: 'Wave Alpha, Done, in cove Work' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Track Alpha, Done, in area Work' })).toBeTruthy();
   });
 
-  it('falls back to Unknown cove when the wave points at a cove we cannot see', () => {
+  it('falls back to Unknown area when the wave points at a cove we cannot see', () => {
     render(<WaveList
       waves={[wave({ coveId: 'gone' })]}
       coves={[cove()]}
@@ -98,7 +98,7 @@ describe('WaveList', () => {
       onOpenWave={vi.fn()}
       emptyMessage="empty"
     />);
-    expect(screen.getByRole('button', { name: /in cove Unknown cove$/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /in area Unknown area$/ })).toBeTruthy();
   });
 
   it('marks the active wave with aria-current', () => {
@@ -109,8 +109,8 @@ describe('WaveList', () => {
       onOpenWave={vi.fn()}
       emptyMessage="empty"
     />);
-    expect(screen.getByRole('button', { name: /^Wave Beta/ }).getAttribute('aria-current')).toBe('page');
-    expect(screen.getByRole('button', { name: /^Wave Alpha/ }).getAttribute('aria-current')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Track Beta/ }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: /^Track Alpha/ }).getAttribute('aria-current')).toBeNull();
   });
 
   it('hides pin and delete unless the callbacks are supplied', () => {

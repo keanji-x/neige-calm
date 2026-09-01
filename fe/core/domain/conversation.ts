@@ -627,7 +627,7 @@ function toolShape(tool: string): ActivityShape {
   // them looks. One phrase covers them because which one it was is a detail of
   // how the agent went looking, not of what happened.
   if (tool.startsWith(WAVE_TOOL_PREFIX)) {
-    return { running: 'Reading the wave', done: 'Read the wave', target: null };
+    return { running: 'Reading the track', done: 'Read the track', target: null };
   }
   return { running: 'Calling', done: 'Called', target: clip(tool) };
 }

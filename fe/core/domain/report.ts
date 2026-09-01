@@ -1110,7 +1110,7 @@ export function groupBacklinks(
     groups.set(backlink.src_wave_id, {
       waveId: backlink.src_wave_id,
       title: backlink.src_wave_id === currentWaveId
-        ? 'This wave (self-reference)'
+        ? 'This track (self-reference)'
         : backlink.src_wave_title,
       entries: [backlink],
     });

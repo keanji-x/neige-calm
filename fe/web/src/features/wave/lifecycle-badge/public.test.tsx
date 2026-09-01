@@ -9,7 +9,7 @@ afterEach(cleanup);
 describe('WaveLifecycleBadge', () => {
   it('reads the phrase from core rather than a local table', () => {
     render(<WaveLifecycleBadge lifecycle="reviewing" />);
-    expect(screen.getByRole('img', { name: 'Wave lifecycle: In review' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Track status: In review' })).toBeTruthy();
   });
 
   it('marks blocked, reviewing and failed as the attention treatment', () => {
@@ -38,7 +38,7 @@ describe('WaveLifecycleBadge', () => {
 
   it('keeps the label but drops the dot when compact', () => {
     const { container } = render(<WaveLifecycleBadge lifecycle="working" compact />);
-    expect(screen.getByRole('img', { name: 'Wave lifecycle: Working' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Track status: Working' })).toBeTruthy();
     expect(screen.getByText('Working')).toBeTruthy();
     expect(container.querySelectorAll('span[aria-hidden="true"]').length).toBe(0);
   });

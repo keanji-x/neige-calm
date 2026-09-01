@@ -68,7 +68,7 @@ describe('INV-TODAY-002 the scheduled-event seam', () => {
     const events: ScheduledEvent[] = [{ wave: shared, date: new Date(NOW), hour: 9 }];
     render(<TodayPage renderWaveRow={renderWaveRow} waves={[shared]} coves={[cove()]} scheduledEvents={events} nowMs={NOW} />);
     // Both the drawn glyph and the accessible name say one, not two.
-    const today = screen.getByRole('button', { name: 'Monday, Aug 10, 1 wave' });
+    const today = screen.getByRole('button', { name: 'Monday, Aug 10, 1 track' });
     expect(today.querySelector('[data-nc-day-count]')?.textContent).toBe('1');
   });
 });

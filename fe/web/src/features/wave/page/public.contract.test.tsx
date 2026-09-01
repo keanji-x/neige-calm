@@ -29,8 +29,8 @@ describe('WavePage delete confirm contract', () => {
     const onDeleteWave = vi.fn(() => gate.promise);
     renderPage({ onDeleteWave });
 
-    await userEvent.click(screen.getByRole('button', { name: /^Delete wave / }));
-    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
 
     // Still mounted, mid-flight.
     expect(screen.getByRole('dialog')).toBeTruthy();
@@ -48,7 +48,7 @@ describe('WavePage delete confirm contract', () => {
 
     gate.resolve();
     await gate.promise;
-    await screen.findByRole('button', { name: /^Delete wave / });
+    await screen.findByRole('button', { name: /^Delete track / });
   });
 
   it('closes the confirm and clears pending when onDeleteWave rejects', async () => {
@@ -56,18 +56,18 @@ describe('WavePage delete confirm contract', () => {
     const onDeleteWave = vi.fn(() => gate.promise);
     renderPage({ onDeleteWave });
 
-    await userEvent.click(screen.getByRole('button', { name: /^Delete wave / }));
-    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
 
     gate.reject();
     await gate.promise.catch(() => undefined);
 
     // The dialog let go, and re-opening it hands back a live Confirm button.
-    const reopen = await screen.findByRole('button', { name: /^Delete wave / });
+    const reopen = await screen.findByRole('button', { name: /^Delete track / });
     expect(screen.queryByRole('dialog')).toBeNull();
     await userEvent.click(reopen);
     expect(screen.getByRole('dialog')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Delete wave' }).getAttribute('aria-disabled')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Delete track' }).getAttribute('aria-disabled')).toBeNull();
   });
 
   /*
@@ -130,17 +130,17 @@ describe('WavePage delete confirm contract', () => {
     // Unchanged value: committing must not fire. Fresh mounts on purpose —
     // EditableTitle suppresses a click for 300ms after an Enter commit (#288).
     renderPage({ wave: wave({ title: 'Alpha' }), onRenameWave });
-    await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
-    await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Wave title' }), 'Alpha{Enter}');
+    await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Track title' }), 'Alpha{Enter}');
     expect(onRenameWave).not.toHaveBeenCalled();
     cleanup();
 
     // Changed value, with surrounding whitespace the commit must trim.
     renderPage({ wave: wave({ title: 'Alpha' }), onRenameWave });
-    await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
-    await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Wave title' }), '  Beta  {Enter}');
+    await userEvent.click(screen.getByRole('button', { name: 'Rename track' }));
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Track title' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Track title' }), '  Beta  {Enter}');
     expect(onRenameWave).toHaveBeenCalledTimes(1);
     expect(onRenameWave).toHaveBeenCalledWith('Beta');
   });

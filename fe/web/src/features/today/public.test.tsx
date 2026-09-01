@@ -116,13 +116,13 @@ describe('Today agenda', () => {
     expect(seen).toContain('Work');
   });
 
-  it('falls back to "Unknown cove" when the wave points at a cove we cannot see', () => {
+  it('falls back to "Unknown area" when the wave points at a cove we cannot see', () => {
     const seen: (string | undefined)[] = [];
     render(<TodayPage
       renderWaveRow={(candidate, options) => { seen.push(options.coveName); return <span>{candidate.title}</span>; }}
       waves={[wave({ coveId: 'gone' })]} coves={[cove()]} nowMs={NOW}
     />);
-    expect(seen).toContain('Unknown cove');
+    expect(seen).toContain('Unknown area');
   });
 
   it('re-scopes the agenda when another day is selected', async () => {
@@ -139,7 +139,7 @@ describe('Today agenda', () => {
     // The day cell's accessible name carries its count — that is the only route
     // to it for assistive tech, since the superscript beside the date is
     // `aria-hidden`. One wave overlaps Tuesday, so the name says so.
-    await userEvent.click(screen.getByRole('button', { name: 'Tuesday, Aug 11, 1 wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Tuesday, Aug 11, 1 track' }));
     expect(agenda()).toContain('Tomorrow only');
     expect(agenda()).not.toContain('Open wave');
     expect(screen.getByText('Tuesday, Aug 11')).toBeTruthy();

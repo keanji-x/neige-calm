@@ -80,7 +80,7 @@ describe('workspace read feedback', () => {
   it('warns that wave activity is unavailable and retries it', async () => {
     const onRetryRead = vi.fn();
     renderSidebar({ activityError: 'overlays down', onRetryRead });
-    expect(screen.getByRole('alert').textContent).toContain('Wave activity is unavailable: overlays down');
+    expect(screen.getByRole('alert').textContent).toContain('Track activity is unavailable: overlays down');
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetryRead).toHaveBeenCalledTimes(1);
   });
@@ -89,23 +89,23 @@ describe('workspace read feedback', () => {
 describe('cove disclosure', () => {
   it('collapses and re-expands a cove wave list from its chevron', async () => {
     renderSidebar({ waves: [wave({ title: 'Inside' })] });
-    expect(screen.getByRole('button', { name: /^Wave Inside/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse cove Work' }));
-    expect(screen.queryByRole('button', { name: /^Wave Inside/ })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
+    expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Expand cove Work' }));
-    expect(screen.getByRole('button', { name: /^Wave Inside/ })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Expand area Work' }));
+    expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
   });
 
   it('re-expands the cove holding the wave the user just opened', async () => {
     const waves = [wave({ id: 'w9', title: 'Inside' })];
     const { update } = renderSidebar({ waves });
-    await userEvent.click(screen.getByRole('button', { name: 'Collapse cove Work' }));
-    expect(screen.queryByRole('button', { name: /^Wave Inside/ })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Collapse area Work' }));
+    expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
 
     update({ waves, currentPath: '/wave/w9' });
-    expect(screen.getByRole('button', { name: /^Wave Inside/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Track Inside/ })).toBeTruthy();
   });
 });
 
@@ -141,12 +141,12 @@ describe('cove row', () => {
   it('exposes disclosure as its own control outside the navigation button', () => {
     renderSidebar({ waves: [wave()] });
     const row = screen.getByRole('button', { name: 'Work' });
-    const chevron = screen.getByRole('button', { name: 'Collapse cove Work' });
+    const chevron = screen.getByRole('button', { name: 'Collapse area Work' });
     expect(row.contains(chevron)).toBe(false);
     expect(chevron.getAttribute('aria-expanded')).toBe('true');
   });
 
-  /* The rail does not own the New wave dialog — `AppShell` does, because the
+  /* The rail does not own the New track dialog — `AppShell` does, because the
      cove page's `+` opens the same one. All the row reports is which cove. */
   it('starts a wave in its own cove from the row, without navigating into it', async () => {
     const onNewWave = vi.fn();
@@ -157,7 +157,7 @@ describe('cove row', () => {
       onNewWave,
       onGo,
     });
-    await userEvent.click(screen.getByRole('button', { name: 'New wave in Reading' }));
+    await userEvent.click(screen.getByRole('button', { name: 'New track in Reading' }));
     expect(onNewWave.mock.calls).toEqual([['c2']]);
     expect(onGo).not.toHaveBeenCalled();
   });
@@ -168,12 +168,12 @@ describe('new cove', () => {
     const onCreateCove = vi.fn();
     renderSidebar({ onCreateCove });
 
-    await userEvent.click(screen.getByRole('button', { name: 'New cove' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Cove name' }), 'Reading{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Reading{Escape}');
     expect(onCreateCove).not.toHaveBeenCalled();
 
-    await userEvent.click(screen.getByRole('button', { name: 'New cove' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Cove name' }), 'Reading{Enter}');
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Reading{Enter}');
     expect(onCreateCove).toHaveBeenCalledTimes(1);
     const [name, color] = onCreateCove.mock.calls[0] as [string, string];
     expect(name).toBe('Reading');
@@ -183,8 +183,8 @@ describe('new cove', () => {
   it('submits on blur', async () => {
     const onCreateCove = vi.fn();
     renderSidebar({ onCreateCove });
-    await userEvent.click(screen.getByRole('button', { name: 'New cove' }));
-    await userEvent.type(screen.getByRole('textbox', { name: 'Cove name' }), 'Later');
+    await userEvent.click(screen.getByRole('button', { name: 'New area' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Area name' }), 'Later');
     await userEvent.click(screen.getByRole('button', { name: 'Work' }));
     expect(onCreateCove.mock.calls.map((call) => (call as string[])[0])).toEqual(['Later']);
   });
@@ -196,12 +196,12 @@ describe('destructive confirms', () => {
     renderSidebar({ waves: [wave({ id: 'w1', title: 'Task' })], onDeleteWave });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
-    expect(screen.getByRole('dialog', { name: 'Delete this wave?' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: 'Delete this track?' })).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(onDeleteWave).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
     expect(onDeleteWave).toHaveBeenCalledWith('w1', expect.any(AbortSignal));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -210,32 +210,32 @@ describe('destructive confirms', () => {
     const onDeleteCove = vi.fn();
     renderSidebar({ onDeleteCove });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
     // §6.13 / CR-5a — the title names the cove, and Confirm stays blocked until
     // the name is reproduced. Deleting a cove cascades to every wave inside it;
     // it is the one operation in the product that earns a typed confirm, and
     // this rail entry shares that dialog with the cove page's header button.
     expect(screen.getByRole('dialog', { name: 'Delete Work?' })).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     expect(onDeleteCove).not.toHaveBeenCalled();
 
     await userEvent.type(screen.getByLabelText('Type Work to confirm.'), 'Work');
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area' }));
     expect(onDeleteCove).toHaveBeenCalledWith('c1', expect.any(AbortSignal));
   });
 
   it('states that the cascade count is unknown when the cove wave query has no data', async () => {
     renderSidebar({ wavesByCove: new Map() });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
-    expect(screen.getByRole('dialog').textContent).toContain('The number of waves is not available.');
-    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('The number of tracks is not available.');
+    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 tracks');
   });
 
   it('describes deletion of a genuinely empty cove without claiming it deletes zero waves', async () => {
     renderSidebar({ wavesByCove: new Map([['c1', []]]) });
-    await userEvent.click(screen.getByRole('button', { name: 'Delete cove Work' }));
-    expect(screen.getByRole('dialog').textContent).toContain('This deletes the cove.');
-    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 waves');
+    await userEvent.click(screen.getByRole('button', { name: 'Delete area Work' }));
+    expect(screen.getByRole('dialog').textContent).toContain('This deletes the area.');
+    expect(screen.getByRole('dialog').textContent).not.toContain('deletes 0 tracks');
   });
 
   it('keeps the confirm mounted while the delete is in flight and clears it on rejection', async () => {
@@ -248,7 +248,7 @@ describe('destructive confirms', () => {
     renderSidebar({ waves: [wave({ id: 'w1', title: 'Task' })], onDeleteWave });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Task' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
     // CR-6 — busy, not `disabled`. Cancel stays a real exit, the dialog stays
     // mounted for the whole await, and Confirm stays focusable: focus is on it
     // at this instant and `disabled` would drop it out of the trap.
@@ -259,7 +259,7 @@ describe('destructive confirms', () => {
     expect(cancel.hasAttribute('disabled')).toBe(false);
     expect(screen.getByRole('dialog').textContent).toContain('Closing this dialog cancels the delete request.');
     await userEvent.click(cancel);
-    expect(screen.queryByRole('dialog', { name: 'Delete this wave?' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'Delete this track?' })).toBeNull();
     expect(signal?.aborted).toBe(true);
 
     reject(new DOMException('aborted', 'AbortError'));
@@ -280,11 +280,11 @@ describe('destructive confirms', () => {
     renderSidebar({ waves: [wave({ id: 'w1', title: 'Alpha' }), wave({ id: 'w2', title: 'Beta' })], onDeleteWave });
 
     await userEvent.click(screen.getByRole('button', { name: 'Delete Alpha' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     await userEvent.click(screen.getByRole('button', { name: 'Delete Beta' }));
-    expect(screen.getByRole('button', { name: 'Delete wave' }).getAttribute('aria-busy')).toBeNull();
-    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    expect(screen.getByRole('button', { name: 'Delete track' }).getAttribute('aria-busy')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
     expect(deleted).toEqual(['w1', 'w2']);
   });
 });
@@ -340,7 +340,7 @@ describe('collapse toggle', () => {
     await userEvent.click(toggle);
     expect(onToggleCollapsed).toHaveBeenCalledTimes(1);
     // Nothing changed here, because nothing here owns it.
-    expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
   });
 
   it('drops to an icon strip when told it is collapsed, and stays navigable', () => {
@@ -350,7 +350,7 @@ describe('collapse toggle', () => {
     // No section labels: 11px uppercase does not fit in 44px, and the strip
     // answers "where am I", not "what is there".
     expect(screen.queryAllByRole('heading')).toHaveLength(0);
-    expect(screen.queryByRole('button', { name: /^Wave Inside/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Track Inside/ })).toBeNull();
     // The cove is still reachable, named for assistive tech and initialled for
     // sighted users — a letter, not one of eight cove hues, because §7.5 keeps
     // this surface greyscale apart from the current location and "waiting".
@@ -360,7 +360,7 @@ describe('collapse toggle', () => {
     expect(screen.getByRole('button', { name: 'Expand sidebar' }).getAttribute('aria-expanded')).toBe('false');
 
     update({ collapsed: false });
-    expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Areas' })).toBeTruthy();
   });
 
   it('shows the waiting count as the strip\'s only figure, with no dot beside it', () => {

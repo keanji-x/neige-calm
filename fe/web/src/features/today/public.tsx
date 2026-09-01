@@ -80,7 +80,7 @@ const SHORT_DAYS = Object.freeze(['M', 'T', 'W', 'T', 'F', 'S', 'S'] as const);
  * simply missing is indistinguishable from a row that belongs nowhere, and the
  * unresolvable case is exactly the one worth seeing.
  */
-const UNKNOWN_COVE = 'Unknown cove';
+const UNKNOWN_COVE = 'Unknown area';
 
 /** It answers "what happened while I was away", not "browse the archive". */
 const RECENT_LIMIT = 12;
@@ -363,7 +363,7 @@ function Calendar({ today, waves, coves, scheduledEvents, renderWaveRow, nowMs }
                    assistive tech, so this is the only route to "how much is on
                    Thursday?" for anyone not reading it by eye. */
                 aria-label={day.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' })
-                  + (seen.size === 0 ? '' : `, ${seen.size} wave${seen.size === 1 ? '' : 's'}`)}
+                  + (seen.size === 0 ? '' : `, ${seen.size} track${seen.size === 1 ? '' : 's'}`)}
                 onClick={() => setSelected(day)}
               >
                 <span className={styles.dayNumber}>{day.getDate()}</span>

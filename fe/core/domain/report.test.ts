@@ -1344,7 +1344,7 @@ describe('backlinks', () => {
     );
     expect(groups.map((group) => [group.waveId, group.title, group.entries.length])).toEqual([
       ['w-2', 'Cash flow model', 2],
-      ['w-1', 'This wave (self-reference)', 1],
+      ['w-1', 'This track (self-reference)', 1],
     ]);
   });
 

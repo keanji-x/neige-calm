@@ -12,29 +12,29 @@ afterEach(cleanup);
 describe('WavePage header', () => {
   it('shows the wave title and the lifecycle badge', () => {
     renderPage({ wave: wave({ title: 'Ship the rewrite', lifecycle: 'blocked' }) });
-    expect(screen.getByRole('button', { name: 'Rename wave' }).textContent).toBe('Ship the rewrite');
-    expect(screen.getByRole('img', { name: 'Wave lifecycle: Blocked' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Ship the rewrite');
+    expect(screen.getByRole('img', { name: 'Track status: Blocked' })).toBeTruthy();
   });
 
   it('does not put Draft in the header', () => {
     renderPage({ wave: wave({ title: 'Ship the rewrite', lifecycle: 'draft' }) });
-    expect(screen.queryByRole('img', { name: 'Wave lifecycle: Draft' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Track status: Draft' })).toBeNull();
   });
 
   it('hides done and canceled, and still shows failed', () => {
     renderPage({ wave: wave({ lifecycle: 'done' }) });
-    expect(screen.queryByRole('img', { name: 'Wave lifecycle: Done' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Track status: Done' })).toBeNull();
     cleanup();
     renderPage({ wave: wave({ lifecycle: 'canceled' }) });
-    expect(screen.queryByRole('img', { name: 'Wave lifecycle: Canceled' })).toBeNull();
+    expect(screen.queryByRole('img', { name: 'Track status: Canceled' })).toBeNull();
     cleanup();
     renderPage({ wave: wave({ lifecycle: 'failed' }) });
-    expect(screen.getByRole('img', { name: 'Wave lifecycle: Failed' })).toBeTruthy();
+    expect(screen.getByRole('img', { name: 'Track status: Failed' })).toBeTruthy();
   });
 
   it('falls back to the untitled label for a blank title', () => {
     renderPage({ wave: wave({ title: '  ' }) });
-    expect(screen.getByRole('button', { name: 'Rename wave' }).textContent).toBe('Untitled wave');
+    expect(screen.getByRole('button', { name: 'Rename track' }).textContent).toBe('Untitled track');
   });
 
   /* The header is one row now. It used to carry "Today / ● atlas" above the
@@ -46,7 +46,7 @@ describe('WavePage header', () => {
     renderPage({ wave: wave({ title: 'Ship the rewrite' }) });
     expect(screen.queryByRole('button', { name: 'Back to cove' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Today' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Back to wave' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Back to track' })).toBeNull();
   });
 
   it('puts Back on the page title row when the card grid is open', async () => {
@@ -55,7 +55,7 @@ describe('WavePage header', () => {
       board: <div data-nc-card-grid="">grid</div>,
       onCloseBoard,
     });
-    await userEvent.click(screen.getByRole('button', { name: 'Back to wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     expect(onCloseBoard).toHaveBeenCalledOnce();
   });
 });
@@ -388,16 +388,16 @@ describe('WavePage delete', () => {
 
   it('uses the shared destructive copy', async () => {
     renderPage();
-    await userEvent.click(screen.getByRole('button', { name: /^Delete wave / }));
-    expect(screen.getByRole('dialog', { name: 'Delete this wave?' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    expect(screen.getByRole('dialog', { name: 'Delete this track?' })).toBeTruthy();
     expect(screen.getByText(/This cannot be undone/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Delete wave' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Delete track' })).toBeTruthy();
   });
 
   it('cancelling closes the confirm without deleting', async () => {
     const onDeleteWave = vi.fn();
     renderPage({ onDeleteWave });
-    await userEvent.click(screen.getByRole('button', { name: /^Delete wave / }));
+    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(onDeleteWave).not.toHaveBeenCalled();
@@ -406,10 +406,10 @@ describe('WavePage delete', () => {
   it('confirming calls onDeleteWave and closes', async () => {
     const onDeleteWave = vi.fn(() => Promise.resolve());
     renderPage({ onDeleteWave });
-    await userEvent.click(screen.getByRole('button', { name: /^Delete wave / }));
-    await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Delete track / }));
+    await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
     expect(onDeleteWave).toHaveBeenCalledTimes(1);
-    await screen.findByRole('button', { name: /^Delete wave / });
+    await screen.findByRole('button', { name: /^Delete track / });
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

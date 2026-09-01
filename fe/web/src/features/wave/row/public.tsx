@@ -96,8 +96,8 @@ export function WaveRow({
   const now = nowMs ?? Date.now();
 
   const bits = [attention ? 'waiting on you' : '', running ? 'running' : ''].filter(Boolean);
-  const label = `Wave ${title}${bits.length > 0 ? `, ${bits.join(', ')}` : ''}, ${lifecycle}`
-    + (coveName === undefined ? '' : `, in cove ${coveName}`);
+  const label = `Track ${title}${bits.length > 0 ? `, ${bits.join(', ')}` : ''}, ${lifecycle}`
+    + (coveName === undefined ? '' : `, in area ${coveName}`);
 
   const dotClass = `${styles.dot} ${attention ? styles.dotWaiting : running ? styles.dotRunning : ''}`;
 

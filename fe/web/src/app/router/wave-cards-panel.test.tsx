@@ -231,7 +231,7 @@ describe('wave route CARDS panel', () => {
     await userEvent.click(await screen.findByRole('button', { name: /^Terminal one/ }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBeNull();
     expect(document.querySelector('[data-nc-card-cell][data-nc-card-id="card-term"]')).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Back to wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
   });
 
@@ -242,7 +242,7 @@ describe('wave route CARDS panel', () => {
     await userEvent.click(await screen.findByRole('button', { name: /^Terminal one/ }));
     expect(document.querySelector('[data-nc-card-board]')).toBeTruthy();
     expect(document.querySelector('[data-nc-terminal-card]')).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Back to wave' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Back to track' }));
     expect(document.querySelector('[data-nc-card-grid]')?.getAttribute('aria-hidden')).toBe('true');
     expect(document.querySelector('[data-nc-card-board]')).toBeTruthy();
   });

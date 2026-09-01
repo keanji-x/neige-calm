@@ -6,7 +6,7 @@ const createdCoveIds: string[] = [];
 /* #1209 — the Task field's accessible name. Visually hidden after the astryx
    rewrite (one line, prompt in the placeholder), so the browser-level check
    that it is still *named* is exactly this locator resolving. */
-const TASK_LABEL = 'What this wave should do';
+const TASK_LABEL = 'What this track should accomplish';
 
 function captureBrowserErrors(page: Page): string[] {
   const errors: string[] = [];
@@ -26,10 +26,10 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   const cove = await createCove(request);
   createdCoveIds.push(cove.id);
   await page.goto(`/next/cove/${cove.id}`);
-  // exact: the rail's per-cove `+` is `New wave in …`, a substring match.
-  await page.getByRole('button', { name: 'New wave', exact: true }).click();
+  // exact: the rail's per-cove `+` is `New track in …`, a substring match.
+  await page.getByRole('button', { name: 'New track', exact: true }).click();
 
-  const dialog = page.getByRole('dialog', { name: 'New wave' });
+  const dialog = page.getByRole('dialog', { name: 'New track' });
   const title = `FE e2e wave ${Date.now()}`;
   await expect(dialog.getByLabel(TASK_LABEL)).toBeVisible();
   // #1147 S3 — the Folder control is present and **optional**. This test walks
@@ -46,7 +46,7 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   await dialog.getByLabel(TASK_LABEL).fill(title);
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
-    dialog.getByRole('button', { name: 'Create wave' }).click(),
+    dialog.getByRole('button', { name: 'Create track' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
   expect(body).toMatchObject({ cove_id: cove.id, title });
@@ -61,7 +61,7 @@ test('creates a wave from the cove page and persists it', async ({ page, request
 
   await expect(page).toHaveURL(/\/wave\/[0-9a-f-]+$/i);
   await expect(page.locator('[data-nc-page-title]', { hasText: title })).toBeVisible();
-  await expect(page.getByRole('button', { name: new RegExp(`^Wave ${title},`) })).toBeVisible();
+  await expect(page.getByRole('button', { name: new RegExp(`^Track ${title},`) })).toBeVisible();
   const response = await request.get(`/api/coves/${cove.id}/waves`);
   expect(response.ok()).toBe(true);
   expect(await response.json() as { title: string }[]).toEqual(
@@ -92,8 +92,8 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   expect(ids).toContain('small-change');
 
   await page.goto(`/next/cove/${cove.id}`);
-  await page.getByRole('button', { name: 'New wave', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'New wave' });
+  await page.getByRole('button', { name: 'New track', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New track' });
   const title = `FE e2e template wave ${Date.now()}`;
   await dialog.getByLabel(TASK_LABEL).fill(title);
   await dialog.getByRole('button', { name: /^Start from/ }).click();
@@ -110,7 +110,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   /* The card is addressed through the option, never guessed at by role.
      `getByRole('dialog')` would match two elements here and throw strict mode:
      `HoverCard` renders its layer *inline*, so the card is a descendant of the
-     New wave dialog, and Playwright's `hasText` reads `textContent` without
+     New track dialog, and Playwright's `hasText` reads `textContent` without
      skipping `display:none` — a closed card's text still counts towards its
      ancestor. `aria-describedby` has no such ambiguity: `HoverCard` writes the
      layer's own id onto its trigger, `DropdownMenuItem` sets no
@@ -135,7 +135,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
 
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
-    dialog.getByRole('button', { name: 'Create wave' }).click(),
+    dialog.getByRole('button', { name: 'Create track' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
   expect(body).toMatchObject({ cove_id: cove.id, title, workflow_id: 'small-change' });

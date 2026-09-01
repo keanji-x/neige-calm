@@ -132,8 +132,8 @@ export function WavePage({
                 type="button"
                 data-nc-role="icon"
                 className={styles.headerBack}
-                aria-label="Back to wave"
-                title="Back to wave"
+                aria-label="Back to track"
+                title="Back to track"
                 onClick={onCloseBoard}
               >
                 <Icon name="arrow-left" />
@@ -142,8 +142,8 @@ export function WavePage({
             <h1 className={styles.titleHeading}><EditableTitle
               value={waveDisplayTitle(wave.title)}
               onCommit={onRenameWave}
-              editLabel="Rename wave"
-              inputLabel="Wave title"
+              editLabel="Rename track"
+              inputLabel="Track title"
               className={styles.title}
               isPageTitle
             /></h1>
@@ -169,8 +169,8 @@ export function WavePage({
             type="button"
             data-nc-role="icon"
             className={styles.headerDelete}
-            aria-label={`Delete wave ${waveDisplayTitle(wave.title)}`}
-            title="Delete wave"
+            aria-label={`Delete track ${waveDisplayTitle(wave.title)}`}
+            title="Delete track"
             onClick={() => deletion.request(wave.id)}
           >
             <Icon name="close" />

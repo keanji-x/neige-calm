@@ -31,7 +31,7 @@ export const WAVE_REPORT_CARD_ENTRY = Object.freeze({
   headless: true,
   defaultSize: Object.freeze({ w: 1, h: 1, minW: 1, minH: 1 }),
   title: () => 'Report',
-  accessibleName: () => 'Wave report',
+  accessibleName: () => 'Track report',
   create: Object.freeze({ mode: 'kernel-minted-only' } as const),
   fromKernel: (card: KernelCardInput): WaveReportCard | null => (
     card.kind === 'wave-report' ? Object.freeze({ type: 'wave-report', id: card.id } as const) : null

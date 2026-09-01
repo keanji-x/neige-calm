@@ -23,7 +23,7 @@ const LISTING: DirectoryListing = {
  * reader and by voice control, and this is the assertion that would catch its
  * removal.
  */
-const TASK_LABEL = 'What this wave should do';
+const TASK_LABEL = 'What this track should accomplish';
 
 /** The bound template, shaped as the read endpoint returns it. */
 const ISSUE_DEV: WaveTemplate = {
@@ -90,7 +90,7 @@ async function pickTheListedFolder(): Promise<void> {
 }
 
 function submitButton(): HTMLButtonElement {
-  return screen.getByRole('button', { name: /Create wave|Creating/ });
+  return screen.getByRole('button', { name: /Create track|Creating/ });
 }
 
 async function fillTitle(value = 'Ship the thing') {
@@ -176,7 +176,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     await fillTitle();
     // Present, and empty: the placeholder is what an unset folder shows, and an
     // unset folder is the managed default.
-    expect(screen.getByLabelText('Folder').textContent).toContain('Neige picks one for this wave');
+    expect(screen.getByLabelText('Folder').textContent).toContain('Neige picks a workspace for this track');
     // Empty means nothing was read: the picker only reaches its port on open.
     expect(props.listDirectory).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Cove')).toBeNull();
@@ -211,7 +211,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     expect(task).toHaveProperty('tagName', 'INPUT');
     expect(task).toHaveProperty('type', 'text');
     // The row the user asked us to reclaim: the prompt lives in the box.
-    expect(task.placeholder).toBe('What should this wave do?');
+    expect(task.placeholder).toBe('What should this track accomplish?');
   });
 
   it('flips the label and blocks submit while submitting', () => {
@@ -220,7 +220,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
   });
 
   it('surfaces the caller error in an alert region', () => {
-    renderForm({ error: 'Could not create the wave.' });
+    renderForm({ error: 'Could not create the track.' });
     expect(screen.getByRole('alert').textContent).toContain('Could not create');
   });
 
@@ -271,7 +271,7 @@ describe('Start from — Blank is the default and stays free', () => {
     renderForm({ templates: [], templatesError: 'Could not load templates.' });
     // A `status`, not an `alert`: nothing the user did failed.
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByText(/Could not load templates\..*still create a blank wave/)).toBeTruthy();
+    expect(screen.getByText(/Could not load templates\..*still create a blank track/)).toBeTruthy();
   });
 });
 

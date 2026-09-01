@@ -43,7 +43,7 @@ describe('degraded workspace reads stay usable', () => {
       return ok([]);
     });
     const main = await screen.findByRole('main');
-    expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Wave activity is unavailable: overlays down'))).toBe(true);
+    expect((await within(main).findAllByRole('alert')).some((node) => node.textContent?.includes('Track activity is unavailable: overlays down'))).toBe(true);
   });
 
   it('keeps Today content when one cove wave read fails', async () => {
@@ -65,10 +65,10 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/coves/c1/waves') return ++waveReads === 1 ? ok([wave]) : fail('waves stale');
       return ok([]);
     });
-    expect(await screen.findByRole('button', { name: 'New wave' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'New track' })).toBeTruthy();
     await view.client.invalidateQueries({ queryKey: ['waves', 'c1'] });
     expect(await within(screen.getByRole('main')).findByText('waves stale')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'New wave' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New track' })).toBeTruthy();
   });
 
   it('prefers wave-detail overlays to the neutral workspace fallback', async () => {
@@ -100,7 +100,7 @@ describe('degraded workspace reads stay usable', () => {
       if (request.path === '/api/waves/w1') return ok({ wave, cards: [], overlays: [] });
       return ok([]);
     });
-    await screen.findByRole('button', { name: 'Rename wave' });
+    await screen.findByRole('button', { name: 'Rename track' });
     expect(screen.queryByText('Needs input')).toBeNull();
   });
 });
@@ -115,7 +115,7 @@ it('puts a dismissible delete failure before Today content', async () => {
   });
   const rail = await screen.findByRole('complementary');
   await userEvent.click(await within(rail).findByRole('button', { name: 'Delete Reliable' }));
-  await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
+  await userEvent.click(screen.getByRole('button', { name: 'Delete track' }));
   const alert = await screen.findByRole('alert');
   const todayContent = within(screen.getByRole('main')).getByRole('heading', { level: 1 });
   expect(alert.compareDocumentPosition(todayContent) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
