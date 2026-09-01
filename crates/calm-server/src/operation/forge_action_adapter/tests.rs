@@ -888,3 +888,64 @@ fn run_git<const N: usize>(path: &Path, args: [&str; N]) {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// #1164 P3 r2 G4 — the two buckets must be a PARTITION of the passthrough
+/// set, so a key added tomorrow lands in exactly one of them deliberately.
+///
+/// This matters beyond tidiness: [`super::FORGE_CREDENTIAL_ENV_KEYS`] is the
+/// `cli_query.env_allow` denylist, and a manifest naming a key in it is a hard
+/// install/reload failure. A key that drifts into the credential bucket by
+/// accident retroactively breaks already-installed connectors at boot; a
+/// credential that drifts out of it silently hands the operator's forge
+/// identity to a manifest-authored connector.
+#[test]
+fn forge_env_key_buckets_are_a_partition() {
+    use super::{
+        FORGE_CREDENTIAL_ENV_KEYS, FORGE_NONCREDENTIAL_ENV_KEYS, forge_passthrough_env_keys,
+    };
+
+    // Neither bucket may be empty — an empty credential bucket would make the
+    // cli-query denylist vacuous while every assertion about it still passed.
+    assert!(!FORGE_CREDENTIAL_ENV_KEYS.is_empty());
+    assert!(!FORGE_NONCREDENTIAL_ENV_KEYS.is_empty());
+
+    // Disjoint …
+    for key in FORGE_CREDENTIAL_ENV_KEYS {
+        assert!(
+            !FORGE_NONCREDENTIAL_ENV_KEYS.contains(key),
+            "{key} is in BOTH buckets; it must be classified once"
+        );
+    }
+    // … and no bucket repeats a key.
+    let mut all: Vec<&str> = forge_passthrough_env_keys().collect();
+    let total = all.len();
+    all.sort_unstable();
+    all.dedup();
+    assert_eq!(
+        all.len(),
+        total,
+        "duplicate key across the buckets: {all:?}"
+    );
+    assert_eq!(
+        total,
+        FORGE_CREDENTIAL_ENV_KEYS.len() + FORGE_NONCREDENTIAL_ENV_KEYS.len(),
+        "the composed list must be exactly the two buckets"
+    );
+
+    // The classification itself, stated once so a re-bucketing is a visible
+    // edit rather than a silent policy change. Proxy/host selection grants
+    // nothing; a token or an agent socket IS the operator.
+    assert_eq!(
+        FORGE_NONCREDENTIAL_ENV_KEYS,
+        &["GH_HOST", "NO_PROXY", "no_proxy"],
+        "moving a key in or out of the non-credential bucket changes who may \
+         name it in cli_query.env_allow — do it deliberately"
+    );
+    for key in FORGE_CREDENTIAL_ENV_KEYS {
+        assert!(
+            key.contains("TOKEN") || key.contains("SSH"),
+            "{key} is in the credential bucket but does not look like a \
+             credential; if it really is one, widen this check deliberately"
+        );
+    }
+}

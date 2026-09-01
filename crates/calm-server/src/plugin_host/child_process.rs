@@ -33,7 +33,14 @@ pub async fn read_capped<R>(reader: &mut R, cap: usize, buf: &mut Vec<u8>) -> st
 where
     R: AsyncRead + Unpin,
 {
-    (&mut *reader).take(cap as u64 + 1).read_to_end(buf).await?;
+    // `saturating_add`, not `+`: `cap` comes from `cli_query.max_output_bytes`,
+    // and `usize::MAX` used to load. Debug built a panic into every such call;
+    // release wrapped to `take(0)`, which returned an EMPTY answer with
+    // `is_error: false` and skipped the drain — silent data loss plus a stalled
+    // child (r2 G1). The manifest now has a ceiling; this is the backstop for
+    // any cap that reaches here by another route.
+    let bounded = cap.saturating_add(1) as u64;
+    (&mut *reader).take(bounded).read_to_end(buf).await?;
     if buf.len() > cap {
         let mut sink = [0u8; 8 * 1024];
         // A drain error is not the caller's problem: the answer is already
@@ -103,12 +110,73 @@ impl Drop for KillGroupOnDrop {
 }
 
 #[cfg(unix)]
-fn kill_process_group(pgid: i32) {
+pub fn kill_process_group(pgid: i32) {
     crate::proc_identity::signal_process_group(pgid, libc::SIGKILL);
 }
 
 #[cfg(not(unix))]
-fn kill_process_group(_pgid: i32) {}
+pub fn kill_process_group(_pgid: i32) {}
+
+/// The deadline passed to [`spawn_within`] elapsed before the child existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpawnTimedOut;
+
+/// Spawn `cmd` **off the async path**, bounded by `deadline`.
+///
+/// # Why this is not just `cmd.spawn()`
+///
+/// `Command::spawn` looks non-blocking and is not. Setting `pre_exec` (which
+/// [`set_process_group_leader`] does) forces std off `posix_spawn` and onto
+/// `fork` + `execve`, where the PARENT blocks reading the exec-status pipe
+/// until the child's `execve` returns or fails. Against a hung mount that is
+/// unbounded — and `tokio::time::timeout` cancels only at await points, so a
+/// timeout wrapped around an inline `spawn()` can never fire. That is the exact
+/// defect the bring-up budget exists to prevent, so it must not live on the
+/// bring-up path (r2 G8).
+///
+/// # Why `spawn_blocking` is sound here
+///
+/// Verified rather than assumed: tokio propagates the runtime context to
+/// blocking-pool threads (`Handle::try_current()` succeeds inside
+/// `spawn_blocking`), so registering the child's pipes and its reaper works
+/// there. The `Handle::enter()` guard is kept anyway so the requirement is
+/// stated in the code rather than relied on implicitly.
+///
+/// # On expiry
+///
+/// The blocking thread is still wedged in `fork`/`execve` and cannot be
+/// cancelled. Rather than leak whatever it eventually produces, a detached task
+/// adopts the result and tears down the process group. The caller gets
+/// [`SpawnTimedOut`] immediately.
+pub async fn spawn_within(
+    mut cmd: tokio::process::Command,
+    deadline: tokio::time::Instant,
+) -> Result<std::io::Result<tokio::process::Child>, SpawnTimedOut> {
+    let handle = tokio::runtime::Handle::current();
+    let mut join = tokio::task::spawn_blocking(move || {
+        let _guard = handle.enter();
+        cmd.spawn()
+    });
+
+    match tokio::time::timeout_at(deadline, &mut join).await {
+        Ok(Ok(res)) => Ok(res),
+        Ok(Err(e)) => Ok(Err(std::io::Error::other(format!(
+            "spawn task failed: {e}"
+        )))),
+        Err(_elapsed) => {
+            tokio::spawn(async move {
+                if let Ok(Ok(mut child)) = join.await {
+                    if let Some(pid) = child.id() {
+                        kill_process_group(pid as i32);
+                    }
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                }
+            });
+            Err(SpawnTimedOut)
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

@@ -2184,15 +2184,8 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
     // over half its domain. `cli_query.timeout_ms` is the (uncapped) tools/call
     // budget — a manifest naming a ten-minute one must still yield the fixed
     // `CLI_QUERY_BRINGUP_BUDGET`.
-    let mut cli_loaded = 0;
-    for extra in [
-        json!({}),
-        json!({ "timeout_ms": 600_000 }),
-        json!({ "timeout_ms": u32::MAX }),
-        json!({ "timeout_ms": u64::MAX }),
-        json!({ "timeout_ms": 0, "max_output_bytes": usize::MAX }),
-        json!({ "search_path_extra": ["/opt/lb/bin"], "env_allow": ["TZ"] }),
-    ] {
+    use calm_server::plugin_host::manifest::CLI_QUERY_MAX_OUTPUT_BYTES_CEILING as OUTPUT_CEILING;
+    let cli_manifest = |extra: &Value| {
         let mut m = json!({
             "manifest_version": 1,
             "kind": "cli-query",
@@ -2208,6 +2201,23 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
         for (k, v) in extra.as_object().unwrap() {
             m["cli_query"][k] = v.clone();
         }
+        m
+    };
+
+    let mut cli_loaded = 0;
+    for extra in [
+        json!({}),
+        json!({ "timeout_ms": 600_000 }),
+        json!({ "timeout_ms": u32::MAX }),
+        json!({ "timeout_ms": u64::MAX }),
+        // r2 G1: `usize::MAX` used to live here and LOAD, which is how the
+        // `cap + 1` overflow reached production. The ceiling itself must still
+        // load — an author is entitled to the maximum — and the refusal of
+        // anything past it is asserted below.
+        json!({ "timeout_ms": 0, "max_output_bytes": OUTPUT_CEILING }),
+        json!({ "search_path_extra": ["/opt/lb/bin"], "env_allow": ["TZ", "no_proxy"] }),
+    ] {
+        let m = cli_manifest(&extra);
         let parsed =
             Manifest::parse(&m.to_string()).unwrap_or_else(|e| panic!("{m} must load, got {e}"));
         cli_loaded += 1;
@@ -2225,6 +2235,21 @@ fn no_loadable_manifest_can_exceed_the_bringup_cap() {
         );
     }
     assert_eq!(cli_loaded, 6, "the cli-query arm must not be vacuous");
+
+    // …and the values a `cli-query` validator must REFUSE outright, so the
+    // "loads" half above is a real filter and not a formality (r2 G1/G4).
+    for extra in [
+        json!({ "max_output_bytes": OUTPUT_CEILING + 1 }),
+        json!({ "max_output_bytes": u64::MAX }),
+        json!({ "env_allow": ["GH_TOKEN"] }),
+        json!({ "env_allow": ["SSH_AUTH_SOCK"] }),
+    ] {
+        let m = cli_manifest(&extra);
+        assert!(
+            Manifest::parse(&m.to_string()).is_err(),
+            "{m} must be refused, not clamped"
+        );
+    }
 }
 
 /// The other half of the same split: a `tools/call` that runs far longer than

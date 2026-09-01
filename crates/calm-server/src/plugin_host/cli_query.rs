@@ -9,7 +9,7 @@
 //!
 //! * **It does not go through the forge-action adapter.** That adapter generates
 //!   a `/bin/sh` script and hands the child the forge credential passthrough
-//!   ([`FORGE_PASSTHROUGH_ENV_KEYS`]). A query connector is authored by whoever
+//!   ([`FORGE_CREDENTIAL_ENV_KEYS`]). A query connector is authored by whoever
 //!   wrote the manifest, is reachable by any agent that can call its tools, and
 //!   has no business holding the operator's git identity — so it gets
 //!   `env_clear()` plus an explicit, enumerated environment, **and** the
@@ -42,10 +42,12 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use super::child_process::{KillGroupOnDrop, read_capped, set_process_group_leader};
+use super::child_process::{
+    KillGroupOnDrop, SpawnTimedOut, read_capped, set_process_group_leader, spawn_within,
+};
 use super::manifest::{CliQueryBlock, CliQueryTool, argv_slot};
 use super::mcp::{CallToolResult, ContentBlock, RpcError};
-use crate::operation::forge_action_adapter::FORGE_PASSTHROUGH_ENV_KEYS;
+use crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS;
 
 /// Wall-clock bound on ONE `cli-query` bring-up (resolution + the `--version`
 /// fingerprint probe).
@@ -82,16 +84,32 @@ pub const CLI_QUERY_MAX_STDERR_BYTES: usize = 4 * 1024;
 /// whole stream inside [`VERSION_PROBE_BUDGET`].
 const PROBE_MAX_STDOUT_BYTES: usize = 4 * 1024;
 
+/// How long a child gets to actually die after its process group is SIGKILLed
+/// and its pipes have closed.
+///
+/// SIGKILL is not instantaneous for a task blocked in uninterruptible I/O, and
+/// an unbounded `wait()` there would hand the caller exactly the stall
+/// `cli_query.timeout_ms` exists to prevent. Short because by this point the
+/// child has already closed both pipes: it is exiting, or it is stuck in a way
+/// no amount of waiting fixes.
+const CHILD_REAP_GRACE: Duration = Duration::from_secs(5);
+
 /// Is `key` a forge credential passthrough key — i.e. one this connector may
 /// never receive from the service environment (design §4 acceptance #4)?
 ///
 /// The single source of truth is
-/// [`crate::operation::forge_action_adapter::FORGE_PASSTHROUGH_ENV_KEYS`], the
-/// same constant the forge adapter forwards from. Re-typing the list here would
-/// drift the moment that one grows — which is precisely how the previous round
-/// shipped a `#[cfg(test)]` "witness" with no mechanism behind it.
-fn is_forge_passthrough_key(key: &str) -> bool {
-    FORGE_PASSTHROUGH_ENV_KEYS.contains(&key)
+/// [`crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS`], the
+/// credential half of what the forge adapter forwards. Re-typing the list here
+/// would drift the moment that one grows — which is precisely how the previous
+/// round shipped a `#[cfg(test)]` "witness" with no mechanism behind it.
+///
+/// The NON-credential half (`GH_HOST`, `NO_PROXY`, `no_proxy`) is deliberately
+/// absent: those grant nothing, and denying them broke a query CLI behind a
+/// proxy while `HTTP_PROXY` sailed through — an incoherent policy with a real
+/// cost, since every key here can retroactively invalidate an installed
+/// manifest at boot (r2 G4).
+fn is_forge_credential_key(key: &str) -> bool {
+    FORGE_CREDENTIAL_ENV_KEYS.contains(&key)
 }
 
 // ---------------------------------------------------------------------------
@@ -140,6 +158,18 @@ impl CliQueryRuntime {
         self.env.keys().map(String::as_str).collect()
     }
 
+    /// The `PATH` the child is actually exec'd with.
+    ///
+    /// The one child-environment VALUE that is safe to expose: it is derived
+    /// from the service PATH and the manifest's `search_path_extra`, never from
+    /// `secrets.json`. Exposed because "what the child's PATH ends up being" is
+    /// the property r2 G2 is about, and asserting it on the resolution helper
+    /// instead would test a different function than the one that builds the
+    /// environment.
+    pub fn child_path(&self) -> &str {
+        self.env.get("PATH").map(String::as_str).unwrap_or_default()
+    }
+
     /// Run one declared tool.
     ///
     /// Mirrors [`super::http_mcp::HttpMcpClient::tools_call`]'s envelope: an
@@ -164,6 +194,13 @@ impl CliQueryRuntime {
             "cli-query connector tools/call"
         );
 
+        // ONE deadline for the whole call, spent across two phases: the spawn
+        // and the capture. The spawn is inside it because `fork`+`execve`
+        // against a wedged mount can block for as long as the mount is wedged
+        // (r2 G8) — a bound that starts only after the child exists is not the
+        // bound `cli_query.timeout_ms` advertises.
+        let deadline = tokio::time::Instant::now() + self.timeout;
+
         let mut cmd = tokio::process::Command::new(&self.program);
         cmd.args(&argv)
             // `env_clear` FIRST, then only what `build_child_env` enumerated.
@@ -186,13 +223,28 @@ impl CliQueryRuntime {
             .kill_on_drop(true);
         set_process_group_leader(&mut cmd);
 
-        let mut child = cmd.spawn().map_err(|e| {
+        let budget_expired = || {
             RpcError::internal(format!(
-                "cli-query `{}`: spawning {} failed: {e}",
+                "cli-query `{}`: `{}` exceeded its {} ms budget \
+                 (cli_query.timeout_ms) and was killed",
                 self.plugin_id,
-                self.program.display()
+                self.program.display(),
+                self.timeout.as_millis()
             ))
-        })?;
+        };
+
+        // ---- Phase 1: spawn, off the async path and inside the deadline. ---
+        let mut child = match spawn_within(cmd, deadline).await {
+            Ok(Ok(child)) => child,
+            Ok(Err(e)) => {
+                return Err(RpcError::internal(format!(
+                    "cli-query `{}`: spawning {} failed: {e}",
+                    self.plugin_id,
+                    self.program.display()
+                )));
+            }
+            Err(SpawnTimedOut) => return Err(budget_expired()),
+        };
         // The child is a session/group leader (`setsid` in `pre_exec`), so its
         // pid is its pgid and one `kill(-pgid)` reaches every descendant.
         let mut group = KillGroupOnDrop::arm(child.id().map(|p| p as i32));
@@ -203,67 +255,89 @@ impl CliQueryRuntime {
             RpcError::internal(format!("cli-query `{}`: stderr not piped", self.plugin_id))
         })?;
 
-        let mut out_buf = Vec::new();
-        let mut err_buf = Vec::new();
-        // Read BOTH pipes concurrently with the wait. Waiting first and reading
-        // after would deadlock on any child that fills a pipe buffer (64 KiB on
-        // Linux) — which `max_output_bytes` defaults are well within, but a
-        // chatty one is not.
+        // ---- Phase 2: drain BOTH pipes to EOF. Do NOT wait yet. ------------
         //
-        // Each read is capped BEFORE buffering ([`read_capped`]): the cap is on
+        // Reading before waiting is the order that cannot deadlock: it is what
+        // unblocks a child filling a 64 KiB pipe buffer. (Waiting *first* is
+        // the deadlock; waiting CONCURRENTLY, as this used to, avoids the
+        // deadlock but lets `wait()` reap the group leader while the drain is
+        // still running — after which the pgid may already have been recycled
+        // and the kill below would be aimed at a stranger. The old comment
+        // asserting that could not happen was simply false on that
+        // interleaving — r2 G3.)
+        //
+        // Each read is capped BEFORE buffering (`read_capped`): the cap is on
         // bytes because that is what bounds memory, and a `read_to_end` that
         // truncates afterwards bounds nothing at all.
+        let mut out_buf = Vec::new();
+        let mut err_buf = Vec::new();
         let stdout_cap = self.max_output_bytes;
-        let outcome = tokio::time::timeout(self.timeout, async {
-            let (r_out, r_err, r_status) = tokio::join!(
+        let drained = tokio::time::timeout_at(deadline, async {
+            let (r_out, r_err) = tokio::join!(
                 read_capped(&mut child_stdout, stdout_cap, &mut out_buf),
                 read_capped(&mut child_stderr, CLI_QUERY_MAX_STDERR_BYTES, &mut err_buf),
-                child.wait(),
             );
             r_out?;
             r_err?;
-            r_status
+            Ok::<(), std::io::Error>(())
         })
         .await;
 
-        let status = match outcome {
-            Ok(Ok(status)) => status,
+        // ---- Phase 3: kill the group, BEFORE anything is reaped. -----------
+        //
+        // Unconditional, including the success path. That is the whole point:
+        // a wrapper of the shape `( daemon --token "$LB_TOKEN" & ) >/dev/null
+        // 2>&1; echo ok` exits 0 and leaves a daemon holding every `secret_env`
+        // value forever — escaping the timeout-only kill by simply succeeding.
+        //
+        // Killing here cannot corrupt the reported exit status: EOF on BOTH
+        // pipes means every descriptor to them is closed, and for an ordinary
+        // child the kernel closes its descriptors inside `do_exit`, by which
+        // point it is already a zombie and SIGKILL is a no-op. A process that
+        // explicitly closes stdout/stderr and keeps running IS the case this
+        // must kill — the contract is that when the answer stream ends, the
+        // query is over.
+        //
+        // The leader has not been reaped, so its pid — and therefore the
+        // pgid — is still ours and cannot have been recycled. That is now a
+        // fact of the control flow rather than an assertion about a race.
+        group.kill_now();
+
+        // ---- Phase 4: reap, bounded. ---------------------------------------
+        //
+        // Bounded because a process wedged in uninterruptible I/O does not die
+        // on SIGKILL, and an unbounded wait here would hand the caller's task
+        // the very stall the budget exists to prevent.
+        let reaped = tokio::time::timeout(CHILD_REAP_GRACE, child.wait()).await;
+
+        match drained {
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
-                // `tokio::join!` completes all three arms, so `wait()` has
-                // reaped the leader here too — same recycling hazard as the
-                // success path below.
-                group.disarm();
                 return Err(RpcError::internal(format!(
                     "cli-query `{}`: reading the child failed: {e}",
                     self.plugin_id
                 )));
             }
-            Err(_elapsed) => {
-                // The borrow taken by the future above has ended, so the child
-                // is ours again. SIGKILL the whole PROCESS GROUP, not just the
-                // direct child: a wrapper script's `foo &` is a grandchild
-                // holding the same secret environment, and killing only its
-                // parent orphans it onto pid 1. The child has not been reaped
-                // yet, so its pid — and therefore the pgid — cannot have been
-                // recycled by the time the signal lands.
-                group.kill_now();
-                let _ = child.kill().await;
+            Err(_elapsed) => return Err(budget_expired()),
+        }
+        let status = match reaped {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => {
                 return Err(RpcError::internal(format!(
-                    "cli-query `{}`: `{}` exceeded its {} ms budget \
-                     (cli_query.timeout_ms) and was killed",
+                    "cli-query `{}`: reaping the child failed: {e}",
+                    self.plugin_id
+                )));
+            }
+            Err(_elapsed) => {
+                return Err(RpcError::internal(format!(
+                    "cli-query `{}`: `{}` closed its output but did not exit within \
+                     {} ms of SIGKILL (it is probably blocked in uninterruptible I/O)",
                     self.plugin_id,
                     self.program.display(),
-                    self.timeout.as_millis()
+                    CHILD_REAP_GRACE.as_millis()
                 )));
             }
         };
-
-        // The child was reaped by `wait()` above, so its pid — and with it the
-        // pgid — is free to be recycled; signalling the group from here on
-        // could hit an unrelated process. Disarm. The group kill's job is the
-        // paths where the leader is still ours: budget expiry, an I/O error,
-        // and a dropped/cancelled `tools_call`.
-        group.disarm();
 
         let stdout = capped_text(&out_buf, self.max_output_bytes);
         let stderr = capped_text(&err_buf, CLI_QUERY_MAX_STDERR_BYTES);
@@ -361,10 +435,14 @@ pub async fn bring_up(
     )?;
 
     // The probe runs with the BASE environment only — no `env_allow`, no
-    // `secret_env`. `--version` needs no credentials, and the probe's stdout is
-    // logged verbatim as the fingerprint, so a CLI that echoes its config on
-    // `--version` would otherwise put a token in the log.
-    let fingerprint = probe_fingerprint(&program, &base_child_env(&service_env, &path_value)).await;
+    // `secret_env`. The probe's stdout is logged verbatim as the fingerprint,
+    // so a CLI that echoes its config on `--version` would otherwise put a
+    // token in the log.
+    //
+    // `?` on purpose: a binary that resolves but cannot be EXECUTED fails the
+    // enable here rather than publishing as `Running` and failing every call.
+    let fingerprint =
+        probe_fingerprint(&program, &base_child_env(&service_env, &path_value)).await?;
     tracing::info!(
         plugin_id = %plugin_id,
         program = %program.display(),
@@ -399,13 +477,18 @@ pub async fn bring_up(
 /// environment. The process-global `PATH` is never mutated: `std::env::set_var`
 /// is process-wide and racy, and one connector's extras must not become every
 /// other connector's (or the server's) search path.
+///
+/// **Non-absolute entries are dropped, exactly as [`resolve_command`] drops
+/// them** (r2 G2). Filtering only during resolution was half a fix: the kernel
+/// would correctly refuse to PIN `.`, say so in the reason — and then hand the
+/// child `PATH=".:…"` anyway, so a query CLI that shells out to `git` or `jq`
+/// resolved it against the server's working directory, with this connector's
+/// secrets already in its environment. One filter, both places, or the
+/// invariant is only true of the half that is tested.
 fn per_connector_path(service_path: &str, extra: &[String]) -> String {
-    let mut parts: Vec<&str> = extra
-        .iter()
-        .map(String::as_str)
-        .filter(|s| !s.is_empty())
-        .collect();
-    parts.extend(service_path.split(':').filter(|s| !s.is_empty()));
+    let mut parts: Vec<&str> = extra.iter().map(String::as_str).collect();
+    parts.extend(service_path.split(':'));
+    parts.retain(|s| !s.is_empty() && Path::new(s).is_absolute());
     parts.join(":")
 }
 
@@ -517,7 +600,7 @@ fn is_executable_file(path: &Path) -> bool {
 ///    revert the per-connector search path this connector was pinned against.
 ///
 /// No forge credential reaches this map, and step 2 is **fail-closed** about
-/// it: a key in [`FORGE_PASSTHROUGH_ENV_KEYS`] is dropped even though the
+/// it: a key in [`FORGE_CREDENTIAL_ENV_KEYS`] is dropped even though the
 /// manifest named it. `Manifest::validate` already refuses such a manifest, so
 /// nothing should reach here — this filter is the backstop for a manifest that
 /// got to the runtime by any other route (a hand-edited DB blob, a future
@@ -531,7 +614,7 @@ fn build_child_env(
 ) -> Result<BTreeMap<String, String>, String> {
     let mut env = base_child_env(service_env, path_value);
     for key in &block.env_allow {
-        if is_forge_passthrough_key(key) {
+        if is_forge_credential_key(key) {
             // Not a hard error here on purpose: the loud refusal belongs to
             // manifest parse/validate, which fails install and reload. At
             // runtime the invariant that matters is that the key is ABSENT.
@@ -582,69 +665,57 @@ fn base_child_env(
     env
 }
 
-/// Informational binary fingerprint, never a bring-up failure.
+/// Probe the pinned binary: an informational fingerprint, or a REFUSAL.
 ///
-/// First line of `<command> --version` on stdout; on any failure at all
-/// (non-zero exit, no output, spawn error, budget expiry) it falls back to the
-/// file's size and mtime, which is still enough for an operator to tell two
-/// deploys apart.
+/// Two failure modes, deliberately not the same outcome (r2 G5):
+///
+/// * **The spawn itself failed** — `EACCES` (the execute bit is set, but not
+///   for us), `ENOEXEC` (no valid format or shebang), `ENOENT` (a dangling
+///   interpreter). Resolution only checks that *some* execute bit is set, so
+///   these are exactly the binaries that resolve, enable, publish as `Running`,
+///   and then fail every single call. `Err` here, so the operator learns at
+///   enable time with the OS error in the reason.
+/// * **The binary ran and we simply learned nothing** — non-zero exit, empty
+///   output, or a `--version` that hung past [`VERSION_PROBE_BUDGET`]. A CLI is
+///   entitled to have no `--version`. `Ok` with the size+mtime fallback, which
+///   still lets an operator tell two deploys apart.
 ///
 /// `env` must be [`base_child_env`], **not** the child environment: this
 /// probe's stdout is logged verbatim at bring-up, and a CLI that echoes its
-/// configuration on `--version` would put a `secret_env` value into the log. A
-/// `--version` needs no credentials, so it gets none.
+/// configuration on `--version` would put a `secret_env` value into the log.
 ///
-/// For the record: scrubbing a connector's *tool output* is explicitly OUT OF
-/// SCOPE. Design R6 accepted "a connector prints its own secret" as a residual
-/// risk and rejected pattern-based redaction as false assurance. This change
-/// removes a leak the KERNEL was creating (it chose to run the probe with
-/// credentials and to log its stdout); it is not the start of an output
-/// scrubber.
-async fn probe_fingerprint(program: &Path, env: &BTreeMap<String, String>) -> String {
-    let probe = async {
-        let mut cmd = tokio::process::Command::new(program);
-        cmd.arg("--version")
-            .env_clear()
-            .envs(env)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
-        set_process_group_leader(&mut cmd);
-        let mut child = cmd.spawn().ok()?;
-        let mut group = KillGroupOnDrop::arm(child.id().map(|p| p as i32));
-        let mut stdout = child.stdout.take()?;
-        // `.output()` buffers UNBOUNDED inside the sub-budget: a chatty
-        // `--version` is the same memory amplifier `tools_call` had. One line
-        // is all this reads, so the cap is small.
-        let mut buf = Vec::new();
-        let (read, status) = tokio::join!(
-            read_capped(&mut stdout, PROBE_MAX_STDOUT_BYTES, &mut buf),
-            child.wait(),
-        );
-        // Both arms have completed, so the leader is reaped: disarm before the
-        // pid can be recycled. A budget expiry never reaches here — the timeout
-        // below drops this future, and the guard kills the group on the way out.
-        group.disarm();
-        read.ok()?;
-        if !status.ok()?.success() {
-            return None;
+/// What that excludes is `env_allow` and `secret_env` — not every path to a
+/// secret (r2 G9). `HOME` is still forwarded, because a CLI without one behaves
+/// differently enough that the fingerprint would stop describing the real
+/// deployment, so a tool that reads `$HOME/.config/<tool>` and echoes it on
+/// `--version` can still print its own credential. That residual is the
+/// R6-accepted "a connector prints its own secret"; scrubbing connector output
+/// is explicitly OUT OF SCOPE, and pattern-based redaction was rejected as
+/// false assurance. What changed is that the kernel no longer *hands* the probe
+/// the connector's secrets itself.
+async fn probe_fingerprint(
+    program: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    match run_version_probe(program, env).await {
+        Ok(Some(line)) => return Ok(format!("--version: {line}")),
+        // Ran, told us nothing useful — fall through to the fallback.
+        Ok(None) => {}
+        Err(e) => {
+            return Err(format!(
+                "cli_query.command `{}` resolved as executable but could not be \
+                 executed: {e}. It would enable and then fail on every call \
+                 (a file can carry an execute bit we may not use, or have no \
+                 valid format or interpreter)",
+                program.display()
+            ));
         }
-        let text = String::from_utf8_lossy(&buf);
-        let line = text.lines().next()?.trim();
-        if line.is_empty() {
-            return None;
-        }
-        Some(line.to_string())
-    };
-    if let Ok(Some(line)) = tokio::time::timeout(VERSION_PROBE_BUDGET, probe).await {
-        return format!("--version: {line}");
     }
     // Blocking `stat(2)`, and the reason the budget above exists is that the
     // path may be a dead mount — so it does not run on a runtime worker either.
-    let program = program.to_path_buf();
-    let meta = tokio::task::spawn_blocking(move || std::fs::metadata(&program)).await;
-    match meta {
+    let owned = program.to_path_buf();
+    let meta = tokio::task::spawn_blocking(move || std::fs::metadata(&owned)).await;
+    Ok(match meta {
         Ok(Ok(m)) => format!(
             "size={} mtime={:?}",
             m.len(),
@@ -655,7 +726,74 @@ async fn probe_fingerprint(program: &Path, env: &BTreeMap<String, String>) -> St
         ),
         Ok(Err(e)) => format!("unavailable ({e})"),
         Err(e) => format!("unavailable (metadata task failed: {e})"),
+    })
+}
+
+/// `Err` = the child could not be started at all. `Ok(None)` = it started and
+/// yielded no usable version line (including by outliving the sub-budget).
+///
+/// Same four-phase lifecycle as `tools_call` — spawn off the async path inside
+/// the deadline, drain to EOF, kill the group before anything is reaped, then
+/// reap under a grace — for the same reasons documented there.
+async fn run_version_probe(
+    program: &Path,
+    env: &BTreeMap<String, String>,
+) -> Result<Option<String>, std::io::Error> {
+    let deadline = tokio::time::Instant::now() + VERSION_PROBE_BUDGET;
+
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.arg("--version")
+        .env_clear()
+        .envs(env)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    set_process_group_leader(&mut cmd);
+
+    let mut child = match spawn_within(cmd, deadline).await {
+        Ok(Ok(child)) => child,
+        Ok(Err(e)) => return Err(e),
+        // A spawn that outran the sub-budget is a HANG, not a broken binary:
+        // the file is fine, something underneath it is not answering. That is
+        // "we learned nothing", not a refusal — the outer bring-up budget is
+        // what decides whether the enable survives.
+        Err(SpawnTimedOut) => return Ok(None),
+    };
+    let mut group = KillGroupOnDrop::arm(child.id().map(|p| p as i32));
+    let Some(mut stdout) = child.stdout.take() else {
+        return Ok(None);
+    };
+
+    // `.output()` buffers UNBOUNDED inside the sub-budget: a chatty `--version`
+    // is the same memory amplifier `tools_call` had. One line is all this
+    // reads, so the cap is small.
+    let mut buf = Vec::new();
+    let drained = tokio::time::timeout_at(
+        deadline,
+        read_capped(&mut stdout, PROBE_MAX_STDOUT_BYTES, &mut buf),
+    )
+    .await;
+    group.kill_now();
+    let reaped = tokio::time::timeout(CHILD_REAP_GRACE, child.wait()).await;
+
+    // A `--version` that hung is the case `VERSION_PROBE_BUDGET` exists for: it
+    // must cost the sub-budget and then fall back, never the whole bring-up.
+    let Ok(Ok(())) = drained else { return Ok(None) };
+    let Ok(Ok(status)) = reaped else {
+        return Ok(None);
+    };
+    if !status.success() {
+        return Ok(None);
     }
+    let text = String::from_utf8_lossy(&buf);
+    let Some(line) = text.lines().next().map(str::trim) else {
+        return Ok(None);
+    };
+    if line.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(line.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +926,9 @@ fn capped_text(bytes: &[u8], cap: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::operation::forge_action_adapter::{
+        FORGE_NONCREDENTIAL_ENV_KEYS, forge_passthrough_env_keys,
+    };
     use serde_json::json;
 
     fn tool(args: &[&str]) -> CliQueryTool {
@@ -933,10 +1074,10 @@ mod tests {
 
     // ---- environment ----------------------------------------------------
 
-    /// A service environment that has EVERY forge passthrough key set — driven
-    /// off the production constant, so a key added to
-    /// `FORGE_PASSTHROUGH_ENV_KEYS` is automatically in the fixture instead of
-    /// silently untested.
+    /// A service environment that has EVERY forge passthrough key set —
+    /// credential and non-credential alike, driven off the production
+    /// constants, so a key added to either bucket is automatically in the
+    /// fixture instead of silently untested.
     fn service_env() -> BTreeMap<String, String> {
         let mut env: BTreeMap<String, String> = [
             ("PATH", "/usr/bin:/bin"),
@@ -948,9 +1089,9 @@ mod tests {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-        for (i, key) in FORGE_PASSTHROUGH_ENV_KEYS.iter().enumerate() {
+        for (i, key) in forge_passthrough_env_keys().enumerate() {
             // Distinct values, so a leak "under another name" is detectable.
-            env.insert((*key).to_string(), format!("forge-credential-value-{i}"));
+            env.insert(key.to_string(), format!("forge-passthrough-value-{i}"));
         }
         env
     }
@@ -1002,11 +1143,11 @@ mod tests {
     fn no_forge_credential_ever_reaches_the_child_env() {
         let svc = service_env();
         assert!(
-            !FORGE_PASSTHROUGH_ENV_KEYS.is_empty(),
+            !FORGE_CREDENTIAL_ENV_KEYS.is_empty(),
             "the denylist must not be vacuous"
         );
-        for key in FORGE_PASSTHROUGH_ENV_KEYS {
-            assert!(svc.contains_key(*key), "fixture must set {key}");
+        for key in forge_passthrough_env_keys() {
+            assert!(svc.contains_key(key), "fixture must set {key}");
         }
 
         let plain = block(json!({
@@ -1019,13 +1160,13 @@ mod tests {
         // property of the code.
         let greedy = block(json!({
             "command": "longbridge",
-            "env_allow": FORGE_PASSTHROUGH_ENV_KEYS,
+            "env_allow": FORGE_CREDENTIAL_ENV_KEYS,
             "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
         }));
 
         for (label, b) in [("plain", &plain), ("env_allow-requests-them", &greedy)] {
             let env = build_child_env(b, &BTreeMap::new(), &svc, "/usr/bin", "s").unwrap();
-            for key in FORGE_PASSTHROUGH_ENV_KEYS {
+            for key in FORGE_CREDENTIAL_ENV_KEYS {
                 assert!(
                     !env.contains_key(*key),
                     "[{label}] {key} leaked into a cli-query child environment: {:?}",
@@ -1035,7 +1176,7 @@ mod tests {
             // …and none of the VALUES rode along under a different name.
             for value in svc
                 .iter()
-                .filter(|(k, _)| FORGE_PASSTHROUGH_ENV_KEYS.contains(&k.as_str()))
+                .filter(|(k, _)| FORGE_CREDENTIAL_ENV_KEYS.contains(&k.as_str()))
                 .map(|(_, v)| v)
             {
                 assert!(
@@ -1076,7 +1217,7 @@ mod tests {
         Manifest::parse(&manifest(json!(["TZ"])))
             .expect("a benign env_allow must still load; otherwise this test proves nothing");
 
-        for key in FORGE_PASSTHROUGH_ENV_KEYS {
+        for key in FORGE_CREDENTIAL_ENV_KEYS {
             let err = Manifest::parse(&manifest(json!(["TZ", key])))
                 .err()
                 .unwrap_or_else(|| panic!("env_allow naming {key} must be refused"));
@@ -1085,6 +1226,52 @@ mod tests {
             assert!(
                 msg.contains("env_allow"),
                 "the refusal must name the field: {msg}"
+            );
+        }
+
+        // …and the NON-credential half of the forge passthrough set must LOAD
+        // (r2 G4). `no_proxy` is an ordinary need for a query CLI behind a
+        // proxy; refusing it was both a false claim ("a forge credential") and
+        // incoherent, since `HTTP_PROXY` was never on the list at all. Every
+        // key in the denylist can also retroactively invalidate an installed
+        // manifest at boot, so only real credentials may be in it.
+        for key in FORGE_NONCREDENTIAL_ENV_KEYS {
+            let parsed = Manifest::parse(&manifest(json!(["TZ", key])));
+            assert!(
+                parsed.is_ok(),
+                "env_allow naming the non-credential key {key} must load, got {:?}",
+                parsed.err()
+            );
+        }
+        // The proxy variables that were never denied — named explicitly so the
+        // incoherence cannot come back unnoticed.
+        for key in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"] {
+            assert!(
+                Manifest::parse(&manifest(json!([key]))).is_ok(),
+                "{key} must load"
+            );
+        }
+    }
+
+    /// The runtime filter mirrors the parse-time denylist exactly: a
+    /// non-credential key that the manifest is ALLOWED to name must actually be
+    /// forwarded. A filter that silently dropped it would make the manifest a
+    /// lie in the other direction.
+    #[test]
+    fn a_non_credential_forge_key_named_by_env_allow_is_forwarded() {
+        assert!(!FORGE_NONCREDENTIAL_ENV_KEYS.is_empty());
+        let b = block(json!({
+            "command": "longbridge",
+            "env_allow": FORGE_NONCREDENTIAL_ENV_KEYS,
+            "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+        }));
+        let svc = service_env();
+        let env = build_child_env(&b, &BTreeMap::new(), &svc, "/usr/bin", "s").unwrap();
+        for key in FORGE_NONCREDENTIAL_ENV_KEYS {
+            assert_eq!(
+                env.get(*key),
+                svc.get(*key),
+                "{key} is not a credential and must be forwarded"
             );
         }
     }
@@ -1408,18 +1595,28 @@ mod tests {
             .unwrap_err();
         assert!(err.message.contains("budget"), "{}", err.message);
 
-        let pid: i32 = std::fs::read_to_string(&pidfile)
-            .expect("the wrapper must have recorded its background child")
+        assert_recorded_descendant_dies(&pidfile, "the budget kill").await;
+    }
+
+    /// Poll the pid a fixture wrote until it is gone, then fail loudly (and
+    /// clean up) if it never is.
+    ///
+    /// The pid is the assertion. "the call returned an error in ~200 ms" is
+    /// not: the previous round's test passed with the kill deleted entirely.
+    #[cfg(unix)]
+    async fn assert_recorded_descendant_dies(pidfile: &Path, what: &str) {
+        let pid: i32 = std::fs::read_to_string(pidfile)
+            .unwrap_or_else(|e| panic!("the fixture must have recorded a descendant pid: {e}"))
             .trim()
             .parse()
-            .unwrap();
+            .expect("the recorded pid must parse");
+        assert!(pid > 1, "implausible descendant pid {pid}");
         // SAFETY: `kill(pid, 0)` only probes for existence; it delivers no
         // signal and touches no memory.
         let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
-        assert!(pid > 1, "implausible grandchild pid {pid}");
 
         // The SIGKILL is asynchronous; give the kernel a moment, then insist.
-        for _ in 0..50 {
+        for _ in 0..100 {
             if !alive(pid) {
                 return;
             }
@@ -1427,7 +1624,153 @@ mod tests {
         }
         // Do not leave a 30 s sleep behind if the assertion is about to fail.
         unsafe { libc::kill(pid, libc::SIGKILL) };
-        panic!("grandchild {pid} survived the budget kill (it was orphaned onto pid 1)");
+        panic!("descendant {pid} survived {what} (it was orphaned onto pid 1)");
+    }
+
+    /// #1164 P3 r2 G3 — the guarantee must hold on the SUCCESS path too.
+    ///
+    /// A wrapper that backgrounds a daemon with its own stdout and then exits 0
+    /// escaped the timeout-only kill by simply succeeding: reaped, reported
+    /// `is_error: false`, and left a process holding every `secret_env` value
+    /// for as long as it felt like. The group kill is now unconditional and
+    /// happens BEFORE the reap.
+    ///
+    /// Mutation witness: move `group.kill_now()` back inside the budget-expiry
+    /// arm and this goes red while every other execution test stays green.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_backgrounded_daemon_does_not_survive_a_successful_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pidfile = tmp.path().join("daemon.pid");
+        let p = script(
+            tmp.path(),
+            "daemonize.sh",
+            // stdout/stderr detached, so the pipes reach EOF the moment the
+            // wrapper exits — exactly the shape that used to escape.
+            "#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > \"$1\"\necho ok\nexit 0\n",
+        );
+        let rt = runtime_for(p, &["{{symbol}}"], 20_000, 4096);
+        let res = rt
+            .tools_call("quote", json!({ "symbol": pidfile.display().to_string() }))
+            .await
+            .unwrap();
+
+        // The success verdict must be UNCHANGED by the kill: the leader is
+        // already a zombie when the signal lands, so its real exit status is
+        // what `wait()` reports.
+        assert_eq!(res.is_error, Some(false), "{:?}", res.content);
+        assert_eq!(res.content[0].text.as_deref(), Some("ok\n"));
+
+        assert_recorded_descendant_dies(&pidfile, "a successful call").await;
+    }
+
+    /// #1164 P3 r2 G6 — the cancellation guarantee `KillGroupOnDrop`'s `Drop`
+    /// advertises had zero coverage: every tested path took the `Option` first
+    /// (`kill_now` on expiry, `disarm` on success), so replacing the whole
+    /// `Drop` body with `self.0 = None;` left the suite fully green.
+    ///
+    /// Here the inner budget is 30 s and an OUTER timeout of 300 ms drops the
+    /// `tools_call` future — a client hangup or a task abort, which is the only
+    /// path `Drop` is responsible for.
+    ///
+    /// Mutation witness: `fn drop(&mut self) { self.0 = None; }` turns this red.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_the_call_future_kills_the_process_group() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pidfile = tmp.path().join("grandchild.pid");
+        let p = script(
+            tmp.path(),
+            "wrapper.sh",
+            "#!/bin/sh\nsleep 30 >/dev/null 2>&1 &\necho $! > \"$1\"\nsleep 30\n",
+        );
+        // Inner budget far longer than the outer one, so the call is CANCELLED
+        // rather than expiring — `kill_now` must not be what saves us.
+        let rt = runtime_for(p, &["{{symbol}}"], 30_000, 4096);
+        let outcome = tokio::time::timeout(
+            Duration::from_millis(300),
+            rt.tools_call("quote", json!({ "symbol": pidfile.display().to_string() })),
+        )
+        .await;
+        assert!(
+            outcome.is_err(),
+            "the outer timeout must fire first, dropping the call future"
+        );
+
+        assert_recorded_descendant_dies(&pidfile, "dropping the call future").await;
+    }
+
+    /// #1164 P3 r2 G1 — `cap + 1` overflowed. `usize::MAX` used to load from a
+    /// manifest; in debug it panicked the request task, and in release it
+    /// wrapped to `take(0)`, which returned an EMPTY answer with
+    /// `is_error: false` and skipped the drain too.
+    ///
+    /// The manifest now has a ceiling, so this drives the runtime directly —
+    /// the arithmetic must be safe for any cap that reaches it.
+    ///
+    /// Mutation witness: `cap + 1` in `read_capped` and this panics with
+    /// "attempt to add with overflow".
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_saturating_cap_returns_the_whole_answer_instead_of_overflowing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = script(tmp.path(), "ok.sh", "#!/bin/sh\necho hello\n");
+        let rt = runtime_for(p, &[], 5_000, usize::MAX);
+        let res = rt.tools_call("quote", json!({})).await.unwrap();
+        assert_eq!(res.is_error, Some(false));
+        assert_eq!(
+            res.content[0].text.as_deref(),
+            Some("hello\n"),
+            "an unbounded cap must return the answer, not an empty string"
+        );
+    }
+
+    /// …and the same at the real manifest ceiling, driven end to end through
+    /// `Manifest::parse` → `bring_up` → `tools_call`, because "it loads" is not
+    /// the property that broke — "it runs" is.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_manifest_at_the_output_ceiling_loads_and_executes() {
+        use super::super::manifest::{CLI_QUERY_MAX_OUTPUT_BYTES_CEILING, Manifest};
+        let tmp = tempfile::tempdir().unwrap();
+        let p = script(tmp.path(), "ok.sh", "#!/bin/sh\necho hello\n");
+
+        let doc = json!({
+            "manifest_version": 1,
+            "kind": "cli-query",
+            "id": "lb-query",
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "LB",
+            "cli_query": {
+                "command": p.display().to_string(),
+                "max_output_bytes": CLI_QUERY_MAX_OUTPUT_BYTES_CEILING,
+                "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+            }
+        });
+        let parsed = Manifest::parse(&doc.to_string()).expect("the ceiling itself must load");
+        let rt = bring_up("cli-test", parsed.cli_query.as_ref().unwrap(), tmp.path())
+            .await
+            .unwrap();
+        let res = rt.tools_call("q", json!({})).await.unwrap();
+        assert_eq!(res.is_error, Some(false));
+        assert_eq!(res.content[0].text.as_deref(), Some("hello\n"));
+
+        // …and one byte past it is refused rather than silently clamped.
+        let mut over = doc.clone();
+        over["cli_query"]["max_output_bytes"] =
+            json!(CLI_QUERY_MAX_OUTPUT_BYTES_CEILING as u64 + 1);
+        let err = Manifest::parse(&over.to_string()).expect_err("over the ceiling must be refused");
+        assert!(err.to_string().contains("max_output_bytes"), "{err}");
+        assert!(
+            Manifest::parse(&{
+                let mut m = doc.clone();
+                m["cli_query"]["max_output_bytes"] = json!(u64::MAX);
+                m.to_string()
+            })
+            .is_err(),
+            "usize::MAX-shaped values must be refused"
+        );
     }
 
     #[cfg(unix)]
@@ -1527,6 +1870,190 @@ mod tests {
             "expected the size+mtime fallback, got {}",
             rt.fingerprint()
         );
+    }
+
+    /// #1164 P3 r2 G7 — a `--version` that HANGS must cost
+    /// [`VERSION_PROBE_BUDGET`] and then fall back, not consume the whole
+    /// bring-up. Only `exit 1` was covered before, which the outer budget would
+    /// have masked entirely.
+    ///
+    /// Mutation witness: raise `VERSION_PROBE_BUDGET` above
+    /// [`CLI_QUERY_BRINGUP_BUDGET`] and this goes red on the elapsed assertion
+    /// — nothing else in the suite distinguishes the two budgets.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hanging_version_probe_costs_the_sub_budget_and_falls_back() {
+        assert!(
+            VERSION_PROBE_BUDGET < CLI_QUERY_BRINGUP_BUDGET,
+            "the sub-budget must be strictly smaller, or a hung probe takes the enable down"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let p = script(tmp.path(), "hang.sh", "#!/bin/sh\nsleep 60\n");
+        let b = block(json!({
+            "command": p.display().to_string(),
+            "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+        }));
+        let started = std::time::Instant::now();
+        let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+        let elapsed = started.elapsed();
+
+        assert!(
+            rt.fingerprint().starts_with("size="),
+            "a hung probe must fall back, got {}",
+            rt.fingerprint()
+        );
+        assert!(
+            elapsed < CLI_QUERY_BRINGUP_BUDGET,
+            "bring-up took {elapsed:?}; the probe must be bounded by its own \
+             {VERSION_PROBE_BUDGET:?} sub-budget, not by the outer one"
+        );
+    }
+
+    /// #1164 P3 r2 G5 — resolution only checks that SOME execute bit is set, so
+    /// a file we cannot actually exec resolves, enables, publishes as `Running`
+    /// and then fails every single call.
+    ///
+    /// Two spawn failures, both reachable without root: mode `0o011` gives
+    /// group/other the execute bit but not the owner, and Linux checks the
+    /// owner class first (`EACCES`); a `#!` line naming an interpreter that
+    /// does not exist is `ENOENT` even though the file itself is right there.
+    ///
+    /// **`ENOEXEC` is deliberately not one of the cases.** Measured, not
+    /// assumed: Rust's `Command::spawn` always goes through `execvp`, and
+    /// glibc's `execvp` implements the POSIX `ENOEXEC` fallback — a text file
+    /// with no shebang and no ELF header is silently re-exec'd under `/bin/sh`,
+    /// so the spawn SUCCEEDS and the file merely exits 127. It therefore lands
+    /// in the informational arm, and a connector pointed at garbage still
+    /// enables. That residual stands on purpose: a non-zero `--version` cannot
+    /// be a bring-up failure, because a CLI is entitled not to have one.
+    ///
+    /// Mutation witness: map the spawn error back onto the size+mtime fallback
+    /// and this goes red while `a_failing_version_probe_falls_back…` stays
+    /// green — the two arms must not collapse into one.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_binary_that_cannot_be_executed_fails_bring_up_instead_of_enabling() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let no_owner_exec = tmp.path().join("noexec.sh");
+        std::fs::write(&no_owner_exec, "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::set_permissions(&no_owner_exec, std::fs::Permissions::from_mode(0o011)).unwrap();
+
+        let dangling_interp = tmp.path().join("dangling.sh");
+        std::fs::write(
+            &dangling_interp,
+            "#!/nonexistent/interpreter-1164\necho hi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&dangling_interp, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        for path in [&no_owner_exec, &dangling_interp] {
+            // It RESOLVES — that is the whole problem.
+            resolve_command(&path.display().to_string(), &[], "").unwrap_or_else(|e| {
+                panic!(
+                    "{} must still resolve for this test to mean anything: {e}",
+                    path.display()
+                )
+            });
+
+            let b = block(json!({
+                "command": path.display().to_string(),
+                "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+            }));
+            let err = bring_up("cli-test", &b, tmp.path())
+                .await
+                .err()
+                .unwrap_or_else(|| panic!("{} enabled despite being unrunnable", path.display()));
+            assert!(err.contains(&path.display().to_string()), "{err}");
+            assert!(
+                err.contains("could not be executed"),
+                "the reason must say what failed: {err}"
+            );
+        }
+    }
+
+    /// #1164 P3 r2 G2 — the child's PATH must carry the same absoluteness rule
+    /// resolution applies. Refusing to PIN `.` and then exec'ing the child with
+    /// `PATH=".:…"` just moves the problem: a query CLI that shells out to
+    /// `git`/`jq` resolves it against the server's working directory, with this
+    /// connector's secrets already in its environment.
+    ///
+    /// Asserted on the FINAL child environment, not on `resolve_command`: the
+    /// existing resolution test passed throughout this defect.
+    ///
+    /// Mutation witness: drop the `is_absolute` filter from
+    /// `per_connector_path` and this goes red.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_childs_path_never_contains_a_relative_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = script(tmp.path(), "ok.sh", "#!/bin/sh\necho hi\n");
+        let b = block(json!({
+            "command": p.display().to_string(),
+            "search_path_extra": [".", "bin", "../up", "/opt/lb/bin"],
+            "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+        }));
+        let rt = bring_up("cli-test", &b, tmp.path()).await.unwrap();
+
+        let path = rt.child_path();
+        for entry in path.split(':') {
+            assert!(
+                Path::new(entry).is_absolute(),
+                "the child's PATH carries the relative entry {entry:?}: {path}"
+            );
+        }
+        // …and the absolute extra survived, so the filter is not "drop
+        // everything".
+        assert!(
+            path.split(':').any(|e| e == "/opt/lb/bin"),
+            "the absolute extra must still be first-class: {path}"
+        );
+    }
+
+    /// #1164 P3 F7 — `std::env::vars()` PANICS on a non-UTF-8 variable, which
+    /// would turn every `cli-query` enable into a panic on the boot path.
+    ///
+    /// Deterministic despite touching the process environment: nextest runs
+    /// each test in its own process, and the variable is set before any runtime
+    /// thread exists, so nothing else can observe it.
+    ///
+    /// Mutation witness: `std::env::vars()` in `bring_up` and this panics with
+    /// "environment variable was not valid unicode".
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_service_env_variable_does_not_panic_bring_up() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+
+        // SAFETY: single-threaded — no runtime has been built yet — and this
+        // test owns its process under nextest.
+        unsafe {
+            std::env::set_var(OsStr::from_bytes(b"CLI_QUERY_BAD_\xff"), "x");
+            std::env::set_var("CLI_QUERY_BAD_VALUE", OsStr::from_bytes(b"v\xff"));
+        }
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let tmp = tempfile::tempdir().unwrap();
+            let p = script(tmp.path(), "ok.sh", "#!/bin/sh\necho hi\n");
+            let b = block(json!({
+                "command": p.display().to_string(),
+                "tools": [{ "name": "q", "input_schema": {}, "args": [] }],
+            }));
+            let rt = bring_up("cli-test", &b, tmp.path())
+                .await
+                .expect("a non-UTF-8 service variable must not fail the enable");
+            // The undecodable key is simply not forwarded; nothing else moved.
+            assert!(
+                !rt.env_keys()
+                    .iter()
+                    .any(|k| k.starts_with("CLI_QUERY_BAD_"))
+            );
+        });
     }
 
     /// Small helper so the missing-slot loop can report WHICH input silently

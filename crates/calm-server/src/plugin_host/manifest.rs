@@ -268,6 +268,24 @@ impl McpHttpBlock {
 pub const CLI_QUERY_DEFAULT_TIMEOUT_MS: u64 = 20_000;
 pub const CLI_QUERY_DEFAULT_MAX_OUTPUT_BYTES: usize = 32_768;
 
+/// Parse-time ceiling on `cli_query.max_output_bytes` (#1164 P3 r2 G1).
+///
+/// **Why a ceiling at all.** Without one the value was unbounded, and
+/// `usize::MAX` loaded — which made `cap + 1` in the capture path overflow: a
+/// debug panic, and in release a wrap to `take(0)` that returned an EMPTY
+/// stdout with `is_error: false`, i.e. silent data loss. The arithmetic is now
+/// saturating regardless, but a manifest that can ask for an unbounded answer
+/// is a memory bound nobody can reason about, so the ceiling is the real fix
+/// and the saturation is the backstop.
+///
+/// **Why 8 MiB.** This is ONE tool call's stdout, held whole in memory and then
+/// embedded in a JSON text block (which roughly doubles it) on its way to the
+/// agent — and an agent has to read it. Real query answers are kilobytes; the
+/// default is 32 KiB. 8 MiB is ~250× the default, so no legitimate author is
+/// squeezed, while the worst a manifest can cost per concurrent call stays in
+/// the tens of megabytes rather than "whatever the child felt like writing".
+pub const CLI_QUERY_MAX_OUTPUT_BYTES_CEILING: usize = 8 * 1024 * 1024;
+
 /// `cli_query` top-level block. Present iff `kind == "cli-query"`.
 ///
 /// #1164 P1 parses and validates this block; the execution runtime lands in a
@@ -915,6 +933,18 @@ impl CliQueryBlock {
                 "must declare at least one tool",
             ));
         }
+        if let Some(n) = self.max_output_bytes
+            && n > CLI_QUERY_MAX_OUTPUT_BYTES_CEILING
+        {
+            return Err(ManifestError::invalid(
+                "cli_query.max_output_bytes",
+                format!(
+                    "{n} exceeds the {CLI_QUERY_MAX_OUTPUT_BYTES_CEILING}-byte ceiling; \
+                     this is one tool call's stdout held whole in memory"
+                ),
+            ));
+        }
+
         // #1164 P3 F1 — `env_allow` is a passthrough from the SERVICE
         // environment, so a manifest that names a forge credential key would
         // hand a manifest-authored, agent-callable connector the operator's git
@@ -924,22 +954,31 @@ impl CliQueryBlock {
         // fail-closed filter for anything that reaches the runtime by another
         // route.
         //
-        // `secret_env` is deliberately NOT subject to this list: those values
-        // come from the connector's own `secrets.json`, which the operator
-        // authored for this connector. Naming `GH_TOKEN` there sets it to
-        // whatever the operator put in that file — there is no escalation from
-        // the service identity, which is the thing this denylist protects.
+        // The denylist is the CREDENTIAL subset only (r2 G4). The wider forge
+        // passthrough set also carries `GH_HOST`/`NO_PROXY`/`no_proxy`, which
+        // grant nothing: refusing them made `"env_allow": ["no_proxy"]` — an
+        // ordinary need for a query CLI behind a proxy — a hard install failure
+        // whose reason falsely called it a credential, while `HTTP_PROXY` sailed
+        // through. Since `registry::load_from_dir` re-parses on boot, every key
+        // in this set can also retroactively invalidate an installed manifest,
+        // which is a cost only a real credential is worth paying.
+        //
+        // `secret_env` is deliberately NOT subject to this list either: those
+        // values come from the connector's own `secrets.json`, which the
+        // operator authored for this connector. Naming `GH_TOKEN` there sets it
+        // to whatever the operator put in that file — there is no escalation
+        // from the service identity, which is the thing this denylist protects.
         for (i, key) in self.env_allow.iter().enumerate() {
-            if crate::operation::forge_action_adapter::FORGE_PASSTHROUGH_ENV_KEYS
+            if crate::operation::forge_action_adapter::FORGE_CREDENTIAL_ENV_KEYS
                 .contains(&key.as_str())
             {
                 return Err(ManifestError::invalid(
                     format!("cli_query.env_allow[{i}]"),
                     format!(
-                        "`{key}` is a forge credential passthrough key and may never be \
-                         forwarded to a cli-query connector: a query connector is authored \
-                         in a manifest and callable by any agent that can see its tools, so \
-                         it must not hold the operator's forge identity"
+                        "`{key}` is a forge CREDENTIAL and may never be forwarded to a \
+                         cli-query connector: a query connector is authored in a manifest \
+                         and callable by any agent that can see its tools, so it must not \
+                         hold the operator's forge identity"
                     ),
                 ));
             }
