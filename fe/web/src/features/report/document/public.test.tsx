@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { cleanup, render, screen } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { ReportBlock, WaveReport } from '../../../../../core/domain/report.ts';
+import { initialBody, splitInitialBody } from './kernel-initial-body.ts';
 import { ReportDocument } from './public.tsx';
 
 afterEach(cleanup);
@@ -344,6 +345,76 @@ describe('ReportDocument', () => {
       />);
       expect(container.textContent).toContain('◂ 3');
       expect(container.textContent?.match(/◂/g)?.length).toBe(1);
+    });
+  });
+
+  /*
+   * A report may carry its own maintenance contract as a leading HTML comment:
+   * dropped where the document is rendered, readable to everything that reads
+   * the body source (#1185). The fixture is deliberately multi-line and spans
+   * blank lines — a CommonMark HTML block of type 2 does not end at one, and a
+   * single-line fixture would not test the property the carrier relies on.
+   *
+   * **These two cases were already green before #1185 touched this front end.**
+   * `sanitizeAstPolicy(_, { rawHtml: 'drop' })` has always removed the node;
+   * nothing here measures a production change made by this PR, and they must
+   * not be read as `fe/`'s evidence for it — that is
+   * `carrier.browser.test.tsx`, in a real browser. They stay as a regression
+   * fence: the day someone reaches for `rehype-raw` to make `<details>` work,
+   * this is where the contract leak shows up first, cheaply, in jsdom.
+   */
+  describe('a document that carries its own maintenance contract (#1185)', () => {
+    /* The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
+       — not a transcription. A hand-written fixture would prove this front end
+       hides *a* comment; only the shipped text proves it hides *the* one every
+       wave is born with.
+
+       Read in `beforeAll`, not at module scope: `kernel-initial-body.ts`
+       promises it never touches the filesystem at import time, and a
+       module-scope destructure here would break that promise for every test
+       in the file (#1185 D5). */
+    let CONTRACT: string;
+    let SECTIONS: string[];
+    beforeAll(() => {
+      [CONTRACT, ...SECTIONS] = splitInitialBody();
+    });
+
+    it('the fixture really is the kernel skeleton', () => {
+      // Guards the read itself: a wrong path or a renamed fragment would
+      // otherwise leave every assertion below vacuously green.
+      expect(CONTRACT.startsWith('<!-- 报告维护契约')).toBe(true);
+      expect(CONTRACT.endsWith('-->\n\n')).toBe(true);
+      expect(CONTRACT).toContain('散文正文');
+      expect(SECTIONS.map((s) => s.split('\n')[0]))
+        .toEqual(['# 概要', '# 待你定', '# 已完成', '# 决策']);
+    });
+
+    it('renders neither the contract nor a row for its block', () => {
+      const { container } = render(<ReportDocument
+        report={blocked(prose('b_1', CONTRACT), prose('b_2', `${SECTIONS[0]}本轮结论。\n`))}
+        empty={EMPTY}
+      />);
+      expect(container.textContent).not.toContain('报告维护契约');
+      expect(container.innerHTML).not.toContain('报告维护契约');
+      expect(container.textContent).not.toContain('散文正文');
+      expect(container.innerHTML).not.toContain('散文正文');
+      // The slot stays in the DOM (it keeps the anchor and any backlink
+      // sidenote); the block inside it renders nothing, and the row it sits on
+      // is what `.row:has(> .block:empty)` then hides — which jsdom cannot see.
+      expect(container.querySelector('#b_1')?.childNodes.length).toBe(0);
+      expect(container.textContent).toContain('概要');
+      expect(container.textContent).toContain('本轮结论。');
+    });
+
+    it('drops the contract on the v1 flat-body path too', () => {
+      // `report.blocks === null` sends the whole body through one ProseBlock.
+      const { container } = render(<ReportDocument report={flat(initialBody())} empty={EMPTY} />);
+      expect(container.textContent).not.toContain('报告维护契约');
+      expect(container.innerHTML).not.toContain('报告维护契约');
+      expect(container.textContent).not.toContain('散文正文');
+      expect(container.innerHTML).not.toContain('散文正文');
+      expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent))
+        .toEqual(['概要', '待你定', '已完成', '决策']);
     });
   });
 });

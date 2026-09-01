@@ -214,25 +214,57 @@ fn block_heading(block: &calm_types::wave_report::ReportBlock) -> String {
         .get("markdown")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let first_line = markdown.lines().next().unwrap_or("");
-    let first_non_empty = markdown
+    // The title comes from `scan_links().plain`, the workspace's SHARED
+    // CommonMark plain-text projection of a block (`calm_types::report_links`):
+    // it drops `Event::Html` / `Event::InlineHtml`, keeps `Event::Text` /
+    // `Event::Code`, and drops the alt text of a standalone image. It is not a
+    // projection of "everything a reader can see" — see the known exception
+    // below — it is the one projection this workspace has, and
+    // `report_backlinks` quotes from it too, so an outline title and a backlink
+    // quote can never disagree about what a block says.
+    //
+    // Reusing it, rather than scanning the source for `<!-- … -->`, is the
+    // whole point: a substring scanner does not respect Markdown boundaries,
+    // so a block starting with the inline code `` `<!-- x -->` `` would render
+    // those characters and be titled without them. The case that makes any of
+    // this matter is a document carrying its own maintenance contract in a
+    // leading comment (#1185 §0.7): it renders as nothing, so it may not echo
+    // into the outline of every wave — as noise and against the response byte
+    // budget. The block itself stays, with an empty heading; dropping it would
+    // make it undeep-linkable, and this outline is the only source of block ids.
+    //
+    // No ATX handling here, deliberately: `plain` already emits a heading's
+    // text without its `#` markers. Re-stripping leading `#` would eat the
+    // visible characters of a block whose first line is the *code* `# x`.
+    //
+    // KNOWN EXCEPTION, deliberately accepted — the one place where this title
+    // is NOT what a reader sees. `plain` drops a standalone image's alt text
+    // (`calm_types::report_links`'s `standalone_image_alt_is_not_plain_text`)
+    // but keeps the alt of an image inside a link
+    // (`image_alt_inside_any_link_is_plain_text`), while `fe/` renders a
+    // standalone image's alt as a VISIBLE `<span>` (never an `<img>`: a report
+    // is agent-written and must not fetch remote bytes,
+    // `fe/web/src/features/report/document/public.tsx`). So an image-only prose
+    // block gets an EMPTY title here even though the front end shows its alt,
+    // and is indistinguishable in the outline from a genuinely invisible
+    // contract block. Pinned by `an_image_only_block_gets_an_empty_heading`.
+    //
+    // Accepted because both alternatives are worse. Changing `plain` is not a
+    // local edit: it is a SHARED projection, and `report_backlinks` uses the
+    // same string to cut citation quotes (`crate::report_backlinks`), so an
+    // S1-scoped fix would silently move an unrelated subsystem's output. And a
+    // hand-written fallback here is precisely the bug this function just
+    // deleted: a second projection of Markdown to text always drifts from the
+    // rendering side. The cost is bounded — the block keeps its id and stays
+    // deep-linkable, and the outline is a text index. If image-only blocks ever
+    // need titles, teach `plain` about them once, for both readers, with the
+    // backlink-quote change reviewed alongside.
+    let plain = calm_types::report_links::scan_links(markdown).plain;
+    let heading = plain
         .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("");
-    let hashes = first_line.bytes().take_while(|byte| *byte == b'#').count();
-    let heading = if (1..=6).contains(&hashes)
-        && first_line
-            .as_bytes()
-            .get(hashes)
-            .is_none_or(|byte| *byte == b' ')
-    {
-        first_line
-            .trim_start_matches('#')
-            .strip_prefix(' ')
-            .unwrap_or(first_line)
-    } else {
-        first_non_empty.trim()
-    };
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
     truncate_chars(heading, 60)
 }
 
@@ -253,4 +285,138 @@ async fn report_backlinks(
         .await
         .map_err(|error| RpcError::internal(format!("report_backlinks: {error}")))?;
     Ok(crate::report_backlinks::mcp_payload(&page))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::block_heading;
+    use calm_types::wave_report::ReportBlock;
+    use serde_json::json;
+
+    fn prose(markdown: &str) -> ReportBlock {
+        ReportBlock {
+            id: "b_0000".into(),
+            kind: calm_types::report_blocks::KIND_PROSE.into(),
+            rev: 1,
+            payload: json!({ "markdown": markdown }),
+        }
+    }
+
+    /// The multi-line shape matters: a CommonMark HTML block of type 2 is *not*
+    /// terminated by a blank line, so a real maintenance contract is one node
+    /// spanning blank lines (#1185 §4.4 F).
+    const CONTRACT: &str = "<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）\n\
+        \n\
+        这份报告自带的结构就是规则：维护它，不要重写它。\n\
+        \n\
+        写作方式：散文正文控制在 1000 字以内。\n\
+        -->\n\n";
+
+    #[test]
+    fn a_comment_only_prose_block_has_an_empty_heading() {
+        // The block stays in the outline (it must remain deep-linkable); only
+        // its title is empty, because it renders as nothing.
+        assert_eq!(block_heading(&prose(CONTRACT)), "");
+    }
+
+    #[test]
+    fn an_atx_heading_is_still_the_title() {
+        assert_eq!(block_heading(&prose("# 概要\n\n本轮结论。\n")), "概要");
+    }
+
+    #[test]
+    fn a_contract_followed_by_prose_takes_the_first_line_of_the_prose() {
+        assert_eq!(
+            block_heading(&prose(&format!("{CONTRACT}# 概要\n\n本轮结论。\n"))),
+            "概要"
+        );
+        assert_eq!(
+            block_heading(&prose(&format!("{CONTRACT}本轮结论。\n"))),
+            "本轮结论。"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_comment_is_stripped_to_the_end() {
+        // A block-level `<!--` that is never closed runs to the end of the
+        // document in CommonMark, so the renderer shows nothing and the outline
+        // must not resurrect text nobody can see.
+        assert_eq!(
+            block_heading(&prose("<!-- 报告维护契约\n\n# 概要\n\n本轮结论。\n")),
+            ""
+        );
+    }
+
+    #[test]
+    fn a_comment_inside_inline_code_is_visible_text_and_keeps_its_characters() {
+        // The regression a source-substring scanner introduced: a renderer
+        // prints these characters, so the outline must title the block with
+        // them. `plain` keeps `Event::Code` and drops only real HTML nodes.
+        assert_eq!(
+            block_heading(&prose("`<!-- x -->` inline code first\n")),
+            "<!-- x --> inline code first"
+        );
+    }
+
+    #[test]
+    fn an_unterminated_comment_inside_a_paragraph_does_not_swallow_the_line() {
+        // Not at the start of a block, so the HTML-block rule does not apply;
+        // and with no `-->` it is not a valid inline HTML comment either, so
+        // CommonMark leaves it as literal TEXT. Both renderers print those
+        // characters, so the outline keeps them. The old source scanner cut
+        // from `<!--` to the end of the block and lost the whole line.
+        assert_eq!(
+            block_heading(&prose("结论 <!-- 内部备注 继续写\n")),
+            "结论 <!-- 内部备注 继续写"
+        );
+    }
+
+    #[test]
+    fn a_fenced_code_block_is_visible_text_even_when_it_contains_a_comment() {
+        assert_eq!(
+            block_heading(&prose("```html\n<!-- 示例 -->\n```\n")),
+            "<!-- 示例 -->"
+        );
+    }
+
+    #[test]
+    fn a_leading_blank_line_does_not_turn_the_heading_into_its_hashes() {
+        // The old scanner took `lines().next()` for the ATX test and the first
+        // non-empty line for the text, so a body starting with a blank line was
+        // titled `# 概要`. `plain` never emits the markers at all.
+        assert_eq!(block_heading(&prose("\n# 概要\n\n本轮结论。\n")), "概要");
+    }
+
+    #[test]
+    fn a_hash_that_is_visible_code_keeps_its_hash() {
+        // The other half of the same fix: nothing re-strips `#` after `plain`,
+        // so a block whose first visible characters are the code `# x` keeps
+        // them.
+        assert_eq!(
+            block_heading(&prose("`# x` not a heading\n")),
+            "# x not a heading"
+        );
+    }
+
+    #[test]
+    fn an_image_only_block_gets_an_empty_heading() {
+        // KNOWN EXCEPTION, recorded on purpose so it reads as a decision and
+        // not an accident: the shared `plain` projection drops a standalone
+        // image's alt while `fe/` renders it as a visible `<span>`, so this
+        // block is titled like a genuinely invisible contract block. The block
+        // keeps its id and stays deep-linkable; see the note on `block_heading`
+        // for why neither `plain` nor a local fallback is changed here.
+        assert_eq!(block_heading(&prose("![一张图](chart.png)\n")), "");
+
+        // The other half of the asymmetry, pinned so a "fix" cannot quietly
+        // flatten it: an image INSIDE a link keeps its alt, because that alt is
+        // the link's label and backlink quotes are cut from the same string.
+        // Follow-up (reconcile the projection with the rendering side for both
+        // readers — outline titles and backlink citations) is tracked as its
+        // own issue off #1185; do not patch it in `block_heading`.
+        assert_eq!(
+            block_heading(&prose("[![一张图](chart.png)](https://example.com)\n")),
+            "一张图"
+        );
+    }
 }

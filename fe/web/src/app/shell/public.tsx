@@ -161,6 +161,9 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
    * does not pick one. The POST still requires `cove_id` this slice.
    */
   const [newWaveCoveId, setNewWaveCoveId] = useState<string | null>(null);
+  // Named explicitly rather than left to the dialog's first-focusable default,
+  // which is the Close button (#1161).
+  const newWaveTitleRef = useRef<HTMLInputElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -361,9 +364,11 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
           <span>Me</span>
         </button>
       </nav>
-      <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave">
+      <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
+        initialFocusRef={newWaveTitleRef}>
         {newWaveCoveId !== null && (
           <NewWaveForm
+            titleRef={newWaveTitleRef}
             submitting={creating}
             error={createError}
             onCancel={() => setNewWaveCoveId(null)}

@@ -152,4 +152,23 @@ pub enum HostError {
         workflow_id: String,
         held_by: String,
     },
+
+    /// #1164 §2.2 / §2.3 — a non-`app` connector could not be brought up.
+    /// Distinct from [`Self::Spawn`]/[`Self::Mcp`] because there is no child
+    /// process and no supervisor behind it: the failure is terminal until an
+    /// operator re-enables, and the `reason` is the only diagnostic they get
+    /// (it is also what lands in `PluginRuntimeStatus::Unavailable`). The boot
+    /// autospawn loop logs it and continues, so an unreachable upstream never
+    /// blocks server start.
+    #[error("connector `{plugin_id}` is unavailable: {reason}")]
+    ConnectorUnavailable { plugin_id: String, reason: String },
+
+    /// #1164 §2.5 — an operation that only makes sense for a process-backed
+    /// `app` plugin was attempted on a connector (e.g. token rotation).
+    #[error("plugin `{plugin_id}` has kind `{kind}`, which does not support {operation}")]
+    UnsupportedForKind {
+        plugin_id: String,
+        kind: &'static str,
+        operation: &'static str,
+    },
 }

@@ -79,6 +79,7 @@ use crate::wave_report_read::load_report_read_snapshot;
 use crate::workflow_templates::{
     WORKFLOW_TEMPLATES, is_workflow_template_key, workflow_template_report,
 };
+use crate::workspace_recycle;
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
@@ -2203,6 +2204,43 @@ async fn finish_wave_deletion(s: &RouteState, plan: WaveDeletePlan, actor: Actor
     Ok(())
 }
 
+/// #1147 S5 — reclaim this wave's managed workspace, between teardown and the
+/// row delete.
+///
+/// **Ordering.** Teardown has already stopped every harness and terminal, so
+/// nothing is writing into the directory; the row delete has not happened yet,
+/// so a failure here aborts the whole DELETE with the wave and its directory
+/// both intact and the request retryable. The reverse order (row first) would
+/// turn a rename failure into "the wave is gone, its repository is not", which
+/// is unretryable and needs a human.
+///
+/// Recycling is not conditional on that ordering being observed elsewhere: the
+/// guards in [`workspace_recycle`] are what make the delete safe, not the
+/// position of this call.
+///
+/// A *refusal* (guard not satisfied) is not an error — see
+/// [`workspace_recycle::recycle_wave_workspace`] for why the row must stay
+/// deletable even when the directory cannot be proven ours.
+///
+/// `cove_kind` is guard 4's input, read once by the caller (which needs it for
+/// the row-layer 403 anyway). `None` — a cove row we could not read — is "not
+/// provably a user cove", and the recycler refuses on it.
+fn recycle_wave_workspace_for_delete(
+    s: &RouteState,
+    wave: &Wave,
+    cove_kind: Option<CoveKind>,
+) -> Result<()> {
+    workspace_recycle::recycle_wave_workspace(
+        &s.workspace_root,
+        cove_kind,
+        wave.id.as_str(),
+        &wave.workspace,
+        crate::model::now_ms(),
+    )?;
+    workspace_recycle::gc_trash_best_effort(&s.workspace_root, crate::model::now_ms());
+    Ok(())
+}
+
 #[utoipa::path(
     delete,
     path = "/api/waves/{id}",
@@ -2211,6 +2249,7 @@ async fn finish_wave_deletion(s: &RouteState, plan: WaveDeletePlan, actor: Actor
     responses(
         (status = 204, description = "Wave deleted"),
         (status = 404, description = "Wave not found", body = ErrorBody),
+        (status = 403, description = "Wave belongs to the system cove and cannot be deleted via REST", body = ErrorBody),
         (status = 409, description = "Wave has a descendant or active forge action", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
@@ -2243,6 +2282,40 @@ pub(crate) async fn delete_wave(
         .ok_or_else(|| CalmError::NotFound(format!("wave {id}")))?;
     let wave_id = wave.id.clone();
 
+    // #1147 S5 — the ROW-layer half of recycle guard 4.
+    //
+    // `workspace_recycle`'s guard 4 refuses to touch a system-cove workspace on
+    // disk, and `DELETE /api/coves/{id}` already 403s a system cove. This route
+    // was the asymmetric one: it deleted a system-cove wave row and returned
+    // 204 while the directory (correctly) survived — and *that* is the leak,
+    // because reclaiming a managed directory needs the wave row that names it.
+    // Once the row is gone the directory is unreachable forever, so every
+    // launchpad delete + `ensure` cycle would strand one more orphan
+    // repository.
+    //
+    // Same invariant as guard 4, one layer up: system scaffolding is
+    // kernel-owned and not user-deletable. Kernel paths that legitimately
+    // retire these rows do not come through this handler.
+    //
+    // **Scope is the whole system cove, not just the launchpad — deliberately.**
+    // The system cove also holds the workflow-template waves
+    // `ensure_workflow_templates` seeds, so those become undeletable through
+    // the API too. Accepted, ruled on 2026-09-01: they are kernel-seeded and
+    // rebuilt at boot, deleting one has never been a meaningful user action,
+    // and the alternative — carving out `purpose = launchpad` — puts an
+    // exception into "the system cove is kernel-owned". An invariant with an
+    // exception is the shape this design line keeps getting hurt by; a wide,
+    // boring rule is worth more than the deletability of three seeded rows.
+    let owning_cove = s.repo.cove_get(wave.cove_id.as_str()).await?;
+    if owning_cove
+        .as_ref()
+        .is_some_and(|c| c.kind == CoveKind::System)
+    {
+        return Err(CalmError::Forbidden(format!(
+            "wave {id} belongs to the system cove and cannot be deleted via the public API"
+        )));
+    }
+
     // Defensive TOCTOU guard only: this non-transactional read happens before
     // the teardown tx, so a forge-action can still become in-flight before the
     // sweep. It shrinks the race; durable parked recovery is the backstop, and
@@ -2273,6 +2346,7 @@ pub(crate) async fn delete_wave(
 
     let plan = snapshot_wave_deletion(&s, &pool, &wave).await?;
     teardown_wave_deletion(&s, &w, &cs, &plan).await?;
+    recycle_wave_workspace_for_delete(&s, &wave, owning_cove.map(|c| c.kind))?;
     finish_wave_deletion(&s, plan, actor.to_actor_id()).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -73,6 +73,76 @@ pub struct WaveReportPayload {
     pub blocks: Option<Vec<ReportBlock>>,
 }
 
+// —— #1185: the report's maintenance contract travels with the document ——
+//
+// The kernel does not decide which sections a report has; the document
+// carries its own rules in a leading HTML comment. The three fragments below
+// are `include_str!` rather than escaped Rust literals because this text gets
+// byte-reviewed routinely and 40 lines of `\n` escapes are unreadable. cargo
+// tracks `include_str!` as a build dependency, so editing the .md recompiles.
+//
+// All three fragments are UNCLOSED (no `-->`) and therefore **private**.
+// Handing out an unclosed comment fails silently and globally: a caller that
+// forgets to append `-->` makes the comment swallow the whole document, and
+// both frontends then render a completely blank report with no diagnostic
+// (#1185 §1.5 B). Only the closed forms below leave this module.
+
+/// Genre rules, independent of any section list: work-brief voice, reader
+/// assumption, current-snapshot / REWRITE, outcomes-not-process, no long
+/// quotes, the 1000-word soft target. Contains no `-->`.
+const CONTRACT_WRITING_RULES: &str = include_str!("wave_report_contract_rules.md");
+
+/// Structure rules + the four section descriptions. The structure rule is
+/// worded as "the sections are defined by the list below", so it cannot be
+/// reused apart from that list — a template that got the structure rule
+/// without the list would be told it may only ever have `# Plan`
+/// (#1185 §1.5 B). Contains no `-->`.
+const CONTRACT_SECTION_RULES: &str = include_str!("wave_report_section_rules.md");
+
+/// Template-only addendum: `# Plan` is a pre-set plan whose prose is taken
+/// over by the four sections once its tasks are activated. Contains no `-->`.
+const CONTRACT_PLAN_NOTE: &str = include_str!("wave_report_plan_note.md");
+
+/// Closes the contract comment. Blank line after it so the first H1 starts
+/// its own block (`split_body` splits at line-initial `# ` / `## `).
+const CONTRACT_CLOSE: &str = "-->\n\n";
+
+/// The default section skeleton. Sections are left empty on purpose: a
+/// `_待填_` placeholder would render, and the agent would read it as content
+/// to delete.
+const DEFAULT_H1S: &str = "# 概要\n\n# 待你定\n\n# 已完成\n\n# 决策\n";
+
+/// The default report body: writing rules + section rules, closed, then the
+/// four empty H1s. `LazyLock` rather than a `format!` per call because
+/// [`WaveReportPayload::initial`] is hot — it backs the birth hard-check in
+/// calm-truth and every `report_startup_read_required` comparison.
+fn initial_body() -> &'static str {
+    static BODY: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!("{CONTRACT_WRITING_RULES}{CONTRACT_SECTION_RULES}{CONTRACT_CLOSE}{DEFAULT_H1S}")
+    });
+    &BODY
+}
+
+/// Report-body prefix for the kernel's built-in workflow templates: writing
+/// rules + section rules + the `# Plan` note, **already closed**.
+///
+/// The templates build their body with [`WaveReportPayload::new`], bypassing
+/// [`WaveReportPayload::initial`], so without this they would carry no
+/// contract at all — losing not just the section list but the word budget,
+/// the current-snapshot rule and the no-process-narration rule that #1146 S1
+/// and #1172 put there (#1185 §1.5 B).
+///
+/// The return value is **closed**; unclosed fragments never leave this
+/// module. See the module comment above for why.
+pub fn report_contract_prefix_for_workflow_template() -> &'static str {
+    static PREFIX: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        format!(
+            "{CONTRACT_WRITING_RULES}{CONTRACT_SECTION_RULES}{CONTRACT_PLAN_NOTE}{CONTRACT_CLOSE}"
+        )
+    });
+    &PREFIX
+}
+
 impl WaveReportPayload {
     /// Current schema version. Bumping this is a Tier A breaking
     /// change — the same PR must also extend
@@ -94,8 +164,16 @@ impl WaveReportPayload {
     /// Canonical "wave was just minted; spec hasn't run yet" payload.
     /// Used by `routes::waves::create_wave` (PR B). Historical
     /// migration seeds stay frozen; freshly-minted waves use this copy.
+    ///
+    /// The body is a *structural skeleton*: a maintenance contract carried in
+    /// a leading HTML comment, then the four default H1 sections (#1185).
+    /// The comment is dropped when the document is rendered, so users never
+    /// see it on the page — but it stays in the body source, which every
+    /// source-reading subject reads (the spec agent, a worker's
+    /// `neige cat report.md`, the REST read surface, the wave's VCS diff).
+    /// It is layout control, not access control: never put secrets in it.
     pub fn initial() -> Self {
-        Self::new("", "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n")
+        Self::new("", initial_body())
     }
 
     /// #1110 S3 — whether spec's first turn must `calm.report.read`.
@@ -138,5 +216,147 @@ mod tests {
                 .report_startup_read_required(),
             "a non-empty summary is not the canonical placeholder"
         );
+    }
+
+    /// #1185 — the birth body is a structural skeleton, and this test is the
+    /// one place in the repo that pins its shape.
+    #[test]
+    fn initial_body_is_the_default_structural_skeleton() {
+        let body = WaveReportPayload::initial().body;
+
+        // —— the contract block: first, and closed before the first H1 ——
+        // `starts_with("<!--") + contains("-->")` is a vacuous pair: moving
+        // `-->` below a heading satisfies both and destroys the rendering.
+        // So assert the slice shape instead.
+        let slices = crate::report_blocks::split_body(&body);
+        assert_eq!(
+            slices.len(),
+            5,
+            "1 contract block + 4 sections; got {slices:#?}"
+        );
+        assert!(slices[0].raw.starts_with("<!-- 报告维护契约"));
+        assert!(
+            slices[0].raw.ends_with("-->\n\n"),
+            "the contract must close before the first H1"
+        );
+        for (slice, head) in
+            slices[1..]
+                .iter()
+                .zip(["# 概要\n", "# 待你定\n", "# 已完成\n", "# 决策\n"])
+        {
+            assert!(
+                slice.raw.starts_with(head),
+                "section order is fixed: {head:?}"
+            );
+        }
+        // No line-initial `# `/`## ` inside the contract — `split_body` would
+        // cleave it into two blocks (#1185 §0(a)).
+        assert!(
+            !slices[0]
+                .raw
+                .lines()
+                .skip(1)
+                .any(|l| l.starts_with("# ") || l.starts_with("## ")),
+            "a heading inside the contract would split it into two blocks"
+        );
+        assert!(
+            !body.contains("# 进行中"),
+            "#1172: the TASKS panel owns task runtime state"
+        );
+
+        // —— the policy really did move here (these strings used to live in
+        // calm-server's spec_card.rs) ——
+        for rule in [
+            "写产出，不写过程",
+            "散文正文",
+            "1000 字",
+            "不计入",
+            "REWRITE",
+            "没有就省略这个 section",
+            "不要 append 后不删",
+        ] {
+            assert!(
+                body.contains(rule),
+                "maintenance contract must carry `{rule}`"
+            );
+        }
+
+        // —— kernel carrier properties ——
+        assert_eq!(crate::report_blocks::flatten(&slices), body);
+        assert!(
+            slices
+                .iter()
+                .all(|s| crate::report_blocks::parse_fence(&s.raw).is_none())
+        );
+        assert!(crate::report_blocks::check_prose_markdown(&body).is_ok());
+        assert!(crate::report_blocks::invalid_neige_fences(&body).is_empty());
+        assert_eq!(
+            crate::report_blocks::strip_markers_and_split(&body).cleaned,
+            body,
+            "the marker stripper must not eat the contract comment"
+        );
+
+        // —— byte properties ——
+        assert!(
+            !body.contains('\r'),
+            "a CRLF checkout would silently change split_body's input"
+        );
+        assert!(body.ends_with('\n') && !body.ends_with("\n\n"));
+        // A second `-->` smuggled into a fragment closes the comment early and
+        // the tail renders visibly.
+        assert_eq!(body.matches("-->").count(), 1, "exactly one comment close");
+    }
+
+    /// #1185 §1.5 B — the built-in workflow templates must get the same
+    /// writing policy, or #1146's guardrails silently vanish on them.
+    #[test]
+    fn the_workflow_template_prefix_is_closed_and_shares_the_default_contract() {
+        let prefix = report_contract_prefix_for_workflow_template();
+        let body = WaveReportPayload::initial().body;
+
+        assert!(prefix.starts_with("<!-- 报告维护契约"));
+        assert!(
+            prefix.ends_with("-->\n\n"),
+            "never hand out an unclosed comment"
+        );
+        assert_eq!(prefix.matches("-->").count(), 1);
+        assert!(!prefix.contains('\r'));
+
+        // What is shared is the genre rules + the section list; the template
+        // gets one extra `Plan` note. Comparing the fragment constants would
+        // just restate the concatenation; asserting on sentences both sides
+        // must carry is what catches one side being quietly edited.
+        for shared in [
+            "写产出，不写过程",
+            "散文正文",
+            "1000 字",
+            "章节由下面这份清单定义",
+            "没有就省略这个 section",
+        ] {
+            assert!(
+                prefix.contains(shared) && body.contains(shared),
+                "the writing rules and the section list must be one text: `{shared}`"
+            );
+        }
+        // The template must be licensed to grow the four sections — otherwise
+        // issue-development is stuck with `# Plan` forever (#1185 §1.5 B).
+        for section in ["概要", "待你定", "已完成", "决策"] {
+            assert!(
+                prefix.contains(section),
+                "template contract must license `{section}`"
+            );
+        }
+        assert!(
+            prefix.contains("Plan —— 预置计划"),
+            "and must say what happens to # Plan"
+        );
+        assert!(
+            !body.contains("Plan —— 预置计划"),
+            "the default skeleton has no plan section"
+        );
+
+        // The contract must stay one block — fragment concatenation must not
+        // introduce a line-initial H1/H2.
+        assert_eq!(crate::report_blocks::split_body(prefix).len(), 1);
     }
 }

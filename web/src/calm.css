@@ -2157,6 +2157,24 @@ select:-webkit-autofill {
 .report-block {
   max-width: 616px;
 }
+/* A block that rendered nothing takes no room. With `skipHtml` a prose block
+   whose whole source is an HTML comment — a document carrying its own
+   maintenance contract, #1185 — renders as an empty div; without this it would
+   still contribute its margins at the top of every report.
+
+   Hiding the block alone is enough HERE, unlike in `fe/`, because this page has
+   no per-block sibling: `ReportBlockView` emits the block div straight into
+   `.report-body` (`pages/report-blocks/index.tsx`, rendered by
+   `WaveReportPage`'s `ReportMarkdown`), and backlink markers live in the rail, not
+   beside the prose — `.report-backlinks` is a rail section. In `fe/` the
+   slot is a `display: contents` row holding the block AND its `◂ N` sidenote,
+   so the rule there has to be on the row or the marker is orphaned.
+
+   Known gap, deliberate: `web/` has no real-browser tests at all, so this rule
+   has no layout coverage — `web-unit` is jsdom, which computes no layout. */
+.report-block:empty {
+  display: none;
+}
 .report-block--breakout {
   max-width: none;
   margin-top: calc(var(--space-12) + var(--space-6));

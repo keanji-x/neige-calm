@@ -75,6 +75,18 @@ impl PluginProcess {
         plugins_data_dir: &Path,
         token: &str,
     ) -> Result<Self, ProcessError> {
+        // #1164 §2.1 — `entrypoint` is optional on the manifest now, but it is
+        // required for `kind: app` (enforced by `Manifest::validate`) and this
+        // function is only reachable from the app spawn arm. Fail loudly
+        // instead of unwrapping so a future non-app caller gets a real error.
+        let entrypoint = manifest.entrypoint.as_ref().ok_or_else(|| {
+            ProcessError::Spawn(std::io::Error::other(format!(
+                "plugin `{}` has no `entrypoint` (kind `{}` has no supervised process)",
+                manifest.id,
+                manifest.kind.wire_name()
+            )))
+        })?;
+
         let plugin_data_dir = plugins_data_dir.join(&manifest.id);
         if !plugin_data_dir.exists() {
             std::fs::create_dir_all(&plugin_data_dir).map_err(ProcessError::Spawn)?;
@@ -83,17 +95,17 @@ impl PluginProcess {
         // Resolve the entrypoint binary relative to install_path. Slice A's
         // manifest validator already rejected absolute paths and `..` escapes,
         // so a plain `join` is safe here.
-        let bin = install_path.join(&manifest.entrypoint.command);
+        let bin = install_path.join(&entrypoint.command);
 
         let mut cmd = Command::new(&bin);
-        cmd.args(&manifest.entrypoint.args)
+        cmd.args(&entrypoint.args)
             .current_dir(&plugin_data_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             // Inherit PATH + other vars by default (don't `env_clear()`); the
             // manifest's env entries then layer on top. NEIGE_* are kernel-owned.
-            .envs(&manifest.entrypoint.env)
+            .envs(&entrypoint.env)
             .env("NEIGE_PLUGIN_TOKEN", token)
             .env("NEIGE_PLUGIN_ID", &manifest.id)
             // Doc §6: we'll also redeliver the token over stdin in Slice H. For

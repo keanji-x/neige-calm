@@ -140,6 +140,7 @@ pub async fn boot() -> Boot {
     let events = EventBus::new();
     let card_role_cache = CardRoleCache::new();
     card_role_cache.insert(spec_card.id.clone(), CardRole::Spec, wave.id.clone());
+    super::mcp::set_persisted_card_role(repo.as_ref(), spec_card.id.as_str(), CardRole::Spec).await;
     card_role_cache.insert(worker_card.id.clone(), CardRole::Worker, wave.id.clone());
     card_role_cache.insert(
         report_card.id.clone(),
@@ -151,6 +152,8 @@ pub async fn boot() -> Boot {
         CardRole::Worker,
         wave2.id.clone(),
     );
+    super::mcp::set_persisted_card_role(repo.as_ref(), other_spec_card.id.as_str(), CardRole::Spec)
+        .await;
     card_role_cache.insert(other_spec_card.id, CardRole::Spec, wave2.id.clone());
 
     let wave_cove_cache = WaveCoveCache::new();

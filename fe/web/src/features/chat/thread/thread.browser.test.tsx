@@ -696,25 +696,6 @@ async function pointRailAt(clientY: number) {
   await pause(150);
 }
 
-/** Every media condition under which some rule declares `needle`, walking
- *  layers and nested conditions. `''` for a rule at the top level. */
-function mediaConditionsDeclaring(needle: string): string[] {
-  const found: string[] = [];
-  const walk = (rules: CSSRuleList, condition: string) => {
-    for (const rule of [...rules]) {
-      if (rule instanceof CSSMediaRule) { walk(rule.cssRules, rule.conditionText); continue; }
-      if (rule instanceof CSSLayerBlockRule) { walk(rule.cssRules, condition); continue; }
-      if (rule instanceof CSSStyleRule && rule.style.cssText.includes(needle)) found.push(condition);
-    }
-  };
-  for (const sheet of [...document.styleSheets]) {
-    let rules: CSSRuleList;
-    try { rules = sheet.cssRules; } catch { continue; }
-    walk(rules, '');
-  }
-  return found;
-}
-
 /**
  * One rule written against one of `element`'s own classes: the rule itself, the
  * media conditions it sits under, the pseudo-element it targets, and **where it
@@ -740,16 +721,20 @@ type RailRule = Readonly<{
  * a stylesheet is exactly the shape that rule exists to stop. Nothing here is
  * located by it; the element came from a data hook.
  *
- * **`at` is the reason this returns more than the rules.** Two of the
- * stylesheet's conditional blocks — `(pointer: coarse)` and
- * `(prefers-reduced-motion: reduce)` — write the *same* declarations at the
- * *same* specificity as the unconditional rule above them, so the only thing
- * that makes them win is that they come later. That is invisible to a
- * declaration-level read: the whole `@media (pointer: coarse)` block was moved
- * to sit above the base rule, which hands every coarse device the fine
- * geometry, and this file stayed green at 35/35. `at` counts every style rule
- * the walk passes, in sheet order, so "later than the base rule" is a number
- * two assertions can compare.
+ * **`at` is the reason this returns more than the rules.**
+ * `@media (prefers-reduced-motion: reduce)` writes the *same* declaration at
+ * the *same* specificity as the `@media (pointer: fine)` block above it, so the
+ * only thing that makes it win is that it comes later — which is invisible to a
+ * declaration-level read. `at` counts every style rule the walk passes, in
+ * sheet order, so "later than the fine block" is a number two assertions can
+ * compare.
+ *
+ * `@media (pointer: coarse)` used to be read the same way here and no longer
+ * is: `thread.coarse.browser.test.tsx` runs in a browser context that reports
+ * a coarse pointer and measures the rendered row, which can only come out at
+ * 28px if that block won on source order. Reduced motion has no such context
+ * yet — emulating the feature on this shared page poisons every file after it
+ * — so this stays the ordinal read for that one condition.
  *
  * A selector's trailing pseudo-element is split off rather than ignored, so
  * `.railDot` and `.railDot::before` are told apart, and `.railDot:hover::before`
@@ -784,12 +769,6 @@ function ruleLedgerFor(element: Element): RailRule[] {
 /** The subset of a ledger sitting under a condition naming `needle`. */
 function under(ledger: readonly RailRule[], needle: string): RailRule[] {
   return ledger.filter((entry) => entry.conditions.some((text) => text.includes(needle)));
-}
-
-/** The subset sitting under no condition at all — the unconditional rules the
- *  conditional ones have to out-order. */
-function unconditional(ledger: readonly RailRule[]): RailRule[] {
-  return ledger.filter((entry) => entry.conditions.length === 0);
 }
 
 describe('the exchange rail, as the engine lays it out', () => {
@@ -1764,108 +1743,101 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 
   /*
-   * ── The coarse branch, and the source order it stands on ──────────────────
+   * ── And the same number of exchanges under different ids ──────────────────
    *
-   * A finger gets a wider gutter, a wider pitch and a resting dot it can see,
-   * and the magnification is not offered there at all — there is no hover to
-   * drive it, so what a finger would get is a swell latched under the last
-   * place it touched.
+   * The case above changes the *count*, and the count is the only thing the
+   * envelope's per-dot write cache watches: it throws the cache away when its
+   * length stops matching the dot array's. So a list that keeps its length and
+   * changes its ids walks straight past that guard. React keys the dots by
+   * exchange id, so every button is unmounted and a fresh one mounted in its
+   * slot — carrying no inline style, because inline styles are the effect's and
+   * not the render's — while the cache still holds the lifts it wrote to the
+   * elements that are gone. Every write is then skipped as a no-op against a
+   * value nothing on the page has any more.
    *
-   * **Read off the loaded stylesheet rather than off a coarse render, and the
-   * reason is a measurement.** Chromium can be put into `pointer: coarse` over
-   * CDP (`Emulation.setTouchEmulationEnabled`), and it is a one-way door:
-   * disabling it again leaves the page at `pointer: none`, where *neither*
-   * branch matches — measured, and measured to survive across test files,
-   * because vitest's browser mode reuses one page. A case that poisons every
-   * case after it is worse than a case that reads the rule.
+   * Measured against the unfixed component, pointer parked on the sixth dot of
+   * twelve: the arc `4 / 4.609 / 6 / 7.375 / 8 / 7.375 / 6 / 4.609 / 4` px and
+   * its inline lifts `0.156 / 0.5 / 0.844 / 1 / …` were there before the swap
+   * and **every one of them was gone after it** — all twelve dots flat at their
+   * 4px rest, every `--nc-dot-lift` removed, and the 26.75px of aim the spread
+   * had opened between two centres back down to the resting 12. It does not
+   * heal on the next pointer move at the same y either, because that pass
+   * computes the same lifts and skips the same writes.
    *
-   * **Reading the declaration is not enough on its own, and that is the hole
-   * this case had.** The coarse block and the base rule name the same custom
-   * properties at the same specificity, so nothing but source order decides
-   * which one a coarse device gets. Executed: the whole `@media (pointer:
-   * coarse)` block moved to sit *above* `.rail` — every coarse
-   * device now laid out at the fine geometry, which is the one outcome the
-   * branch exists to prevent — and this file stayed green at 35/35. So the
-   * ordinal is asserted as well as the values.
+   * **The shoulders are not part of what this asserts, and the reason is worth
+   * writing down.** `--nc-rail-lead`/`--nc-rail-tail` are published outside the
+   * cache, so they come out the same either way — measured at `0` and `2.2e-16`
+   * both before and after, because a fully interior envelope is exactly the
+   * growth the shoulders exist to complement. That is the failure rather than
+   * the alibi: the track is holding back four openings of blank in exchange for
+   * a spread that is no longer on the page. What that is visible *as* is the
+   * dots, which is what is asserted.
    *
-   * What is still not read is a coarse *render*; that is what the one-way door
-   * above costs, and the fine branch's own case covers the declaration →
-   * layout step by measuring the dot's box against `--nc-rail-pitch`.
+   * Not currently reachable from the product — `ChatThread` is keyed by the
+   * drawer's own id and exchange ids are server turn ids, so nothing swaps a
+   * list of the same length for a different one — which is why the fixture
+   * constructs it directly rather than driving it through a route.
    */
-  it('keeps the coarse geometry, after the base rule rather than before it', async () => {
+  it('keeps the envelope when the ids change under the pointer', async () => {
     await page.viewport(1400, 900);
-    render(<RailPane turns={promptTurns()} />);
+    /* The same twelve exchanges twice over, differing in nothing a reader could
+       see: identical prompts, identical replies, identical times. The geometry
+       is therefore identical too, which is what makes this a clean test of the
+       cache rather than of a relayout — the pointer is over the same row, and
+       every lift the pass computes is the one it computed before. */
+    const turns = (era: string) => Array.from({ length: 12 }).flatMap((_unused, index) => [
+      { id: `${era}-you-${index}`, author: 'you' as const, text: `Ask ${index}`,
+        atMs: index * 2_000 },
+      { id: `${era}-agent-${index}`, author: 'agent' as const, text: 'Short.',
+        atMs: index * 2_000 + 1 },
+    ]);
+    const { rerender } = render(<RailPane turns={turns('a')} />);
     await frame();
-    /* `.rail` itself now, one level up from the track: the geometry moved off
-       the transcript frame when the rail left the transcript, so this is the
-       element the pointer split switches. */
-    const railed = railTrack().parentElement!;
+    await scrollPaneTo(0);
+    await userEvent.hover(pane());
+    await pause(150);
+    expect(dots()).toHaveLength(12);
 
-    const ledger = ruleLedgerFor(railed);
-    const coarse = under(ledger, 'pointer: coarse');
-    const base = unconditional(ledger);
-    expect(coarse).toHaveLength(1);
-    expect(base.length).toBeGreaterThan(0);
+    const centre = (index: number) => {
+      const box = dots()[index].getBoundingClientRect();
+      return box.top + box.height / 2;
+    };
+    const aimed = dots()[5].getBoundingClientRect();
+    await pointRailAt(aimed.top + aimed.height / 2);
+    expect(dotInk(5)).toBeCloseTo(8, 1);
 
-    /* **The cascade, as a number.** Equal specificity, so the later rule wins;
-       every unconditional rule on this element has to come first or the coarse
-       device silently gets the dense geometry. */
-    expect(coarse[0].at).toBeGreaterThan(Math.max(...base.map((entry) => entry.at)));
+    rerender(<RailPane turns={turns('b')} />);
+    await settle();
+    await pause(150);
 
-    const probe = document.createElement('div');
-    document.body.append(probe);
-    probe.style.cssText = coarse[0].rule.style.cssText;
-    probe.style.blockSize = 'var(--nc-rail-pitch)';
-    /* The width is the seam's, not a rail variable: both pointer branches are
-       the same 24px wide, because the seam is one number. `--nc-rail-gutter` is
-       gone with the transcript channel it used to cut. */
-    probe.style.inlineSize = 'var(--space-10)';
-    const box = probe.getBoundingClientRect();
-    /* The dot sizes are declared in the same block and were the untested half
-       of it: both were cut to `1px` and this file stayed green. They are read
-       through a child so that the sizes measured are the ones a dot would
-       inherit, not the block's own box. */
-    const ink = document.createElement('div');
-    ink.style.blockSize = 'var(--nc-rail-dot)';
-    ink.style.inlineSize = 'var(--nc-rail-dot-current)';
-    probe.append(ink);
-    const inkBox = ink.getBoundingClientRect();
-    probe.remove();
+    /* Same length, and not one of the elements that carried the envelope. */
+    expect(dots()).toHaveLength(12);
+    expect(dots()[5].getAttribute('aria-label')).toContain('Ask 5');
 
-    /* **Both dimensions clear 24 on this branch too, and that is the change.**
-       The rail used to be 10px wide on the fine branch and 14 here, so neither
-       enclosed a 24px square and 2.5.8 was being met — where it was met at all
-       — through the spacing exception. In the seam the width is 24 on both
-       branches and the coarse row is 28 tall, so the criterion is satisfied by
-       target *size*, with the coarse branch a step above the floor because a
-       finger is blunter than a cursor rather than because it is carrying a
-       compliance argument for the other branch. 28 is asserted outright so
-       that quietly cutting it to the floor has to come back and read this. */
-    expect(box.height).toBeGreaterThanOrEqual(24);
-    expect(box.width).toBeGreaterThanOrEqual(24);
-    expect(box.height).toBe(28);
-    expect(box.width).toBe(24);
-    expect(inkBox.height).toBe(6);
-    expect(inkBox.width).toBe(8);
+    /* The envelope, still on the row the pointer never left: the peak, and the
+       arc either side of it, which together are the claim a cache stuck on
+       departed elements cannot satisfy — it leaves twelve dots at their rest
+       and no maximum anywhere. */
+    const inks = dots().map((_dot, index) => dotInk(index));
+    /* Strictly above every *other* dot, not merely equal to the maximum of all
+       of them. Under the defect this case is pointed at every dot is left at
+       its rest, and the resting maximum is the lit dot's 6px — so `equal to the
+       max` would have been satisfied by nothing more than the pointer happening
+       to be parked on the lit row, and the case would have passed with the
+       envelope gone. Measured with the cache working: dot 5 at 8, the next
+       highest 7.375. */
+    expect(dotInk(5)).toBeGreaterThan(Math.max(...inks.filter((_ink, index) => index !== 5)));
+    expect(dotInk(5)).toBeCloseTo(8, 1);
+    expect(dotInk(6)).toBeGreaterThan(dotInk(7));
+    expect(dotInk(7)).toBeGreaterThan(dotInk(8));
+    expect(dotInk(8)).toBeGreaterThan(dotInk(9));
+    expect(dotInk(9)).toBeCloseTo(4, 1);
+    /* And the aim the spread is for is still open, which is the same claim in
+       the units a cursor cares about. */
+    expect(centre(6) - centre(5)).toBeGreaterThanOrEqual(24);
 
-    /* And the magnification is not on offer there: every rule that reads the
-       component's published lift is inside a fine-pointer block. */
-    const conditions = mediaConditionsDeclaring('--nc-dot-lift');
-    expect(conditions.length).toBeGreaterThan(0);
-    for (const condition of conditions) expect(condition).toContain('pointer: fine');
-
-    /* Nor is the preview: it is a hover affordance, and the only thing it could
-       do under a finger is appear over the dot that has already been pressed.
-       Bound here rather than left to the component's own touch guard, which is
-       a separate mechanism with a separate case. */
-    await userEvent.hover(dots()[3]);
-    await pause(600);
-    const preview = railPreview()!;
-    expect(preview).not.toBeNull();
-    const hidden = under(ruleLedgerFor(preview), 'pointer: coarse');
-    expect(hidden).toHaveLength(1);
-    expect(hidden[0].rule.style.display).toBe('none');
-    await userEvent.hover(replies()[0]);
+    railTrack().dispatchEvent(new PointerEvent('pointerleave', { pointerType: 'mouse' }));
+    await settle();
     await pause(150);
   });
 
@@ -1877,11 +1849,15 @@ describe('the exchange rail, as the engine lays it out', () => {
    * failure. What goes is the part that keeps moving after the input has
    * stopped: the transition.
    *
-   * Asserted the same way as the coarse branch and for the same reason —
-   * `prefers-reduced-motion` cannot be emulated here without poisoning the
-   * shared page, the declaration alone is not the behaviour, and the block wins
-   * only by sitting after `@media (pointer: fine)`. Executed: `transition:
-   * none` replaced with `inline-size 3s linear`, 35/35 green.
+   * Asserted at the declaration and at its ordinal, which is now the *only*
+   * case in this file that has to be — the coarse branch it used to share the
+   * technique with is rendered in `thread.coarse.browser.test.tsx`, in a
+   * browser context of its own. `prefers-reduced-motion` has no such context
+   * yet: emulating the feature on this shared page poisons every file after it,
+   * and the same `contextOptions` lever that solved the pointer split would
+   * solve this one. Until then the declaration alone is not the behaviour, and
+   * the block wins only by sitting after `@media (pointer: fine)`. Executed:
+   * `transition: none` replaced with `inline-size 3s linear`, 35/35 green.
    */
   it('drops the dot transition under reduced motion, after the fine block', async () => {
     await page.viewport(1400, 900);
@@ -1909,11 +1885,23 @@ describe('the exchange rail, as the engine lays it out', () => {
    * with it at zero the layer fires on every dot a pointer crosses on its way
    * to the composer, which is a strobe over the thing the reader is looking at.
    *
-   * **The delay is measured rather than bracketed**, because bracketing it did
-   * not bind it: "absent at 150ms, present at 550ms" is satisfied by anything
-   * in `(150, 550]`, and `RAIL_PREVIEW_DELAY_MS = 300` stayed green. The wait
-   * is polled and the elapsed time asserted, which costs the poll's own 20ms of
-   * resolution and buys a band the shipped number sits in the middle of.
+   * **This tier no longer pins the number, and the assertion below is not a
+   * measurement of it.** It used to be: the wait was polled and the elapsed
+   * time asserted into `(380, 650)`, which the shipped 450 sits in the middle
+   * of and which 300 and 700 both fall outside. That left 200ms for the
+   * driver's hover round-trip, the poll's own 20ms of resolution and the
+   * runner's scheduling, and on a shared runner it ran out: run 33380223777
+   * measured 671.6ms — 221.6ms of overhead on a 450ms delay — under a mutation
+   * of the app's providers. Widening the band does not repair it, it disarms
+   * it: the ceiling was the half that rejected 700, and the overhead runs one
+   * way, so the same 221.6ms lifts a 300ms delay to 520ms and past the floor
+   * that was rejecting *it*. The number is pinned on fake timers in
+   * `public.test.tsx` instead — absent at 449, present at 450, no clock in it.
+   *
+   * What is left here needs a real engine and a real pointer, and neither half
+   * is a millisecond claim: the panel is **not** up 150ms after the hover,
+   * which is the strobe this delay exists to prevent, and it is up well inside
+   * a ceiling on the feature being discoverable at all.
    */
   it('floats the prompt out only after the pointer has rested', async () => {
     await page.viewport(1400, 900);
@@ -1929,10 +1917,11 @@ describe('the exchange rail, as the engine lays it out', () => {
     const shownAfter = performance.now() - startedAt;
     const preview = railPreview()!;
     expect(preview).not.toBeNull();
-    /* Wide enough for the hover itself and for the poll's granularity, narrow
-       enough that 300 and 700 are both outside it. */
-    expect(shownAfter).toBeGreaterThan(380);
-    expect(shownAfter).toBeLessThan(650);
+    /* A usability ceiling, not a band around the constant: past about this
+       long nobody who merely paused on a 4px dot is still there. It leaves
+       750ms over the shipped delay, three times the worst overhead on record
+       (221.6ms). */
+    expect(shownAfter).toBeLessThan(1_200);
 
     /* It carries **more** than the accessible name, which is the only reason a
        second rendering of the same fact is worth its ink: the name is capped so

@@ -11,6 +11,7 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
   const props = {
     submitting: false,
     error: null,
+    titleRef: { current: null },
     onCancel: vi.fn(),
     onSubmit: vi.fn(),
     ...overrides,

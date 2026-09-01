@@ -196,6 +196,13 @@ async fn boot() -> Boot {
         wave2.id.clone(),
     );
     card_role_cache.insert(other_spec_card.id.clone(), CardRole::Spec, wave2.id.clone());
+    // #1189 §3.6 — the recorder gate reads `cards.role` in-tx, so the two
+    // spec cards must be persisted as such and not merely cached that way
+    // (`Repo::card_create` mints non-report cards as Worker).
+    for card in [&spec_card.id, &other_spec_card.id] {
+        crate::support::mcp::set_persisted_card_role(repo.as_ref(), card.as_str(), CardRole::Spec)
+            .await;
+    }
 
     let route_repo: Arc<dyn calm_server::db::RouteRepo> = repo.clone();
     let wave_cove_cache = calm_server::wave_cove_cache::WaveCoveCache::new();

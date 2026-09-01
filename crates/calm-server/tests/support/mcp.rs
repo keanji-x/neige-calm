@@ -27,6 +27,17 @@ pub const TEST_BUDGET: Duration = Duration::from_secs(5);
 pub struct CardBoot {
     pub server: Arc<McpServer>,
     pub repo: Arc<dyn Repo>,
+    /// Same handle as `repo`, kept concrete so a fixture can open a
+    /// transaction and mint through the production `*_tx` helpers.
+    pub sqlx: Arc<SqlxRepo>,
+    /// The caches the booted `McpServer` actually gates on — a fixture
+    /// that mints a card outside `card_with_codex_create_tx` must write
+    /// through THESE, not a private cache of its own, or the role gate
+    /// will see a card with no role.
+    pub card_role_cache: CardRoleCache,
+    pub wave_cove_cache: calm_server::wave_cove_cache::WaveCoveCache,
+    /// Home wave of the minted card(s).
+    pub wave_id: calm_server::ids::WaveId,
     pub events: EventBus,
     pub card_id: String,
     /// Other card id tests may try to smuggle into tool args to prove the
@@ -38,6 +49,31 @@ pub struct CardBoot {
     pub thread_id: String,
     pub socket_path: PathBuf,
     pub _tmp: TempDir,
+}
+
+/// Pin a card's **persisted** `cards.role` column.
+///
+/// `Repo::card_create` mints everything that is not a `wave-report` as
+/// `CardRole::Worker`, so a fixture that only writes the role into a
+/// `CardRoleCache` leaves the database disagreeing with the test's own
+/// story. That was harmless while every role check read the cache; #1189
+/// §3.6 made the recorder gate resolve session → card → `{role, wave}`
+/// with a live in-tx `cards` read, and a fixture whose "spec card" is
+/// persisted as a worker now denies for a reason the test never intended.
+///
+/// Production mints go through `card_with_codex_create_tx`, which writes
+/// the row and the cache together; fixtures that bypass it must reproduce
+/// both halves.
+pub async fn set_persisted_card_role(repo: &dyn Repo, card_id: &str, role: CardRole) {
+    let pool = repo
+        .sqlite_pool()
+        .expect("fixture repo must be sqlite-backed to pin a card role");
+    sqlx::query("UPDATE cards SET role = ?1 WHERE id = ?2")
+        .bind(role.as_db_str())
+        .bind(card_id)
+        .execute(&pool)
+        .await
+        .expect("pin persisted card role");
 }
 
 pub async fn boot_with_role(role: CardRole) -> CardBoot {
@@ -153,7 +189,7 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     let server = McpServer::spawn(
         repo.clone(),
         events.clone(),
-        calm_server::state::WriteContext::new(card_role_cache, wave_cove_cache),
+        calm_server::state::WriteContext::new(card_role_cache.clone(), wave_cove_cache.clone()),
         socket_path.clone(),
         PathBuf::from("/nonexistent-shim-bin"),
         registry,
@@ -170,6 +206,10 @@ async fn boot_with_role_and_daemon_token(role: CardRole, daemon_token: Option<St
     CardBoot {
         server,
         repo,
+        sqlx: sqlx_repo,
+        card_role_cache,
+        wave_cove_cache,
+        wave_id: wave.id.clone(),
         events,
         card_id,
         other_card_id,

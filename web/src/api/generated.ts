@@ -1129,7 +1129,7 @@ export interface components {
          * @description Authorization role persisted on each card and enforced by `role_gate`.
          * @enum {string}
          */
-        CardRole: "worker" | "spec" | "reportcard";
+        CardRole: "worker" | "spec" | "reportcard" | "assistant";
         /**
          * @description Live runtime projection read from `worker_sessions` when a card is fetched
          *     or serialized.
@@ -1753,6 +1753,10 @@ export interface components {
             installed_at: number;
             last_error?: string | null;
             manifest: Record<string, never>;
+            /**
+             * @description Same wire-name set as [`PluginListItem::state`], including the
+             *     connector-only `unavailable` — see that field's doc.
+             */
             state: string;
             /** Format: int64 */
             updated_at: number;
@@ -1772,8 +1776,16 @@ export interface components {
             manifest_description?: string | null;
             manifest_name: string;
             /**
-             * @description Wire-name string per design §7.1: `running | spawning | crashed |
-             *     disabled | installing | installed`.
+             * @description Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:
+             *     `running | spawning | crashed | unavailable | disabled | installing |
+             *     installed`.
+             *
+             *     `unavailable` is the NORMAL terminal state of a connector
+             *     (`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable
+             *     upstream, rejected `secrets.json`, boot budget exhausted. It is not an
+             *     error state of the kernel, and unlike `crashed` there is no supervisor
+             *     that will retry it: it stands until an operator re-enables. `last_error`
+             *     carries the reason.
              */
             state: string;
             version: string;
@@ -4878,6 +4890,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Wave belongs to the system cove and cannot be deleted via REST */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
             /** @description Wave not found */
             404: {

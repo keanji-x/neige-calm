@@ -125,7 +125,16 @@ export const ReportBlockView = memo(function ReportBlockView({
       };
       return (
         <div id={block.id} className="report-block report-prose calm-prose">
+          {/* `skipHtml` drops raw HTML nodes instead of printing them (#1185
+              §0.6). Without it react-markdown@10 turns a raw node into *text*,
+              so a report that carries its own maintenance contract in a
+              leading HTML comment prints that contract, escaped, at the top of
+              every user's report page. This matches `fe/`'s
+              `sanitizeAstPolicy(_, { rawHtml: 'drop' })`; the price is that a
+              hand-written `<details>` block disappears silently — see the
+              test that pins it. */}
           <ReactMarkdown
+            skipHtml
             remarkPlugins={[remarkGfm]}
             urlTransform={reportUrlTransform}
             components={{

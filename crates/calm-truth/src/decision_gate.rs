@@ -39,6 +39,12 @@ pub trait WriteTx: sealed::Sealed + Send {
 
     async fn read_card_role(&mut self, card: &CardId) -> Result<Option<CardRole>>;
 
+    /// #1189 §3.6 — the card's home wave, the load-bearing half of the
+    /// recorder criterion. Same shape as [`WriteTx::read_card_role`]: a
+    /// live `cards` read inside the caller's write transaction, `None`
+    /// for a row that isn't there (deny, never assume).
+    async fn read_card_wave(&mut self, card: &CardId) -> Result<Option<WaveId>>;
+
     async fn read_wave_cove(&mut self, wave: &WaveId) -> Result<Option<CoveId>>;
 }
 
@@ -154,6 +160,14 @@ impl<'a> WriteTx for Transaction<'a, Sqlite> {
         .transpose()
     }
 
+    async fn read_card_wave(&mut self, card: &CardId) -> Result<Option<WaveId>> {
+        let row: Option<(String,)> = sqlx::query_as("SELECT wave_id FROM cards WHERE id = ?1")
+            .bind(card.as_str())
+            .fetch_optional(&mut **self)
+            .await?;
+        Ok(row.map(|(wave,)| WaveId::from(wave)))
+    }
+
     async fn read_wave_cove(&mut self, wave: &WaveId) -> Result<Option<CoveId>> {
         let row: Option<(String,)> = sqlx::query_as("SELECT cove_id FROM waves WHERE id = ?1")
             .bind(wave.as_str())
@@ -220,6 +234,53 @@ impl PrincipalDecisionGate {
         Self { principal }
     }
 
+    /// #1189 §3.6 — may this agent session record into `wave`'s report?
+    ///
+    /// The criterion is **the session's card**, not the wave's root session:
+    /// `card.wave_id == wave` ∧ `role ∈ {Spec, Assistant}`.
+    ///
+    /// The two halves carry different weight and are worth naming:
+    ///
+    /// * `role ∈ {Spec, Assistant}` keeps worker-card sessions out (G-A).
+    ///   The MCP entry points have a `require_role` of their own, so a
+    ///   mutation here is masked on the production path — this half is
+    ///   pinned at the gate-unit level only, and that is admitted.
+    /// * `card.wave_id == wave` is the load-bearing half (G-A'): once the
+    ///   role whitelist admits N assistant cards, nothing else stops one
+    ///   wave's assistant from recording into another wave's report.
+    ///
+    /// **The old `session_id == waves.root_session_id` criterion is gone,
+    /// not OR-ed in.** Keeping it as an extra allow-arm would have been a
+    /// bypass of the role whitelist rather than a compatibility shim:
+    /// `session_mark_wave_root_tx` never checks the root session's card
+    /// role or home wave, so a root-marked worker session would sail
+    /// straight past the very check G-A exists to make. The root session
+    /// of a wave is bound to that wave's Spec card, so it is covered by
+    /// the new criterion on its own merits; what it loses is the ability
+    /// to be the *only* spec-roled session that may record, which #1189
+    /// deliberately gives up (an assistant is by construction not root).
+    ///
+    /// Liveness is checked explicitly, mirroring
+    /// [`enforce_role_resolving_session`]: `session_get_tx` is a plain
+    /// `WHERE id = ?1` with no state filter, so a `superseded`/`exited`
+    /// row still resolves and still carries its `card_id`. Production reaches
+    /// this state on every resume: `session_supersede_active_tx` — reached
+    /// through `session_supersede_and_start_tx` — only flips
+    /// `worker_sessions.state` to `superseded`. The row stays, bound to the
+    /// same card on the same wave, so both halves of the card criterion still
+    /// admit the predecessor.
+    ///
+    /// Moving `waves.root_session_id` is a *separate and conditional* path,
+    /// not part of the supersede: `session_repoint_current_links_tx` calls
+    /// `session_mark_wave_root_tx` only when the successor is a `Planner` in
+    /// an active-authority state. So the old root-session criterion got
+    /// liveness for free only on that path (a Planner resume moves the pointer
+    /// off the predecessor); the card criterion never gets it, on any path, so
+    /// the check has to be written down.
+    ///
+    /// Every unresolvable step denies: no session row, a session that is no
+    /// longer an active authority, a cardless session, an unknown card, an
+    /// unknown card wave.
     pub async fn decide_recorder<T>(&self, tx: &mut T, wave: &WaveId) -> Result<GateDecision>
     where
         T: WriteTx + ?Sized + Send,
@@ -229,14 +290,43 @@ impl PrincipalDecisionGate {
                 "principal is not an agent session".into(),
             ));
         };
-        let root = tx.read_wave_root_session_id(wave).await?;
-        if root.as_ref() == Some(session_id) {
-            Ok(GateDecision::Allow)
-        } else {
-            Ok(GateDecision::Deny(format!(
-                "session {session_id} is not wave root"
-            )))
+        let Some(session) = tx.read_worker_session(session_id).await? else {
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} has no session row"
+            )));
+        };
+        if !session.state.is_active_authority() {
+            let state = session.state;
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} is no longer an active authority (state {state:?})"
+            )));
         }
+        let Some(card_id) = session.card_id else {
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} is not bound to a card"
+            )));
+        };
+        let Some(role) = tx.read_card_role(&card_id).await? else {
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} is bound to unknown card {card_id}"
+            )));
+        };
+        if !matches!(role, CardRole::Spec | CardRole::Assistant) {
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} card {card_id} has role {role:?}, which may not record"
+            )));
+        }
+        let Some(card_wave) = tx.read_card_wave(&card_id).await? else {
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} card {card_id} has no resolvable wave"
+            )));
+        };
+        if &card_wave != wave {
+            return Ok(GateDecision::Deny(format!(
+                "session {session_id} card {card_id} lives on wave {card_wave}, not {wave}"
+            )));
+        }
+        Ok(GateDecision::Allow)
     }
 
     pub async fn recorder_grant<T>(&self, tx: &mut T, wave: &WaveId) -> Result<bool>
@@ -316,6 +406,8 @@ mod tests {
         worker_session: Option<WorkerSessionRow>,
         worker_session_reads: usize,
         worker_session_read_error: bool,
+        /// `cards` rows this fake knows about: id → (role, home wave).
+        cards: Vec<(CardId, CardRole, WaveId)>,
     }
 
     impl FakeWriteTx {
@@ -325,7 +417,14 @@ mod tests {
                 worker_session: None,
                 worker_session_reads: 0,
                 worker_session_read_error: false,
+                cards: Vec::new(),
             }
+        }
+
+        fn with_card(mut self, card: &str, role: CardRole, wave: &str) -> Self {
+            self.cards
+                .push((CardId::from(card), role, WaveId::from(wave)));
+            self
         }
 
         fn with_worker_session(worker_session: WorkerSessionRow) -> Self {
@@ -371,8 +470,20 @@ mod tests {
                 .cloned())
         }
 
-        async fn read_card_role(&mut self, _card: &CardId) -> Result<Option<CardRole>> {
-            Ok(None)
+        async fn read_card_role(&mut self, card: &CardId) -> Result<Option<CardRole>> {
+            Ok(self
+                .cards
+                .iter()
+                .find(|(id, _, _)| id == card)
+                .map(|(_, role, _)| *role))
+        }
+
+        async fn read_card_wave(&mut self, card: &CardId) -> Result<Option<WaveId>> {
+            Ok(self
+                .cards
+                .iter()
+                .find(|(id, _, _)| id == card)
+                .map(|(_, _, wave)| wave.clone()))
         }
 
         async fn read_wave_cove(&mut self, _wave: &WaveId) -> Result<Option<CoveId>> {
@@ -478,37 +589,241 @@ mod tests {
         (cache, wcc)
     }
 
-    #[tokio::test]
-    async fn principal_decision_gate_computes_root_grant() {
-        let wave = WaveId::from("wave-1");
-        let mut tx = FakeWriteTx {
-            root_session_id: Some(WorkerSessionId::from("root-session")),
-            ..FakeWriteTx::new()
-        };
-
-        let root = PrincipalDecisionGate::new(agent("root-session"))
-            .recorder_grant(&mut tx, &wave)
+    /// #1189 §3.6 — one table for the whole recorder criterion, so the two
+    /// halves (`role ∈ {Spec, Assistant}` and `card.wave_id == wave`) are
+    /// each pinned by a row that flips when that half is removed.
+    async fn recorder_grant_for(
+        session: &str,
+        card: Option<&str>,
+        card_role: CardRole,
+        card_wave: &str,
+        target_wave: &str,
+    ) -> bool {
+        let mut tx =
+            FakeWriteTx::with_worker_session(worker_session(session, card.map(CardId::from)));
+        if let Some(card) = card {
+            tx = tx.with_card(card, card_role, card_wave);
+        }
+        PrincipalDecisionGate::new(agent(session))
+            .recorder_grant(&mut tx, &WaveId::from(target_wave))
             .await
-            .expect("root grant");
-        assert!(root);
-
-        let non_root = PrincipalDecisionGate::new(agent("other-session"))
-            .recorder_grant(&mut tx, &wave)
-            .await
-            .expect("non-root grant");
-        assert!(!non_root);
+            .expect("recorder grant computes")
     }
 
     #[tokio::test]
-    async fn principal_decision_gate_treats_missing_root_as_not_root() {
-        let wave = WaveId::from("wave-1");
-        let mut tx = FakeWriteTx::new();
+    async fn recorder_grant_admits_spec_and_assistant_cards_of_the_target_wave() {
+        assert!(
+            recorder_grant_for(
+                "s-spec",
+                Some("card-spec"),
+                CardRole::Spec,
+                "wave-1",
+                "wave-1"
+            )
+            .await,
+            "the wave's spec card may record — this is the path the old \
+             root-session criterion used to serve"
+        );
+        assert!(
+            recorder_grant_for(
+                "s-assistant",
+                Some("card-assistant"),
+                CardRole::Assistant,
+                "wave-1",
+                "wave-1"
+            )
+            .await,
+            "#1189: an assistant card on the wave records into the same report"
+        );
+    }
 
-        let grant = PrincipalDecisionGate::new(agent("root-session"))
-            .recorder_grant(&mut tx, &wave)
+    /// G-A. Honest about its reach: the MCP entry points carry a
+    /// `require_role` of their own, so this half is only observable here.
+    #[tokio::test]
+    async fn recorder_grant_refuses_a_worker_card_session() {
+        assert!(
+            !recorder_grant_for(
+                "s-worker",
+                Some("card-worker"),
+                CardRole::Worker,
+                "wave-1",
+                "wave-1"
+            )
             .await
-            .expect("missing root grant");
-        assert!(!grant);
+        );
+        assert!(
+            !recorder_grant_for(
+                "s-report",
+                Some("card-report"),
+                CardRole::ReportCard,
+                "wave-1",
+                "wave-1"
+            )
+            .await
+        );
+    }
+
+    /// G-A' — the load-bearing half. Same role, same everything, different
+    /// home wave: drop `card.wave_id == wave` from `decide_recorder` and
+    /// this is the assertion that goes red.
+    #[tokio::test]
+    async fn recorder_grant_refuses_a_card_from_another_wave() {
+        assert!(
+            !recorder_grant_for(
+                "s-foreign-assistant",
+                Some("card-foreign-assistant"),
+                CardRole::Assistant,
+                "wave-2",
+                "wave-1"
+            )
+            .await,
+            "another wave's assistant must not record into this wave's report"
+        );
+        assert!(
+            !recorder_grant_for(
+                "s-foreign-spec",
+                Some("card-foreign-spec"),
+                CardRole::Spec,
+                "wave-2",
+                "wave-1"
+            )
+            .await,
+            "and neither may another wave's spec — the role whitelist alone \
+             is not containment"
+        );
+    }
+
+    #[tokio::test]
+    async fn recorder_grant_denies_every_unresolvable_step() {
+        // No session row at all (the fake only answers for its own id).
+        let mut tx = FakeWriteTx::new();
+        assert!(
+            !PrincipalDecisionGate::new(agent("ghost"))
+                .recorder_grant(&mut tx, &WaveId::from("wave-1"))
+                .await
+                .expect("missing session row is a denial, not an error")
+        );
+        // Session row, no card binding.
+        assert!(!recorder_grant_for("s-cardless", None, CardRole::Spec, "wave-1", "wave-1").await);
+        // Session bound to a card that has no `cards` row.
+        let mut tx = FakeWriteTx::with_worker_session(worker_session(
+            "s-dangling",
+            Some(CardId::from("card-gone")),
+        ));
+        assert!(
+            !PrincipalDecisionGate::new(agent("s-dangling"))
+                .recorder_grant(&mut tx, &WaveId::from("wave-1"))
+                .await
+                .expect("unknown card is a denial, not an error")
+        );
+    }
+
+    /// #1189 §3.6 liveness — a session row whose card passes *both* halves of
+    /// the recorder criterion, parameterised only on `worker_sessions.state`.
+    /// `session_get_tx` is `WHERE id = ?1` with no state filter, so every one
+    /// of these rows resolves; only `is_active_authority` separates them.
+    async fn recorder_decision_for_state(state: WorkerSessionState) -> GateDecision {
+        let mut session = worker_session("s-spec", Some(CardId::from("card-spec")));
+        session.state = state;
+        let mut tx =
+            FakeWriteTx::with_worker_session(session).with_card("card-spec", CardRole::Spec, "w-1");
+        PrincipalDecisionGate::new(agent("s-spec"))
+            .decide_recorder(&mut tx, &WaveId::from("w-1"))
+            .await
+            .expect("recorder decision computes")
+    }
+
+    /// The predecessor row a resume leaves behind must not keep recording
+    /// rights. `session_supersede_active_tx` (reached through
+    /// `session_supersede_and_start_tx`) only flips the old row's state to
+    /// `superseded`; the row keeps its `card_id` on the same wave, so the card
+    /// criterion alone still admits it. Moving `waves.root_session_id` off the
+    /// predecessor is a different path — `session_repoint_current_links_tx` →
+    /// `session_mark_wave_root_tx` — and runs only when the successor is an
+    /// active-authority `Planner`. The old root criterion therefore got this
+    /// for free only on that path; the card criterion has to check it
+    /// explicitly, on every path.
+    #[tokio::test]
+    async fn recorder_grant_refuses_a_session_that_is_no_longer_an_active_authority() {
+        for state in [
+            WorkerSessionState::Superseded,
+            WorkerSessionState::Exited,
+            WorkerSessionState::Failed,
+        ] {
+            assert!(
+                matches!(
+                    recorder_decision_for_state(state).await,
+                    GateDecision::Deny(_)
+                ),
+                "a {state:?} session on this wave's spec card must not record"
+            );
+        }
+        for state in [
+            WorkerSessionState::Starting,
+            WorkerSessionState::Running,
+            WorkerSessionState::Idle,
+            WorkerSessionState::TurnPending,
+        ] {
+            assert_eq!(
+                recorder_decision_for_state(state).await,
+                GateDecision::Allow,
+                "a {state:?} session on this wave's spec card still records"
+            );
+        }
+    }
+
+    /// The deny message used to claim "no live session row" for a read that is
+    /// not a live query at all. The two failures are now distinct facts and
+    /// must stay distinguishable, or the message is decoration again.
+    #[tokio::test]
+    async fn recorder_deny_distinguishes_a_missing_row_from_a_dead_one() {
+        let mut tx = FakeWriteTx::new();
+        let missing = PrincipalDecisionGate::new(agent("ghost"))
+            .decide_recorder(&mut tx, &WaveId::from("w-1"))
+            .await
+            .expect("missing row is a denial, not an error");
+        let GateDecision::Deny(missing) = missing else {
+            panic!("a session with no row must be denied");
+        };
+        assert!(
+            missing.contains("has no session row"),
+            "missing-row denial should say the row is absent, got {missing:?}"
+        );
+
+        let dead = recorder_decision_for_state(WorkerSessionState::Superseded).await;
+        let GateDecision::Deny(dead) = dead else {
+            panic!("a superseded session must be denied");
+        };
+        assert!(
+            dead.contains("is no longer an active authority") && dead.contains("Superseded"),
+            "dead-row denial should name the state it found, got {dead:?}"
+        );
+        assert_ne!(
+            missing, dead,
+            "the two denials must not collapse into one message"
+        );
+    }
+
+    /// The root-session criterion is *gone*, not OR-ed in. Marking a
+    /// worker-card session as the wave root used to be — and must not
+    /// become again — a way around the role whitelist: nothing in
+    /// `session_mark_wave_root_tx` checks the root card's role.
+    #[tokio::test]
+    async fn a_root_marked_worker_session_is_still_refused() {
+        let mut tx = FakeWriteTx::with_worker_session(worker_session(
+            "s-root",
+            Some(CardId::from("card-worker")),
+        ))
+        .with_card("card-worker", CardRole::Worker, "wave-1");
+        tx.root_session_id = Some(WorkerSessionId::from("s-root"));
+
+        assert!(
+            !PrincipalDecisionGate::new(agent("s-root"))
+                .recorder_grant(&mut tx, &WaveId::from("wave-1"))
+                .await
+                .expect("root grant computes"),
+            "being the wave root must not buy a worker card recording rights"
+        );
     }
 
     #[tokio::test]

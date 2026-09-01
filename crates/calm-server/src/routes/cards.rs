@@ -375,11 +375,30 @@ async fn create_via_tool_call(
     wave_id: String,
     via: ViaToolCall,
 ) -> Result<Response, Response> {
-    // 1. Plugin must be running. `mcp_client` returns None when the plugin is
-    //    Disabled / Crashed / not yet spawned.
+    // 1. Plugin must be a RUNNING `app`. `mcp_client` returns None when the
+    //    plugin is Disabled / Crashed / not yet spawned — and, since #1164
+    //    §2.6, also when it is a connector (`mcp-http` / `cli-query`), which
+    //    has no stdio client.
+    //
+    //    Card creation stays stdio-only on purpose: it depends on the plugin
+    //    answering with `_meta.ui.resourceUri`, i.e. on it owning a `ui://`
+    //    view, which a remote MCP server or a query CLI structurally cannot.
+    //
+    //    The two cases must NOT share an error. Telling an operator that a
+    //    demonstrably-Running connector "is not running" sends them to debug
+    //    the wrong thing (design doc §2.6, "一处措辞修正").
     let mcp = match s.plugin.mcp_client(&via.plugin_id).await {
         Some(c) => c,
         None => {
+            if let Some(client) = s.plugin.connector_client(&via.plugin_id).await {
+                return Err(CalmError::BadRequest(format!(
+                    "plugin `{}` is a `{}` connector; connectors cannot create cards \
+                     (no `ui://` view to bind a card to)",
+                    via.plugin_id,
+                    client.variant_name()
+                ))
+                .into_response());
+            }
             return Err(
                 CalmError::NotFound(format!("plugin `{}` is not running", via.plugin_id))
                     .into_response(),

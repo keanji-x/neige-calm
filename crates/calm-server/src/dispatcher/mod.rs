@@ -94,8 +94,17 @@ pub(crate) fn event_warrants_spec_push_with_role(
         // no self-push loop is possible. Spec/Kernel authors stay
         // suppressed (the spec wrote those — or the kernel rewrote on
         // its behalf — and pushing them back would loop).
+        //
+        // #1189 §3.4 — `Assistant` joins that set for the same reason and
+        // by explicit ruling: an assistant session is a *different*
+        // session editing the spec's work product, so it cannot loop, and
+        // leaving the spec unaware that its report changed under it is a
+        // worse failure than one extra wake-up.
         Event::WaveReportEdited { author, .. } => {
-            matches!(author, EditAuthor::User | EditAuthor::Plugin)
+            matches!(
+                author,
+                EditAuthor::User | EditAuthor::Plugin | EditAuthor::Assistant
+            )
         }
         Event::WorkspaceLeased { .. } | Event::WorkspaceReleased { .. } => true,
         Event::ForgePrMerged { .. }
