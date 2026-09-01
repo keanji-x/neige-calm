@@ -805,6 +805,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wave-templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_wave_template_definition"];
+        put: operations["update_wave_template"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -2534,6 +2550,37 @@ export interface components {
             title: string;
         };
         /**
+         * @description A template's editable definition: what Settings loads, edits and puts back.
+         *
+         *     Separate from [`WaveTemplate`] on purpose. The picker's shape is a *chooser*
+         *     view and #1209 argues down to `key` + `goal` for it deliberately; the editor
+         *     needs every field of the task or a save would silently drop the ones it
+         *     cannot see. Widening [`WaveTemplateTask`] to serve both would put acceptance
+         *     criteria and dependency edges into the New wave dialog's payload to satisfy
+         *     a surface that is not the New wave dialog.
+         */
+        WaveTemplateDefinition: {
+            id: string;
+            /**
+             * @description `true` once the template wave exists, i.e. once the title and tasks above
+             *     came from the report the create path forks rather than from the built-in
+             *     constants. Purely informational for the editor; a `PUT` works either way
+             *     because it seeds first.
+             */
+            seeded: boolean;
+            /**
+             * @description Every task, with every field. `context` / `gate` / `acceptance_criteria`
+             *     are not editable in the UI, but they are returned and expected back so a
+             *     save preserves them instead of flattening the task to `key` + `goal`.
+             */
+            tasks: unknown[];
+            /**
+             * @description Editable. Stored as the template wave's report summary — see the note on
+             *     this module about why the wave row's own title is not involved.
+             */
+            title: string;
+        };
+        /**
          * @description One pre-set task, projected from the template's own `PlanTaskInput`.
          *
          *     `key` and `goal` only: those are the two facts a person choosing a starting
@@ -2546,6 +2593,24 @@ export interface components {
             goal: string;
             /** @description The task block's `key` in the seeded report. */
             key: string;
+        };
+        /** @description A template edit from Settings. */
+        WaveTemplateUpdate: {
+            /**
+             * @description The new task list, in plan order. Each entry is a task object in the
+             *     same shape `GET /api/wave-templates/{id}` returned, so the fields the
+             *     editor does not display survive the round trip.
+             *
+             *     An empty list is refused: a template *is* its task list, and forking an
+             *     empty one would produce a wave whose plan is the intro paragraph alone.
+             */
+            tasks: unknown[];
+            /**
+             * @description The new title. Trimmed; must not be empty — a template with a blank
+             *     title is unpickable in the New wave dialog, which lists templates by
+             *     title and nothing else.
+             */
+            title: string;
         };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
@@ -4966,6 +5031,101 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WaveTemplate"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_wave_template_definition: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Template key */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The template's editable definition */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplateDefinition"];
+                };
+            };
+            /** @description Unknown template key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_wave_template: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Template key */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WaveTemplateUpdate"];
+            };
+        };
+        responses: {
+            /** @description The stored definition after the edit */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplateDefinition"];
+                };
+            };
+            /** @description Invalid title or task list */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown template key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */

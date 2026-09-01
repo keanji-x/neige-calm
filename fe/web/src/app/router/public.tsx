@@ -26,6 +26,7 @@ import { isSpecHarnessPayload, partitionWaveCards } from '../../systems/cards/pu
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
+import { TemplateEditorPage, TemplateListPage } from '../../features/settings/templates.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
@@ -59,7 +60,8 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
   settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  useSettingsMutation, useSpecMutations, useWaveMutations, useWorkspace,
+  useSettingsMutation, useSpecMutations, useWaveMutations, useWaveTemplateDefinitions,
+  useWaveTemplateMutation, useWorkspace,
   waveBacklinksQueryOptions, waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
@@ -430,7 +432,21 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <SettingsRoute transport={transport} unauthorized={unauthorized} />,
   });
 
-  return rootRoute.addChildren([indexRoute, coveRoute, waveRoute, settingsRoute]);
+  const templateListRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/templates',
+    component: () => <TemplateListRoute transport={transport} unauthorized={unauthorized} />,
+  });
+
+  const templateEditorRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/templates/$templateId',
+    component: () => <TemplateEditorRoute transport={transport} unauthorized={unauthorized} />,
+  });
+
+  return rootRoute.addChildren([
+    indexRoute, coveRoute, waveRoute, settingsRoute, templateListRoute, templateEditorRoute,
+  ]);
 }
 
 export function createAppRouter(deps: AppRouterDeps) {
@@ -1655,10 +1671,10 @@ function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPor
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
-
   return (
     <SettingsPage
       settings={settings.data?.settings}
+      onOpenTemplates={() => go({ name: 'settings-templates' })}
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}
       saving={saving}
@@ -1674,6 +1690,62 @@ function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPor
         setSaving(true);
         setSaveError(null);
         return save(patch)
+          .then(() => { setSavedAt(Date.now()); })
+          .catch((error: unknown) => {
+            setSaveError(error instanceof Error ? error.message : 'Save failed.');
+          })
+          .finally(() => { setSaving(false); });
+      }}
+    />
+  );
+}
+
+/**
+ * Settings › Templates (#1230). Two routes rather than page-local state, so
+ * Back leaves the editor instead of leaving Settings, and one template's
+ * editor is a URL.
+ */
+function TemplateListRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const go = useGo();
+  const templates = useWaveTemplateDefinitions(transport, unauthorized);
+  return (
+    <TemplateListPage
+      templates={templates.definitions}
+      loadError={templates.error}
+      onRetryLoad={templates.refetch}
+      onOpenSettings={() => go({ name: 'settings' })}
+      onEdit={(templateId) => go({ name: 'settings-template', templateId })}
+    />
+  );
+}
+
+function TemplateEditorRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const go = useGo();
+  const templateId = useRouteParam('/settings/templates/');
+  const templates = useWaveTemplateDefinitions(transport, unauthorized);
+  const saveTemplate = useWaveTemplateMutation(transport, unauthorized);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const template = templates.definitions?.find((entry) => entry.id === templateId);
+  return (
+    <TemplateEditorPage
+      template={template}
+      /* An id that names no template is a load failure for this route, not an
+         empty editor: blank fields for a template that does not exist would
+         invite a save against nothing. */
+      loadError={templates.definitions !== undefined && template === undefined
+        ? `No template named ${templateId ?? ''}.`
+        : templates.error}
+      onRetryLoad={templates.refetch}
+      saving={saving}
+      saveError={saveError}
+      savedAt={savedAt}
+      onOpenTemplates={() => go({ name: 'settings-templates' })}
+      onSave={(save) => {
+        setSaving(true);
+        setSaveError(null);
+        return saveTemplate(save)
           .then(() => { setSavedAt(Date.now()); })
           .catch((error: unknown) => {
             setSaveError(error instanceof Error ? error.message : 'Save failed.');
