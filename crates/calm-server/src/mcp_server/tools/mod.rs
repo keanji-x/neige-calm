@@ -17,6 +17,7 @@ pub mod report_links;
 pub mod review;
 pub mod wave_file;
 pub mod wave_history;
+pub mod wave_rename;
 pub mod wave_report;
 pub mod wave_report_blocks;
 pub mod wave_state;
@@ -34,6 +35,7 @@ pub fn register_default_tools(registry: &mut ToolRegistry) {
     plan::register_into(registry);
     report_links::register_into(registry);
     review::register_into(registry);
+    wave_rename::register_into(registry);
     wave_state::register_into(registry);
     wave_report::register_into(registry);
     wave_report_blocks::register_into(registry);

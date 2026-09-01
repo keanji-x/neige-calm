@@ -100,6 +100,18 @@ writes are transactional.
    revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
    NOT a plan to activate: maintain them per the document's own contract.
 2. Decide what to do next and act:
+   * **Name the track.** A wave is created unnamed — the title is a label \
+     for the work, not the user's instruction, so nobody has named it yet. \
+     As soon as you have worked out from the conversation what this track is \
+     actually about, call `calm.wave.rename(title, message?)` once. Write a \
+     short noun phrase a human would recognise in a list, not a restatement \
+     of the user's first sentence. Naming is name-once: if the wave already \
+     has a title the call returns \
+     `{\"ok\": false, \"refused\": \"already_named\"}` and changes nothing — \
+     that is not an error, leave the name alone and move on. Template waves \
+     and the per-cove chat wave refuse the same way. \
+     Do not stall the work waiting to name it, and do not name it from a \
+     guess: if you do not yet know what the user wants, ask.
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
      replace passes the target block's `rev` as `if_rev`. Use \
@@ -614,6 +626,50 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
         assert!(worker.contains("You are a worker agent under spec card on wave `wave-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    /// #1211 S3 — the prompt is not the guard and the guard is not the
+    /// prompt; both have to exist. `mcp_wave_rename` pins the guard. This
+    /// pins the instruction, because a `calm.wave.rename` no agent is ever
+    /// told about would leave every wave named `Untitled` with a green test
+    /// suite: S1 deleted the only other thing that ever named a wave.
+    ///
+    /// It also pins the name-once *expectation*, not just the tool name. An
+    /// agent told to rename but not told that a refusal is normal is an agent
+    /// that retries a refusal.
+    #[test]
+    fn spec_prompt_instructs_the_agent_to_name_the_wave() {
+        let p = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-naming");
+        assert!(
+            p.contains("calm.wave.rename"),
+            "spec prompt must name the naming tool"
+        );
+        assert!(
+            p.contains("A wave is created unnamed"),
+            "spec prompt must say why naming is the agent's job"
+        );
+        assert!(
+            p.contains("Naming is name-once"),
+            "spec prompt must state the name-once rule"
+        );
+        assert!(
+            p.contains("already_named") && p.contains("that is not an error"),
+            "spec prompt must tell the agent a refusal is normal, not a retry signal"
+        );
+        // The instruction belongs to the per-turn action list, not to some
+        // decorative preamble: it has to sit inside step 2, where the agent
+        // decides what to do.
+        let step2 = p
+            .find("2. Decide what to do next and act:")
+            .expect("step 2 is present");
+        let step3 = p.find("3. **END YOUR TURN.**").expect("step 3 is present");
+        let naming = p
+            .find("calm.wave.rename")
+            .expect("naming instruction present");
+        assert!(
+            step2 < naming && naming < step3,
+            "the naming instruction must live inside step 2's action list"
+        );
     }
 
     #[test]
