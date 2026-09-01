@@ -10,6 +10,7 @@ pub mod error;
 pub mod events;
 mod glob;
 pub mod http_mcp;
+pub mod lifecycle;
 pub mod manifest;
 pub mod mcp;
 pub mod perms;
