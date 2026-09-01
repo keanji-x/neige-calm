@@ -14,7 +14,7 @@ The control names itself: the accessible name is the placeholder, plus the **who
 
 ## Test contract
 
-The type-only consumer supplies only `ListDirectory`, value and onChange. Separate contract and integration tests assert the browse button surface — the full path as its name, its `aria-haspopup`, the `title` that repeats the path, and the basename as the only text it shows — plus both Dialog child-view and inline paths, keeping the browse → select → field chain on public entries.
+The type-only consumer supplies only `ListDirectory`, value and onChange. Separate contract and integration tests assert the browse button surface — the basename as its name and its only text, its `aria-haspopup`, the `title`, and the description carrying the full path — that an outer `<label htmlFor>` still wins the name, that the purpose phrase follows `mode` and survives a blank placeholder, plus both Dialog child-view and inline paths, keeping the browse → select → field chain on public entries.
 
 ## Deliberately not done
 

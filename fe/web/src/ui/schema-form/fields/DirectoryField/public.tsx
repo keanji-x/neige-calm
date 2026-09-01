@@ -24,25 +24,33 @@
 // `aria-haspopup="dialog"`. Two words to say "clickable" is the kind of thing
 // that reads as thorough and lands as noise.
 //
-// ## Names, since the visible text is never the whole value
+// ## Names, and why this control must not set its own
 //
-//   * The name is the purpose phrase (the call site's placeholder, or a
-//     mode-aware default), and once there is a value that phrase *and* the
-//     full path — set through `aria-label`, because neither half can
-//     come from the contents: the visible text is a basename, and a reader who
-//     hears only "app" learns neither which `app` nor what the control is for.
-//     Dropping the purpose half was the first cut of this and it was wrong;
-//     "/srv/app, button" is a control whose job you have to infer from a path.
-//     A call site therefore does not need to wrap this in a labelled field,
-//     and should not: an outer `<label for>` would outrank the whole thing and
-//     replace it with one word.
-//   * The native `title` carries the same string for the pointer, so the full
-//     path is one hover away from the basename. astryx drops `title` from
-//     `BaseProps` in favour of its `tooltip` prop, which would mount a
-//     floating layer on a control whose whole job is to open one, so the
-//     attribute is passed through as a rest prop instead.
+// The accessible name comes from the button's *contents* — the purpose phrase
+// while there is no value, the basename once there is one — and from nothing
+// else. In particular **not** from an `aria-label`, and the reason is a second
+// call site: `features/wave/new-card` wraps this field in an astryx `Field`
+// whose `<label htmlFor>` points at this button, precisely so the control is
+// named "File or folder" and the path it holds is its value. `aria-label`
+// outranks a `<label>`, so a name set here would silently rename *that*
+// control too — which is exactly what happened, and what `new-card.test.tsx`
+// caught (#1231 landed while this branch was open).
+//
+// So the two things the contents cannot carry travel beside them:
+//
+//   * The **full path** goes in a visually hidden node that `aria-describedby`
+//     points at. A description does not compete with a name, so the labelled
+//     call site keeps "File or folder" *and* gains the path, while the
+//     unlabelled one reads "neige-calm, button, /home/kenji/neige-calm".
+//     Without it a reader hears a basename and learns nothing about which
+//     `app` it is.
+//   * The **native `title`** carries purpose and path together for the
+//     pointer, so a truncated chip is one hover from being readable. astryx
+//     drops `title` from `BaseProps` in favour of its `tooltip` prop, which
+//     would mount a floating layer on a control whose whole job is to open
+//     one, so the attribute is passed through as a rest prop instead.
 
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useId, type ReactNode } from 'react';
 import { Button } from '@astryxdesign/core/Button';
 
 import { useState } from '../../../state/public.ts';
@@ -69,6 +77,7 @@ export interface DirectoryFieldProps {
 export function DirectoryField({ value, onChange, listDirectory, id, placeholder, mode = 'directory' }: DirectoryFieldProps): ReactNode {
   const [browsing, setBrowsing] = useState(false);
   const dialog = useDialogView();
+  const pathDescriptionId = `${useId()}-directory-field-path`;
   const initialPath = mode === 'file' && value ? value.slice(0, value.lastIndexOf('/')) || '/' : value || null;
   useEffect(() => {
     if (!dialog || !browsing) return;
@@ -105,7 +114,7 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
         size="sm"
         className={styles.trigger}
         aria-haspopup="dialog"
-        aria-label={name}
+        aria-describedby={value === '' ? undefined : pathDescriptionId}
         {...nativeTitle}
         data-nc-empty={value === '' || undefined}
         icon={<Icon name="folder" size="sm" />}
@@ -120,6 +129,13 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
         label={value === '' ? purpose : basenameOf(value)}
         onClick={() => setBrowsing(true)}
       />
+      {/* The value in full, for the reader whose only view of this control is
+          its accessible description. Hidden rather than shown because the chip
+          is sized to a row of chips, and rendered only when there is a path —
+          an empty description is a node screen readers still walk into. */}
+      {value !== '' && (
+        <span className={styles.srOnly} id={pathDescriptionId}>{value}</span>
+      )}
       {browsing && !dialog && (
         <DirectoryBrowser listDirectory={listDirectory} initialPath={initialPath} mode={mode} onCancel={() => setBrowsing(false)} onSelect={(path) => { onChange(path); setBrowsing(false); }}/>
       )}

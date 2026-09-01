@@ -11,6 +11,20 @@
     gap: var(--space-4);
   }
 
+  /* The canonical clip block: `clip-path` alone still leaves the node
+     selectable and `display: none` takes it out of the accessibility tree,
+     which is the one thing this node exists to be in. */
+  .srOnly {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
   .trigger {
     /* A folder name is a name, not prose: it may be long, and past this it is
        the astryx label span's own ellipsis that finishes the job. */
