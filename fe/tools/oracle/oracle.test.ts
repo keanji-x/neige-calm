@@ -2,7 +2,10 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
-import { codeAnchorLines, defaultOracleOptions, ORACLE_RULES, ORACLE_YAML_FIELDS, validateOracle } from './validator';
+import {
+  codeAnchorLines, defaultOracleOptions, extractStatementAnchors, ORACLE_RULES, ORACLE_YAML_FIELDS,
+  validateOracle,
+} from './validator';
 
 const fixtures = resolve(import.meta.dirname, 'fixtures');
 
@@ -20,6 +23,20 @@ const anchorPositionShapes = [
   ['ts-multiline.ts', ['typescriptMultiline'], { typescriptMultiline: [2] }],
   ['ts-comment.ts', ['typescriptCommentAnchor'], { typescriptCommentAnchor: [] }],
   ['ts-template-comment.ts', ['templateCommentAnchor'], { templateCommentAnchor: [] }],
+] as const;
+
+/** Anchor-class fixtures that must stay silent: the branch under test anchors, or refuses to anchor. */
+const anchorClassGreen = [
+  'display-copy-with-identifier', 'display-copy-placeholder', 'display-copy-case-insensitive',
+  'display-copy-typography-split', 'backtick-path-in-range', 'backtick-word-in-range',
+  'generic-word-not-anchored', 'generic-display-copy-not-anchored',
+] as const;
+
+/** Anchor-class fixtures that must red, each pinning exactly one extraction branch. */
+const anchorClassRed = [
+  ['display-copy-range-miss', 'range-miss', 'INV-TEST-010'],
+  ['backtick-path-range-miss', 'range-miss', 'INV-TEST-015'],
+  ['backtick-word-range-miss', 'range-miss', 'INV-TEST-017'],
 ] as const;
 
 function run(rule: string, kind: 'positive' | 'negative') {
@@ -122,6 +139,59 @@ describe('oracle rule fixtures', () => {
       }
     });
   }
+
+  // ── Anchor classes (#1148) ────────────────────────────────────────────────────────────────────────
+  //
+  // Each directory under `source-anchor/anchor-classes/` holds exactly ONE entry, so a case that expects a
+  // violation pins its own extraction branch: delete that branch and the statement yields no identifier at
+  // all, the `identifiers.length === 0` shortcut returns green, and only this case reds. The green cases
+  // pin the opposite direction — the branch must not manufacture a failure — and the two stop-word cases
+  // pin the exclusion list, where deleting the guard turns a word that is in no cited file into a red.
+  const anchorClass = (name: string) => validateOracle({
+    repoRoot: fixtures,
+    oracleDir: resolve(fixtures, 'source-anchor/anchor-classes', name),
+    ownerAliasesPath: resolve(fixtures, 'owner-aliases.yaml'),
+  });
+
+  it('anchor classes: every fixture directory is exercised, in both directions', () => {
+    const declared = new Set([...anchorClassGreen, ...anchorClassRed.map(([name]) => name)]);
+    const present = new Set(readdirSync(resolve(fixtures, 'source-anchor/anchor-classes'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory()).map((entry) => entry.name));
+    expect(declared).toEqual(present);
+    expect(present).toEqual(declared);
+  });
+
+  it.each(anchorClassGreen)('anchor class %s produces no violation', (name) => {
+    const violations = anchorClass(name);
+    expect(violations, JSON.stringify(violations)).toEqual([]);
+  });
+
+  it.each(anchorClassRed)('anchor class %s is the only violation, as %s', (name, subtype, id) => {
+    const violations = anchorClass(name);
+    expect(violations, JSON.stringify(violations)).toHaveLength(1);
+    expect(violations[0]?.rule).toBe('source-anchor');
+    expect(violations[0]?.id).toBe(id);
+    expect(violations[0]?.message).toBe(`unbaselined ${subtype}`);
+  });
+
+  it('extracts display copy and backtick fragments, and refuses generic words', () => {
+    const anchorsOf = (statement: string) => extractStatementAnchors(statement)
+      .map(({ text, caseInsensitive }) => `${caseInsensitive ? '~' : ''}${text}`).sort();
+    // Display copy: quoted, Latin, split at placeholders and at non-ASCII typography, case-insensitive.
+    expect(anchorsOf('必须显示 "Failed to load settings: <message>"')).toEqual(['~Failed to load settings:']);
+    expect(anchorsOf('空态是 "No messages yet — ask below."')).toEqual(['~No messages yet', '~ask below.']);
+    expect(anchorsOf('标题是 "waiting on you"')).toEqual(['~waiting on you']);
+    // CJK inside quotes is prose emphasis, never UI copy, and quoted noise is under the length floor.
+    expect(anchorsOf('不得因为"看起来无关"而重排')).toEqual([]);
+    expect(anchorsOf('必须是 "on"')).toEqual([]);
+    // Backtick fragments: path/dotted shapes and whole words, minus the generic list.
+    expect(anchorsOf('探测 `/api/auth/whoami`')).toEqual(['/api/auth/whoami']);
+    // `.updated` is the pre-existing CSS-class shape; the new whole-fragment rule adds the dotted name.
+    expect(anchorsOf('监听 `card.updated`')).toEqual(['.updated', 'card.updated']);
+    expect(anchorsOf('设置 `basepath`')).toEqual(['basepath']);
+    expect(anchorsOf('透传 `children` 与 `overflow`')).toEqual([]);
+    expect(anchorsOf('引用 `web/src/ui`')).toEqual(['web/src/ui']);
+  });
 
   it('source-anchor baseline is exact in both directions', () => {
     const root = resolve(fixtures, 'source-anchor/negative');

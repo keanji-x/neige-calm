@@ -344,7 +344,7 @@
   why: >
     helpers/reset.ts:16-17 — dev-only by design doc §6.3; these endpoints bypass the actor /
     lifecycle authorization surface.
-  source: web/e2e/helpers/reset.ts:16-17
+  source: web/e2e/helpers/reset.ts:31-33
   authoritative_test: web/e2e/helpers/reset.ts:31
   owner_slice: none/e2e/infra
   intentional_omission: true
@@ -891,12 +891,12 @@
   kind: capability
   family: routing
   statement: >
-    The router must run under `basepath: '/calm'`, so the Today index route surfaces in the
-    browser URL as `/calm/` with no `/today` suffix.
+    The router must be created with `basepath` set to `/calm`, so the Today index route surfaces
+    in the browser URL as `/calm/` with no `/today` suffix.
   why: >
     a11y-wave-cove-ops.spec.ts:901-904 — the cove-delete handler navigates `go({name:'today'})`
     and the assertion has to match `/calm/(\?|$)`.
-  source: web/e2e/a11y-wave-cove-ops.spec.ts:896-908
+  source: web/src/app/router.tsx:153-161 web/e2e/a11y-wave-cove-ops.spec.ts:896-908
   authoritative_test: web/e2e/a11y-wave-cove-ops.spec.ts:908
   owner_slice: app/router
   intentional_omission: false
@@ -965,7 +965,7 @@
   kind: capability
   family: user-menu
   statement: >
-    The sidebar must expose an avatar trigger with accessible name `Open user menu`; Enter
+    The sidebar must expose an avatar trigger with accessible name "Open user menu"; Enter
     opens a menu whose FIRST item is Settings, and Enter again routes to `/calm/settings`.
   why: >
     a11y-keyboard.spec.ts:851-858 — two Enters from the trigger is the documented keyboard
@@ -1438,8 +1438,9 @@
   kind: invariant
   family: cove-resolve
   statement: >
-    A sibling-prefix path that is NOT a filesystem descendant (`/work/repository` vs a
-    `/work/repo` claim) must MISS — both at the exact level and deeper.
+    A sibling-prefix path that is NOT a filesystem descendant (`siblingPrefix`, e.g.
+    /work-1700000000/repository, against a `claim` of /work-1700000000/repo) must MISS —
+    both at the exact level and deeper.
   why: >
     a11y-cwd-resolve.spec.ts:234-245 — dedicated regression guard for the `/`-boundary check;
     the failure mode silently swallows a whole sibling project into the wrong cove.
@@ -4056,10 +4057,10 @@
   kind: capability
   family: exit-badge
   statement: >
-    The exit badge must also cover signal and non-zero exits (`exit 137`, `signal`), not only
-    `exit 0`.
+    The exit badge must also cover signal and non-zero exits (`exit 137`, `signal_killed`), not
+    only `exit 0`.
   why: terminal-clean-exit.spec.ts:12-15 (#306) — the badge carries the full exit disposition.
-  source: web/e2e/terminal-clean-exit.spec.ts:10-15
+  source: web/src/XtermView.tsx:60-90 web/e2e/terminal-clean-exit.spec.ts:120-127
   authoritative_test: web/e2e/terminal-clean-exit.spec.ts:126
   owner_slice: systems/terminal/card
   intentional_omission: false
@@ -4733,7 +4734,7 @@
   why: >
     wheel-wave-switch.spec.ts:92-95 — a real environment constraint that silently produces an
     empty terminal instead of a failure.
-  source: web/e2e/wheel-wave-switch.spec.ts:92-96
+  source: web/e2e/wheel-wave-switch.spec.ts:92-100
   authoritative_test: web/e2e/wheel-wave-switch.spec.ts:98
   owner_slice: none/e2e/infra
   intentional_omission: false

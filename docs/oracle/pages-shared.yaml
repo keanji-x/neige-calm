@@ -266,7 +266,7 @@
   why: >
     后端有 `idx_cards_one_report_per_wave` 唯一索引,但历史数据/竞态仍可能出现多张;静默挑一张会让用户
     看到"报告内容莫名其妙变了"。
-  source: web/src/pages/WaveReportPage.tsx:84-87,163-169,955-957
+  source: web/src/pages/WaveReportPage.tsx:84-87,163-169,197-202,955-957
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:864
   owner_slice: features/report/shell
   intentional_omission: false
@@ -998,7 +998,7 @@
     "cites block <id>" 目标提示只在当前报告确实有结构化 blocks 时才渲染。
   why: >
     "does not promise a block target for a flat v1 report" —— 扁平报告里没有块锚点,承诺一个跳不到的目标是谎言。
-  source: web/src/pages/WaveReportPage.tsx:637-642,846
+  source: web/src/pages/WaveReportPage.tsx:637-642,704-708,846
   authoritative_test: web/src/pages/WaveReportPage.test.tsx:2338
   owner_slice: features/report/shell
   intentional_omission: false
@@ -3566,11 +3566,12 @@
   kind: invariant
   family: new-task-form
   statement: >
-    issue-dev 刻意不提供 `notes` 字段;唯一能发 notes 的路径是 raw JSON 逃生口。
+    issue-dev 的 `derivedWorkflowInput` 刻意不带 `notes` 字段;唯一能发 notes 的路径是
+    raw JSON 逃生口。
   why: >
     源码注释(#891 signoff):"it duplicated the task-description free-text"。测试名把这一点写死:
     "including a notes key, which raw JSON alone can carry"。
-  source: web/src/shared/components/NewTaskForm.tsx:369-373,626-632
+  source: web/src/shared/components/NewTaskForm.tsx:369-374,626-632
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,277
   owner_slice: features/wave/create
   intentional_omission: true
