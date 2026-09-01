@@ -405,22 +405,24 @@ S0 的价值不只是让 S1 可评审：那 24 处集成测试的改造若混在
 4. **S0 必须同时把 `PluginRegistry::insert` / `remove` / `set_exposes_tools` 降到 `pub(crate)`**，否则编译器不强制那 24 处迁移，S0 会以「builder 加好了、老 `insert` 还 `pub`、调用点一处没动」的形态合入，24 处洪水原样冲进 S1——正是这次切片要避免的事。
 5. **前置 `plugin_get_by_id` 的 404 必须保留**（搬迁后是 `lifecycle.rs:143` / `:165` / `:188` / `:225` 四处 `plugin_row_or_404`；原 `routes/plugins.rs:416` / `:451` / `:528` / `:616` 的坐标随 S0b 搬迁作废，那些行今天是别的东西。不只是钉子 2 说的 `build_detail` 那次**后**读）。丢了它，`reload` 从 404 变成读盘失败的 400/500。
 
-> **S0b 跟进更正**：原文这里还写着「`uninstall` 会从 404 变 204（`plugin_delete` 不返回 `NotFound`）」——**事实相反**，`plugin_delete` 在 `rows_affected()==0` 时就返回 `NotFound`（`out_of_domain.rs:469-471`）。`enable`/`disable` 同样被 `plugin_update_enabled` 兜住（`:413`）。所以四个探针里只有 `reload` 的是单独可观测的；另外三个是与 repo 层重复的防御。要守的是端点契约，见下面「钉子 5 / 6 / 7 的门禁」。
+> **S0b 跟进更正**：原文这里还写着「`uninstall` 会从 404 变 204（`plugin_delete` 不返回 `NotFound`）」——**事实相反**，`plugin_delete` 在 `rows_affected()==0` 时就返回 `NotFound`（`out_of_domain.rs:469-471`）。`enable`/`disable` 同样被 `plugin_update_enabled` 兜住（`:413`）。所以四个探针里只有 `reload` 的是单独可观测的；另外三个是与 repo 层重复的防御。要守的是端点契约，见下面「钉子 5 / 6 / 7 的门禁现状」。
 6. **`reload` 的条件重生**：搬迁后是 `lifecycle.rs:274`（原 `routes/plugins.rs:666`）那句 `if plug.enabled` 才 spawn，且 `plug` 是 **stop 之前**读到的那一行（`plug.install_path` / `plug.enabled` 都来自它）。§2.3 的表已同步。无条件 spawn 会把一个已禁用插件拉起来——一个贴着「零行为变更」标签的行为变更。
 7. **`uninstall` 的三次 `let _ =` 吞错**（搬迁后是 `lifecycle.rs:200-202`：token / kv / overlay；契约注释在方法 doc `:181-186`。原 `routes/plugins.rs:540-542` / `:536-539` 作废）是**刻意**的。搬进 host 后最自然的写法是 `?`，那会让「overlay 清理失败」从静默变 500。明写为契约。
 8. **评审证据**：每个 handler 的错误码集合前后逐条对照表。没有这张表，「零行为变更」是一句自称。
 
-#### 钉子 5 / 6 / 7 的门禁（S0b 跟进补齐）
+#### 钉子 5 / 6 / 7 的门禁现状（S0b 跟进补齐）
 
-S0b 首版把 5 / 6 / 7 写进了代码与注释，但**没有任何测试会因为删掉它们而变红**。跟进提交在 `crates/calm-server/tests/cases/plugin_routes.rs` 补了五条：
+S0b 首版把 5 / 6 / 7 写进了代码与注释，但**没有任何测试会因为删掉它们而变红**。跟进提交在 `crates/calm-server/tests/cases/plugin_routes.rs` 补了五条测试，覆盖钉子 5 的端点契约与钉子 6；**钉子 7 至今无门禁**（见本节末）：
 
-| 测试 | 钉住 |
+下表按**实测**记录每条是哪种门禁——单点可观测（单删一行即红）还是端点契约（需复合变异才红）。不是「一条测试钉一颗钉子」的一一对应。
+
+| 测试 | 门禁性质（实测） |
 |---|---|
-| `enable_unknown_id_returns_404` | 钉子 5（`lifecycle.rs:143` 探针） |
-| `disable_unknown_id_returns_404` | 钉子 5（`:165` 探针） |
-| `uninstall_unknown_id_returns_404_not_204` | 钉子 5（`:188` 探针；丢了就是 204） |
-| `reload_unknown_id_returns_404_not_manifest_read_error` | 钉子 5（`:225` 探针；丢了就是读盘 400） |
-| `reload_disabled_plugin_does_not_spawn` | 钉子 6（`:274` 的 `if plug.enabled`），断言 `PluginHost::list_running()` 仍为空，不只断 HTTP 码 |
+| `enable_unknown_id_returns_404` | 端点契约（未知 id ⇒ 404）。单删 `lifecycle.rs:143` 探针实测全绿；需同时打掉 repo 兜底的复合变异才红 |
+| `disable_unknown_id_returns_404` | 同上（探针 `:165`） |
+| `uninstall_unknown_id_returns_404_not_204` | 同上（探针 `:188`）。单删该探针实测**仍是 404**，因为 `plugin_delete` 自己在 `rows_affected()==0` 时返回 `NotFound` |
+| `reload_unknown_id_returns_404_not_manifest_read_error` | **单点可观测**：单删 `:225` 探针实测 `left: 400 / right: 404` |
+| `reload_disabled_plugin_does_not_spawn` | 钉子 6（`:274` 的 `if plug.enabled`）。删掉该守卫时实测先红的是 `det["state"]`（`left: "running" / right: "disabled"`）；同一断言块里的 `list_running().is_empty()` 排在其后、该变异下不执行，作为对未来改动的冗余防御保留，今天没有可达的额外见证 |
 
 五条均已做变异验证，并顺带证伪了钉子 5 自己的论据：
 

@@ -18,8 +18,8 @@
 //!   7. install rejects manifest with disallowed `scope`
 //!   8. install rejects reinstall with 409
 //!
-//! Plus the #1196 S0b lifecycle-probe gate at the bottom of the file: the four
-//! unknown-id 404s and reload's conditional respawn.
+//! Plus the #1196 S0b lifecycle contract tests at the bottom of the file: the
+//! four unknown-id 404s and reload's conditional respawn.
 
 #![cfg(unix)]
 
@@ -618,13 +618,28 @@ async fn patch_config_writes_user_config() {
 // ===========================================================================
 // #1196 S0b — the leading 404 probes and reload's `if plug.enabled` guard.
 //
-// These five tests are the gate for design §7 nails 5 / 6 / 7. Before them,
-// deleting any of `PluginHost::{enable,disable,uninstall,reload}`'s leading
-// `plugin_row_or_404` probe — or reload's `if plug.enabled` respawn guard —
-// was completely invisible to the suite: `uninstall` of an unknown id silently
-// became a 204, `reload` became a manifest-read 400, and a reload would
-// resurrect a disabled plugin. S1 rewrites every step of these methods, so the
-// probes need a red light of their own.
+// These five tests assert endpoint contracts: an unknown id must 404 on all
+// four lifecycle endpoints, and reload must not respawn a disabled plugin.
+// They are not all the same kind of gate, so what each was observed to do is
+// spelled out rather than assumed:
+//
+// * `reload`'s leading probe is the only one that is single-point observable.
+//   Deleting it alone was observed to turn the 404 into a manifest-read 400
+//   (`left: 400 / right: 404`).
+// * `enable` / `disable` / `uninstall` are *not* single-point observable
+//   today. `plugin_update_enabled` and `plugin_delete` both already return
+//   `NotFound` on `rows_affected() == 0`, and deleting one of those three
+//   probes alone was observed to leave the suite green. These three tests gate
+//   the endpoint contract, not the probe line; only a compound mutation that
+//   also removes the repo fallback turns them red.
+// * `reload_disabled_plugin_does_not_spawn` was observed red under deletion of
+//   reload's `if plug.enabled` respawn guard.
+//
+// Design §7 nail 7 (`uninstall`'s three `let _ =`) has **no** gate here or
+// anywhere in the suite — see that method's doc comment.
+//
+// S1 rewrites every step of these methods, which is why the contracts are
+// pinned even where today's probe line is redundant with the repo layer.
 // ===========================================================================
 
 const GHOST: &str = "test.no.such.plugin";
@@ -641,7 +656,7 @@ async fn enable_unknown_id_returns_404() {
     assert_eq!(
         resp.status(),
         StatusCode::NOT_FOUND,
-        "enable of an unknown id must 404, not fall through to the enabled-flip"
+        "endpoint contract: enable of an unknown id must 404"
     );
 }
 
@@ -657,12 +672,14 @@ async fn disable_unknown_id_returns_404() {
     assert_eq!(
         resp.status(),
         StatusCode::NOT_FOUND,
-        "disable of an unknown id must 404, not fall through to the enabled-flip"
+        "endpoint contract: disable of an unknown id must 404"
     );
 }
 
-/// `plugin_delete` does **not** report `NotFound`, so without the leading
-/// probe this endpoint answers 204 for an id that never existed.
+/// Endpoint contract only. `plugin_delete` itself returns `NotFound` on
+/// `rows_affected() == 0` (`out_of_domain.rs:464-472`), so deleting
+/// `uninstall`'s leading probe alone was observed to leave this test green;
+/// the 204 shape needs a compound mutation that also drops that repo fallback.
 #[tokio::test]
 async fn uninstall_unknown_id_returns_404_not_204() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
@@ -694,34 +711,33 @@ async fn reload_unknown_id_returns_404_not_manifest_read_error() {
     );
 }
 
-/// Nail 6: reload respawns **only if the pre-stop row said `enabled`**. An
-/// unconditional respawn resurrects a plugin the operator disabled.
+/// Design §7 nail 6: reload respawns **only if the pre-stop row said
+/// `enabled`**. An unconditional respawn resurrects a plugin the operator
+/// disabled.
 ///
-/// The assertion is on the host's runtime table, not just the HTTP code:
+/// The assertions read the host's runtime table, not just the HTTP code:
 /// `PluginHost::spawn` is awaited to completion inside `reload`, so if the
 /// guard is gone the id has a live (or admission-reserved) entry by the time
 /// the response is built.
 ///
-/// What each assertion below actually buys is worth stating, because they do
-/// not all buy the same thing:
+/// What each assertion does, and what has actually been observed of it:
 ///
 /// * the `status(id).is_none()` *before* the reload is a **precondition**, and
 ///   today a vacuous one — `install` has no runtime step at all, so it can
 ///   never fail. It is kept as documentation of the starting state, not as a
 ///   gate;
 /// * `det["state"] == "disabled"` is rendered by `build_detail` from
-///   `PluginHost::status(id)`, i.e. the *same* read as a trailing
-///   `status(id).is_none()` would be — a trailing per-id probe could therefore
-///   never be the assertion that fires first, and pinned nothing extra. Under
-///   the mutation this test is named for (deleting the `if plug.enabled`
-///   guard), *this* is the assertion that goes red first: it is verified to
-///   fail with `left: "running" / right: "disabled"`;
-/// * the trailing `list_running()` buys **coverage, not priority**. It is
-///   broader than `det["state"]` — a different host method over the whole live
-///   table, so it also catches shapes `status(id)` cannot see (a respawn
-///   landing under some *other* id, and an entry that only reached the
-///   admission reservation without becoming live) — but it sits after
-///   `det["state"]`, so under the guard-deletion mutation it never executes.
+///   `PluginHost::status(id)`. Under the mutation this test is named for
+///   (deleting the `if plug.enabled` guard) *this* is the assertion observed
+///   to go red, with `left: "running" / right: "disabled"`;
+/// * the trailing `list_running().is_empty()` reads the whole live table via a
+///   different host method. Under that same mutation it never executes,
+///   because `det["state"]` fails first, and no mutation is known today under
+///   which it alone goes red: `status(id)` already reports admission-reserved
+///   ids before consulting the live map (`mod.rs:1819-1826`), and `reload`
+///   spawns `id` itself, having already rejected `manifest.id != id`. It is
+///   kept as redundant defence against future changes; no additional witness
+///   for it has been observed.
 #[tokio::test]
 async fn reload_disabled_plugin_does_not_spawn() {
     let (state, _tmp, _plugins_dir) = boot_state().await;
@@ -754,23 +770,18 @@ async fn reload_disabled_plugin_does_not_spawn() {
         "a disabled plugin must still read `disabled` after reload"
     );
 
-    // The broadest assertion: nothing at all is running. Orthogonal to the
-    // `det["state"]` check above (that one reads `status(id)`; this one reads
-    // the whole live table via a different method), and strictly wider — it
-    // also catches a respawn landing under an id other than the one we query,
-    // and an entry that only got as far as the admission reservation without
-    // becoming live. Neither shape is visible to `status(id)`.
-    //
-    // It is *not* the assertion that fires first, though: under this test's
+    // Reads the whole live table via `list_running`, a different host method
+    // from the `status(id)` behind `det["state"]` above. Under this test's
     // named mutation (deleting the `if plug.enabled` guard in
-    // `PluginHost::reload`) the `det["state"]` check above goes red first
-    // ("running" vs "disabled") and this line never runs. It is here for the
-    // shapes above, not as the primary witness.
+    // `PluginHost::reload`) `det["state"]` goes red first ("running" vs
+    // "disabled") and this line never runs; no mutation is known today under
+    // which this line alone goes red. Kept as redundant defence against future
+    // changes — see the doc comment.
     let running = state.plugin.list_running().await;
     assert!(
         running.is_empty(),
-        "reload of a disabled plugin must not spawn anything — the \
-         `if plug.enabled` guard in PluginHost::reload is gone; running: {:?}",
+        "reload of a disabled plugin must not spawn anything (design §7 \
+         nail 6); running: {:?}",
         running.iter().map(|s| &s.id).collect::<Vec<_>>()
     );
 }
