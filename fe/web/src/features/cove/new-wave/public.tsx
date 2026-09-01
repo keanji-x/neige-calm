@@ -58,12 +58,58 @@
 //     its roles and its keyboard model, which is what astryx is here to avoid.
 //   * `CommandPalette` is a modal search dialog. A second modal inside the New
 //     wave dialog, with a search box, for three options.
+//   * `Selector` **with `renderOption`** — the fifth shape, and the one the
+//     first write-up of this comparison missed. `Selector` takes
+//     `renderOption?: (option: SelectorOptionData) => ReactNode`
+//     (`Selector/Selector.tsx`), and `SelectorOption` takes
+//     `description?: ReactNode` (`Selector/SelectorOption.tsx`). Rendering the
+//     template's task keys as a one-line description therefore puts the same
+//     information *inside* `role="option"`, and it needs no hover card at all:
+//     no `focusTrigger` workaround, no top layer, and `aria-selected` says
+//     "one of N" outright — so neither of the two stand-ins below would exist.
+//     (`SelectorOptionData` itself has no `description` field; the review that
+//     raised this read the prop off the component. The route is real, the
+//     field is not — it goes through `renderOption`.)
+//     Not taken here, and not because it cannot be done: this form's shape is
+//     already accepted, the description would land inside the option's
+//     accessible name (an option would read "Small change inspect, implement,
+//     verify"), and the multi-line goal text the card shows does not fit a
+//     one-line description. Recorded so the next reader does not conclude that
+//     astryx has no listbox answer — it does, and it is the cheaper one if the
+//     content is ever cut down to keys.
 //
 // The one thing `DropdownMenu` cannot express is *which* item is chosen:
 // `DropdownMenuItem` hard-codes `role="menuitem"` and offers no
 // `menuitemradio`/`aria-checked`. Two things stand in for it, and both are
 // asserted: the trigger's accessible name is "Start from <current choice>",
 // and the chosen item carries a check icon plus a `VisuallyHidden` "Selected".
+//
+// ### Two astryx limits this shape runs into, measured and left standing
+//
+// Neither is fixable from here — both live inside `@astryxdesign/core` — so
+// they are written down rather than worked around with a local fork.
+//
+//  1. **The menu's accessible name is the current selection, not "Start
+//     from".** `DropdownMenu` names its popup from its trigger's label
+//     (`aria-label={button.label}`, `DropdownMenu.tsx`), and this trigger's
+//     label *is* the current choice — that is the compensation for the missing
+//     `aria-checked`. So a reader who opens the picker while Blank is selected
+//     hears "Blank menu", not "Start from menu". The trigger itself still
+//     reads correctly ("Start from Blank", via `aria-labelledby`); it is only
+//     the popup's own name that inherits the selection. The alternative is
+//     worse: dropping the choice out of the trigger label would make the
+//     collapsed control silent about what is selected, which is the whole
+//     reason the label carries it.
+//  2. **The hover card's `role="dialog"` is a DOM descendant of the
+//     `role="menu"`.** `HoverCard` renders its layer inline next to the
+//     trigger — deliberately, "no portal is needed" (`HoverCard.tsx`), because
+//     the Popover API's top layer plus CSS anchor positioning already escape
+//     clipping. The trigger here is a menu item, so the layer is emitted
+//     inside the menu, and a `menu`'s owned children are supposed to be
+//     `menuitem`s only. In Chromium the computed tree is very likely still
+//     correct — the intervening wrapper is `display: contents` with no role,
+//     and the popover is in the top layer — but that is astryx's rendering
+//     detail carrying the ARIA structure, not something this file guarantees.
 
 import { useId, type RefObject } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
@@ -72,10 +118,12 @@ import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Field } from '@astryxdesign/core/Field';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
+import { HStack } from '@astryxdesign/core/HStack';
 import { Icon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
 import { TextInput } from '@astryxdesign/core/TextInput';
 import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
+import { VStack } from '@astryxdesign/core/VStack';
 
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
 import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
@@ -219,7 +267,13 @@ export function NewWaveForm({
   }
 
   return (
-    <form
+    /* `VStack as="form"`, not a hand-rolled flex column: the vertical rhythm
+       is astryx's `gap` step (2 = 8px, the `--space-4` this used to restate).
+       `styles.form` is what astryx does not own — the dialog's text colour and
+       font, which come from this app's tokens. */
+    <VStack
+      as="form"
+      gap={2}
       className={styles.form}
       onSubmit={(event) => {
         event.preventDefault();
@@ -330,7 +384,10 @@ export function NewWaveForm({
         )}
       </Field>
 
-      <div className={styles.actions}>
+      {/* The action row is a plain horizontal stack, so it is astryx's:
+          `gap={1}` is 4px (the old `--space-2`) and `justify="end"` is the
+          main-axis alias for `justify-content: flex-end`. */}
+      <HStack gap={1} justify="end">
         <Button type="button" label="Cancel" variant="ghost" onClick={onCancel} />
         <Button
           type="submit"
@@ -338,8 +395,8 @@ export function NewWaveForm({
           label={submitting ? 'Creating…' : 'Create wave'}
           isDisabled={submitting || !valid}
         />
-      </div>
-    </form>
+      </HStack>
+    </VStack>
   );
 }
 

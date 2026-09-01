@@ -102,9 +102,26 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   const option = page.getByRole('menuitem', { name: /^Small change/ });
   await expect(option).toBeVisible();
   await expect(page.getByText(/^\d+ tasks?$/)).toHaveCount(0);
+  /* The card is addressed through the option, never guessed at by role.
+     `getByRole('dialog')` would match two elements here and throw strict mode:
+     `HoverCard` renders its layer *inline*, so the card is a descendant of the
+     New wave dialog, and Playwright's `hasText` reads `textContent` without
+     skipping `display:none` — a closed card's text still counts towards its
+     ancestor. `aria-describedby` has no such ambiguity: `HoverCard` writes the
+     layer's own id onto its trigger, `DropdownMenuItem` sets no
+     `aria-describedby` of its own, so this attribute is exactly one id, and an
+     id matches exactly one element.
+     `[id="…"]` and not `#…`: the id comes from React's `useId`, which is
+     `«r0»`-shaped — an attribute selector does not care.
+     Not runnable on the dev box (the stack is docker + a 0-swap prod host);
+     this case is verified in CI. */
   await option.hover();
-  const taskCard = page.getByRole('dialog').filter({ hasText: 'implement' });
+  const cardId = await option.getAttribute('aria-describedby');
+  expect(cardId, 'the option must describe its hover card').toBeTruthy();
+  const taskCard = page.locator(`[id="${cardId ?? ''}"]`);
+  await expect(taskCard).toHaveCount(1);
   await expect(taskCard).toBeVisible();
+  await expect(taskCard).toContainText('implement');
   await expect(taskCard).toContainText('verify');
   // Another template's tasks are not in this card.
   await expect(taskCard).not.toContainText('gather-facts');

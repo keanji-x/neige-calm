@@ -372,6 +372,8 @@ the issue or the gates.
 #[cfg(test)]
 mod tests {
     use super::*;
+    use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
+    use std::collections::BTreeSet;
 
     #[test]
     fn issue_development_report_keeps_pre_s5_task_keys() {
@@ -526,31 +528,82 @@ mod tests {
     /// but not to the list (or a list entry that seeds nothing) would make the
     /// tooltip promise something the forked report does not contain.
     ///
-    /// Both directions are checked — every listed key is fenced into the body,
-    /// and the body fences exactly as many task blocks as the list has entries.
+    /// ## What this can and cannot catch
+    ///
+    /// Today it is **a construction guard, not a drift detector**: every
+    /// `*_report()` in this module is built by `report_from_tasks` from the
+    /// matching `*_tasks()` — the same `Vec`, one call apart — so a divergence
+    /// is not expressible and this test is green by construction. What it
+    /// guards is the *next* edit: a `*_report()` that stops taking its blocks
+    /// from its own `*_tasks()` (hand-written fences, an extra block appended,
+    /// a task quietly dropped from the list) fails here immediately.
+    ///
+    /// The drift that actually reaches the picker — the route serving a
+    /// different list than the one seeded — is out of this module's reach and
+    /// is pinned in
+    /// `tests/cases/wave_templates_read.rs::every_template_lists_the_tasks_its_report_pre_sets`,
+    /// which asserts the HTTP response's keys in order.
+    ///
+    /// Both directions are real, and neither is a substring count: forward,
+    /// every listed key/goal is in a `task` fence; backward, the fences the
+    /// body actually parses to are read out and their key **set** compared,
+    /// with duplicates rejected. Counting `"key": "` occurrences would have
+    /// been the fragile version — any nested payload carrying that literal
+    /// would have made it fail for the wrong reason. Both halves were measured
+    /// by mutation, not asserted: appending one extra `task` fence to every
+    /// seeded body turns this red on the key set (`ghost` shows up on the right
+    /// of the diff), while giving each task a `context` of `{"key": "..."}`
+    /// leaves it green and would have taken the old count from 3 to 6 on
+    /// `small-change` alone.
     #[test]
     fn listed_tasks_are_exactly_the_report_task_blocks() {
         for key in WORKFLOW_TEMPLATE_KEYS {
             let tasks = workflow_template_tasks(key).expect("known key");
             let body = workflow_template_report(key).expect("known key").body;
             assert!(!tasks.is_empty(), "{key} lists no tasks");
-            for task in &tasks {
-                assert!(
-                    body.contains(&format!("\"key\": \"{}\"", task.key)),
-                    "{key}: listed task {} is not in the seeded report",
-                    task.key
+
+            // The report's own reader, not a string scan: `split_body` cuts the
+            // well-formed fences out and `parse_fence` gives their payloads, so
+            // this sees exactly the task blocks a forked wave would.
+            let mut seeded: Vec<String> = Vec::new();
+            for slice in split_body(&body) {
+                let Some(fence) = parse_fence(&slice.raw) else {
+                    continue;
+                };
+                if fence.kind != KIND_TASK {
+                    continue;
+                }
+                seeded.push(
+                    fence.payload["key"]
+                        .as_str()
+                        .unwrap_or_else(|| panic!("{key}: task block without a string key"))
+                        .to_string(),
                 );
+            }
+
+            let mut unique = seeded.clone();
+            unique.sort();
+            unique.dedup();
+            assert_eq!(
+                unique.len(),
+                seeded.len(),
+                "{key}: the seeded report declares the same task key twice: {seeded:?}"
+            );
+
+            let listed: BTreeSet<&str> = tasks.iter().map(|task| task.key.as_str()).collect();
+            let fenced: BTreeSet<&str> = seeded.iter().map(String::as_str).collect();
+            assert_eq!(
+                listed, fenced,
+                "{key}: the advertised task keys and the seeded task blocks differ"
+            );
+
+            for task in &tasks {
                 assert!(
                     body.contains(&task.goal),
                     "{key}: listed goal for {} is not the seeded goal",
                     task.key
                 );
             }
-            assert_eq!(
-                body.matches("\"key\": \"").count(),
-                tasks.len(),
-                "{key}: the report seeds a different number of tasks than the list advertises"
-            );
         }
     }
 }

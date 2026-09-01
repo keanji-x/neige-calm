@@ -224,7 +224,14 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     const { sent } = harness();
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
-    await waitFor(() => expect(sent.some((r) => r.path === '/api/wave-templates')).toBe(true));
+    /* Wait for the failure to *land*, not for the request to leave. Waiting on
+       `sent` only proves the query started: react-query could still be pending
+       when the submit runs, and then this case would silently be testing
+       "submits while the list is loading" — a different, easier branch.
+       The rendered notice is the first observable moment the 500 has been
+       consumed (`useWaveTemplates` turns `isError` into this string), so it is
+       what the wait is on. */
+    await screen.findByText(/Could not load templates/);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it anyway');
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));

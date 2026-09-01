@@ -1,14 +1,16 @@
 /* What is left after the form moved onto `@astryxdesign/core` (#1209): only
-   what no astryx component owns — the form's own vertical rhythm, the action
-   row, the bound-input panel's inset rule, and making the Start from trigger
-   fill its field the way the text inputs above it do. Every control's look —
-   inputs, menu, checkbox, buttons, status messages, the task hover-card's
-   surface — comes from astryx and is deliberately not restated here. */
+   what no astryx component owns — this app's type/colour on the form root, the
+   bound-input panel's inset rule, and making the Start from trigger fill its
+   field the way the text inputs above it do. Every control's look — inputs,
+   menu, checkbox, buttons, status messages, the task hover-card's surface —
+   comes from astryx and is deliberately not restated here, and so is every
+   flex box: the form root is `VStack as="form" gap={2}` and the action row is
+   `HStack gap={1} justify="end"`, which is why neither has a rule below. */
 @layer features {
+  /* Layout deliberately absent: `VStack` owns the column and the gap. What is
+     left is the two things astryx cannot know — the dialog's text colour and
+     the app's sans stack, both from `styles/tokens.css`. */
   .form {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-4);
     color: var(--text);
     font-family: var(--font-sans);
   }
@@ -31,12 +33,6 @@
     gap: var(--space-4);
     padding-inline-start: var(--space-6);
     border-inline-start: 1px solid var(--hairline);
-  }
-
-  .actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-2);
   }
 
   /* The hover-card's scroll box. `HoverCard` takes no max-height, and drops
