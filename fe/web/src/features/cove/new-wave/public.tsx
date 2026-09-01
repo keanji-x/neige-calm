@@ -31,15 +31,21 @@
 // frozen primitive whose nine global classes are a closed list, so swapping it
 // is a spec change and its own slice. Only the form's insides are astryx.
 //
-// ## Start from (#1209)
+// ## The template (#1209)
 //
-// `Blank` is a first-class option and the default, and it is **not** a row the
-// server sent: it is the absence of a template, i.e. a create with no
+// "No template" is a first-class option and the default, and it is **not** a
+// row the server sent: it is the absence of a template, i.e. a create with no
 // `workflow_id` — precisely today's behaviour. Everything about this list is
-// arranged so that staying on Blank is free. In particular `templates` may be
+// arranged so that staying on it is free. In particular `templates` may be
 // empty because the read failed or has not landed, and the dialog is fully
 // usable in that state: this is the app's only wave-creation entry point, and
 // a failed list read must not be able to close it.
+//
+// The words on screen are the reader's, not the codebase's. The chip asks
+// ("Choose a template") until there is something to name, and the sentinel is
+// "No template" in the list — `Blank` was this file's own word for "no
+// `workflow_id` on the wire", and it had ended up on a control read by someone
+// who has not been told this app has workflows.
 //
 // The vocabulary seam is deliberate and recorded in #1209: the read side says
 // *template*, the write side says `workflow_id`. This form speaks the read
@@ -93,25 +99,26 @@
 // The one thing `DropdownMenu` cannot express is *which* item is chosen:
 // `DropdownMenuItem` hard-codes `role="menuitem"` and offers no
 // `menuitemradio`/`aria-checked`. Two things stand in for it, and both are
-// asserted: the trigger's accessible name is "Start from <current choice>",
-// and the chosen item carries a check icon plus a `VisuallyHidden` "Selected".
+// asserted: the trigger's accessible name is "Template: <current choice>" —
+// an `aria-label`, because the chip's *text* is the bare choice and a name
+// read on its own has to say which kind of choice it is — and the chosen item
+// carries a check icon plus a `VisuallyHidden` "Selected".
 //
 // ### Two astryx limits this shape runs into, measured and left standing
 //
 // Neither is fixable from here — both live inside `@astryxdesign/core` — so
 // they are written down rather than worked around with a local fork.
 //
-//  1. **The menu's accessible name is the current selection, not "Start
-//     from".** `DropdownMenu` names its popup from its trigger's label
-//     (`aria-label={button.label}`, `DropdownMenu.tsx`), and this trigger's
-//     label *is* the current choice — that is the compensation for the missing
-//     `aria-checked`. So a reader who opens the picker while Blank is selected
-//     hears "Blank menu", not "Start from menu". The trigger itself still
-//     reads correctly ("Start from Blank", via `aria-labelledby`); it is only
-//     the popup's own name that inherits the selection. The alternative is
-//     worse: dropping the choice out of the trigger label would make the
+//  1. **The menu's accessible name is the current selection, not "Template".**
+//     `DropdownMenu` names its popup from its trigger's *label*
+//     (`aria-label={button.label}`, `DropdownMenu.tsx`) and not from the
+//     trigger's computed name, so the `aria-label` that makes the trigger read
+//     "Template: Small change" does not reach the popup: a reader who opens it
+//     on a chosen template hears "Small change menu". Unset the two coincide,
+//     because the label is then "Choose a template" outright. The alternative
+//     is worse: dropping the choice out of the visible label would make the
 //     collapsed control silent about what is selected, which is the whole
-//     reason the label carries it.
+//     reason it carries it.
 //  2. **The hover card's `role="dialog"` is a DOM descendant of the
 //     `role="menu"`.** `HoverCard` renders its layer inline next to the
 //     trigger — deliberately, "no portal is needed" (`HoverCard.tsx`), because
@@ -128,7 +135,7 @@ import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
 import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
-import { Field } from '@astryxdesign/core/Field';
+import { FieldStatus } from '@astryxdesign/core/FieldStatus';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Icon } from '@astryxdesign/core/Icon';
@@ -209,8 +216,19 @@ const ISSUE_DEVELOPMENT = 'issue-development';
  */
 const BLANK = '';
 
-/** What the collapsed trigger says while nothing has been chosen. */
-const BLANK_LABEL = 'Blank';
+/**
+ * The two things the template chip can say, and neither of them is "Blank".
+ *
+ * `Blank` was the codebase's word for "no `workflow_id` on the wire", and it
+ * had leaked onto a chip a person reads before they know this app has
+ * workflows at all. What a reader needs from an unset control is what it is
+ * *for*, in the words they would use themselves — so unset the chip asks, and
+ * once a choice exists it names it. The absence itself keeps a plain name of
+ * its own in the menu, because a list of alternatives has to be able to offer
+ * "none" as one of them.
+ */
+const CHOOSE_TEMPLATE = 'Choose a template';
+const NO_TEMPLATE = 'No template';
 
 /**
  * The Task field's accessible name.
@@ -226,21 +244,24 @@ const TASK_LABEL = 'What this wave should do';
 const TASK_PLACEHOLDER = 'What should this wave do?';
 
 /**
- * The folder control's name and its one line of supporting copy.
+ * What the folder chip says while there is no folder — its visible text, its
+ * accessible name and its hover string at once.
  *
- * The name is the control's own (`aria-label` on the chip, and its `title` for
- * the pointer): unset, the chip is a folder mark with no text, and a mark that
- * names nothing is a control only its author can use.
+ * It is the same sentence shape as the template chip beside it on purpose: two
+ * controls that do the same kind of thing should ask the same kind of
+ * question, and "Choose a …" is the shortest form of the only thing a reader
+ * needs from either — what tapping it is going to do.
  *
- * The hint survived the row's collapse, cut from two sentences to one and shown
- * only while the folder is unset. It is the one thing on this dialog that
- * nothing else can say: that leaving the folder alone is not "no workspace" but
- * "a workspace Neige makes". What it dropped is the half about attached
- * repositories never being moved or deleted — that is a promise about a folder
- * the reader has *already* chosen, and by then the path itself is on screen.
+ * What used to sit under this row was a sentence about what Neige does when
+ * the folder is left alone (it allocates a workspace and `git init`s it). That
+ * is true, and it is the implementation talking: it explains a mechanism to
+ * someone who has not yet been told there is a choice. The choice is what the
+ * chip now says; the mechanism is not something the reader has to hold to make
+ * it. The managed-vs-attached distinction is still exactly one click deep —
+ * the picker is where a folder gets chosen — and it stays in
+ * `DirectoryField`'s and the kernel's own documentation.
  */
-const FOLDER_PLACEHOLDER = 'Choose a folder for this wave';
-const FOLDER_HINT = 'Neige creates a workspace for this wave unless you choose a folder.';
+const FOLDER_PLACEHOLDER = 'Choose a folder';
 /** The way back to the managed default, which exists nowhere else. */
 const FOLDER_CLEAR_LABEL = 'Use a Neige workspace instead';
 
@@ -270,7 +291,6 @@ export function NewWaveForm({
   const [cwd, setCwd] = useState('');
   const folderId = `${fieldId}-folder`;
   const triggerId = `${fieldId}-start-from-trigger`;
-  const startFromLabelId = `${fieldId}-start-from-label`;
   const startFromStatusId = `${fieldId}-start-from-status`;
 
   // A template that vanished between renders (the list refetched without it)
@@ -354,6 +374,7 @@ export function NewWaveForm({
         placeholder={TASK_PLACEHOLDER}
         value={title}
         width="100%"
+        className={styles.task}
         data-nc-new-wave-title
         onChange={(value) => setTitle(value)}
       />
@@ -369,44 +390,35 @@ export function NewWaveForm({
           dialog, and these sit under it the way a composer's controls sit
           under its text.
 
-          `isLabelHidden` on the field, not label-less: "Start from" is still
-          the trigger's name (the visually-hidden span is what
-          `aria-labelledby` points at), and it is still where the group's
-          status message lands. What is gone is the row it spent to say a word
-          the trigger already carries.
-
-          `isGroupLabel` — i.e. a `<span>`, not a `<label>`. A `<label>` whose
-          `htmlFor` points at a button *replaces* that button's contents as its
-          accessible name, so "Start from" would be all a screen reader hears
-          and the current choice would go silent. The span is referenced
-          instead, together with the trigger itself, so the name reads
-          "Start from <choice>". */}
+          Each chip says what it is for and then what it holds — "Choose a
+          template" until one is chosen, then the template's title — so the row
+          needs no labels above it and no paragraph under it. That is also why
+          there is no `Field` around the trigger any more: a field exists to
+          put a name beside a control, and these controls carry their own.
+          What the `Field` did carry is the group's status message, and that is
+          `FieldStatus` on its own, below the row. */}
       <HStack gap={1} align="center" className={styles.controls}>
-      <Field
-        label="Start from"
-        labelID={startFromLabelId}
-        isGroupLabel
-        isLabelHidden
-        inputID={triggerId}
-        statusVariant="detached"
-        status={groupStatus && { ...groupStatus, messageID: startFromStatusId }}
-      >
         <DropdownMenu
           placement="below"
           button={{
             id: triggerId,
-            label: chosen?.title ?? BLANK_LABEL,
+            label: chosen?.title ?? CHOOSE_TEMPLATE,
+            /* The chip's text is the choice; its *name* has to survive being
+               read on its own, out of the row, with nothing beside it — so it
+               says which kind of choice it is. Unset the two coincide, because
+               "Choose a template" already is that sentence. */
+            'aria-label': chosen === undefined ? CHOOSE_TEMPLATE : `Template: ${chosen.title}`,
             variant: 'secondary',
             size: 'sm',
             className: styles.trigger,
-            'aria-labelledby': `${startFromLabelId} ${triggerId}`,
             'aria-describedby': groupStatus !== undefined ? startFromStatusId : undefined,
           }}
         >
-          {/* Blank carries no hover card because it has no tasks to show —
-              its whole content is "no template". */}
+          {/* The absence of a template is an alternative like any other, and
+              it is the one the dialog opens on. It carries no hover card
+              because it has no tasks to show — its whole content is its name. */}
           <TemplateChoice
-            label={BLANK_LABEL}
+            label={NO_TEMPLATE}
             isSelected={effectiveSelection === BLANK}
             onSelect={() => setSelected(BLANK)}
           />
@@ -420,46 +432,53 @@ export function NewWaveForm({
             />
           ))}
         </DropdownMenu>
-      </Field>
 
-      {/* The folder, #1147 S3, and no field around it: `DirectoryField` names
+        {/* The folder, #1147 S3, and no field around it: `DirectoryField` names
           itself (`aria-label` — its visible text is a basename, and a reader
           who hears only "app" learns nothing about which one), so a wrapping
           `<label>` here would be a second name for one control. It is also the
           frozen wrapper that pushes `DirectoryBrowser` into the *surrounding*
           dialog rather than opening a second one, which is why this form does
           not roll its own picker. */}
-      <DirectoryField
-        id={folderId}
-        value={cwd}
-        onChange={setCwd}
-        listDirectory={listDirectory}
-        placeholder={FOLDER_PLACEHOLDER}
-      />
-      {/* Create time is the only entry into the attached choice, so the way
-          *back* to the managed default has to exist here too — there is no
-          later screen for it. It appears beside the folder it undoes and only
-          once there is one; icon-only, because a control that undoes a choice
-          should not be wider than the choice. */}
-      {cwd !== '' && (
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          isIconOnly
-          icon={<Icon icon="close" size="sm" />}
-          label={FOLDER_CLEAR_LABEL}
-          onClick={() => setCwd('')}
+        <DirectoryField
+          id={folderId}
+          value={cwd}
+          onChange={setCwd}
+          listDirectory={listDirectory}
+          placeholder={FOLDER_PLACEHOLDER}
         />
-      )}
+
+        {/* Create time is the only entry into the attached choice, so the way
+            *back* to the managed default has to exist here too — there is no
+            later screen for it. It appears beside the folder it undoes and only
+            once there is one; icon-only, because a control that undoes a choice
+            should not be wider than the choice. */}
+        {cwd !== '' && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            isIconOnly
+            icon={<Icon icon="close" size="sm" />}
+            label={FOLDER_CLEAR_LABEL}
+            onClick={() => setCwd('')}
+          />
+        )}
       </HStack>
 
-      {/* The one line of supporting text in the dialog, and only while it has
-          something to support: unset is the state whose consequence is not
-          visible anywhere on screen — a wave with no folder still gets one,
-          Neige just makes it. Once a folder is chosen the path says what
-          happens, and the line goes. */}
-      {cwd === '' && <p className={styles.hint}>{FOLDER_HINT}</p>}
+      {/* The template group's one status slot, kept from the `Field` that used
+          to own it. `detached` is the variant for a message under a control
+          rather than overlapping an input's border, and the two things that
+          can fill it never coexist — a failed list read leaves no bound
+          template to be unsupported. */}
+      {groupStatus !== undefined && (
+        <FieldStatus
+          id={startFromStatusId}
+          type={groupStatus.type}
+          message={groupStatus.message}
+          variant="detached"
+        />
+      )}
 
       {issueDev && (
         /* Under the row that chose it, named by the template it belongs to.

@@ -33,13 +33,34 @@
     max-inline-size: 16rem;
   }
 
-  /* The dialog's only supporting line, and it reads as one: the muted step,
-     the same size as a field's description, and no box of its own. */
-  .hint {
-    margin: 0;
-    color: var(--text-3);
-    font-size: var(--text-md);
-    line-height: var(--leading-snug);
+  /* ── The task field, unboxed ──────────────────────────────────────────────
+     astryx draws a `TextInput` as a bordered pill, which is right for a field
+     among fields — it says "this control ends here" where several of them are
+     stacked. This one is not among fields: it is the sentence the dialog is
+     about, alone above a row of chips, and the border was drawing a box around
+     the one thing that did not need bounding. What is left is the text, one
+     step larger than the chips under it, which is the whole hierarchy this
+     dialog needs.
+
+     The focus indicator is a wash rather than a ring: the dialog opens with
+     this input already focused (`initialFocusRef`), so a ring would put the
+     box straight back on screen at the moment the border was removed to get
+     rid of it. `--overlay-hover-faint` over `--paper` is the same tint the
+     rest of the app uses to say "this is the live surface", and the caret is
+     in it. */
+  .task {
+    padding-inline: 0;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .task:focus-within {
+    border-color: transparent;
+    background: var(--overlay-hover-faint);
+  }
+
+  .task input {
+    font-size: var(--text-lg);
   }
 
   /* Indented and rule-led: the fields belong to the template named above them,

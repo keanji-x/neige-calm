@@ -26,6 +26,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
 import { NewWaveForm } from './public.tsx';
 
+/* The template chip, matched on either of the two things it can say: it asks
+   while nothing is chosen and names the choice after. Never on the whole
+   string — the rest of the name is what the assertions vary. */
+const TEMPLATE_CHIP = /^Choose a template$|^Template: /;
+
 const TEMPLATES: readonly WaveTemplate[] = [{
   id: 'small-change',
   title: 'Small change',
@@ -56,7 +61,7 @@ function renderForm() {
 }
 
 function trigger(): HTMLButtonElement {
-  return screen.getByRole('button', { name: /^Start from/ });
+  return screen.getByRole('button', { name: TEMPLATE_CHIP });
 }
 
 async function openMenu() {

@@ -7,21 +7,24 @@
 // `<span>`s, which rendered as browser defaults ("/home/kenjiBrowse…" run
 // together) inside a dialog whose every other control is astryx's.
 //
-// ## Two states, and only one of them is a row
+// ## One chip, two states
 //
-// Unset, the control is the folder mark and nothing else. A path is the only
-// thing this field has to say, and when it has no path a full-width box saying
-// so is a placeholder pretending to be a value: it takes a form row, it takes
-// the eye first among the controls beside it, and it says nothing. Set, the
-// mark is joined by the folder's own name — the segment that identifies it —
-// and the control grows to exactly that.
+// Unset, the chip is the folder mark and the call site's placeholder, which is
+// written as the question the control answers — "Choose a folder". Set, the
+// placeholder gives way to the folder's own name: the last segment of the
+// path, which is the part that identifies it, in mono because by then the chip
+// is holding data and not a question.
 //
-// The `Browse…` affordance is gone with it. It labelled what the whole control
+// What it is *not* is a full-width box with a placeholder in it. That shape
+// takes a form row and the eye that goes with it to say nothing, which is how
+// an optional setting ends up looking like the subject of the dialog.
+//
+// The `Browse…` affordance is gone too. It labelled what the whole control
 // already is: a button that opens a picker, marked with a folder, carrying
 // `aria-haspopup="dialog"`. Two words to say "clickable" is the kind of thing
 // that reads as thorough and lands as noise.
 //
-// ## Names, since there is not always text to take one from
+// ## Names, since the visible text is never the whole value
 //
 //   * The name is always the full path, or the placeholder while there is
 //     none — set through `aria-label`, because the visible text is the
@@ -86,12 +89,15 @@ export function DirectoryField({ value, onChange, listDirectory, id, placeholder
         {...nativeTitle}
         data-nc-empty={value === '' || undefined}
         icon={<Icon name="folder" size="sm" />}
-        /* The basename, not the path: this control sits in a row of controls,
-           and a row cannot hold "/home/kenji/src/neige-calm" without becoming
-           the row. The identifying segment is the last one; the whole path is
-           in both the name and the title, one hover or one screen reader away.
-           Empty while unset — the mark is the whole control there. */
-        label={basenameOf(value)}
+        /* Unset, the placeholder — which a call site writes as the question
+           the control answers ("Choose a folder"), because a chip that says
+           only what it *is* leaves the reader to guess what tapping it does.
+           Set, the basename and not the path: this control sits in a row of
+           controls, and a row cannot hold "/home/kenji/src/neige-calm" without
+           becoming the row. The identifying segment is the last one; the whole
+           path is in both the name and the title, one hover or one screen
+           reader away. */
+        label={value === '' ? placeholder : basenameOf(value)}
         onClick={() => setBrowsing(true)}
       />
       {browsing && !dialog && (

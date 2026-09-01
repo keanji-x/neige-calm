@@ -39,7 +39,12 @@ const TASK_LABEL = 'What this wave should do';
 
 /* The folder chip's name, restated for the same reason as `TASK_LABEL`: unset
    the chip has no text, so this string is the only handle on it. */
-const FOLDER_PLACEHOLDER = 'Choose a folder for this wave';
+const FOLDER_PLACEHOLDER = 'Choose a folder';
+
+/* The template chip, matched on either of the two things it can say: it asks
+   while nothing is chosen and names the choice after. Never on the whole
+   string — the rest of the name is what the assertions vary. */
+const TEMPLATE_CHIP = /^Choose a template$|^Template: /;
 
 const COVE = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, kind: 'user', created_at: 1, updated_at: 1 };
 const OTHER = { id: 'c2', name: 'Reading', color: '#8B7FE8', sort: 2, kind: 'user', created_at: 1, updated_at: 1 };
@@ -174,7 +179,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
        assertion used to be `toBeNull()` — and it starts empty. Empty is what
        "no folder chosen" looks like, and it is what the absence checks on the
        body below are the consequence of. */
-    expect(screen.getByRole('button', { name: FOLDER_PLACEHOLDER }).textContent).toBe('');
+    expect(screen.getByRole('button', { name: FOLDER_PLACEHOLDER }).textContent).toBe(FOLDER_PLACEHOLDER);
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
     await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
@@ -236,7 +241,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await userEvent.click(await screen.findByRole('button', { name: 'New wave' }));
     expect(await screen.findByRole('dialog', { name: 'New wave' })).toBeTruthy();
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Read it');
-    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
 
     await userEvent.click(await screen.findByRole('button', { name: FOLDER_PLACEHOLDER }));
@@ -291,7 +296,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     /* `findBy`: the picker's trigger is there from the first paint, but the
        option only exists once the template read has landed — so the wait is on
        the option inside the opened menu, not on the trigger. */
-    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Issue development/ }));
     await userEvent.type(
       screen.getByLabelText('Issue URL'),
@@ -317,7 +322,7 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Tiny fix');
-    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(screen.getByRole('button', { name: TEMPLATE_CHIP }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));

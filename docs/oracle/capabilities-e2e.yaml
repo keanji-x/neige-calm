@@ -4932,8 +4932,8 @@
     Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
     the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
     break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:424-438
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:201-214
+  source: fe/web/src/features/cove/new-wave/public.tsx:435-449
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:206-219
   owner_slice: ui/directory-browser
   intentional_omission: false
   runtime_layer: ui

@@ -12,17 +12,15 @@
   }
 
   .trigger {
-    font-family: var(--font-mono);
     /* A folder name is a name, not prose: it may be long, and past this it is
        the astryx label span's own ellipsis that finishes the job. */
     max-inline-size: 14rem;
   }
 
-  /* Unset: astryx sizes the button to its label, and the label is empty, so
-     what is left is the icon in a box padded like a label that is not there.
-     Squaring it is what makes the empty state read as one mark rather than as
-     a control that failed to render its text. */
-  .trigger[data-nc-empty] {
-    padding-inline: var(--space-3);
+  /* Mono for the value only. The unset chip holds a sentence — a question the
+     reader is being asked — and a question set in a monospace path font reads
+     as data the app is reporting rather than a control offering a choice. */
+  .trigger:not([data-nc-empty]) {
+    font-family: var(--font-mono);
   }
 }
