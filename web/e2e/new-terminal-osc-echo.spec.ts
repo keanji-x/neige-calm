@@ -147,13 +147,15 @@ test('new terminal does not echo OSC 10/11 color replies (raw-mode shell)', asyn
   // NewWave field (#177); dark sentinel mirrors DARK_THEME_RGB.
   const coveId = new URL(page.url()).pathname.split('/').pop()!;
   const waveTitle = `E2E osc-echo ${Date.now()}`;
-  const cwd = `/tmp/playwright-cove-${coveId}`;
   const waveRes = await page.request.post('/api/waves', {
     data: {
       cove_id: coveId,
       title: waveTitle,
-      cwd,
-      attach_folder: true,
+      // #1147 S3 — no `cwd`: take the kernel-managed workspace branch.
+      // This spec is about OSC echo through the terminal card, not
+      // working directories. See `helpers/reset.ts::createWaveInCove`
+      // for why the invented `/tmp/playwright-cove-<id>` attached path
+      // was never valid.
       theme: { fg: [216, 219, 226], bg: [15, 20, 24] },
     },
     headers: { 'content-type': 'application/json' },

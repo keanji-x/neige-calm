@@ -1026,7 +1026,7 @@
           "coves"
         ],
         "summary": "Mint a conversation and deliver its first message.",
-        "description": "# What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)\n\nA standard idempotency key promises \"same key ⇒ same recorded result,\nforever\". This endpoint deliberately promises something weaker and more\nuseful: **same key = the same retryable draft**. Slice 4 binds the key to\nthe draft the user keeps pressing send on, so replaying a failure forever\nwould turn one bad attempt into a permanently dead compose box.\n\nThe full contract, all four arms:\n\n| same key, previous attempt … | answer |\n|---|---|\n| succeeded | replays the same conversation, **does not re-send** the first message (201) |\n| terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |\n| `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |\n| failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |\n\n# Same key, different `text`\n\nThe first message's SHA-256 travels in the operation payload\n(`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part\nof `stable_payload_hash` and therefore part of what\n`OperationRuntime::submit` compares before it does anything else. Reusing a\nkey with a different body is consequently a real 409 `conflict` — no card,\nno message — rather than a silent 201 replaying whatever the key sent the\nfirst time. Only the hash travels: the payload is persisted in\n`operations.payload_json`, and the body has no business being copied there.\n\nThe one arm where a changed body is not rejected for the old hash is the\n`Failed` row above: the retry submits under a fresh `#N` operation key,\nwhich no prior payload hash is bound to. That is the intended behaviour, not\nan oversight — arm (b) exists so an edited draft can be resent after a\nfailure. What it buys is a genuine re-execution, not a guaranteed 201: the\nretry's final status is decided by that execution and can still be a failure\n(a 409 `conflict` if the derived card already exists, say).\n\nA concurrent laggard can also observe the 500 arm: if the predecessor it\nshares an operation with ended terminally failed, the replayed failure is\nwhat it gets while the leader's fresh attempt succeeds.\n\nNone of this can produce a second conversation: the **card id** is a pure\nfunction of `(cove_id, Idempotency-Key)` and the `#N` suffix touches only\nthe *operation* key (see [`derive_conversation_keys`] and its golden test).",
+        "description": "# What `Idempotency-Key` means here (it is NOT standard HTTP idempotency)\n\nA standard idempotency key promises \"same key ⇒ same recorded result,\nforever\". This endpoint deliberately promises something weaker and more\nuseful: **same key = the same retryable draft**. Slice 4 binds the key to\nthe draft the user keeps pressing send on, so replaying a failure forever\nwould turn one bad attempt into a permanently dead compose box.\n\nThe full contract, all four arms:\n\n| same key, previous attempt … | answer |\n|---|---|\n| succeeded | replays the same conversation, **does not re-send** the first message (201) |\n| terminally `Failed` | **genuinely retries** under a `#N` operation key, so it may return 201 where the first call returned 500 — different result, same key |\n| `Stuck` | keeps returning 500, on purpose (fail-closed: compensation did not finish, the card may still exist, an operator has to look) |\n| failed 64 times | 409 `idempotency_key_exhausted` — the key is exhausted, use a new one |\n\n# Same key, different `text`\n\nThe first message's SHA-256 travels in the operation payload\n(`SpecHarnessStartOperationPayload::first_message_sha256`), so it is part\nof `stable_payload_hash` and therefore part of what\n`OperationRuntime::submit` compares before it does anything else. Reusing a\nkey with a different body is consequently a real 409 `conflict` — no card,\nno message — rather than a silent 201 replaying whatever the key sent the\nfirst time. Only the hash travels: the payload is persisted in\n`operations.payload_json`, and the body has no business being copied there.\n\nThe one arm where a changed body is not rejected for the old hash is the\n`Failed` row above: the retry submits under a fresh `#N` operation key,\nwhich no prior payload hash is bound to. That is the intended behaviour, not\nan oversight — arm (b) exists so an edited draft can be resent after a\nfailure. What it buys is a genuine re-execution, not a guaranteed 201: the\nretry's final status is decided by that execution and can still be a failure\n(a 409 `conflict` if the derived card already exists, say).\n\nA concurrent laggard can also observe the 500 arm: if the predecessor it\nshares an operation with ended terminally failed, the replayed failure is\nwhat it gets while the leader's fresh attempt succeeds.\n\nNone of this can produce a second conversation: the **card id** is a pure\nfunction of `(cove_id, Idempotency-Key)` and the `#N` suffix touches only\nthe *operation* key (see `conversation_keys::derive_cove_conversation_keys` and its golden test).",
         "operationId": "create_cove_conversation",
         "parameters": [
           {
@@ -2843,6 +2843,39 @@
         }
       }
     },
+    "/api/wave-templates": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "list_wave_templates",
+        "responses": {
+          "200": {
+            "description": "Selectable wave templates",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WaveTemplate"
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/waves": {
       "get": {
         "tags": [
@@ -3115,8 +3148,38 @@
               }
             }
           },
+          "400": {
+            "description": "Unsupported workspace change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Workspace change refused (system cove)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace is frozen, attached, or no longer empty",
             "content": {
               "application/json": {
                 "schema": {
@@ -4208,6 +4271,170 @@
           },
           "500": {
             "description": "Daemon spawn failed (rows are persisted; sweeper reaps within ~60s)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/waves/{wave_id}/conversations": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "operationId": "list_wave_conversations",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Assistant conversations on this wave, newest activity first. The wave's spec card, report card and dispatched worker cards are never listed here.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/WaveConversationSummary"
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "Mint a wave assistant conversation and deliver its first message.",
+        "description": "The `Idempotency-Key` contract, the first-message claim and both of its\nknown gaps are identical to `create_cove_conversation`, whose doc comment is\nthe long-form statement of all of them; this handler differs only in the\nprofile it mints under and the namespace its ids come from. The gaps are\nrestated in brief where they bite:\n\n* the first-message claim asks \"has this CARD ever had a user message\n  enqueued?\", not \"has THIS request's message landed?\", so a foreign\n  `POST /api/cards/{id}/spec/input` between a failed send and its retry\n  satisfies the claim;\n* the evidence is written non-transactionally, so a send whose audit write\n  fails is re-sent on retry.\n\nBoth are tracked on #1098 and deliberately unchanged here: fixing them means\nfolding the first message into the mint operation, which would change both\nendpoints at once and belongs in one dedicated change rather than being\nhalf-done on the newer of the two.",
+        "operationId": "create_wave_conversation",
+        "parameters": [
+          {
+            "name": "wave_id",
+            "in": "path",
+            "description": "Wave id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "**Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.\n\n**This is NOT standard HTTP idempotency — it is \"same key = the same retryable draft\"**, with the same four arms as `POST /api/coves/{cove_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NewWaveConversationBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WaveConversationSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing/blank `Idempotency-Key`, empty/over-long text, or the wave carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template waves with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The wave is a cove chat wave; its conversations are created through the cove endpoint.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Wave not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Distinguished by the body's `code`:\n* `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).\n* `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Shared codex app-server not running — retry shortly",
             "content": {
               "application/json": {
                 "schema": {
@@ -5616,6 +5843,19 @@
         },
         "additionalProperties": false
       },
+      "NewWaveConversationBody": {
+        "type": "object",
+        "description": "Body of `POST /api/waves/{wave_id}/conversations`: the first message.",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "description": "The first message. Validated exactly like `POST /api/cards/{id}/spec/input`\n(non-blank after trim, at most 32768 chars) and validated *before*\nanything is minted, so a rejected message leaves no card behind."
+          }
+        }
+      },
       "Overlay": {
         "type": "object",
         "required": [
@@ -6600,6 +6840,53 @@
           }
         }
       },
+      "WaveConversationSummary": {
+        "type": "object",
+        "description": "One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).\n\nIts own type rather than a reuse of [`CoveConversationSummary`], which is\nwhat #1189 §6 Q3 leaned towards and what the shapes turned out to require:\nthe cove type's contract says \"`waveTitle` is absent because every row lives\non one hidden wave\", and on a wave that reasoning is simply not true. Two\nlists with different contracts should not share one name just because their\ncurrent fields coincide.",
+        "required": [
+          "id",
+          "waveId",
+          "kind",
+          "updatedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The assistant card's id. This is the conversation's identity everywhere,\nand it is also the card the CARDS panel and `/api/cards/{id}/spec/*`\naddress."
+          },
+          "kind": {
+            "type": "string",
+            "description": "Always `\"wave-assistant\"`, derived from the card's persisted marker.\nA distinct value from the cove list's `\"shared-chat\"` on purpose: the\nfrontend branches on it, and a shared value would route assistant rows\nthrough the cove chat's presentation."
+          },
+          "state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WorkerSessionState",
+                "description": "The live session's state, or **null when the card has no session row**.\n\nNullable for the same reason as the cove list's: the query LEFT JOINs so\na card whose session is gone (failed start, superseded runtime, shut\ndown harness) stays visible. Never fill it with an invented value."
+              }
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The conversation's own name, or null before it has one. Never the\nwave's title."
+          },
+          "updatedAt": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The session's last update, falling back to the card's own."
+          },
+          "waveId": {
+            "type": "string",
+            "description": "The wave this conversation lives on. Always the wave in the request\npath; carried so a client holding a bare row can navigate."
+          }
+        }
+      },
       "WaveDetail": {
         "type": "object",
         "description": "What a Wave detail page renders: the wave itself plus its cards and\nany overlays scoped to the wave (status/progress badges) and its cards.",
@@ -7090,6 +7377,17 @@
             ],
             "format": "int64",
             "description": "Issue #985 slice 6 PR-B — budget for the non-terminal spec inventory of\nthe WHOLE wave tree. Root-only: `wave_update_tx` refuses the patch on a\nwave with a parent, since a per-child budget would make the tree bound\nvacuous. A present null resets to the kernel default (32)."
+          },
+          "workspace": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WaveWorkspacePatch",
+                "description": "#1147 S3 — request a workspace change (design §更换与冻结).\n\nHandled entirely by `routes::waves::update_wave` and **never** by\n`wave_update_tx`: a re-point is a filesystem move bracketed by two\ntransactions, not a column write, so there is nothing here for the\nmechanical row writer to apply. It is also mutually exclusive with\nevery other field in this struct — see the route."
+              }
+            ]
           }
         }
       },
@@ -7176,6 +7474,52 @@
           }
         }
       },
+      "WaveTemplate": {
+        "type": "object",
+        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `workflow_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
+        "required": [
+          "id",
+          "title",
+          "tasks"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Template key. Passed back verbatim as `workflow_id` on\n`POST /api/waves` — see the seam note on this module."
+          },
+          "input_schema": {
+            "description": "JSON Schema for `workflow_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `workflow_input` for it is a 400 on create."
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WaveTemplateTask"
+            },
+            "description": "The tasks this template pre-sets, in plan order. Always present and\nnever empty for a real template — a template *is* its task list — so the\nclient can show it without a \"no tasks\" branch that could never render."
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "WaveTemplateTask": {
+        "type": "object",
+        "description": "One pre-set task, projected from the template's own `PlanTaskInput`.\n\n`key` and `goal` only: those are the two facts a person choosing a starting\npoint needs, and both are verbatim from the seeded plan. Acceptance\ncriteria, dependencies and gate advice belong to the wave's report once it\nexists, not to the chooser.",
+        "required": [
+          "key",
+          "goal"
+        ],
+        "properties": {
+          "goal": {
+            "type": "string",
+            "description": "What that task is for, verbatim from the template."
+          },
+          "key": {
+            "type": "string",
+            "description": "The task block's `key` in the seeded report."
+          }
+        }
+      },
       "WaveWorkspace": {
         "type": "object",
         "description": "A wave's typed workspace. `path` is its single stored path.",
@@ -7208,6 +7552,29 @@
           "managed",
           "attached"
         ]
+      },
+      "WaveWorkspacePatch": {
+        "type": "object",
+        "description": "#1147 S3 — point a wave at a repository the user already has.\n\nThe only transition this expresses is `managed → attached`. There is no\n`managed → managed`: a managed path is *derived*\n(`<workspace-root>/<cove_id>/<wave_id>`, see\n`workspace_materialize::managed_workspace_path`) from a wave's cove and id,\nneither of which can change, so \"re-allocate a managed workspace\" would\nalways re-derive the same path — an in-place reset, not a change. And a\ncaller-supplied *managed* path is worse than useless: S5's recycle guard 2\nrequires exactly `<root>/<cove>/<wave>` depth, so any other path produces a\nrow whose directory can never be reclaimed.\n\n`attached → *` stays refused (an attached repository belongs to the user;\nthe server never moves, initializes or deletes it), which makes this a\none-way door — and the write below stamps `frozen_at` to say so.",
+        "required": [
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "attach_folder": {
+            "type": "boolean",
+            "description": "Claim `path` for this wave's cove in the same transaction, exactly as\n`POST /api/waves`'s field of the same name does (issue #275 rules:\nequal / ancestor / descendant of any existing claim is a structured\n409). Default `false`: an unclaimed path is refused rather than\nsilently making a homeless wave."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/WaveWorkspaceKind",
+            "description": "Must be `attached`. `managed` is a documented 400, not a silent no-op."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path to an existing Git work tree. Validated — existence and\ngit-ness included — *before* anything is written, because \"the path was\nwrong\" surfacing later as a worker's `spawn-failed` is the defect\n#1147 was opened on."
+          }
+        },
+        "additionalProperties": false
       },
       "WavesWindowQuery": {
         "type": "object",

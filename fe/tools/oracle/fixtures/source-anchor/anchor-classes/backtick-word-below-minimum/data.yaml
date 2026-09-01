@@ -1,0 +1,13 @@
+- id: "INV-TEST-021"
+  kind: "invariant"
+  family: "fixture"
+  statement: '终端必须转发 `osc` 序列'
+  source: "anchor-display-copy.ts:4"
+  why: "Anchor-class fixture"
+  authoritative_test: "NONE"
+  owner_slice: "styles/global"
+  intentional_omission: false
+  runtime_layer: "styles"
+  verification_owner: "unit"
+  test_tier: "static"
+  migration: "pending"

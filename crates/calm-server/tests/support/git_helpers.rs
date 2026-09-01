@@ -237,3 +237,108 @@ pub fn git_stdout<const N: usize>(repo: &Path, args: [&str; N]) -> String {
 pub fn is_hex_sha(value: &str) -> bool {
     value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
+
+/// #1147 S3 — a real Git work tree at a stable, name-derived path, for
+/// fixtures that need an **attached** wave and do not care where it points.
+///
+/// `POST /api/waves` now validates an attached `cwd` (absolute, exists, is a
+/// Git work tree) instead of accepting any string, because the FE entry point
+/// this slice adds is the first way a user can name one — and a path that only
+/// fails later, as a worker's `spawn-failed`, is the defect #1147 was opened
+/// on. Dozens of fixtures predate that check and pass literals like
+/// `/tmp/issue-250-pr2-test`, which were never valid workspaces; this makes
+/// them what they always claimed to be.
+///
+/// Idempotent and safe to share: the directory is keyed by `name` and re-init
+/// is a no-op, which matches how those literals were already shared across
+/// tests within a file.
+///
+/// Sharing has to survive *concurrent* first use, not just repeated use. The
+/// literals this replaces were shared across tests, and nextest runs every
+/// test in its own process with several binaries in flight at once, so two
+/// processes reach the un-initialized branch for the same key at the same
+/// time. Two `git init`s in one directory race on `.git/config`'s lock and one
+/// of them dies with `不能锁定配置文件 … 文件已存在`. So the repository is built
+/// off to the side and its `.git` is *renamed* into place: the winner's rename
+/// is atomic, the loser's fails because the destination is a non-empty
+/// directory, and the loser's repository is discarded — the winner's is
+/// identical, and no caller ever observes a half-initialized `.git`.
+pub fn attached_repo_fixture(name: &str) -> String {
+    let root = std::env::temp_dir().join("neige-attached-fixtures");
+    let path = root.join(name);
+    std::fs::create_dir_all(&path).unwrap_or_else(|e| panic!("create {path:?}: {e}"));
+    if !is_git_work_tree(&path) {
+        // The staging path must be unique per *call*, not per process. Under
+        // `cargo test`'s thread model one pid runs every test in a binary, so a
+        // pid-only name collides whenever two threads reach this branch for the
+        // same `name` — and each would then `remove_dir_all` the other's
+        // staging mid-`git init`. pid + a monotonic counter is unique across
+        // both models: the counter separates threads within a process, the pid
+        // separates nextest's processes.
+        static NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let nonce = NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let staging = root.join(format!(".init-{name}-{}-{nonce}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).unwrap_or_else(|e| panic!("create {staging:?}: {e}"));
+        run_git(&staging, ["init", "-b", "main"]);
+        // Losing this rename is the expected outcome for every process but the
+        // first; the assertion that matters is made below, after the race.
+        let _ = std::fs::rename(staging.join(".git"), path.join(".git"));
+        let _ = std::fs::remove_dir_all(&staging);
+        assert!(
+            is_git_work_tree(&path),
+            "attached_repo_fixture({name}): {path:?} is not a Git work tree after init"
+        );
+    }
+    path.to_string_lossy().into_owned()
+}
+
+/// "Does `path` already own a working repository?" — asked of git, not of the
+/// filesystem.
+///
+/// The predicate gates whether the fixture gets (re)built, and what the callers
+/// need is what the server's `validate_attached_workspace` will ask: can git
+/// resolve a repository here. A `.git` directory left half-populated by an
+/// interrupted init satisfies `is_dir()` while failing that, so the old
+/// directory test would hand back a path the route then 400s on. Asking git
+/// means such a leftover is rebuilt instead of trusted.
+///
+/// Two refinements over a bare `rev-parse`:
+///
+///   * the repository-redirecting environment is scrubbed, the same set
+///     `neige_git_command` removes — an inherited `GIT_DIR` would otherwise
+///     make every path look initialized;
+///   * the answer must be *this* directory's own `.git`. `rev-parse` walks
+///     upward, so on a box whose `TMPDIR` happens to sit inside a repository a
+///     bare success would skip the init and leave the fixtures sharing their
+///     ancestor's repository.
+fn is_git_work_tree(path: &Path) -> bool {
+    const HOSTILE_GIT_ENV: [&str; 8] = [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_TEMPLATE_DIR",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+    ];
+    let mut cmd = Command::new("git");
+    for key in HOSTILE_GIT_ENV {
+        cmd.env_remove(key);
+    }
+    let output = cmd
+        .current_dir(path)
+        .args(["rev-parse", "--absolute-git-dir"])
+        .output()
+        .expect("run git");
+    if !output.status.success() {
+        return false;
+    }
+    let git_dir = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    let own = path.join(".git");
+    match (git_dir.canonicalize(), own.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}

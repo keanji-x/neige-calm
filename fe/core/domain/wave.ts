@@ -162,7 +162,59 @@ export type NewWaveBody = Readonly<{
    * `attach_folder` is `false`.
    */
   attach_folder?: boolean;
+  /**
+   * The chosen template's key (#1209). Read as `template.id` from
+   * `GET /api/wave-templates`; the write side still spells it `workflow_id`
+   * because on this field that name is accurate — it is what the kernel's
+   * plugin-binding path resolves. #1209 records the seam and the decision not
+   * to add a `template_id` alias.
+   *
+   * **Blank omits the key entirely.** Not `null`, not `''`: the kernel rejects
+   * a whitespace-only id with a 400 and the body is
+   * `deny_unknown_fields`-strict, so the only spelling of "no template" is
+   * absence.
+   */
+  workflow_id?: string;
+  /**
+   * Only accepted when the chosen template is bound to a running trusted
+   * plugin — i.e. exactly when `GET /api/wave-templates` returned an
+   * `input_schema` for it. Sending it otherwise is a 400.
+   */
+  workflow_input?: Readonly<Record<string, unknown>>;
 }>;
+
+/**
+ * A selectable starting point for a new wave (#1209).
+ *
+ * `input_schema` is present only when a running trusted plugin is bound to the
+ * template; its presence — not the template's id — is what says "this one takes
+ * input". Kept as `unknown`: the picker branches on presence, and nothing in
+ * the FE evaluates JSON Schema.
+ *
+ * There is no `description`, on purpose. The kernel has no such fact (#1209
+ * §"权威源散在三处"), so a description here would be a fourth authority for
+ * what a template is. What the picker shows instead is `tasks` — the plan the
+ * template *already* contains, surfaced rather than re-described.
+ */
+export const waveTemplateSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  input_schema: z.unknown().optional(),
+  /**
+   * The tasks the template pre-sets, in plan order — the same `task` blocks
+   * the created wave's report is seeded with.
+   *
+   * Required, not `.default([])`: the server sends it for every template, and
+   * a default would let a genuinely broken read render as "this template
+   * pre-sets nothing", which is a lie the user cannot tell from the truth.
+   */
+  tasks: z.array(z.object({ key: z.string(), goal: z.string() })),
+});
+export type WaveTemplate = z.infer<typeof waveTemplateSchema>;
+
+export function waveTemplatesOperation(): ApiOperation<WaveTemplate[]> {
+  return { method: 'GET', path: '/api/wave-templates', responseSchema: z.array(waveTemplateSchema) };
+}
 
 export type WavePatchBody = Readonly<{
   title?: string;

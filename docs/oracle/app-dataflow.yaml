@@ -657,7 +657,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 wave。
     没有 wave 被加载时，用户根本看不到那个 wave 的 card overlay 变化，等下次 wave detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:190-209
+  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:253-272
   authoritative_test: fe/web/src/app/events/wave-lookup.test.ts:7
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -693,7 +693,7 @@
     所属 wave detail、`['overlays','card']` 与该 wave 的 wave-files。
   why: >
     runtime 状态同时驱动卡片详情、卡片状态角标（overlay 快照）和 runtime.json 投影三处 UI。
-  source: fe/core/events/invalidation-plan.ts:165-176; fe/web/src/app/events/wave-lookup.ts:7-17
+  source: fe/core/events/invalidation-plan.ts:191-199,236-238; fe/web/src/app/events/wave-lookup.ts:7-17
   authoritative_test: fe/core/events/invalidation-plan.test.ts:44
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -711,7 +711,7 @@
   why: >
     策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
     所以反链只能整片失效，不能按 wave 收窄。
-  source: fe/core/events/invalidation-plan.ts:187-189
+  source: fe/core/events/invalidation-plan.ts:250-252
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:20
   owner_slice: app/events-glue/invalidation
   intentional_omission: false
@@ -893,7 +893,7 @@
     issue #189：axum 中间件把未认证的 upgrade 变成普通 HTTP 401，浏览器表现为
     "close 而无先前 open"。只有这一种形态才可能是 401 cookie 失效，需要走 unauthorized 流程；
     活连接掉线是网络问题，探测只会制造噪声。
-  source: web/src/api/events.ts:313-359
+  source: web/src/api/events.ts:313-359,558-566
   authoritative_test: fe/web/src/systems/events/websocket-driver.contract.test.ts:1
   owner_slice: systems/events-transport/stream
   intentional_omission: false

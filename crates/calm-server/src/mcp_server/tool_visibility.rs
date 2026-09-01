@@ -378,8 +378,7 @@ mod tests {
             "permissions": {}
         });
         let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");
-        let registry = PluginRegistry::empty();
-        registry.insert(manifest, Some(install_dir.clone()));
+        let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
         repo.plugin_install(crate::model::NewPlugin {
             id: plugin_id.to_string(),
             version: "0.1.0".into(),

@@ -409,8 +409,7 @@ async fn boot_plugin_host(
 
     let manifest = read_manifest();
     let manifest_json = manifest.to_json();
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     repo.plugin_install(NewPlugin {
         id: PLUGIN_ID.into(),
         version: "0.1.0".into(),

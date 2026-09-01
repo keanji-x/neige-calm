@@ -2570,11 +2570,12 @@
   kind: invariant
   family: wave-list
   statement: >
-    行的 onKeyDown 必须先处理 Alt+ArrowUp / Alt+ArrowDown / Delete / Backspace
-    并 return，只有未认领的键才委派给 useRovingTabindex 的 handler
+    行的 onKeyDown 必须先处理 Alt+ArrowUp / Alt+ArrowDown / `Delete` 并 return，
+    只有未认领的键才委派给 useRovingTabindex 的 handler；`Backspace` 刻意不在认领
+    集合里，它落到 hook 与原生编辑行为
   why: >
     非 Alt 的方向键归 hook；Alt 组合归列表。顺序反了 hook 会把 Alt+Arrow 当普通
-    方向键消费掉
+    方向键消费掉。Backspace 是编辑键，认领它等于给输入场景装一个误删陷阱
   source: web/src/WaveList.tsx:210-241
   authoritative_test: web/src/WaveList.test.tsx:446
   owner_slice: features/wave/list
@@ -2606,12 +2607,13 @@
   kind: capability
   family: wave-list
   statement: >
-    Delete / Backspace 必须直接删除聚焦卡片，不做二次确认；行级 × 按钮点击
-    等价，且必须 stopPropagation
+    `Delete` 必须直接删除聚焦卡片，不做二次确认；行级 × 按钮点击等价，且必须
+    stopPropagation。`Backspace` 刻意不绑删除
   why: >
-    与 grid 视图的 × 行为对齐 —— grid 不确认，list 也不确认
-  source: web/src/WaveList.tsx:228-235,259-270
-  authoritative_test: web/src/WaveList.test.tsx:598,616
+    与 grid 视图的 × 行为对齐 —— grid 不确认，list 也不确认。Backspace 作为编辑键
+    被刻意排除在破坏性快捷键之外
+  source: web/src/WaveList.tsx:234-240,259-270
+  authoritative_test: web/src/WaveList.test.tsx:620,638,730
   owner_slice: features/wave/list
   intentional_omission: false
   runtime_layer: features

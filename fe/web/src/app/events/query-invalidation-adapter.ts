@@ -48,6 +48,24 @@ export function mapPlannedQueryKey(key: QueryKey): readonly unknown[] | null {
      change it. */
   if (head === 'wave-report' && key.length === 1) return queryKeys.waveReportPrefix();
   if (head === 'wave-report' && typeof first === 'string' && key.length === 2) return queryKeys.waveReport(first);
+  /* The cove drawer's conversation list. Only the bare form exists: no
+     conversation-writing event carries a `cove_id` and no cached row can supply
+     one, so the plan emits the prefix and `queryKeys.coveConversations` keeps
+     the cove id in second position precisely so this prefix reaches it. */
+  if (head === 'cove-conversations' && key.length === 1) return queryKeys.coveConversationsPrefix();
+  /* One wave's conversation list. Both arities are mapped, same as
+     `wave-report` above: the plan names the wave whenever `derivedWaveId`
+     resolves one and falls back to the prefix when a `runtime.*` event's card
+     belongs to a wave no cached detail owns.
+
+     The query behind these keys arrives in S5. Mapping them now is harmless —
+     invalidating a key with no mounted query neither marks nor refetches
+     anything — and mapping them *later* is what would be dangerous: a mounted
+     query with no adapter arm is a list that silently never refreshes. */
+  if (head === 'wave-conversations' && key.length === 1) return queryKeys.waveConversationsPrefix();
+  if (head === 'wave-conversations' && typeof first === 'string' && key.length === 2) {
+    return queryKeys.waveConversations(first);
+  }
   return null;
 }
 

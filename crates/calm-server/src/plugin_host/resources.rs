@@ -195,8 +195,7 @@ mod tests {
         });
         let mut manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest");
         manifest.views.push(view);
-        let registry = PluginRegistry::empty();
-        registry.insert(manifest, Some(install_dir));
+        let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir))]);
         (registry, tmp)
     }
 

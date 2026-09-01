@@ -793,6 +793,7 @@
     "expected_red": [
       "EventBridge contracts resolves a runtime card through cached wave detail before invalidating",
       "event composition T-B2 carries a real socket card event through the bridge into wave invalidation",
+      "query invalidation adapter drives the conversation-list keys all the way onto the query client",
       "query invalidation adapter invalidates each mapped key of an invalidate effect",
       "query invalidation adapter maps every planned key shape onto a queryKeys key and drops the rest",
       "query invalidation adapter preserves effect order across a snapshot-required style batch",
@@ -998,7 +999,7 @@
       "oracle:CAP-APP-037"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -147,7 +147,7 @@ function policies(): PolicyMap {\n     ['harness-items', event.data.card_id], ['spec-run', event.data.card_id], COVE_CONVERSATIONS,\n   ])),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -248,7 +248,7 @@ function policies(): PolicyMap {\n     ...conversationLists(event.data.wave_id),\n   ])),\n   'wave.report_edited': plan((event) => result([\n-    ['wave-files', event.data.wave_id], ['wave-report', event.data.wave_id], ['wave-backlinks'],\n+    ['wave-files', event.data.wave_id], ['wave-backlinks'],\n   ])),\n   'overlay.set': plan((event, context) => {\n     const keys: QueryKey[] = [];\n",
     "expected_red": [
       "invalidation plan contract pins ordinary query-key literals independently from production definitions",
       "invalidation plan contract pins wave-report invalidation to exactly the derived kinds plus report edits"
@@ -1074,7 +1075,7 @@
       "oracle:CAP-CHATHIST-005"
     ],
     "target": "core/events/invalidation-plan.ts",
-    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -136,7 +136,7 @@ function policies(): PolicyMap {\n     const waveId = context.findWaveOwningCard(event.data.card_id);\n     return result([...(waveId === null ? [] : [['wave', waveId]]), ['overlays', 'card'], ...waveFilesDerived(waveId)]);\n   }),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([\n     ['spec-run', event.data.card_id], COVE_CONVERSATIONS,\n   ])),\n",
+    "patch": "diff --git a/core/events/invalidation-plan.ts b/core/events/invalidation-plan.ts\n--- a/core/events/invalidation-plan.ts\n+++ b/core/events/invalidation-plan.ts\n@@ -236,7 +236,7 @@ function policies(): PolicyMap {\n   'runtime.started': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.status_changed': plan((event, context) => runtimePlan(event.data.card_id, context)),\n   'runtime.superseded': plan((event, context) => runtimePlan(event.data.card_id, context)),\n-  'harness.item.added': plan((event) => result([['harness-items', event.data.card_id]])),\n+  'harness.item.added': plan(() => result([])),\n   'harness.phase.changed': plan((event) => result([\n     ['spec-run', event.data.card_id], ...conversationLists(event.data.wave_id),\n   ])),\n",
     "expected_red": [
       "invalidation plan behavior plans each harness event against the projections it can change",
       "query invalidation adapter turns each real harness plan into its exact live query invalidations"

@@ -39,6 +39,8 @@ use serde_json::{Value, json};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+use crate::support::git_helpers::attached_repo_fixture;
+
 struct Boot {
     app: axum::Router,
     cove_id: String,
@@ -190,7 +192,7 @@ async fn post_api_waves_mints_spec_card_atomically() {
     let (status, body) = post(
         boot.app.clone(),
         "/api/waves",
-        json!({"cove_id": boot.cove_id, "title": "first wave", "cwd": "/tmp/issue-250-pr2-test", "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
+        json!({"cove_id": boot.cove_id, "title": "first wave", "cwd": attached_repo_fixture("issue-250-pr2-test"), "attach_folder": true, "theme": {"fg": [216,219,226], "bg": [15,20,24]} }),
     )
     .await;
     // Issue #293 / PR #311: the spec-push app-server boot is non-fatal.

@@ -28,6 +28,7 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 use crate::common;
+use crate::support::git_helpers::attached_repo_fixture;
 
 struct Boot {
     app: axum::Router,
@@ -173,7 +174,7 @@ async fn post_api_waves_as_template_writes_overlay_and_skips_spec_harness_start(
         create_body(
             &boot.cove_id,
             "template wave",
-            "/tmp/1110-s1-template",
+            &attached_repo_fixture("1110-s1-template"),
             Some(true),
         ),
     )
@@ -224,7 +225,7 @@ async fn post_api_waves_omitted_as_template_still_starts_spec_harness() {
         create_body(
             &boot.cove_id,
             "ordinary wave",
-            "/tmp/1110-s1-ordinary",
+            &attached_repo_fixture("1110-s1-ordinary"),
             None,
         ),
     )
@@ -255,7 +256,7 @@ async fn template_waves_are_hidden_from_lists_and_visible_by_id() {
         create_body(
             &boot.cove_id,
             "hidden template",
-            "/tmp/1110-s1-hidden",
+            &attached_repo_fixture("1110-s1-hidden"),
             Some(true),
         ),
     )
@@ -269,7 +270,7 @@ async fn template_waves_are_hidden_from_lists_and_visible_by_id() {
         create_body(
             &boot.cove_id,
             "visible ordinary",
-            "/tmp/1110-s1-visible",
+            &attached_repo_fixture("1110-s1-visible"),
             Some(false),
         ),
     )
@@ -326,7 +327,7 @@ async fn spec_reset_on_template_wave_is_refused() {
         create_body(
             &boot.cove_id,
             "template reset",
-            "/tmp/1110-s1-reset",
+            &attached_repo_fixture("1110-s1-reset"),
             Some(true),
         ),
     )
@@ -368,7 +369,7 @@ async fn overlay_post_marks_existing_wave_as_template_and_blocks_spec_reset() {
         create_body(
             &boot.cove_id,
             "later template",
-            "/tmp/1110-s1-later",
+            &attached_repo_fixture("1110-s1-later"),
             Some(false),
         ),
     )

@@ -343,7 +343,7 @@ export interface paths {
          *
          *     None of this can produce a second conversation: the **card id** is a pure
          *     function of `(cove_id, Idempotency-Key)` and the `#N` suffix touches only
-         *     the *operation* key (see [`derive_conversation_keys`] and its golden test).
+         *     the *operation* key (see `conversation_keys::derive_cove_conversation_keys` and its golden test).
          */
         post: operations["create_cove_conversation"];
         delete?: never;
@@ -789,6 +789,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wave-templates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_wave_templates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -1010,6 +1026,42 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["create_codex_card"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/waves/{wave_id}/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_wave_conversations"];
+        put?: never;
+        /**
+         * Mint a wave assistant conversation and deliver its first message.
+         * @description The `Idempotency-Key` contract, the first-message claim and both of its
+         *     known gaps are identical to `create_cove_conversation`, whose doc comment is
+         *     the long-form statement of all of them; this handler differs only in the
+         *     profile it mints under and the namespace its ids come from. The gaps are
+         *     restated in brief where they bite:
+         *
+         *     * the first-message claim asks "has this CARD ever had a user message
+         *       enqueued?", not "has THIS request's message landed?", so a foreign
+         *       `POST /api/cards/{id}/spec/input` between a failed send and its retry
+         *       satisfies the claim;
+         *     * the evidence is written non-transactionally, so a send whose audit write
+         *       fails is re-sent on retry.
+         *
+         *     Both are tracked on #1098 and deliberately unchanged here: fixing them means
+         *     folding the first message into the mint operation, which would change both
+         *     endpoints at once and belongs in one dedicated change rather than being
+         *     half-done on the newer of the two.
+         */
+        post: operations["create_wave_conversation"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1698,6 +1750,15 @@ export interface components {
              */
             workflow_input?: Record<string, never> | null;
         };
+        /** @description Body of `POST /api/waves/{wave_id}/conversations`: the first message. */
+        NewWaveConversationBody: {
+            /**
+             * @description The first message. Validated exactly like `POST /api/cards/{id}/spec/input`
+             *     (non-blank after trim, at most 32768 chars) and validated *before*
+             *     anything is minted, so a rejected message leaves no card behind.
+             */
+            text: string;
+        };
         Overlay: {
             entity_id: string;
             /** @description `"wave"` or `"card"`. */
@@ -2155,6 +2216,47 @@ export interface components {
             truncated: boolean;
         };
         /**
+         * @description One row of `GET /api/waves/{wave_id}/conversations` (#1189 §4.1).
+         *
+         *     Its own type rather than a reuse of [`CoveConversationSummary`], which is
+         *     what #1189 §6 Q3 leaned towards and what the shapes turned out to require:
+         *     the cove type's contract says "`waveTitle` is absent because every row lives
+         *     on one hidden wave", and on a wave that reasoning is simply not true. Two
+         *     lists with different contracts should not share one name just because their
+         *     current fields coincide.
+         */
+        WaveConversationSummary: {
+            /**
+             * @description The assistant card's id. This is the conversation's identity everywhere,
+             *     and it is also the card the CARDS panel and `/api/cards/{id}/spec/*`
+             *     address.
+             */
+            id: string;
+            /**
+             * @description Always `"wave-assistant"`, derived from the card's persisted marker.
+             *     A distinct value from the cove list's `"shared-chat"` on purpose: the
+             *     frontend branches on it, and a shared value would route assistant rows
+             *     through the cove chat's presentation.
+             */
+            kind: string;
+            state?: null | components["schemas"]["WorkerSessionState"];
+            /**
+             * @description The conversation's own name, or null before it has one. Never the
+             *     wave's title.
+             */
+            title?: string | null;
+            /**
+             * Format: int64
+             * @description The session's last update, falling back to the card's own.
+             */
+            updatedAt: number;
+            /**
+             * @description The wave this conversation lives on. Always the wave in the request
+             *     path; carried so a client holding a bare row can navigate.
+             */
+            waveId: string;
+        };
+        /**
          * @description What a Wave detail page renders: the wave itself plus its cards and
          *     any overlays scoped to the wave (status/progress badges) and its cards.
          */
@@ -2332,6 +2434,7 @@ export interface components {
              *     vacuous. A present null resets to the kernel default (32).
              */
             tree_task_budget?: number | null;
+            workspace?: null | components["schemas"]["WaveWorkspacePatch"];
         };
         /**
          * @description The payload persisted in a wave-report card's `payload` JSON column.
@@ -2402,6 +2505,48 @@ export interface components {
             summary: string;
             taskDiagnostics: components["schemas"]["BlockVerdict"][];
         };
+        /**
+         * @description One selectable starting point for a new wave.
+         *
+         *     "Blank" is not in this list and never will be: it is the *absence* of a
+         *     template (`POST /api/waves` with no `workflow_id`), so the client renders it
+         *     as its own default option rather than the server minting a pseudo-row for
+         *     something that has no key, no title source, and no report to fork.
+         */
+        WaveTemplate: {
+            /**
+             * @description Template key. Passed back verbatim as `workflow_id` on
+             *     `POST /api/waves` — see the seam note on this module.
+             */
+            id: string;
+            /**
+             * @description JSON Schema for `workflow_input`, from the manifest of the running
+             *     trusted plugin bound to `id`. Absent means the template takes no input;
+             *     sending `workflow_input` for it is a 400 on create.
+             */
+            input_schema?: unknown;
+            /**
+             * @description The tasks this template pre-sets, in plan order. Always present and
+             *     never empty for a real template — a template *is* its task list — so the
+             *     client can show it without a "no tasks" branch that could never render.
+             */
+            tasks: components["schemas"]["WaveTemplateTask"][];
+            title: string;
+        };
+        /**
+         * @description One pre-set task, projected from the template's own `PlanTaskInput`.
+         *
+         *     `key` and `goal` only: those are the two facts a person choosing a starting
+         *     point needs, and both are verbatim from the seeded plan. Acceptance
+         *     criteria, dependencies and gate advice belong to the wave's report once it
+         *     exists, not to the chooser.
+         */
+        WaveTemplateTask: {
+            /** @description What that task is for, verbatim from the template. */
+            goal: string;
+            /** @description The task block's `key` in the seeded report. */
+            key: string;
+        };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
             /**
@@ -2422,6 +2567,42 @@ export interface components {
          * @enum {string}
          */
         WaveWorkspaceKind: "managed" | "attached";
+        /**
+         * @description #1147 S3 — point a wave at a repository the user already has.
+         *
+         *     The only transition this expresses is `managed → attached`. There is no
+         *     `managed → managed`: a managed path is *derived*
+         *     (`<workspace-root>/<cove_id>/<wave_id>`, see
+         *     `workspace_materialize::managed_workspace_path`) from a wave's cove and id,
+         *     neither of which can change, so "re-allocate a managed workspace" would
+         *     always re-derive the same path — an in-place reset, not a change. And a
+         *     caller-supplied *managed* path is worse than useless: S5's recycle guard 2
+         *     requires exactly `<root>/<cove>/<wave>` depth, so any other path produces a
+         *     row whose directory can never be reclaimed.
+         *
+         *     `attached → *` stays refused (an attached repository belongs to the user;
+         *     the server never moves, initializes or deletes it), which makes this a
+         *     one-way door — and the write below stamps `frozen_at` to say so.
+         */
+        WaveWorkspacePatch: {
+            /**
+             * @description Claim `path` for this wave's cove in the same transaction, exactly as
+             *     `POST /api/waves`'s field of the same name does (issue #275 rules:
+             *     equal / ancestor / descendant of any existing claim is a structured
+             *     409). Default `false`: an unclaimed path is refused rather than
+             *     silently making a homeless wave.
+             */
+            attach_folder?: boolean;
+            /** @description Must be `attached`. `managed` is a documented 400, not a silent no-op. */
+            kind: components["schemas"]["WaveWorkspaceKind"];
+            /**
+             * @description Absolute path to an existing Git work tree. Validated — existence and
+             *     git-ness included — *before* anything is written, because "the path was
+             *     wrong" surfacing later as a worker's `spawn-failed` is the defect
+             *     #1147 was opened on.
+             */
+            path: string;
+        };
         /**
          * @description Issue #250 PR 2 — calendar window query parameters for
          *     `GET /api/waves`. Every field is optional so omitting all three
@@ -4742,6 +4923,35 @@ export interface operations {
             };
         };
     };
+    list_wave_templates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Selectable wave templates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplate"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_waves_window: {
         parameters: {
             query?: {
@@ -4954,8 +5164,35 @@ export interface operations {
                     "application/json": components["schemas"]["Wave"];
                 };
             };
+            /** @description Unsupported workspace change */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Workspace change refused (system cove) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Wave not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Workspace is frozen, attached, or no longer empty */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5770,6 +6007,139 @@ export interface operations {
             };
             /** @description Daemon spawn failed (rows are persisted; sweeper reaps within ~60s) */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_wave_conversations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Wave id */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Assistant conversations on this wave, newest activity first. The wave's spec card, report card and dispatched worker cards are never listed here. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveConversationSummary"][];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_wave_conversation: {
+        parameters: {
+            query?: never;
+            header: {
+                /**
+                 * @description **Required.** Scopes the derived card id and the operation dedup key, so retrying the same request can never mint a second conversation. A missing or blank header is 400.
+                 *
+                 *     **This is NOT standard HTTP idempotency — it is "same key = the same retryable draft"**, with the same four arms as `POST /api/coves/{cove_id}/conversations`: (a) same key after a **success** replays the same conversation and does not re-send the first message; (b) same key after a **terminally failed** attempt genuinely RETRIES under a fresh `#N` operation key and may therefore return 201 where the first call gave 500; (c) same key after a **stuck** attempt keeps returning 500 on purpose (fail-closed); (d) after 64 failed attempts the key is exhausted and answers 409 `idempotency_key_exhausted`; (e) same key with a **different `text`** is 409 `conflict`, because the message body is bound into the operation payload as a SHA-256 — except after arm (b), whose fresh operation key no earlier payload hash is bound to. The derived card id never carries the retry suffix, so none of this can mint a second conversation.
+                 */
+                "Idempotency-Key": string;
+            };
+            path: {
+                /** @description Wave id */
+                wave_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NewWaveConversationBody"];
+            };
+        };
+        responses: {
+            /** @description Conversation card minted, harness started, first message sent. Also returned when a retry under the same `Idempotency-Key` replays an earlier success (same conversation, no second message). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveConversationSummary"];
+                };
+            };
+            /** @description Missing/blank `Idempotency-Key`, empty/over-long text, or the wave carries the kernel view/template overlay — `SpecHarnessStartAdapter::validate` refuses template waves with a `BadRequest`, and the operation-failure mapping keeps `bad_request` a 400. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description The wave is a cove chat wave; its conversations are created through the cove endpoint. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Wave not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /**
+             * @description Distinguished by the body's `code`:
+             *     * `conflict` — the derived card already exists, or this `Idempotency-Key` was already used for a request whose first-message text differed (the text is bound into the operation payload as a SHA-256).
+             *     * `idempotency_key_exhausted` — the key used up its 64 retry slots; retry under a NEW `Idempotency-Key`.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Internal error. A failed harness *start* is compensated: no card, no session, and the same key can be retried. A failed first *send* after a successful start leaves the created conversation in place on purpose — that is what makes the same key retry the send instead of answering a silent 201. A previous attempt left `Stuck` also answers 500 under the same key until an operator clears it. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Shared codex app-server not running — retry shortly */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

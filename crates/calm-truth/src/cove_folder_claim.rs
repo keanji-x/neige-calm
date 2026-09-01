@@ -171,6 +171,146 @@ mod tests {
         assert_eq!(normalize_path("/"), "/");
     }
 
+    /// #1147 S3 — the edges nothing was pinning.
+    ///
+    /// This got written because the slice's fixture migration replaced the one
+    /// route-level test that fed `cwd: "/"` through `POST /api/waves` (the
+    /// system-cove case, which can no longer use `/` now that an attached
+    /// target must be an existing Git work tree). Rather than force a fixture
+    /// back onto a path that cannot work, the boundary is pinned here, where it
+    /// actually lives.
+    ///
+    /// Everything below is **measured behaviour**, not aspiration. Two of these
+    /// are sharper than the doc comment suggests, so they are stated rather
+    /// than left for someone to rediscover:
+    ///
+    /// * the function is **not idempotent** — it strips *exactly one* trailing
+    ///   slash, so `///` needs three passes to reach `/`;
+    /// * it does **not** resolve `..` and does **not** collapse interior
+    ///   slashes. It is a storage normalizer, not a path canonicalizer, and
+    ///   `is_descendant_of` compares the results as plain strings.
+    #[test]
+    fn normalize_pins_the_edges_it_actually_has() {
+        // Root, and the shapes that reduce to it.
+        assert_eq!(normalize_path("/"), "/");
+        assert_eq!(normalize_path("//"), "/");
+        // NOT idempotent: exactly one trailing slash comes off per call.
+        assert_eq!(normalize_path("///"), "//");
+        assert_eq!(normalize_path(&normalize_path("///")), "/");
+
+        // Ordinary paths, with and without the trailing slash.
+        assert_eq!(normalize_path("/a"), "/a");
+        assert_eq!(normalize_path("/a/"), "/a");
+        assert_eq!(normalize_path("/a/b/"), "/a/b");
+
+        // No `..` resolution and no interior-slash collapsing. Deliberate:
+        // callers hand in a path the filesystem already accepted, and the only
+        // job here is to make storage and comparison agree on the trailing
+        // slash.
+        assert_eq!(normalize_path("/a/../b"), "/a/../b");
+        assert_eq!(normalize_path("/a/.."), "/a/..");
+        assert_eq!(normalize_path("/a//b"), "/a//b");
+
+        // Not this function's business: absolute-ness is a 400 at the route
+        // layer, so the wire error code stays precise.
+        assert_eq!(normalize_path("a/b"), "a/b");
+        assert_eq!(normalize_path(""), "");
+    }
+
+    /// KNOWN GAP (#1147 N19) — a doubled trailing slash survives normalization,
+    /// and then TWO things follow, the second worse than the first.
+    ///
+    /// `normalize_path("/a//")` is `"/a/"`, and `is_descendant_of` builds its
+    /// probe as `format!("{parent}/")`, i.e. `"/a//"` — which nothing under
+    /// `/a` starts with.
+    ///
+    /// **1. Two claims can cover the same subtree.** The reachable second claim
+    /// is `"/a/b"`, not `"/a"`. `"/a"` IS refused: the create route's reverse
+    /// overlap check asks `is_descendant_of("/a", "/a/")`, and that is true
+    /// (`"/a/"` starts with `"/a/"`), so the ancestor arm catches it. `"/a/b"`
+    /// matches in neither direction — forward `is_descendant_of("/a/", "/a/b")`
+    /// is false as shown below, reverse `is_descendant_of("/a/b", "/a/")` is
+    /// false too — so both rows are admitted and both cover `/a/b`.
+    ///
+    /// **2. The boot fence goes blind to exactly that pair.**
+    /// `overlapping_pairs` — the whole-table scan behind
+    /// `db::sqlite::assert_cove_folders_disjoint`, which is **fail-closed at
+    /// boot** — is built out of the same `classify_conflict`, so it does not
+    /// see `("/a/", "/a/b")` either. A fence whose job is to refuse to start on
+    /// an overlapping table therefore starts happily on the one overlap this
+    /// gap produces. That is the part that makes N19 worth writing down: not
+    /// "a claim that matches nothing", but "a fail-closed startup check that
+    /// silently stops being exhaustive".
+    ///
+    /// Pre-existing, not introduced by #1147 S3, and reachable: the filesystem
+    /// accepts `/a//` everywhere, so neither the route's `starts_with('/')` nor
+    /// S3's `validate_attached_workspace` (which stats and asks git) rejects
+    /// it. Asserted rather than fixed because the fix is a decision about what
+    /// normalization means — collapse runs of slashes? canonicalize? — and that
+    /// belongs to whoever owns the claim rules, not to a workspace slice.
+    /// Whoever takes it will see these assertions go red.
+    #[test]
+    fn a_doubled_trailing_slash_produces_a_claim_that_covers_nothing() {
+        let stored = normalize_path("/a//");
+        assert_eq!(stored, "/a/", "one slash comes off, one stays");
+        assert!(
+            !is_descendant_of(&stored, "/a/b"),
+            "KNOWN GAP (#1147 N19): a claim stored as `{stored}` matches nothing \
+             beneath it. If this fails, normalization was fixed — replace this \
+             test with the positive one."
+        );
+        // …and the un-doubled form does cover it, which is what makes the pair
+        // above a real divergence rather than a curiosity.
+        assert!(is_descendant_of(&normalize_path("/a/"), "/a/b"));
+    }
+
+    /// KNOWN GAP (#1147 N19), consequence 1: two claims, one subtree.
+    ///
+    /// Stated through `classify_conflict`, which is what both the create route
+    /// and `GET /api/coves/resolve` consult, so this is the rule as production
+    /// applies it — not a restatement of the string helper above.
+    #[test]
+    fn n19_lets_two_claims_cover_one_subtree() {
+        let stored = vec![folder(1, "c1", &normalize_path("/a//"))];
+        // `/a` is correctly refused — the ancestor arm sees it.
+        assert!(
+            classify_conflict(&stored, "/a").is_some(),
+            "premise: `/a` is NOT part of this gap; it is caught"
+        );
+        // `/a/b` is admitted, and now two rows cover it.
+        assert!(
+            classify_conflict(&stored, "/a/b").is_none(),
+            "KNOWN GAP (#1147 N19): `/a/b` must be admitted alongside `/a/`, \
+             giving two claims over one subtree — issue #275's invariant. If \
+             this fails, the gap was closed."
+        );
+    }
+
+    /// KNOWN GAP (#1147 N19), consequence 2 — the one that matters most.
+    ///
+    /// `overlapping_pairs` backs `assert_cove_folders_disjoint`, a **fail-closed
+    /// boot fence**. It cannot see the pair N19 creates, so the fence starts
+    /// the server on precisely the table it exists to refuse.
+    #[test]
+    fn n19_is_invisible_to_the_boot_disjointness_fence() {
+        let table = vec![
+            folder(1, "c1", &normalize_path("/a//")),
+            folder(2, "c2", "/a/b"),
+        ];
+        assert_eq!(
+            overlapping_pairs(&table).len(),
+            0,
+            "KNOWN GAP (#1147 N19): the boot fence reports this table disjoint \
+             even though both rows cover `/a/b`. If this fails, the fence (or \
+             normalization) was fixed — replace this test with the positive one."
+        );
+        // The fence is not broken in general — the same shape without the
+        // doubled slash IS caught. That contrast is the whole point: the fence
+        // works, and N19 is a hole in what it is given.
+        let sane = vec![folder(1, "c1", "/a"), folder(2, "c2", "/a/b")];
+        assert_eq!(overlapping_pairs(&sane).len(), 1);
+    }
+
     #[test]
     fn descendant_match_basics() {
         assert!(is_descendant_of("/a", "/a"));

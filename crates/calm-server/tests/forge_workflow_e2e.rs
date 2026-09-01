@@ -138,7 +138,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         "issue_number": 888,
         "merge_policy": "auto-merge"
     });
-    let wave_dir = short_tempdir("wf").expect("workflow wave cwd");
+    let wave_dir = wave_cwd_tempdir("wf").expect("workflow wave cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -185,7 +185,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
 
     // #891 — `workflow_input` without `workflow_id` is a 400 before any
     // DB write.
-    let orphan_input_dir = short_tempdir("wf-input-orphan").expect("orphan input cwd");
+    let orphan_input_dir = wave_cwd_tempdir("wf-input-orphan").expect("orphan input cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -207,7 +207,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     // #891 slice ② — the shipped schema has required fields, so a bound
     // create WITHOUT `workflow_input` is a 400 naming them (fail before any
     // DB write).
-    let required_dir = short_tempdir("wf-input-required").expect("required input cwd");
+    let required_dir = wave_cwd_tempdir("wf-input-required").expect("required input cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -235,7 +235,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     );
 
     // Input present but missing a required field → 400 naming it.
-    let partial_dir = short_tempdir("wf-input-partial").expect("partial input cwd");
+    let partial_dir = wave_cwd_tempdir("wf-input-partial").expect("partial input cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -269,7 +269,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     );
 
     // Enum violation against the shipped merge_policy → 400 naming the field.
-    let invalid_dir = short_tempdir("wf-input-invalid").expect("invalid input cwd");
+    let invalid_dir = wave_cwd_tempdir("wf-input-invalid").expect("invalid input cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -305,7 +305,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     );
 
     // INV-1110-003 — extra key against additionalProperties:false is still 400.
-    let extra_dir = short_tempdir("wf-input-extra").expect("extra-key input cwd");
+    let extra_dir = wave_cwd_tempdir("wf-input-extra").expect("extra-key input cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -347,10 +347,10 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         .validate()
         .expect("schema-less mutation stays a valid manifest");
     // `install_path = None` keeps the registry's existing on-disk path.
-    fx.plugin_host.registry().insert(schemaless, None);
+    fx.plugin_host.registry_insert(schemaless, None);
 
     // Bound + input against a schema-less plugin → 400 fail-closed.
-    let no_schema_dir = short_tempdir("wf-input-noschema").expect("no-schema input cwd");
+    let no_schema_dir = wave_cwd_tempdir("wf-input-noschema").expect("no-schema input cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -377,7 +377,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     );
 
     // Schema-less bound create without input stays valid (design §1.4 row 4).
-    fx.plugin_host.registry().insert(
+    fx.plugin_host.registry_insert(
         {
             let mut schemaless = read_manifest();
             schemaless.input_schema = None;
@@ -385,7 +385,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
         },
         None,
     );
-    let no_input_dir = short_tempdir("wf-noschema-ok").expect("schema-less bind cwd");
+    let no_input_dir = wave_cwd_tempdir("wf-noschema-ok").expect("schema-less bind cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -402,9 +402,9 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
     assert_eq!(body["workflow_input"], Value::Null);
 
     // Restore the shipped manifest for the remaining cases.
-    fx.plugin_host.registry().insert(read_manifest(), None);
+    fx.plugin_host.registry_insert(read_manifest(), None);
 
-    let missing_dir = short_tempdir("wf-missing").expect("missing workflow cwd");
+    let missing_dir = wave_cwd_tempdir("wf-missing").expect("missing workflow cwd");
     let (status, body) = post_wave(
         app.clone(),
         json!({
@@ -430,7 +430,7 @@ async fn git_forge_workflow_registers_and_wave_create_binds() {
 
     drop(trusted);
     let _untrusted = EnvGuard::set("NEIGE_TRUSTED_FORGE_PLUGINS", "other.plugin");
-    let untrusted_dir = short_tempdir("wf-untrusted").expect("untrusted workflow cwd");
+    let untrusted_dir = wave_cwd_tempdir("wf-untrusted").expect("untrusted workflow cwd");
     let (status, body) = post_wave(
         app,
         json!({
@@ -1855,8 +1855,7 @@ async fn boot_plugin_host(
 
     let manifest = read_manifest();
     let manifest_json = manifest.to_json();
-    let registry = PluginRegistry::empty();
-    registry.insert(manifest, Some(install_dir.clone()));
+    let registry = PluginRegistry::from_manifests([(manifest, Some(install_dir.clone()))]);
     repo.plugin_install(NewPlugin {
         id: PLUGIN_ID.into(),
         version: "0.1.0".into(),
@@ -2952,6 +2951,17 @@ fn setup_forge_env() -> ForgeTestEnv {
         _results: results,
         _path: path,
     }
+}
+
+/// #1147 S3 — `POST /api/waves` now validates an attached `cwd`: absolute,
+/// existing, inside a Git work tree. Every `cwd` this file posts is a throwaway
+/// directory nothing ever reads, so make it a real (empty) repository. Used
+/// even where the create is expected to 400 on `workflow_input` binding first,
+/// so no site depends on which check fires first.
+fn wave_cwd_tempdir(prefix: &str) -> std::io::Result<TempDir> {
+    let dir = short_tempdir(prefix)?;
+    run_git(dir.path(), ["init", "-b", "main"]);
+    Ok(dir)
 }
 
 fn short_tempdir(prefix: &str) -> std::io::Result<TempDir> {

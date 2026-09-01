@@ -59,9 +59,13 @@ mod threads_resolve_claude;
 mod today_launchpad;
 #[path = "cases/version.rs"]
 mod version;
+#[path = "cases/wave_conversations.rs"]
+mod wave_conversations;
 #[path = "cases/wave_projection_policy_patch.rs"]
 mod wave_projection_policy_patch;
 #[path = "cases/wave_workspace_materialize.rs"]
 mod wave_workspace_materialize;
 #[path = "cases/wave_workspace_recycle.rs"]
 mod wave_workspace_recycle;
+#[path = "cases/wave_workspace_repoint.rs"]
+mod wave_workspace_repoint;

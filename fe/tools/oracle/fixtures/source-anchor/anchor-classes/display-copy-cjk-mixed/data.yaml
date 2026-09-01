@@ -1,0 +1,13 @@
+- id: "INV-TEST-022"
+  kind: "invariant"
+  family: "fixture"
+  statement: '草稿指示器的文案是 "保存 Draft copy 草稿"'
+  source: "anchor-display-copy.ts:4"
+  why: "Anchor-class fixture"
+  authoritative_test: "NONE"
+  owner_slice: "styles/global"
+  intentional_omission: false
+  runtime_layer: "styles"
+  verification_owner: "unit"
+  test_tier: "static"
+  migration: "pending"

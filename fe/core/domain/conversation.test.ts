@@ -11,7 +11,8 @@ import {
   coveConversationCardId, coveConversationFailure, coveConversationsOperation,
   createCoveConversationOperation,
   harnessItemToActivity, harnessItemToTurn, isLiveConversation, mergeTranscript, readableCommand,
-  reconcileUserEchoes, toCoveConversation, type Conversation, type ConversationTurn,
+  reconcileUserEchoes, toCoveConversation, toWaveConversation, waveConversationsOperation,
+  type Conversation, type ConversationTurn,
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -158,6 +159,54 @@ describe('cove conversations', () => {
     expect(coveConversationCardId('cove-1', 'key-a')).toBe('conv-7b12bb251f95129865ab81128125cbf5');
     expect(coveConversationCardId('cove-1', 'key-b')).not.toBe(coveConversationCardId('cove-1', 'key-a'));
     expect(coveConversationCardId('cove-2', 'key-a')).not.toBe(coveConversationCardId('cove-1', 'key-a'));
+  });
+});
+
+describe('wave conversations', () => {
+  const row = {
+    id: 'card-3', waveId: 'wave-1', title: null, kind: 'wave-assistant',
+    state: 'starting' as const, updatedAt: 7,
+  };
+
+  it('decodes a list row into the app\'s own shape', () => {
+    const operation = waveConversationsOperation('wave 1');
+    expect(operation.method).toBe('GET');
+    expect(operation.path).toBe('/api/waves/wave%201/conversations');
+    expect(operation.responseSchema.parse([row])).toEqual([{
+      id: 'card-3', waveId: 'wave-1', title: null, kind: 'wave-assistant',
+      state: 'starting', updatedAt: 7,
+    }]);
+  });
+
+  /*
+   * A row is rejected, not coerced. `state` is the field that matters: it is
+   * the one the list renders a live dot from, and the server's contract is that
+   * it is either one of the seven session states or `null` because the LEFT
+   * JOIN found no session. A schema that let an unknown string through would
+   * hand the renderer a state nobody defined behaviour for.
+   */
+  it('rejects a row whose session state is not one the kernel can produce', () => {
+    expect(waveConversationsOperation('w').responseSchema.safeParse([{ ...row, state: 'dormant' }]).success)
+      .toBe(false);
+    expect(waveConversationsOperation('w').responseSchema.safeParse([{ ...row, state: null }]).success)
+      .toBe(true);
+  });
+
+  it('leaves the wave title absent rather than inventing one, and names the row Assistant', () => {
+    const conversation = toWaveConversation(row);
+    expect(conversationName(conversation)).toBe('Assistant');
+    expect(Object.hasOwn(conversation, 'waveTitle')).toBe(false);
+    expect(Object.hasOwn(conversation, 'turns')).toBe(false);
+  });
+
+  /*
+   * The two lists are separate kinds, not one kind with two sources. The
+   * server sends distinct markers and says the frontend branches on them; a
+   * transform that collapsed them would route assistant rows through the cove
+   * chat's presentation, which is the exact mistake #1189 §4.1 warns about.
+   */
+  it('does not collapse into the cove chat kind', () => {
+    expect(toWaveConversation(row).kind).not.toBe(toCoveConversation({ ...row, kind: 'shared-chat' }).kind);
   });
 });
 

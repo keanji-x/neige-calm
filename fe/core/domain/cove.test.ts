@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  coveFolderWireSchema, coveFoldersOperation, coveListOperation, coveOf, coveWireSchema,
-  sortedCoveFolders, sortedCoves, toCove, toCoveFolder, visibleCoves,
-  type Cove, type CoveFolder,
+  asFolderConflict, coveFolderWireSchema, coveFoldersOperation, coveListOperation, coveOf,
+  coveWireSchema, folderConflictMessage, sortedCoveFolders, sortedCoves, toCove, toCoveFolder,
+  visibleCoves, type Cove, type CoveFolder,
 } from './cove.js';
 
 const baseWire = { id: 'c1', name: 'Work', color: '#5B8DEF', sort: 1, created_at: 1, updated_at: 1 };
@@ -90,5 +90,53 @@ describe('cove folders', () => {
     const list = [folder({ id: 3, path: '/srv/b' }), folder({ id: 2, path: '/srv/a' }), folder({ id: 1, path: '/srv/a' })];
     expect(sortedCoveFolders(list).map((f) => f.id)).toEqual([1, 2, 3]);
     expect(list.map((f) => f.id)).toEqual([3, 2, 1]);
+  });
+});
+
+/*
+ * #1147 S3 — `POST /api/waves` answers a folder clash with a structured body
+ * that has no `error` key, so `core/api/client.ts` normalises it to the bare
+ * status text ("Conflict"). These are what turns that into a sentence.
+ */
+describe('folder conflict decode', () => {
+  const conflict = {
+    folder_id: 4, cove_id: 'c2', conflict_path: '/srv/app', conflict_kind: 'descendant',
+  } as const;
+
+  it('decodes the kernel 409 body', () => {
+    expect(asFolderConflict(conflict)).toEqual(conflict);
+  });
+
+  it('refuses any other error body rather than guessing at one', () => {
+    expect(asFolderConflict({ error: 'Conflict' })).toBeNull();
+    expect(asFolderConflict(null)).toBeNull();
+    expect(asFolderConflict('Conflict')).toBeNull();
+    // An unknown kind is not a fourth message; it is a body we cannot read.
+    expect(asFolderConflict({ ...conflict, conflict_kind: 'sibling' })).toBeNull();
+    expect(asFolderConflict({ ...conflict, cove_id: 7 })).toBeNull();
+  });
+
+  it('names the owning cove, the path, and a different remedy per kind', () => {
+    const descendant = folderConflictMessage(conflict, 'Atlas');
+    expect(descendant).toContain('cove “Atlas”');
+    expect(descendant).toContain('/srv/app');
+    expect(descendant).toContain('pick a different folder');
+
+    const ancestor = folderConflictMessage({ ...conflict, conflict_kind: 'ancestor' }, 'Atlas');
+    expect(ancestor).toContain('narrower claim');
+    expect(ancestor).not.toBe(descendant);
+
+    const equal = folderConflictMessage({ ...conflict, conflict_kind: 'equal' }, 'Atlas');
+    expect(equal).toContain('That exact folder');
+    expect(equal).not.toBe(descendant);
+    expect(equal).not.toBe(ancestor);
+  });
+
+  /* The cove may have been made in another tab, or deleted between the
+     conflict and this render. A uuid on screen would be worse than a phrase. */
+  it('degrades to "another cove" rather than printing an id', () => {
+    const message = folderConflictMessage(conflict, null);
+    expect(message).toContain('another cove');
+    expect(message).not.toContain('c2');
   });
 });

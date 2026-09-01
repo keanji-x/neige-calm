@@ -1090,16 +1090,88 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
             return Ok(());
         }
     }
-    let plain_chat = match inner.repo.card_get(inner.card_id.as_str()).await? {
-        Some(card) => crate::plain_chat::card_is_plain_chat(
-            &card,
-            inner.repo.card_role_get(card.id.as_str()).await?,
-            true,
-        ),
-        None => false,
-    };
+    // Two independent per-turn decisions that used to ride on one boolean
+    // (#1189 review A6). Splitting them is the whole point:
+    //
+    // * `skip_transcript_refresh` — skip the wave-level
+    //   `snapshot_transcripts_for_cards_in_wave` WRITE transaction below.
+    // * `skip_wave_diff` — issue the turn with no "wave state changes since
+    //   your last turn" block at all.
+    //
+    // A cove chat skips both: it lives alone on a hidden scaffolding wave, so
+    // there is nothing to snapshot and nothing to diff.
+    //
+    // A wave assistant skips only the first, and the asymmetry is deliberate.
+    //   - Skipping the WRITE: the refresh commits a wave-scoped wave-vcs
+    //     commit before every turn, and #1189's premise is N conversations on
+    //     one wave, so keeping it would multiply that write by N and make every
+    //     assistant turn contend for the same sqlite write lock as the spec
+    //     harness's own per-turn refresh.
+    //
+    //     This is a REAL, BOUNDED degradation — not "nothing is lost" — and the
+    //     boundary is written out here because widening the skip is only safe
+    //     inside it:
+    //       * `cards/<id>/events.json` and `cards/<id>/conversation.md` are
+    //         dirtied by exactly two places in the tree, both via
+    //         `wave_vcs::delta::add_card_event_paths`: `add_card_paths`
+    //         (reachable only from `CardAdded` / `CardUpdated`, i.e. card
+    //         creation) and `snapshot_transcripts_for_cards_in_wave` — this
+    //         very refresh. The ordinary event-driven commit path does NOT keep
+    //         them current: `HarnessItemAdded` / `HarnessPhaseChanged` /
+    //         `HarnessTranscriptCleared` / `HarnessUserMessageEnqueued` dirty
+    //         only `.payload.json` + `runtime.json`, and `CodexHook` /
+    //         `ClaudeHook` produce an EMPTY delta (`wave_vcs/delta.rs`).
+    //         `spec_harness_wave_vcs.rs::
+    //         since_last_turn_override_fences_post_refresh_hook_commit` pins
+    //         that fact directly: a post-refresh hook commit advances HEAD and
+    //         still does not contain its own transcript.
+    //       * So on this wave the freshness of BOTH transcript paths is
+    //         maintained solely by the spec harness's own per-turn refresh. The
+    //         event-driven path still keeps `report.md`, `runs/*`,
+    //         `cards/<id>/.payload.json`, `cards/<id>/runtime.json` and newly
+    //         added cards current; the skip degrades transcripts and nothing
+    //         else.
+    //
+    //     Why that degradation is acceptable for THIS role and only this role:
+    //     an assistant cannot read those paths at all. `wave_file` (ls/cat) and
+    //     `wave_history` are `require_role_any([Spec, Worker])`, so an
+    //     Assistant card is rejected by role; its wave-fs surface is
+    //     `wave_report*` (`[Spec, Assistant]`), and `report.md` IS kept fresh by
+    //     the event-driven path. The collaboration channel this design gives the
+    //     assistant is the report block, not the transcript.
+    //
+    //     Consequences for whoever touches this next: (a) do NOT extend the skip
+    //     to Spec or Worker cards — they can `wave_file cat`
+    //     `conversation.md`/`events.json` and would read a stale HEAD; (b) if
+    //     the spec harness of this wave ever stops refreshing per turn, these
+    //     two paths have no writer left and go stale for everyone. The root fix
+    //     is to make the hook / harness-item event transactions dirty the
+    //     transcript paths too; that changes `wave_vcs` delta semantics for all
+    //     cards and is deliberately out of scope here.
+    //   - Keeping the DIFF: this is what the assistant must not lose. It is the
+    //     wave's report patch plus the paths that changed since this
+    //     conversation's last turn — for a card whose entire job is answering
+    //     questions about the wave and editing its report, that block is the
+    //     context, not decoration. `since_last_turn_block` with no
+    //     `current_override` simply reads the wave's current head, so dropping
+    //     the refresh costs at most the freshness a concurrent refresh would
+    //     have added, never the block itself.
+    let (skip_transcript_refresh, skip_wave_diff) =
+        match inner.repo.card_get(inner.card_id.as_str()).await? {
+            Some(card) => {
+                let role = inner.repo.card_role_get(card.id.as_str()).await?;
+                if crate::plain_chat::card_is_plain_chat(&card, role, true) {
+                    (true, true)
+                } else if crate::plain_chat::card_is_wave_assistant(&card, role, true) {
+                    (true, false)
+                } else {
+                    (false, false)
+                }
+            }
+            None => (false, false),
+        };
     let last_seen_head_snapshot = inner.last_seen_head.lock().await.clone();
-    let refresh_head = if plain_chat {
+    let refresh_head = if skip_transcript_refresh {
         None
     } else {
         let refresh_repo = Arc::clone(&inner.repo);
@@ -1133,7 +1205,7 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
         refresh_head = ?refresh_head.as_deref(),
         "fetching since-last-turn diff"
     );
-    let diff = if plain_chat {
+    let diff = if skip_wave_diff {
         wave_vcs::SinceLastTurnBlock::empty()
     } else {
         diff_with_timeout(inner, refresh_head.as_ref()).await

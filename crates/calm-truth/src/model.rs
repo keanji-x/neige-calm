@@ -26,8 +26,8 @@ pub use crate::ids::{ActorId, CardId, CoveId, WaveId};
 // type-drift risk, issue #679 "Greenfield-specific risks" #4).
 pub use calm_types::model::{
     Card, CardRole, CardRuntimeView, Cove, CoveConversationSummary, CoveFolder, CoveKind,
-    CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave, WaveLifecycle,
-    WaveWorkspace, WaveWorkspaceKind, default_deletable,
+    CoveResolve, FolderConflict, FolderConflictKind, HarnessItem, Overlay, Wave,
+    WaveConversationSummary, WaveLifecycle, WaveWorkspace, WaveWorkspaceKind, default_deletable,
 };
 
 /// Wire shape of `NewCodexCardBody.theme` / `NewWave.theme`. Matches the
@@ -197,6 +197,49 @@ pub struct WavePatch {
     /// migration 0041). `Some(v)` sets the flag, omit to leave alone.
     /// Enforced by `calm.plan.upsert` rule 6 only from PR-C onward.
     pub require_task_gates: Option<bool>,
+    /// #1147 S3 — request a workspace change (design §更换与冻结).
+    ///
+    /// Handled entirely by `routes::waves::update_wave` and **never** by
+    /// `wave_update_tx`: a re-point is a filesystem move bracketed by two
+    /// transactions, not a column write, so there is nothing here for the
+    /// mechanical row writer to apply. It is also mutually exclusive with
+    /// every other field in this struct — see the route.
+    #[serde(default)]
+    pub workspace: Option<WaveWorkspacePatch>,
+}
+
+/// #1147 S3 — point a wave at a repository the user already has.
+///
+/// The only transition this expresses is `managed → attached`. There is no
+/// `managed → managed`: a managed path is *derived*
+/// (`<workspace-root>/<cove_id>/<wave_id>`, see
+/// `workspace_materialize::managed_workspace_path`) from a wave's cove and id,
+/// neither of which can change, so "re-allocate a managed workspace" would
+/// always re-derive the same path — an in-place reset, not a change. And a
+/// caller-supplied *managed* path is worse than useless: S5's recycle guard 2
+/// requires exactly `<root>/<cove>/<wave>` depth, so any other path produces a
+/// row whose directory can never be reclaimed.
+///
+/// `attached → *` stays refused (an attached repository belongs to the user;
+/// the server never moves, initializes or deletes it), which makes this a
+/// one-way door — and the write below stamps `frozen_at` to say so.
+#[derive(Clone, Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaveWorkspacePatch {
+    /// Must be `attached`. `managed` is a documented 400, not a silent no-op.
+    pub kind: WaveWorkspaceKind,
+    /// Absolute path to an existing Git work tree. Validated — existence and
+    /// git-ness included — *before* anything is written, because "the path was
+    /// wrong" surfacing later as a worker's `spawn-failed` is the defect
+    /// #1147 was opened on.
+    pub path: String,
+    /// Claim `path` for this wave's cove in the same transaction, exactly as
+    /// `POST /api/waves`'s field of the same name does (issue #275 rules:
+    /// equal / ancestor / descendant of any existing claim is a structured
+    /// 409). Default `false`: an unclaimed path is refused rather than
+    /// silently making a homeless wave.
+    #[serde(default)]
+    pub attach_folder: bool,
 }
 
 // ---------------- Card DTOs ----------------
