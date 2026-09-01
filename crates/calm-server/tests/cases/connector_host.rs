@@ -6,6 +6,9 @@
 //! * **#1** install + enable → Running, and still Running after a full service
 //!   restart (simulated by rebuilding host + registry from disk over the same
 //!   repo, which is exactly what boot does).
+//! * **#4** a `cli-query` connector resolves + pins its command, comes up
+//!   Running with its declared tool visible, executes it on `tools/call`, and
+//!   reports a non-zero exit as `isError` rather than as a transport failure.
 //! * **#3** a real `tools/call` returns real upstream data — against a local
 //!   stub HTTP MCP server that reproduces the recorded wire shape from §1.1
 //!   (single `event: message` frame, one `data:` line, no session header).
@@ -31,8 +34,9 @@
 //! the REAL `POST /api/waves/{id}/cards` route, not its two accessors.
 //!
 //! §4 #2 and #9 (discovery + underscore routing) are unit tests against the
-//! production projection/route functions in `mcp_server::transport`; §4 #4 is
-//! `cli-query` execution, which is a later slice.
+//! production projection/route functions in `mcp_server::transport`. §4 #4 —
+//! `cli-query` execution — landed in #1164 P3 and is covered at the bottom of
+//! this file, against a script the test writes and pins by absolute path.
 
 #![cfg(unix)]
 
@@ -950,44 +954,255 @@ async fn a_failing_connector_never_leaks_the_api_key_into_any_error_sink() {
     }
 }
 
-/// `cli-query` parses and installs in this slice but has no execution runtime
-/// yet. That is a "not implemented" condition, not a kernel fault: it must
-/// report through the same channel as every other connector bring-up failure
-/// (503 + an observable `Unavailable`), not as a 500. `HostError::BadState`
-/// has no arm in `spawn_error_to_calm`, so routing it through `BadState` gave
-/// an operator a kernel-fault-shaped 500.
-#[tokio::test]
-async fn cli_query_enable_is_a_503_not_a_kernel_fault_500() {
-    let b = boot().await;
-    let id = "cli-longbridge";
-    let dir = b.plugins_dir.join(id);
+// ===========================================================================
+// §4 #4 — `cli-query` execution (#1164 P3)
+//
+// The connector under test is a shell script the test writes into a temp dir
+// and pins by ABSOLUTE path, which is what an operator does for a real query
+// CLI. Nothing here touches the network and nothing depends on a binary being
+// installed on the runner.
+// ===========================================================================
+
+const CLI_ID: &str = "cli-longbridge";
+const CLI_TOOL: &str = "quote";
+
+/// Write an executable script and return its absolute path.
+fn write_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    let p = dir.join(name);
+    std::fs::write(&p, body).unwrap();
+    std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    p
+}
+
+/// Install a `cli-query` connector directory inside `plugins_dir` (D9: the
+/// source must live there so install hits the `src == dst` short-circuit).
+fn write_cli_connector(plugins_dir: &Path, command: &str, args: &[&str]) -> PathBuf {
+    let dir = plugins_dir.join(CLI_ID);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("manifest.json"),
         json!({
             "manifest_version": 1,
             "kind": "cli-query",
-            "id": id,
+            "id": CLI_ID,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",
             "display_name": "Longbridge",
             "cli_query": {
-                "command": "longbridge",
+                "command": command,
+                "timeout_ms": 5_000,
                 "tools": [{
-                    "name": "quote",
+                    "name": CLI_TOOL,
+                    "description": "Get a quote",
                     "input_schema": {
                         "type": "object",
                         "properties": { "symbol": { "type": "string" } },
                         "required": ["symbol"],
                         "additionalProperties": false
                     },
-                    "args": ["quote", "{{symbol}}"]
+                    "args": args
                 }]
             }
         })
         .to_string(),
     )
     .unwrap();
+    dir
+}
+
+/// §4 #1/#4 for `cli-query`: install + enable → Running, with the declared tool
+/// visible through the same boot-audit read every other connector test uses.
+#[tokio::test]
+async fn cli_query_installs_and_enables_and_publishes_its_tool() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(bin.path(), "lb.sh", "#!/bin/sh\necho \"quote:$1\"\n");
+    let dir = write_cli_connector(
+        &b.plugins_dir,
+        &script.display().to_string(),
+        &["quote", "{{symbol}}"],
+    );
+
+    let host = b.host();
+    let state = b.state(Arc::clone(&host));
+    let (status, body) = post_json(
+        &state,
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": dir.display().to_string() } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "install failed: {body}");
+
+    let (status, body) =
+        post_json(&state, &format!("/api/plugins/{CLI_ID}/enable"), json!({})).await;
+    assert_eq!(status, StatusCode::OK, "enable failed: {body}");
+
+    let st = state
+        .plugin
+        .status(CLI_ID)
+        .await
+        .expect("observable status");
+    assert!(
+        matches!(st.status, PluginRuntimeStatus::Running),
+        "got {:?}",
+        st.status
+    );
+    assert!(state.plugin.running_plugin_ids().await.contains(CLI_ID));
+
+    // The tool materialized BEFORE the live insert (§2.7(1)) — the same
+    // structural witness the mcp-http path is held to.
+    let order = state
+        .plugin
+        .connector_spawn_order(CLI_ID)
+        .expect("a connector spawn must record its ordering");
+    assert!(
+        order.materialized_before_live_insert(),
+        "materialization must precede the live insert: {order:?}"
+    );
+
+    // …and it is visible through the exact read the boot audit performs.
+    let tools = boot_audit_tool_names(&state.plugin).await;
+    assert!(
+        tools.contains(&format!("{CLI_ID}::{CLI_TOOL}")),
+        "the declared tool must be visible: {tools:?}"
+    );
+
+    // The client is the new variant, and the command was pinned absolute.
+    let client = state
+        .plugin
+        .connector_client(CLI_ID)
+        .await
+        .expect("running connector must expose a client");
+    let ConnectorClient::Cli(cli) = &client else {
+        panic!("expected a Cli connector client, got {client:?}");
+    };
+    assert_eq!(cli.program(), script.as_path());
+    assert!(cli.program().is_absolute());
+    // `mcp_client()` stays stdio-only: a cli-query connector is not an app.
+    assert!(state.plugin.mcp_client(CLI_ID).await.is_none());
+    assert_eq!(client.variant_name(), "cli-query");
+}
+
+/// §4 #4 — calling the materialized tool actually runs the binary and returns
+/// its stdout, with the argument substituted as one whole argv element.
+#[tokio::test]
+async fn cli_query_tools_call_runs_the_binary_and_returns_its_stdout() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    // Prints each argv element on its own line, so the test can see EXACTLY
+    // how the template was rendered — one element, not a shell-split string.
+    let script = write_script(
+        bin.path(),
+        "argv.sh",
+        "#!/bin/sh\nfor a in \"$@\"; do echo \"arg:$a\"; done\n",
+    );
+    write_cli_connector(
+        &b.plugins_dir,
+        &script.display().to_string(),
+        &["quote", "{{symbol}}"],
+    );
+    let host = b.host();
+    seed_row(&b, CLI_ID).await;
+    host.spawn(CLI_ID)
+        .await
+        .expect("cli-query connector spawns");
+
+    let client = host.connector_client(CLI_ID).await.expect("client");
+    let ConnectorClient::Cli(cli) = &client else {
+        panic!("expected a Cli client, got {client:?}");
+    };
+
+    // A value full of shell metacharacters, to prove there is no shell.
+    let symbol = "700.HK; rm -rf / && echo $HOME";
+    let res = cli
+        .tools_call(CLI_TOOL, json!({ "symbol": symbol }))
+        .await
+        .expect("tools/call");
+    assert_eq!(res.is_error, Some(false));
+    let text = res.content[0].text.clone().unwrap();
+    assert_eq!(
+        text,
+        format!("arg:quote\narg:{symbol}\n"),
+        "the slot must render as exactly one argv element"
+    );
+
+    // Unknown argument keys are ignored, not an error (v0 does no full
+    // JSON-Schema validation).
+    let res = cli
+        .tools_call(CLI_TOOL, json!({ "symbol": "X", "extra": "Y" }))
+        .await
+        .expect("tools/call");
+    assert_eq!(res.content[0].text.as_deref(), Some("arg:quote\narg:X\n"));
+
+    // A missing required slot is a refusal that names it — never an empty argv
+    // element handed to the binary.
+    let err = cli
+        .tools_call(CLI_TOOL, json!({}))
+        .await
+        .expect_err("a missing slot must be refused");
+    assert!(err.message.contains("symbol"), "{}", err.message);
+}
+
+/// A non-zero exit is the CHILD's verdict, not a transport failure: the call
+/// succeeds and carries `isError: true` plus whatever the command printed.
+/// Reporting it as an `Err` would make "the query found nothing" and "the
+/// kernel could not run the query" indistinguishable to an agent.
+#[tokio::test]
+async fn cli_query_non_zero_exit_is_is_error_true_with_the_output() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(
+        bin.path(),
+        "fail.sh",
+        "#!/bin/sh\necho 'partial rows'\necho 'upstream refused' >&2\nexit 7\n",
+    );
+    write_cli_connector(
+        &b.plugins_dir,
+        &script.display().to_string(),
+        &["quote", "{{symbol}}"],
+    );
+    let host = b.host();
+    seed_row(&b, CLI_ID).await;
+    host.spawn(CLI_ID).await.expect("connector spawns");
+
+    let client = host.connector_client(CLI_ID).await.expect("client");
+    let ConnectorClient::Cli(cli) = &client else {
+        panic!("expected a Cli client, got {client:?}");
+    };
+    let res = cli
+        .tools_call(CLI_TOOL, json!({ "symbol": "X" }))
+        .await
+        .expect("a failing command must NOT surface as a transport error");
+    assert_eq!(res.is_error, Some(true));
+    let joined: String = res
+        .content
+        .iter()
+        .filter_map(|c| c.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(joined.contains("partial rows"), "{joined}");
+    assert!(joined.contains("upstream refused"), "{joined}");
+    assert!(
+        joined.contains('7'),
+        "the exit status must be reported: {joined}"
+    );
+
+    // The connector stays Running: one failing query is not a dead connector.
+    assert!(host.running_plugin_ids().await.contains(CLI_ID));
+}
+
+/// Design R5 — an unresolvable bare command is a 503 whose reason names the
+/// service PATH and the directories searched. The case this exists for is a
+/// docker preview stack that simply has no such binary; "command not found"
+/// alone tells the operator nothing about where the kernel looked.
+#[tokio::test]
+async fn cli_query_unresolvable_command_is_a_503_naming_the_path() {
+    let b = boot().await;
+    let dir = write_cli_connector(
+        &b.plugins_dir,
+        "definitely-not-a-real-binary-1164",
+        &["quote", "{{symbol}}"],
+    );
 
     let state = b.state(b.host());
     let (status, body) = post_json(
@@ -998,25 +1213,139 @@ async fn cli_query_enable_is_a_503_not_a_kernel_fault_500() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "install failed: {body}");
 
-    let (status, body) = post_json(&state, &format!("/api/plugins/{id}/enable"), json!({})).await;
+    let (status, body) =
+        post_json(&state, &format!("/api/plugins/{CLI_ID}/enable"), json!({})).await;
     assert_eq!(
         status,
         StatusCode::SERVICE_UNAVAILABLE,
-        "cli-query enable must be a 503, got {status}: {body}"
+        "an unresolvable command must be a 503, got {status}: {body}"
+    );
+    let rendered = body.to_string();
+    assert!(
+        rendered.contains("PATH"),
+        "the reason must name PATH: {rendered}"
     );
     assert!(
-        body.to_string().contains("not implemented"),
-        "the reason must be actionable: {body}"
+        rendered.contains("definitely-not-a-real-binary-1164"),
+        "the reason must name the command: {rendered}"
+    );
+    let service_path = std::env::var("PATH").unwrap_or_default();
+    let first_dir = service_path
+        .split(':')
+        .find(|s| !s.is_empty())
+        .unwrap_or("/");
+    assert!(
+        rendered.contains(first_dir),
+        "the reason must list the directories searched ({first_dir}): {rendered}"
     );
 
-    // And it is observable, like every other failed connector.
-    let st = state.plugin.status(id).await.expect("observable status");
+    // Observable, like every other failed connector.
+    let st = state
+        .plugin
+        .status(CLI_ID)
+        .await
+        .expect("observable status");
     assert!(
         matches!(st.status, PluginRuntimeStatus::Unavailable { .. }),
         "got {:?}",
         st.status
     );
-    assert!(!state.plugin.running_plugin_ids().await.contains(id));
+    assert!(!state.plugin.running_plugin_ids().await.contains(CLI_ID));
+}
+
+/// A `secret_env` key with no matching secret is a bring-up failure whose
+/// reason names the key and the file — and never the value of any secret.
+#[tokio::test]
+async fn cli_query_missing_secret_is_a_503_that_names_the_key_and_the_file() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(bin.path(), "lb.sh", "#!/bin/sh\necho hi\n");
+    let dir = b.plugins_dir.join(CLI_ID);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("manifest.json"),
+        json!({
+            "manifest_version": 1,
+            "kind": "cli-query",
+            "id": CLI_ID,
+            "version": "0.1.0",
+            "min_kernel_version": "0.0.1",
+            "display_name": "Longbridge",
+            "cli_query": {
+                "command": script.display().to_string(),
+                "secret_env": ["LB_TOKEN"],
+                "tools": [{
+                    "name": CLI_TOOL,
+                    "input_schema": { "type": "object", "properties": {} },
+                    "args": ["quote"]
+                }]
+            }
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let state = b.state(b.host());
+    post_json(
+        &state,
+        "/api/plugins/install",
+        json!({ "source": { "kind": "local_path", "path": dir.display().to_string() } }),
+    )
+    .await;
+    let (status, body) =
+        post_json(&state, &format!("/api/plugins/{CLI_ID}/enable"), json!({})).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let rendered = body.to_string();
+    assert!(rendered.contains("LB_TOKEN"), "{rendered}");
+    assert!(rendered.contains("secrets.json"), "{rendered}");
+}
+
+/// §2.5 — `neige.*` callbacks and forge dispatch stay app-only for the new
+/// variant too. Widening either would hand a manifest-declared local binary the
+/// kernel's inbound callback surface.
+#[tokio::test]
+async fn cli_query_connectors_are_refused_app_only_surfaces() {
+    let b = boot().await;
+    let bin = tempfile::tempdir().unwrap();
+    let script = write_script(bin.path(), "lb.sh", "#!/bin/sh\necho hi\n");
+    write_cli_connector(&b.plugins_dir, &script.display().to_string(), &["quote"]);
+    let host = b.host();
+    seed_row(&b, CLI_ID).await;
+    host.spawn(CLI_ID).await.expect("connector spawns");
+
+    let err = host
+        .dispatch_neige_callback(CLI_ID, "neige.overlay.set", json!({}), None)
+        .await
+        .expect_err("neige.* must be refused for a cli-query connector");
+    assert_eq!(err.code, -32002, "{err:?}");
+    assert!(
+        err.message.contains("cli-query"),
+        "the refusal must name the KIND: {}",
+        err.message
+    );
+
+    // `rotate-token` keeps its non-app 4xx: a connector has no plugin token.
+    let state = b.state(Arc::clone(&host));
+    let (status, _) = post_json(
+        &state,
+        &format!("/api/plugins/{CLI_ID}/rotate-token"),
+        json!({}),
+    )
+    .await;
+    assert!(
+        status.is_client_error(),
+        "rotate-token on a connector must be a 4xx, got {status}"
+    );
+
+    // …and a process-less connector reports an EMPTY stderr tail (the id is
+    // live, so this is `Some(vec![])`, not `None`) and stops cleanly.
+    assert_eq!(
+        host.stderr_tail(CLI_ID, 10).await,
+        Some(Vec::new()),
+        "a connector has no child process, so it has no stderr"
+    );
+    host.stop(CLI_ID).await.expect("stop must succeed");
+    assert!(!host.running_plugin_ids().await.contains(CLI_ID));
 }
 
 /// §2.4 — a wrongly-permissioned secrets file refuses the enable outright.
