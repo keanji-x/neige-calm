@@ -128,15 +128,33 @@ pub async fn spawn_recovered_harness(
         return Ok(RecoveryOutcome::Skipped);
     };
     let mut snapshot = HarnessSnapshot::from_value_strict(state_json);
-    let catch_up_watermark = snapshot.push_watermark;
-    replay_harness_events_since(
-        repo.clone(),
-        &runtime.card_id,
-        &card.wave_id,
-        catch_up_watermark,
-        &mut snapshot,
-    )
-    .await?;
+    // #1189 — the catch-up replay is a SPEC-push catch-up, and it belongs to
+    // the spec card alone. `replay_harness_events_since` filters with
+    // `event_warrants_spec_push_with_role`, i.e. task completions, gate
+    // verdicts, report edits, forge/workspace notifications — the stream the
+    // live dispatcher pushes only to the wave's spec harness. A conversation
+    // harness (cove chat or wave assistant) is never a live recipient of any of
+    // it, so replaying it here would not be "catching up": it would inject a
+    // backlog the conversation was never meant to see, starting from watermark
+    // 0 on a freshly minted assistant, and hard-fire a turn before the user has
+    // said anything.
+    //
+    // Dispatch on the persisted role rather than on a payload marker: the role
+    // is what the live push path itself resolves, and an unknown/absent role
+    // falls into the no-replay arm, which is the fail-closed direction (a
+    // missed catch-up is a stale spec, an unwanted one is a conversation
+    // talking about somebody else's tasks).
+    if role == Some(CardRole::Spec) {
+        let catch_up_watermark = snapshot.push_watermark;
+        replay_harness_events_since(
+            repo.clone(),
+            &runtime.card_id,
+            &card.wave_id,
+            catch_up_watermark,
+            &mut snapshot,
+        )
+        .await?;
+    }
     let runtime_id = runtime.id.clone();
     // #953 §5 placement invariant: the reservation sits exactly where the
     // old `remove()` sat — after recovery replay, immediately before handle

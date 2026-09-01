@@ -407,6 +407,67 @@ pub(crate) const WORKER_SYSTEM_PROMPT_PLACEHOLDER: &str =
 pub(crate) const WORKER_CODEX_SYSTEM_PROMPT: &str =
     concat!(worker_prompt_head_mcp!(), worker_prompt_tail!());
 
+/// #1189 — the wave assistant's system prompt.
+///
+/// Deliberately not a trimmed copy of [`SPEC_SYSTEM_PROMPT_TEMPLATE`]: most of
+/// that prompt instructs the agent to drive the lifecycle state machine and the
+/// plan, and every one of those tools rejects `CardRole::Assistant` at the
+/// handler. Describing them here would teach the agent to spend turns on calls
+/// that can only come back `-32602`.
+///
+/// Two things in here are load-bearing rather than stylistic:
+///
+/// * **"read with markers before you rewrite"** — a `calm.report.write` style
+///   full-document rewrite is unavailable to this role, and a block write that
+///   re-mints ids reads as "delete every task block and create new ones", which
+///   the task-block guard rejects as a whole transaction (design §3.2a-bis.4).
+///   The marker read is what keeps existing block ids stable.
+/// * **"you do not own the plan"** — the guard exists, but an agent that keeps
+///   trying to write task blocks produces a stream of rejected turns instead of
+///   answering the user.
+pub(crate) const ASSISTANT_SYSTEM_PROMPT_TEMPLATE: &str = "\
+You are an assistant conversation on wave `{wave_id}`.
+
+You are talking with the user. Answer them. You are NOT the wave's spec agent: \
+you do not own the wave's lifecycle, its plan, or its workers, and the kernel \
+will reject you if you try to drive any of them.
+
+## What you can do
+
+* **Read the wave.** Use the `neige` shell CLI (`neige state`, `neige ls`, \
+  `neige cat`) for wave and card state, and `calm.report.read` for the wave \
+  report.
+* **Run shell commands** in the wave's workspace, subject to the usual sandbox.
+* **Write prose into the wave report** through the block tools: \
+  `calm.report.blocks.upsert`, `.move`, `.delete` \
+  (`calm.report.blocks.kinds` lists the block vocabulary), or \
+  `calm.report.write_markdown` for a whole-document rewrite.
+
+## What you cannot do
+
+Lifecycle transitions, plan writes, task verdicts, review, admin, and the \
+whole-document `calm.report.write` are not yours. Neither are `task` blocks: \
+the wave's plan belongs to the spec agent, and a `task` block written from here \
+is rejected — the whole write, not just that block. If the user asks for work \
+to be scheduled, say so plainly and let them take it to the spec agent.
+
+## Writing to the report, concretely
+
+1. Call `calm.report.read` with `with_markers: true` FIRST. It gives you the \
+   document's `docRev` and every block's `{id, kind, rev}`.
+2. To add a block, pass that `docRev` as `if_doc_rev`. To replace one, pass \
+   the block's own `rev` as `if_rev` together with its `id`.
+3. `calm.report.write_markdown` needs the SAME marker read first, and you must \
+   send the markers back. Without them your rewrite mints new ids for existing \
+   content, which reads as deleting every block and creating replacements — \
+   and if any of them were task blocks the entire write is refused.
+4. Another session may be writing at the same time. A revision conflict means \
+   somebody else moved first: re-read and reapply, do not retry blindly.
+
+Keep the report's own structure and conventions; you are a guest in a document \
+the spec agent maintains.
+";
+
 /// Substitute the per-spawn placeholders into a prompt template. Today
 /// the only placeholder is `{wave_id}`; lifted out as its own helper so
 /// PR7+ can extend the substitution set without rewriting call sites.
@@ -462,6 +523,22 @@ pub fn render_worker_prompt_for_e2e(wave_id: &str, codex: bool) -> String {
         SeededCardRole::Worker
     };
     render_system_prompt(role.prompt_template(), wave_id)
+}
+
+/// Test-only seam (#1189): the exact `developer_instructions` string a wave
+/// assistant's `thread/start` must carry.
+///
+/// Exposed rather than re-spelled in the test on purpose. An integration test
+/// that asserted on a substring ("contains `assistant`") would stay green if the
+/// assistant profile were wired to the SPEC prompt, which is one of the two
+/// mutations #1189's A2 gate has to catch; a test that re-declared the template
+/// would stay green if the adapter stopped rendering the placeholder. Handing
+/// out the rendered string makes the assertion an equality against production's
+/// own value.
+#[cfg(feature = "fixtures")]
+#[doc(hidden)]
+pub fn render_assistant_prompt_for_test(wave_id: &str) -> String {
+    render_system_prompt(ASSISTANT_SYSTEM_PROMPT_TEMPLATE, wave_id)
 }
 
 /// Roles that legitimately need role-specific Codex setup.
