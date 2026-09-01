@@ -8,6 +8,7 @@
 use crate::mcp_server::tools::plan::{PlanTaskInput, plan_template_task_block_payload};
 use crate::wave_report::WaveReportPayload;
 use calm_types::report_blocks::render_fence;
+use calm_types::wave_report::report_contract_prefix_for_workflow_template;
 use serde_json::{Value, json};
 
 pub const ISSUE_DEVELOPMENT: &str = "issue-development";
@@ -78,7 +79,12 @@ fn task(
 }
 
 fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> WaveReportPayload {
-    let mut body = intro.trim_end().to_string();
+    // #1185 §1.5 B — these templates bypass `WaveReportPayload::initial()`, so
+    // without this prefix they ship with no maintenance contract at all: no
+    // section list, no word budget, no current-snapshot rule. The prefix is
+    // already closed; never concatenate an unclosed fragment here.
+    let mut body = report_contract_prefix_for_workflow_template().to_string();
+    body.push_str(intro.trim_end());
     body.push_str("\n\n");
     for task in tasks {
         let mut payload = plan_template_task_block_payload(task);
@@ -186,9 +192,10 @@ fn small_change_report() -> WaveReportPayload {
         concat!(
             "# Plan\n\n",
             "Short inspect → implement → verify loop. Treat these task blocks as ",
-            "the authoritative pre-set plan. Activate by replacing them, authoring ",
-            "a real `gate` from the target repo toolchain (formatter, linter, tests), ",
-            "and setting `ready: true`. Do not mint duplicate tasks.\n"
+            "the authoritative pre-set plan. Activate by replacing those task blocks, ",
+            "authoring a real `gate` from the target repo toolchain (formatter, linter, ",
+            "tests), and setting `ready: true`. Do not mint duplicate tasks. Prose blocks ",
+            "are NOT a plan to activate: maintain them per this document's own contract.\n"
         ),
         &[
             task(
@@ -227,8 +234,9 @@ fn investigation_report() -> WaveReportPayload {
             "Read-only investigation. Gather facts, then write findings in this ",
             "report. Do not open a pull request, merge, or otherwise change the ",
             "bound repository. Treat these task blocks as the authoritative ",
-            "pre-set plan. Activate by replacing them with `ready: true`. ",
-            "Do not mint duplicate tasks.\n"
+            "pre-set plan. Activate by replacing those task blocks with `ready: true`. ",
+            "Do not mint duplicate tasks. Prose blocks are NOT a plan to activate: ",
+            "maintain them per this document's own contract.\n"
         ),
         &[
             task(
@@ -256,9 +264,10 @@ fn investigation_report() -> WaveReportPayload {
 const ISSUE_DEVELOPMENT_INTRO: &str = "\
 # Plan
 
-Pre-set issue-development plan. Treat the prose and `task` blocks as the \
-authoritative plan. Activate by replacing those blocks and setting `ready: true` \
-— use the read's block ids and revision as replace anchors. Do not mint duplicate tasks.
+Pre-set issue-development plan. Treat the `task` blocks as the \
+authoritative plan. Activate by replacing those task blocks and setting `ready: true` \
+— use the read's block ids and revision as replace anchors. Do not mint duplicate tasks. \
+Prose blocks are NOT a plan to activate: maintain them per this document's own contract.
 
 For this wave, drive dual-review convergence for each review subject.
 
@@ -385,6 +394,83 @@ mod tests {
         assert!(investigation.body.contains("\"key\": \"write-findings\""));
         assert!(investigation.body.contains("Do not open a pull request"));
         assert!(!investigation.body.contains("\"gate\""));
+    }
+
+    /// #1185 §1.5 B — the built-in templates bypass
+    /// `WaveReportPayload::initial()`, so the maintenance contract has to be
+    /// concatenated onto their bodies explicitly. Without it they ship with no
+    /// section list, no word budget and no current-snapshot rule: #1146's
+    /// guardrails would vanish on exactly the first-party workflows.
+    #[test]
+    fn every_builtin_template_carries_the_maintenance_contract() {
+        let prefix = report_contract_prefix_for_workflow_template();
+        for (name, report) in [
+            ("issue-development", issue_development_report()),
+            ("small-change", small_change_report()),
+            ("investigation", investigation_report()),
+        ] {
+            assert!(
+                report.body.starts_with(prefix),
+                "{name} must lead with the closed contract prefix"
+            );
+            let slices = calm_types::report_blocks::split_body(&report.body);
+            assert!(
+                slices[0].raw.ends_with("-->\n\n"),
+                "{name}: the contract must be its own closed block, got {:?}",
+                slices[0].raw
+            );
+            assert_eq!(
+                report.body.matches("-->").count(),
+                1,
+                "{name}: a second `-->` would close the comment early and leak the tail"
+            );
+            assert!(
+                report.body.contains("# Plan"),
+                "{name} keeps its own plan section"
+            );
+            assert!(
+                report.body.contains("Plan —— 预置计划"),
+                "{name} must say what happens to `# Plan` once its tasks are activated"
+            );
+            assert!(
+                report.report_startup_read_required(),
+                "{name} is not the default skeleton"
+            );
+        }
+    }
+
+    /// #1185 §1.5 B — the anti-flattening rewrite of the three intros.
+    ///
+    /// Activation targets `task` blocks only. Ordering the agent to "replace
+    /// the prose blocks" is precisely the instruction that destroys a report
+    /// arriving with its own structure — and the templates are the delivery
+    /// path the contract mechanism exists for, so an intro still carrying it
+    /// would put two contradictory orders in one document.
+    #[test]
+    fn no_builtin_intro_orders_the_prose_replaced() {
+        for (name, report) in [
+            ("issue-development", issue_development_report()),
+            ("small-change", small_change_report()),
+            ("investigation", investigation_report()),
+        ] {
+            let intro = &report.body;
+            assert!(
+                !intro.contains("Treat the prose"),
+                "{name} must not treat prose blocks as a plan to activate"
+            );
+            assert!(
+                !intro.contains("the prose and"),
+                "{name} must not scope activation to prose blocks"
+            );
+            assert!(
+                intro.contains("Prose blocks are NOT a plan to activate"),
+                "{name} must say prose is maintained, not replaced"
+            );
+            assert!(
+                intro.contains("task blocks"),
+                "{name} must scope activation to task blocks"
+            );
+        }
     }
 
     #[test]

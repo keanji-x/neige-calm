@@ -55,6 +55,10 @@ impl CardIdentity {
     ///
     /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
     /// * `CardRole::Worker`     → provider-specific AI session actor
+    /// * `CardRole::Assistant`  → provider-specific AI session actor too
+    ///   (#1189 §3.4a: the provider arm inherits every existing negative
+    ///   rule for free; `role_gate` tells Assistant apart by the cached
+    ///   `CardRole`, not by the actor variant).
     /// * `CardRole::ReportCard` → unreachable here too (report cards are
     ///   read-only kernel-projected payload and don't get an MCP token).
     ///   Mapped by provider for the same total-function reason — the role
@@ -65,7 +69,7 @@ impl CardIdentity {
         let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
             CardRole::Spec => ActorId::AiSpecSession(session_id),
-            CardRole::Worker | CardRole::ReportCard => {
+            CardRole::Worker | CardRole::ReportCard | CardRole::Assistant => {
                 provider_session_actor(&self.provider, session_id)
             }
         }
@@ -115,13 +119,14 @@ impl ToolCallIdentity {
     ///
     /// * `CardRole::Spec`       → [`ActorId::AiSpecSession`]
     /// * `CardRole::Worker`     → provider-specific AI session actor
+    /// * `CardRole::Assistant`  → provider-specific AI session actor (#1189).
     /// * `CardRole::ReportCard` → provider-specific total-function fallback;
     ///   write gates still reject report-card writes.
     pub fn to_actor_id(&self) -> ActorId {
         let session_id = WorkerSessionId::from(self.session_id.clone());
         match self.role {
             CardRole::Spec => ActorId::AiSpecSession(session_id),
-            CardRole::Worker | CardRole::ReportCard => {
+            CardRole::Worker | CardRole::ReportCard | CardRole::Assistant => {
                 provider_session_actor(&self.provider, session_id)
             }
         }
@@ -646,7 +651,12 @@ mod tests {
 
         for name in hidden {
             assert!(registry.lookup(name).is_some(), "{name} handler registered");
-            for role in [CardRole::Spec, CardRole::Worker, CardRole::ReportCard] {
+            for role in [
+                CardRole::Spec,
+                CardRole::Worker,
+                CardRole::ReportCard,
+                CardRole::Assistant,
+            ] {
                 let names = registry
                     .descriptors_for_role(role)
                     .into_iter()

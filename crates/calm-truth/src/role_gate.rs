@@ -57,7 +57,7 @@
 
 use crate::card_role_cache::CardRoleCache;
 use crate::event::{Event, EventScope};
-use crate::ids::{ActorId, CardId};
+use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::CardRole;
 use crate::wave_cove_cache::WaveCoveCache;
 use crate::worker::WorkerSessionId;
@@ -159,6 +159,11 @@ pub enum RoleViolation {
 
     #[error("worker card {card} is out of scope {scope}")]
     WorkerOutOfScope { card: CardId, scope: String },
+
+    /// #1189 — an `Assistant`-roled card wrote outside the two card
+    /// scopes it owns (itself, and its home wave's report card).
+    #[error("assistant card {card} is out of scope {scope}")]
+    AssistantOutOfScope { card: CardId, scope: String },
 
     #[error(
         "AI worker actor references card {card} that the role cache does not know — \
@@ -622,6 +627,15 @@ pub fn enforce_role(
             Some(CardRole::ReportCard) => {
                 enforce_card_self_scope(card_id, scope, cache, wave_cove_cache)?;
             }
+            // #1189 — Assistant cards are the Worker self-scope rule
+            // loosened by exactly one card: their home wave's report
+            // card. Everything else (Wave/Cove/System scope, another
+            // wave's report card, someone else's worker card) is
+            // refused, which is what pins "an assistant can neither
+            // advance the lifecycle nor dispatch a task".
+            Some(CardRole::Assistant) => {
+                enforce_assistant_scope(card_id, scope, cache, wave_cove_cache)?;
+            }
         }
     }
 
@@ -649,32 +663,104 @@ fn enforce_card_self_scope(
     cache: &CardRoleCache,
     wave_cove_cache: &WaveCoveCache,
 ) -> Result<(), RoleViolation> {
-    let card_matches = matches!(scope, EventScope::Card { card, .. } if card == card_id);
-    if !card_matches {
-        return Err(RoleViolation::WorkerOutOfScope {
-            card: card_id.clone(),
-            scope: format!("scope.card mismatch: {scope:?}"),
-        });
-    }
-    // Card matched. Now cross-check `scope.wave` against the card's
-    // immutable home wave. `wave_of` returning None at this point is
-    // impossible — the caller just got `Some(_)` for the same card
-    // from the same cache — but the explicit `.expect` documents the
-    // invariant for a future refactor.
-    let home_wave = cache
-        .wave_of(card_id)
-        .expect("wave_of must be Some when get() returned Some — same cache entry");
-    let (scope_wave, scope_cove) = match scope {
-        EventScope::Card { wave, cove, .. } => (wave, cove),
-        // Unreachable: `card_matches` above already pinned the variant
-        // to `EventScope::Card`.
-        _ => unreachable!("card_matches guarantees Card variant"),
+    enforce_card_scope(
+        card_id,
+        scope,
+        cache,
+        wave_cove_cache,
+        &|target, _home| target == card_id,
+        &|card, scope| RoleViolation::WorkerOutOfScope { card, scope },
+    )
+}
+
+/// #1189 — [`enforce_card_self_scope`] loosened by exactly one card.
+///
+/// An `Assistant`-roled card may write into its own card scope **or**
+/// into the scope of its home wave's report card (`role == ReportCard`
+/// **and** same home wave — the report card of *another* wave is
+/// refused). The `wave` / `cove` cross-checks are the same #232 / #234
+/// anti-spoof checks the Worker arm runs, so an assistant can neither
+/// fan an event out to a foreign wave nor claim a foreign cove.
+///
+/// Everything else is refused, including every non-`Card` scope. That
+/// last clause is what pins the two §2 non-capabilities: `Wave`-scoped
+/// events (lifecycle transitions, dispatch requests) never reach an
+/// assistant-authored write.
+fn enforce_assistant_scope(
+    card_id: &CardId,
+    scope: &EventScope,
+    cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
+) -> Result<(), RoleViolation> {
+    enforce_card_scope(
+        card_id,
+        scope,
+        cache,
+        wave_cove_cache,
+        &|target, home_wave| {
+            target == card_id
+                || (cache.get(target) == Some(CardRole::ReportCard)
+                    && cache.wave_of(target).as_ref() == Some(home_wave))
+        },
+        &|card, scope| RoleViolation::AssistantOutOfScope { card, scope },
+    )
+}
+
+/// Shared body of [`enforce_card_self_scope`] and
+/// [`enforce_assistant_scope`]: the scope must be `EventScope::Card`,
+/// its `card` must satisfy `target_allowed`, and its `wave` / `cove`
+/// must match the acting card's home wave and that wave's persisted
+/// cove.
+fn enforce_card_scope(
+    card_id: &CardId,
+    scope: &EventScope,
+    cache: &CardRoleCache,
+    wave_cove_cache: &WaveCoveCache,
+    target_allowed: &dyn Fn(&CardId, &WaveId) -> bool,
+    violation: &dyn Fn(CardId, String) -> RoleViolation,
+) -> Result<(), RoleViolation> {
+    // `get()` (in the caller) and `wave_of()` are two independent DashMap
+    // lookups, so a card deleted between them makes `wave_of` return
+    // `None`. Every denial below therefore has to be reachable without a
+    // successful `wave_of`: the non-Card scopes are refused before it is
+    // consulted, and the lookup itself is fail-closed (see below) so that
+    // "Card scope naming the wrong card" — the out-of-bounds write path —
+    // is a clean violation under the same delete race, exactly as it was
+    // before the check was split into variant + target halves.
+    let EventScope::Card {
+        card: target,
+        wave: scope_wave,
+        cove: scope_cove,
+    } = scope
+    else {
+        return Err(violation(
+            card_id.clone(),
+            format!("scope.card mismatch: {scope:?}"),
+        ));
     };
+    // Fail closed: the acting card losing its cache entry between the
+    // caller's `get()` and this lookup means we can no longer prove the
+    // scope is the card's own home, and "cannot prove" is a denial, never
+    // a panic inside the kernel gate.
+    let Some(home_wave) = cache.wave_of(card_id) else {
+        return Err(violation(
+            card_id.clone(),
+            format!("scope.card mismatch: {scope:?}"),
+        ));
+    };
+    if !target_allowed(target, &home_wave) {
+        return Err(violation(
+            card_id.clone(),
+            format!("scope.card mismatch: {scope:?}"),
+        ));
+    }
+    // Target accepted. Now cross-check `scope.wave` against the acting
+    // card's immutable home wave.
     if scope_wave != &home_wave {
-        return Err(RoleViolation::WorkerOutOfScope {
-            card: card_id.clone(),
-            scope: format!("scope.wave mismatch: home={home_wave}, scope={scope:?}"),
-        });
+        return Err(violation(
+            card_id.clone(),
+            format!("scope.wave mismatch: home={home_wave}, scope={scope:?}"),
+        ));
     }
     // #234 — cross-check `scope.cove` against the home wave's persisted
     // cove. The wave→cove cache is write-through-populated in
@@ -687,10 +773,10 @@ fn enforce_card_self_scope(
          wave_create_tx writes through unconditionally",
     );
     if scope_cove != &home_cove {
-        return Err(RoleViolation::WorkerOutOfScope {
-            card: card_id.clone(),
-            scope: format!("scope.cove mismatch: home={home_cove}, scope={scope:?}"),
-        });
+        return Err(violation(
+            card_id.clone(),
+            format!("scope.cove mismatch: home={home_cove}, scope={scope:?}"),
+        ));
     }
     Ok(())
 }
@@ -2134,6 +2220,52 @@ mod tests {
                     RoleViolation::NotSubmitterPluginForProposalWithdrawn { .. }
                 ),
                 "{label}: expected NotSubmitterPluginForProposalWithdrawn, got {err:?}",
+            );
+        }
+    }
+
+    /// #1189 review round 2 — the delete race must be a *denial* on every
+    /// branch, not a panic on one of them.
+    ///
+    /// `enforce_role` looks the acting card up with `cache.get()`; this
+    /// helper then looks the same card up again with `cache.wave_of()`.
+    /// The two are independent DashMap lookups, so a card deleted in
+    /// between makes the second one return `None`. Before the check was
+    /// split into "scope variant" + "target card" halves, BOTH refusals
+    /// were reached before `wave_of` was ever consulted, so neither could
+    /// blow up under that race — the split must not cost that.
+    ///
+    /// The empty cache below is exactly that race's end state (the entry
+    /// is simply gone), so every scope shape must come back `Err`. A
+    /// `.expect()` on `wave_of` fails this test by panicking on the
+    /// Card-scope rows.
+    #[test]
+    fn card_scope_is_fail_closed_when_the_acting_card_vanished() {
+        let vanished = CardRoleCache::new();
+        let wcc = seeded_wcc();
+        let acting = CardId::from("worker-1");
+        let self_only = |target: &CardId, _home: &WaveId| target == &acting;
+        for scope in [
+            // Non-Card scope — refused before `wave_of` in every version.
+            wave_scope("w", "c"),
+            // Card scope naming someone else's card: the actual
+            // out-of-bounds write path, and the one the split regressed.
+            card_scope("someone-elses-card", "w", "c"),
+            // Card scope naming the acting card itself — still
+            // unprovable once the cache entry is gone.
+            card_scope("worker-1", "w", "c"),
+        ] {
+            let result = enforce_card_scope(
+                &acting,
+                &scope,
+                &vanished,
+                &wcc,
+                &self_only,
+                &|card, scope| RoleViolation::WorkerOutOfScope { card, scope },
+            );
+            assert!(
+                matches!(result, Err(RoleViolation::WorkerOutOfScope { .. })),
+                "a vanished acting card must deny {scope:?}, got {result:?}"
             );
         }
     }

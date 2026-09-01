@@ -147,8 +147,11 @@ async fn backfill_mints_report_card_per_wave() {
     // diverged from `WaveReportPayload::initial()` since the prompt
     // rewrite (5f3278e6), which moved `initial()` to a Chinese seed
     // for new waves while keeping migration 0014 frozen for historical
-    // backfills. Existing wave reports get migrated in-place by the
-    // spec on next edit (see `spec_card.rs` migration paragraph).
+    // backfills. #1185 S2 deleted the `spec_card.rs` paragraph that used
+    // to order the spec agent to rewrite these backfilled reports into the
+    // kernel's shape; structure now travels with each document, so a report
+    // that arrived with `# Goal` keeps `# Goal` and is maintained in place.
+    // See `spec_card.rs::spec_prompt_carries_no_section_vocabulary`.
     let payload: WaveReportPayload = serde_json::from_value(report.payload.clone())
         .expect("payload is a valid WaveReportPayload");
     // Migration 0014 SQL stays frozen at the historical v1 shape; v1

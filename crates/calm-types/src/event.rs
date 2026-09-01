@@ -117,6 +117,12 @@ impl AsRef<str> for ArtifactRef {
 pub enum EditAuthor {
     Spec,
     User,
+    /// #1189 — a wave-scoped assistant conversation (`CardRole::Assistant`).
+    /// Deliberately a unit variant, like `Plugin`: the bare-lowercase wire
+    /// encoding and `Copy` must survive. Note that
+    /// `wave_report_edit_guard::author_name` maps this to `None`, i.e. an
+    /// assistant may not author task declaration blocks.
+    Assistant,
     /// Server-internal rewrite — FSM scaffolding, migrations, etc.
     /// Reserved; no emitter today.
     Kernel,

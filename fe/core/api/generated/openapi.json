@@ -3036,6 +3036,16 @@
           "204": {
             "description": "Wave deleted"
           },
+          "403": {
+            "description": "Wave belongs to the system cove and cannot be deleted via REST",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Wave not found",
             "content": {
@@ -4480,7 +4490,8 @@
         "enum": [
           "worker",
           "spec",
-          "reportcard"
+          "reportcard",
+          "assistant"
         ]
       },
       "CardRuntimeView": {
@@ -5760,7 +5771,8 @@
             "type": "object"
           },
           "state": {
-            "type": "string"
+            "type": "string",
+            "description": "Same wire-name set as [`PluginListItem::state`], including the\nconnector-only `unavailable` — see that field's doc."
           },
           "updated_at": {
             "type": "integer",
@@ -5808,7 +5820,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Wire-name string per design §7.1: `running | spawning | crashed |\ndisabled | installing | installed`."
+            "description": "Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:\n`running | spawning | crashed | unavailable | disabled | installing |\ninstalled`.\n\n`unavailable` is the NORMAL terminal state of a connector\n(`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable\nupstream, rejected `secrets.json`, boot budget exhausted. It is not an\nerror state of the kernel, and unlike `crashed` there is no supervisor\nthat will retry it: it stands until an operator re-enables. `last_error`\ncarries the reason."
           },
           "version": {
             "type": "string"

@@ -990,19 +990,35 @@ async fn empty_block_snapshot_written_by_rest_forks_payload_and_crdt_exactly() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    let seed = &fresh_report["blocks"][0];
-    let (status, empty_write) = request_json(
-        &boot.app,
-        "DELETE",
-        format!(
-            "/api/waves/{source_id}/report/blocks/{}",
-            seed["id"].as_str().unwrap()
-        ),
-        &boot.cookie,
-        Some(json!({"ifBlockRev": seed["rev"]})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "empty report write: {empty_write}");
+    // #1185: the birth report is a five-block skeleton, so emptying it means
+    // deleting every block, re-reading between deletes for the fresh `rev`.
+    let mut report = fresh_report;
+    loop {
+        let blocks = report["blocks"].as_array().expect("blocks array").clone();
+        let Some(seed) = blocks.first() else { break };
+        let (status, empty_write) = request_json(
+            &boot.app,
+            "DELETE",
+            format!(
+                "/api/waves/{source_id}/report/blocks/{}",
+                seed["id"].as_str().unwrap()
+            ),
+            &boot.cookie,
+            Some(json!({"ifBlockRev": seed["rev"]})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "empty report write: {empty_write}");
+        let (status, next) = request_json(
+            &boot.app,
+            "GET",
+            format!("/api/waves/{source_id}/report"),
+            &boot.cookie,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        report = next;
+    }
     let (status, source_report) = request_json(
         &boot.app,
         "GET",
@@ -1920,10 +1936,15 @@ async fn inv_1110_002_forked_wave_requires_report_startup_read() {
     );
 
     let prompt = render_spec_developer_instructions_for_test(target_wave_id.as_str(), None, None);
+    // #1185 §1.5 A — the read is unconditional now. The bit above still
+    // matters, and matters more: its meaning narrowed from "must you read" to
+    // "does this document already hold content beyond the default skeleton",
+    // which is exactly what a forked report is.
     assert!(
-        prompt
-            .contains("If `report_startup_read_required` is true, first call `calm.report.read`."),
-        "spec first-turn prompt must tell the agent to read a non-empty report"
+        prompt.contains(
+            "Before you write anything to the report in a session, call `calm.report.read` once"
+        ),
+        "spec first-turn prompt must mandate an unconditional first read"
     );
     assert!(prompt.contains("authoritative pre-set plan"));
     assert!(prompt.contains("Do not mint duplicate tasks"));

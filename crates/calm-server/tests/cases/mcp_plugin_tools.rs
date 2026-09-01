@@ -60,6 +60,11 @@ struct Fixture {
     /// Worker card token/thread minted in the workflow-bound wave.
     bound_raw_token: String,
     bound_thread_id: String,
+    /// #1189 — Assistant card token/thread minted in the UNBOUND wave, so
+    /// plugin scope allows every running plugin and the only thing left
+    /// between the caller and the plugin is `PLUGIN_TOOL_ROLES`.
+    assistant_raw_token: String,
+    assistant_thread_id: String,
     _tmp: TempDir,
 }
 
@@ -199,6 +204,87 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
         colliding_routed["result"]["_meta"]["requested_name"], COLLIDING_TOOL_NAME,
         "kernel must forward the stripped inner tool name to the prefix-colliding plugin"
     );
+
+    fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
+    fx.plugin_host
+        .stop(COLLIDING_PLUGIN_ID)
+        .await
+        .expect("stop prefix-colliding plugin");
+    fx.plugin_host
+        .stop(&fx.trusted_plugin_id)
+        .await
+        .expect("stop trusted workflow plugin");
+}
+
+/// #1189 review round 2 (G4) — the assistant's tool verdict must also hold
+/// on the path the registry meta-test cannot see.
+///
+/// `dispatch_tools_call` falls through to the dynamic `plugin.<id>_<tool>`
+/// router when the kernel registry misses, and those names are not in
+/// `build_default_registry().descriptors()` — so the
+/// allow/deny-partition meta-test in `mcp_assistant_tool_gate` is closed
+/// only over the built-in surface. What actually keeps an assistant off
+/// every plugin tool is the single `require_role_any(&identity,
+/// PLUGIN_TOOL_ROLES)` line in `transport.rs`, and adding `Assistant` to
+/// that constant would turn none of the other #1189 tests red.
+///
+/// This is that counterexample: a real running plugin tool, an Assistant
+/// token in the UNBOUND wave (so plugin scope allows it and the role gate
+/// is the only thing left), called on the wire by name. The worker control
+/// below proves the tool is genuinely reachable — otherwise the refusal
+/// could be scope or existence wearing a role-shaped message.
+#[tokio::test]
+async fn assistant_token_cannot_call_a_plugin_tool() {
+    let fx = boot_fixture().await;
+
+    let (mut rd, mut wr) = connect(&fx.socket_path).await;
+    handshake(&mut rd, &mut wr, &fx.assistant_raw_token).await;
+    send_frame(
+        &mut wr,
+        tools_call_frame(
+            60,
+            EXPOSED_NAME,
+            &fx.assistant_thread_id,
+            json!({ "payload": "from-assistant" }),
+        ),
+    )
+    .await;
+    let refused = recv_frame(&mut rd).await;
+    let error = refused
+        .get("error")
+        .unwrap_or_else(|| panic!("plugin tool must refuse an assistant: {refused:#?}"));
+    assert_eq!(
+        error["code"].as_i64(),
+        Some(-32602),
+        "plugin-tool role refusal is INVALID_PARAMS: {refused:#?}"
+    );
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("tool requires role"),
+        "the refusal must be the *role* decision, not scope/arguments: {refused:#?}"
+    );
+
+    // Control: same tool, same wave, a Worker token — routes and answers.
+    let (mut worker_rd, mut worker_wr) = connect(&fx.socket_path).await;
+    handshake(&mut worker_rd, &mut worker_wr, &fx.raw_token).await;
+    send_frame(
+        &mut worker_wr,
+        tools_call_frame(
+            61,
+            EXPOSED_NAME,
+            &fx.thread_id,
+            json!({ "payload": "from-worker" }),
+        ),
+    )
+    .await;
+    let routed = recv_frame(&mut worker_rd).await;
+    assert!(
+        routed.get("error").is_none(),
+        "the same plugin tool must be reachable for a worker in the same wave: {routed:#?}"
+    );
+    assert_eq!(routed["result"]["isError"], false);
 
     fx.plugin_host.stop(PLUGIN_ID).await.expect("stop plugin");
     fx.plugin_host
@@ -600,10 +686,27 @@ async fn boot_fixture() -> Fixture {
         .await
         .expect("seed wave/cove cache");
 
-    let (raw_token, thread_id) =
-        mint_worker_card_with_thread(&sqlx_repo, &card_role_cache, wave.id.clone()).await;
-    let (bound_raw_token, bound_thread_id) =
-        mint_worker_card_with_thread(&sqlx_repo, &card_role_cache, bound_wave.id.clone()).await;
+    let (raw_token, thread_id) = mint_card_with_thread(
+        &sqlx_repo,
+        &card_role_cache,
+        wave.id.clone(),
+        CardRole::Worker,
+    )
+    .await;
+    let (bound_raw_token, bound_thread_id) = mint_card_with_thread(
+        &sqlx_repo,
+        &card_role_cache,
+        bound_wave.id.clone(),
+        CardRole::Worker,
+    )
+    .await;
+    let (assistant_raw_token, assistant_thread_id) = mint_card_with_thread(
+        &sqlx_repo,
+        &card_role_cache,
+        wave.id.clone(),
+        CardRole::Assistant,
+    )
+    .await;
 
     let trusted_exposed_name = format!("plugin.{trusted_plugin_id}_{TRUSTED_TOOL_NAME}");
     let plugin_host = boot_plugin_host(
@@ -658,6 +761,8 @@ async fn boot_fixture() -> Fixture {
         trusted_exposed_name,
         bound_raw_token,
         bound_thread_id,
+        assistant_raw_token,
+        assistant_thread_id,
         _tmp: tmp,
     }
 }
@@ -678,11 +783,12 @@ fn configured_trusted_plugin_id() -> String {
         .unwrap_or_else(|| "dev.neige.git-forge".to_string())
 }
 
-/// Mint a worker card (+ MCP token + attributed codex thread) in `wave_id`.
-async fn mint_worker_card_with_thread(
+/// Mint a card in `role` (+ MCP token + attributed codex thread) in `wave_id`.
+async fn mint_card_with_thread(
     sqlx_repo: &Arc<SqlxRepo>,
     card_role_cache: &CardRoleCache,
     wave_id: calm_server::ids::WaveId,
+    role: CardRole,
 ) -> (String, String) {
     let card_id = calm_server::model::new_id();
     let runtime_id = calm_server::model::new_id();
@@ -700,13 +806,13 @@ async fn mint_worker_card_with_thread(
         None,
         None,
         None,
-        CardRole::Worker,
+        role,
         true,
         card_role_cache,
         calm_server::routes::theme::RequestTheme::default_dark(),
     )
     .await
-    .expect("mint worker card");
+    .expect("mint card");
     let raw_token = match mcp_token {
         Some(token) => token,
         None => {

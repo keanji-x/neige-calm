@@ -8,6 +8,7 @@ import {
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ReactElement, ReactNode } from 'react';
+import { initialBody, splitInitialBody } from './report-blocks/kernel-initial-body.ts';
 import { WaveReportPage } from './WaveReportPage';
 import {
   useOverlaysByKindQuery,
@@ -2751,19 +2752,17 @@ describe('WaveReportPage', () => {
     // prints raw HTML as text unless `skipHtml` is set, and the comment spans
     // blank lines (CommonMark HTML block type 2), so the whole contract is one
     // raw node.
-    const contract = [
-      '<!-- 报告维护契约（渲染时被丢弃，读 body 源码的主体看得到）',
-      '',
-      '这份报告自带的结构就是规则：维护它，不要重写它。',
-      '',
-      '写作方式：散文正文控制在 1000 字以内。',
-      '-->',
-      '',
-    ].join('\n');
+    // The kernel's own bytes, read off `crates/calm-types/src/wave_report_*.md`
+    // — a transcription would only prove this path hides *a* comment.
+    const [contract, ...sections] = splitInitialBody();
+    expect(contract.startsWith('<!-- 报告维护契约')).toBe(true);
+    expect(contract.endsWith('-->\n\n')).toBe(true);
+    expect(contract).toContain('散文正文');
+
     const { container } = render(
       <WaveReportPage
         wave={makeWave()}
-        cards={[reportSlot(`${contract}# 概要\n\n本轮结论。\n`)]}
+        cards={[reportSlot(`${contract}${sections[0]}本轮结论。\n`)]}
       />,
     );
 
@@ -2775,5 +2774,24 @@ describe('WaveReportPage', () => {
       screen.getByRole('heading', { level: 1, name: '概要' }),
     ).toBeInTheDocument();
     expect(screen.getByText('本轮结论。')).toBeInTheDocument();
+  });
+
+  it('never renders the whole birth skeleton either (#1185)', () => {
+    // The real v1 shape: `body` is exactly what a freshly minted wave holds.
+    const { container } = render(
+      <WaveReportPage wave={makeWave()} cards={[reportSlot(initialBody())]} />,
+    );
+
+    expect(container.textContent).not.toContain('报告维护契约');
+    expect(container.innerHTML).not.toContain('报告维护契约');
+    expect(container.textContent).not.toContain('散文正文');
+    expect(container.innerHTML).not.toContain('散文正文');
+    // The first h1 is the page's own wave title, not report content.
+    expect(
+      screen
+        .getAllByRole('heading', { level: 1 })
+        .map((h) => h.textContent)
+        .slice(1),
+    ).toEqual(['概要', '待你定', '已完成', '决策']);
   });
 });

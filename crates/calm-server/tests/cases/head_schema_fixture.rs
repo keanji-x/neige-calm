@@ -15,6 +15,7 @@ const POST_0067_MIGRATION_NAMES: &[&str] = &[
     "0075_drop_cove_folder_repo_identity.sql",
     "0076_waves_plugin_scope.sql",
     "0077_wave_workspace.sql",
+    "0078_cards_role_assistant.sql",
 ];
 
 #[test]

@@ -1354,9 +1354,10 @@ mod tests {
         assert_eq!(out, expected);
         assert!(
             expected.contains(
-                "If `report_startup_read_required` is true, first call `calm.report.read`."
+                "Before you write anything to the report in a session, call `calm.report.read` once"
             ),
-            "base prompt must tell spec to read a non-empty forked report"
+            "base prompt must mandate an unconditional first read (#1185 §1.5 A) — the \
+             document's own maintenance contract is only reachable by reading it"
         );
         assert!(expected.contains("authoritative pre-set plan"));
         assert!(expected.contains("Do not mint duplicate tasks"));

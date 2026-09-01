@@ -36,7 +36,28 @@ use calm_server::wave_report::WaveReportPayload;
 use serde_json::{Value, json};
 
 const TOOL_REPORT_READ: &str = "calm.report.read";
-const SEED_BODY: &str = "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n";
+/// The birth body, read at runtime rather than re-transcribed. #1185 made it a
+/// five-block structural skeleton; a test that copies the constant only proves
+/// the copy matches itself.
+fn seed_body() -> &'static str {
+    static BODY: std::sync::LazyLock<String> =
+        std::sync::LazyLock::new(|| WaveReportPayload::initial().body);
+    &BODY
+}
+
+/// Position of the block whose text starts with `head`, within the block index
+/// a `calm.report.read` just returned.
+///
+/// #1185 turned the birth body into five blocks. Tests address blocks by
+/// content, never by a fresh constant subscript: `blocks[5]` would just defer
+/// the same brittleness to the next skeleton change.
+fn position_of_block_starting_with(read_out: &Value, head: &str) -> usize {
+    let text = read_out["text"].as_str().expect("read returns text");
+    calm_types::report_blocks::split_body(text)
+        .iter()
+        .position(|s| s.raw.starts_with(head))
+        .unwrap_or_else(|| panic!("no block starts with {head:?} in {text:?}"))
+}
 
 /// Current report payload straight from the card row.
 async fn current_payload(boot: &Boot) -> WaveReportPayload {
@@ -400,10 +421,10 @@ async fn kinds_refuses_worker() {
 async fn read_returns_blocks_index_and_clean_text_by_default() {
     let boot = boot().await;
     let out = read(&boot, json!({})).await;
-    assert_eq!(out.get("text").and_then(Value::as_str), Some(SEED_BODY));
+    assert_eq!(out.get("text").and_then(Value::as_str), Some(seed_body()));
     assert_eq!(
         out.get("body").and_then(Value::as_str),
-        Some(SEED_BODY),
+        Some(seed_body()),
         "legacy `body` alias carries the same value as `text`",
     );
     assert!(
@@ -411,12 +432,39 @@ async fn read_returns_blocks_index_and_clean_text_by_default() {
         "default read output must be marker-free",
     );
     let index = index_of(&out);
-    assert_eq!(index.len(), 1);
-    assert!(index[0].0.starts_with("b_"), "id = {}", index[0].0);
-    assert_eq!(index[0].1, 1);
+    // #1185 — the literal 5 is deliberate and is the ONLY end-to-end
+    // (boot → real card → `calm.report.read`) pin of the birth block count.
+    // `split_body(&initial().body).len()` would move with the constant and
+    // stay green even if `initial()` reverted to a one-line placeholder.
     assert_eq!(
-        out.pointer("/blocks/0/kind").and_then(Value::as_str),
-        Some("prose"),
+        index.len(),
+        5,
+        "birth report is 1 contract block + 4 sections: {index:?}"
+    );
+    for (id, rev) in &index {
+        assert!(id.starts_with("b_"), "id = {id}");
+        assert_eq!(*rev, 1);
+    }
+    for i in 0..5 {
+        assert_eq!(
+            out.pointer(&format!("/blocks/{i}/kind"))
+                .and_then(Value::as_str),
+            Some("prose"),
+        );
+    }
+    // The maintenance contract leads the document and closes before the first
+    // H1 — that is what makes it invisible on both frontends and what makes
+    // block 0 the contract rather than a section.
+    let text = out["text"].as_str().unwrap();
+    assert!(
+        text.starts_with("<!-- 报告维护契约"),
+        "the birth body must lead with the maintenance contract: {text:?}"
+    );
+    let first_h1 = text.find("\n# ").expect("skeleton has H1 sections") + 1;
+    assert!(
+        text[..first_h1].ends_with("-->\n\n"),
+        "the contract must close before the first H1: {:?}",
+        &text[..first_h1]
     );
 }
 
@@ -483,8 +531,8 @@ async fn upsert_new_block_appends_and_emits_both_events() {
             body_after,
             ..
         } => {
-            assert_eq!(body_before, SEED_BODY);
-            assert_eq!(body_after, &format!("{SEED_BODY}# 新块\n\ncontent\n"));
+            assert_eq!(body_before, seed_body());
+            assert_eq!(body_after, &format!("{}# 新块\n\ncontent\n", seed_body()));
             assert_eq!(
                 summary_before, summary_after,
                 "block ops never touch summary"
@@ -495,11 +543,14 @@ async fn upsert_new_block_appends_and_emits_both_events() {
 
     // JSON cache mirrors the append.
     let payload = current_payload(&boot).await;
-    assert_eq!(payload.body, format!("{SEED_BODY}# 新块\n\ncontent\n"));
+    assert_eq!(payload.body, format!("{}# 新块\n\ncontent\n", seed_body()));
     let blocks = payload.blocks.expect("blocks cache");
-    assert_eq!(blocks.len(), 2);
-    assert_eq!(blocks[1].id, id);
-    assert_eq!(blocks[1].rev, 1);
+    assert_eq!(blocks.len(), 6, "5 skeleton blocks + the appended one");
+    let appended = blocks
+        .iter()
+        .find(|b| b.id == id)
+        .expect("appended block is in the cache");
+    assert_eq!(appended.rev, 1);
 }
 
 #[tokio::test]
@@ -542,8 +593,12 @@ async fn upsert_replace_with_if_rev_bumps_rev() {
     let boot = boot().await;
     // The id handed out by `read` on a never-persisted card must be a
     // valid target: the CRDT seed mints the same deterministic ids.
-    let index = index_of(&read(&boot, json!({})).await);
-    let (id, rev) = index[0].clone();
+    let read_out = read(&boot, json!({})).await;
+    let index = index_of(&read_out);
+    // #1185: block 0 is the maintenance contract now — target the summary
+    // section by content, which is what this test was always about.
+    let at = position_of_block_starting_with(&read_out, "# 概要");
+    let (id, rev) = index[at].clone();
     assert_eq!(rev, 1);
 
     let out = call_tool(
@@ -558,10 +613,27 @@ async fn upsert_replace_with_if_rev_bumps_rev() {
     assert_eq!(out.get("rev").and_then(Value::as_u64), Some(2));
 
     let payload = current_payload(&boot).await;
-    assert_eq!(payload.body, "# 概要\n\nrewritten\n");
+    // Body is the untouched blocks with the replaced one spliced back in.
+    let expected: String = calm_types::report_blocks::split_body(seed_body())
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            if i == at {
+                "# 概要\n\nrewritten\n".to_string()
+            } else {
+                s.raw.clone()
+            }
+        })
+        .collect();
+    assert_eq!(payload.body, expected);
     assert_eq!(payload.summary, "", "summary untouched");
-    let index = index_of(&read(&boot, json!({})).await);
-    assert_eq!(index, vec![(id, 2)]);
+    let after = index_of(&read(&boot, json!({})).await);
+    assert_eq!(
+        after.len(),
+        5,
+        "replacing a block does not change the count"
+    );
+    assert_eq!(after[at], (id, 2));
 }
 
 #[tokio::test]
@@ -1270,21 +1342,32 @@ async fn upsert_chart_block_projects_canonical_fence_and_typed_payload() {
     // Flat body carries the canonical fence (no id/rev inside — D9).
     let stored = current_payload(&boot).await;
     let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
-    assert_eq!(stored.body, format!("{SEED_BODY}{fence}"));
+    assert_eq!(stored.body, format!("{}{fence}", seed_body()));
     assert!(!fence.contains(&id), "fence must not embed the block id");
 
     // JSON blocks cache mirrors the typed payload (what the frontend
     // zod schema will consume), not a `{ markdown }` wrapper.
     let blocks = stored.blocks.expect("blocks cache");
-    assert_eq!(blocks[1].id, id);
-    assert_eq!(blocks[1].kind, "chart.candles");
-    assert_eq!(blocks[1].payload, payload);
+    // Address the chart by kind, not by subscript: the skeleton's block count
+    // is not this test's subject (#1185 §4.3).
+    let chart = blocks
+        .iter()
+        .find(|b| b.kind == "chart.candles")
+        .expect("chart block is in the cache");
+    assert_eq!(chart.id, id);
+    assert_eq!(chart.payload, payload);
 
     // read index reports the kind; with_markers text embeds the fence.
     let out = read(&boot, json!({ "with_markers": true })).await;
     assert_eq!(
-        out.pointer("/blocks/1/kind").and_then(Value::as_str),
-        Some("chart.candles"),
+        out["blocks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|b| b["kind"] == "chart.candles")
+            .count(),
+        1,
+        "the read index reports the chart's kind: {out}"
     );
     let text = out.get("text").and_then(Value::as_str).unwrap();
     assert!(text.contains(&fence), "marker read embeds the fence");
@@ -1402,8 +1485,12 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
     let boot = boot().await;
     let payload: Value = serde_json::from_str(CHART_PAYLOAD_V1).unwrap();
     let (id, rev) = upsert_chart(&boot, payload.clone()).await;
-    let prose_index = index_of(&read(&boot, json!({})).await);
-    let (prose_id, prose_rev) = prose_index[0].clone();
+    let read_out = read(&boot, json!({})).await;
+    let prose_index = index_of(&read_out);
+    // #1185: `index[0]` is the maintenance contract now. This test's subject
+    // is "the summary section was not touched", so address it by content.
+    let summary_at = position_of_block_starting_with(&read_out, "# 概要");
+    let (prose_id, prose_rev) = prose_index[summary_at].clone();
     let fence = calm_types::report_blocks::render_fence("chart.candles", &payload);
 
     // Malformed fence JSON: whole write rejected, nothing lands.
@@ -1427,16 +1514,27 @@ async fn write_markdown_edits_fence_params_with_rev_bump_and_rejects_bad_fences(
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": format!("{SEED_BODY}{edited}"), "if_doc_rev": before.doc_rev }),
+        json!({ "body": format!("{}{edited}", seed_body()), "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect("fence-editing write_markdown passes");
     let index = index_of(&read(&boot, json!({})).await);
-    assert_eq!(index[0], (prose_id, prose_rev), "prose untouched");
-    assert_eq!(index[1].0, id, "fence keeps its id");
-    assert_eq!(index[1].1, rev + 1, "edited fence: rev+1");
+    assert_eq!(
+        index[summary_at],
+        (prose_id, prose_rev),
+        "the summary section is untouched"
+    );
+    let fence_at = index
+        .iter()
+        .position(|(bid, _)| bid == &id)
+        .expect("fence keeps its id");
+    assert_eq!(index[fence_at].1, rev + 1, "edited fence: rev+1");
     let blocks = current_payload(&boot).await.blocks.expect("blocks cache");
-    assert_eq!(blocks[1].payload["overlays"], json!(["ma20", "ma60"]));
+    let chart = blocks
+        .iter()
+        .find(|b| b.id == id)
+        .expect("chart block is in the cache");
+    assert_eq!(chart.payload["overlays"], json!(["ma20", "ma60"]));
 }
 
 #[tokio::test]
@@ -1518,7 +1616,7 @@ async fn write_markdown_cannot_silently_drop_a_spec_task_block() {
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": SEED_BODY, "if_doc_rev": before.doc_rev }),
+        json!({ "body": seed_body(), "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect_err("a body that drops the task fence must be rejected");
@@ -1553,7 +1651,7 @@ async fn write_markdown_may_still_edit_a_task_fence_in_place() {
         &boot,
         TOOL_REPORT_WRITE_MARKDOWN,
         spec_identity(&boot),
-        json!({ "body": format!("{SEED_BODY}{edited}"), "if_doc_rev": before.doc_rev }),
+        json!({ "body": format!("{}{edited}", seed_body()), "if_doc_rev": before.doc_rev }),
     )
     .await
     .expect("editing the fence body in place stays legal");
@@ -1586,4 +1684,66 @@ async fn spec_block_level_delete_of_its_own_task_still_succeeds() {
         payload.body
     );
     assert!(task_keys(&boot).await.is_empty(), "task row is withdrawn");
+}
+
+/// #1185 §4.4(D) — a whole-document write that CHANGES one section must leave
+/// the maintenance contract byte-identical.
+///
+/// An identity round-trip only proves the marker channel does not eat the
+/// comment. The real risk is the agent rewriting a section and reflowing the
+/// contract along with it: the contract is the only carrier of the document's
+/// policy, so losing it silently un-governs the report on every later turn.
+#[tokio::test]
+async fn write_markdown_changing_one_section_leaves_the_contract_byte_identical() {
+    let boot = boot().await;
+
+    let before_index = index_of(&read(&boot, json!({})).await);
+    let before_body = current_payload(&boot).await.body;
+    let contract_before = calm_types::report_blocks::split_body(&before_body)[0]
+        .raw
+        .clone();
+    let summary_at = position_of_block_starting_with(&read(&boot, json!({})).await, "# 概要");
+
+    let marked = read(&boot, json!({ "with_markers": true })).await;
+    let text = marked["text"].as_str().unwrap();
+    assert!(
+        text.contains("<!-- 报告维护契约"),
+        "the marker read hands the contract back to the agent verbatim"
+    );
+    // Edit exactly one section's prose, the way a spec agent would.
+    let edited = text.replacen("# 概要\n", "# 概要\n\n当前进展一句话。\n", 1);
+    assert_ne!(edited, text, "the fixture must actually change something");
+
+    call_tool(
+        &boot,
+        TOOL_REPORT_WRITE_MARKDOWN,
+        spec_identity(&boot),
+        json!({ "body": edited, "if_doc_rev": marked["docRev"] }),
+    )
+    .await
+    .expect("marker-channel write passes");
+
+    let after_body = current_payload(&boot).await.body;
+    let after_slices = calm_types::report_blocks::split_body(&after_body);
+    assert_eq!(after_slices.len(), 5, "block count is unchanged");
+    assert_eq!(
+        after_slices[0].raw, contract_before,
+        "the maintenance contract must survive byte-identical"
+    );
+
+    let after_index = index_of(&read(&boot, json!({})).await);
+    assert_eq!(
+        after_index[0], before_index[0],
+        "the contract block keeps both its id and its rev"
+    );
+    assert_eq!(
+        after_index[summary_at].0, before_index[summary_at].0,
+        "the edited section keeps its id"
+    );
+    assert_eq!(
+        after_index[summary_at].1,
+        before_index[summary_at].1 + 1,
+        "the edited section gets rev+1"
+    );
+    assert!(after_body.contains("当前进展一句话。"));
 }

@@ -545,7 +545,13 @@ describe('PR2 of #247: wave.report_edited', () => {
   });
 
   it('accepts every author discriminator (spec | user | kernel | plugin)', () => {
-    for (const author of ['spec', 'user', 'kernel', 'plugin'] as const) {
+    for (const author of [
+      'spec',
+      'user',
+      'assistant',
+      'kernel',
+      'plugin',
+    ] as const) {
       const parsed = wireEventSchema.parse({
         ev: 'wave.report_edited',
         data: {

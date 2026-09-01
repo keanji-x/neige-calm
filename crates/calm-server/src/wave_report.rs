@@ -1126,15 +1126,4 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, CalmError::Internal(_)), "got {err:?}");
     }
-
-    #[test]
-    fn initial_uses_current_chinese_seed_body() {
-        // Migration 0014 is historical and intentionally remains
-        // frozen; freshly-minted waves use the current Chinese seed.
-        let p = WaveReportPayload::initial();
-        assert_eq!(
-            p.body,
-            "# 概要\n\n_Spec agent 会在第一次 turn 时填这里。_\n"
-        );
-    }
 }

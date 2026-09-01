@@ -35,7 +35,10 @@ fn author_name(author: EditAuthor) -> Option<&'static str> {
     match author {
         EditAuthor::Spec => Some("spec"),
         EditAuthor::User => Some("user"),
-        EditAuthor::Kernel | EditAuthor::Plugin => None,
+        // `None` = "may not author task declaration blocks". Assistant
+        // (#1189) is deliberately here rather than aliased onto "spec":
+        // half of the §3.2a P2 guard falls out of this line.
+        EditAuthor::Kernel | EditAuthor::Plugin | EditAuthor::Assistant => None,
     }
 }
 
@@ -329,6 +332,47 @@ mod tests {
         );
     }
 
+    /// #1189 F3 — `author_name(EditAuthor::Assistant) == None` is half of
+    /// the §3.2a P2 guard, and nothing else pins it.
+    ///
+    /// The block below attributes itself to `"assistant"`, which is the ONLY
+    /// shape that can tell the two implementations apart: with the current
+    /// fail-closed `None`, `guard_task_declarations` refuses before it ever
+    /// compares `declared_by`; alias Assistant onto any name at all and the
+    /// same call succeeds. Attributing the block to `"spec"` instead would
+    /// keep failing under both (on the attribution mismatch), i.e. it would
+    /// be a vacuous assertion.
+    #[test]
+    fn assistant_may_not_create_task_blocks() {
+        let self_attributed = block("b_task", live("assistant"));
+        let error = guard_task_declarations(
+            &[],
+            std::slice::from_ref(&self_attributed),
+            EditAuthor::Assistant,
+            None,
+        )
+        .expect_err("Assistant must not be able to declare a task block");
+        let CalmError::BadRequest(message) = &error else {
+            panic!("expected a 400, got {error:?}");
+        };
+        assert!(
+            message.contains("may not create task blocks"),
+            "the refusal must be the author_name fail-closed one, not an \
+             attribution mismatch; got: {message}"
+        );
+
+        // Control: the same shape from Spec, self-attributed, goes through —
+        // so the refusal above is about *who the author is*, not about task
+        // creation being blocked for everyone.
+        guard_task_declarations(
+            &[],
+            std::slice::from_ref(&block("b_task", live("spec"))),
+            EditAuthor::Spec,
+            None,
+        )
+        .expect("Spec may still declare its own task block");
+    }
+
     #[test]
     fn task_declaration_rules_reject_every_forbidden_transition() {
         let spec = block("b_task", live("spec"));
@@ -343,7 +387,14 @@ mod tests {
             guard_task_declarations(&[], std::slice::from_ref(&user), EditAuthor::Spec, None)
                 .is_err()
         );
-        for author in [EditAuthor::Kernel, EditAuthor::Plugin] {
+        // #1189 — Assistant belongs in this list, not the "may author"
+        // one: `author_name` gives it no name, so it can never satisfy the
+        // `declared_by` attribution a new task block must carry.
+        for author in [
+            EditAuthor::Kernel,
+            EditAuthor::Plugin,
+            EditAuthor::Assistant,
+        ] {
             assert!(
                 guard_task_declarations(&[], std::slice::from_ref(&spec), author, None).is_err()
             );
@@ -395,7 +446,14 @@ mod tests {
             .is_err()
         );
         // 3: no non-user writer may modify/delete either form of user control.
-        for author in [EditAuthor::Spec, EditAuthor::Kernel, EditAuthor::Plugin] {
+        // #1189 — Assistant is a non-user writer like the rest, so the
+        // user-control rule must bind it too.
+        for author in [
+            EditAuthor::Spec,
+            EditAuthor::Kernel,
+            EditAuthor::Plugin,
+            EditAuthor::Assistant,
+        ] {
             assert!(
                 guard_task_declarations(std::slice::from_ref(&user), &[], author, None).is_err()
             );
@@ -641,11 +699,15 @@ mod tests {
     /// delete rule covers every author, not just the user.
     #[test]
     fn no_author_may_delete_a_live_task_through_a_whole_document_write() {
+        // #1189 — "every author" has to mean every variant, Assistant
+        // included; the whole point of #1179 was that an omitted author is
+        // a silent hole.
         for author in [
             EditAuthor::User,
             EditAuthor::Spec,
             EditAuthor::Kernel,
             EditAuthor::Plugin,
+            EditAuthor::Assistant,
         ] {
             for operation in [
                 ReportDocOp::WriteMarkdown {
@@ -676,6 +738,17 @@ mod tests {
     /// the author itself declared still goes through.
     #[test]
     fn block_level_delete_of_an_own_task_remains_allowed_for_every_author() {
+        // #1189 — `Assistant` is deliberately ABSENT from this loop. The
+        // escape hatch is not authorship-scoped (the task here is
+        // declared_by "spec" for every author listed), so adding Assistant
+        // would freeze "an assistant may delete a spec-declared live task
+        // outright, no tombstone, no attribution" as a tested capability —
+        // the mirror image of §3.2a P2, which says an assistant cannot even
+        // declare a task block. Today `blocks.delete` is `require_role(Spec)`
+        // so nothing reaches this guard as Assistant; when S2 opens the
+        // block channel, the assistant's block-level delete right is an
+        // explicit S2 decision, not something inherited by default from a
+        // list this test happened to widen.
         for author in [EditAuthor::Spec, EditAuthor::Kernel, EditAuthor::Plugin] {
             let (mut doc, task, _) = doc_with_task("spec");
             apply_report_op(

@@ -72,8 +72,16 @@ pub struct PluginListItem {
     pub id: String,
     pub version: String,
     pub enabled: bool,
-    /// Wire-name string per design §7.1: `running | spawning | crashed |
-    /// disabled | installing | installed`.
+    /// Wire-name string per design §7.1, plus `unavailable` from #1164 §2.2:
+    /// `running | spawning | crashed | unavailable | disabled | installing |
+    /// installed`.
+    ///
+    /// `unavailable` is the NORMAL terminal state of a connector
+    /// (`kind: mcp-http` / `cli-query`) whose bring-up failed — unreachable
+    /// upstream, rejected `secrets.json`, boot budget exhausted. It is not an
+    /// error state of the kernel, and unlike `crashed` there is no supervisor
+    /// that will retry it: it stands until an operator re-enables. `last_error`
+    /// carries the reason.
     pub state: String,
     pub manifest_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,6 +98,8 @@ pub struct PluginDetail {
     pub id: String,
     pub version: String,
     pub enabled: bool,
+    /// Same wire-name set as [`PluginListItem::state`], including the
+    /// connector-only `unavailable` — see that field's doc.
     pub state: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
@@ -1005,10 +1015,24 @@ pub(crate) async fn rotate_plugin_token(
         .plugin_get_by_id(&id)
         .await?
         .ok_or_else(|| CalmError::NotFound(format!("plugin {id}")))?;
+    // #1164 §2.5 — a connector never had a token minted, so rotation is a
+    // 400, not a 500. The host refuses BEFORE deleting any row and BEFORE
+    // restarting anything, so a mistaken call is fully inert.
     cs.plugin
         .rotate_plugin_token(&id)
         .await
-        .map_err(|e| CalmError::Internal(format!("rotate failed: {e}")))?;
+        .map_err(|e| match e {
+            crate::plugin_host::HostError::UnsupportedForKind { .. } => {
+                CalmError::BadRequest(e.to_string())
+            }
+            // The host fails CLOSED when it cannot determine the plugin's kind
+            // (no registry entry). That is a 404, not a kernel fault — and, like
+            // the connector refusal, it happens before any token delete/restart.
+            crate::plugin_host::HostError::NotFound(_) => {
+                CalmError::NotFound(format!("plugin {id} is not loaded"))
+            }
+            other => CalmError::Internal(format!("rotate failed: {other}")),
+        })?;
     let plug = s
         .repo
         .plugin_get_by_id(&id)
@@ -1058,6 +1082,16 @@ fn spawn_error_to_calm(e: crate::plugin_host::HostError) -> CalmError {
         )),
         conflict @ crate::plugin_host::HostError::WorkflowConflict { .. } => {
             CalmError::PluginConflict(conflict.to_string())
+        }
+        // #1164 §2.2 — an unreachable/misconfigured connector is not a kernel
+        // fault: the request was well-formed, the upstream (or the operator's
+        // `secrets.json`) is the problem. 503 carries the reason verbatim, and
+        // the row stays `enabled` so a re-enable is the whole recovery.
+        unavailable @ crate::plugin_host::HostError::ConnectorUnavailable { .. } => {
+            CalmError::ServiceUnavailable(unavailable.to_string())
+        }
+        unsupported @ crate::plugin_host::HostError::UnsupportedForKind { .. } => {
+            CalmError::BadRequest(unsupported.to_string())
         }
         other => CalmError::Internal(format!("spawn failed: {other}")),
     }
