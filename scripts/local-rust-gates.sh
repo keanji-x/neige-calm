@@ -42,9 +42,34 @@ cargo build --release -p calm-server -p calm-codex-bridge -p neige-mcp-stdio-shi
   --bin neige-mcp-stdio-shim --bin calm-proc-supervisor --locked
 
 step "5/6 openapi drift (DEFAULT features)"
+# #1147 S6 — this step used to check ONLY `fe/core/api/generated/openapi.json`,
+# and that is how a doc-comment change on `NewTerminalCardBody` went out green
+# locally and failed the `openapi drift` job in CI.
+#
+# The CI job regenerates BOTH consumers and diffs seven paths:
+#
+#   web/src/api/openapi.json  web/src/api/generated.ts
+#   web/src/api/generated-terminal.ts  web/src/api/generated-events.ts
+#   web/src/editor/types/  fe/core/api/generated/wire.ts
+#   fe/core/api/generated/openapi.json
+#
+# The two `openapi.json` files come from the SAME `emit-openapi` binary, so both
+# are checked here for free. The rest (`generated*.ts`, `editor/types/`,
+# `wire.ts`) need `npm run gen:api` — node + ts-rs — which this Rust-only script
+# deliberately does not run. So this step is a NECESSARY, NOT SUFFICIENT check:
+# when either spec drifts, run `cd web && npm run gen:api` (Node 20, as the job
+# does) and commit everything it touches.
 cargo run --quiet --manifest-path Cargo.toml --bin emit-openapi > /tmp/neige-openapi-check.json
-diff -q /tmp/neige-openapi-check.json fe/core/api/generated/openapi.json
-echo "openapi: no drift"
+openapi_stale=0
+for spec in fe/core/api/generated/openapi.json web/src/api/openapi.json; do
+  diff -q /tmp/neige-openapi-check.json "$spec" || openapi_stale=1
+done
+if [[ "$openapi_stale" == "1" ]]; then
+  echo "openapi: STALE — regenerate with: (cd web && npm run gen:api)" >&2
+  echo "         then commit the generated .ts/wire.ts/editor types it also rewrites." >&2
+  exit 1
+fi
+echo "openapi: no drift (both specs; generated .ts still needs npm run gen:api)"
 
 if [[ "${1:-}" == "--quick" ]]; then
   step "6/6 tests SKIPPED (--quick)"

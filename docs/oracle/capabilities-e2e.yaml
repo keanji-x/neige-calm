@@ -4912,7 +4912,7 @@
     no-op when this cove already covers the path (same-cove arm), so a second wave in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-cove case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/shell/public.tsx:159-176
+  source: fe/web/src/app/shell/public.tsx:297-312
   authoritative_test: fe/web/src/app/shell/public.test.tsx:197
   owner_slice: features/wave/create
   intentional_omission: false

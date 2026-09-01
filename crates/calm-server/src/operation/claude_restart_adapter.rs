@@ -16,9 +16,9 @@ use crate::event::{BroadcastEnvelope, Event, SYNC_EVENT_VERSION};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::new_id;
 use crate::operation::claude_adapter::{CLAUDE_PHASES, build_claude_env};
-use crate::routes::cards::card_scope;
+use crate::routes::cards::{card_scope, card_scope_tx};
 use crate::routes::claude_cards::{build_claude_settings_json, claude_hook_command};
-use crate::routes::codex_cards::{default_cwd, shell_single_quote};
+use crate::routes::codex_cards::shell_single_quote;
 use crate::routes::theme::RequestTheme;
 use crate::session_projection_lookup::resolve_claude_session_for_card;
 use crate::session_projection_repo::{
@@ -171,14 +171,35 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         let term = match terminal_get_by_card_tx(tx, &card_id).await? {
             Some(term) => term,
             None => {
-                let cwd = card
-                    .payload
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(ToOwned::to_owned)
-                    .unwrap_or_else(default_cwd);
+                // #1147 S6 — the fallback used to be `default_cwd()`, i.e.
+                // `$HOME`. After S6 this was the *only* remaining path that
+                // could persist the server's environment into a `terminals.cwd`
+                // — and it persists it into a row that freezes the wave's
+                // workspace in the same transaction, so the wrong directory
+                // becomes permanent.
+                //
+                // Reachability today is near zero (a claude card's payload
+                // always carries a `cwd`, filled by `ClaudeAdapter`), which is
+                // exactly why it is worth closing rather than arguing about:
+                // "nobody hits it" is a property of today's callers, and the
+                // shape — an empty/absent value silently becoming the kernel
+                // process's own directory — is the one #1147 was opened on.
+                //
+                // The claude card's cwd SEMANTICS are unchanged: a payload cwd
+                // still wins. Only the fallback moves, from `$HOME` to the
+                // wave's workspace, and an empty workspace is a hard error
+                // rather than a third fallback.
+                let cwd = crate::operation::terminal_adapter::terminal_cwd_or_wave_workspace(
+                    tx,
+                    card.wave_id.as_str(),
+                    card.payload
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(ToOwned::to_owned),
+                )
+                .await?;
                 terminal_create_tx(
                     tx,
                     NewTerminal {
@@ -212,12 +233,12 @@ impl ProviderAdapter for ClaudeRestartAdapter {
         )
         .await?;
 
-        let scope = card_scope(
-            self.repo.as_ref(),
-            CardId::from(card_id.clone()),
-            card.wave_id.clone(),
-        )
-        .await?;
+        // #1147 S6 — `card_scope_tx`, NOT `card_scope`. This transaction may
+        // have just created the terminal row above, which freezes the wave's
+        // workspace and therefore holds the write lock on `waves`; resolving the
+        // scope through the pool would deadlock the task against itself. See
+        // `card_scope_tx`'s doc comment for the measurement.
+        let scope = card_scope_tx(tx, CardId::from(card_id.clone()), card.wave_id.clone()).await?;
         let runtime_event = Event::RuntimeStarted {
             runtime_id: runtime_id.clone(),
             card_id: card_id.clone(),

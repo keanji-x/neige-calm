@@ -9,6 +9,7 @@
 // header's right edge at --text-base: a page whose job is "what needs me" cannot
 // have a clock as its main emphasis.
 
+import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 
 import {
@@ -17,8 +18,10 @@ import {
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
+import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { PanelCard, PanelModule } from '../../ui/panel-card/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { useCompactViewport } from '../../ui/viewport/public.ts';
 import styles from './today.module.css';
 
 /**
@@ -108,11 +111,18 @@ function formatHour(hour: number): string {
   return `${(hour + 11) % 12 + 1}${hour >= 12 ? 'pm' : 'am'}`;
 }
 
+function isoDate(day: Date): ISODateString {
+  const month = String(day.getMonth() + 1).padStart(2, '0');
+  const date = String(day.getDate()).padStart(2, '0');
+  return `${day.getFullYear()}-${month}-${date}` as ISODateString;
+}
+
 export function TodayPage({
   waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
   nowMs,
 }: TodayPageProps) {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
+  const compact = useCompactViewport();
 
   useEffect(() => {
     if (nowMs !== undefined) {
@@ -128,6 +138,20 @@ export function TodayPage({
     start.setHours(0, 0, 0, 0);
     return start;
   }, [now]);
+
+  if (compact) {
+    return (
+      <main className={styles.mobileToday}>
+        <MobileHeader title="Today" level={1} />
+        <AstryxCalendar
+          key={isoDate(today)}
+          defaultValue={isoDate(today)}
+          weekStartsOn="mon"
+          hasVariableRowCount
+        />
+      </main>
+    );
+  }
 
   const shownWaves = visibleWaves(waves);
   const waiting = shownWaves.filter(needsUserAttention);

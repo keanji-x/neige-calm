@@ -26,8 +26,9 @@
 //!
 //! and the four refusals (frozen / already attached / system cove / non-empty)
 //! each have one too. The freeze latch's system-cove exclusion has
-//! `a_workspace_lease_never_freezes_the_launchpad`; the freeze point S3 does
-//! NOT implement has `a_terminal_card_does_not_freeze_the_workspace_yet_n17`.
+//! `a_workspace_lease_never_freezes_the_launchpad`; freeze point 2 (terminal
+//! persistence), which S3 left open as gap N17 and S6 closed, has
+//! `a_terminal_card_lands_in_the_workspace_and_freezes_it`.
 //!
 //! The transition is `managed → attached` and nothing else. There is no
 //! `managed → managed`: a managed path is derived from the wave's cove and id,
@@ -1341,27 +1342,21 @@ async fn a_workspace_change_cannot_ride_along_with_row_edits() {
 // The freeze latch — each freeze point through its real production route
 // ---------------------------------------------------------------------------
 
-/// KNOWN GAP (#1147 N17) — freeze point 2 ("terminal persistence") is NOT
-/// implemented in S3. This test asserts the gap, so the slice that closes it
-/// sees red and has to replace this test rather than quietly agreeing with it.
+/// Freeze point 2: terminal persistence — #1147 S6, closing gap N17.
 ///
-/// Two reasons, both measured, both in `terminal_create_tx`'s comment:
+/// This test REPLACES `a_terminal_card_does_not_freeze_the_workspace_yet_n17`,
+/// which asserted the gap and the premise that made it harmless in S3 ("no
+/// terminal ever captures `waves.workspace_path`"). S6 is the slice that makes
+/// terminals land in the workspace, so that premise is gone and the gap is a
+/// real hole; the old test is not relaxed here, it is inverted.
 ///
-/// 1. **It is not load bearing yet.** A terminal's `cwd` comes from the request
-///    body or `default_cwd()`, never from `waves.workspace_path` — asserted
-///    below. Re-pointing a workspace therefore cannot invalidate a terminal
-///    today. S6 is the slice that makes terminals land in the wave workspace,
-///    and it is the slice in which this becomes a real hole.
-/// 2. **Writing `waves` from a terminal transaction deadlocks.** The in-memory
-///    database runs in shared-cache mode (per-TABLE locks): with the freeze in
-///    `terminal_create_tx`,
-///    `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`
-///    hangs forever in `sqlx_sqlite::statement::unlock_notify::wait`. A
-///    `SELECT` on `waves` from the same transaction returns fine; the `UPDATE`
-///    never does. Shipping the freeze there would have traded a hole for a
-///    hang.
+/// The two halves are asserted together on purpose. The freeze without the
+/// default would be over-strict (a terminal that never captured the path would
+/// still nail the workspace down); the default without the freeze is the hole —
+/// a re-point would rename the terminal's directory into `.trash/` while a
+/// `terminals` row still points at it, and nothing re-anchors a `terminals.cwd`.
 #[tokio::test]
-async fn a_terminal_card_does_not_freeze_the_workspace_yet_n17() {
+async fn a_terminal_card_lands_in_the_workspace_and_freezes_it() {
     let b = boot().await;
     let cove = create_cove(&b, "c").await;
     let (wave, path) = managed_wave(&b, &cove, "w").await;
@@ -1376,8 +1371,6 @@ async fn a_terminal_card_does_not_freeze_the_workspace_yet_n17() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
 
-    // The premise that makes the gap harmless *today*: the terminal did not
-    // capture the wave's workspace path.
     let terminal_cwds: Vec<String> = sqlx::query_scalar(
         "SELECT t.cwd FROM terminals t JOIN cards c ON c.id = t.card_id WHERE c.wave_id = ?1",
     )
@@ -1387,26 +1380,71 @@ async fn a_terminal_card_does_not_freeze_the_workspace_yet_n17() {
     .unwrap();
     assert!(!terminal_cwds.is_empty(), "a terminal row must exist");
     for cwd in &terminal_cwds {
-        assert_ne!(
+        assert_eq!(
             PathBuf::from(cwd),
             path,
-            "KNOWN GAP (#1147 N17) is only harmless while no terminal captures \
-             the wave workspace. This one did, so the gap is now a real hole: \
-             close it in the slice that made terminals land in the workspace \
-             (S6) and replace this test."
+            "#1147 S6: a terminal card with no explicit cwd must open in the \
+             wave's workspace, not in $HOME"
         );
     }
 
-    assert_eq!(
-        workspace_row(&b, &wave).await.2,
-        None,
-        "KNOWN GAP (#1147 N17): a terminal card does not freeze the workspace in S3"
+    assert!(
+        workspace_row(&b, &wave).await.2.is_some(),
+        "#1147 S6 freeze point 2: persisting a terminal row freezes the workspace"
     );
     let (status, body) = repoint(&b, &wave).await;
     assert_eq!(
         status,
-        StatusCode::OK,
-        "KNOWN GAP (#1147 N17): the re-point is still allowed; body={body}"
+        StatusCode::CONFLICT,
+        "the wave now has a durable cwd consumer; the re-point must be refused; body={body}"
+    );
+    assert_eq!(
+        workspace_row(&b, &wave).await.1,
+        path.to_string_lossy(),
+        "the refused re-point must not have moved the row"
+    );
+    assert!(
+        trash_entries(&b.workspace_root).is_empty(),
+        "the refused re-point must not have touched the filesystem"
+    );
+}
+
+/// An explicit cwd is honored — the default is a default, not a policy.
+///
+/// Pinned separately because the natural over-reach of S6 is to force every
+/// terminal into the workspace. `POST /api/waves/{id}/terminal-cards` has taken
+/// a `cwd` since #13, and nothing in design §更换与冻结 says it stops being
+/// respected. The freeze still applies: it is the *row*, not the path it names,
+/// that cannot be re-anchored.
+#[tokio::test]
+async fn an_explicit_terminal_cwd_is_kept_and_still_freezes() {
+    let b = boot().await;
+    let cove = create_cove(&b, "c").await;
+    let (wave, path) = managed_wave(&b, &cove, "w").await;
+    let elsewhere = b.tmp.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+
+    let (status, body) = request(
+        b.app.clone(),
+        "POST",
+        &format!("/api/waves/{wave}/terminal-cards"),
+        Some(json!({"theme": theme(), "cwd": elsewhere.to_string_lossy()})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let cwd: String = sqlx::query_scalar(
+        "SELECT t.cwd FROM terminals t JOIN cards c ON c.id = t.card_id WHERE c.wave_id = ?1",
+    )
+    .bind(&wave)
+    .fetch_one(b.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(PathBuf::from(&cwd), elsewhere);
+    assert_ne!(PathBuf::from(&cwd), path);
+    assert!(
+        workspace_row(&b, &wave).await.2.is_some(),
+        "the freeze is a property of persisting the row, not of which path it names"
     );
 }
 

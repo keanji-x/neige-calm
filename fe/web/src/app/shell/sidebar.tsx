@@ -8,7 +8,7 @@
 import { useEffect, useRef } from 'react';
 
 import { coveOf, visibleCoves, type Cove } from '../../../../core/domain/cove.ts';
-import { needsUserAttention, visibleWaves, type Wave } from '../../../../core/domain/wave.ts';
+import { needsUserAttention, userVisibleWaves, visibleWaves, type Wave } from '../../../../core/domain/wave.ts';
 import { COVE_PALETTE } from '../../features/cove/palette.ts';
 import { WaveRow } from '../../features/wave/row/public.tsx';
 import { deleteCoveCopy, DELETE_WAVE_COPY } from '../../ui/confirm-dialog/copy.ts';
@@ -82,9 +82,10 @@ function randomCoveColor(): string {
  * (`features/wave/row/row.module.css`), so a jsdom test can only prove the
  * control is always in the accessibility tree and carries `aria-pressed`.
  *
- * E2E-INV-SHELL-003 — `visibleCoves` filters the kernel system cove here as
- * well as in the query layer, so scaffolding cannot reach the rail even if a
- * caller hands over an unfiltered list.
+ * E2E-INV-SHELL-003 — `userVisibleWaves` filters the kernel system cove here
+ * as well as in the query layer, so scaffolding cannot reach the rail even if a
+ * caller hands over an unfiltered list. It is the same function mobile Pages
+ * uses, so the two surfaces cannot drift (#1191 §3.1).
  */
 export function Sidebar({
   coves, wavesByCove, waves, currentPath, onGo,
@@ -104,8 +105,7 @@ export function Sidebar({
   const writeFeedback = useOperationFeedback();
 
   const userCoves = visibleCoves(coves);
-  const userCoveIds = new Set(userCoves.map((cove) => cove.id));
-  const userWaves = visibleWaves(waves).filter((wave) => userCoveIds.has(wave.coveId));
+  const userWaves = userVisibleWaves(waves, coves);
   const waiting = userWaves.filter(needsUserAttention);
   const pinned = userWaves.filter((wave) => wave.pinnedAt !== null)
     .toSorted((left, right) => (right.pinnedAt ?? 0) - (left.pinnedAt ?? 0));

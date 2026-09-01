@@ -4,6 +4,7 @@ import { noDirectPersistence } from './no-direct-persistence.mjs';
 import { noCalmKeyOutsideCoreKeys } from './no-calm-key-outside-core-keys.mjs';
 import { noClassDomQuery } from './no-class-dom-query.mjs';
 import { noCorePlatformEscape } from './no-core-platform-escape.mjs';
+import { singleViewportSource } from './single-viewport-source.mjs';
 
 /** @type {import('eslint').ESLint.Plugin} */
 export const architecturePlugin = {
@@ -14,5 +15,6 @@ export const architecturePlugin = {
     'no-direct-persistence': noDirectPersistence,
     'no-create-context-outside-allowlist': noCreateContextOutsideAllowlist,
     'no-module-runtime-state': noModuleRuntimeState,
+    'single-viewport-source': singleViewportSource,
   },
 };

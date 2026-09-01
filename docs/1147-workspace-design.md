@@ -1,6 +1,6 @@
 # Wave 工作区
 
-状态：实现中。S0 已合入 #1158；S1 已合入 #1163；S2 已合入 #1182；S4 已合入 #1193；S5 已合入 #1201；S3 实现完成（更换与冻结 + FE attached 入口）。
+状态：实现中。S0 已合入 #1158；S1 已合入 #1163；S2 已合入 #1182；S4 已合入 #1193；S5 已合入 #1201；S3 已合入 #1205；S6 实现完成（terminal 默认落在 wave 工作区 + 冻结点 2，关掉 N17）。
 
 ## 前提
 
@@ -228,8 +228,9 @@ S5 回收守卫 2 要求深度恰好两层，任何别的路径都会产出「�
    紧接着做内存那一半（`HarnessRegistry::remove` + `shutdown()`），因为
    `maybe_issue_turn` 不读任何持久状态，否则一条提交前就入队的 observation 照样会变成 turn。
    口径是「该 wave 的全部活跃 runtime」而不是「spec harness」：worker runtime 已被判据蕴含
-   （取租约会加 worktree，被 `worktree list` 那条挡下），但 terminal runtime **不**被蕴含
-   （见 N17），这正是宽口径值钱的地方——它不依赖任何一条「今天恰好如此」的推理。
+   （取租约会加 worktree，被 `worktree list` 那条挡下），而 terminal runtime 在 S3 当时**不**被
+   蕴含（N17）。S6 之后有 terminal 的 wave 根本走不到这一步（建 terminal 行即冻结），
+   但宽口径不因此收窄——它值钱恰恰在于不依赖任何一条「今天恰好如此」的推理。
 2. **在任何不可逆动作之前重跑判据。** 栅栏与此之间的任何写入都让整次 PATCH 变成 409，
    且**什么都没动**：盘上没动、列没改。唯一残留是 spec harness 被拆了，所以这条路径会在
    **旧路径上**把它重开再返回 409——和 `POST /api/cards/{id}/reset` 每天做的是同一个操作，
@@ -266,24 +267,46 @@ thread 内上下文，不是用户看得见的历史。幂等键 `None`，与所
 | # | 冻结点 | 位置 | 为什么这里就不可重锚 |
 |---|---|---|---|
 | 1 | 首次 workspace lease | `operation/workspace_lease/mod.rs::acquire_workspace_lease_at_path_tx` | 租约行存绝对路径，而 worktree 与仓库靠 `<wt>/.git` 与 `<repo>/.git/worktrees/<n>/gitdir` 两个绝对指针互指，rename 之后双向悬空且无人重锚 |
-| 2 | terminal 持久化 | **未做，推到 S6** | 见下 N17 |
+| 2 | terminal 持久化 | `calm-truth/db/sqlite/card.rs::terminal_create_tx`（S6） | `terminals.cwd` 存的是一个字符串，spawn 路径读的是这一行而不是 wave，没有任何东西重锚它；S6 让这个字符串默认等于工作区路径之后，重指工作区就等于把某个 terminal 的目录 rename 进 `.trash` |
 | 3 | wave 离开 Draft | `calm-truth/db/sqlite/wave.rs::wave_update_tx` | 判据是 `w.lifecycle != Draft` 而不是「本次 patch 发生了转换」：只在转换上触发会漏掉所有转换发生在本片之前的行 |
 | 4 | child wave 创建 | S4 已做（`ManagedFrozenUnder` / `InheritAttachedFrozen`） | 机器在 spec 运行中建的，harness 立刻 bootstrap，没有可安全重指的窗口 |
 
-**N17：冻结点 2 没做，两条实测理由。** 先写了、跑门禁才发现，如实记下：
+**N17 由 S6 关闭，并且订正了 N17 记的死锁诊断。**
 
-1. **今天还不吃紧。** terminal 的 `cwd` 来自请求体或 `default_cwd()`
-   （`operation/terminal_adapter.rs`），**从来不读 `waves.workspace_path`**。
-   让 terminal 落进 wave 工作区的是 S6；在那之前，重指工作区不可能让任何 terminal 失效。
-2. **在 terminal 的事务里写 `waves` 会死锁。** 实测：把冻结放进 `terminal_create_tx` 之后，
-   `claude_card_endpoint::post_claude_restart_recreates_missing_terminal_row_and_resumes_session`
-   永久挂在 `sqlx_sqlite::statement::unlock_notify::wait`（gdb 抓到）。内存库跑在 shared-cache 模式，
-   锁是**表级**的，这条流程里另有连接占着 `waves`。同一个事务里对 `waves` 做 `SELECT` 正常返回，
-   `UPDATE` 永不返回。把冻结留在那里等于用一个洞换一次挂死。
+冻结落在 `terminal_create_tx`（不是四个 composite），因为 `claude_restart_adapter`
+直接调它——S2 把守卫挂在 composite 上时漏掉的正是这条路。它对**卡片种类无条件**：
+codex / claude / terminal 三种卡都在这里持久化一个 `cwd`，都是设计说的那个「不可重锚
+的持久 cwd 消费者」。唯一的例外（system cove 的 launchpad）在 `wave_workspace_freeze_tx`
+内部由 SQL 子句排除，所以这里不需要、也不许再写一次例外。
 
-    N17 有测试钉住（`wave_workspace_repoint::a_terminal_card_does_not_freeze_the_workspace_yet_n17`），
-    并且**同时断言了理由 1 的前提**（terminal 的 cwd ≠ wave 工作区路径）——所以 S6 一旦让
-    terminal 落进工作区，这条测试就会红，必须显式替换而不是顺手改绿。
+**订正：N17 说「同一事务里 `UPDATE waves` 永不返回」，实测不是。** S6 用 printf 探针重测
+同一条 `post_claude_restart_recreates_missing_terminal_row_and_resumes_session`：`UPDATE ok`
+打印了**两次**，挂死发生在它之后一步，方向正好相反 —— 事务此时持有 `waves` 的**写锁**，
+而 `ClaudeRestartAdapter::prepare_tx` 接着用 `card_scope` 从**连接池**（第二条连接）读
+`waves`，于是任务在只有它自己能释放的锁上永久等待
+（`sqlx_sqlite::statement::unlock_notify::wait`）。内存库是 shared-cache，锁是表级的。
+
+所以给后来者的规则不是「别在这里冻结」，也**不是只关于 `waves`**。真正的规则是：
+
+> **一个事务在提交前，不得从连接池读它自己写过的任何表。** 连接池给的是第二条连接，
+> shared-cache 下锁是表级的，于是它阻塞在一把只有调用者自己能释放的锁上。
+
+`waves` 只是 S6 新塞进「每个建 terminal 的事务」写集的那一张表；`cards`、`terminals`
+早就在里面了，从这些流程里去池读它们一样会挂。S6 改变的是**哪些读现在不安全**，不是规则
+本身。为此加了 `routes/cards.rs::card_scope_tx`（以及本来就有的 `wave_workspace_read_tx`）。
+
+**这条规则没有任何机械执行手段，如实记下。** 全部覆盖就是一条流程上的一个 20 秒墙钟
+（`claude_card_endpoint::post_claude_restart_does_not_deadlock_on_the_workspace_freeze`），
+它只把**那一条**流程的回归从「挂住的 CI job」变成「会说话的红测试」。将来某个新 adapter
+建完 terminal 行再用 `self.repo` 读 `waves`，照样挂 CI，且没有任何测试点出原因。全树扫过
+一遍（其余 adapter 的 `card_scope` 都在建卡之前，同样正确）——那是**某一刻的实测，不是
+保证**。
+
+N17 那条「同时钉住无害前提」的测试
+（`a_terminal_card_does_not_freeze_the_workspace_yet_n17`）如约变红，被
+`a_terminal_card_lands_in_the_workspace_and_freezes_it` **反转替换**（不是放宽）：
+同一条路由，现在断言 terminal 的 cwd **等于**工作区路径、行已冻结、重指返回 409
+且盘上零改动。
 
 **system cove 在冻结函数内部被排除，不是在调用点。** launchpad 自带 terminal 卡、也会取租约，
 按上表它每次 boot 都会被冻上，而 `today_launchpad_ensure_tx` 下一次 `ensure` 就会撞上门栓
@@ -379,6 +402,55 @@ thread 内上下文，不是用户看得见的历史。幂等键 `None`，与所
 
 Managed 仓库保证 Codex 能获得 Git 工作区。Claude 当前不读取 wave workspace，迁移到同等 worktree 租约是独立工作，不属于本设计。
 
+## Terminal 的工作目录（S6）
+
+两条产生 terminal 卡的路都改成：**调用方给了 cwd 就用它，没给就用 wave 的
+`workspace_path`**（此前两条都回退到 `$HOME`）。实现是
+`operation/terminal_adapter.rs::terminal_cwd_or_wave_workspace`，在**即将写这一行的那个
+事务里**读工作区，所以读到的路径和被这一行冻住的路径必然是同一个。
+
+- `POST /api/waves/{id}/terminal-cards`（用户点 New terminal，FE 不带 cwd）
+- dispatcher 的 `terminal-worker`（`tasks.cwd` 为空时）
+
+**默认不在请求归一化里填，而是在 `prepare_tx` 里解析。** 理由与 scheduler 一直给
+`terminal-worker` 载荷留 `cwd: None` 的理由是同一条：把默认值物化进操作载荷 = 把服务端
+的环境写进 `stable_payload_hash`，换个 `HOME` 重跑就会把自己的操作看成异载荷冲突。
+
+**空的 `workspace_path` 是硬错误，不是回退。** S2 之后每个 wave 都有物化过的工作区；
+真出现空值说明行坏了，而把空串写进 `terminals.cwd` 等于让 worker 继承内核进程的当前
+目录——那正是 #1147 开篇那种「失败在别处、原因不可读」的形状。
+
+**codex / claude 卡不在本片范围内**：它们各自的 cwd 语义不变（见上一节，Claude 迁移是
+独立工作）。但它们同样经过 `terminal_create_tx`，所以同样触发冻结点 2——冻的是「持久化
+了一个 cwd 副本」这件事，与这个副本指向哪里无关。
+
+`claude_restart_adapter` 里那处**回退**改了（S6 红队第 3 条）：原本 payload 没有 `cwd`
+时回退 `default_cwd()`（`$HOME`）。那是 S6 之后全树最后一条能把服务端环境**持久化**进
+`terminals.cwd` 的路径，而且它写下的正是那条会冻结工作区的行 ⇒ 一次写错就是永久写错。
+今天几乎不可达（claude 卡 payload 恒带 cwd），但「没人踩」是今天调用方的性质，不是这个
+函数的性质。改成与 terminal 共用 `terminal_cwd_or_wave_workspace`：payload 的 cwd 仍然
+优先（语义没变），只有回退从 `$HOME` 变成工作区，空工作区照样硬失败。
+单违规 fixture：`post_claude_restart_without_a_payload_cwd_falls_back_to_the_wave_workspace`
+（直接构造 HTTP 造不出的「payload 无 cwd」状态，并断言结果既等于工作区路径、又不等于
+`$HOME`）。
+
+### 冻结对卡片种类无条件——这笔产品代价，本片没算清（登记）
+
+底层单入口 + 无条件，换来的是「不靠调用点枚举」，代价却没在设计里算过：
+
+**建一张 codex 或 claude 卡就永久冻住工作区，而这两种卡的 cwd 是 `$HOME` 而不是工作区。**
+也就是说：没有任何持久副本捕获了工作区路径，工作区却已经不能再重指了。对几乎任何真实
+wave（第一件事往往就是开一张 codex 卡）来说，S3 的重指功能因此接近关死。
+
+保守方向本身站得住（冻的是「持久化了一个 cwd 副本」这个事实），但它把一个**可能可以更
+精确**的判断，做成了最粗的那个。可能的收敛方向，仍然满足「单入口、非上层枚举」：在同一个
+`terminal_create_tx` 里按**值**判断——这一行的 `cwd` 是否落在该 wave 的工作区之内——
+再决定冻不冻。落在里面才是「不可重锚的持久 cwd 消费者」；指向别处的行，重指工作区并不会
+让它失效。
+
+本片不做，跟进在 #1223：它需要一个「落在工作区之内」的判据（前缀？canonicalize？符号链接
+怎么算？），而那是一次独立裁决，与 S6 的两件事无关。
+
 Managed 仓库默认没有 remote；需要操作真实代码仓库时，用户应在创建时 attached，或在冻结前从 managed 切换到 attached。
 
 ## 交付顺序
@@ -389,13 +461,15 @@ Managed 仓库默认没有 remote；需要操作真实代码仓库时，用户�
 4. S4：子 wave 工作区按父 kind 分情况并冻结。
 5. S5：安全回收和根目录断言（四条守卫 + trash + GC，见「回收（S5）」）。
 6. S3：工作区更换（`managed → attached`）、冻结门栓、attached 目标校验、harness 重锚定、FE attached 创建入口。
-7. S6：terminal 默认落在 wave 工作区。
+7. S6：terminal 默认落在 wave 工作区 + 冻结点 2（见「Terminal 的工作目录（S6）」，关闭 N17）。
 
 S4 必须不晚于 S5；S3 必须复用 S5 的路径安全边界。
 
 ## 已知缺口
 
-实测可达、被刻意推迟的缺口。N4–N11 每条都有一个断言缺口本身的测试（`nX_` 命名或带 `KNOWN GAP (#1147 nX)` 文案），所以修好它的那一片会看到测试变红，必须显式替换而不是顺手改绿。
+实测可达、被刻意推迟的缺口 —— **N20 是唯一一条以「实测不可达」入表的**，它记的不是一个
+今天能踩到的洞，而是一个「前提一旦变化就会变成洞」的形状（理由与数字见该行）。
+N4–N11 每条都有一个断言缺口本身的测试（`nX_` 命名或带 `KNOWN GAP (#1147 nX)` 文案），所以修好它的那一片会看到测试变红，必须显式替换而不是顺手改绿。
 
 S5 新增的三条按同一标准登记，但状态不同，别混：**N14 有测试**（`wave_workspace_recycle::a_managed_workspace_without_our_marker_is_left_on_disk` 同时断言目录还在 **和** 行已删）；**N12、N13、N15 没有测试（N16 **有**测试：`a_trash_swapped_between_canonicalize_and_rename_is_not_reported_as_success`，用确定性注入而不是多线程 hammer）**——N12 今天没有任何路由触达，N13 藏在守卫 3 后面，N15 要跨线程时序才能构造，三条都只能靠这张表记住。写测试之前它们只是记录，不是防线。
 
@@ -414,7 +488,8 @@ S5 新增的三条按同一标准登记，但状态不同，别混：**N14 有�
 | N16 | canonicalize trash root 与 `rename` 之间的 TOCTOU：`.trash` 被换成符号链接 | 工作区被 rename 到托管根之外。**已由 rename 后的复验兜住**——检测得到、报硬错误、尽力移回，所以后果是「一次失败的 DELETE」而不是静默泄漏；未做的是防御（`openat(O_NOFOLLOW)` + `renameat`） | 独立 issue；威胁模型不高（能造这个符号链接的人本来就能直接删目录） |
 | N19 | `normalize_path("/a//")` 得到 `"/a/"`，而 `is_descendant_of` 用 `format!("{parent}/")` 探测 ⇒ 存成 `"/a/"` 的 claim **谁也覆盖不到** | 两层后果，第二层更重。**① 两条 claim 覆盖同一棵子树**：可达的第二条是 **`/a/b`** 而不是 `/a` —— `/a` 会被创建路由的反向 Ancestor 检查挡下（`is_descendant_of("/a","/a/")` 为真），而 `/a/b` 两个方向都不匹配，于是两行并存，正是 #275 要护住的不变量。**② `overlapping_pairs` 看不见这一对** —— 那是 `assert_cove_folders_disjoint` 这道 **boot 时 fail-closed** 围栏的全表扫描，于是一道「表有重叠就拒绝启动」的围栏，恰好在这个 gap 造出的唯一一种重叠上照常启动。**先于本片存在**，且可达（文件系统到处接受 `/a//`，路由的 `starts_with('/')` 与 S3 的 `validate_attached_workspace` 都不拦） | 认领规则的归属者；**三条测试钉住**（`a_doubled_trailing_slash_produces_a_claim_that_covers_nothing`、`n19_lets_two_claims_cover_one_subtree`、`n19_is_invisible_to_the_boot_disjointness_fence`，最后一条同时断言「没有双斜杠时围栏照样抓得到」，免得把围栏整体判成坏的）。没有顺手修，因为修法是一个「规范化到底是什么意思」的裁决（折叠连续斜杠？canonicalize？），不属于工作区片 |
 | N18 | attached 目标校验只在**用户指定目录**的两条路上（`POST /api/waves` 的 attached 分支、`PATCH /api/waves/{id}`）；内核派生的 attached 路径（cove chat wave 沿用既有 `cove_folders` claim、子 wave 继承 attached 父）**不校验** | 那些路径上一个不存在 / 非 git 的目录仍然会拖到 worker 起不来才暴露。今天可达性低（路径来自一条已经存在的 claim），但不是封闭的 | 独立一片：**实测把校验放进 `materialize_workspace` 的共用契约点会让 202 条测试变红**，因为全树的 attached fixture 指的都不是真仓库；关掉它等于把那些 fixture 全部改成建真仓库 |
-| N17 | 冻结点 2（terminal 持久化）没做 | 建了 terminal 卡的 wave 仍可更换工作区。今天无害（terminal 的 cwd 不来自工作区），S6 让 terminal 落进工作区之后就是真洞 | S6；**有测试**（`a_terminal_card_does_not_freeze_the_workspace_yet_n17`，同时钉住「无害」的前提）。实现时注意：在 terminal 事务里 `UPDATE waves` 会因 shared-cache 表级锁死锁 |
+| N20 | `workspace_path` 为空的 wave 开不了 terminal，且**没有自救路径**：S6 硬失败（`Internal`），而该 wave 若已冻结就再也改不了工作区 | 那种 wave 上任何 terminal / codex / claude 卡都建不起来。**但这个状态在任何现存库里都不存在**——实测：`:4040` 停在 migration 75，**根本没有 `workspace_path` 列**；`:4140` 在 78，空路径行数 **0**。且按§前提二（老数据不迁移、含 `:4040` 一并按大版本 refresh）本就出范围，与 S4 砍掉 N11 迁移是同一条理由 | 若将来前提变了：修法是「空路径时允许解冻重指」或一次性回填。**没有测试钉住这条缺口**（要构造它得先造一个生产路由造不出的行）；能红的是它的**反面**——`terminal_worker_refuses_to_default_to_an_empty_workspace` 钉住「空路径宁可硬失败也不继承服务端 cwd」 |
+| ~~N17~~ | 冻结点 2（terminal 持久化）没做 | 建了 terminal 卡的 wave 仍可更换工作区 | **S6 已关闭**（`terminal_create_tx` 冻结 + `card_scope_tx`）。原测试如约变红并被反转替换；N17 记的死锁诊断也在那里订正——见「冻结（S3）」下的 N17 段 |
 
 **N14：拒绝回收目录 ≠ 拒绝删行，这是刻意的。**
 

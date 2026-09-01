@@ -114,7 +114,7 @@ const keysOf = (requests: readonly ApiRequest[]) =>
 
 async function openDraft() {
   fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
-  await screen.findByRole('complementary', { name: 'New conversation' });
+  await screen.findByRole('complementary', { name: 'Untitled' });
 }
 
 /*
@@ -312,7 +312,7 @@ describe('cove conversations', () => {
     await screen.findByRole('button', { name: 'Try again' });
     fireEvent.click(screen.getByRole('button', { name: 'Close conversation' }));
     fireEvent.click(await screen.findByRole('button', { name: 'New conversation' }));
-    await screen.findByRole('complementary', { name: 'New conversation' });
+    await screen.findByRole('complementary', { name: 'Untitled' });
     // The words came back with the drawer; nothing had to be retyped.
     expect(screen.getByText('words that failed')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
@@ -378,7 +378,7 @@ describe('cove conversations', () => {
     await openDraft();
     await write('landed anyway');
     await screen.findByRole('complementary', { name: 'Chat' });
-    expect(screen.queryByRole('complementary', { name: 'New conversation' })).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Untitled' })).toBeNull();
   });
 
   /* The list was simply behind: the key's card was minted by an earlier attempt
@@ -656,7 +656,7 @@ function harnessTurns(cardId: string) {
     await write('words that are mine');
     await screen.findByRole('button', { name: 'Try again' });
     expect(screen.queryByRole('complementary', { name: 'Not yours' })).toBeNull();
-    await screen.findByRole('complementary', { name: 'New conversation' });
+    await screen.findByRole('complementary', { name: 'Untitled' });
     expect(screen.getByText('words that are mine')).toBeTruthy();
     expect(posts(requests)).toHaveLength(1);
   });
@@ -830,7 +830,7 @@ function harnessTurns(cardId: string) {
     /* `data-nc-escape-layer`, not just the label: `Drawer` keeps painting its
        last frame while it retracts, so a drawer that is on its way out still
        answers to the name. The attribute is present only while it is open. */
-    const drawer = await screen.findByRole('complementary', { name: 'New conversation' });
+    const drawer = await screen.findByRole('complementary', { name: 'Untitled' });
     expect(drawer.hasAttribute('data-nc-escape-layer')).toBe(true);
 
     /* And it is a working draft, not a husk: it sends, and it sends to cove 2
@@ -969,7 +969,7 @@ function harnessTurns(cardId: string) {
       const { field } = await openRowWithMenu();
       await typeInto(field, '/new');
       fireEvent.keyDown(field, { key: 'Enter' });
-      await screen.findByRole('complementary', { name: 'New conversation' });
+      await screen.findByRole('complementary', { name: 'Untitled' });
       expect(field.textContent).toBe('');
       expect(commandMenu()).toBeNull();
     });

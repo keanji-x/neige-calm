@@ -623,4 +623,36 @@
     color: var(--text-3);
     font-style: italic;
   }
+
+  /* Mobile owns one reading column. The desktop outline/measure/sidenote grid
+     must not keep its fixed document measure and widen the viewport. */
+  @media (width < 60rem) {
+    .doc {
+      grid-template-columns: minmax(0, 1fr);
+      max-inline-size: 100%;
+      overflow-wrap: anywhere;
+    }
+
+    .block,
+    .byline,
+    .raw,
+    .reference {
+      grid-column: 1;
+      max-inline-size: 100%;
+    }
+
+    .sidenote {
+      display: none;
+    }
+
+    .referenceSidenote {
+      white-space: normal;
+    }
+
+    .code,
+    .raw,
+    .tableWrap {
+      max-inline-size: 100%;
+    }
+  }
 }

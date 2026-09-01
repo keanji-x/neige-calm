@@ -2,11 +2,23 @@
 // calls an API. Loading, saving and error state all arrive as props, and the
 // patch it builds leaves through `onSave` (features must not import app).
 
+import { Button as AstryxButton } from '@astryxdesign/core/Button';
+import { Card as AstryxCard } from '@astryxdesign/core/Card';
+import {
+  MetadataList as AstryxMetadataList,
+  MetadataListItem as AstryxMetadataListItem,
+} from '@astryxdesign/core/MetadataList';
+import {
+  SegmentedControl as AstryxSegmentedControl,
+  SegmentedControlItem as AstryxSegmentedControlItem,
+} from '@astryxdesign/core/SegmentedControl';
+import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
 import { useEffect } from 'react';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
 import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
+import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './settings.module.css';
 
@@ -98,146 +110,104 @@ export function SettingsPage({
         breadcrumb={<Breadcrumb ancestor="Today" onNavigate={onOpenToday} />}
         title={<PageTitle>Settings</PageTitle>}
       />
+      <div className={styles.mobileHeader}><MobileHeader title="Settings" level={1} /></div>
 
       <div className={styles.form}>
-        {/* Section labels take the place of card boxes. Per the boundary
-            ladder, a label plus 16px of space separates two groups as well as
-            "border + radius + fill + padding" does, using one channel instead
-            of four. */}
-        <section className={styles.section} aria-labelledby="nc-settings-network">
-          <h2 className={styles.sectionLabel} id="nc-settings-network">Network</h2>
-          {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
-          {!loaded && loadError === null
-            ? <p className={styles.hint}>Loading settings…</p>
-            : loaded ? (
-              <>
-                <Field
-                  id="nc-settings-http-proxy"
-                  label="HTTP proxy"
-                  value={draft.http}
-                  onChange={(value) => setDraft({ ...draft, http: value })}
-                />
-                <Field
-                  id="nc-settings-https-proxy"
-                  label="HTTPS proxy"
-                  value={draft.https}
-                  onChange={(value) => setDraft({ ...draft, https: value })}
-                />
-                <div className={styles.actions}>
-                  {/*
-                    Two kinds of "cannot press", and they must not look alike.
-                    A clean form is really `disabled`. Saving is busy: focus is
-                    on Save at that moment, and a real `disabled` would throw it
-                    away. Reset follows Save, because two buttons in one action
-                    row taking two different treatments reads as two different
-                    things happening.
-                  */}
-                  <button
-                    type="button"
-                    data-nc-action="primary"
-                    disabled={!dirty && !saving}
-                    aria-busy={saving ? true : undefined}
-                    aria-disabled={saving ? true : undefined}
-                    data-nc-state={saving ? 'busy' : undefined}
-                    onClick={() => { if (saving) return; void onSave(buildPatch(draft, base)); }}
-                  >
-                    {/* Both labels occupy one grid cell, so the button's width
-                        is the wider of the two and never changes. */}
-                    <span className="confirm-dialog-label">
-                      <span aria-hidden={saving}>Save</span>
-                      <span aria-hidden={!saving}>Saving…</span>
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    data-nc-action="secondary"
-                    disabled={!dirty && !saving}
-                    aria-busy={saving ? true : undefined}
-                    aria-disabled={saving ? true : undefined}
-                    data-nc-state={saving ? 'busy' : undefined}
-                    onClick={() => { if (saving) return; setDraft(base); }}
-                  >
-                    Reset
-                  </button>
-                  {/* The only green pixels in the app, and only for four seconds. */}
-                  {showSaved && <span className={styles.saved} role="status">Saved.</span>}
-                </div>
-                {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
-              </>
-            ) : null}
-        </section>
+        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
+          <section className={styles.section} aria-labelledby="nc-settings-network">
+            <h2 className={styles.sectionLabel} id="nc-settings-network">Network</h2>
+            {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
+            {!loaded && loadError === null
+              ? <p className={styles.hint}>Loading settings…</p>
+              : loaded ? (
+                <>
+                  <AstryxTextInput
+                    label="HTTP proxy"
+                    value={draft.http}
+                    onChange={(value) => setDraft({ ...draft, http: value })}
+                    size="lg"
+                    width="100%"
+                  />
+                  <AstryxTextInput
+                    label="HTTPS proxy"
+                    value={draft.https}
+                    onChange={(value) => setDraft({ ...draft, https: value })}
+                    size="lg"
+                    width="100%"
+                  />
+                  <div className={styles.actions}>
+                    <AstryxButton
+                      label={saving ? 'Saving…' : 'Save'}
+                      variant="primary"
+                      size="lg"
+                      isDisabled={!dirty && !saving}
+                      isLoading={saving}
+                      isInterruptible
+                      data-nc-state={saving ? 'busy' : undefined}
+                      onClick={() => { if (saving) return; void onSave(buildPatch(draft, base)); }}
+                    />
+                    <AstryxButton
+                      label="Reset"
+                      variant="secondary"
+                      size="lg"
+                      isDisabled={!dirty || saving}
+                      data-nc-state={saving ? 'busy' : undefined}
+                      onClick={() => { if (saving) return; setDraft(base); }}
+                    />
+                    {/*
+                      * `data-nc-settings-saved` is the e2e seam, not decoration.
+                      * `role="status"` cannot locate this span: every Astryx
+                      * `Button` renders its own unconditional, empty-text
+                      * `role="status"` live region for loading announcements
+                      * (`@astryxdesign/core` `Button.tsx`), so the two buttons
+                      * beside this one make `getByRole('status')` resolve to
+                      * three elements. Filtering those by the text we are about
+                      * to assert would be circular — it could only prove "some
+                      * status says Saved.", never "the save succeeded". The
+                      * anchor keeps locating independent of asserting.
+                      */}
+                    {showSaved && (
+                      <span className={styles.saved} role="status" data-nc-settings-saved>Saved.</span>
+                    )}
+                  </div>
+                  {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
+                </>
+              ) : null}
+          </section>
+        </AstryxCard>
 
-        <section className={styles.section} aria-labelledby="nc-settings-appearance">
-          <h2 className={styles.sectionLabel} id="nc-settings-appearance">Appearance</h2>
-          {/* Deliberately local-only: theme is a device preference, so it never
-              goes through onSave. See this module's README.
+        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
+          <section className={styles.section} aria-labelledby="nc-settings-appearance">
+            <h2 className={styles.sectionLabel} id="nc-settings-appearance">Appearance</h2>
+            <AstryxSegmentedControl
+              value={themeMode}
+              onChange={(value) => onThemeModeChange(value === 'light' || value === 'dark' ? value : 'system')}
+              label="Appearance"
+              size="lg"
+              layout="fill"
+            >
+              {THEME_MODES.map((mode) => (
+                <AstryxSegmentedControlItem key={mode} value={mode} label={themeLabel(mode)} />
+              ))}
+            </AstryxSegmentedControl>
+            <p className={styles.hint}>Stored on this device.</p>
+          </section>
+        </AstryxCard>
 
-              `radiogroup`/`radio`, not `tablist`/`tab`: this picks a value, it
-              does not switch views, and there is no tabpanel. Calling it a
-              tablist would be an accessibility downgrade dressed as a reskin. */}
-          <div className={styles.segmented} role="radiogroup" aria-label="Appearance">
-            {THEME_MODES.map((mode, index) => (
-              <button
-                key={mode}
-                type="button"
-                role="radio"
-                data-nc-role="tab"
-                aria-checked={themeMode === mode}
-                className={themeMode === mode ? `${styles.segment} ${styles.segmentOn}` : styles.segment}
-                onClick={() => onThemeModeChange(mode)}
-                onKeyDown={(event) => {
-                  const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1
-                    : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
-                  if (step === 0) return;
-                  event.preventDefault();
-                  const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]');
-                  const nextIndex = (index + step + THEME_MODES.length) % THEME_MODES.length;
-                  onThemeModeChange(THEME_MODES[nextIndex]);
-                  buttons?.item(nextIndex).focus();
-                }}
-              >
-                {themeLabel(mode)}
-              </button>
-            ))}
-          </div>
-          <p className={styles.hint}>Appearance is stored on this device only.</p>
-        </section>
-
-        <section className={styles.section} aria-labelledby="nc-settings-about">
-          <h2 className={styles.sectionLabel} id="nc-settings-about">About</h2>
-          {/* Build-time facts, not API fields (§0.5). `data dir` is kernel-owned
-              and has no wire column, so that row is simply absent — no dashed
-              box, no "unavailable". */}
-          <dl className={styles.about}>
-            <dt className={styles.aboutKey}>version</dt>
-            <dd className={styles.aboutValue}>{__NC_VERSION__}</dd>
-            <dt className={styles.aboutKey}>build</dt>
-            <dd className={styles.aboutValue}>{__NC_BUILD__}</dd>
-          </dl>
-        </section>
+        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
+          <section className={styles.section} aria-labelledby="nc-settings-about">
+            <h2 className={styles.sectionLabel} id="nc-settings-about">About</h2>
+            <AstryxMetadataList columns="single" label={{ position: 'start', width: '6rem' }}>
+              <AstryxMetadataListItem label="Version">
+                <span className={styles.aboutValue}>{__NC_VERSION__}</span>
+              </AstryxMetadataListItem>
+              <AstryxMetadataListItem label="Build">
+                <span className={styles.aboutValue}>{__NC_BUILD__}</span>
+              </AstryxMetadataListItem>
+            </AstryxMetadataList>
+          </section>
+        </AstryxCard>
       </div>
-    </div>
-  );
-}
-
-function Field({ id, label, value, onChange }: {
-  id: string;
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  return (
-    <div className={styles.field}>
-      <label className={styles.label} htmlFor={id}>{label}</label>
-      <input
-        id={id}
-        className={styles.input}
-        type="text"
-        value={value}
-        spellCheck={false}
-        autoComplete="off"
-        onChange={(event) => onChange(event.target.value)}
-      />
     </div>
   );
 }
