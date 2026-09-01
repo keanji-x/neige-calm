@@ -65,6 +65,12 @@ fn app_state_for_boot_test(repo: Arc<SqlxRepo>) -> AppState {
 /// `CardRole::Spec` — the same role the live pusher resolves
 /// (`Dispatcher::resolve_spec_card`) — so a Worker-role row no longer stands in
 /// for a spec card, and these fixtures have to write the role they mean.
+///
+/// The payload comes from `routes::waves::spec_harness_card_payload`, the same
+/// function the mint route calls, rather than a hand-written
+/// `{"schemaVersion": 1}`: the production shape also carries `codex_source` and
+/// `spec_harness`, and a fixture that omits them would be silently unlike every
+/// real spec card the moment anything backend-side starts reading either key.
 async fn seed_spec_card_row(repo: &SqlxRepo, wave_id: &WaveId) -> calm_server::model::Card {
     let mut tx = repo.pool().begin().await.unwrap();
     let card = card_create_with_id_tx(
@@ -75,7 +81,7 @@ async fn seed_spec_card_row(repo: &SqlxRepo, wave_id: &WaveId) -> calm_server::m
             title: None,
             kind: "codex".into(),
             sort: None,
-            payload: json!({"schemaVersion": 1}),
+            payload: calm_server::routes::waves::spec_harness_card_payload(None),
         },
         CardRole::Spec,
         false,

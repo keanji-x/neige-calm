@@ -1576,6 +1576,105 @@ mod tests {
         assert!(!without.contains("## Bound Workflow Input"));
     }
 
+    /// #1189 review F3 — the boot-recovery selector's SQL literals have no
+    /// compile-time link to the Rust values they mirror.
+    ///
+    /// `session_projection_recover_harnesses_on_boot` (calm-truth) hardcodes
+    /// two `(role, harness_profile)` pairs: `('assistant', 'assistant')` and
+    /// `('worker', 'plain_chat')`. The truth for both lives in
+    /// `minted_card_shape` here, in calm-server, which calm-truth cannot depend
+    /// on. Renaming `ASSISTANT_HARNESS_PROFILE_MARKER`, the `"plain_chat"`
+    /// literal, or a `CardRole` db string therefore compiles cleanly and fails
+    /// by making the selector silently skip that conversation class on boot —
+    /// which is exactly the bug #1189 A1 just fixed.
+    ///
+    /// So this seeds one recoverable runtime per profile using the shape
+    /// `minted_card_shape` returns and requires the selector to return both. A
+    /// rename on either side is red here.
+    #[tokio::test]
+    async fn boot_recovery_sql_literals_track_the_minted_card_shape() {
+        use crate::session_projection_repo::WorkerSessionProjectionRepo;
+
+        let repo = Arc::new(
+            SqlxRepo::open("sqlite::memory:")
+                .await
+                .expect("open in-memory sqlite repo"),
+        );
+        let wave = make_wave(repo.as_ref(), None, None).await;
+
+        let mut base = HarnessSnapshot::initial(0, vec![]);
+        base.phase = HarnessPhaseTag::Idle;
+
+        let mut expected = Vec::new();
+        let mut tx = repo.pool().begin().await.expect("begin tx");
+        for profile in [HarnessProfile::Assistant, HarnessProfile::PlainChat] {
+            let (minted_role, minted_marker) =
+                minted_card_shape(profile).expect("conversation profile mints a card");
+            let card = card_create_with_id_tx(
+                &mut tx,
+                new_id(),
+                NewCard {
+                    wave_id: wave.id.clone(),
+                    title: None,
+                    kind: "codex".into(),
+                    sort: None,
+                    payload: json!({"schemaVersion": 1, "harness_profile": minted_marker}),
+                },
+                minted_role,
+                false,
+                repo.card_role_cache(),
+            )
+            .await
+            .expect("mint conversation card");
+
+            let runtime_id = new_id();
+            let thread_id = format!("thread-{}", card.id.as_str());
+            let mut snapshot = base.clone();
+            snapshot.last_thread_id = Some(thread_id.clone());
+            session_start_runtime_tx(
+                &mut tx,
+                WorkerSessionInit {
+                    id: runtime_id.clone(),
+                    card_id: card.id.to_string(),
+                    kind: session_kind_for(profile),
+                    agent_provider: Some(AgentProvider::Codex),
+                    // The state the restart bug bites in: a turn was in flight.
+                    status: WorkerSessionState::TurnPending,
+                    terminal_run_id: None,
+                    thread_id: Some(thread_id),
+                    session_id: None,
+                    active_turn_id: None,
+                    handle_state_json: Some(
+                        serde_json::to_value(&snapshot).expect("serialize snapshot"),
+                    ),
+                    spawn_op_id: None,
+                    now_ms: now_ms(),
+                },
+            )
+            .await
+            .expect("start runtime");
+            expected.push(runtime_id);
+        }
+        tx.commit().await.expect("commit seed tx");
+
+        let mut selected = repo
+            .session_projection_recover_harnesses_on_boot()
+            .await
+            .expect("boot selector")
+            .into_iter()
+            .map(|runtime| runtime.id)
+            .collect::<Vec<_>>();
+        selected.sort();
+        expected.sort();
+        assert_eq!(
+            selected, expected,
+            "the boot selector no longer recognises a card minted by \
+             `minted_card_shape`: its SQL literals ('assistant'/'assistant' and \
+             'worker'/'plain_chat') have drifted from the Rust values, so a \
+             kernel restart would drop that conversation class"
+        );
+    }
+
     #[tokio::test]
     async fn bound_workflow_descriptor_filters_running_trusted_workflow_binding() {
         let trusted_plugin_id = configured_trusted_plugin_id();

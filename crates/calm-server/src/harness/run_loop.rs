@@ -1106,11 +1106,48 @@ async fn maybe_issue_turn(inner: &Arc<Inner>) -> Result<()> {
     //     commit before every turn, and #1189's premise is N conversations on
     //     one wave, so keeping it would multiply that write by N and make every
     //     assistant turn contend for the same sqlite write lock as the spec
-    //     harness's own per-turn refresh. Nothing is lost: the spec harness of
-    //     that same wave still refreshes each turn, and card transcript paths
-    //     are also committed by the ordinary event-driven commit path, so the
-    //     assistant is reading a HEAD somebody else keeps current rather than
-    //     one nobody maintains.
+    //     harness's own per-turn refresh.
+    //
+    //     This is a REAL, BOUNDED degradation — not "nothing is lost" — and the
+    //     boundary is written out here because widening the skip is only safe
+    //     inside it:
+    //       * `cards/<id>/events.json` and `cards/<id>/conversation.md` are
+    //         dirtied by exactly two places in the tree, both via
+    //         `wave_vcs::delta::add_card_event_paths`: `add_card_paths`
+    //         (reachable only from `CardAdded` / `CardUpdated`, i.e. card
+    //         creation) and `snapshot_transcripts_for_cards_in_wave` — this
+    //         very refresh. The ordinary event-driven commit path does NOT keep
+    //         them current: `HarnessItemAdded` / `HarnessPhaseChanged` /
+    //         `HarnessTranscriptCleared` / `HarnessUserMessageEnqueued` dirty
+    //         only `.payload.json` + `runtime.json`, and `CodexHook` /
+    //         `ClaudeHook` produce an EMPTY delta (`wave_vcs/delta.rs`).
+    //         `spec_harness_wave_vcs.rs::
+    //         since_last_turn_override_fences_post_refresh_hook_commit` pins
+    //         that fact directly: a post-refresh hook commit advances HEAD and
+    //         still does not contain its own transcript.
+    //       * So on this wave the freshness of BOTH transcript paths is
+    //         maintained solely by the spec harness's own per-turn refresh. The
+    //         event-driven path still keeps `report.md`, `runs/*`,
+    //         `cards/<id>/.payload.json`, `cards/<id>/runtime.json` and newly
+    //         added cards current; the skip degrades transcripts and nothing
+    //         else.
+    //
+    //     Why that degradation is acceptable for THIS role and only this role:
+    //     an assistant cannot read those paths at all. `wave_file` (ls/cat) and
+    //     `wave_history` are `require_role_any([Spec, Worker])`, so an
+    //     Assistant card is rejected by role; its wave-fs surface is
+    //     `wave_report*` (`[Spec, Assistant]`), and `report.md` IS kept fresh by
+    //     the event-driven path. The collaboration channel this design gives the
+    //     assistant is the report block, not the transcript.
+    //
+    //     Consequences for whoever touches this next: (a) do NOT extend the skip
+    //     to Spec or Worker cards — they can `wave_file cat`
+    //     `conversation.md`/`events.json` and would read a stale HEAD; (b) if
+    //     the spec harness of this wave ever stops refreshing per turn, these
+    //     two paths have no writer left and go stale for everyone. The root fix
+    //     is to make the hook / harness-item event transactions dirty the
+    //     transcript paths too; that changes `wave_vcs` delta semantics for all
+    //     cards and is deliberately out of scope here.
     //   - Keeping the DIFF: this is what the assistant must not lose. It is the
     //     wave's report patch plus the paths that changed since this
     //     conversation's last turn — for a card whose entire job is answering

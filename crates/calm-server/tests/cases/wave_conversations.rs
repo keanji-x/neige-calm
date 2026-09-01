@@ -667,6 +667,21 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
+    // Captured BEFORE the reset. A one-sided "the assistant did not become the
+    // root" assertion also passes when reset clears `root_session_id` to NULL,
+    // which loses the spec card's root just as thoroughly, so the post-condition
+    // below is equality against this value, not absence of the assistant.
+    let root_before: Option<String> =
+        sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .unwrap();
+    assert!(
+        root_before.is_some(),
+        "the wave must already have a spec root session before the reset, \
+         otherwise the equality check below is vacuous"
+    );
 
     let (status, body) = b
         .request(
@@ -705,12 +720,18 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
         contracts.iter().all(|contract| contract == "executor"),
         "reset restarted the assistant as a planner: {contracts:?}"
     );
-    let root: Option<String> =
+    let root_after: Option<String> =
         sqlx::query_scalar("SELECT root_session_id FROM waves WHERE id = ?1")
             .bind(&wave_id)
             .fetch_one(b.repo.pool())
             .await
             .unwrap();
+    assert_eq!(
+        root_after, root_before,
+        "reset must leave the wave's root session exactly as it was: taking it \
+         over for the assistant and clearing it to NULL are both losses of the \
+         spec card's root"
+    );
     let assistant_sessions: Vec<String> =
         sqlx::query_scalar("SELECT id FROM worker_sessions WHERE card_id = ?1")
             .bind(&card_id)
@@ -720,13 +741,17 @@ async fn resetting_an_assistant_conversation_restarts_it_under_its_own_profile()
     assert!(
         !assistant_sessions
             .iter()
-            .any(|id| root.as_deref() == Some(id.as_str())),
+            .any(|id| root_after.as_deref() == Some(id.as_str())),
         "the reset assistant displaced the spec card as the wave's root session"
     );
     // A reset is a hard restart: a new thread, and the card still listed.
+    // Ordered explicitly: reset supersedes the old row and starts a new one, so
+    // "the live session" is the newest active row, not whatever sqlite happens
+    // to return first.
     let thread_after: Option<String> = sqlx::query_scalar(
         "SELECT thread_id FROM worker_sessions WHERE card_id = ?1 \
-           AND state IN ('starting','running','idle','turn_pending')",
+           AND state IN ('starting','running','idle','turn_pending') \
+         ORDER BY created_at_ms DESC, id DESC LIMIT 1",
     )
     .bind(&card_id)
     .fetch_one(b.repo.pool())
