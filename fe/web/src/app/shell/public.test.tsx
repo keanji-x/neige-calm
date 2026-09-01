@@ -176,8 +176,11 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Fix the thing');
-    // `findBy`: the row only exists once the template read has landed.
-    await userEvent.click(await screen.findByRole('radio', { name: 'Issue development' }));
+    /* `findBy`: the picker's trigger is there from the first paint, but the
+       option only exists once the template read has landed — so the wait is on
+       the option inside the opened menu, not on the trigger. */
+    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Issue development/ }));
     await userEvent.type(
       screen.getByLabelText('Issue URL'),
       'https://github.com/keanji-x/neige-calm/issues/1209',
@@ -202,7 +205,8 @@ describe('the New wave dialog is the shell\'s, and both entry points open it', (
     await userEvent.click(await screen.findByRole('button', { name: 'New wave in Reading' }));
     await screen.findByRole('dialog', { name: 'New wave' });
     await userEvent.type(screen.getByLabelText(TASK_LABEL), 'Tiny fix');
-    await userEvent.click(await screen.findByRole('radio', { name: 'Small change' }));
+    await userEvent.click(screen.getByRole('button', { name: /^Start from/ }));
+    await userEvent.click(await screen.findByRole('menuitem', { name: /^Small change/ }));
     await userEvent.click(screen.getByRole('button', { name: 'Create wave' }));
     await waitFor(() => expect(createdWaveBodies(sent)).toHaveLength(1));
     const body = createdWaveBodies(sent)[0] as Record<string, unknown>;

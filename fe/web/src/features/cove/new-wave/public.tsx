@@ -32,16 +32,50 @@
 // The vocabulary seam is deliberate and recorded in #1209: the read side says
 // *template*, the write side says `workflow_id`. This form speaks the read
 // side's word to the user and the write side's word on the wire.
+//
+// ### Collapsed, not spread out
+//
+// The first cut laid every template out as a permanent radio row. Three rows
+// today; the list is meant to grow, and a dialog that grows a row per template
+// does not scale. So the control collapses to one row that names the current
+// choice and opens a list on click.
+//
+// `DropdownMenu` and not `Selector`, `Popover` or `CommandPalette` — the
+// reason is where DOM focus goes, and it decides the hover card below:
+//
+//   * `Selector` is the semantically nicer control (`role="listbox"` +
+//     `aria-selected`, which is exactly "one of N"), but it drives its list
+//     with `aria-activedescendant`: DOM focus never leaves the trigger button
+//     (`Selector.tsx` keeps `triggerRef` focused and only sets
+//     `aria-activedescendant`). An option therefore never receives `focusin`,
+//     so a per-option hover card would be mouse-only — the very defect this
+//     revision exists to fix. It also renders `role="combobox"`.
+//   * `DropdownMenu` navigates by *moving focus*: `useListFocus.focusIndex`
+//     calls `target.focus()` on the `[role="menuitem"]` element. That is what
+//     makes a hover card attached to the option itself reachable by keyboard.
+//     Its items are `tabIndex={-1}`, so the whole control is one tab stop.
+//   * `Popover` is an empty surface — using it means hand-rolling the list,
+//     its roles and its keyboard model, which is what astryx is here to avoid.
+//   * `CommandPalette` is a modal search dialog. A second modal inside the New
+//     wave dialog, with a search box, for three options.
+//
+// The one thing `DropdownMenu` cannot express is *which* item is chosen:
+// `DropdownMenuItem` hard-codes `role="menuitem"` and offers no
+// `menuitemradio`/`aria-checked`. Two things stand in for it, and both are
+// asserted: the trigger's accessible name is "Start from <current choice>",
+// and the chosen item carries a check icon plus a `VisuallyHidden` "Selected".
 
 import { useId, type RefObject } from 'react';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { CheckboxInput } from '@astryxdesign/core/CheckboxInput';
+import { DropdownMenu, DropdownMenuItem } from '@astryxdesign/core/DropdownMenu';
 import { Field } from '@astryxdesign/core/Field';
 import { HoverCard } from '@astryxdesign/core/HoverCard';
+import { Icon } from '@astryxdesign/core/Icon';
 import { List, ListItem } from '@astryxdesign/core/List';
-import { RadioList, RadioListItem } from '@astryxdesign/core/RadioList';
 import { TextInput } from '@astryxdesign/core/TextInput';
+import { VisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 
 import { parseGitHubIssueUrl } from '../../../../../core/domain/issue-url.ts';
 import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
@@ -93,13 +127,13 @@ const ISSUE_DEVELOPMENT = 'issue-development';
 /**
  * Selection sentinel for Blank.
  *
- * `''` because `RadioList.value` is a string and Blank is the *absence* of a
- * template id, which no server row can ever collide with. astryx reads `''` as
- * "nothing selected" for one purpose only — a focus-entry correction for
- * groups with no selection — and that correction is a no-op here: it redirects
- * to the first enabled radio, which is Blank, the radio that is checked.
+ * `''` because Blank is the *absence* of a template id, which no server row
+ * can ever collide with, and because that absence is what goes on the wire.
  */
 const BLANK = '';
+
+/** What the collapsed trigger says while nothing has been chosen. */
+const BLANK_LABEL = 'Blank';
 
 /**
  * The Task field's accessible name.
@@ -136,14 +170,9 @@ export function NewWaveForm({
   const [selected, setSelected] = useState<string>(BLANK);
   const [issueUrl, setIssueUrl] = useState('');
   const [autoMerge, setAutoMerge] = useState(false);
-  const panelLabelId = `${fieldId}-panel-label`;
-  /*
-   * `Field` requires an `inputID` even as a group label, where it is unused:
-   * a group label renders as a `<span>`, which has no `htmlFor`. The group's
-   * own controls are astryx inputs that mint their own ids, so there is no
-   * single control to point at — this satisfies the prop and names nothing.
-   */
-  const unusedPanelInputId = `${fieldId}-panel-input`;
+  const triggerId = `${fieldId}-start-from-trigger`;
+  const startFromLabelId = `${fieldId}-start-from-label`;
+  const startFromStatusId = `${fieldId}-start-from-status`;
 
   // A template that vanished between renders (the list refetched without it)
   // must not leave a selection pointing at nothing; falling back to Blank is
@@ -164,7 +193,7 @@ export function NewWaveForm({
   const valid = title.trim() !== '' && !inputBlocker;
 
   /*
-   * One status slot on the group, and the two things that can fill it never
+   * One status slot on the field, and the two things that can fill it never
    * coexist: `templatesError` means the list is empty, and an empty list has
    * no bound template to be unsupported. Error vs warning is the difference
    * that matters to a reader — one blocks the submit, the other does not.
@@ -218,42 +247,59 @@ export function NewWaveForm({
         onChange={(value) => setTitle(value)}
       />
 
-      {/* `RadioList` and not `SelectableCard`: these are mutually exclusive
-          alternatives, so the control has to be a radio group — real radios,
-          one tab stop, arrow keys between them. `SelectableCard` puts a hidden
-          *checkbox* behind each card, which announces "one of these is
-          independently on or off". */}
-      <RadioList
+      {/* `isGroupLabel` — i.e. a `<span>`, not a `<label>`. A `<label>` whose
+          `htmlFor` points at a button *replaces* that button's contents as its
+          accessible name, so "Start from" would be all a screen reader hears
+          and the current choice would go silent. The span is referenced
+          instead, together with the trigger itself, so the name reads
+          "Start from <choice>". */}
+      <Field
         label="Start from"
-        value={effectiveSelection}
-        onChange={setSelected}
-        status={groupStatus}
+        labelID={startFromLabelId}
+        isGroupLabel
+        inputID={triggerId}
+        statusVariant="detached"
+        status={groupStatus && { ...groupStatus, messageID: startFromStatusId }}
       >
-        <RadioListItem label="Blank" value={BLANK} />
-        {templates.map((template) => (
-          <RadioListItem
-            key={template.id}
-            label={template.title}
-            value={template.id}
-            endContent={<TemplateTasks template={template} />}
-          />
-        ))}
-      </RadioList>
-
-      {issueDev && (
-        /* The panel sits after the group rather than inside the chosen row:
-           `RadioListItem` takes no children, and a form panel spliced between
-           two radios inside `role="radiogroup"` is not a shape the pattern
-           allows. astryx's own group-label mechanism carries the association
-           instead — a `<span>` label (never a `<label>`, which names exactly
-           one control) that the group points at with `aria-labelledby`. */
-        <Field
-          label={chosen?.title ?? ''}
-          labelID={panelLabelId}
-          isGroupLabel
-          inputID={unusedPanelInputId}
+        <DropdownMenu
+          placement="below"
+          button={{
+            id: triggerId,
+            label: chosen?.title ?? BLANK_LABEL,
+            variant: 'secondary',
+            className: styles.trigger,
+            'aria-labelledby': `${startFromLabelId} ${triggerId}`,
+            'aria-describedby': groupStatus !== undefined ? startFromStatusId : undefined,
+          }}
         >
-          <div className={styles.panel} role="group" aria-labelledby={panelLabelId}>
+          {/* Blank carries no hover card because it has no tasks to show —
+              its whole content is "no template". */}
+          <TemplateChoice
+            label={BLANK_LABEL}
+            isSelected={effectiveSelection === BLANK}
+            onSelect={() => setSelected(BLANK)}
+          />
+          {templates.map((template) => (
+            <TemplateChoice
+              key={template.id}
+              label={template.title}
+              tasks={template.tasks}
+              isSelected={effectiveSelection === template.id}
+              onSelect={() => setSelected(template.id)}
+            />
+          ))}
+        </DropdownMenu>
+
+        {issueDev && (
+          /* Back under the control it belongs to. With the alternatives
+             collapsed into one trigger row there is no longer a group of
+             radios for a form panel to be spliced into, so the fields sit
+             directly beneath the trigger — inside the same `Field`, which is
+             the DOM statement that they belong to this choice.
+             The group needs a *name*, not a second visible heading: the
+             trigger immediately above already reads the template's title, so
+             repeating it would be the same word twice in two rows. */
+          <div className={styles.panel} role="group" aria-label={chosen?.title ?? ''}>
             <TextInput
               label="Issue URL"
               value={issueUrl}
@@ -281,8 +327,8 @@ export function NewWaveForm({
               onChange={(checked) => setAutoMerge(checked)}
             />
           </div>
-        </Field>
-      )}
+        )}
+      </Field>
 
       <div className={styles.actions}>
         <Button type="button" label="Cancel" variant="ghost" onClick={onCancel} />
@@ -298,44 +344,102 @@ export function NewWaveForm({
 }
 
 /**
- * "What will this template give me", answered with the template's own plan.
+ * One alternative in the Start from menu, and — when it has tasks — the
+ * "what will this give me" card behind it.
  *
- * The count is the trigger and is itself the headline fact; the card behind it
- * is the list. Nothing here is authored copy: `key` and `goal` come from the
- * `task` blocks the created wave's report is seeded with, so this cannot drift
- * from what the template actually does the way a hand-written description
- * would (#1209 declined to add one for exactly that reason).
+ * ## The row is the trigger
  *
- * `HoverCard`, not `Tooltip`. A tooltip is short non-interactive text and
- * closes the moment the pointer leaves the trigger, so a scrolling list inside
- * one is unreachable — you cannot move the mouse into it. `HoverCard` keeps
- * itself open while the pointer or focus is inside its content, which is what
- * makes eight scrollable rows usable.
+ * The previous cut hung the card off a separate "N tasks" label in the row's
+ * `endContent`. `HoverCard` renders a string child as a focusable
+ * `<span tabIndex={0}>`, so that label was a *second* tab stop inside every
+ * row — a composite control is supposed to be one stop, and a test had been
+ * written that asserted the extra stop existed, fixing the defect in place.
  *
- * Keyboard: passing a plain string as the child makes astryx render the
- * trigger as a focusable `<span tabIndex={0}>` with `aria-describedby` bound
- * to the card, and attach the focus listeners that open it — so the content is
- * reachable by Tab and dismissible with Escape, not hover-only.
+ * The card now hangs off the option itself. It costs no tab stop, because
+ * `DropdownMenuItem` renders `tabIndex={-1}`: the menu is entered from its
+ * trigger and walked with arrow keys, and `useListFocus.focusIndex` moves real
+ * DOM focus onto the `[role="menuitem"]` element. `focusin` on the option is
+ * therefore what opens the card — the keyboard gets the same affordance as the
+ * pointer, on the same element, with no stop of its own.
+ *
+ * `focusTrigger="always"` is load-bearing and not defensive: the default
+ * `'auto'` attaches focus listeners only when `useHoverCard`'s `isFocusable`
+ * says so, and that helper returns `false` for an element with `tabindex="-1"`
+ * — which is every menu item here. Left at `'auto'` the card would be
+ * hover-only, i.e. the original defect with a new shape.
+ *
+ * ## The one sharp edge, reported as measured
+ *
+ * `useHoverCard` attaches a *native* `keydown` listener to its trigger that
+ * calls `stopPropagation()` on Escape. The trigger here is the menu item, so
+ * that listener sits below `DropdownMenu`'s React `onKeyDown` — which is
+ * delegated at the root and therefore never runs. Escape's effect on the
+ * *menu* is thereby handed to the engine's close request against
+ * `popover="auto"`, and which layer that request lands on turns on whether the
+ * DOM listener already hid the card: measured in Chromium it goes both ways
+ * between runs, and in jsdom the menu never closes at all.
+ *
+ * The card itself always closes on Escape, and the menu always closes on Tab —
+ * `DropdownMenu` handles Tab itself, per the APG menu-button pattern — so the
+ * picker is not a keyboard trap. That is the property that matters and it is
+ * the one pinned, in `new-wave.browser.test.tsx`, because none of it is
+ * observable without a top layer.
+ *
+ * ## Why a HoverCard and not a Tooltip
+ *
+ * A tooltip is short non-interactive text and closes the moment the pointer
+ * leaves the trigger, so a scrolling list inside one is unreachable — you
+ * cannot move the mouse into it. `HoverCard` keeps itself open while the
+ * pointer or focus is inside its content.
+ *
+ * ## The content
+ *
+ * Nothing here is authored copy: `key` and `goal` come from the `task` blocks
+ * the created wave's report is seeded with, so this cannot drift from what the
+ * template actually does the way a hand-written description would (#1209
+ * declined to add one for exactly that reason).
  */
-function TemplateTasks({ template }: Readonly<{ template: WaveTemplate }>) {
-  const count = template.tasks.length;
+function TemplateChoice({ label, tasks, isSelected, onSelect }: Readonly<{
+  label: string;
+  tasks?: WaveTemplate['tasks'];
+  isSelected: boolean;
+  onSelect: () => void;
+}>) {
+  const item = (
+    <DropdownMenuItem
+      label={label}
+      onClick={onSelect}
+      /* `DropdownMenuItem` is a `role="menuitem"` with no `aria-checked` to
+         set — astryx exposes no `menuitemradio`. The check icon alone would
+         say nothing to a screen reader, so the state is also spelled out in
+         the item's accessible name. */
+      endContent={isSelected ? (
+        <>
+          <Icon icon="check" size="sm" color="accent" />
+          <VisuallyHidden>Selected</VisuallyHidden>
+        </>
+      ) : undefined}
+    />
+  );
+  if (tasks === undefined || tasks.length === 0) return item;
   return (
     <HoverCard
-      placement="above"
+      placement="end"
+      focusTrigger="always"
       content={(
         // Scrolling and a ceiling are ours: `HoverCard` has no max-height, and
         // its `className`/`xstyle` props never reach the rendered layer, so the
         // only place to bound the height is the content we pass in.
         <span className={styles.taskScroll}>
           <List listStyle="decimal" density="compact">
-            {template.tasks.map((task) => (
+            {tasks.map((task) => (
               <ListItem key={task.key} label={task.key} description={task.goal} />
             ))}
           </List>
         </span>
       )}
     >
-      {count === 1 ? '1 task' : `${count} tasks`}
+      {item}
     </HoverCard>
   );
 }

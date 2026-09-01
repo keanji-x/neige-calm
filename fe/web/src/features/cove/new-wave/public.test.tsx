@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -73,6 +73,35 @@ async function fillTitle(value = 'Ship the thing') {
   await userEvent.type(screen.getByLabelText(TASK_LABEL), value);
 }
 
+/**
+ * The collapsed Start from control.
+ *
+ * Matched on the label prefix, never on the whole string: the rest of the name
+ * is the current choice, which is exactly what the assertions vary.
+ */
+function templateTrigger(): HTMLButtonElement {
+  return screen.getByRole('button', { name: /^Start from/ });
+}
+
+/**
+ * `DropdownMenu` focuses its first item inside a `requestAnimationFrame`, so
+ * "the menu is open" is not true by the time the click resolves. Every case
+ * that reads focus or the menu's contents goes through here.
+ */
+async function openTemplates() {
+  await userEvent.click(templateTrigger());
+  await act(async () => {
+    await new Promise((resolve) => { requestAnimationFrame(() => resolve(null)); });
+  });
+  return screen.getByRole('menu');
+}
+
+/** Picks a template by name from the opened menu. */
+async function chooseTemplate(name: string) {
+  await openTemplates();
+  await userEvent.click(screen.getByRole('menuitem', { name: new RegExp(`^${name}`) }));
+}
+
 describe('NewWaveForm asks for a task and what the wave starts from', () => {
   it('keeps submit disabled while the task is empty', () => {
     renderForm();
@@ -94,10 +123,20 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
 
   /*
    * The pre-#1209 shape of this test asserted the dialog had *no* radio,
-   * checkbox or combobox at all. Two of those three are still true and stay
-   * asserted; the third was the whole point of #1209, so it flips from "must
-   * not exist" to "must exist, and must be a real radio group" — the control
-   * this form was most likely to fake with divs and onClick.
+   * checkbox or combobox at all — one assertion standing for "this dialog
+   * stays minimal". #1209 added a template picker, so the shape has to be
+   * restated rather than deleted, and this is the restatement:
+   *
+   *   * No **combobox**, still, and now for a second reason. The picker is a
+   *     `DropdownMenu` (`role="menu"`), and the alternative astryx offers —
+   *     `Selector` — renders `role="combobox"`. So this line is no longer just
+   *     "the dialog is simple": it is the assertion that fails the day someone
+   *     swaps the picker for a `Selector`, which would silently take the task
+   *     hover cards off the keyboard (a `listbox` never gives an option DOM
+   *     focus; see `public.tsx`). It is a contract with a reason, not a relic.
+   *   * No **radio**: the alternatives are no longer spread across the dialog
+   *     as permanent rows. They live behind one trigger.
+   *   * No **checkbox** until a template that takes input is chosen.
    *
    * What has not changed: this dialog still does not ask for a folder, a cove,
    * or a working directory. Those are the assertions that were load-bearing.
@@ -109,13 +148,17 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     expect(screen.queryByLabelText('Cove')).toBeNull();
     expect(screen.queryByLabelText(/Working directory/i)).toBeNull();
     expect(screen.queryByLabelText(/Claim this folder/)).toBeNull();
-    // No OS dropdown anywhere in the dialog: the picker is a radio list.
     expect(screen.queryByRole('combobox')).toBeNull();
-    expect(screen.getByRole('radiogroup', { name: 'Start from' })).toBeTruthy();
-    expect(screen.getAllByRole('radio').map((radio) => radio.getAttribute('value')))
-      .toEqual(['', 'issue-development', 'small-change', 'investigation']);
-    // Nothing is checkable until a template that takes input is selected.
+    expect(screen.queryByRole('radio')).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
+
+    // The picker is collapsed: one control, named by its field label *and* by
+    // what it currently holds.
+    expect(templateTrigger().getAttribute('aria-expanded')).toBe('false');
+    await openTemplates();
+    expect(templateTrigger().getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent))
+      .toEqual(['BlankSelected', 'Issue development', 'Small change', 'Investigation']);
   });
 
   /*
@@ -156,7 +199,11 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
 describe('Start from — Blank is the default and stays free', () => {
   it('selects Blank on open and submits no workflow_id at all', async () => {
     const { onSubmit } = renderForm();
-    expect(screen.getByRole('radio', { name: 'Blank' })).toHaveProperty('checked', true);
+    /* The collapsed trigger *is* the answer to "what is selected" — there is
+       no checked radio left to read it off. Its accessible name is the field
+       label plus the current choice, which is also why a `<label htmlFor>`
+       cannot be used here: it would replace the choice with the label. */
+    expect(screen.getByRole('button', { name: 'Start from Blank' })).toBe(templateTrigger());
     await fillTitle();
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
@@ -174,8 +221,10 @@ describe('Start from — Blank is the default and stays free', () => {
    */
   it('still creates a blank wave when the template read gave nothing', async () => {
     const { props } = renderForm({ templates: [], templatesError: 'Could not load templates.' });
-    expect(screen.getByRole('radio', { name: 'Blank' })).toHaveProperty('checked', true);
-    expect(screen.getAllByRole('radio')).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Start from Blank' })).toBe(templateTrigger());
+    await openTemplates();
+    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+    await userEvent.keyboard('{Escape}');
     await fillTitle();
     expect(submitButton().disabled).toBe(false);
     await userEvent.click(submitButton());
@@ -194,7 +243,9 @@ describe('Start from — an unbound template is id-only', () => {
   it('sends workflow_id and no workflow_input for small-change', async () => {
     const { onSubmit } = renderForm();
     await fillTitle();
-    await userEvent.click(screen.getByRole('radio', { name: 'Small change' }));
+    await chooseTemplate('Small change');
+    // The collapsed trigger carries the choice out of the closed menu.
+    expect(screen.getByRole('button', { name: 'Start from Small change' })).toBeTruthy();
     // No fields expand: the read said this template has no input schema.
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
@@ -209,7 +260,7 @@ describe('Start from — an unbound template is id-only', () => {
 describe('Start from — issue development expands under the group', () => {
   async function chooseIssueDev() {
     await fillTitle();
-    await userEvent.click(screen.getByRole('radio', { name: 'Issue development' }));
+    await chooseTemplate('Issue development');
   }
 
   it('blocks submit until the issue URL parses, and says why', async () => {
@@ -259,12 +310,12 @@ describe('Start from — issue development expands under the group', () => {
   });
 
   /*
-   * The expanded fields belong to one alternative in the group, and a reader
-   * who lands on them has to be told which. astryx's `RadioListItem` takes no
-   * children and exposes no hook for `aria-controls` on its radio, so the
-   * association is carried the other way: the panel is a `group` whose
-   * accessible name is the chosen template's title. Without it the fields are
-   * orphans sitting under a list of alternatives.
+   * The expanded fields belong to one alternative, and a reader who lands on
+   * them has to be told which. With the picker collapsed the fields now sit
+   * directly beneath the trigger that names the template — but adjacency is
+   * not an association, so the panel is still a `group` carrying that title as
+   * its accessible name. It carries no *visible* heading any more: the trigger
+   * one row above already says it.
    */
   it('names the expanded panel after the template that opened it', async () => {
     renderForm();
@@ -272,6 +323,9 @@ describe('Start from — issue development expands under the group', () => {
     const panel = screen.getByRole('group', { name: 'Issue development' });
     expect(within(panel).getByLabelText('Issue URL')).toBeTruthy();
     expect(within(panel).getByRole('checkbox')).toBeTruthy();
+    // Directly under the control it belongs to, not after the whole picker.
+    expect(templateTrigger().compareDocumentPosition(panel))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   /*
@@ -305,7 +359,7 @@ describe('Start from — issue development expands under the group', () => {
       }],
     });
     await fillTitle();
-    await userEvent.click(screen.getByRole('radio', { name: 'Future template' }));
+    await chooseTemplate('Future template');
     expect(submitButton().disabled).toBe(true);
     expect(screen.getByText(/needs input this version cannot collect/)).toBeTruthy();
   });
@@ -321,48 +375,122 @@ describe('Start from — issue development expands under the group', () => {
  * only thing that distinguishes "shows the plan" from "shows a blurb".
  */
 describe('Start from — each template says which tasks it pre-sets', () => {
-  it('names the count on the row and lists that template\'s tasks behind it', () => {
+  it('hangs each template\'s own task list off that template\'s option', async () => {
     renderForm();
-    // Distinct counts per template, so a trigger that showed the *list's*
-    // length instead of its own row's would be caught here.
-    expect(screen.getByText('4 tasks')).toBeTruthy();
-    expect(screen.getByText('3 tasks')).toBeTruthy();
-    expect(screen.getByText('1 task')).toBeTruthy();
+    const menu = await openTemplates();
 
     // Every task key of the bound template, and its goal, is available.
     for (const task of ISSUE_DEV.tasks) {
       expect(screen.getByText(task.key)).toBeTruthy();
       expect(screen.getByText(task.goal)).toBeTruthy();
     }
-    // And each list belongs to its own template — investigation's single task
-    // is not in issue-development's card.
+
+    /*
+     * One card per template, and each card is bound to *its own* option — the
+     * check that separates "the card lists the right tasks" from "every row
+     * points at the same list". Blank has no card: it has no tasks.
+     */
     const cards = screen.getAllByRole('dialog', { hidden: true });
     expect(cards).toHaveLength(TEMPLATES.length);
-    const issueDevCard = cards.find((card) => card.textContent?.includes('inspect-issue'));
-    expect(issueDevCard?.textContent).not.toContain('gather-facts');
+    for (const template of TEMPLATES) {
+      const option = within(menu).getByRole('menuitem', { name: new RegExp(`^${template.title}`) });
+      const card = document.getElementById(option.getAttribute('aria-describedby') ?? '');
+      expect(card).toBeTruthy();
+      for (const task of template.tasks) expect(card?.textContent).toContain(task.key);
+      // Goals and not keys for the negative: `inspect` is a prefix of
+      // `inspect-issue`, so a key-based "not to contain" would fail on a card
+      // that is in fact correct. Goals are whole sentences and unique.
+      for (const other of TEMPLATES) {
+        if (other.id === template.id) continue;
+        for (const task of other.tasks) expect(card?.textContent).not.toContain(task.goal);
+      }
+    }
+    expect(within(menu).getByRole('menuitem', { name: /^Blank/ }).getAttribute('aria-describedby'))
+      .toBeNull();
   });
 
   /*
-   * A hover-only affordance does not exist for a keyboard or a touch user. The
-   * trigger has to be a tab stop, and the card it opens has to be what
-   * assistive technology is pointed at when that stop is reached.
+   * ── The tab stop this test used to *demand* ────────────────────────────
+   *
+   * The previous revision hung the card off a separate "N tasks" label in each
+   * row's `endContent`, and `HoverCard` renders a string child as a focusable
+   * `<span tabIndex={0}>`. That put one extra tab stop *inside every row* of a
+   * composite widget that is supposed to be a single stop — and the test here
+   * asserted that stop existed, which turned the defect into a guarded
+   * feature. It is inverted deliberately: nothing inside the picker may be
+   * tabbable, because the picker is entered from its trigger and walked with
+   * arrow keys.
+   *
+   * Green when: the dialog's tab order is task → picker → actions, and every
+   * option carries `tabindex="-1"`.
+   * Red when: the "N tasks" trigger (or any other `tabindex="0"`) comes back
+   * inside the menu, or an option is left tabbable.
    */
-  it('puts the task list on a tab stop, not on hover alone', async () => {
+  it('costs the tab order nothing — the picker is one stop, options are not', async () => {
     renderForm();
-    const trigger = screen.getByText('1 task');
-    expect(trigger.getAttribute('tabindex')).toBe('0');
+    const menu = await openTemplates();
 
-    const describedBy = trigger.getAttribute('aria-describedby');
-    expect(describedBy).toBeTruthy();
-    const card = document.getElementById(describedBy ?? '');
-    expect(card?.textContent).toContain('gather-facts');
-
-    // Reachable in practice, not just in attributes: tabbing from the field
-    // walks into the group and onto the trigger.
-    await userEvent.tab();
-    for (let step = 0; step < 8 && document.activeElement !== trigger; step += 1) {
-      await userEvent.tab();
+    for (const option of within(menu).getAllByRole('menuitem')) {
+      expect(option.getAttribute('tabindex')).toBe('-1');
     }
-    expect(document.activeElement).toBe(trigger);
+    expect(menu.querySelectorAll('[tabindex="0"]')).toHaveLength(0);
+    // No "N tasks" affordance anywhere: the option itself is the trigger.
+    expect(screen.queryByText(/\d+ tasks?$/)).toBeNull();
+
+    await userEvent.keyboard('{Escape}');
+    // A disabled submit is not a tab stop, so the walk below would end on the
+    // document — fill the title first and the actions row is reachable.
+    await fillTitle();
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    const order: Element[] = [];
+    for (let step = 0; step < 3; step += 1) {
+      await userEvent.tab();
+      if (document.activeElement !== null) order.push(document.activeElement);
+    }
+    expect(order).toEqual([
+      templateTrigger(),
+      screen.getByRole('button', { name: 'Cancel' }),
+      submitButton(),
+    ]);
+  });
+
+  /*
+   * A hover-only affordance does not exist for a keyboard user. The card now
+   * hangs off the option itself, and the option is where DOM focus actually
+   * goes: `DropdownMenu` navigates with `useListFocus`, which calls
+   * `.focus()` on the `[role="menuitem"]` element (unlike `Selector`, whose
+   * listbox only moves `aria-activedescendant` and would leave this card
+   * unreachable). `focusTrigger="always"` is what makes `HoverCard` listen —
+   * its `'auto'` default declines any element with `tabindex="-1"`.
+   *
+   * Red when: the picker is swapped for an activedescendant control, or
+   * `focusTrigger` drops back to the default.
+   */
+  it('opens the card by arrowing onto the option, with no pointer involved', async () => {
+    renderForm();
+    templateTrigger().focus();
+    await userEvent.keyboard('{ArrowDown}');
+    await act(async () => {
+      await new Promise((resolve) => { requestAnimationFrame(() => resolve(null)); });
+    });
+    // First stop inside the menu is Blank, which has no card.
+    expect(document.activeElement?.textContent).toContain('Blank');
+    expect(screen.queryByRole('dialog')).toBeNull();
+
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}');
+    const option = document.activeElement as HTMLElement;
+    expect(option.textContent).toContain('Investigation');
+    // Shown, not merely present: every card is in the DOM at all times inside
+    // a closed `popover`, so an assertion that did not filter by accessibility
+    // state would pass without the focus listener ever firing.
+    const describedBy = option.getAttribute('aria-describedby') ?? '';
+    /* Shown, not merely present: every card is in the DOM at all times inside
+       a closed `popover`, so `getElementById` alone would pass without the
+       focus listener ever firing. A role query only returns what is in the
+       accessibility tree, and `getAllBy` because the card of the option
+       arrowed *past* is still fading out on its 200 ms hide delay. */
+    const shown = screen.getAllByRole('dialog');
+    expect(shown.map((card) => card.id)).toContain(describedBy);
+    expect(document.getElementById(describedBy)?.textContent).toContain('gather-facts');
   });
 });

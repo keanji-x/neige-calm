@@ -35,8 +35,9 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   await expect(dialog.getByLabel('Folder')).toHaveCount(0);
   // #1209 — Blank is the default and is left alone here: this case is the
   // pre-template create, and the assertions below say the picker added no
-  // field to it.
-  await expect(dialog.getByRole('radio', { name: 'Blank' })).toBeChecked();
+  // field to it. The picker is collapsed, so "what is selected" is read off
+  // the trigger's accessible name rather than a checked row.
+  await expect(dialog.getByRole('button', { name: 'Start from Blank' })).toBeVisible();
   await dialog.getByLabel(TASK_LABEL).fill(title);
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),
@@ -90,20 +91,25 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   const dialog = page.getByRole('dialog', { name: 'New wave' });
   const title = `FE e2e template wave ${Date.now()}`;
   await dialog.getByLabel(TASK_LABEL).fill(title);
-  await dialog.getByRole('radio', { name: 'Small change' }).click();
+  await dialog.getByRole('button', { name: /^Start from/ }).click();
 
-  /* #1209 — the row says what the template pre-sets, and it says it from the
-     kernel's own plan: `small-change` seeds inspect → implement → verify.
+  /* #1209 — the option says what the template pre-sets, and it says it from
+     the kernel's own plan: `small-change` seeds inspect → implement → verify.
+     The option itself is the hover trigger now — there is no separate
+     "N tasks" label, and therefore no extra tab stop inside the menu.
      Hovering opens the card in a real browser, which is the part jsdom cannot
      prove (the layer is a `popover`, hidden by the UA stylesheet until then). */
-  const tasksTrigger = dialog.getByText('3 tasks');
-  await expect(tasksTrigger).toBeVisible();
-  await tasksTrigger.hover();
+  const option = page.getByRole('menuitem', { name: /^Small change/ });
+  await expect(option).toBeVisible();
+  await expect(page.getByText(/^\d+ tasks?$/)).toHaveCount(0);
+  await option.hover();
   const taskCard = page.getByRole('dialog').filter({ hasText: 'implement' });
   await expect(taskCard).toBeVisible();
   await expect(taskCard).toContainText('verify');
   // Another template's tasks are not in this card.
   await expect(taskCard).not.toContainText('gather-facts');
+  await option.click();
+  await expect(dialog.getByRole('button', { name: 'Start from Small change' })).toBeVisible();
 
   const [createRequest] = await Promise.all([
     page.waitForRequest((pending) => pending.method() === 'POST' && new URL(pending.url()).pathname === '/api/waves'),

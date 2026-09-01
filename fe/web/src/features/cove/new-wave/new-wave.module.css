@@ -1,9 +1,9 @@
 /* What is left after the form moved onto `@astryxdesign/core` (#1209): only
-   the three things no astryx component owns — the form's own vertical rhythm,
-   the action row, and the bound-input panel's inset rule. Every control's
-   look — inputs, radios, checkbox, buttons, status messages, the task
-   hover-card's surface — comes from astryx and is deliberately not restated
-   here. */
+   what no astryx component owns — the form's own vertical rhythm, the action
+   row, the bound-input panel's inset rule, and making the Start from trigger
+   fill its field the way the text inputs above it do. Every control's look —
+   inputs, menu, checkbox, buttons, status messages, the task hover-card's
+   surface — comes from astryx and is deliberately not restated here. */
 @layer features {
   .form {
     display: flex;
@@ -11,6 +11,16 @@
     gap: var(--space-4);
     color: var(--text);
     font-family: var(--font-sans);
+  }
+
+  /* The collapsed Start from row. astryx sizes a `Button` to its label, but
+     this one stands where a field's control stands, so it spans the field and
+     pushes its chevron to the far edge — the shape every other picker in the
+     dialog has. The `features` layer sorts after `astryx`, so this wins
+     without a specificity fight. */
+  .trigger {
+    inline-size: 100%;
+    justify-content: space-between;
   }
 
   /* Indented and rule-led: the fields belong to the template named above them,
