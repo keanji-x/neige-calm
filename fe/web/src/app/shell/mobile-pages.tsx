@@ -5,7 +5,7 @@ import {
 
 import { coveOf, visibleCoves, type Cove } from '../../../../core/domain/cove.ts';
 import {
-  visibleWaves, waveDisplayTitle, type Wave,
+  userVisibleWaves, waveDisplayTitle, type Wave,
 } from '../../../../core/domain/wave.ts';
 import {
   MobileList, MobileListEmpty, MobileListItem, MobileListPage,
@@ -20,7 +20,13 @@ export function MobilePages({ coves, waves, onOpenWave }: Readonly<{
   waves: readonly Wave[];
   onOpenWave: (waveId: string) => void;
 }>) {
-  const visible = visibleWaves(waves);
+  /*
+   * E2E-INV-SHELL-003 — the same second layer of defence the sidebar applies:
+   * a wave whose cove is not user-visible does not belong on a list a person
+   * reads, and filtering waves alone (what this list used to do) let the
+   * kernel's system cove through if an unfiltered list ever reached here.
+   */
+  const visible = userVisibleWaves(waves, coves);
   const shownCoves = visibleCoves(coves);
   const pinned = visible
     .filter((wave) => wave.pinnedAt !== null)

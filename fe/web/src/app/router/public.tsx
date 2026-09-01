@@ -65,7 +65,10 @@ import {
 import { AppShell, useMobileReportNavigation, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
-import { useGo, useRouteCardId, useRouteHash, useRouteParam } from './navigation.ts';
+import {
+  useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRouteParam,
+  validateWaveSearch, type WaveSearch,
+} from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
@@ -415,10 +418,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   const waveRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/wave/$waveId',
-    validateSearch: (search: Record<string, unknown>): { card?: string } => {
-      const card = search.card;
-      return typeof card === 'string' && card !== '' ? { card } : {};
-    },
+    validateSearch: (search: Record<string, unknown>): WaveSearch => validateWaveSearch(search),
     component: () => <WaveRoute transport={transport} unauthorized={unauthorized} cardRuntime={cards} />,
   });
 
@@ -1366,7 +1366,15 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   const waveMutations = useWaveMutations(transport, unauthorized);
   const mobileReportNavigation = useMobileReportNavigation();
   const go = useGo();
+  const goSameWave = useGoSameWave();
   const requestedCardId = useRouteCardId();
+  /*
+   * `?from=` is a property of *this* visit to the report, so every move that
+   * stays on this wave has to hand it back explicitly — `go` clears whatever it
+   * is not given (#1191 §1.3). Crossing to another wave drops it, because the
+   * return path belonged to the wave being left.
+   */
+  const routeFrom = useRouteFrom() ?? undefined;
   const cardRegistry = cardRuntime.registry;
   // `showWave: false` — on a wave's own page the wave's name is the page title,
   // so repeating it on every row is one column spent saying nothing.
@@ -1469,8 +1477,12 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
     && gridItems.some((item) => item.card.id === requestedCardId);
   useEffect(() => {
     if (requestedCardId === null || knownCard) return;
-    go({ name: 'wave', waveId: wave.id }, { replace: true });
-  }, [go, knownCard, requestedCardId, wave.id]);
+    // Bouncing an unopenable `?card=` must drop *only* that parameter: the
+    // panel, the return surface and the block anchor describe where the reader
+    // is, not which card they asked for. Clearing them here was a regression
+    // this route shipped with.
+    goSameWave(wave.id, { card: undefined }, { replace: true });
+  }, [goSameWave, knownCard, requestedCardId, wave.id]);
   const backlinksQuery = useQuery(waveBacklinksQueryOptions(transport, wave.id, unauthorized));
   const backlinks = backlinksQuery.data;
 
@@ -1485,15 +1497,19 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   const openReportLink = (target: ReportLinkTarget) => {
     if (target.waveId === wave.id) {
       if (target.blockId !== null) revealReportAnchor(target.blockId);
-      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
+      // Same wave: landing on a block is a move *within* the report, so the
+      // return surface survives and the panel closes (the document is now what
+      // the reader is looking at).
+      go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined, from: routeFrom });
       return;
     }
+    // Another wave: a real navigation. Nothing carries over.
     go({ name: 'wave', waveId: target.waveId, blockId: target.blockId ?? undefined });
   };
 
   const openReportAnchor = (blockId: string) => {
     revealReportAnchor(blockId);
-    go({ name: 'wave', waveId: wave.id, blockId });
+    go({ name: 'wave', waveId: wave.id, blockId, from: routeFrom });
   };
 
   return (
@@ -1515,14 +1531,14 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           label="New terminal"
           onClick={() => {
             void waveMutations.createTerminal(wave.id, { theme: readHostThemeRgb() }).then((card) => {
-              go({ name: 'wave', waveId: wave.id, cardId: card.id });
+              go({ name: 'wave', waveId: wave.id, cardId: card.id, from: routeFrom });
             });
           }}
         >
           <Icon name="plus" />
         </PanelAction>
       }
-      onOpenCard={(cardId) => { go({ name: 'wave', waveId: wave.id, cardId }); }}
+      onOpenCard={(cardId) => { go({ name: 'wave', waveId: wave.id, cardId, from: routeFrom }); }}
       board={
         <CardGridOverlay
           open={knownCard}
@@ -1530,12 +1546,12 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           host={cardRuntime.host}
           activeCardId={requestedCardId}
           onClose={knownCard
-            ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
+            ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
             : undefined}
         />
       }
       onCloseBoard={knownCard
-        ? () => { go({ name: 'wave', waveId: wave.id }, { replace: true }); }
+        ? () => { go({ name: 'wave', waveId: wave.id, from: routeFrom }, { replace: true }); }
         : undefined}
       mobileBackLabel={mobileReportNavigation.backLabel}
       onMobileBack={mobileReportNavigation.backFromReport}
@@ -1558,7 +1574,11 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
           <ReportBacklinks
             waveId={wave.id}
             backlinks={backlinks}
-            onOpen={(waveId, blockId) => { go({ name: 'wave', waveId, blockId }); }}
+            onOpen={(waveId, blockId) => {
+              // Same wave keeps the return surface; a backlink into another wave
+              // is a departure and carries nothing.
+              go({ name: 'wave', waveId, blockId, from: waveId === wave.id ? routeFrom : undefined });
+            }}
           />
         )
         : undefined}

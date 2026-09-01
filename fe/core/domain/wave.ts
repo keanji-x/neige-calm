@@ -5,6 +5,7 @@
 import { z } from 'zod';
 
 import type { ApiOperation } from '../api/types.js';
+import { visibleCoves, type Cove } from './cove.js';
 
 export const waveLifecycleSchema = z.enum([
   'draft', 'planning', 'dispatching', 'working',
@@ -257,6 +258,23 @@ export function sortByLifecycleRank(waves: readonly Wave[]): Wave[] {
 /** Archived is an orthogonal visibility flag, never a lifecycle bucket. */
 export function visibleWaves(waves: readonly Wave[]): Wave[] {
   return waves.filter((wave) => wave.archivedAt === null);
+}
+
+/**
+ * The waves a person may see: not archived, and hosted by a cove they may see.
+ *
+ * This is **not** a fix for a live leak — `coveListQueryOptions` already applies
+ * `visibleCoves` in the query layer, and the workspace only fans out over what
+ * that returned. It is the *second* layer of defence `visibleCoves` announces
+ * (E2E-INV-SHELL-003), and it existed on exactly one of the two list surfaces:
+ * the sidebar intersected coves and waves by hand while mobile Pages filtered
+ * waves alone. One function, used by both, is what makes the stated intent true
+ * at the component boundary rather than only in the query that happens to feed
+ * it today (#1191 §3.1).
+ */
+export function userVisibleWaves(waves: readonly Wave[], coves: readonly Cove[]): Wave[] {
+  const userCoveIds = new Set(visibleCoves(coves).map((cove) => cove.id));
+  return visibleWaves(waves).filter((wave) => userCoveIds.has(wave.coveId));
 }
 
 /** The wave has work in flight. `done` / `draft` / `canceled` are neither. */
