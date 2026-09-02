@@ -121,6 +121,19 @@ struct EnsureTxResult {
 /// the arm becomes dead code and the race surfaces as a 500 instead of the
 /// retry it was written to perform. `routes::waves` has always used the column
 /// form (`waves.cove_id`); this module did not until #1253 PR1.
+/// The `constraint` argument for the system-cove race, and the ONLY place that
+/// string is written. The retry arm passes this, and the test that provokes a
+/// real violation asserts against this — so reverting it to an index name makes
+/// that test red instead of silently making the arm dead again.
+const SYSTEM_COVE_UNIQUE: &str = "coves.kind";
+
+/// The `constraint` argument for the launchpad-wave race. Same single-sourcing
+/// as [`SYSTEM_COVE_UNIQUE`], and it matters more here: this arm is currently
+/// unreachable (see `ensure_today_launchpad`), so this constant plus the test
+/// that reads it are the *only* thing standing between the fix and a silent
+/// return to dead code.
+const LAUNCHPAD_UNIQUE: &str = "waves.purpose";
+
 fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
     let CalmError::Db(sqlx::Error::Database(error)) = error else {
         return false;
@@ -529,7 +542,7 @@ pub(crate) async fn ensure_today_launchpad(
         //    is a known, named gap; do not close it by asserting that test
         //    covers both, and do not add a fixtures-gated seam whose only
         //    purpose is to make an unreachable state reachable.
-        Err(e) if is_unique_constraint(&e, "waves.purpose") => {
+        Err(e) if is_unique_constraint(&e, LAUNCHPAD_UNIQUE) => {
             // A concurrent inserter won the partial unique index; retry selects it.
             let route = RouteState::from_ref(&app);
             let cove_id = cove.id.to_string();
@@ -665,9 +678,17 @@ mod tests {
     /// `CalmError`, and deliberately not `waves::is_unique_constraint_for_test`
     /// — a test that reaches for a test-only export is testing the export.
     ///
-    /// The negative half is the load-bearing half: asserting only that
-    /// `"coves.kind"` matches would stay green if the call sites still passed
-    /// index names, because it never asks what the pre-#1253 code asked.
+    /// **It asserts against [`SYSTEM_COVE_UNIQUE`] and [`LAUNCHPAD_UNIQUE`],
+    /// not against string literals**, and that is what makes it a test of the
+    /// call sites rather than of the helper. The first version of this test
+    /// used literals; reverting the launchpad call site to the index name left
+    /// it green, which is the same defect in a new costume — the assertion has
+    /// to read the value production passes, not restate the value production
+    /// ought to pass.
+    ///
+    /// The negative half is the other load-bearing half: asserting only that
+    /// the constants match would stay green if SQLite ever started naming the
+    /// index too, so both index names are asserted NOT to match.
     #[tokio::test]
     async fn sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations() {
         let repo = SqlxRepo::open("sqlite::memory:").await.unwrap();
@@ -689,9 +710,14 @@ mod tests {
             message.contains("UNIQUE constraint failed: coves.kind"),
             "unexpected message: {message}"
         );
+        // `SYSTEM_COVE_UNIQUE`, not a literal: this is the exact value the
+        // retry arm passes, so reverting that arm reverts this assertion's
+        // input too. A literal here would pin the helper and leave the call
+        // site free to go back to matching nothing.
         assert!(
-            is_unique_constraint(&error, "coves.kind"),
-            "the column form must match: {message}"
+            is_unique_constraint(&error, SYSTEM_COVE_UNIQUE),
+            "the system-cove retry arm's constraint must match a real \
+             violation, but `{SYSTEM_COVE_UNIQUE}` does not: {message}"
         );
         assert!(
             !is_unique_constraint(&error, "idx_coves_one_system"),
@@ -716,8 +742,9 @@ mod tests {
             "unexpected message: {message}"
         );
         assert!(
-            is_unique_constraint(&error, "waves.purpose"),
-            "the column form must match: {message}"
+            is_unique_constraint(&error, LAUNCHPAD_UNIQUE),
+            "the launchpad retry arm's constraint must match a real violation, \
+             but `{LAUNCHPAD_UNIQUE}` does not: {message}"
         );
         assert!(
             !is_unique_constraint(&error, "idx_waves_one_launchpad"),
