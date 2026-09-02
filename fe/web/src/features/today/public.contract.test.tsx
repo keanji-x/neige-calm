@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // Invariants for the Today surface. Behavior lives in public.test.tsx.
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Cove } from '../../../../core/domain/cove.ts';
@@ -91,5 +91,102 @@ describe('INV-A11Y-061 navigation shape', () => {
       <TodayPage renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW} />,
     );
     expect(container.querySelectorAll('a').length).toBe(0);
+  });
+});
+
+/*
+ * #1253 §5.2 — the Today document region.
+ *
+ * `launchpad` is the server's answer to `GET /api/today/launchpad`, and
+ * `report_has_noninitial_content` is the ONLY thing on this page that decides
+ * between the document and the empty state. The stand-in document below is a
+ * marker, not a report: what is under test is which branch runs, and the real
+ * `ReportDocument` against a real canonical initial payload is exercised at the
+ * composition layer in `app/router/today-document.test.tsx`.
+ */
+const DOCUMENT = <p>the day&apos;s report</p>;
+const EMPTY_COPY = 'Nothing written today yet.';
+
+describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () => {
+  it('renders the empty state for a report nobody has written', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: false }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
+    // The negative half: the canonical initial report is a well-formed
+    // document — four empty H1s — so a page that decided this by looking at
+    // the document instead of at the server field would render those headings
+    // here rather than the empty state.
+    expect(screen.queryByText("the day's report")).toBeNull();
+  });
+
+  it('renders the document once the server says the report has content', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText("the day's report")).toBeTruthy();
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+  });
+
+  it('treats a 404 as the empty state rather than an error', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={null} launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
+  });
+
+  it('says nothing at all while the resolve is still in flight', () => {
+    // "We do not know yet" and "there is nothing" are different answers, and
+    // flashing the second one while the first is true is how a page teaches
+    // people to distrust it.
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+    expect(screen.queryByText("the day's report")).toBeNull();
+  });
+
+  it('offers no trigger button beside the empty state', () => {
+    // `POST /api/today/summary` does not exist until PR2. A stubbed, mocked or
+    // disabled button would be worse than its absence.
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[]} coves={[cove()]} nowMs={NOW}
+      launchpad={null}
+    />);
+    const empty = screen.getByText(EMPTY_COPY);
+    expect(empty.querySelector('button')).toBeNull();
+    expect(screen.queryByRole('button', { name: /progress|summary|write/i })).toBeNull();
+  });
+});
+
+describe('INV-TODAYDOC-002 a failed resolve never degrades into the empty state', () => {
+  it('shows the failure and suppresses the empty state', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave()]} coves={[cove()]} nowMs={NOW}
+      launchpad={undefined}
+      launchpadDocument={DOCUMENT}
+      launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
+    />);
+    expect(screen.getByRole('alert').textContent).toContain('boom');
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
+  });
+});
+
+describe('#1253 D7 the status bar comes before the document', () => {
+  it('puts the waiting rows above the document in the main column', () => {
+    const { container } = render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[wave({ lifecycle: 'blocked' })]} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    const main = within(container).getByText('Waiting on you');
+    const document_ = within(container).getByText("the day's report");
+    expect(main.compareDocumentPosition(document_) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

@@ -2813,6 +2813,38 @@
         }
       }
     },
+    "/api/today/launchpad": {
+      "get": {
+        "tags": [
+          "waves"
+        ],
+        "summary": "#1253 §5.1 — the read-only resolve the Today page load uses.",
+        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**404 twice, and the second one needs its reason stated correctly.** No\nlaunchpad wave is a 404, and the frontend renders that as an empty state\nrather than an error. A launchpad wave with no `wave-report` card is\n*also* a 404 — but not because that state is reachable: the wave and its\nreport card are created in **one transaction**\n(`today_launchpad_ensure_tx`), and the adopt-legacy branch has not yet\nwritten `purpose = 'launchpad'` when it commits, so a `purpose`-keyed read\ncannot observe a half-built launchpad. 404 is chosen because it is cheap\nand fail-closed, **not** because the intermediate state occurs.",
+        "operationId": "resolve_today_launchpad",
+        "responses": {
+          "200": {
+            "description": "The launchpad wave and whether its report has been written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TodayLaunchpadResolved"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No launchpad wave yet (page renders an empty state), or it carries no report card",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/today/launchpad/ensure": {
       "post": {
         "tags": [
@@ -6555,6 +6587,23 @@
           },
           "terminal_id": {
             "type": "string"
+          },
+          "wave_id": {
+            "type": "string"
+          }
+        }
+      },
+      "TodayLaunchpadResolved": {
+        "type": "object",
+        "description": "#1253 §5.1 — what the Today **page load** reads.\n\nA deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it\ndoes not grow into it: `ensure`'s shape is the bootstrap's, this one is the\nreader's, and the two answer different questions.\n\nThere is no `report_card_id` here on purpose. The wave detail already\nreturns the wave's cards and the frontend locates the report by\n`kind == \"wave-report\"` (`fe/core/domain/report.ts::readWaveReport`), so\nsuch a field would have no consumer.",
+        "required": [
+          "wave_id",
+          "report_has_noninitial_content"
+        ],
+        "properties": {
+          "report_has_noninitial_content": {
+            "type": "boolean",
+            "description": "Whether this report's `summary`/`body` differ from the canonical\nfreshly-minted report — i.e. **has anyone ever written it**.\n\nIt is computed server-side by\n[`WaveReportPayload::report_startup_read_required`], the kernel's one\ncanonical \"has this been written\" predicate. It is deliberately NOT\nnamed `report_started`, and the difference is not cosmetic (design D7):\n\n* It answers \"has anyone written this report\", not \"has today's summary\n  run\". A user hand-editing the document flips it to `true` just as a\n  summary agent would, and once true it never returns to false — a\n  stale document still reads as content. Anything that really needs\n  \"did the summary run\" needs a durable marker or event, not this.\n* It compares `summary + body` only; `doc_rev` and `blocks` are\n  deliberately ignored, so a canonical placeholder that CRDT has\n  already materialised still reads `false`.\n\nThe frontend must not re-derive this by looking at the report body:\n`readWaveReport` returns non-null for the canonical initial report\n(its body carries the maintenance-contract comment and four H1s), so a\nnull-check there renders four empty headings instead of an empty state."
           },
           "wave_id": {
             "type": "string"

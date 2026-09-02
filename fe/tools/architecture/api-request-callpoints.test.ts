@@ -38,7 +38,12 @@ describe('web api request callpoints', () => {
       'app/auth/session-gate.tsx',
       'app/providers/queries.ts',
     ]);
-    expect(callpoints.flatMap((path) => performApiRequestArities(readFileSync(path, 'utf8')))).toEqual([3, 3]);
+    /* Three calls, two files. `app/providers/queries.ts` holds two of them:
+       `runOperation`, and #1253's Today launchpad resolve, which needs the
+       failure rather than an exception so it can turn a 404 into data while
+       every other failure stays an error. Every call is arity 3 — the
+       `unauthorized` channel is never dropped, which is what this pins. */
+    expect(callpoints.flatMap((path) => performApiRequestArities(readFileSync(path, 'utf8')))).toEqual([3, 3, 3]);
   });
 
   it('detects whitespace before the call parenthesis without matching similar names', () => {

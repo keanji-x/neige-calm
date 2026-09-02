@@ -28,6 +28,9 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
+  todayLaunchpadOperation, type TodayLaunchpadWire,
+} from '../../../../core/domain/today.ts';
+import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
   deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, putWaveTemplateOperation, toWave,
   updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
@@ -120,6 +123,10 @@ export const queryKeys = Object.freeze({
      can move under them is a plugin starting or stopping, which changes an
      `input_schema` the dialog reads when it opens. */
   waveTemplates: () => ['wave-templates'] as const,
+  /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by wave:
+     the kernel's partial unique index makes `purpose = 'launchpad'` a
+     singleton, and the id is what this query is fetching. */
+  todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
   /* The event bridge can only invalidate the `['cove-conversations']` prefix —
@@ -498,6 +505,33 @@ export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | nul
     return errorUpdateCount > 0 && errorUpdateCount <= TASK_VERDICT_RECOVERY_ATTEMPTS
       ? TASK_VERDICT_RECOVERY_POLL_MS
       : false;
+  };
+}
+
+/**
+ * #1253 §5.1 — the Today page load's resolve. A pure read: it never
+ * bootstraps, so the first paint of Today does not depend on codex being up.
+ *
+ * **404 is data, every other failure is an error, and the split is
+ * load-bearing** (INV-TODAYDOC-002). "There is no launchpad yet" is the empty
+ * state and arrives as `null`; a 500, a timeout or a schema mismatch must
+ * reach the reader as an error box. Folding them together — returning `null`
+ * for any failure — would make an unreachable server look exactly like a fresh
+ * workspace, which is the silent-degradation this invariant exists to forbid.
+ */
+export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.todayLaunchpad(),
+    queryFn: async (): Promise<TodayLaunchpadWire | null> => {
+      const result = await performApiRequest(transport, todayLaunchpadOperation(), unauthorized);
+      if (result.status === 'ready') return result.value;
+      /* Duck-typed on `status` rather than on the failure kind, the same way
+         the Today terminal's resolve chain is specified to read a 404
+         (INV-TODAYTERM-006): transport and decode failures carry no status and
+         must not be mistaken for "nothing there". */
+      if ('status' in result.error && result.error.status === 404) return null;
+      throw new ApiError(result.error);
+    },
   };
 }
 

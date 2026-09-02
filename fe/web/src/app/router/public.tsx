@@ -69,8 +69,8 @@ import {
   settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
   useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations,
   useWaveTemplateMutation, useWaveTemplates, useWorkspace,
-  waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
-  waveTaskVerdictsQueryOptions,
+  todayLaunchpadQueryOptions, waveBacklinksQueryOptions, waveConversationsQueryOptions,
+  waveDetailQueryOptions, waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
@@ -1595,6 +1595,33 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const chat = useConversationPanel(transport, unauthorized, {
     kind: 'elsewhere', intent: { kind: 'all' },
   });
+  /*
+   * #1253 §5.1 — the launchpad resolve, and it is a READ.
+   *
+   * `POST /api/today/launchpad/ensure` is deliberately not called from here,
+   * and that is INV-TODAYDOC-001, not a nicety: `ensure` materializes a
+   * workspace and then submits a `spec-harness-start` operation and waits on
+   * it, so putting it on the page-load path would make Today fail hard
+   * whenever codex is down — worse than the Today this replaces, which needed
+   * nothing to render. `ensure` belongs to an explicit action; PR1 has none.
+   *
+   * A 404 arrives as `null` ("nothing yet" → empty state). Everything else
+   * arrives as an error and is rendered as one (INV-TODAYDOC-002).
+   */
+  const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
+  const launchpad = launchpadQuery.data;
+  const launchpadWaveId = launchpad?.wave_id ?? '';
+  /* The document itself comes from the ordinary wave detail — the resolve
+     carries no `report_card_id` because `readWaveReport` locates the card by
+     `kind === 'wave-report'` and that field would have no consumer (§5.1). */
+  const launchpadDetailQuery = useQuery({
+    ...waveDetailQueryOptions(transport, launchpadWaveId, unauthorized),
+    enabled: launchpadWaveId !== '',
+  });
+  const launchpadReport = useMemo(
+    () => readWaveReport(launchpadDetailQuery.data?.cards ?? []),
+    [launchpadDetailQuery.data],
+  );
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -1635,6 +1662,28 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       )}
       conversationList={chat.list}
         conversationAction={chat.action}
+      /* Undefined while the resolve is in flight, `null` on 404. The page
+         decides the empty state from `report_has_noninitial_content` and from
+         nothing else — see INV-TODAYDOC-003 on `TodayPageProps.launchpad`. */
+      launchpad={launchpadQuery.isError ? undefined : launchpad}
+      launchpadDocument={
+        <ReportDocument
+          report={launchpadReport}
+          empty={<ReportEmpty
+            lead="Nothing written today yet."
+            hints={[
+              'This is the launchpad wave\'s report — the day\'s summary is written into it.',
+              'It is a current snapshot, rewritten each time, not a running log.',
+            ]}
+          />}
+        />
+      }
+      launchpadError={launchpadQuery.isError
+        ? <ErrorBox
+          message={`Today's progress is unavailable: ${launchpadQuery.error.message}`}
+          onRetry={() => { void launchpadQuery.refetch(); }}
+        />
+        : undefined}
     />
     <ConfirmDialog
       open={deletion.open}

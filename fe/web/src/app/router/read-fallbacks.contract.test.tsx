@@ -21,8 +21,18 @@ const wave = { id: 'w1', cove_id: 'c1', title: 'Reliable', sort: 1, lifecycle: '
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
 
+/* #1253 — none of the cases in this file are about the Today launchpad, and
+   404 is that endpoint's ordinary "no launchpad yet" answer. Answering it here
+   rather than letting each case's catch-all `ok([])` reach it keeps a decode
+   failure out of every Today render below; a case that wants the resolve to
+   fail says so by handling the path itself. */
+const TODAY_LAUNCHPAD_PATH = '/api/today/launchpad';
+const notFound = (): ApiTransportResponse => ({ status: 404, statusText: 'Not Found', body: { error: 'not found' } });
+
 function renderRoute(path: string, reply: (request: ApiRequest) => ApiTransportResponse | Promise<ApiTransportResponse>) {
-  const transport: ApiTransportPort = { send: (request) => Promise.resolve(reply(request)) };
+  const transport: ApiTransportPort = {
+    send: (request) => Promise.resolve(request.path === TODAY_LAUNCHPAD_PATH ? notFound() : reply(request)),
+  };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
   router.update({ history: createMemoryHistory({ initialEntries: [path] }) });
