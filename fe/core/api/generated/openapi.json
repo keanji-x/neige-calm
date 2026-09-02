@@ -7605,7 +7605,7 @@
       },
       "WaveTemplateGoalEdit": {
         "type": "object",
-        "description": "One `(key, goal)` pair — the only two facts the editor may state about a\ntask. Everything else about a task block is the server's.",
+        "description": "One `(key, goal)` pair — the only two facts the editor may state about a\ntask. Everything else about a task block is the server's.\n\n`deny_unknown_fields` is the load-bearing part, not decoration. The whole\nsafety argument for this endpoint is \"privileged task vocabulary has nowhere\nto go in the request\"; without this attribute serde would quietly ignore\nextra keys, the guarantee would rest on nobody ever adding a\n`#[serde(flatten)]` here, and\n`privileged_task_vocabulary_cannot_reach_a_stored_block` would keep passing\nwhile the property it names had stopped holding.",
         "required": [
           "key",
           "goal"
@@ -7617,7 +7617,8 @@
           "key": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "WaveTemplateTask": {
         "type": "object",
@@ -7662,7 +7663,8 @@
             "type": "string",
             "description": "The new title. Trimmed; must not be empty — a template with a blank\ntitle is unpickable in the New wave dialog, which lists templates by\ntitle and nothing else."
           }
-        }
+        },
+        "additionalProperties": false
       },
       "WaveWorkspace": {
         "type": "object",

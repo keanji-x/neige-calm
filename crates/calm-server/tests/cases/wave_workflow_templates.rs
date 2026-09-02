@@ -922,33 +922,63 @@ async fn a_save_that_would_render_a_broken_plan_is_refused() {
 /// to put them. This test pins that by sending them anyway and asserting they
 /// reach no stored block.
 #[tokio::test]
-async fn privileged_task_vocabulary_cannot_reach_a_stored_block() {
+async fn privileged_task_vocabulary_is_refused_by_the_request_shape() {
     let boot = boot().await;
     let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
-    let (status, body) = put(
+
+    // The guarantee is "there is nowhere to put these", so the request must be
+    // *rejected*, not sanitised. Asserting only that the stored block came out
+    // clean was the weaker claim: `ready` / `declared_by` are restamped
+    // unconditionally, so two of those assertions were green regardless of the
+    // request, and the rest rested on a struct whose closedness nothing tested.
+    for (case, body) in [
+        (
+            "privileged vocabulary on an edit",
+            json!({ "title": "Small change", "edits": [
+                { "key": "inspect", "goal": "Look.", "released_by_user": true },
+            ] }),
+        ),
+        (
+            "spawn on an append",
+            json!({ "title": "Small change", "appends": [
+                { "key": "sneaky", "goal": "Do.", "spawn": "sub-wave" },
+            ] }),
+        ),
+        (
+            "a tombstone smuggled into an append",
+            json!({ "title": "Small change", "appends": [
+                { "key": "sneaky", "goal": "Do.", "tombstone": { "reason": null } },
+            ] }),
+        ),
+        (
+            "an unknown top-level field",
+            json!({ "title": "Small change", "edits": [], "tasks": [] }),
+        ),
+    ] {
+        let (status, response) = put(boot.app.clone(), &uri, body).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{case}: the request shape must refuse this outright: body={response}"
+        );
+    }
+
+    // Positive control: the same request without the extra key is accepted, so
+    // the refusals are about the extra field and not about the shape at large.
+    let (status, response) = put(
         boot.app.clone(),
         &uri,
-        json!({
-            "title": "Small change",
-            "edits": [{
-                "key": "inspect", "goal": "Look.",
-                "released_by_user": true, "spawn": "sub-wave", "declared_by": "spec", "ready": true,
-            }],
-            "appends": [{
-                "key": "sneaky", "goal": "Do.",
-                "released_by_user": true, "spawn": "sub-wave", "tombstone": { "reason": null },
-            }],
-        }),
+        json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Look." }] }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(status, StatusCode::OK, "positive control: body={response}");
 
+    // And nothing privileged reached a stored block either.
     for task in template_task_blocks(&boot, SMALL_CHANGE).await {
         assert_ne!(task["released_by_user"], json!(true), "task={task}");
         assert_ne!(task["spawn"], json!("sub-wave"), "task={task}");
         assert_eq!(task["declared_by"], "user", "task={task}");
         assert_eq!(task["ready"], false, "task={task}");
-        assert!(task.get("tombstone").is_none(), "task={task}");
     }
 }
 

@@ -2552,6 +2552,14 @@ export interface components {
         /**
          * @description One `(key, goal)` pair — the only two facts the editor may state about a
          *     task. Everything else about a task block is the server's.
+         *
+         *     `deny_unknown_fields` is the load-bearing part, not decoration. The whole
+         *     safety argument for this endpoint is "privileged task vocabulary has nowhere
+         *     to go in the request"; without this attribute serde would quietly ignore
+         *     extra keys, the guarantee would rest on nobody ever adding a
+         *     `#[serde(flatten)]` here, and
+         *     `privileged_task_vocabulary_cannot_reach_a_stored_block` would keep passing
+         *     while the property it names had stopped holding.
          */
         WaveTemplateGoalEdit: {
             goal: string;
