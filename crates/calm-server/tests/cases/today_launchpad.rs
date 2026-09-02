@@ -1314,11 +1314,31 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
         Some(Arc::clone(&gate)),
     )
     .await;
+    // The second request is deliberately SKEWED, and that is what makes this a
+    // gate rather than a coin flip.
+    //
+    // Without the rendezvous, a 250ms head start lets the first request finish
+    // its entire mint before the second one reads, so the second reads `Some`,
+    // never mints, and `attempts` is 1 — measured, this reproduces the CI
+    // failure exactly ("the race did not happen: 1 of the 2 requests found no
+    // system cove"). With the rendezvous the first request is parked before it
+    // can write, so the skew cannot suppress the race and the case passes.
+    //
+    // Keeping the skew permanently means removing the rendezvous fails here
+    // deterministically, on any machine, instead of waiting for a scheduler
+    // unlucky enough to expose it. Our box was green 20/20 on the version CI
+    // then falsified; this is the difference.
+    //
     // Bounded, because the failure mode of a rendezvous is a hang: if only one
     // request ever reached it, `wait()` would park forever and CI would report
-    // a timeout instead of a fact. 30s is far above the ~0.2s this takes.
+    // a timeout instead of a fact. 30s is far above the ~0.5s this takes.
     let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
-        tokio::join!(ensure(b.app.clone()), ensure(b.app.clone()))
+        let a = b.app.clone();
+        let c = b.app.clone();
+        tokio::join!(ensure(a), async move {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            ensure(c).await
+        })
     })
     .await
     .expect("both requests must reach the mint rendezvous; a timeout here means only one did");
