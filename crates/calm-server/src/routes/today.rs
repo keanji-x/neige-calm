@@ -194,6 +194,37 @@ const LAUNCHPAD_UNIQUE: &str = "waves.purpose";
 /// sharing rather than documenting it.
 ///
 /// [`AppState`]: crate::state::AppState
+/// A rendezvous the system-cove mint race can be *created* at, not merely
+/// observed.
+///
+/// `None` in production — the mint path costs one `Option` check and never
+/// waits. A test arms it with a `Barrier::new(2)`; both requests then park
+/// here after their `cove_get_system()` has returned `None` and before either
+/// opens its write transaction, so the second request provably cannot read the
+/// first one's committed row.
+///
+/// **Why this exists at all.** `attempts == 2` observes whether the race
+/// happened; it cannot make it happen. `tokio::join!` does not order the two
+/// requests, so on a scheduler where A finishes the whole mint before B reads,
+/// the assertion correctly reports "the race did not happen" — and a case that
+/// is red for that reason is worse than the vacuous one it replaced. Our box
+/// measured 20/20 and 4/4 green and was simply not an environment that could
+/// falsify it; a CI runner was. The counters stay: they are what proves the
+/// rendezvous actually did its job.
+///
+/// **Why an `Option` on [`AppState`] rather than `#[cfg(feature = "fixtures")]`.**
+/// `routes::waves`'s `wait_at_chat_wave_ensure_barrier` is the existing
+/// precedent for this shape and is cfg-gated behind a process-global registry.
+/// That carrier was already ruled against for the counters, for two reasons
+/// that apply here unchanged: a cfg-gated path means the tested binary does not
+/// execute the instructions the shipped one does, which is exactly what a
+/// timing test cannot afford; and a process-global is shared by every
+/// `AppState` in the process, which a threaded `cargo test` turns into
+/// cross-case interference. Same shape as the precedent, per-instance carrier.
+///
+/// [`AppState`]: crate::state::AppState
+pub type SystemCoveMintRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
+
 #[derive(Debug, Default)]
 pub struct SystemCoveMintCounters {
     /// Requests that found no system cove and therefore tried to mint one.
@@ -533,6 +564,13 @@ pub(crate) async fn ensure_today_launchpad(
         app.system_cove_mint
             .attempts
             .fetch_add(1, Ordering::Relaxed);
+        // Armed only by the concurrency case; `None` everywhere else, so this
+        // is one `Option` check on the production path. See
+        // [`SystemCoveMintRendezvous`] for why the race has to be created here
+        // rather than hoped for.
+        if let Some(barrier) = &app.system_cove_mint_rendezvous {
+            barrier.wait().await;
+        }
         let route = RouteState::from_ref(&app);
         let minted = write_with_event_typed(
             app.repo.as_ref(),

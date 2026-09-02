@@ -50,6 +50,17 @@ async fn boot() -> Boot {
 /// `CALM_WORKSPACE_ROOT` change) looks like to the rows already in
 /// `operations`.
 async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
+    boot_with_rendezvous(tmp, repo, root_name, None).await
+}
+
+/// #1253 — `boot_with`, plus the option to arm the system-cove mint
+/// rendezvous. Only the concurrency case passes `Some`.
+async fn boot_with_rendezvous(
+    tmp: TempDir,
+    repo: Arc<SqlxRepo>,
+    root_name: &str,
+    rendezvous: Option<Arc<tokio::sync::Barrier>>,
+) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
     let waves = WaveCoveCache::new();
@@ -90,6 +101,10 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     // #1147 S2 — keep every managed workspace this test mints inside the
     // sandbox, and make the root's location assertable.
     .with_workspace_root(tmp.path().join(root_name));
+    let state = match rendezvous {
+        Some(barrier) => state.with_system_cove_mint_rendezvous(barrier),
+        None => state,
+    };
     let system_cove_mint = Arc::clone(&state.system_cove_mint);
     let app = routes::router()
         .layer(axum::middleware::from_fn(
@@ -1268,9 +1283,21 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     // still establishing one, after which B reads `Some` — so "green" on its
     // own carried no information about whether anything had been exercised.
     //
-    // `attempts == 2` is what fixes that: it says both requests read "no system
-    // cove" before either wrote, i.e. the race occurred, which is what turns
-    // the status assertion below from vacuous into a gate.
+    // Two halves, and both are needed.
+    //
+    // The RENDEZVOUS *creates* the race: armed on this server only, it parks
+    // each request after its `cove_get_system()` has returned `None` and before
+    // it opens a write transaction, so the second request provably cannot read
+    // the first one's committed row. Without it the case merely hoped —
+    // `tokio::join!` imposes no order, and on a CI runner request A finished
+    // the whole mint before B read, so the case went red reporting, correctly,
+    // that the race had not happened. Red-flaky is worse than the vacuous
+    // version it replaced.
+    //
+    // `attempts == 2` then *proves* the rendezvous did its job, and keeps the
+    // status assertion below from being vacuous. A rendezvous with no counter
+    // would be an unchecked assumption; a counter with no rendezvous is what
+    // CI falsified.
     //
     // `sqlite::memory:` like every sibling case here, measured on this exact
     // two-request shape: 8/8 green unmutated with `attempts == 2` holding, and
@@ -1279,8 +1306,22 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
     // that reading came from a different shape (six barrier-released requests)
     // and did not survive being re-measured against this one, so the special
     // case is deleted rather than re-justified.
-    let b = boot().await;
-    let (first, second) = tokio::join!(ensure(b.app.clone()), ensure(b.app.clone()));
+    let gate = Arc::new(tokio::sync::Barrier::new(2));
+    let b = boot_with_rendezvous(
+        TempDir::new().unwrap(),
+        Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap()),
+        "workspaces",
+        Some(Arc::clone(&gate)),
+    )
+    .await;
+    // Bounded, because the failure mode of a rendezvous is a hang: if only one
+    // request ever reached it, `wait()` would park forever and CI would report
+    // a timeout instead of a fact. 30s is far above the ~0.2s this takes.
+    let (first, second) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(ensure(b.app.clone()), ensure(b.app.clone()))
+    })
+    .await
+    .expect("both requests must reach the mint rendezvous; a timeout here means only one did");
     for (status, body) in [&first, &second] {
         assert!(
             status.is_success(),

@@ -262,6 +262,7 @@ impl BootState {
             repo: route_repo,
             events: self.events,
             system_cove_mint: Arc::new(crate::routes::today::SystemCoveMintCounters::default()),
+            system_cove_mint_rendezvous: None,
             daemon: self.daemon,
             terminal_renderer: self.terminal_renderer,
             plugin: self.plugin,
@@ -309,6 +310,10 @@ pub struct AppState {
     /// why it lives on the state rather than in a `static`, and why it is not
     /// gated behind `fixtures`.
     pub system_cove_mint: Arc<crate::routes::today::SystemCoveMintCounters>,
+    /// #1253 — `None` in production. Armed by the system-cove concurrency case
+    /// so that race is created rather than waited for; see
+    /// [`crate::routes::today::SystemCoveMintRendezvous`].
+    pub system_cove_mint_rendezvous: crate::routes::today::SystemCoveMintRendezvous,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,
@@ -593,6 +598,17 @@ impl AppState {
     /// the adapter reject the very workspace the routes just created — the
     /// containment assertion would compare against the wrong root.
     #[cfg(feature = "fixtures")]
+    /// #1253 — arm the system-cove mint rendezvous. Test-only in practice;
+    /// production never calls it and the field stays `None`.
+    #[doc(hidden)]
+    pub fn with_system_cove_mint_rendezvous(
+        mut self,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.system_cove_mint_rendezvous = Some(barrier);
+        self
+    }
+
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.route.workspace_root = root;
         // Release the auto-allocated sandbox: the caller supplied its own root,
