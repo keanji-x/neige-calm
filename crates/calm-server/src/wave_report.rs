@@ -426,6 +426,13 @@ pub(crate) fn apply_report_op(
                     )
                 })?;
                 check_rev(doc, id, expected)?;
+                // #1269 — the block-level entrance. `ReportDoc::
+                // upsert_block` fence-checks only NON-prose content, so
+                // prose would otherwise carry a malformed / schema-invalid
+                // ```neige-block fence straight in.
+                if kind == calm_types::report_blocks::KIND_PROSE {
+                    validate_body_fences(content)?;
+                }
                 let (id, rev) = doc
                     .upsert_block(Some(id), kind, content)
                     .map_err(internal)?;
@@ -436,6 +443,11 @@ pub(crate) fn apply_report_op(
                     CalmError::BadRequest("if_doc_rev is required when creating a block".into())
                 })?;
                 check_doc_rev(doc, expected)?;
+                // #1269 — same check on the create arm; leaving either
+                // arm open would leave the entrance open.
+                if kind == calm_types::report_blocks::KIND_PROSE {
+                    validate_body_fences(content)?;
+                }
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len

@@ -90,7 +90,8 @@
 //! # Why there are no guard/CAS booleans here
 //!
 //! The three report guards — `guard_non_prose_stomp` in the `Replace` arm,
-//! `validate_body_fences` in the `Replace` and `WriteMarkdown` arms, and
+//! `validate_body_fences` in the `Replace`, `WriteMarkdown` and prose
+//! `UpsertBlock` arms, and
 //! `guard_task_declarations` after the match on every op that got that far —
 //! are plain control flow inside `wave_report::apply_report_op` today, with no
 //! parameter that can switch any of them off. Modelling them as booleans would

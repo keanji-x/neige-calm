@@ -1850,18 +1850,14 @@ fn prepare_fork_report(
             //
             // What `validate_body_fences` actually covers today (#1252 R1/F3
             // corrects an earlier "every other write end" claim here, which
-            // was false): its only production call sites are the two
-            // whole-body writes — `wave_report::apply_report_op`'s
-            // `ReportDocOp::Replace` and `::WriteMarkdown` arms. The
-            // `UpsertBlock` arm does NOT call it, and `ReportDoc::
-            // upsert_block` fence-checks only non-prose content
-            // (`if kind != KIND_PROSE`), so `calm.report.blocks.upsert` with
-            // `kind: "prose"` and a malformed fence is still accepted. That
-            // entrance is a known, still-open gap tracked under #1252;
-            // closing it is a separate behaviour change with its own blast
-            // radius and is deliberately not done here. Closing the fork
-            // exit is still worth it on its own: fork is the path that
-            // copies such a block into a *new* wave.
+            // was false at the time): its production call sites are the
+            // markdown-carrying arms of `wave_report::apply_report_op` —
+            // `ReportDocOp::Replace`, `::WriteMarkdown`, and (since #1269)
+            // `::UpsertBlock` when `kind == "prose"` — plus this fork exit.
+            // #1269 closed the `UpsertBlock` entrance that this note used to
+            // record as still open: `ReportDoc::upsert_block` itself
+            // fence-checks only non-prose content (`if kind != KIND_PROSE`),
+            // so the prose case has to be checked in the op arm.
             //
             // Deliberately only the fence check: running `validate_payload`
             // on prose blocks is a separate behaviour change too.
@@ -3529,10 +3525,9 @@ mod tests {
     /// #1252 S0b — the `KIND_PROSE` arm `continue`s past the loop's
     /// `validate_payload`, so the fence check has to happen inside that arm.
     /// A malformed ```` ```neige-block ```` fence in prose is refused by
-    /// `wave_report_guard::validate_body_fences` at both whole-body write
-    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`); forking is a write
-    /// end too. (Prose `UpsertBlock` remains an open entrance — see the
-    /// #1252 R1/F3 note on the production arm.)
+    /// `wave_report_guard::validate_body_fences` at the whole-body write
+    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`) and, since #1269,
+    /// at the prose `::UpsertBlock` entrance; forking is a write end too.
     #[test]
     fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
         let prose = ReportBlock {
