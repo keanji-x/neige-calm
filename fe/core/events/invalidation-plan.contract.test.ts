@@ -27,10 +27,34 @@ describe('invalidation plan contract', () => {
       { ev: 'wave.report_edited' }
     >;
     expect(invalidationPlanFor(event)).toEqual({
-      invalidate: [['wave-files', 'wave-7'], ['wave-report', 'wave-7'], ['wave-backlinks']],
+      invalidate: [
+        ['wave-files', 'wave-7'], ['wave-report', 'wave-7'], ['wave-backlinks'],
+        ['today-launchpad'], ['wave', 'wave-7'],
+      ],
       remove: [],
       writeThrough: [],
     });
+  });
+
+  /*
+   * #1253 §6 — the two keys the Today trigger needs, asserted on their own.
+   *
+   * They are already covered by the literal list above; this states them as a
+   * requirement rather than as an incidental part of a snapshot, because the
+   * failure they prevent is invisible from inside this layer. A report edit
+   * that does not invalidate these two leaves the page unchanged after the
+   * button is pressed — with no error, no console warning and no failing
+   * golden, since `PolicyMap` is exhaustive over event kinds and not over query
+   * keys. Deleting either line from the policy turns this red and nothing else.
+   */
+  it('refreshes the Today document and its resolve when a report is edited', () => {
+    const event = { ev: 'wave.report_edited', data: { wave_id: 'lp' } } as Extract<
+      WireEvent,
+      { ev: 'wave.report_edited' }
+    >;
+    const keys = invalidationPlanFor(event).invalidate;
+    expect(keys).toContainEqual(['today-launchpad']);
+    expect(keys).toContainEqual(['wave', 'lp']);
   });
 
   it('pins wave-report invalidation to exactly the derived kinds plus report edits', () => {

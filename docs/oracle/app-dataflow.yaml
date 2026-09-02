@@ -657,7 +657,7 @@
     kernel 用 entity_kind + entity_id 寻址 overlay，光看事件 payload 无从知道该失效哪个 wave。
     没有 wave 被加载时，用户根本看不到那个 wave 的 card overlay 变化，等下次 wave detail
     refetch 捡起来即可 —— 这是被明确判定为无害的降级。
-  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:253-272
+  source: fe/web/src/app/events/wave-lookup.ts:7-17; fe/core/events/invalidation-plan.ts:270-289
   authoritative_test: fe/web/src/app/events/wave-lookup.test.ts:7
   owner_slice: app/events-glue/invalidation
   intentional_omission: true
@@ -706,12 +706,17 @@
   kind: capability
   family: app-invalidation-policy
   statement: >
-    `wave.report_edited` 必须同时失效该 wave 的 wave-files、`wave-report` 与全局
-    `['wave-backlinks']`。
+    `wave.report_edited` 必须同时失效该 wave 的 wave-files、`wave-report`、全局
+    `['wave-backlinks']`，以及（#1253 PR2）`['today-launchpad']` 与该 wave 的
+    `['wave', id]`。
   why: >
     策略 reason 明写："报告编辑改变 wave 文件投影，并且可能改变**任意** wave 的反链"，
     所以反链只能整片失效，不能按 wave 收窄。
-  source: fe/core/events/invalidation-plan.ts:250-252
+    后两个键是 Today 文档的刷新链：`['wave', id]` 是文档本身被读出的键，
+    `['today-launchpad']` 是空态判据被读出的键；缺任一个，点了「写今日进度」页面就
+    不动。`PolicyMap` 只对 event kind 穷举、不对 query key 穷举，所以删掉任一行都不会
+    有 golden 变红 —— 只有 authoritative_test 里那份逐字键表拦得住。
+  source: fe/core/events/invalidation-plan.ts:266-269
   authoritative_test: fe/core/events/invalidation-plan.contract.test.ts:20
   owner_slice: app/events-glue/invalidation
   intentional_omission: false

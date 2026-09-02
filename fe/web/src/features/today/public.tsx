@@ -61,14 +61,26 @@ export type WaveRowRenderer = (
   options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; coveName?: string }>,
 ) => ReactNode;
 
-/**
- * The copy for "the day has no document yet".
- *
- * There is no trigger button beside it. `POST /api/today/summary` does not
- * exist until #1253 PR2, and a button that cannot do anything — stubbed,
- * mocked or disabled — is worse than its absence.
- */
+/** The copy for "the day has no document yet". */
 const NO_PROGRESS_YET = 'Nothing written today yet.';
+
+/**
+ * The trigger's two labels.
+ *
+ * Two, because re-running is the ordinary case rather than a recovery: the
+ * report's own contract is "a snapshot of now, REWRITTEN every time", so a day
+ * gets summarised again whenever more has happened. A single "Write" label on a
+ * page that already shows a report would read as "write a second one".
+ *
+ * The control is NOT suppressed once a report exists.
+ * `report_has_noninitial_content` is a statement about the report's current
+ * text and consults no history — restoring the document to its canonical
+ * skeleton flips it back to false — so using it to decide "the summary has
+ * already run" would be wrong in both directions, and using it to hide the
+ * re-run would silently disable the button for anyone who edited by hand.
+ */
+const WRITE_SUMMARY = 'Write today\u2019s progress';
+const REWRITE_SUMMARY = 'Rewrite today\u2019s progress';
 
 export type TodayPageProps = Readonly<{
   waves: readonly Wave[];
@@ -104,6 +116,32 @@ export type TodayPageProps = Readonly<{
    * could not be reached.
    */
   launchpadError?: ReactNode;
+  /**
+   * Ask the server to write today's progress (#1253 D5), or `undefined` when
+   * the composition layer has no trigger to offer.
+   *
+   * **The control is shown whether or not anything happened today, and that is
+   * deliberate.** The design's gate lives on the server: `POST
+   * /api/today/summary` computes the day's activity itself and refuses an empty
+   * window, creating no conversation and sending no message
+   * (INV-TODAYDOC-007). This page cannot make the same decision — there is no
+   * read that would tell it, by design (D4 deleted the layer that would have
+   * offered one) — so hiding the button here would be a guess, and a guess that
+   * is wrong in the direction that makes the feature look broken. The refusal
+   * comes back as `summaryNotice` and reads as a fact about the day.
+   */
+  onWriteSummary?: () => void;
+  /** The trigger is in flight: the control says so and does not fire again. */
+  summaryPending?: boolean;
+  /**
+   * What the last trigger said, when it did not simply work — already worded
+   * and rendered by the composition layer, the same way `launchpadError` is.
+   *
+   * It sits beside the button rather than replacing the document: a refused or
+   * failed trigger changes nothing about the report already on screen, and
+   * swapping the document out for an error would claim otherwise.
+   */
+  summaryNotice?: ReactNode;
   /** Navigation lives inside the injected row; Today itself opens nothing. */
   renderWaveRow: WaveRowRenderer;
   /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
@@ -186,6 +224,7 @@ function isoDate(day: Date): ISODateString {
 export function TodayPage({
   waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
   launchpad, launchpadDocument, launchpadError, nowMs,
+  onWriteSummary, summaryPending, summaryNotice,
 }: TodayPageProps) {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
   const compact = useCompactViewport();
@@ -255,6 +294,9 @@ export function TodayPage({
             launchpad={launchpad}
             document={launchpadDocument}
             error={launchpadError}
+            onWriteSummary={onWriteSummary}
+            pending={summaryPending}
+            notice={summaryNotice}
           />
         </div>
       </div>
@@ -281,6 +323,9 @@ export function TodayPage({
             launchpad={launchpad}
             document={launchpadDocument}
             error={launchpadError}
+            onWriteSummary={onWriteSummary}
+            pending={summaryPending}
+            notice={summaryNotice}
           />
 
           <section className={styles.terminalSlot} aria-label="Today terminal">
@@ -388,20 +433,78 @@ function WaitingSection({ waves, render }: {
  * on this page (INV-TODAYDOC-003) — no null-check of the document, no reading
  * of its text.
  */
-function TodayDocument({ launchpad, document, error }: {
+function TodayDocument({ launchpad, document, error, onWriteSummary, pending, notice }: {
   launchpad?: TodayLaunchpadWire | null;
   document?: ReactNode;
   error?: ReactNode;
+  onWriteSummary?: () => void;
+  pending?: boolean;
+  notice?: ReactNode;
 }) {
   if (error !== undefined && error !== null) return <>{error}</>;
   // The read is still in flight. Not the empty state: "we do not know yet" and
   // "there is nothing" are different answers, and flashing the second one
   // while the first is true is how a page teaches people to distrust it.
+  //
+  // The trigger is inside this branch too, and not beside it: a control that
+  // rewrites a document nobody has read yet is offered before the page knows
+  // whether there IS a document, and its label would have to guess.
   if (launchpad === undefined) return null;
-  if (launchpad === null || !launchpad.report_has_noninitial_content) {
-    return <p className={styles.inlineEmpty}>{NO_PROGRESS_YET}</p>;
+  const written = launchpad !== null && launchpad.report_has_noninitial_content;
+  const trigger = (
+    <SummaryTrigger
+      label={written ? REWRITE_SUMMARY : WRITE_SUMMARY}
+      onWrite={onWriteSummary}
+      pending={pending}
+      notice={notice}
+    />
+  );
+  if (!written) {
+    return <>
+      <p className={styles.inlineEmpty}>{NO_PROGRESS_YET}</p>
+      {trigger}
+    </>;
   }
-  return <>{document}</>;
+  return <>{document}{trigger}</>;
+}
+
+/**
+ * The "write today's progress" control, plus whatever the last attempt said.
+ *
+ * A `<button>`, like every other control on this surface: it emits no
+ * `<a href>` (INV-A11Y-061) and it navigates nowhere.
+ *
+ * `undefined` `onWrite` renders nothing at all rather than a disabled control.
+ * A disabled button is a promise that it will work later; an absent one is the
+ * honest shape for "this composition has no trigger", which is what the
+ * feature's own suites pass.
+ */
+function SummaryTrigger({ label, onWrite, pending, notice }: {
+  label: string;
+  onWrite?: () => void;
+  pending?: boolean;
+  notice?: ReactNode;
+}) {
+  if (onWrite === undefined) return null;
+  const busy = pending === true;
+  return (
+    <div className={styles.summaryTrigger}>
+      <button
+        type="button"
+        data-nc-action="tertiary"
+        className={styles.moreButton}
+        // Disabled only while a request is actually in flight, so a double
+        // click cannot send two. Not a general "can you press this?" gate:
+        // whether there is anything to summarise is the server's answer.
+        disabled={busy}
+        aria-busy={busy}
+        onClick={onWrite}
+      >
+        {busy ? 'Writing\u2026' : label}
+      </button>
+      {notice !== undefined && notice !== null && <>{notice}</>}
+    </div>
+  );
 }
 
 /**

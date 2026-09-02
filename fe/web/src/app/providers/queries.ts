@@ -31,7 +31,8 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
-  todayLaunchpadOperation, type TodayLaunchpadWire,
+  todayLaunchpadOperation, todaySummaryOperation,
+  type TodayLaunchpadWire, type TodaySummaryWire,
 } from '../../../../core/domain/today.ts';
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
@@ -134,11 +135,11 @@ export const queryKeys = Object.freeze({
      the kernel's partial unique index makes `purpose = 'launchpad'` a
      singleton, and the id is what this query is fetching.
 
-     TODO(#1253 PR2): no event invalidates this key, and `wave.report_edited`
-     does not invalidate `['wave', id]` either — so once `POST
-     /api/today/summary` exists, a successful summary will change nothing on
-     screen until a reload. Both keys need adding to that policy in PR2. It is
-     inert in PR1: nothing here can change either value. */
+     PR2 put it on `wave.report_edited`'s invalidation list, together with
+     `['wave', id]`. Both are needed and neither is generated: the first
+     carries the empty-state predicate, the second carries the document, and
+     `PolicyMap` is exhaustive over event kinds rather than over query keys, so
+     no golden would have reported their absence. */
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
@@ -539,6 +540,48 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
     queryKey: queryKeys.todayLaunchpad(),
     queryFn: (): Promise<TodayLaunchpadWire | null> =>
       runOperation(transport, todayLaunchpadOperation(), unauthorized),
+  };
+}
+
+/**
+ * The Today trigger (#1253 D5), as one mutation.
+ *
+ * `failure` is handed back as an `ApiFailure` rather than as a sentence,
+ * because the wording is `core/domain/today`'s job: `todaySummaryFailure`
+ * matches on the machine-readable `code` there, where it is unit-testable and
+ * away from React.
+ *
+ * **What `onSuccess` does not do is invalidate the document.** A 200 means the
+ * message was enqueued, not that the agent has written anything — that lands
+ * later as a `wave.report_edited` event, which is exactly what the event
+ * bridge turns into `['today-launchpad']` and `['wave', id]`. Refreshing the
+ * document here would only ever refetch the *old* report and would hide a
+ * broken invalidation chain behind a lucky refetch. The one thing that IS true
+ * immediately is that the launchpad now carries a conversation, so the lists
+ * that show conversations are the ones invalidated.
+ */
+export type TodaySummaryMutation = Readonly<{
+  write: () => void;
+  pending: boolean;
+  failure: ApiFailure | null;
+}>;
+
+export function useTodaySummaryMutation(
+  transport: ApiTransportPort, unauthorized: UnauthorizedChannel,
+): TodaySummaryMutation {
+  const client = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (): Promise<TodaySummaryWire> =>
+      runOperation(transport, todaySummaryOperation(), unauthorized),
+    onSuccess: (started) => {
+      void client.invalidateQueries({ queryKey: queryKeys.waveConversationsPrefix() });
+      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(started.wave_id) });
+    },
+  });
+  return {
+    write: () => { mutation.mutate(); },
+    pending: mutation.isPending,
+    failure: mutation.error instanceof ApiError ? mutation.error.failure : null,
   };
 }
 

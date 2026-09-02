@@ -19,11 +19,15 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router';
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { ApiRequest, ApiTransportPort, ApiTransportResponse } from '../../../../core/api/types.ts';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { ThemeProvider } from '../theme/public.tsx';
+import { wireEventSchema } from '../../../../core/api/schemas.ts';
+import { invalidationPlanFor } from '../../../../core/events/invalidation-plan.ts';
+import { applyEventEffects } from '../events/query-invalidation-adapter.ts';
 import { createAppRouter } from './public.tsx';
 import { bootTestCardRuntime } from './test-card-runtime.ts';
 
@@ -32,6 +36,9 @@ const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 
 /** The server's answer when no launchpad wave exists yet: 200, body `null`. */
 const noLaunchpad = (): ApiTransportResponse => ({ status: 200, statusText: 'OK', body: null });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
+/** A typed 4xx, the way the kernel words one: `{ error, code }`. */
+const refuse = (status: number, code: string, message: string): ApiTransportResponse =>
+  ({ status, statusText: 'Conflict', body: { error: message, code } });
 
 const coves = [{ id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
 const wave = {
@@ -88,14 +95,19 @@ type Case = Readonly<{
   /** The launchpad report's `body`. */
   body: string;
   detail?: DetailMode;
+  /** What `POST /api/today/summary` answers; a 200 by default. */
+  summary?: ApiTransportResponse;
 }>;
 
-function renderToday({ resolve, body, detail = 'seeded' }: Case) {
+function renderToday({ resolve, body, detail = 'seeded', summary }: Case) {
   const requests: ApiRequest[] = [];
   const detailOk = () => ok({ wave: launchpadWave, cards: [reportCard(body)], overlays: [] });
   const transport: ApiTransportPort = {
     send: (request) => {
       requests.push(request);
+      if (request.path === '/api/today/summary') {
+        return Promise.resolve(summary ?? ok({ wave_id: 'lp', card_id: 'conv-1' }));
+      }
       if (request.path === '/api/today/launchpad') return Promise.resolve(resolve);
       if (request.path === '/api/coves') return Promise.resolve(ok(coves));
       if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([wave]));
@@ -256,5 +268,127 @@ describe('INV-TODAYDOC-002 the three document states are three answers', () => {
     // Nothing to draw ⇒ nothing to fetch. It also keeps the states above
     // honest: each is about a document the reader is actually owed.
     expect(requests.map((request) => request.path)).not.toContain('/api/waves/lp');
+  });
+});
+
+/*
+ * #1253 D5 / §6 — the trigger, and the chain that makes pressing it visible.
+ *
+ * PR1 shipped the empty state with no button, on the grounds that a control
+ * which cannot do anything is worse than none. This is the other half.
+ */
+describe('#1253 D5 the write-today’s-progress trigger', () => {
+  const WRITE = 'Write today’s progress';
+  const REWRITE = 'Rewrite today’s progress';
+
+  it('posts to the summary endpoint, and to nothing else', async () => {
+    const { requests } = renderToday({ resolve: resolved(false), body: INITIAL_BODY });
+    await screen.findByText(EMPTY_COPY);
+    await userEvent.click(screen.getByRole('button', { name: WRITE }));
+    await waitFor(() => {
+      expect(requests.filter((request) => request.method !== 'GET').map((request) => request.path))
+        .toEqual(['/api/today/summary']);
+    });
+    /* No prompt and no body. The message is synthesised server-side from an
+       activity projection this frontend has no read for; a body here would be
+       that deleted layer growing back on the client. */
+    expect(requests.find((request) => request.path === '/api/today/summary')?.body).toBeUndefined();
+  });
+
+  it('offers a re-run once the report has content, rather than hiding the control', async () => {
+    /* `report_has_noninitial_content` is about the report's CURRENT text and
+       consults no history, so it cannot mean "the summary already ran" —
+       using it to suppress the button would disable the feature for anyone who
+       edited the document by hand, and re-enable it for anyone who reverted. */
+    renderToday({ resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n' });
+    expect(await screen.findByRole('button', { name: REWRITE })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: WRITE })).toBeNull();
+  });
+
+  it('reports an empty day as a fact about the day, not as a failure', async () => {
+    renderToday({
+      resolve: resolved(false), body: INITIAL_BODY,
+      summary: refuse(409, 'today_summary_no_activity', 'nothing happened today'),
+    });
+    await screen.findByText(EMPTY_COPY);
+    await userEvent.click(screen.getByRole('button', { name: WRITE }));
+    expect(await screen.findByText('Nothing has happened in this workspace today yet.')).toBeTruthy();
+    /* Not an alert: the user asked a question and got a straight answer, and
+       interrupting a screen reader for it would be wrong. The document region
+       also keeps saying what it said — a refusal changed nothing. */
+    expect(screen.queryAllByRole('alert')).toEqual([]);
+    expect(screen.getByText(EMPTY_COPY)).toBeTruthy();
+  });
+
+  it('announces a real failure, and keeps the document it did not change', async () => {
+    renderToday({
+      resolve: resolved(true), body: '# 概要\n\n今天合了两个 PR。\n',
+      summary: refuse(409, 'spec_harness_dormant', 'the harness is dormant'),
+    });
+    await userEvent.click(await screen.findByRole('button', { name: REWRITE }));
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((alert) => alert.textContent?.includes('the harness is dormant'))).toBe(true);
+    /* A 409 that shares its status with the empty-day refusal must not borrow
+       its copy: only the machine-readable `code` separates them. */
+    expect(screen.queryByText('Nothing has happened in this workspace today yet.')).toBeNull();
+    expect(screen.getByText('今天合了两个 PR。')).toBeTruthy();
+  });
+
+  /*
+   * The failure this PR exists to prevent from shipping: press the button, the
+   * agent writes the report, and the page does not move.
+   *
+   * The event is fed through the real bridge, so the assertion covers the whole
+   * chain — the plan emitting `['today-launchpad']` and `['wave', id]`, and the
+   * adapter mapping both. Refetching in the mutation's `onSuccess` would have
+   * hidden a break in that chain behind a lucky refresh, which is why it does
+   * not.
+   */
+  it('redraws the document when the agent’s report edit arrives', async () => {
+    let hasContent = false;
+    const requests: ApiRequest[] = [];
+    const transport: ApiTransportPort = {
+      send: (request) => {
+        requests.push(request);
+        if (request.path === '/api/today/summary') return Promise.resolve(ok({ wave_id: 'lp', card_id: 'conv-1' }));
+        if (request.path === '/api/today/launchpad') return Promise.resolve(resolved(hasContent));
+        if (request.path === '/api/coves') return Promise.resolve(ok(coves));
+        if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([wave]));
+        if (request.path === '/api/waves/lp') {
+          return Promise.resolve(ok({
+            wave: launchpadWave,
+            cards: [reportCard(hasContent ? '# 概要\n\n今天合了两个 PR。\n' : INITIAL_BODY)],
+            overlays: [],
+          }));
+        }
+        return Promise.resolve(ok([]));
+      },
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const router = createAppRouter({ transport, unauthorized, client, cards: bootTestCardRuntime(), onSignOut: () => undefined });
+    router.update({ history: createMemoryHistory({ initialEntries: ['/'] }) });
+    render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
+      <RouterProvider router={router} />
+    </ThemeProvider></QueryClientProvider>);
+
+    await screen.findByText(EMPTY_COPY);
+    await userEvent.click(screen.getByRole('button', { name: WRITE }));
+    await waitFor(() => {
+      expect(requests.map((request) => request.path)).toContain('/api/today/summary');
+    });
+    // The agent has now written the report; the server would answer differently.
+    hasContent = true;
+    // The real plan and the real adapter, driven with the real wire event —
+    // not a hand-picked key list, which would assert the chain by assuming it.
+    const edited = wireEventSchema.parse({
+      ev: 'wave.report_edited',
+      data: {
+        wave_id: 'lp', card_id: 'report-card', author: 'assistant', edit_id: 'edit-1',
+        summary_before: '', summary_after: 'today', body_before: '', body_after: '# 概要',
+      },
+    });
+    applyEventEffects(client, [{ type: 'invalidate', keys: invalidationPlanFor(edited).invalidate }]);
+    expect(await screen.findByText('今天合了两个 PR。')).toBeTruthy();
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
   });
 });
