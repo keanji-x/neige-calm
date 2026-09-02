@@ -632,7 +632,16 @@ pub mod workspace_repoint;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
 pub mod report_backlinks;
-pub(crate) mod templates;
+/// The template roster and its report recipes.
+///
+/// `pub` for the same reason `routes::waves::spec_harness_card_payload` is: an
+/// integration test that transcribes a production constant by hand stops being
+/// a test of that constant. #1300 S2's characterization test **derives** the
+/// report a template must instantiate to from this module, so editing a
+/// template's prose moves both sides together and only an implementation drift
+/// can turn it red. A hand-written copy of the expected task list would be a
+/// change detector instead.
+pub mod templates;
 pub mod wave_fs_view;
 pub mod wave_lifecycle;
 pub mod wave_report;

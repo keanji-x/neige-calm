@@ -1474,4 +1474,146 @@ async fn the_picker_answers_from_the_seeded_report_not_the_constants() {
     // title is enough: both facts come from the same `current_definition`
     // branch, so a collapse to the constants cannot take one and leave the
     // other.
+// ---------------------------------------------------------------------------
+// #1300 S2 — what "create a wave from a template" produces, derived not
+// transcribed.
+//
+// This is the characterization test the seeding removal is measured against.
+// It is written and verified green **against the old seeding path first**, and
+// must stay green after the implementation is replaced. That order is the whole
+// of the equivalence evidence: a test written after the switch can only say the
+// new code agrees with itself.
+// ---------------------------------------------------------------------------
+
+/// The report a template must instantiate to, derived from the recipe.
+///
+/// ## Why derived and not written out
+///
+/// Spelling the expected task payloads into this file would make the test a
+/// **change detector**: rewording one template goal would turn it red with no
+/// defect, and the fix would be to paste the new text — which teaches everyone
+/// that red here means "go update the expectation". Deriving keeps the two
+/// sides moving together for a content edit and apart for an implementation
+/// drift, which is the only difference this test exists to see.
+///
+/// It is still an oracle and not a tautology, because the two sides travel
+/// different roads: this walks the recipe's slices in the test process, while
+/// the value it is compared against came back over HTTP from a wave the server
+/// created.
+///
+/// ## The one normalization, stated once
+///
+/// A template's task blocks are instantiated as `declared_by: "spec"` and
+/// `ready: false` — nothing in a recipe was decided for *this* wave. Everything
+/// else about a block is carried verbatim.
+///
+/// ## Why every slice, not just the task fences
+///
+/// Concatenating only the normalized task fences would silently drop the
+/// maintenance-contract prefix (#1185 §1.5 B), the `# Plan` intro, and the
+/// newline-only prose slices that `report_from_tasks` leaves between fences —
+/// and an implementation that lost all of them would still pass. Non-task
+/// slices are therefore carried through byte for byte.
+fn instantiated_recipe(key: &str) -> (String, String, Vec<Value>) {
+    use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
+
+    let recipe = calm_server::templates::template_report(key)
+        .unwrap_or_else(|| panic!("`{key}` is not a known template"));
+    let mut body = String::new();
+    let mut tasks = Vec::new();
+    for slice in split_body(&recipe.body) {
+        match parse_fence(&slice.raw) {
+            Some(fence) if fence.kind == KIND_TASK => {
+                let mut payload = fence.payload;
+                payload["declared_by"] = json!("spec");
+                payload["ready"] = json!(false);
+                body.push_str(&render_fence(KIND_TASK, &payload));
+                tasks.push(payload);
+            }
+            _ => body.push_str(&slice.raw),
+        }
+    }
+    assert!(
+        !tasks.is_empty(),
+        "`{key}`: the recipe parsed to no task fences, so this test would assert nothing"
+    );
+    (recipe.summary, body, tasks)
+}
+
+/// Creating a wave from each template produces exactly that template's recipe,
+/// normalized once.
+///
+/// ## What is deliberately NOT asserted, and why
+///
+/// **`blocks[].id` and `blocks[].rev`.** Both are per-wave bookkeeping, and
+/// neither is a cross-implementation contract. `rev` in particular differs by
+/// construction between the two implementations this test spans: the seeding
+/// path writes the recipe *over* the default report skeleton, so the blocks the
+/// aligner matches come out at `rev: 2`, while a wave initialized straight from
+/// the recipe starts every block at `rev: 1`. A fresh wave whose blocks all
+/// start at 1 is self-consistent, and the readers of `rev` — the block-level
+/// CAS anchors used by the MCP and REST block writers — are all within one
+/// wave. Asserting equality here would make this test red at the moment of the
+/// switch for a difference nobody can observe, and the repair would be to
+/// weaken it, with the reason nowhere on record.
+///
+/// **The CRDT bytes**, for the same reason one layer down.
+///
+/// ## What this cannot see
+///
+/// The fork implementation also rewrites `neige://wave/...` links, normalizes
+/// tombstones, and strips `released_by_user`. None of the three built-in
+/// recipes contains any of that vocabulary, so those branches take no input
+/// here and this test says nothing about them. That is a fact about today's
+/// three recipes, not about templates: a recipe that grew a tombstone would
+/// need its own case.
+#[tokio::test]
+async fn creating_from_a_template_instantiates_its_recipe() {
+    let boot = boot().await;
+    for template in &calm_server::templates::TEMPLATES {
+        let key = template.key;
+        let (status, body) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(&boot.cove_id, key, json!({ "template_id": key })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{key}: body={body}");
+        let wave_id = body["id"].as_str().expect("wave id");
+
+        let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+        assert_eq!(status, StatusCode::OK, "{key}: detail={detail}");
+        let payload = report_card_payload(&detail);
+
+        let (summary, expected_body, expected_tasks) = instantiated_recipe(key);
+        assert_eq!(payload.summary, summary, "{key}: report summary");
+
+        // Ordered task payloads FIRST, then the flat body. The body compare
+        // subsumes this one — every difference a fence can carry shows up in
+        // it — but it reports as a single multi-kilobyte string diff, and
+        // these recipes are kilobytes of prose contract. Asserting the parsed
+        // payloads first means the common failure (a field of one task) names
+        // that task and that field. Measured, not assumed: dropping the
+        // `declared_by` normalization printed the whole document twice until
+        // this order was fixed.
+        let actual_tasks: Vec<Value> = task_blocks(&payload).into_iter().cloned().collect();
+        assert_eq!(actual_tasks, expected_tasks, "{key}: task block payloads");
+
+        // The body still has to be compared: the payload list above says
+        // nothing about the contract prefix, the intro, the order the fences
+        // appear in, or the whitespace between them.
+        assert_eq!(payload.body, expected_body, "{key}: report body");
+
+        // Whole-payload equality above already covers these; they are spelled
+        // out because they are the three the removal could plausibly get wrong,
+        // and a named assertion says which one broke.
+        for task in &actual_tasks {
+            assert_eq!(task["declared_by"], "spec", "{key}: {task}");
+            assert_eq!(task["ready"], false, "{key}: {task}");
+            assert!(
+                task.get("released_by_user").is_none(),
+                "{key}: an instantiated task must carry no user release; {task}"
+            );
+        }
+    }
 }
