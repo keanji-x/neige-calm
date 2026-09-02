@@ -237,6 +237,59 @@ describe('Template editor', () => {
     expect(screen.getByLabelText<HTMLInputElement>('inspect').value).toBe('Read the requested change.');
   });
 
+  /** Round 3: the post-save refetch used to wipe typing done in its window. */
+  it('does not overwrite typing when the post-save refetch lands', async () => {
+    const view = render(<TemplateEditorPage {...editorProps({ saving: true })} />);
+    view.rerender(<TemplateEditorPage {...editorProps({ saving: false, savedAt: 1 })} />);
+    await userEvent.clear(screen.getByLabelText('implement'));
+    await userEvent.type(screen.getByLabelText('implement'), 'Typed after the save.');
+    // The invalidation refetch resolves with the server's new definition.
+    const server = { ...SMALL_CHANGE, tasks: [{ key: 'inspect', goal: 'Saved goal.' }, SMALL_CHANGE.tasks[1]] };
+    view.rerender(<TemplateEditorPage {...editorProps({ saving: false, savedAt: 1, template: server })} />);
+    expect(screen.getByLabelText<HTMLInputElement>('implement').value).toBe('Typed after the save.');
+  });
+
+  /** Round 3: pending appends were re-sent after they had been persisted. */
+  it('clears pending appends once a save lands', async () => {
+    const view = render(<TemplateEditorPage {...editorProps()} />);
+    await userEvent.type(screen.getByLabelText('Key'), 'hand-off');
+    await userEvent.type(screen.getByLabelText('Goal'), 'Summarize.');
+    await userEvent.click(screen.getByRole('button', { name: 'Add task' }));
+    expect(screen.getByLabelText('hand-off (new)')).toBeTruthy();
+
+    view.rerender(<TemplateEditorPage {...editorProps({ savedAt: 7 })} />);
+    // Still pending here would mean the next Save re-sends a persisted key and
+    // the server 400s the whole request.
+    expect(screen.queryByLabelText('hand-off (new)')).toBeNull();
+  });
+
+  /**
+   * Round 3: the diff was index-paired.
+   *
+   * The misalignment needs the two lists to disagree on order, which happens
+   * exactly when a re-seed is skipped: the user has typed (so their draft holds
+   * the old order) and the list then refetches with a task prepended by another
+   * client. Index pairing then compares `implement`'s new goal against
+   * `inspect`'s old one and reports an edit to the wrong task.
+   */
+  it('pairs the diff by key, so a reordered refetch cannot misattribute a goal', async () => {
+    const onSave = vi.fn();
+    const view = render(<TemplateEditorPage {...editorProps({ onSave })} />);
+    await userEvent.clear(screen.getByLabelText('implement'));
+    await userEvent.type(screen.getByLabelText('implement'), 'Only this one.');
+
+    // Another client prepended a task; the editor keeps the user's draft.
+    const shifted = {
+      ...SMALL_CHANGE,
+      tasks: [{ key: 'added-first', goal: 'New.' }, ...SMALL_CHANGE.tasks],
+    };
+    view.rerender(<TemplateEditorPage {...editorProps({ onSave, template: shifted })} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    expect((onSave.mock.calls[0][0] as TemplateSave).edits)
+      .toEqual([{ key: 'implement', goal: 'Only this one.' }]);
+  });
+
   it('keeps the save button focusable while saving', () => {
     render(<TemplateEditorPage {...editorProps({ saving: true })} />);
     const save = screen.getByRole('button', { name: /Saving…/ });

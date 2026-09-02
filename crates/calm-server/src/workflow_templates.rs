@@ -71,23 +71,6 @@ pub fn workflow_template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
     }
 }
 
-/// The prose intro a template's report carries above its task fences.
-///
-/// #1230 — the settings editor rewrites a template report as
-/// `(intro + edited tasks)`. The intro is *not* editable and stays a constant:
-/// it is the activation contract the spec agent reads ("replace these blocks,
-/// author a real gate, set `ready: true`"), not template content anybody
-/// chose. Making it editable would let the editor delete the one paragraph
-/// that tells the agent these pre-set blocks are not yet a plan.
-pub fn workflow_template_intro(key: &str) -> Option<&'static str> {
-    match key {
-        ISSUE_DEVELOPMENT => Some(ISSUE_DEVELOPMENT_INTRO),
-        SMALL_CHANGE => Some(SMALL_CHANGE_INTRO),
-        INVESTIGATION => Some(INVESTIGATION_INTRO),
-        _ => None,
-    }
-}
-
 /// Read the task blocks back out of a rendered template report body, **as the
 /// payloads they are**.
 ///
@@ -147,44 +130,6 @@ pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
     let key = payload.get("key")?.as_str()?.to_string();
     let goal = payload.get("goal")?.as_str()?.to_string();
     Some((key, goal))
-}
-
-/// Render a template report from task **payloads** that are already in
-/// task-block vocabulary.
-///
-/// The counterpart to [`workflow_template_task_payloads_from_body`]. Restamps
-/// `ready: false` / `declared_by: "user"` exactly as [`report_from_tasks`]
-/// does, because those two are this module's to own on a template — but it
-/// touches nothing else, so a payload that came out of a body goes back in
-/// byte-identical.
-pub fn workflow_template_report_from_payloads(
-    key: &str,
-    summary: &str,
-    payloads: &[Value],
-) -> Option<WaveReportPayload> {
-    let intro = workflow_template_intro(key)?;
-    let mut body = report_contract_prefix_for_workflow_template().to_string();
-    body.push_str(intro.trim_end());
-    body.push_str("\n\n");
-    for payload in payloads {
-        let mut payload = payload.clone();
-        // A tombstone keeps its own shape: `ready` is not part of the tombstone
-        // schema (`report_blocks/kinds.rs`), and `declared_by` is immutable, so
-        // restamping either would render a block the contract rejects.
-        if payload
-            .get("tombstone")
-            .is_some_and(|value| !value.is_null())
-        {
-            body.push_str(&render_fence(KIND_TASK, &payload));
-            body.push('\n');
-            continue;
-        }
-        payload["ready"] = json!(false);
-        payload["declared_by"] = json!("user");
-        body.push_str(&render_fence(KIND_TASK, &payload));
-        body.push('\n');
-    }
-    Some(WaveReportPayload::new(summary, body))
 }
 
 /// The task payloads a template's built-in constants render to, for the
@@ -498,23 +443,31 @@ mod tests {
     use calm_types::report_blocks::{KIND_TASK, parse_fence, split_body};
     use std::collections::BTreeSet;
 
-    /// #1230 — the read/render pair must be an **identity** on task payloads,
-    /// not merely agree on the fields one struct happens to model. The first
-    /// cut deserialized into `PlanTaskInput` (`deny_unknown_fields`) and
-    /// silently dropped any block carrying `refs` / `released_by_user` /
-    /// `tombstone`; asserting identity is what makes that class impossible
-    /// rather than merely fixed for the fields we thought of.
+    /// #1230 — reading a task block out of a body and rendering it back must be
+    /// an **identity on the payload**, not merely agree on the fields some
+    /// struct happens to model. The first cut deserialized into
+    /// `PlanTaskInput` (`deny_unknown_fields`) and silently dropped any block
+    /// carrying `refs` / `released_by_user` / `tombstone`; asserting identity is
+    /// what makes that class impossible rather than fixed for the fields we
+    /// happened to think of.
+    ///
+    /// The whole-document version of this property — that a *save* preserves
+    /// every block and its id — is an integration test
+    /// (`a_save_preserves_blocks_it_does_not_edit`), because it is about the
+    /// report's blocks and not about this module's constants.
     #[test]
-    fn re_rendering_parsed_payloads_reproduces_the_seeded_report_byte_for_byte() {
+    fn parsing_a_task_fence_and_rendering_it_back_is_an_identity() {
         for key in WORKFLOW_TEMPLATE_KEYS {
-            let seeded = workflow_template_report(key).expect("known key");
-            let payloads = workflow_template_task_payloads_from_body(&seeded.body);
+            let body = workflow_template_report(key).expect("known key").body;
+            let payloads = workflow_template_task_payloads_from_body(&body);
             assert!(!payloads.is_empty(), "{key}: no task payloads parsed");
-            let rerendered =
-                workflow_template_report_from_payloads(key, &seeded.summary, &payloads)
-                    .expect("known key");
-            assert_eq!(rerendered.body, seeded.body, "{key}: body drifted");
-            assert_eq!(rerendered.summary, seeded.summary, "{key}: summary drifted");
+            for payload in &payloads {
+                let fence = render_fence(KIND_TASK, payload);
+                assert!(
+                    body.contains(&fence),
+                    "{key}: re-rendering a parsed payload did not reproduce its fence:\n{fence}"
+                );
+            }
         }
     }
 

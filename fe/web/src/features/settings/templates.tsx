@@ -157,18 +157,42 @@ export function TemplateEditorPage({
 
   const [seed, setSeed] = useState<string | null>(null);
   const [draft, setDraft] = useState<TemplateDraft | null>(null);
+  /*
+   * Has the user changed anything since the draft last matched the server?
+   *
+   * Explicit rather than derived. Deriving it (draft !== seed) conflated two
+   * states that need opposite handling: "the user typed" — do not re-seed over
+   * them — and "we just saved, so the draft legitimately differs from the seed
+   * we started from" — re-seed, or the post-save server value never lands.
+   * Both wedges in rounds 1 and 3 came from trying to infer this.
+   */
+  const [touched, setTouched] = useState(false);
+  const [syncedSaveAt, setSyncedSaveAt] = useState<number | null>(null);
+
+  // A landed save makes the draft the server's state by definition: drop the
+  // pending appends (they are persisted now — re-sending one 400s the whole
+  // request) and stop treating the draft as unsaved work.
+  if (savedAt !== null && savedAt !== syncedSaveAt) {
+    setSyncedSaveAt(savedAt);
+    setTouched(false);
+    if (draft !== null && draft.appends.length > 0) setDraft({ ...draft, appends: [] });
+  }
+
   if (incoming !== null && incomingKey !== seed) {
-    // `seed` advances only when the draft actually takes the new value, so a
-    // definition that lands mid-save is applied on the next render rather than
-    // being recorded as seen and lost. Advancing it unconditionally wedged the
-    // editor permanently (review round 1).
-    if (seed === null || !saving) {
+    // `seed` advances only together with `draft`, never on its own: advancing
+    // it alone recorded a definition as seen without applying it, after which
+    // no later re-seed could fire (round 1). And a re-seed never runs over
+    // unsaved typing — the post-save refetch makes that the normal path, not
+    // an edge case (round 3).
+    if (seed === null || (!saving && !touched)) {
       setSeed(incomingKey);
       setDraft(incoming);
     }
   }
 
-  const dirty = draft !== null && JSON.stringify(draft) !== incomingKey;
+  const edit = (next: TemplateDraft) => { setTouched(true); setDraft(next); };
+
+  const dirty = draft !== null && JSON.stringify(draft) !== seed;
   // The server refuses a blank title and a blank goal unconditionally, so
   // offering Save in those states would be an affordance whose only outcome is
   // a 400 — the same rule `NewTaskRow` applies to a malformed key.
@@ -201,7 +225,7 @@ export function TemplateEditorPage({
                 status={blankTitle
                   ? { type: 'error', message: 'A template needs a title — the New wave dialog lists templates by it.' }
                   : undefined}
-                onChange={(value: string) => setDraft({ ...draft, title: value })}
+                onChange={(value: string) => edit({ ...draft, title: value })}
               />
 
               <Heading level={2}>Tasks</Heading>
@@ -218,7 +242,7 @@ export function TemplateEditorPage({
                   value={task.goal}
                   width="100%"
                   status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
-                  onChange={(value: string) => setDraft({
+                  onChange={(value: string) => edit({
                     ...draft,
                     tasks: draft.tasks.map((entry, position) =>
                       position === index ? { ...entry, goal: value } : entry),
@@ -233,7 +257,7 @@ export function TemplateEditorPage({
                   value={task.goal}
                   width="100%"
                   status={task.goal.trim() === '' ? { type: 'error', message: 'A task needs a goal.' } : undefined}
-                  onChange={(value: string) => setDraft({
+                  onChange={(value: string) => edit({
                     ...draft,
                     appends: draft.appends.map((entry, position) =>
                       position === index ? { ...entry, goal: value } : entry),
@@ -243,7 +267,7 @@ export function TemplateEditorPage({
 
               <NewTaskRow
                 existingKeys={[...draft.tasks, ...draft.appends].map((task) => task.key)}
-                onAdd={(key, goal) => setDraft({ ...draft, appends: [...draft.appends, { key, goal }] })}
+                onAdd={(key, goal) => edit({ ...draft, appends: [...draft.appends, { key, goal }] })}
               />
 
               {saveError !== null && <Banner status="error" title={saveError} role="alert" />}
@@ -264,8 +288,12 @@ export function TemplateEditorPage({
                     // Only the goals that actually changed. Sending every task
                     // would make a save re-assert values nobody edited, which
                     // is the same defect INV-SETTINGS-001 removes for settings.
-                    const edits = draft.tasks.filter((task, index) =>
-                      task.goal !== incoming.tasks[index]?.goal);
+                    // Paired by key, not by index: an append landing from
+                    // another client shifts every later index, and an
+                    // index-paired diff would then attribute one task's goal to
+                    // its neighbour.
+                    const was = new Map(incoming.tasks.map((task) => [task.key, task.goal]));
+                    const edits = draft.tasks.filter((task) => was.get(task.key) !== task.goal);
                     void onSave({ id: template.id, title: draft.title, edits, appends: draft.appends });
                   }}
                 />
@@ -277,7 +305,7 @@ export function TemplateEditorPage({
                   // `disabled` is right here — unlike Save, focus is not on it
                   // at the moment a save starts.
                   isDisabled={!dirty || saving}
-                  onClick={() => { if (!saving && incoming !== null) setDraft(incoming); }}
+                  onClick={() => { if (!saving && incoming !== null) { setTouched(false); setSeed(incomingKey); setDraft(incoming); } }}
                 />
                 {savedAt !== null && !dirty && (
                   <span className={styles.saved} role="status">Saved.</span>

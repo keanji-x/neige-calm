@@ -121,8 +121,7 @@ use crate::state::{AppState, RouteState};
 use crate::wave_report::{ReportDocOp, persist_report_with_shadow, resolve_report_for_wave};
 use crate::workflow_templates::{
     AUTHOR_REAL_GATE, WORKFLOW_TEMPLATES, is_workflow_template_key, task_payload_key_and_goal,
-    workflow_template_report_from_payloads, workflow_template_task_payloads,
-    workflow_template_task_payloads_from_body,
+    workflow_template_task_payloads, workflow_template_task_payloads_from_body,
 };
 use axum::{
     Json, Router,
@@ -130,9 +129,12 @@ use axum::{
     routing::{get, put},
 };
 use calm_types::report_blocks::tasks::key_is_valid;
+use calm_types::report_blocks::{
+    KIND_TASK, flat_text, marker_line, render_fence, validate_payload,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use utoipa::ToSchema;
 
 pub fn router() -> Router<AppState> {
@@ -358,37 +360,101 @@ pub(crate) async fn update_wave_template(
             ))
         })?;
     let (wave, report_card, current) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;
-    let mut payloads = workflow_template_task_payloads_from_body(&current.body);
+    // The *blocks*, not the flat body. Two things follow from that and both are
+    // load-bearing:
+    //
+    //  * every block is preserved, whatever its kind. Rebuilding from the task
+    //    fences alone silently dropped prose the user had written and any
+    //    non-task block the report happened to carry — `WriteMarkdown` is
+    //    documented as the op that *may* delete non-prose blocks, so nothing
+    //    would have refused it.
+    //  * each block keeps its **id**, emitted as a `<!-- neige:b_xxxx -->`
+    //    marker. Without markers `align.rs` re-derives identity from text
+    //    similarity — a heuristic — even though this handler knows exactly
+    //    which stored block each payload came from. Handing it the answer
+    //    removes a whole class of "the aligner guessed wrong" failures
+    //    (`key is immutable`, `must use the block-level DELETE endpoint`)
+    //    instead of hoping the similarity stays above threshold.
+    let blocks = current.blocks.clone().ok_or_else(|| {
+        CalmError::Internal(format!(
+            "wave template: seeded template `{id}` has no block projection"
+        ))
+    })?;
 
-    // Every existing key, including tombstoned ones: an append may not collide
-    // with a retired key either, or the block-level history for that key would
-    // have two authors.
-    let existing: BTreeSet<String> = payloads
-        .iter()
-        .filter_map(|payload| payload.get("key").and_then(Value::as_str))
-        .map(str::to_string)
-        .collect();
+    // Every key a stored *live* task block declares, and separately the retired
+    // ones. An append may reuse neither.
+    let mut live: BTreeSet<&str> = BTreeSet::new();
+    let mut retired: BTreeSet<&str> = BTreeSet::new();
+    for block in &blocks {
+        if block.kind != KIND_TASK {
+            continue;
+        }
+        let Some(key) = block.payload.get("key").and_then(Value::as_str) else {
+            continue;
+        };
+        if block
+            .payload
+            .get("tombstone")
+            .is_some_and(|value| !value.is_null())
+        {
+            retired.insert(key);
+        } else {
+            live.insert(key);
+        }
+    }
 
     for edit in &update.edits {
-        if !existing.contains(&edit.key) {
+        if retired.contains(edit.key.as_str()) {
+            // A 200 here would report success for a write that did not happen:
+            // the projection drops tombstones, so no client could tell.
+            return Err(CalmError::BadRequest(format!(
+                "wave template: task `{}` was retired and can no longer be edited",
+                edit.key
+            )));
+        }
+        if !live.contains(edit.key.as_str()) {
             return Err(CalmError::BadRequest(format!(
                 "wave template: no task named `{}` in this template",
                 edit.key
             )));
         }
-        for payload in &mut payloads {
-            // Tombstones are skipped rather than 400'd: they are not editable,
-            // they are not shown, and they must come through untouched.
-            if payload
-                .get("tombstone")
-                .is_some_and(|value| !value.is_null())
-            {
-                continue;
-            }
-            if payload.get("key").and_then(Value::as_str) == Some(edit.key.as_str()) {
-                payload["goal"] = Value::String(edit.goal.clone());
-            }
+    }
+    let mut edited = BTreeSet::new();
+    for edit in &update.edits {
+        if !edited.insert(edit.key.as_str()) {
+            return Err(CalmError::BadRequest(format!(
+                "wave template: task `{}` is edited twice in one save",
+                edit.key
+            )));
         }
+    }
+    let goals: BTreeMap<&str, &str> = update
+        .edits
+        .iter()
+        .map(|edit| (edit.key.as_str(), edit.goal.as_str()))
+        .collect();
+
+    let mut body = String::new();
+    for block in &blocks {
+        body.push_str(&marker_line(&block.id));
+        if block.kind == KIND_TASK
+            && block
+                .payload
+                .get("tombstone")
+                .is_none_or(serde_json::Value::is_null)
+            && let Some(key) = block.payload.get("key").and_then(Value::as_str)
+            && let Some(goal) = goals.get(key)
+        {
+            let mut payload = block.payload.clone();
+            payload["goal"] = Value::String((*goal).to_string());
+            body.push_str(&render_fence(KIND_TASK, &payload));
+        } else {
+            body.push_str(&flat_text(block));
+        }
+        if !body.ends_with('\n') {
+            body.push('\n');
+        }
+        body.push('\n');
     }
 
     let mut appended = BTreeSet::new();
@@ -399,16 +465,20 @@ pub(crate) async fn update_wave_template(
                 append.key
             )));
         }
-        if existing.contains(&append.key) || !appended.insert(append.key.clone()) {
+        if live.contains(append.key.as_str())
+            || retired.contains(append.key.as_str())
+            || !appended.insert(append.key.clone())
+        {
             return Err(CalmError::BadRequest(format!(
                 "wave template: task key `{}` is already used in this template",
                 append.key
             )));
         }
-        // Constructed here, not accepted from the client. `no_gate_reason` is
-        // the same placeholder the kernel's own template constants carry, so an
-        // appended task is not read as scheduled work missing a gate.
-        payloads.push(json!({
+        // Constructed here, never accepted from the client. `no_gate_reason` is
+        // the placeholder the kernel's own template constants carry, so an
+        // appended task is not read as scheduled work missing a gate. No
+        // marker: a new block must get a new id.
+        let payload = json!({
             "key": append.key,
             "kind": "codex",
             "goal": append.goal,
@@ -416,12 +486,17 @@ pub(crate) async fn update_wave_template(
             "no_gate_reason": AUTHOR_REAL_GATE,
             "ready": false,
             "declared_by": "user",
-        }));
+        });
+        validate_payload(KIND_TASK, &payload).map_err(|error| {
+            CalmError::BadRequest(format!(
+                "wave template: appended task `{}` is invalid: {error}",
+                append.key
+            ))
+        })?;
+        body.push_str(&render_fence(KIND_TASK, &payload));
+        body.push('\n');
     }
 
-    let next = workflow_template_report_from_payloads(&id, &title, &payloads).ok_or_else(|| {
-        CalmError::Internal(format!("wave template: no intro registered for `{id}`"))
-    })?;
     let if_doc_rev = current.doc_rev;
     // `WriteMarkdown`, not `Replace`. A template report is mostly `task`
     // fences, and the prose `Replace` path refuses by contract to modify or
@@ -438,8 +513,8 @@ pub(crate) async fn update_wave_template(
         report_card,
         current,
         ReportDocOp::WriteMarkdown {
-            summary: Some(next.summary),
-            body: next.body,
+            summary: Some(title.clone()),
+            body,
             if_doc_rev,
         },
         None,

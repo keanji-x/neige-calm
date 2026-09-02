@@ -1082,3 +1082,202 @@ async fn tombstone_task(boot: &Boot, wave_id: &str, key: &str) {
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     assert_eq!(status, StatusCode::OK, "delete block: {body}");
 }
+
+/// Round-3 finding, reproduced before any fix: the save rewrites the whole body
+/// with `WriteMarkdown` and emits **no `<!-- neige:b_xxxx -->` markers**, so
+/// block identity is decided by `align.rs`'s similarity heuristic even though
+/// the handler knows exactly which stored block each payload came from.
+///
+/// Editing two goals in one save — which the editor's single Save button makes
+/// the ordinary case — with one of them replaced by much longer text drops the
+/// similarity below the reuse threshold, the old block goes unassigned, and the
+/// guard reports it as a deletion.
+#[tokio::test]
+async fn editing_two_goals_at_once_with_a_long_replacement_is_savable() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed: body={body}");
+
+    // Several shapes, each an ordinary thing a person does in this editor.
+    for (case, edits) in [
+        (
+            "two adjacent goals, one replaced by much longer text",
+            json!([
+                { "key": "inspect", "goal": "x".repeat(2000) },
+                { "key": "implement", "goal": "Implement it and commit." },
+            ]),
+        ),
+        (
+            "all three goals replaced with unrelated short text",
+            json!([
+                { "key": "inspect", "goal": "a" },
+                { "key": "implement", "goal": "b" },
+                { "key": "verify", "goal": "c" },
+            ]),
+        ),
+        (
+            "two adjacent goals swapped in content",
+            json!([
+                { "key": "inspect", "goal": "Run the repository's standard tests and record the result." },
+                { "key": "implement", "goal": "Read the requested change and the current code that it touches." },
+            ]),
+        ),
+    ] {
+        let (status, response) = put(
+            boot.app.clone(),
+            &uri,
+            json!({ "title": "Small change", "edits": edits }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{case}: body={response}");
+    }
+}
+
+/// Round-3 finding: rebuilding the body from the task fences alone dropped
+/// every other block. The rebuild now walks the report's **blocks** and
+/// re-emits each with its `<!-- neige:b_xxxx -->` marker, so nothing is lost
+/// and the aligner is handed identity rather than made to guess it.
+#[tokio::test]
+async fn a_save_preserves_blocks_it_does_not_edit() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    // Seed through wave *creation*, not through `PUT`. Seeding with a save
+    // would run the very code under test before `before` is captured, and then
+    // `before == after` holds no matter what the save does — the first version
+    // of this test did exactly that and both mutations passed it.
+    let (status, created) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "seed-for-preserve",
+            json!({ "workflow_id": SMALL_CHANGE }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "seed: body={created}");
+
+    let before = template_blocks(&boot, SMALL_CHANGE).await;
+    let kinds_before: Vec<String> = before
+        .iter()
+        .map(|b| b["kind"].as_str().unwrap().to_string())
+        .collect();
+    let ids_before: Vec<String> = before
+        .iter()
+        .map(|b| b["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        kinds_before.iter().any(|kind| kind != "task"),
+        "fixture must carry a non-task block or this proves nothing: {kinds_before:?}"
+    );
+
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Look." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let after = template_blocks(&boot, SMALL_CHANGE).await;
+    assert_eq!(
+        after
+            .iter()
+            .map(|b| b["kind"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        kinds_before,
+        "a save dropped or added a block"
+    );
+    // Ids preserved is the marker's whole job: without it the aligner re-derives
+    // identity from text similarity and can mint new ids for edited blocks.
+    assert_eq!(
+        after
+            .iter()
+            .map(|b| b["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        ids_before,
+        "block ids changed across a save — the markers are not doing their job"
+    );
+}
+
+/// Editing a retired task used to return 200 and do nothing: the projection
+/// drops tombstones, so no client could tell success from silent no-op.
+#[tokio::test]
+async fn editing_a_retired_task_is_refused_rather_than_silently_dropped() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed: body={body}");
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(key, _)| key == SMALL_CHANGE)
+        .map(|(_, id)| id)
+        .expect("seeded");
+    tombstone_task(&boot, &wave_id, "verify").await;
+
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "verify", "goal": "back" }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={response}");
+
+    // Positive control: a live key in the same shape is accepted, so the
+    // refusal is about retirement and not about edits in general.
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Look." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={response}");
+}
+
+/// The same key edited twice in one request is a client bug, not a last-wins.
+#[tokio::test]
+async fn the_same_key_edited_twice_in_one_save_is_refused() {
+    let boot = boot().await;
+    let (status, response) = put(
+        boot.app.clone(),
+        &format!("/api/wave-templates/{SMALL_CHANGE}"),
+        json!({ "title": "Small change", "edits": [
+            { "key": "inspect", "goal": "a" }, { "key": "inspect", "goal": "b" },
+        ] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={response}");
+}
+
+/// Read the template wave's blocks with ids and kinds.
+async fn template_blocks(boot: &Boot, key: &str) -> Vec<Value> {
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(template_key, _)| template_key == key)
+        .map(|(_, wave_id)| wave_id)
+        .unwrap_or_else(|| panic!("template `{key}` is not seeded"));
+    let (_, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let card = detail["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["kind"] == "wave-report")
+        .expect("wave-report card");
+    card["payload"]["blocks"]
+        .as_array()
+        .expect("blocks")
+        .clone()
+}

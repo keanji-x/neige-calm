@@ -487,8 +487,12 @@ export function useWaveTemplates(transport: ApiTransportPort, unauthorized: Unau
     // #1230 — the Settings editor reads this list too, and there `[]` must not
     // be readable as "loaded and empty": rendering an empty form for a template
     // whose read has not landed is INV-SETTINGS-002's defect in another place.
-    // The dialog keeps using `templates` and ignores this.
-    loaded: !query.isPending,
+    //
+    // A **failed** read is not loaded either. The first cut wrote
+    // `!query.isPending`, which is true once a read has errored — so a dead
+    // server produced `loaded: true` with `templates: []`, and the editor said
+    // "No template named small-change" instead of reporting the failure.
+    loaded: !query.isPending && !query.isError,
     refetch: () => { void query.refetch(); },
   };
 }
