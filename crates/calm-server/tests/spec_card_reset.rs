@@ -2108,17 +2108,17 @@ async fn reset_spec_card_tolerates_corrupt_dormant_snapshot() {
             .expect("new runtime snapshot"),
     );
     // Fresh session: nothing inherited from the corrupt row — watermark is 0
-    // and the queue holds at most the freshly seeded wave goal.
+    // and the queue is empty. #1211 S1 removed the title→goal seeding, so this
+    // asserts `is_empty()` rather than `.all(is WaveGoal)`: the latter is
+    // vacuously true on an empty queue and would pass no matter what reset put
+    // there.
     assert_eq!(
         new_snapshot.push_watermark, 0,
         "corrupt inherited snapshot must be discarded, not carried over"
     );
     assert!(
-        new_snapshot
-            .pending_queue
-            .iter()
-            .all(|obs| matches!(obs, Observation::WaveGoal { .. })),
-        "fresh queue must only contain the seeded wave goal: {:?}",
+        new_snapshot.pending_queue.is_empty(),
+        "fresh queue must be empty — reset seeds no observation: {:?}",
         new_snapshot.pending_queue
     );
     assert!(boot.state.harness.get(&active.id).is_some());
@@ -2508,4 +2508,236 @@ async fn reset_spec_card_failure_keeps_old_runtime_when_shared_daemon_down() {
         .expect("old runtime remains active");
     assert_eq!(active.id, old_runtime_id);
     assert_eq!(active.thread_id.as_deref(), Some("thread-old"));
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1211 S1 — the wave title is no longer seeded as the spec agent's goal
+// ---------------------------------------------------------------------------
+//
+// Before #1211 the single new-wave input box was both the wave's title and the
+// statement of what the wave should do, and three places turned it back into an
+// intent: `routes::waves::start_spec_harness` (the `spec-harness-start`
+// payload's `goal`), the spec card's `payload.prompt` at create, and
+// `/api/cards/{id}/spec/reset` for the `Spec` profile. #1211 moves the intent
+// out of the title — a wave created without one starts unnamed and the spec
+// agent names it once the conversation has established what the work is — so
+// all three must stop seeding.
+//
+// These tests assert on the persisted `spec-harness-start` payload rather than
+// only on the live queue: the payload row is what the route decided, and it
+// cannot be drained out from under the assertion by a harness that consumed the
+// observation before we looked.
+
+/// Every `spec-harness-start` operation payload recorded for `card_id`,
+/// oldest first. `payload_json` is the exact `SpecHarnessStartOperationPayload`
+/// the route submitted.
+async fn spec_harness_start_payloads(repo: &SqlxRepo, card_id: &str) -> Vec<Value> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT payload_json FROM operations WHERE kind = 'spec-harness-start' ORDER BY rowid",
+    )
+    .fetch_all(repo.pool())
+    .await
+    .unwrap();
+    rows.into_iter()
+        .filter_map(|row| serde_json::from_str::<Value>(&row).ok())
+        .filter(|payload| {
+            payload
+                .get("request")
+                .unwrap_or(payload)
+                .get("spec_card_id")
+                .and_then(Value::as_str)
+                == Some(card_id)
+        })
+        .collect()
+}
+
+fn assert_no_seeded_goal(payloads: &[Value], what: &str) {
+    assert!(
+        !payloads.is_empty(),
+        "{what}: expected at least one spec-harness-start payload to inspect"
+    );
+    for payload in payloads {
+        let request = payload.get("request").unwrap_or(payload);
+        assert_eq!(
+            request.get("goal"),
+            Some(&Value::Null),
+            "{what}: spec-harness-start must carry no goal; payload = {payload}"
+        );
+    }
+}
+
+async fn spec_card_of_wave(boot: &Boot, wave_id: &str) -> Card {
+    let cards = boot.repo.cards_by_wave(wave_id).await.unwrap();
+    cards
+        .into_iter()
+        .find(|card| card.kind == "codex" && card.payload["spec_harness"] == json!(true))
+        .expect("spec harness card")
+}
+
+/// Assert the freshly started harness for `card_id` holds no observation at
+/// all — neither in memory nor in the snapshot persisted on its session row.
+async fn assert_harness_queue_empty(boot: &Boot, card_id: &str, what: &str) {
+    let runtime = boot
+        .repo
+        .session_projection_active_for_card(&card_id.to_string())
+        .await
+        .unwrap()
+        .expect("active spec harness runtime");
+    let snapshot = HarnessSnapshot::from_value_strict(
+        runtime
+            .handle_state_json
+            .clone()
+            .expect("runtime snapshot json"),
+    );
+    assert!(
+        snapshot.pending_queue.is_empty(),
+        "{what}: persisted start snapshot must hold no observation; got {:?}",
+        snapshot.pending_queue
+    );
+    let handle = boot
+        .state
+        .harness
+        .get(&runtime.id)
+        .expect("live harness handle");
+    let queued = handle.pending_queue_for_test().await;
+    assert!(
+        queued.is_empty(),
+        "{what}: live harness queue must hold no observation; got {queued:?}"
+    );
+}
+
+/// #1211 S1 (1) — a create request may omit `title` entirely, and the harness
+/// that comes up behind it starts with an empty observation queue.
+#[tokio::test]
+async fn wave_create_without_title_seeds_no_wave_goal() {
+    let boot = boot_shared().await;
+    let cove = boot
+        .repo
+        .cove_create(NewCove {
+            name: "no-goal-untitled".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let (status, body) = post_json(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": cove.id,
+            "cwd": attached_repo_fixture("issue-1211-untitled"),
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let wave_id = body["id"].as_str().expect("wave id").to_string();
+    let spec_card = spec_card_of_wave(&boot, &wave_id).await;
+    assert_no_seeded_goal(
+        &spec_harness_start_payloads(boot.repo.as_ref(), spec_card.id.as_str()).await,
+        "create without title",
+    );
+    assert_harness_queue_empty(&boot, spec_card.id.as_str(), "create without title").await;
+}
+
+/// #1211 S1 (2) — the deletion itself. A create carrying a perfectly good
+/// non-empty title must ALSO produce no `Observation::WaveGoal`: the title is
+/// simply not the wave's intent any more. Restore the old
+/// `goal: (!goal.is_empty()).then_some(goal)` in
+/// `routes::waves::start_spec_harness` and this test is the one that fails.
+#[tokio::test]
+async fn wave_create_with_title_seeds_no_wave_goal() {
+    let boot = boot_shared().await;
+    let cove = boot
+        .repo
+        .cove_create(NewCove {
+            name: "no-goal-titled".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let title = "ship the rename tool";
+    let (status, body) = post_json(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": cove.id,
+            "title": title,
+            "cwd": attached_repo_fixture("issue-1211-titled"),
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+
+    let wave_id = body["id"].as_str().expect("wave id").to_string();
+    // The title itself is untouched — only its promotion to an intent is gone.
+    assert_eq!(
+        boot.repo
+            .wave_get(&wave_id)
+            .await
+            .unwrap()
+            .expect("wave row")
+            .title,
+        title
+    );
+    let spec_card = spec_card_of_wave(&boot, &wave_id).await;
+    assert_no_seeded_goal(
+        &spec_harness_start_payloads(boot.repo.as_ref(), spec_card.id.as_str()).await,
+        "create with non-empty title",
+    );
+    assert_harness_queue_empty(&boot, spec_card.id.as_str(), "create with non-empty title").await;
+}
+
+/// #1211 S1 (3) — `/spec/reset` restarts the `Spec` profile, which was the
+/// second place that re-seeded the title. A restarted spec session must come
+/// up as silent as a fresh one.
+#[tokio::test]
+async fn spec_reset_seeds_no_wave_goal() {
+    let boot = boot_shared().await;
+    let cove = boot
+        .repo
+        .cove_create(NewCove {
+            name: "no-goal-reset".into(),
+            color: "#000".into(),
+            sort: None,
+        })
+        .await
+        .unwrap();
+    let (status, body) = post_json(
+        boot.app.clone(),
+        "/api/waves",
+        json!({
+            "cove_id": cove.id,
+            "title": "reset keeps quiet",
+            "cwd": attached_repo_fixture("issue-1211-reset"),
+            "attach_folder": true,
+            "theme": {"fg": [216,219,226], "bg": [15,20,24]}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave_id = body["id"].as_str().expect("wave id").to_string();
+    let spec_card = spec_card_of_wave(&boot, &wave_id).await;
+
+    let (status, body) = post_empty(
+        boot.app.clone(),
+        &format!("/api/cards/{}/spec/reset", spec_card.id),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    // Two payloads by now (create + reset); both must be goal-free.
+    let payloads = spec_harness_start_payloads(boot.repo.as_ref(), spec_card.id.as_str()).await;
+    assert_eq!(
+        payloads.len(),
+        2,
+        "expected the create payload and the reset payload: {payloads:?}"
+    );
+    assert_no_seeded_goal(&payloads, "spec reset");
+    assert_harness_queue_empty(&boot, spec_card.id.as_str(), "spec reset").await;
 }

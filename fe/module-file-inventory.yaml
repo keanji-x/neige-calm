@@ -45,6 +45,7 @@
 - { path: fe/core/schemas, type: directory, owner: core/schemas, readonly: false, basis: "architecture §2" }
 - { path: fe/core/state, type: directory, owner: core/state, readonly: true, basis: "frozen interface §6.1a" }
 - { path: fe/core/types, type: directory, owner: core/types, readonly: false, basis: "architecture §8.7" }
+- { path: fe/core/view, type: directory, owner: core/view, readonly: false, basis: "#1234 视口一致性：面板派生层，桌面与手机的唯一视图来源" }
 
 # App composition (§2: router/providers/theme/shell/DI and §4.7 events).
 - { path: fe/web/src/app/cards.ts, type: file, owner: app/cards, readonly: false, basis: "frozen cards consumer §6.6" }
