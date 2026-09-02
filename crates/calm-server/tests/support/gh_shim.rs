@@ -49,7 +49,7 @@ pub fn run_gh(gh: &Path, args: &[&str]) -> std::process::Output {
 }
 
 pub const GH_SHIM: &str = r#"#!/bin/sh
-# Hermetic gh shim for forge_workflow_e2e.
+# Hermetic gh shim for forge_template_e2e.
 # State is derived only from --repo so the kernel's env-cleared subprocess can
 # replay probes without test-only variables. The merge command is idempotent:
 # repeated merges for the same PR return the original recorded merge oid.

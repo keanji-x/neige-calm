@@ -506,7 +506,7 @@ const TASK_BLOCK_PROTOCOL_GOLDEN: &str = concat!(
 );
 
 /// Exact paragraph oracle for the static task-block protocol. The shipped
-/// workflow's fully rendered prompt has a separate whole-document golden;
+/// template's fully rendered prompt has a separate whole-document golden;
 /// free-text contradictions cannot be proved absent with a keyword list.
 #[cfg(test)]
 pub(crate) fn validate_spec_prompt_contract(prompt: &str) -> Result<(), String> {
@@ -900,7 +900,7 @@ mod tests {
     ///
     /// Section vocabulary is policy: it belongs to the document, which carries
     /// it in a leading HTML comment that every read returns. A prompt that
-    /// names sections re-imposes one workflow's shape on every document in the
+    /// names sections re-imposes one template's shape on every document in the
     /// cove, and the "rewrite anything unfamiliar" instruction that used to
     /// accompany it flattened any report that arrived with its own structure.
     ///
@@ -921,7 +921,7 @@ mod tests {
         );
 
         // The section ban must be QUALIFIED by the document's own contract
-        // list. Unqualified it contradicts every shipped workflow template:
+        // list. Unqualified it contradicts every shipped template:
         // their seeded body carries a single `# Plan` H1, and the contract
         // inside it requires the agent to add 概要 / 已完成 / 决策. An absolute
         // "never add a section" bullet and the "文档里的维护契约优先" fallback

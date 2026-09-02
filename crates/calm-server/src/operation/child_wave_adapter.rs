@@ -1977,7 +1977,7 @@ mod tests {
             "min_kernel_version": "0.0.1",
             "display_name": "Child Inherit Stub",
             "entrypoint": { "command": "bin/stub" },
-            "workflows": [],
+            "templates": [],
             "permissions": {}
         });
         let manifest = Manifest::parse(&manifest_json.to_string()).expect("manifest parses");

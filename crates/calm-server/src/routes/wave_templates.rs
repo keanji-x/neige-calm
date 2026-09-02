@@ -6,12 +6,12 @@
 //! authorities and this endpoint *joins* them; it never copies or invents a
 //! third:
 //!
-//! * `id` / `title` — [`crate::workflow_templates::WORKFLOW_TEMPLATES`], the
+//! * `id` / `title` — [`crate::templates::TEMPLATES`], the
 //!   Rust constants that also seed the template waves. Since #1230 the title is
 //!   the constant only until the template is seeded; after that it is the
 //!   seeded report's summary.
 //! * `input_schema` — the **owning plugin's** manifest `input_schema`, reached
-//!   through the same [`resolve_trusted_workflow`] the create path uses. Absent
+//!   through the same [`resolve_template_binding`] the create path uses. Absent
 //!   when no running trusted plugin declares that id, which is exactly the set
 //!   of templates that would be rejected for carrying `template_input`.
 //! * `tasks` — the template's own `task` blocks, projected to `key` + `goal`.
@@ -27,7 +27,7 @@
 //! trigger a write* half is unchanged and load-bearing. See "Editable
 //! templates" below.
 //!
-//! Deliberately **no `description`**: `workflow_templates.rs` has no such
+//! Deliberately **no `description`**: `templates.rs` has no such
 //! field, and #1209 records that template facts are already spread across three
 //! places. Adding a fourth spelling of "what this template is" to serve one
 //! label is how the drift starts. The three titles are self-describing.
@@ -36,10 +36,11 @@
 //!
 //! One concept (template), one field (`template_id`). This endpoint lists it,
 //! `POST /api/waves` admits by it, and there is no second spelling. The
-//! `workflows[]` array in a plugin manifest is a file written by *the other
-//! side*; it declares which template keys this plugin claims. That is not a
-//! seam but a documented adapter boundary (see the field docs on
-//! `plugin_host::manifest::Manifest::workflows`).
+//! `templates[]` array in a plugin manifest is a file written by *the other
+//! side*; it declares which template keys this plugin claims. #1209 left that
+//! array under its pre-unification name and called the difference a documented
+//! adapter boundary; #1268 removed the difference instead — see the field docs
+//! on `plugin_host::manifest::Manifest::templates`.
 //!
 //! The shape returned here did not change when the concepts merged.
 //!
@@ -58,7 +59,7 @@
 //! * **A template that has not been seeded yet** — the constants, unchanged.
 //!
 //! The read stays a read. `current_definition` looks the wave up and gives up
-//! if it is absent; it never calls `ensure_workflow_templates`. The lazy seed
+//! if it is absent; it never calls `ensure_templates`. The lazy seed
 //! is a write, and a `GET` that mints three waves the first time somebody opens
 //! the New wave dialog is exactly the behaviour the note above forbids. A read
 //! *failure* on a seeded report is propagated, never swallowed into the
@@ -129,15 +130,13 @@
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::EditAuthor;
 use crate::ids::ActorId;
-use crate::routes::waves::{
-    ensure_workflow_templates, lookup_workflow_template_wave, resolve_trusted_workflow,
-};
+use crate::routes::waves::{ensure_templates, lookup_template_wave, resolve_template_binding};
 use crate::state::{AppState, RouteState};
-use crate::wave_report::{ReportDocOp, persist_report_with_shadow, resolve_report_for_wave};
-use crate::workflow_templates::{
-    AUTHOR_REAL_GATE, WORKFLOW_TEMPLATES, task_payload_key_and_goal, workflow_template,
-    workflow_template_task_payloads, workflow_template_task_payloads_from_body,
+use crate::templates::{
+    AUTHOR_REAL_GATE, TEMPLATES, task_payload_key_and_goal, template_by_key,
+    template_task_payloads, template_task_payloads_from_body,
 };
+use crate::wave_report::{ReportDocOp, persist_report_with_shadow, resolve_report_for_wave};
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -211,13 +210,13 @@ pub struct WaveTemplateTask {
 pub(crate) async fn list_wave_templates(
     State(s): State<RouteState>,
 ) -> Result<Json<Vec<WaveTemplate>>> {
-    let mut templates = Vec::with_capacity(WORKFLOW_TEMPLATES.len());
-    for template in &WORKFLOW_TEMPLATES {
+    let mut templates = Vec::with_capacity(TEMPLATES.len());
+    for template in &TEMPLATES {
         // Same resolver as create-time binding, so a template can never be
         // advertised with a schema the create path would then refuse to
         // validate against (stopped or untrusted plugin ⇒ `None` on both
         // sides).
-        let input_schema = resolve_trusted_workflow(&s, template.key)
+        let input_schema = resolve_template_binding(&s, template.key)
             .await
             .and_then(|manifest| manifest.input_schema.clone());
         let definition = current_definition(&s, template.key).await?;
@@ -242,12 +241,12 @@ pub(crate) async fn list_wave_templates(
 /// The current authority for a template's title and tasks: the seeded report if
 /// there is one, the built-in constants otherwise.
 ///
-/// Read-only. The `lookup_workflow_template_wave` miss is a plain "not seeded",
+/// Read-only. The `lookup_template_wave` miss is a plain "not seeded",
 /// never a reason to seed — see this module's note.
 struct Definition {
     title: String,
     /// Whole task-block payloads, never a narrowed struct — see
-    /// `workflow_template_task_payloads_from_body` for why that distinction is
+    /// `template_task_payloads_from_body` for why that distinction is
     /// load-bearing rather than stylistic.
     tasks: Vec<Value>,
 }
@@ -257,33 +256,33 @@ async fn current_definition(s: &RouteState, key: &str) -> Result<Definition> {
     // error, never a reason to answer with the constants: falling back would
     // report stale constant content as current, i.e. turn an outage into
     // exactly the drift this endpoint exists to remove.
-    if let Some(wave_id) = lookup_workflow_template_wave(s, key).await? {
+    if let Some(wave_id) = lookup_template_wave(s, key).await? {
         let (_, _, report) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;
         return Ok(Definition {
             title: report.summary.clone(),
-            tasks: workflow_template_task_payloads_from_body(&report.body),
+            tasks: template_task_payloads_from_body(&report.body),
         });
     }
-    // `unwrap_or_default` is unreachable for a `WORKFLOW_TEMPLATES` key and
+    // `unwrap_or_default` is unreachable for a `TEMPLATES` key and
     // stays a default rather than a panic: both tables are keyed off the same
     // constants, and `listed_tasks_are_exactly_the_report_task_blocks` fails
     // loudly if one ever grows an entry the other lacks.
     Ok(Definition {
-        title: WORKFLOW_TEMPLATES
+        title: TEMPLATES
             .iter()
             .find(|template| template.key == key)
             .map(|template| template.title.to_string())
             .unwrap_or_default(),
-        tasks: workflow_template_task_payloads(key).unwrap_or_default(),
+        tasks: template_task_payloads(key).unwrap_or_default(),
     })
 }
 
-/// #1209 PR-1 made `workflow_template()` the single fallible roster lookup and
+/// #1209 PR-1 made `template_by_key()` the single fallible roster lookup and
 /// deleted the second roster array it replaced. This goes through it rather
 /// than re-deriving membership, so there is exactly one answer to "is this a
 /// template" and the write endpoint cannot drift from the create path's admission.
 fn known_template(id: &str) -> Result<()> {
-    workflow_template(id)
+    template_by_key(id)
         .map(|_| ())
         .ok_or_else(|| CalmError::NotFound(format!("wave template `{id}`")))
 }
@@ -384,14 +383,12 @@ pub(crate) async fn update_wave_template(
 
     // Writing is the one path that may seed: a save has to have a wave to write
     // to. The read paths must not.
-    ensure_workflow_templates(&s).await?;
-    let wave_id = lookup_workflow_template_wave(&s, &id)
-        .await?
-        .ok_or_else(|| {
-            CalmError::Internal(format!(
-                "wave template: seeded template `{id}` is missing after ensure"
-            ))
-        })?;
+    ensure_templates(&s).await?;
+    let wave_id = lookup_template_wave(&s, &id).await?.ok_or_else(|| {
+        CalmError::Internal(format!(
+            "wave template: seeded template `{id}` is missing after ensure"
+        ))
+    })?;
     let (wave, report_card, current) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;
     // The *blocks*, not the flat body. Two things follow from that and both are
     // load-bearing:
@@ -585,7 +582,7 @@ pub(crate) async fn update_wave_template(
     Ok(Json(WaveTemplate {
         id: id.clone(),
         title: definition.title,
-        input_schema: resolve_trusted_workflow(&s, &id)
+        input_schema: resolve_template_binding(&s, &id)
             .await
             .and_then(|manifest| manifest.input_schema.clone()),
         tasks: definition

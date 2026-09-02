@@ -2292,7 +2292,7 @@
             }
           },
           "409": {
-            "description": "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
+            "description": "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2439,7 +2439,7 @@
             }
           },
           "409": {
-            "description": "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
+            "description": "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5932,7 +5932,7 @@
               "object",
               "null"
             ],
-            "description": "Issue #891 / #1110 S2 — JSON input for the bound workflow. Only\naccepted when `template_id` names a running trusted workflow whose\nowning plugin Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
+            "description": "Issue #891 / #1110 S2 — JSON input for the bound template. Only\naccepted when `template_id` names a template a running trusted plugin\nbinds to and whose Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
           },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
@@ -6832,7 +6832,7 @@
               "string",
               "null"
             ],
-            "description": "Owning plugin copied from the bound workflow. Immutable after creation."
+            "description": "Owning plugin copied from the bound template. Immutable after creation."
           },
           "purpose": {
             "type": [

@@ -346,7 +346,7 @@ pub(crate) async fn install_plugin(
     responses(
         (status = 200, description = "Plugin enabled and spawned", body = PluginDetail),
         (status = 404, description = "Plugin not found", body = ErrorBody),
-        (status = 409, description = "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
+        (status = 409, description = "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
         (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Spawn failed / internal error", body = ErrorBody),
     ),
@@ -488,7 +488,7 @@ pub(crate) async fn tail_plugin_log(
         (status = 200, description = "Manifest reloaded + plugin restarted if enabled", body = PluginDetail),
         (status = 400, description = "Manifest invalid / id mismatch after reload", body = ErrorBody),
         (status = 404, description = "Plugin not found", body = ErrorBody),
-        (status = 409, description = "Workflow id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
+        (status = 409, description = "Template id already registered by a running trusted plugin (`plugin_conflict`), or another lifecycle operation holds this plugin (`plugin_busy`)", body = ErrorBody),
         (status = 422, description = "Manifest min_kernel_version exceeds kernel version", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),

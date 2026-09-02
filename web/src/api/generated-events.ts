@@ -377,7 +377,7 @@ cwd: string,
  */
 template_id: string | null, 
 /**
- * Owning plugin copied from the bound workflow. Immutable after creation.
+ * Owning plugin copied from the bound template. Immutable after creation.
  */
 plugin_scope: string | null, 
 /**
@@ -583,7 +583,7 @@ cwd: string,
  */
 template_id: string | null, 
 /**
- * Owning plugin copied from the bound workflow. Immutable after creation.
+ * Owning plugin copied from the bound template. Immutable after creation.
  */
 plugin_scope: string | null, 
 /**

@@ -54,8 +54,8 @@ import {
 // dangling pipe, no SIGPIPE on first `tracing::info!` write inside
 // the cargo grandchild (root cause of the `socket hang up` flake
 // investigated in debug PR #191). The file also doubles as a CI
-// artifact: Playwright's `upload-artifact` step (see `.github/
-// workflows/ci.yml`) picks up `web/test-results/replay-server.log`
+// artifact: Playwright's `upload-artifact` step (see
+// `.github/workflows/ci.yml`) picks up `web/test-results/replay-server.log`
 // on a11y-job failure so diagnostics survive past worker exit.
 const REPLAY_LOG_DIR = resolve(REPO_ROOT, 'web/test-results');
 const REPLAY_LOG_PATH = resolve(REPLAY_LOG_DIR, 'replay-server.log');

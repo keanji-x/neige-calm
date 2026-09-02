@@ -136,25 +136,23 @@ pub enum HostError {
     #[error(transparent)]
     KernelTooOld(#[from] KernelTooOld),
 
-    /// #891 slice ④ — registration-time workflow-id uniqueness. A trusted
-    /// plugin declares a workflow id another **running trusted** plugin
-    /// already registers; spawning it would make the workflow resolvers
-    /// (`routes::waves::resolve_trusted_workflow`, the spec harness's
-    /// `bound_workflow`, the MCP per-wave tool scope) ambiguous. Like
+    /// #891 slice ④ — registration-time template-id uniqueness. A trusted
+    /// plugin declares a template id another **running trusted** plugin
+    /// already registers; spawning it would make the binding resolvers
+    /// (`routes::waves::resolve_template_binding`, the spec harness's
+    /// `bound_template`, the MCP per-wave tool scope) ambiguous. Like
     /// `KernelTooOld` this fires before any process spawn or token mint, so
     /// no half-spawned state is left behind; the boot autospawn loop's
     /// per-plugin tolerance logs and continues.
     #[error(
-        "plugin `{plugin_id}` declares workflow `{workflow_id}`, which running trusted plugin `{held_by}` already registers"
+        "plugin `{plugin_id}` declares template `{template_id}`, which running trusted plugin `{held_by}` already registers"
     )]
-    WorkflowConflict {
+    TemplateConflict {
         plugin_id: String,
-        /// #1209 PR-2 deliberately does NOT rename this to `template_id`: it is
-        /// the id a plugin declared in its manifest's `workflows[]` array, which
-        /// stays spelled `workflow` (renaming that key would break every
-        /// third-party manifest at parse time). This is plugin-side vocabulary,
-        /// not the kernel request-body field.
-        workflow_id: String,
+        /// The id a plugin declared in its manifest's `templates[]` array. Same
+        /// vocabulary as the kernel's `template_id` since #1268: a manifest
+        /// entry names which kernel template the plugin binds to.
+        template_id: String,
         held_by: String,
     },
 
@@ -177,7 +175,7 @@ pub enum HostError {
     ///
     /// Routes render it as a 409 with the code `plugin_busy`, which is
     /// deliberately *not* `plugin_conflict`: the latter is permanent for the
-    /// request as written (duplicate id, workflow id already held) while this
+    /// request as written (duplicate id, template id already held) while this
     /// one clears on its own. See [`crate::error::CalmError::PluginBusy`].
     #[error("plugin `{0}` is busy: another lifecycle operation holds it")]
     LifecycleBusy(String),

@@ -338,7 +338,7 @@ pub fn tools_list_frame(id: i64, thread_id: &str) -> Value {
 }
 
 /// Scripted MCP `tools/call` over a kernel UDS socket (hoisted from
-/// forge_workflow_e2e.rs's fixture-local `call_tool`, generalized off that
+/// forge_template_e2e.rs's fixture-local `call_tool`, generalized off that
 /// file's `Fixture`). `token` may be a card-bound session token or the
 /// shared-daemon token; identity resolves from `_meta.threadId` either way,
 /// so callers that only hold the daemon token (codex forge E2E) can drive

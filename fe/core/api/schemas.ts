@@ -126,7 +126,7 @@ const waveObjectSchema = z.object({
    */
   cwd: z.string().default(''),
   /**
-   * Issue #760 slice 4a — optional workflow descriptor backing this wave.
+   * Issue #760 slice 4a — optional template descriptor backing this wave.
    * Defaulted to `null` for replay of event-log rows written before the
    * field existed; fresh rows serialize the field explicitly.
    */
@@ -139,7 +139,7 @@ const waveObjectSchema = z.object({
   plugin_scope: z.string().nullable().default(null),
   purpose: z.string().nullable().default(null),
   /**
-   * Issue #891 — opaque bound-workflow input JSON (kernel validates at
+   * Issue #891 — opaque bound-template input JSON (kernel validates at
    * create time; the frontend never interprets it). `z.unknown()` mirrors
    * the `#[ts(type = "unknown")]` override on the Rust side (same pattern
    * as `Card.payload`). Defaulted to `null` for pre-#891 replay payloads
