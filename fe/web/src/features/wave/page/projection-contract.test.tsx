@@ -132,9 +132,15 @@ const withEmptyCards: readonly RowModuleView[] = Object.freeze([emptyCards, task
 
 // ── The fixture shape guard (§3.5, oracle preconditions) ─────────────────────
 
-/** Every module list this suite hands to `checkProjection`. The guard below
- *  asserts over exactly this set, so a fixture added without the shape it was
- *  meant to bring cannot slip in silently. */
+/** The canonical fixture lists — the ones whose *aggregate* shape is guarded.
+ *  The guard below asserts over exactly this set, so a fixture added here
+ *  without the shape it was meant to bring cannot slip in silently.
+ *
+ *  Two further module lists are handed to `checkProjection` further down and
+ *  are deliberately **not** registered here: `cohostView` (E / co-hosting) and
+ *  `tapView` (the mobile tap shape). Each exists to carry one narrow shape for
+ *  one case, is read only by that case, and would drag the aggregate clauses
+ *  below off their subject if merged in. */
 const FIXTURES: readonly (readonly RowModuleView[])[] = Object.freeze([view, withEmpty, withEmptyCards]);
 
 const ALL_MODULES: readonly RowModuleView[] = FIXTURES.flatMap((fixture) => [...fixture]);
@@ -142,6 +148,16 @@ const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module
 
 const ACTION_KINDS: readonly RowAction['kind'][] =
   Object.freeze<readonly RowAction['kind'][]>(['reveal-block', 'open-card', 'delete-card']);
+
+/** The module-key domain in full. Typed as an exhaustive `Record`, so a new
+ *  `RowModuleView['key']` cannot be introduced without landing here — and once
+ *  here, the guard below demands the fixtures actually exercise it. Deriving
+ *  the domain from the fixtures instead (`new Set(ALL_MODULES.map(…))`) would
+ *  only ever check the keys that already appear: renaming `tasks.key` to
+ *  `cards` would shrink the domain to match and stay green. */
+const MODULE_KEY_TABLE: Readonly<Record<RowModuleView['key'], true>> =
+  Object.freeze({ cards: true, tasks: true });
+const MODULE_KEYS = Object.keys(MODULE_KEY_TABLE) as readonly RowModuleView['key'][];
 
 /** The capability table the action-shape clauses are stated against. Support is
  *  a painter fact, so "only unsupported" is only meaningful relative to one. */
@@ -160,9 +176,13 @@ const unsupportedOf = (row: PanelRow): readonly RowAction[] =>
  * of this file would notice.
  *
  * **What this guard is worth, precisely (§6.9).** It makes the checklist
- * *executed* — every clause §3.5 spells out is asserted here, and a fixture edit
- * that drops a shape goes red naming the shape. It does **not** make the
- * checklist *complete*: the clauses are a hand-written list, and a new field on
+ * *executed*: a fixture edit that drops a shape goes red naming the shape.
+ * For the two closed domains — `RowAction['kind']` and `RowModuleView['key']` —
+ * that is mechanical in both directions: the guard iterates a list tied to an
+ * exhaustive `Record` rather than whatever the fixtures happen to contain, so a
+ * new member cannot reach the type without landing in the table, and cannot
+ * then be omitted from the coverage clause. It does **not** make the checklist
+ * *complete*: the remaining clauses are a hand-written list, and a new field on
  * `RowBadge` / `RowStatus` / `PanelRow`, or a new distinguishing shape nobody
  * thought of, arrives with no clause and nothing here will ask for one. Keeping
  * the list adequate is a review obligation, not a mechanical one.
@@ -234,10 +254,15 @@ describe('fixture shape guard', () => {
     expect(ALL_ROWS.some((row) => unsupportedOf(row).length > 0 && supportedOf(row).length > 0)).toBe(true);
   });
 
-  it('every module key is exercised both empty and non-empty', () => {
-    const keys = new Set(ALL_MODULES.map((module) => module.key));
-    expect(keys.size).toBeGreaterThan(0);
-    for (const key of keys) {
+  it('the module keys these fixtures carry are the key domain in full', () => {
+    // Pins the fixture key set to the `Record`-typed domain in both directions:
+    // a key that disappears from the fixtures goes red here, and a new key added
+    // to `RowModuleView` goes red until the fixtures carry it.
+    expect([...new Set(ALL_MODULES.map((module) => module.key))].sort()).toEqual([...MODULE_KEYS].sort());
+  });
+
+  it('every module key in the domain is exercised both empty and non-empty', () => {
+    for (const key of MODULE_KEYS) {
       const mine = ALL_MODULES.filter((module) => module.key === key);
       expect(mine.some((module) => module.rows.length === 0)).toBe(true);
       expect(mine.some((module) => module.rows.length > 0)).toBe(true);

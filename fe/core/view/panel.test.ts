@@ -181,8 +181,9 @@ describe('paintModule action filtering', () => {
  * both modules out in one tree. Mobile drills into one module at a time and
  * will call `paintModule` per page when S1b-4 wires it, so the module sequence
  * there is a navigation structure, not a DOM sequence. Today the mobile surface
- * calls neither: outside this suite, `paintModule`'s only caller is
- * `paintPanel`, and no production renderer calls either one.
+ * calls neither: outside this suite, `paintModule`'s callers are `paintPanel`
+ * and `checkProjection` (`tools/projection/public.ts`), and no *production
+ * renderer* calls either one.
  *
  * Nothing forces the desktop component to call this — that gap is review's
  * (§6.10), not this suite's.
