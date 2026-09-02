@@ -169,7 +169,7 @@ async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
                 && wave_id.as_str() == "wave-old"
         ),
         "pre-#1252 row must replay with unmeasured telemetry, got {:?}",
-        &rows[0].3
+        rows[0].3
     );
 }
 
