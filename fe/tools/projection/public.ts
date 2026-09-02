@@ -37,7 +37,9 @@
 // have that a marked node in that tree came from the painter — not a proof:
 // see the standing list below for the residue it leaves. (The page's
 // marker-literal source scan is a narrower guard beside it, not the carrier;
-// see `checkProjectionIn`.) The mobile surface has no such carrier yet.
+// see `checkProjectionIn`.) Since S1b-4a the mobile **Cards** page has the same
+// pair — `mobile-projection.test.tsx` and `mobile-entry.test.tsx` — and the
+// mobile Tasks page has neither.
 //
 // **Violations are returned, not thrown.** Each carries a stable `code`, so a
 // malicious painter's *isolation* is mechanically assertable

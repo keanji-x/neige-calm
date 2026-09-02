@@ -90,10 +90,13 @@ export type WavePageProps = Readonly<{
    *
    * The panel is a navigation *destination*, so its identity lives in the URL
    * (`?panel=`, #1191 §1) and `app/router` reads it — `features/**` may not
-   * import `app/**`, and this page stays a pure renderer. The mobile **card
-   * detail** below is the deliberate exception (§0.1): its legal set is the
-   * panel's cards, which includes cards `?card=` would bounce off the URL, so a
-   * URL-borne detail page could not open them at all.
+   * import `app/**`, and this page stays a pure renderer.
+   *
+   * There used to be a fifth mobile page below — a card **detail** held in
+   * component state rather than the URL, because its legal set included cards
+   * `?card=` would bounce off. #1234 S1b-4a deleted it: opening a card is not
+   * offered on this viewport (`mobile-painter.tsx`'s capability table), so the
+   * page it drilled into had nothing left to be.
    */
   panel?: 'outline' | 'cards' | 'tasks' | 'conversations' | null;
   onOpenPanel?: (panel: 'outline' | 'cards' | 'tasks' | 'conversations') => void;

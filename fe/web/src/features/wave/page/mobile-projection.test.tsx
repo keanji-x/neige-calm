@@ -29,6 +29,13 @@
 // turns a green run into evidence is **`mobile-entry.test.tsx`**, which mocks
 // `paintMobileModule` and holds that the page calls it with the Cards module and
 // renders the value it hands back.
+//
+// **The marker-literal hygiene guard is not repeated here.** It already covers
+// this branch: `desktop-projection.test.tsx`'s last describe scans the *whole* of
+// `public.tsx` — both surfaces — for every `MARKER` name in both its kebab and
+// its `dataset` spelling, so a hand-composed mobile row that retyped
+// `data-nc-row` goes red there. Read it as hygiene either way; the oracle is the
+// entry suite.
 
 import { cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
