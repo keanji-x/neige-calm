@@ -35,13 +35,29 @@
 //! The join below is on `events.scope_wave`, so every row written before
 //! migration 0007 is invisible to it, whatever its kind. A window that spans
 //! the upgrade point reports less activity than actually happened, with no
-//! error and no warning. Same applies forward: an emitter that logs one of the
-//! allowlisted kinds at `EventScope::System` writes a row this projection
-//! cannot see. Every current emitter of the four kinds uses a wave or card
-//! scope (`routes::waves::update_wave` and `wave_report::persist_report` use
-//! `EventScope::Wave`; `decision_sink::commit_worker_task_report` uses
-//! `EventScope::Card`, which also populates `scope_wave`) — that is a fact
-//! about today's code, not a constraint the schema enforces.
+//! error and no warning.
+//!
+//! The same hazard points forward: an emitter that logs one of the allowlisted
+//! kinds at `EventScope::System` writes a row this projection cannot see, and
+//! nothing in the schema forbids that. As of #1253 PR2 no emitter does — the
+//! call sites were enumerated by grepping each kind's constructor and reading
+//! the scope each is paired with:
+//!
+//! * `wave.lifecycle_changed` — `routes::waves::update_wave`,
+//!   `wave_lifecycle::apply_requested_transition_in_tx`,
+//!   `wave_lifecycle::auto_transition_if_current_in_tx`, `reaper::*`,
+//!   `scheduler::*`: all `EventScope::Wave`.
+//! * `wave.report_edited` — `wave_report::persist_report`, the single writer
+//!   every REST and MCP path funnels through: `EventScope::Wave`.
+//! * `task.completed` / `task.failed` — `decision_sink::commit_worker_task_report`:
+//!   `EventScope::Card`, which populates `scope_wave` as well.
+//!
+//! Two of the four are pinned end to end against their real emitters
+//! (`today_summary::a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity`);
+//! the task pair is **not**, and its scope rests on that reading rather than on
+//! a test. Say so rather than widening the sentence: a future emitter is what
+//! would break this, and a future emitter is exactly what an enumeration cannot
+//! cover.
 //!
 //! # Counts only — this is what bounds the prompt
 //!
@@ -61,10 +77,18 @@ use crate::error::Result;
 
 /// The event kinds that count as workspace activity, adjudicated in design D4.
 ///
-/// Both permanence requirements are met by construction: all four are absent
-/// from `EVENTS_PRUNE_KINDS` (`calm-truth/src/events_prune.rs`), whose
-/// allowlist is exact-kind and fails safe, so these rows outlive every
-/// retention pass.
+/// All four must outlive every retention pass, and they do: none is in
+/// `EVENTS_PRUNE_KINDS` (`calm-truth/src/events_prune.rs`), whose allowlist is
+/// exact-kind and fails safe, so a kind absent from it is permanent by
+/// construction.
+///
+/// That is a claim about a `&'static [&str]` in another crate, so it is read by
+/// a test rather than asserted here:
+/// `events_pruner::activity_window_kinds_are_never_prunable` compares the two
+/// lists directly, in the same shape as the existing
+/// `first_message_dedup_kind_is_never_prunable`. Without it, adding one of
+/// these four to the prune allowlist would silently make every window older
+/// than the horizon read as an empty day — and an empty day is refused.
 ///
 /// **`turns` is deliberately absent.** Its only fact source,
 /// `harness.item.added`, *is* in the 30-day prune allowlist, so a turn count
@@ -77,17 +101,25 @@ pub const ACTIVITY_KINDS: [&str; 4] = [
     "task.failed",
 ];
 
-/// The FROM/WHERE both aggregates share, written once.
+/// The one statement this projection runs.
 ///
-/// Shared rather than repeated because the two queries must select over exactly
-/// the same rows: a predicate that drifted between them would report counts and
-/// a wave total taken from different populations, and nothing about the result
-/// would look wrong.
+/// **One query, not two, and that is a correctness property rather than a
+/// tidiness one.** The per-kind counts and the distinct-wave count are read in
+/// a single pass over a single snapshot, so they cannot disagree. Two
+/// statements sharing the same FROM/WHERE *text* are still two snapshots: an
+/// event landing between them yields a window reporting one event across two
+/// waves, which is not a state the workspace was ever in, and nothing about the
+/// result would look wrong.
+///
+/// `SUM(e.kind = ?n)` is SQLite's boolean-as-integer, and `COALESCE` covers the
+/// empty-window case, where `SUM` over no rows is NULL rather than 0.
 ///
 /// * `?1`/`?2` — the half-open window, `[start, end)`. See INV-TODAYDOC-006:
 ///   an event at the boundary belongs to the later day and to that day only.
 /// * `?3` — the wave to exclude, or NULL.
-/// * `?4`..`?7` — [`ACTIVITY_KINDS`], bound positionally.
+/// * `?4`..`?7` — [`ACTIVITY_KINDS`], bound positionally, and bound twice: once
+///   to restrict the rows and once to bucket them, so a kind can never be
+///   counted into a column the query did not ask for.
 ///
 /// The join runs through `waves` and `coves` rather than trusting
 /// `events.scope_cove`: the scope columns are a snapshot taken at write time,
@@ -97,7 +129,12 @@ pub const ACTIVITY_KINDS: [&str; 4] = [
 /// `coves.kind = 'user'` is the visibility filter, and it is the same predicate
 /// `coves_list_user_visible` uses for `GET /api/coves` (#175). It is what keeps
 /// the system cove — and therefore the launchpad — out of the count.
-const ACTIVITY_FROM_WHERE: &str = r#"
+const ACTIVITY_QUERY: &str = r#"
+    SELECT COALESCE(SUM(e.kind = ?4), 0) AS lifecycle,
+           COALESCE(SUM(e.kind = ?5), 0) AS report,
+           COALESCE(SUM(e.kind = ?6), 0) AS completed,
+           COALESCE(SUM(e.kind = ?7), 0) AS failed,
+           COUNT(DISTINCT w.id)          AS waves
       FROM events e
       JOIN waves w ON w.id = e.scope_wave
       JOIN coves c ON c.id = w.cove_id
@@ -163,53 +200,25 @@ pub async fn workspace_activity_window(
 ) -> Result<WorkspaceActivityWindow> {
     let [lifecycle, report, completed, failed] = ACTIVITY_KINDS;
 
-    let counted: Vec<(String, i64)> = sqlx::query_as(&format!(
-        "SELECT e.kind AS kind, COUNT(*) AS n {ACTIVITY_FROM_WHERE} GROUP BY e.kind"
-    ))
-    .bind(start_ms)
-    .bind(end_ms)
-    .bind(exclude_wave)
-    .bind(lifecycle)
-    .bind(report)
-    .bind(completed)
-    .bind(failed)
-    .fetch_all(pool)
-    .await?;
+    let (wave_lifecycle_changed, wave_report_edited, task_completed, task_failed, waves_touched) =
+        sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(ACTIVITY_QUERY)
+            .bind(start_ms)
+            .bind(end_ms)
+            .bind(exclude_wave)
+            .bind(lifecycle)
+            .bind(report)
+            .bind(completed)
+            .bind(failed)
+            .fetch_one(pool)
+            .await?;
 
-    let waves_touched: i64 = sqlx::query_scalar(&format!(
-        "SELECT COUNT(DISTINCT w.id) {ACTIVITY_FROM_WHERE}"
-    ))
-    .bind(start_ms)
-    .bind(end_ms)
-    .bind(exclude_wave)
-    .bind(lifecycle)
-    .bind(report)
-    .bind(completed)
-    .bind(failed)
-    .fetch_one(pool)
-    .await?;
-
-    let mut window = WorkspaceActivityWindow {
+    Ok(WorkspaceActivityWindow {
+        wave_lifecycle_changed,
+        wave_report_edited,
+        task_completed,
+        task_failed,
         waves_touched,
-        ..Default::default()
-    };
-    for (kind, n) in counted {
-        // Matched against the same constants the query bound, so a renamed kind
-        // cannot land in a field it does not belong to: it simply cannot come
-        // back from a query that never asked for it.
-        match kind.as_str() {
-            k if k == lifecycle => window.wave_lifecycle_changed = n,
-            k if k == report => window.wave_report_edited = n,
-            k if k == completed => window.task_completed = n,
-            k if k == failed => window.task_failed = n,
-            other => {
-                return Err(crate::error::CalmError::Internal(format!(
-                    "activity window returned unrequested kind `{other}`"
-                )));
-            }
-        }
-    }
-    Ok(window)
+    })
 }
 
 /// The server-local day containing `now_ms`, as the half-open window

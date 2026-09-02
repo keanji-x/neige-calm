@@ -40,6 +40,7 @@ use axum::{
     routing::post,
 };
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use utoipa::ToSchema;
 
 use crate::activity_window::{
@@ -54,6 +55,7 @@ use crate::operation::spec_harness_start_adapter::{
     HarnessProfile, SpecHarnessStartOperationPayload,
 };
 use crate::routes::cards::{SendSpecInputRequest, run_spec_card_operation, send_spec_input};
+use crate::routes::conversations_shared::user_message_already_enqueued;
 use crate::routes::today::ensure_today_launchpad;
 use crate::routes::wave_conversations::{NewWaveConversationBody, create_wave_conversation};
 use crate::state::{AppState, CodexShellState, RouteState, WorkerState};
@@ -141,13 +143,28 @@ fn synthetic_actor() -> Actor {
 
 /// The first message the summary conversation is ever sent — **static, forever**.
 ///
+/// "Ever" is enforced, not hoped for: the handler sends this text whenever the
+/// derived card has no `harness.user_message.enqueued` row yet, whether the
+/// card was minted by this request or left behind empty by an earlier one. A
+/// card-only branch predicate made the sentence false for both of the states
+/// review found (`Stuck` compensation, and a create whose own first send
+/// failed) — in each the bootstrap was skipped forever.
+///
 /// Not a formality. `POST /api/waves/{id}/conversations` binds this text into
 /// the operation payload as a SHA-256 (arm (e)), so a date, a timestamp or the
 /// activity counts in here would make every later retry under the same key a
 /// 409. It is one of the three variables D5 has to eliminate to keep the
-/// deterministic key safe; the other two are the actor above and `cwd`, which
-/// cannot move because a re-point never re-enters the create branch (the card
-/// exists by then, and it is `deletable: false`).
+/// deterministic key safe; the other two are the actor above and `cwd`.
+///
+/// **What is true about `cwd`, stated narrowly.** Once the derived card exists,
+/// the create arm is not entered again, so a workspace re-point after that
+/// point cannot resubmit the key under a new payload. It does **not** hold
+/// before the card exists: a create that lands `Stuck` *without* leaving the
+/// card is not stepped over by `retryable_operation_key` (which appends `#N`
+/// only for `Phase::Failed`), so a re-point followed by a press resubmits the
+/// same key with a different hash and 409s permanently. That window is narrow,
+/// fail-closed and already named in D5's residual-window paragraph; what it is
+/// not is impossible, and the earlier wording here said it was.
 ///
 /// **Why it says "stand by".** A first press can run a bootstrap-only turn:
 /// `UserMessage` is hard-fire, so if this message reaches an issuable drain
@@ -160,6 +177,65 @@ pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str = "You are this workspace's daily-p
      later message tells you the day's activity. When that message arrives, \
      rewrite the report in full following the maintenance contract carried in \
      its body.";
+
+/// A rendezvous the create-under-a-fixed-key race can be **created** at.
+///
+/// `None` in production — the create arm costs one `Option` check and never
+/// waits. A test arms it with a `Barrier::new(2)`; both requests then park here
+/// after their `card_get` has returned `None` and before either submits, so the
+/// second provably cannot see the first one's card and must take the 409
+/// fallback.
+///
+/// **Why it exists at all.** The fallback's window is one request wide and
+/// `tokio::join!` does not order two requests, so a case that merely fired two
+/// and hoped would be green on a scheduler that serialises them — reporting
+/// success for a run in which the arm was never entered. Our box is not an
+/// environment that can falsify that; a CI runner is. The same reasoning, and
+/// the same shape, as `routes::today`'s [`SystemCoveMintRendezvous`], down to
+/// living on [`AppState`] rather than in a `static`: a process-global is shared
+/// by every `AppState` in the process, which a threaded `cargo test` turns into
+/// cross-case interference.
+///
+/// [`SystemCoveMintRendezvous`]: crate::routes::today::SystemCoveMintRendezvous
+/// [`AppState`]: crate::state::AppState
+pub type TodaySummaryCreateRendezvous = Option<std::sync::Arc<tokio::sync::Barrier>>;
+
+/// Per-server observation of the create arm.
+///
+/// **`attempts` is what makes the race deterministic rather than hoped for**,
+/// and it is incremented *before* the rendezvous for exactly the reason
+/// `SystemCoveMintCounters::attempts` is: it lets a test know a request has
+/// passed `card_get` and found nothing, which is the only moment at which
+/// planting a conflicting card is guaranteed to produce the 409 the fallback
+/// exists for. Without it the test would have to guess when to act, and
+/// guessing wrong makes the case pass while never entering the arm.
+///
+/// **`conflicts` is not the assertion, it is the assertion's validity.** Every
+/// outcome the case checks — both requests 200, one conversation card, the
+/// right enqueued rows — is equally true of a run in which the fallback never
+/// ran. This is what tells the two apart.
+///
+/// Unconditional rather than `fixtures`-gated, for the reason the sibling
+/// counters give: a case about ordering has to execute the instructions
+/// production executes, and the cost is two relaxed atomic adds on a path taken
+/// at most once per launchpad.
+#[derive(Debug, Default)]
+pub struct TodaySummaryCreateCounters {
+    /// Requests that found no derived card and therefore entered the create arm.
+    pub attempts: AtomicU64,
+    /// Creates that lost the key race and took D5's 409 fallback.
+    pub conflicts: AtomicU64,
+}
+
+impl TodaySummaryCreateCounters {
+    /// Reads for tests; production never looks.
+    pub fn snapshot(&self) -> (u64, u64) {
+        (
+            self.attempts.load(Ordering::Relaxed),
+            self.conflicts.load(Ordering::Relaxed),
+        )
+    }
+}
 
 /// What the caller gets back on success.
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -271,23 +347,62 @@ pub(crate) async fn write_today_summary(
     let wave_id = launchpad.wave_id;
     let derived = summary_conversation_keys(&wave_id);
 
-    // **Branch on the card, never on a list or a heuristic.** A `Stuck`
-    // compensation leaves the derived card behind with no runtime, and that
-    // card is `deletable: false` so the user cannot clear it. A "does the wave
-    // have any assistant conversation?" test would pick the create branch on a
-    // wave that already holds the card and get a 409 from `validate`; a "did we
-    // ever succeed?" test cannot see that state at all. `card_get` on the
-    // derived id answers the only question that matters.
+    // **The branch predicate is "the card exists AND it has ever been sent a
+    // message", not "the card exists".** Two review channels found the gap from
+    // opposite ends, and both end in the same place: a derived card that exists
+    // with an empty transcript.
+    //
+    // * The create operation lands `Stuck`. `plan_compensation` marks it on the
+    //   first compensation error and never re-drives it, leaving the card
+    //   behind (`deletable: false`, so the user cannot clear it) with no
+    //   runtime and no first message.
+    // * The create operation *succeeds* — card and harness minted — and then
+    //   `create_wave_conversation`'s own first `send_spec_input` fails (a 503
+    //   from a shared app-server that went down in between). It returns `Err`,
+    //   so no summary is sent either, and the card is left with an empty
+    //   transcript.
+    //
+    // Under a card-only predicate the next press skips the create arm and sends
+    // only the summary. Two things then break at once: the *first successful*
+    // trigger leaves ONE `harness.user_message.enqueued` row where
+    // INV-TODAYDOC-010 requires two, and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] — the
+    // standing instruction that keeps a bootstrap-only turn from writing a
+    // report with no material — is never delivered at all, permanently.
+    //
+    // So the transcript is consulted, through the same read the create arm
+    // itself uses to decide whether to send (`user_message_already_enqueued`),
+    // and it is read *after* the create arm rather than inside its condition:
+    // that way one statement covers both entrances, plus the ordinary one where
+    // the card was minted seconds ago by this very request.
+    //
+    // The recovery is NOT "call `create_wave_conversation` again". Against an
+    // existing card the adapter's `validate` refuses to re-mint and answers 409
+    // — correctly, since the card is not the thing missing. What is missing is
+    // the message, so the message is what gets sent, down the one channel that
+    // sends messages.
     if s.repo.card_get(&derived.card_id).await?.is_none() {
         let mut headers = HeaderMap::new();
         headers.insert(
             "idempotency-key",
             HeaderValue::from_static(TODAY_SUMMARY_CONVERSATION_KEY),
         );
+        // Counted before the rendezvous, so a test can tell "this request found
+        // no card" from "it read someone else's". See
+        // [`TodaySummaryCreateCounters`].
+        app.today_summary_create
+            .attempts
+            .fetch_add(1, Ordering::Relaxed);
+        // Armed only by the concurrency case; `None` in production, where this
+        // is one `Option` check on a path taken once per launchpad. See
+        // [`TodaySummaryCreateRendezvous`] for why the 409 window below has to
+        // be created rather than waited for.
+        if let Some(barrier) = &app.today_summary_create_rendezvous {
+            barrier.wait().await;
+        }
         // The real handler, not a reimplementation of it: the mint, the
         // derived-id guard, the four retry arms and the first-message claim all
         // have to be the ones production uses.
-        let _created = create_wave_conversation(
+        let created = create_wave_conversation(
             State(s.clone()),
             State(w.clone()),
             State(cs.clone()),
@@ -297,6 +412,52 @@ pub(crate) async fn write_today_summary(
             Json(NewWaveConversationBody {
                 text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
             }),
+        )
+        .await;
+        // D5's create-409 fallback: **conflict ⇒ resolve the derived card ⇒
+        // carry on to the spec input**, if the card is in fact there.
+        //
+        // The window is real and is exactly one request wide: between the
+        // `card_get` above and this create, a concurrent request under the same
+        // key can mint the card. Ours then loses on either wall the adapter
+        // has — `validate` refusing to re-mint an existing card, or
+        // `insert_operation` refusing the same idempotency key under a
+        // different payload hash — and both answer 409 `conflict`. Failing
+        // outright there would be wrong twice over: the state the caller asked
+        // for now exists, and the payload-hash flavour is permanent
+        // (`operations` has no pruner), so the button would stay dead forever.
+        //
+        // The `card_get` re-read is the whole condition, and it is fail-closed:
+        // a 409 with no card is a conflict about something else and is
+        // re-raised unchanged.
+        if let Err(error) = created {
+            let recoverable = matches!(error, CalmError::Conflict(_))
+                && s.repo.card_get(&derived.card_id).await?.is_some();
+            if !recoverable {
+                return Err(error);
+            }
+            app.today_summary_create
+                .conflicts
+                .fetch_add(1, Ordering::Relaxed);
+            tracing::info!(
+                card_id = %derived.card_id,
+                %error,
+                "today summary: create lost a race under the fixed key; the \
+                 derived card exists, continuing to the spec input"
+            );
+        }
+    }
+
+    // Whatever route got us here, the standing instruction has to reach the
+    // agent before the day's numbers do. On the ordinary path this read is a
+    // single indexed row and the answer is "yes, the create just sent it".
+    if !user_message_already_enqueued(&w, &wave_id, &derived.card_id).await? {
+        send_summary(
+            &s,
+            &w,
+            &cs,
+            &derived.card_id,
+            TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
         )
         .await?;
     }

@@ -31,6 +31,7 @@ use axum::{
 };
 use calm_server::auth::Principal;
 use calm_server::db::{RepoOutOfDomain, RepoRead};
+use calm_server::ids::ActorId;
 use calm_server::{
     card_role_cache::CardRoleCache,
     db::{Repo, sqlite::SqlxRepo},
@@ -50,6 +51,9 @@ use tower::ServiceExt;
 struct Boot {
     app: axum::Router,
     repo: Arc<SqlxRepo>,
+    /// #1253 PR2 — this server's own create-arm counters. Per instance, so a
+    /// sibling case in the same binary cannot move them.
+    create_counters: Arc<calm_server::routes::today_summary::TodaySummaryCreateCounters>,
     _tmp: TempDir,
 }
 
@@ -65,6 +69,17 @@ async fn boot() -> Boot {
 /// workspace re-point looks like from the rows' point of view, and that is the
 /// fixture INV-TODAYDOC-011 needs.
 async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
+    boot_with_rendezvous(tmp, repo, root_name, None).await
+}
+
+/// `boot_with`, plus the option to arm the create-arm rendezvous. Only the
+/// create-race case passes `Some`.
+async fn boot_with_rendezvous(
+    tmp: TempDir,
+    repo: Arc<SqlxRepo>,
+    root_name: &str,
+    rendezvous: Option<Arc<tokio::sync::Barrier>>,
+) -> Boot {
     let repo_dyn: Arc<dyn Repo> = repo.clone();
     let roles = CardRoleCache::new();
     let waves = WaveCoveCache::new();
@@ -102,6 +117,11 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
         None,
     ))
     .with_workspace_root(tmp.path().join(root_name));
+    let state = match rendezvous {
+        Some(barrier) => state.with_today_summary_create_rendezvous(barrier),
+        None => state,
+    };
+    let create_counters = Arc::clone(&state.today_summary_create);
     let app = routes::router()
         // `POST /api/waves/{id}/report` — the route this file produces its
         // activity with — extracts a `Principal`, so the session layer has to
@@ -119,6 +139,7 @@ async fn boot_with(tmp: TempDir, repo: Arc<SqlxRepo>, root_name: &str) -> Boot {
     Boot {
         app,
         repo,
+        create_counters,
         _tmp: tmp,
     }
 }
@@ -226,6 +247,47 @@ impl Boot {
         .unwrap()
     }
 
+    /// The distinct `events.actor` values behind one event kind, sorted.
+    ///
+    /// The audit log's own column, read the way an auditor would. Nothing else
+    /// in this file looks at attribution, and until it did, the 30 lines of
+    /// reasoning on `synthetic_actor` were unguarded: the mutation that
+    /// forwards the caller's declared actor went red only because a downstream
+    /// authorization gate happens to reject an AI actor carrying no card
+    /// context today. Relax that gate — or re-attribute `ai:codex` once a card
+    /// IS in scope — and the summary would start being recorded as an agent
+    /// starting itself, with nothing turning red.
+    async fn actors_for(&self, kind: &str) -> Vec<String> {
+        sqlx::query_scalar("SELECT DISTINCT actor FROM events WHERE kind = ?1 ORDER BY actor")
+            .bind(kind)
+            .fetch_all(self.repo.pool())
+            .await
+            .unwrap()
+    }
+
+    /// The distinct actors of every event written after `mark` about `card_id`.
+    ///
+    /// Watermarked because the card already carries the first trigger's events
+    /// by the time the dormancy is staged; without it "some event somewhere is
+    /// the kernel's" would be true before the restart ever ran.
+    async fn actors_for_card_after(&self, mark: i64, card_id: &str) -> Vec<String> {
+        sqlx::query_scalar(
+            "SELECT DISTINCT actor FROM events WHERE id > ?1 AND scope_card = ?2 ORDER BY actor",
+        )
+        .bind(mark)
+        .bind(card_id)
+        .fetch_all(self.repo.pool())
+        .await
+        .unwrap()
+    }
+
+    async fn last_event_id(&self) -> i64 {
+        sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM events")
+            .fetch_one(self.repo.pool())
+            .await
+            .unwrap()
+    }
+
     async fn launchpad_wave_id(&self) -> Option<String> {
         self.repo
             .wave_get_launchpad()
@@ -233,6 +295,17 @@ impl Boot {
             .unwrap()
             .map(|wave| wave.id.to_string())
     }
+}
+
+/// How `events.actor` spells one [`ActorId`].
+///
+/// The column holds `serde_json::to_string(&actor)`
+/// (`calm-truth/src/db/sqlite/events.rs`), so the expected value is computed
+/// the same way rather than written out as a literal — a hand-typed `"user"`
+/// would be a guess at a representation this test does not own, and would go
+/// green or red for reasons that have nothing to do with attribution.
+fn stored(actor: ActorId) -> String {
+    serde_json::to_string(&actor).unwrap()
 }
 
 fn bootstrap_chars() -> i64 {
@@ -375,6 +448,26 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
         1,
         "three triggers, one conversation"
     );
+
+    /*
+     * The audit log says a human did this, and that is the whole point of
+     * `synthetic_actor`.
+     *
+     * `Actor::to_actor_id` maps `"user"` and every non-`ai:codex` value to
+     * `ActorId::User`, so what this pins is not "two humans agree" — it is that
+     * the caller's declared actor never reaches the message. The endpoint has
+     * no `Actor` extractor precisely so that no future edit can start
+     * forwarding one, and this is the assertion that notices if one does.
+     * Attributing a button press to an agent would make the log say the summary
+     * agent started itself, which is the `identity_migration_attribution_scope`
+     * failure exactly.
+     */
+    assert_eq!(
+        b.actors_for("harness.user_message.enqueued").await,
+        vec![stored(ActorId::User)],
+        "every message this endpoint sends is attributed to the human who \
+         pressed the button"
+    );
 }
 
 /// INV-TODAYDOC-011 — the summary conversation is the same card whatever the
@@ -414,12 +507,24 @@ async fn a_repointed_workspace_and_a_different_actor_reuse_the_one_summary_conve
             .await
             .unwrap();
 
-    // A declared AI actor. The endpoint has no `Actor` extractor, so this must
-    // change nothing — including the derived card, which would move if the
-    // actor ever reached the key.
+    /*
+     * A declared AI actor, and what it must NOT change is the attribution.
+     *
+     * This used to assert the derived `card_id` was unchanged — an assertion no
+     * mutation can fail, because `derive_wave_conversation_keys(wave_id, key)`
+     * has no actor parameter at all. It read like a guard and was one only by
+     * accident (it covered the 403 path). The real property is that the header
+     * does not reach the message: the endpoint takes no `Actor`, so a caller
+     * claiming `ai:codex` still has the summary recorded against the human.
+     */
     let (status, same) = before.summary(Some("ai:codex")).await;
     assert_eq!(status, StatusCode::OK, "body={same}");
-    assert_eq!(same["card_id"], json!(card_id));
+    assert_eq!(
+        before.actors_for("harness.user_message.enqueued").await,
+        vec![stored(ActorId::User)],
+        "a caller declaring `ai:codex` must not get the summary attributed to \
+         an agent — the endpoint does not forward the header"
+    );
 
     // --- the re-point ---
     let after = boot_with(TempDir::new().unwrap(), repo.clone(), "workspaces-new").await;
@@ -561,6 +666,11 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         .await;
     assert_eq!(items_before, 1);
 
+    // Everything after this point is the recovery's doing, which is what makes
+    // the attribution assertions below about the restart rather than about the
+    // first trigger.
+    let mark = b.last_event_id().await;
+
     // Dormancy, in the shape `ensure_live_spec_harness` actually tests for: no
     // session row in an active state for this card. That is trigger B of #649 —
     // the state a failed start or a crashed session leaves behind.
@@ -590,5 +700,240 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         b.enqueued_char_counts().await.len(),
         3,
         "and the summary the trigger was for must actually have been sent"
+    );
+    /*
+     * The restart is the kernel's, and it is the one place in this module that
+     * constructs `ActorId::Kernel` directly — it has to, because
+     * `Actor("kernel").to_actor_id()` silently degrades to `User`.
+     *
+     * Nobody asked for this restart: the user asked for a summary and the
+     * server decided a harness needed re-opening. Recording it as a human act
+     * would put a session start in the log that no human performed. The
+     * messages stay the human's (asserted above), so this also pins that the
+     * two attributions did not collapse into one.
+     */
+    let restart_actors = b.actors_for_card_after(mark, &card_id).await;
+    assert!(
+        restart_actors.contains(&stored(ActorId::Kernel)),
+        "the dormant recovery's `spec-harness-start` must be attributed to the \
+         kernel — it is the one act here no human asked for, and \
+         `Actor(\"kernel\").to_actor_id()` silently degrades to User, so it is \
+         also the one place this module builds an `ActorId` by hand; actors \
+         were {restart_actors:?}"
+    );
+    assert!(
+        restart_actors.contains(&stored(ActorId::User)),
+        "…and the messages stay the human's, so the two attributions have not \
+         collapsed into one; actors were {restart_actors:?}"
+    );
+}
+
+/// A derived card that exists with an **empty transcript** still gets the
+/// bootstrap. Both review channels found this from opposite ends.
+///
+/// Two production routes reach that state, and neither is drivable in-process:
+///
+/// * the create operation lands `Stuck` — `plan_compensation` marks it on the
+///   first compensation error and never re-drives it, leaving the card behind
+///   (`deletable: false`) with no runtime and no first message;
+/// * the create operation *succeeds* and `create_wave_conversation`'s own first
+///   `send_spec_input` then fails — a 503 from a shared app-server that went
+///   down in between. It returns `Err`, so the summary is not sent either.
+///
+/// So the state is staged rather than driven, and the staging is deliberately
+/// minimal: the card is minted through the **production** route (the same
+/// endpoint, under the same fixed key, so the row is the row production makes),
+/// and then exactly one thing is removed — the evidence row the predicate
+/// reads. That pair, `card_get` says yes and `user_message_already_enqueued`
+/// says no, is precisely what both scenarios leave behind.
+///
+/// What must NOT happen is what a card-only predicate does: skip the create arm
+/// and send only the summary. The first *successful* trigger would then leave
+/// ONE enqueued row where INV-TODAYDOC-010 requires two, and the standing "do
+/// not touch the report until instructed" bootstrap would never be delivered at
+/// all — for the life of the conversation, since the card exists from then on.
+#[tokio::test]
+async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
+    let b = boot().await;
+    let wave_id = b.user_wave("interrupted").await;
+    b.edit_report(&wave_id, "something happened").await;
+
+    // Mint the card through the real endpoint, under the real key.
+    let (status, first) = b.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "body={first}");
+    let card_id = first["card_id"].as_str().unwrap().to_string();
+    assert_eq!(b.enqueued_char_counts().await.len(), 2);
+
+    // …then take away the one thing both failure modes never wrote.
+    sqlx::query(
+        "DELETE FROM events WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1",
+    )
+    .bind(&card_id)
+    .execute(b.repo.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        b.enqueued_char_counts().await,
+        Vec::<i64>::new(),
+        "the fixture must actually reproduce the empty transcript, or this \
+         case proves nothing"
+    );
+
+    let (status, second) = b.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "body={second}");
+    assert_eq!(
+        second["card_id"],
+        json!(card_id),
+        "still the one conversation"
+    );
+
+    let counts = b.enqueued_char_counts().await;
+    assert_eq!(
+        counts.len(),
+        2,
+        "the trigger that finds an empty transcript must deliver BOTH the \
+         bootstrap and the summary: {counts:?}"
+    );
+    assert_eq!(
+        counts[0],
+        bootstrap_chars(),
+        "and the bootstrap must come first, so the agent cannot take a turn on \
+         the summary while still unbriefed: {counts:?}"
+    );
+    assert_ne!(counts[1], bootstrap_chars(), "{counts:?}");
+    assert_eq!(
+        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
+            .await,
+        1,
+        "recovering the message must not mint a second conversation — \
+         re-running the create against an existing card is what `validate` \
+         refuses, which is why the message is sent directly instead"
+    );
+}
+
+/// D5's create-409 fallback: **conflict ⇒ resolve the derived card ⇒ carry on
+/// to the spec input.**
+///
+/// The window is one request wide — between this handler's `card_get` and its
+/// create, a concurrent request under the same fixed key can mint the card —
+/// and it is *created* here rather than waited for. `tokio::join!` does not
+/// order two requests, so a case that fired two and hoped would be green on a
+/// scheduler that serialised them, reporting success for a run in which the arm
+/// was never entered. The counters are what prove it was: `attempts` says the
+/// request found no card, `conflicts` says it took the fallback.
+///
+/// The interloper is the production conversation endpoint under the same key
+/// with **different text**, because that is what makes the conflict permanent
+/// rather than an idempotent replay: the first message is bound into the
+/// operation payload as a SHA-256, so the two submissions collide on
+/// `insert_operation`'s "same key, different payload hash" — the 409 that never
+/// expires, since `operations` has no pruner. Failing outright there would
+/// leave the button dead forever on a state the caller asked for and that now
+/// exists.
+#[tokio::test]
+async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let b = boot_with_rendezvous(
+        TempDir::new().unwrap(),
+        Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap()),
+        "workspaces",
+        Some(barrier.clone()),
+    )
+    .await;
+    let wave_id = b.user_wave("contended").await;
+    b.edit_report(&wave_id, "something happened").await;
+
+    let app = b.app.clone();
+    let trigger = tokio::spawn(async move {
+        let response = app
+            .oneshot(
+                Request::post("/api/today/summary")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+        )
+    });
+
+    // Wait until the request has passed `card_get` and found nothing. Only then
+    // is planting a card guaranteed to produce the conflict; acting earlier
+    // would make it take the "card already exists" path and never reach the
+    // create arm at all.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while b.create_counters.snapshot().0 == 0 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the trigger never entered the create arm; the rendezvous is not \
+             where this case thinks it is"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    let launchpad = b.launchpad_wave_id().await.expect("ensure minted it");
+
+    // The interloper, through the production route, same key, different text.
+    let response = b
+        .app
+        .clone()
+        .oneshot(
+            Request::post(format!("/api/waves/{launchpad}/conversations"))
+                .header("content-type", "application/json")
+                // The SAME fixed key the endpoint derives from — that is what
+                // makes both submissions aim at one card and one operation key.
+                .header(
+                    "idempotency-key",
+                    calm_server::routes::today_summary::TODAY_SUMMARY_CONVERSATION_KEY,
+                )
+                .body(Body::from(
+                    json!({ "text": "a different first message" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let planted: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::CREATED, "planted={planted}");
+    let card_id = planted["id"].as_str().unwrap().to_string();
+
+    // Release the parked request into the conflict.
+    barrier.wait().await;
+    let (status, body) = trigger.await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "losing the key race must not fail the trigger — the card it wanted \
+         now exists: {body}"
+    );
+    assert_eq!(body["card_id"], json!(card_id), "and it is that card");
+
+    let (attempts, conflicts) = b.create_counters.snapshot();
+    assert_eq!(attempts, 1, "one request entered the create arm");
+    assert_eq!(
+        conflicts, 1,
+        "…and it took the 409 fallback. Without this the assertions above are \
+         all satisfied by a run in which the race never happened"
+    );
+    assert_eq!(
+        b.scalar("SELECT COUNT(*) FROM cards WHERE id LIKE 'conv-%'")
+            .await,
+        1,
+        "the race must not leave two conversations"
+    );
+    // The interloper's own first message, then the summary the trigger was for.
+    // The bootstrap is not re-sent: the transcript is no longer empty, which is
+    // the same predicate the empty-transcript case above turns the other way.
+    let counts = b.enqueued_char_counts().await;
+    assert_eq!(
+        counts.len(),
+        2,
+        "the trigger must still deliver its summary after the fallback: \
+         {counts:?}"
     );
 }

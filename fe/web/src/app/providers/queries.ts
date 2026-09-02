@@ -551,14 +551,18 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
  * matches on the machine-readable `code` there, where it is unit-testable and
  * away from React.
  *
- * **What `onSuccess` does not do is invalidate the document.** A 200 means the
- * message was enqueued, not that the agent has written anything — that lands
- * later as a `wave.report_edited` event, which is exactly what the event
- * bridge turns into `['today-launchpad']` and `['wave', id]`. Refreshing the
- * document here would only ever refetch the *old* report and would hide a
- * broken invalidation chain behind a lucky refetch. The one thing that IS true
- * immediately is that the launchpad now carries a conversation, so the lists
- * that show conversations are the ones invalidated.
+ * **`onSuccess` deliberately does not touch the document's keys.** A 200 means
+ * the message was enqueued, not that the agent has written anything — the write
+ * lands later as a `wave.report_edited` event, which the bridge turns into
+ * `['today-launchpad']` and `['wave', id]`. Refetching either here would fetch
+ * the *old* report, and worse, it would hide a broken invalidation chain behind
+ * a lucky refresh: the page would appear to update after a press even with both
+ * keys missing from the policy, which is the exact defect §6 exists to prevent.
+ * An earlier version invalidated `['wave', id]` here while this comment claimed
+ * it did not; the code was what moved.
+ *
+ * What IS true immediately is that the launchpad now carries a conversation, so
+ * the conversation lists — and only those — are invalidated.
  */
 export type TodaySummaryMutation = Readonly<{
   write: () => void;
@@ -573,9 +577,8 @@ export function useTodaySummaryMutation(
   const mutation = useMutation({
     mutationFn: (): Promise<TodaySummaryWire> =>
       runOperation(transport, todaySummaryOperation(), unauthorized),
-    onSuccess: (started) => {
+    onSuccess: () => {
       void client.invalidateQueries({ queryKey: queryKeys.waveConversationsPrefix() });
-      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(started.wave_id) });
     },
   });
   return {
