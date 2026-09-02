@@ -83,6 +83,79 @@ it('lets Tab move away after blur commits a changed title', async () => {
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Next' }));
 });
 
+/*
+ * #1211 — the display carrier and the edit carrier are two props.
+ *
+ * Red when `placeholder` is folded back into `value`: the box would open
+ * holding the stand-in text, which is the state the reader had to delete before
+ * typing.
+ */
+it('shows the placeholder for a blank name and still opens an empty box', async () => {
+  render(<EditableTitle
+    value=""
+    placeholder="Untitled wave"
+    editLabel="Rename wave"
+    inputLabel="Wave title"
+    onCommit={() => undefined}
+  />);
+  const title = screen.getByRole('button', { name: 'Rename wave' });
+  expect(title.textContent).toBe('Untitled wave');
+  await userEvent.click(title);
+  expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Wave title' }).value).toBe('');
+});
+
+/*
+ * #1211 — the two answers to "what does an empty commit mean", pinned as a
+ * pair. `'cancel'` is the default and the cove's; `'clear'` is the wave's,
+ * where the spec agent can take the name back once the title is empty.
+ */
+it('swallows an empty commit by default, and sends it under emptyCommit=clear', async () => {
+  const cancels = vi.fn();
+  render(<EditableTitle value="Old" editLabel="Rename cove" inputLabel="Cove name" onCommit={cancels} />);
+  await userEvent.click(screen.getByRole('button', { name: 'Rename cove' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Cove name' }));
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Cove name' }), { key: 'Enter' });
+  await screen.findByRole('button', { name: 'Rename cove' });
+  expect(cancels).not.toHaveBeenCalled();
+  cleanup();
+
+  const clears = vi.fn();
+  render(<EditableTitle
+    value="Old"
+    emptyCommit="clear"
+    editLabel="Rename wave"
+    inputLabel="Wave title"
+    onCommit={clears}
+  />);
+  await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
+  await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Wave title' }), { key: 'Enter' });
+  await screen.findByRole('button', { name: 'Rename wave' });
+  expect(clears).toHaveBeenCalledTimes(1);
+  expect(clears).toHaveBeenCalledWith('');
+});
+
+/*
+ * The arithmetic no-op survives `'clear'`: a title that is already blank has no
+ * state change to request, so the empty commit is still write-free. Red when
+ * `'clear'` is implemented as "always send when empty".
+ */
+it('writes nothing when an already-blank title is committed blank', async () => {
+  const onCommit = vi.fn();
+  render(<EditableTitle
+    value=""
+    placeholder="Untitled wave"
+    emptyCommit="clear"
+    editLabel="Rename wave"
+    inputLabel="Wave title"
+    onCommit={onCommit}
+  />);
+  await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
+  fireEvent.keyDown(screen.getByRole('textbox', { name: 'Wave title' }), { key: 'Enter' });
+  await screen.findByRole('button', { name: 'Rename wave' });
+  expect(onCommit).not.toHaveBeenCalled();
+});
+
 it('suppresses the synthesized click after Enter accepts an unchanged title', async () => {
   render(<EditableTitle value="Old" editLabel="Rename" inputLabel="Title" onCommit={() => undefined} />);
   await userEvent.click(screen.getByRole('button', { name: 'Rename' }));
