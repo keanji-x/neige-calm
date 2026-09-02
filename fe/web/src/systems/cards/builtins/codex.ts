@@ -1,4 +1,5 @@
 import type { CardComponentProps, CardEntry, KernelCardInput } from '../registry.js';
+import { isAssistantHarnessPayload } from './assistant.ts';
 import { isSpecHarnessPayload } from './spec.ts';
 import { TerminalCardView } from './terminal-card.tsx';
 import { terminalIdFromPayload } from './terminal.ts';
@@ -71,6 +72,12 @@ export const CODEX_CARD_ENTRY = Object.freeze({
     card.kind === 'codex'
       && !isSpecHarnessPayload(card.payload)
       && !isPlainChatPayload(card.payload)
+      /* #1189 — and the assistant marker, for the same reason as the two
+         above: `codex` is scanned before `assistant`, so without this clause
+         this entry claims every wave-assistant card and the headless
+         `ASSISTANT_CARD_ENTRY` is never reached. The card would then appear in
+         CARDS and on the board as an empty terminal. */
+      && !isAssistantHarnessPayload(card.payload)
       ? Object.freeze({
         type: 'codex',
         id: card.id,

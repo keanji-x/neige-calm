@@ -58,8 +58,20 @@ export function ChatList({
                 + (live ? ', live' : '')}
               onClick={() => onOpen(conversation)}
             >
+              {/* Both, never one instead of the other (#1189 §5).
+                  The row used to render the wave's title *in place of* the
+                  conversation's whenever it knew one, which was unambiguous
+                  only while a wave could contribute at most one row to this
+                  list. It can now contribute all of them, and N rows reading
+                  `Test wave` are N rows a sighted reader cannot tell apart —
+                  the difference lived in the `aria-label` alone. So the name
+                  is the row and the wave is what follows it, quieter and
+                  second, which is also the order the label says them in. */}
               <span className={styles.label}>
-                {showWave && waveTitle !== undefined ? waveTitle : name}
+                <span className={styles.name}>{name}</span>
+                {showWave && waveTitle !== undefined && (
+                  <span className={styles.wave}>{waveTitle}</span>
+                )}
               </span>
             </button>
             {/* Trailing, outside the button — the same shape a wave row takes in

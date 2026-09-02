@@ -19,6 +19,31 @@
  * (blue/green/…) have no counterpart in our vocabulary yet.
  */
 @layer astryx {
+  /*
+   * ── One field edge, not two ───────────────────────────────────────────────
+   *
+   * base.css states this app's text-field recipe as "a rule, not a box", and it
+   * states it on the element: every `<input>` carries a hairline underline and
+   * doubles it to a full-strength rule on focus. astryx draws the same edge in
+   * the other place — a bordered box on the *wrapper* around the input — so an
+   * astryx field rendered in this app shows both at once: a rule sitting inside
+   * a box, which is the one shape neither system meant to produce.
+   *
+   * Inside a wrapper the wrapper is the field's edge, so the inner element goes
+   * back to being just text. It is written here rather than in the two modules
+   * that render astryx inputs because it is a property of the seam between the
+   * two systems, not of either call site — a per-module copy is how one of them
+   * ends up keeping the double rule after the other is fixed.
+   *
+   * The class is astryx's own theme hook (`themeProps('text-input')`), which is
+   * why it is registered in `global-classes.yaml` alongside the other vendor
+   * surfaces this app restyles.
+   */
+  .astryx-text-input input {
+    border-block-end: none;
+    box-shadow: none;
+  }
+
   :root {
     /* Surfaces */
     --color-background-body: var(--bg);

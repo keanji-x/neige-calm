@@ -34,10 +34,17 @@ describe('DirectoryBrowser behavior', () => {
   it('rejects a non-absolute Enter path', async () => {
     const { input } = await ready(); fireEvent.change(input, { target: { value: 'relative' } }); fireEvent.keyDown(input, { key: 'Enter' }); expect(screen.getByRole('alert').textContent).toBe('Enter an absolute path');
   });
+  /* Named by its text and not by `getByRole('status')` alone: every astryx
+     `Button` renders an always-present, empty `role="status"` live region of
+     its own (`Button.tsx`), so this surface's three buttons make the bare role
+     query ambiguous. The assertion is unchanged in what it locks — the row that
+     says Loading is a live region — and both halves still fail on their own if
+     the row loses its text or its role. */
   it('shows loading while a listing request is pending', () => {
     const pending = new Promise<DirectoryListing>(() => undefined);
     render(<DirectoryBrowser listDirectory={() => pending} initialPath={null} onCancel={vi.fn()} onSelect={vi.fn()}/>);
-    expect(screen.getByRole('status').textContent).toContain('Loading');
+    const loading = screen.getByText('Loading…');
+    expect(loading.getAttribute('role')).toBe('status');
   });
   it('resets active descendant when filtering changes', async () => {
     const { input } = await ready(); expect(input.getAttribute('aria-activedescendant')).toBe(screen.getByRole('option', { name: 'src' }).id);
@@ -62,6 +69,52 @@ describe('DirectoryBrowser behavior', () => {
     expect(inputs[1].getAttribute('aria-controls')).toBe(lists[1].id);
     expect(inputs[0].getAttribute('aria-activedescendant')).toBe(options[0].id);
     expect(inputs[1].getAttribute('aria-activedescendant')).toBe(options[1].id);
+  });
+  /* The list is a bounded scrolling window, and arrow keys move
+     `aria-activedescendant` rather than DOM focus — so nothing scrolls the
+     highlight into view unless this component does it. Red when the effect is
+     dropped: the highlight walks under the fold and Enter acts on a row that is
+     not on screen. `block: 'nearest'` and not `center`: it must scroll only
+     when the row is actually out of view.
+
+     jsdom implements no scrolling at all, so `scrollIntoView` is installed for
+     the case and removed after — the component's own `typeof` guard is what
+     makes it a no-op the rest of the time. */
+  it('scrolls the highlighted option into view as the keyboard moves it', async () => {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    const deep: DirectoryListing = { path: '/work', parent: '/', entries: [
+      { name: 'a', path: '/work/a', isDirectory: true },
+      { name: 'b', path: '/work/b', isDirectory: true },
+    ] };
+    render(<DirectoryBrowser listDirectory={() => Promise.resolve(deep)} initialPath="/work" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+    await screen.findByRole('option', { name: 'b' });
+    scrollIntoView.mockClear();
+    fireEvent.keyDown(screen.getByRole('combobox'), { key: 'ArrowDown' });
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    expect(scrollIntoView.mock.instances[0]).toBe(screen.getByRole('option', { name: 'b' }));
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+  });
+  it('walks up to the listing parent from the pointer', async () => {
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Parent directory' }));
+    await waitFor(() => expect(listing).toHaveBeenLastCalledWith('/'));
+  });
+  it('offers no way up out of a listing that has no parent', async () => {
+    const filesystemRoot: DirectoryListing = { path: '/', parent: null, entries: [{ name: 'work', path: '/work', isDirectory: true }] };
+    render(<DirectoryBrowser listDirectory={() => Promise.resolve(filesystemRoot)} initialPath="/" onCancel={vi.fn()} onSelect={vi.fn()}/>);
+    await screen.findByRole('option', { name: 'work' });
+    expect(screen.getByRole('button', { name: 'Parent directory' }).hasAttribute('disabled')).toBe(true);
+  });
+  /* Two different facts, and the difference decides what the reader does next:
+     back up a character, or navigate somewhere else entirely. */
+  it('tells an empty directory apart from a filtered-out one', async () => {
+    const { input } = await ready();
+    fireEvent.change(input, { target: { value: '/work/zzz' } });
+    expect(screen.getByText('No matches')).toBeTruthy();
+    fireEvent.change(input, { target: { value: '/work/src/' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(await screen.findByText('Empty directory')).toBeTruthy();
   });
   it('returns focus through two animation frames after loading', async () => {
     const callbacks: FrameRequestCallback[] = [];

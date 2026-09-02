@@ -8,11 +8,13 @@ import {
 import type { ApiFailure } from '../api/types.js';
 import {
   buildTranscript, CONVERSATION_NAME_MAX, conversationName, conversationNameFrom,
+  CONVERSATION_STATE_SOURCE,
   coveConversationCardId, coveConversationFailure, coveConversationsOperation,
-  createCoveConversationOperation,
+  createCoveConversationOperation, createWaveConversationOperation,
   harnessItemToActivity, harnessItemToTurn, isLiveConversation, mergeTranscript, readableCommand,
-  reconcileUserEchoes, toCoveConversation, toWaveConversation, waveConversationsOperation,
-  type Conversation, type ConversationTurn,
+  reconcileUserEchoes, toCoveConversation, toWaveConversation, waveConversationCardId,
+  waveConversationsOperation,
+  type Conversation, type ConversationKind, type ConversationTurn,
 } from './conversation.js';
 
 function conversation(overrides: Partial<Conversation> = {}): Conversation {
@@ -207,6 +209,65 @@ describe('wave conversations', () => {
    */
   it('does not collapse into the cove chat kind', () => {
     expect(toWaveConversation(row).kind).not.toBe(toCoveConversation({ ...row, kind: 'shared-chat' }).kind);
+  });
+
+  it('posts the first message to the wave, carrying the key as a header', () => {
+    const operation = createWaveConversationOperation('wave 1', 'hello', 'key-a');
+    expect(operation.method).toBe('POST');
+    expect(operation.path).toBe('/api/waves/wave%201/conversations');
+    expect(operation.body).toEqual({ text: 'hello' });
+    expect(operation.headers).toEqual({ 'Idempotency-Key': 'key-a' });
+    expect(operation.responseSchema.parse(row).kind).toBe('wave-assistant');
+  });
+
+  /*
+   * A golden, and the value is the server's: it is copied from
+   * `the_derived_card_id_depends_only_on_wave_and_idempotency_key` in
+   * `crates/calm-server/src/conversation_keys.rs`, whose doc comment names this
+   * function as the mirror it must be written against.
+   *
+   * The last assertion is the one that would survive a plausible mistake. The
+   * two derivations differ **only** in the namespace inside the hashed string —
+   * the visible `conv-` prefix is deliberately identical — so a wave derivation
+   * that reused the cove prefix produces a perfectly well-shaped id that names
+   * another endpoint's card, and a draft that adopted it would open a cove chat
+   * as if it were the words just typed.
+   */
+  it('derives the same card id the server does, from its own namespace', () => {
+    expect(waveConversationCardId('wave-1', 'key-a')).toBe('conv-9778c6de9be6196b5b44fdd411e5c305');
+    expect(waveConversationCardId('wave-1', 'key-b')).not.toBe(waveConversationCardId('wave-1', 'key-a'));
+    expect(waveConversationCardId('wave-2', 'key-a')).not.toBe(waveConversationCardId('wave-1', 'key-a'));
+    expect(waveConversationCardId('id-1', 'key-a')).not.toBe(coveConversationCardId('id-1', 'key-a'));
+  });
+});
+
+/*
+ * Every kind says who owns its `state`, and the table is total.
+ *
+ * The router branches on this to decide whether a row's state is the server's
+ * reading or the route's own phase, and the branch it replaces was
+ * `kind === 'shared-chat' ? … : …`: a kind added to the union fell into the
+ * `else` and had the server's state silently swapped for an invented one. The
+ * `Record` makes that a compile error; this test makes it one at runtime too,
+ * for the same reason `register.contract.test.ts` re-checks `headless` — a type
+ * assertion can forge the compile-time half.
+ */
+describe('CONVERSATION_STATE_SOURCE', () => {
+  const KINDS: readonly ConversationKind[] = [
+    'terminal', 'codex', 'claude', 'shared-spec', 'shared-chat', 'wave-assistant',
+  ];
+
+  it('decides every kind, and only those', () => {
+    expect(Object.keys(CONVERSATION_STATE_SOURCE).sort()).toEqual([...KINDS].sort());
+    for (const kind of KINDS) expect(CONVERSATION_STATE_SOURCE[kind]).toMatch(/^(server|route)$/);
+  });
+
+  /* The two server-listed kinds are exactly the two that arrive from a list
+     endpoint. Written out rather than derived, so widening it is a decision
+     somebody has to make here. */
+  it('names the listed kinds as the server\'s to report', () => {
+    expect(KINDS.filter((kind) => CONVERSATION_STATE_SOURCE[kind] === 'server'))
+      .toEqual(['shared-chat', 'wave-assistant']);
   });
 });
 

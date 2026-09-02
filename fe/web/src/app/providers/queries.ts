@@ -37,6 +37,7 @@ import {
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
   specRunOperation, coveConversationsOperation, createCoveConversationOperation,
+  createWaveConversationOperation, waveConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
 import type { ServerVersionInfo } from './public.tsx';
@@ -259,6 +260,66 @@ export function useCoveConversationMutations(
     create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
     refresh: () => client.fetchQuery({
       ...coveConversationsQueryOptions(transport, coveId, unauthorized),
+      staleTime: 0,
+    }),
+  };
+}
+
+/**
+ * One wave's assistant conversations (#1189 §4.1).
+ *
+ * The key it registers is `queryKeys.waveConversations(waveId)`, which the
+ * event bridge has mapped since S4 — so the list goes live the moment this
+ * query mounts, with no second refresh path of its own.
+ */
+export function waveConversationsQueryOptions(
+  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+) {
+  return {
+    queryKey: queryKeys.waveConversations(waveId),
+    queryFn: (): Promise<Conversation[]> =>
+      runOperation(transport, waveConversationsOperation(waveId), unauthorized),
+  };
+}
+
+/**
+ * The wave twin of `useCoveConversationMutations`, with the same two doors and
+ * the same reasons for them.
+ *
+ * Not shared with the cove version through a parameterised helper: the two
+ * endpoints have different paths, different derived namespaces and different
+ * cache keys, and the only thing a shared helper would save is four lines of
+ * plumbing at the cost of making "which list does a create write through to?"
+ * a question you have to trace.
+ */
+export function useWaveConversationMutations(
+  transport: ApiTransportPort, waveId: string, unauthorized: UnauthorizedChannel,
+): CoveConversationMutations {
+  const client = useQueryClient();
+  const create = useMutation({
+    mutationFn: ({ text, idempotencyKey }: { text: string; idempotencyKey: string }) =>
+      runOperation(transport, createWaveConversationOperation(waveId, text, idempotencyKey), unauthorized),
+    onSuccess: (row) => {
+      /* Written through as well as invalidated, for the same reason the cove
+         list is: the drawer switches to this row in the same tick and a list
+         that does not hold it yet renders with no active row. */
+      client.setQueryData<Conversation[]>(queryKeys.waveConversations(waveId), (current) => {
+        const rows = current ?? [];
+        return rows.some((candidate) => candidate.id === row.id)
+          ? rows.map((candidate) => candidate.id === row.id ? row : candidate)
+          : [...rows, row];
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.waveConversations(waveId) });
+      /* The card is new on the wave, so the wave's own detail — which is where
+         the CARDS panel, the grid and the Today open-request all read cards
+         from — is now one card short of the truth. */
+      void client.invalidateQueries({ queryKey: queryKeys.waveDetail(waveId) });
+    },
+  });
+  return {
+    create: (text, idempotencyKey) => create.mutateAsync({ text, idempotencyKey }),
+    refresh: () => client.fetchQuery({
+      ...waveConversationsQueryOptions(transport, waveId, unauthorized),
       staleTime: 0,
     }),
   };

@@ -98,6 +98,35 @@ export const CONVERSATION_KIND_LABEL: Readonly<Record<ConversationKind, string>>
 });
 
 /**
+ * Who is entitled to say what state a conversation of this kind is in.
+ *
+ * `'server'` — the row arrives from a list endpoint that read
+ * `worker_sessions.state`, so the value it carries is a *reading* and must be
+ * shown as sent. `run_status_for` writes `turn_pending` and never `running` for
+ * a headless harness, and everything outside the four live states arrives as
+ * `null`; substituting a locally-invented `'idle'` for that `null` would assert
+ * a state nobody read.
+ *
+ * `'route'` — nothing listed this conversation. The surface reading its harness
+ * is the only thing that knows anything about it, so its own phase is the whole
+ * answer.
+ *
+ * It is a total `Record` on purpose. The branch this replaces was written
+ * `scopeKind === 'shared-chat' ? … : …`, and a new kind falling into that
+ * `else` **silently** dropped the server's state — no compile error, no failing
+ * type. A missing row here is a compile error instead, which is the only reason
+ * this table exists rather than a two-armed conditional.
+ */
+export const CONVERSATION_STATE_SOURCE: Readonly<Record<ConversationKind, 'server' | 'route'>> = Object.freeze({
+  terminal: 'route',
+  codex: 'route',
+  claude: 'route',
+  'shared-spec': 'route',
+  'shared-chat': 'server',
+  'wave-assistant': 'server',
+});
+
+/**
  * The one name a conversation shows, wherever it is shown.
  *
  * It lives here because two surfaces show it — the list in the panel and the
@@ -390,6 +419,51 @@ export function waveConversationsOperation(waveId: string): ApiOperation<Convers
  */
 export function coveConversationCardId(coveId: string, idempotencyKey: string): string {
   return `conv-${sha256Hex(`cove-chat-conversation:${coveId}:${idempotencyKey}`).slice(0, 32)}`;
+}
+
+/**
+ * Mint a wave assistant conversation and deliver its first message (#1189 §4.1).
+ *
+ * The cove twin's contract holds verbatim, including the four retry arms the
+ * server documents on the endpoint, so the reason `idempotencyKey` is a
+ * parameter is the same: it identifies the *draft*, and a key minted per call
+ * would be a new key per attempt.
+ *
+ * What is not shared is the derived namespace — see `waveConversationCardId`.
+ */
+export function createWaveConversationOperation(
+  waveId: string, text: string, idempotencyKey: string,
+): ApiOperation<Conversation> {
+  return {
+    method: 'POST',
+    path: `/api/waves/${encodeURIComponent(waveId)}/conversations`,
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: { text },
+    responseSchema: waveConversationSummarySchema.transform(toWaveConversation),
+  };
+}
+
+/**
+ * The wave flavour of `coveConversationCardId`, and it exists for exactly the
+ * same reason: a failed create has to be able to ask "is **my** row there?"
+ * rather than "did the list grow?".
+ *
+ * `derive_wave_conversation_keys` (`crates/calm-server/src/conversation_keys.rs`)
+ * is `"conv-" + sha256("wave-conversation:{wave_id}:{idempotency_key}")[..32]`,
+ * lower-case hex, and its doc comment names this function as the mirror it must
+ * be written against. The server's own golden is asserted here too
+ * (`conversation.test.ts`), because two implementations of one formula that
+ * agree only by inspection agree until one of them is edited.
+ *
+ * **The namespace is the load-bearing difference.** A cove id and a wave id are
+ * drawn from the same id space, so sharing the `cove-chat-conversation:` prefix
+ * would let one `(id, key)` pair name one card from two endpoints — a wave
+ * draft could adopt a cove chat's row and open somebody else's conversation.
+ * The visible `conv-` prefix is deliberately identical; the separation lives
+ * inside the hashed string.
+ */
+export function waveConversationCardId(waveId: string, idempotencyKey: string): string {
+  return `conv-${sha256Hex(`wave-conversation:${waveId}:${idempotencyKey}`).slice(0, 32)}`;
 }
 
 /**

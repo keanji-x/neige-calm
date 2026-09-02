@@ -7,7 +7,8 @@ import { Icon, type IconName } from './public.tsx';
 afterEach(cleanup);
 
 const names: readonly IconName[] = [
-  'chevron-left', 'chevron-right', 'arrow-left', 'arrow-up', 'plus', 'close', 'chat',
+  'chevron-left', 'chevron-right', 'arrow-left', 'arrow-up', 'plus', 'close',
+  'chat', 'folder', 'file',
 ];
 
 describe('Icon', () => {

@@ -76,6 +76,19 @@ async function openConversation() {
 }
 
 /*
+ * `combobox`, not `textbox`, since #1189.
+ *
+ * The wave route is a `'rows'` route now, which means the composer carries the
+ * `/` command menu — and `useTriggerMenu` only emits the combobox role when a
+ * trigger is really configured. The accessibility tree is where that difference
+ * is honest, so the lookup follows it rather than hiding it behind a `*ByRole`
+ * that would match either.
+ */
+function messageField(): HTMLElement {
+  return screen.getByRole('combobox', { name: 'Message' });
+}
+
+/*
  * A conversation that actually has a transcript. It used to exist because the
  * reset control was only offered when there was something to throw away; reset
  * is gone (#1139) and this survives because "the drawer over a non-empty
@@ -197,7 +210,7 @@ describe('spec conversation regressions', () => {
     await openConversationWithTurns();
     const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
 
-    const field = within(drawer).getByRole('textbox', { name: 'Message' });
+    const field = within(drawer).getByRole('combobox', { name: 'Message' });
     await typeInto(field, 'a message');
     await sendWithEnter(field);
 
@@ -220,29 +233,38 @@ describe('spec conversation regressions', () => {
   });
 
   /*
-   * The wave route gets the `+` and deliberately does *not* get `/new` — see
-   * `startAnother` in the router: this route has exactly one spec card, so
-   * `start()` here reopens the row already open rather than creating anything,
-   * and a command named `New conversation` that does nothing is worse than no
-   * command. The observable consequence is in the accessibility tree, which is
-   * the honest place to assert it: with no trigger configured the field stays
-   * a plain `textbox` instead of becoming a combobox that can never expand.
+   * The wave route used to be the one route with a `+` and no `/new`: it had
+   * exactly one spec card, `start()` reopened the row already open, and a
+   * command named `New conversation` that reopens the conversation you are
+   * reading is a lie told by a control.
+   *
+   * #1189 removed the premise. A wave holds as many assistant conversations as
+   * you start, so `/new` here means what it means on a cove, and the composer
+   * becomes the combobox `useTriggerMenu` emits when a trigger is configured.
+   * Asserted through the accessibility tree, which is where the difference is
+   * visible to a reader.
    */
-  it('leaves the wave composer a plain textbox, with no / command menu', async () => {
+  it('offers /new in the wave composer, now that a wave can hold a second conversation', async () => {
     setupWithTurns();
     await openConversationWithTurns();
-    const field = screen.getByRole('textbox', { name: 'Message' });
-    expect(field.getAttribute('role')).toBe('textbox');
-    expect(field.hasAttribute('aria-haspopup')).toBe(false);
-    expect(screen.queryByRole('combobox', { name: 'Message' })).toBeNull();
+    const field = messageField();
+    expect(field.getAttribute('aria-haspopup')).toBe('listbox');
+    expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
   });
 
+  /*
+   * No turn count on these labels since #1189: a wave route lists rows, and a
+   * row it has not opened is one it cannot count the turns of. `ChatList` says
+   * nothing rather than `0 turns`, which would be a claim. The open row still
+   * counts, because the drawer is reading its transcript — that is what the
+   * Today test below asserts.
+   */
   it('keeps a wave route conversation list scoped after visiting another wave', async () => {
     const { router } = setup();
-    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat' });
     await router.navigate({ to: '/wave/w2' });
-    await screen.findByRole('button', { name: 'Conversation Second chat, 0 turns' });
-    expect(screen.queryByRole('button', { name: 'Conversation Spec chat, 0 turns' })).toBeNull();
+    await screen.findByRole('button', { name: 'Conversation Second chat' });
+    expect(screen.queryByRole('button', { name: 'Conversation Spec chat' })).toBeNull();
   });
 
   it('keeps a wave conversation on Today after navigating away from the wave', async () => {
@@ -255,12 +277,27 @@ describe('spec conversation regressions', () => {
     expect(conversation.textContent).toContain('Test wave');
   });
 
+  /*
+   * #1189 §5.1 / G5 — and the point is that the wave was only *visited*.
+   *
+   * The row was never opened, so nothing here went through the open-row
+   * remember: the wave route writes the rows it lists into the registry as it
+   * lists them, which is the only way an assistant conversation — which exists
+   * nowhere but in that list — can ever reach Today.
+   */
+  it('lists a wave conversation on Today after merely visiting the wave', async () => {
+    const { router } = setup();
+    await screen.findByRole('button', { name: 'Conversation Spec chat' });
+    await router.navigate({ to: '/' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave' });
+  });
+
   it('navigates from a Today conversation to its wave before opening it', async () => {
     const { requests } = setup();
-    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat' });
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
     fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Spec chat, on Test wave, 0 turns',
+      name: 'Conversation Spec chat, on Test wave',
     }));
     await screen.findByRole('complementary', { name: 'Spec chat' });
     expect(window.location.pathname).toBe(`${APP_BASEPATH}/wave/w1`);
@@ -276,12 +313,12 @@ describe('spec conversation regressions', () => {
    */
   it('does not list a wave spec conversation on that wave\'s cove', async () => {
     setup();
-    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat' });
     fireEvent.click(screen.getByRole('button', { name: 'Work' }));
     await screen.findByText('No conversations yet.');
     expect(screen.queryByRole('button', { name: /Conversation Spec chat/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'neige · calm' }));
-    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 0 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave' });
   });
 
   /*
@@ -300,17 +337,28 @@ describe('spec conversation regressions', () => {
   it('remembers a card again after the open card is swapped and swapped back', async () => {
     const { client, router } = setup((request) => request.path.includes('/harness/items')
       ? ok(harnessRows(3)) : undefined);
-    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Spec chat' }));
+    /* The open row is the one this route can count, so it is the one that grows
+       a turn count — and waiting for it is also how we know the transcript has
+       arrived before the card is swapped underneath it. */
+    await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' });
 
     client.setQueryData(queryKeys.harnessItems(CARD_SAME_WAVE.id), {
       pages: [harnessRows(3)], pageParams: [0],
     });
     client.setQueryData(queryKeys.waveDetail(WAVE.id), { wave: WAVE, cards: [CARD_SAME_WAVE], overlays: [] });
+    /* The listed row is the swapped-in card, and the drawer's row is gone with
+       the old one — a `'rows'` route lists what the server (here, the wave
+       detail) says, so the count only comes back when this one is opened. */
+    fireEvent.click(await screen.findByRole('button', { name: 'Conversation Other chat' }));
     await screen.findByRole('button', { name: 'Conversation Other chat, 3 turns' });
     client.setQueryData(queryKeys.waveDetail(WAVE.id), { wave: WAVE, cards: [CARD], overlays: [] });
-    await screen.findByRole('button', { name: 'Conversation Spec chat, 3 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat' });
     await router.navigate({ to: '/' });
+    /* Both are on Today, and the first one still carries the transcript it was
+       remembered with — the swap did not cost it. */
     await screen.findByRole('button', { name: 'Conversation Spec chat, on Test wave, 3 turns' });
+    await screen.findByRole('button', { name: 'Conversation Other chat, on Test wave, 3 turns' });
   });
 
   it('clears an unclaimed open request after a wave without a spec card resolves', async () => {
@@ -324,18 +372,18 @@ describe('spec conversation regressions', () => {
       }
       return undefined;
     });
-    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat' });
     await router.navigate({ to: '/' });
     omitTargetCard = true;
     client.removeQueries({ queryKey: queryKeys.waveDetail(WAVE.id) });
     fireEvent.click(await screen.findByRole('button', {
-      name: 'Conversation Spec chat, on Test wave, 0 turns',
+      name: 'Conversation Spec chat, on Test wave',
     }));
     await screen.findByText('No cards yet.');
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
 
     await router.navigate({ to: '/wave/w2' });
-    await screen.findByRole('button', { name: 'Conversation Spec chat, 0 turns' });
+    await screen.findByRole('button', { name: 'Conversation Spec chat' });
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
   });
 
@@ -362,6 +410,10 @@ describe('spec conversation regressions', () => {
     ];
     setup((request) => request.path.includes('/harness/items') ? ok(rows) : undefined);
     await openConversation();
+    /* The history is fetched when the row is *opened* now — the wave route no
+       longer holds a card scope before that — so the transcript lands a round
+       trip after the drawer does. */
+    await screen.findByText('interleaved reply');
     const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
     const actionIndex = drawer.textContent?.indexOf('Ran') ?? -1;
     const replyIndex = drawer.textContent?.indexOf('interleaved reply') ?? -1;
@@ -377,8 +429,8 @@ describe('spec conversation regressions', () => {
     };
     setup((request) => request.path.includes('/harness/items') ? ok([thought]) : undefined);
     await openConversation();
-    expect(screen.getByText('Thought')).toBeTruthy();
-    const field = screen.getByRole('textbox', { name: 'Message' });
+    expect(await screen.findByText('Thought')).toBeTruthy();
+    const field = messageField();
     await typeInto(field, 'next message');
     await sendWithEnter(field);
     expect(await screen.findByText('next message')).toBeTruthy();
@@ -400,7 +452,7 @@ describe('spec conversation regressions', () => {
     const pending = new Promise<ApiTransportResponse>((_resolve, rejectPromise) => { reject = rejectPromise; });
     const { requests } = setup((request) => request.path.endsWith('/spec/input') ? pending : undefined);
     await openConversation();
-    const field = screen.getByRole('textbox', { name: 'Message' });
+    const field = messageField();
     await typeInto(field, 'hello');
     await sendWithEnter(field);
     await sendWithEnter(field);
@@ -412,9 +464,13 @@ describe('spec conversation regressions', () => {
   it('invalidates history and phase after a successful send', async () => {
     const { requests } = setup();
     await openConversation();
+    await waitFor(() => {
+      expect(requests.filter((request) => request.path.includes('/harness/items')).length).toBeGreaterThan(0);
+      expect(requests.filter((request) => request.path.endsWith('/spec/run')).length).toBeGreaterThan(0);
+    });
     const beforeHistory = requests.filter((request) => request.path.includes('/harness/items')).length;
     const beforeRun = requests.filter((request) => request.path.endsWith('/spec/run')).length;
-    const field = screen.getByRole('textbox', { name: 'Message' });
+    const field = messageField();
     await typeInto(field, 'hello');
     await sendWithEnter(field);
     await waitFor(() => {
@@ -447,7 +503,13 @@ describe('spec conversation regressions', () => {
     });
     await openConversation();
     const drawer = screen.getByRole('complementary', { name: 'Spec chat' });
-    fireEvent.keyDown(drawer, { key: 'Escape' });
+    /* The phase query starts with the drawer, so the turn is only known to be
+       running a round trip later — and Escape does nothing until it is. */
+    await waitFor(() => expect(requests.some((request) => request.path.endsWith('/spec/run'))).toBe(true));
+    await waitFor(() => {
+      fireEvent.keyDown(drawer, { key: 'Escape' });
+      expect(requests.filter((request) => request.path.endsWith('/spec/interrupt'))).toHaveLength(1);
+    });
     fireEvent.keyDown(drawer, { key: 'Escape' });
     expect(requests.filter((request) => request.path.endsWith('/spec/interrupt'))).toHaveLength(1);
     expect(screen.getByRole('complementary', { name: 'Spec chat' })).toBeTruthy();
