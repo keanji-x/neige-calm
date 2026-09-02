@@ -794,8 +794,9 @@ pub struct GetSpecRunResponse {
 ///   them its own way, and the correct division is not the obvious one.
 /// - **`total_tokens` is NOT shipped.** The stored value keeps it (it is the
 ///   honest lifetime cost), but `tokenUsage.total` is a cumulative sum across
-///   every response in the thread — unbounded, routinely several times the
-///   window — and the single most likely bug in any future UI is a meter
+///   every response in the thread — unbounded, and measured at 253.8x the
+///   window in the captured frame this slice's tests run on — and the single
+///   most likely bug in any future UI is a meter
 ///   drawn from it. Handing the frontend both numbers and trusting it to pick
 ///   the right one is how that bug gets written. It cannot pick wrong if only
 ///   one number crosses the wire.
@@ -814,6 +815,16 @@ pub struct SpecRunTokenUsage {
     /// the window. That last case is deliberately NOT clamped to 100 — see
     /// `TokenUsage::percent`. Render the raw count with no meter.
     pub percent: Option<f64>,
+    /// Wall-clock ms of the codex frame this reading came from.
+    ///
+    /// Shipped because the reading survives a reboot: it rides the runtime
+    /// snapshot, so a harness respawned by boot recovery or by lazy recovery
+    /// serves whatever number was last observed — possibly months ago — and
+    /// without this field a rehydrated reading is indistinguishable on the
+    /// wire from a live one. A UI that draws a meter needs to be able to say
+    /// "as of then", or to stop drawing it. The kernel does not pick a
+    /// staleness threshold; it ships the timestamp so a reader can.
+    pub at_ms: i64,
 }
 
 impl From<&TokenUsage> for SpecRunTokenUsage {
@@ -822,6 +833,7 @@ impl From<&TokenUsage> for SpecRunTokenUsage {
             used_tokens: usage.used_tokens,
             context_window: usage.context_window,
             percent: usage.percent(),
+            at_ms: usage.at_ms,
         }
     }
 }

@@ -65,6 +65,26 @@ pub struct HarnessSnapshot {
     /// cost the opposite: `assert_known_schema` panics on an unknown version,
     /// so a bump makes every live snapshot unreadable by the older binary —
     /// it would turn a lossless rollback into a boot panic.
+    ///
+    /// The first direction is now a *tested* claim, not only a read one:
+    /// `a_pre_1255_snapshot_without_token_usage_still_deserializes` below
+    /// feeds a literal that omits the key. It has to be a literal — every
+    /// other call site in the suite hands `from_value_strict` JSON that a new
+    /// binary just serialized, so `token_usage` is always present and the
+    /// absent-key path is otherwise never exercised.
+    ///
+    /// What that test actually pins, measured rather than assumed: deleting
+    /// `#[serde(default)]` from this field changes **nothing**, because
+    /// serde's derive already treats a missing `Option<T>` field as `None`.
+    /// The attribute is belt-and-braces and the test stays green without it —
+    /// verified by removing it and re-running. What *does* redden the test is
+    /// the field becoming genuinely required (a `deserialize_with`, or a
+    /// non-`Option` type), and the failure is not a missing field: it is
+    /// `is_harness_snapshot_value` answering false for every pre-#1255 row,
+    /// and `HarnessSnapshot::from_value_strict` **panicking** in boot recovery
+    /// (`harness/mod.rs`, which unlike `routes/cards.rs` has no
+    /// pre-validation guard) — i.e. every existing harness unrecoverable on
+    /// upgrade. That is the mutation the test was verified against.
     #[serde(default)]
     pub token_usage: Option<TokenUsage>,
 }
@@ -179,5 +199,64 @@ impl From<&HarnessState> for HarnessPhaseTag {
             HarnessState::Resumed { .. } => Self::Resumed,
             HarnessState::Wedged { .. } => Self::Wedged,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// Forward compatibility as an executed test rather than an asserted
+    /// claim (#1255 S3 review).
+    ///
+    /// This literal is a snapshot as a **pre-#1255 binary wrote it**: no
+    /// `token_usage` key at all. Nothing else in the suite can catch a
+    /// regression here, because every other `from_value_strict` call site
+    /// feeds it JSON a *current* binary just serialized, in which the key is
+    /// always present.
+    ///
+    /// Mutation-verified: removing `#[serde(default)]` alone does NOT redden
+    /// it (serde already reads a missing `Option` field as `None`), but making
+    /// the field genuinely required does — `#[serde(deserialize_with =
+    /// "Option::<TokenUsage>::deserialize")]` fails the
+    /// `is_harness_snapshot_value` assertion below. That red is the same red
+    /// as every deployed harness failing to recover on upgrade: boot recovery
+    /// (`harness/mod.rs`) calls `from_value_strict` with no pre-validation, so
+    /// it would panic.
+    #[test]
+    fn a_pre_1255_snapshot_without_token_usage_still_deserializes() {
+        let pre_1255 = json!({
+            "schema_version": HARNESS_SNAPSHOT_SCHEMA_VERSION,
+            "mode": HARNESS_MODE,
+            "phase": "idle",
+            "push_watermark": 42,
+            "pending_queue": [],
+            "pending_envelope_ids": [],
+            "last_thread_id": "thread-pre-1255",
+            "last_turn_id": null,
+            "last_report_body_sha256": null,
+            "last_seen_head": null,
+            "issued_turn_head": null,
+            "wedged_reason": null
+        });
+        assert!(
+            pre_1255.get("token_usage").is_none(),
+            "the point of this literal is the ABSENT key; do not add it"
+        );
+
+        assert!(
+            is_harness_snapshot_value(&pre_1255),
+            "a pre-#1255 row must still be recognised as a harness snapshot — \
+             `routes::cards::get_spec_run` uses this to decide dormant-vs-live"
+        );
+
+        let snapshot = HarnessSnapshot::from_value_strict(pre_1255);
+        assert_eq!(
+            snapshot.token_usage, None,
+            "an absent reading defaults to None, not to a zeroed reading"
+        );
+        assert_eq!(snapshot.push_watermark, 42, "the rest still round-trips");
+        assert_eq!(snapshot.last_thread_id.as_deref(), Some("thread-pre-1255"));
     }
 }

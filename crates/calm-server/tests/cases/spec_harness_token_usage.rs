@@ -38,12 +38,24 @@ use tower::ServiceExt;
 /// test substitutes this in.
 const SEED_THREAD_ID: &str = "thread-token-usage";
 
-/// The `thread/tokenUsage/updated` payload, hand-authored from codex upstream
-/// `rust-v0.151.0` — see the `_provenance` block inside the file. It is
-/// deliberately not a capture: this box is production and cannot run codex
-/// turns. The numbers in it are chosen so that a `total`-derived percentage
-/// would be ~535%.
+/// A thread id that is emphatically not this harness's. See
+/// [`token_usage_from_a_foreign_thread_is_ignored`].
+const FOREIGN_THREAD_ID: &str = "thread-belonging-to-another-card";
+
+/// The `thread/tokenUsage/updated` payload — a **real capture** out of
+/// `~/.codex/sessions` on this box, cross-checked against the deployed
+/// binary's own `generate-json-schema` output. See the `_provenance` block
+/// inside the file for the source frame, the redactions, and the command.
+/// Because the numbers were not curated, they are more damning than any
+/// invented ones: a `total`-derived percentage would be ~26607%.
 const USAGE_FIXTURE: &str = include_str!("../fixtures/thread_token_usage_updated.json");
+
+/// `last.totalTokens` in the captured frame.
+const CAPTURED_USED: i64 = 113_356;
+/// `total.totalTokens` in the captured frame — 253.8x the window.
+const CAPTURED_TOTAL: i64 = 65_570_537;
+/// `modelContextWindow` in the captured frame.
+const CAPTURED_WINDOW: i64 = 258_400;
 
 /// The fixture's wire `params`, with the placeholder `threadId` replaced by
 /// the seeded one.
@@ -57,13 +69,22 @@ fn fixture_params() -> Value {
     params
 }
 
-/// A frame built by editing the fixture's counts, so every test in this file
-/// still exercises the transcribed field layout rather than a hand-rolled
+/// A frame built by editing the captured frame's counts, so every test in
+/// this file still exercises the real field layout rather than a hand-rolled
 /// object that happens to have the two keys the parser reads.
 fn frame_with(last_total: i64, window: Value) -> Value {
     let mut params = fixture_params();
     params["tokenUsage"]["last"]["totalTokens"] = json!(last_total);
     params["tokenUsage"]["modelContextWindow"] = window;
+    params
+}
+
+/// The same frame, addressed to a thread this harness does not own. Built
+/// through `fixture_params` and then re-addressed, so the ONLY difference
+/// from a frame this harness must accept is the `threadId`.
+fn foreign_frame(last_total: i64, window: Value) -> Value {
+    let mut params = frame_with(last_total, window);
+    params["threadId"] = json!(FOREIGN_THREAD_ID);
     params
 }
 
@@ -268,20 +289,20 @@ async fn emit_and_wait(boot: &Boot, params: Value, expect_used: i64) -> TokenUsa
 /// THE central-trap regression at the integration layer, and the one to read
 /// first if this file goes red.
 ///
-/// The fixture's `total.totalTokens` is 1_400_000 against a 272_000 window —
-/// 5.1x over, which is an ordinary state for a long thread. The response must
-/// report the `last`-derived occupancy (60_000 → ~18.46%) and must not be
-/// anywhere near the ~535% that `total` produces. It must also not ship
-/// `total_tokens` at all: the reading is stored with it, and the wire type
-/// drops it precisely so no client can divide by the wrong number.
+/// The captured frame's `total.totalTokens` is 65_570_537 against a 258_400
+/// window — 253.8x over, which is what a long real thread looks like. The
+/// response must report the `last`-derived occupancy (113_356 → ~41.13%) and
+/// must not be anywhere near the ~26607% that `total` produces. It must also
+/// not ship `total_tokens` at all: the reading is stored with it, and the wire
+/// type drops it precisely so no client can divide by the wrong number.
 #[tokio::test]
 async fn spec_run_reports_percent_derived_from_last_not_the_lifetime_total() {
     let boot = boot().await;
     wait_for_notification_receiver(&boot.daemon).await;
 
-    let usage = emit_and_wait(&boot, fixture_params(), 60_000).await;
+    let usage = emit_and_wait(&boot, fixture_params(), CAPTURED_USED).await;
     assert_eq!(
-        usage.total_tokens, 1_400_000,
+        usage.total_tokens, CAPTURED_TOTAL,
         "the lifetime total is stored — it is just never the numerator"
     );
 
@@ -295,18 +316,31 @@ async fn spec_run_reports_percent_derived_from_last_not_the_lifetime_total() {
     assert_eq!(body["phase"], json!("idle"));
 
     let wire = &body["token_usage"];
-    assert_eq!(wire["used_tokens"], json!(60_000));
-    assert_eq!(wire["context_window"], json!(272_000));
+    assert_eq!(wire["used_tokens"], json!(CAPTURED_USED));
+    assert_eq!(wire["context_window"], json!(CAPTURED_WINDOW));
 
     let percent = wire["percent"].as_f64().expect("a renderable percentage");
-    let expected = 48_000.0 / 260_000.0 * 100.0;
+    let expected = 101_356.0 / 246_400.0 * 100.0;
     assert!(
         (percent - expected).abs() < 1e-9,
         "percent must be (last - 12000) / (window - 12000); got {percent}"
     );
     assert!(
         percent < 100.0,
-        "a total-derived percentage would be ~535%; got {percent}"
+        "a total-derived percentage would be ~26607%; got {percent}"
+    );
+
+    // #1255 S3 review — `at_ms` ships. Without it a reading rehydrated from a
+    // months-old snapshot is indistinguishable on the wire from a live one,
+    // and the field's own doc comment claims exactly that distinguishability.
+    assert_eq!(
+        wire["at_ms"].as_i64(),
+        Some(usage.at_ms),
+        "the frame's wall clock must reach the client; got {wire}"
+    );
+    assert!(
+        wire["at_ms"].as_i64().is_some_and(|at| at > 0),
+        "at_ms must be the real ingest clock, not a placeholder; got {wire}"
     );
 
     assert!(
@@ -326,7 +360,7 @@ async fn spec_run_keeps_a_known_context_window_across_a_null_frame() {
     let boot = boot().await;
     wait_for_notification_receiver(&boot.daemon).await;
 
-    emit_and_wait(&boot, fixture_params(), 60_000).await;
+    emit_and_wait(&boot, fixture_params(), CAPTURED_USED).await;
     emit_and_wait(&boot, frame_with(80_000, Value::Null), 80_000).await;
 
     let (status, body) = get(
@@ -338,7 +372,7 @@ async fn spec_run_keeps_a_known_context_window_across_a_null_frame() {
     let wire = &body["token_usage"];
     assert_eq!(
         wire["context_window"],
-        json!(272_000),
+        json!(CAPTURED_WINDOW),
         "a null modelContextWindow must not erase the window we already know"
     );
     assert_eq!(
@@ -347,7 +381,7 @@ async fn spec_run_keeps_a_known_context_window_across_a_null_frame() {
         "counts still come from the newest frame"
     );
     let percent = wire["percent"].as_f64().expect("still renderable");
-    let expected = 68_000.0 / 260_000.0 * 100.0;
+    let expected = 68_000.0 / 246_400.0 * 100.0;
     assert!((percent - expected).abs() < 1e-9, "got {percent}");
 
     boot.harness.shutdown().await.unwrap();
@@ -362,7 +396,12 @@ async fn spec_run_omits_the_percentage_when_usage_exceeds_the_window() {
     let boot = boot().await;
     wait_for_notification_receiver(&boot.daemon).await;
 
-    emit_and_wait(&boot, frame_with(272_001, json!(272_000)), 272_001).await;
+    emit_and_wait(
+        &boot,
+        frame_with(CAPTURED_WINDOW + 1, json!(CAPTURED_WINDOW)),
+        CAPTURED_WINDOW + 1,
+    )
+    .await;
 
     let (status, body) = get(
         boot.app.clone(),
@@ -373,10 +412,10 @@ async fn spec_run_omits_the_percentage_when_usage_exceeds_the_window() {
     let wire = &body["token_usage"];
     assert_eq!(
         wire["used_tokens"],
-        json!(272_001),
+        json!(CAPTURED_WINDOW + 1),
         "the raw count is the evidence and must still ship"
     );
-    assert_eq!(wire["context_window"], json!(272_000));
+    assert_eq!(wire["context_window"], json!(CAPTURED_WINDOW));
     assert_eq!(
         wire["percent"],
         Value::Null,
@@ -401,7 +440,7 @@ async fn spec_run_omits_the_percentage_when_usage_exceeds_the_window() {
 async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
     let boot = boot().await;
     wait_for_notification_receiver(&boot.daemon).await;
-    let live = emit_and_wait(&boot, fixture_params(), 60_000).await;
+    let live = emit_and_wait(&boot, fixture_params(), CAPTURED_USED).await;
     boot.harness.shutdown().await.unwrap();
 
     let row = boot
@@ -413,7 +452,7 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
     let stored = row.handle_state_json.expect("persisted handle state");
     assert_eq!(
         stored["token_usage"]["used_tokens"],
-        json!(60_000),
+        json!(CAPTURED_USED),
         "the reading must be in the runtime snapshot on disk, not only in memory"
     );
 
@@ -443,4 +482,75 @@ async fn token_usage_round_trips_through_the_persisted_runtime_snapshot() {
     );
 
     rehydrated.shutdown().await.unwrap();
+}
+
+/// THE cross-thread gate (#1255 S3 review). Card A must never show card B's
+/// context, and this is the only test that holds it.
+///
+/// `SpecHarness::run` subscribes to the daemon's *global* notification
+/// broadcast, so every harness on the box receives every
+/// `thread/tokenUsage/updated` frame from every thread. The sole filter is
+/// `on_notification`'s prologue comparing `notif.thread_id()` against the
+/// harness's own. Every other test in this file goes through `fixture_params`,
+/// which overwrites `threadId` with the seeded one — so none of them can see
+/// this. Its failure mode is not a crash or an error: it is a meter showing a
+/// plausible number that belongs to a different conversation.
+///
+/// The assertion is on the **window**, not the count, and that is deliberate.
+/// An ignored notification returns before `persist_snapshot`, so it leaves no
+/// trace to poll for — there is no barrier that says "the foreign frame has
+/// been processed and discarded". Sequencing a legitimate frame after it gives
+/// that barrier (the run loop handles the broadcast in order), but a count
+/// would then simply be overwritten and the test would pass either way. The
+/// window survives: `sticky_merge` keeps a window a previous frame established.
+/// So a foreign frame carrying a window, followed by a legitimate frame
+/// carrying none, leaves exactly one distinguishable state.
+///
+/// Mutation: delete the two-line `thread_id` guard at the top of
+/// `on_notification` and this goes red on `context_window`.
+#[tokio::test]
+async fn token_usage_from_a_foreign_thread_is_ignored() {
+    let boot = boot().await;
+    wait_for_notification_receiver(&boot.daemon).await;
+
+    // Another card's harness, mid-conversation, on the same daemon.
+    boot.daemon.emit_notification_for_test(Notification::Other {
+        method: "thread/tokenUsage/updated".into(),
+        params: foreign_frame(200_000, json!(400_000)),
+    });
+
+    // Our own next frame: it carries no window of its own, so any window on
+    // the wire afterwards can only have come from the foreign frame.
+    let usage = emit_and_wait(&boot, frame_with(55_555, Value::Null), 55_555).await;
+
+    assert_eq!(
+        usage.context_window, None,
+        "a frame addressed to another thread must not establish this \
+         harness's context window — the harness subscribes to a GLOBAL \
+         notification broadcast and the thread id is the only filter"
+    );
+    assert_eq!(
+        usage.used_tokens, 55_555,
+        "and its counts must not land either"
+    );
+
+    let (status, body) = get(
+        boot.app.clone(),
+        format!("/api/cards/{}/spec/run", boot.spec_card.id.as_str()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let wire = &body["token_usage"];
+    assert_eq!(
+        wire["context_window"],
+        Value::Null,
+        "the foreign window must not reach a client either; got {wire}"
+    );
+    assert_eq!(
+        wire["percent"],
+        Value::Null,
+        "no window, no percentage — a foreign window would have produced one"
+    );
+
+    boot.harness.shutdown().await.unwrap();
 }

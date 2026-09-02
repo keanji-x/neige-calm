@@ -6462,11 +6462,17 @@
       },
       "SpecRunTokenUsage": {
         "type": "object",
-        "description": "#1255 S3 — the context-usage half of [`GetSpecRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, routinely several times the\n  window — and the single most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
+        "description": "#1255 S3 — the context-usage half of [`GetSpecRunResponse`].\n\nA wire type distinct from the stored [`TokenUsage`], and the differences\nare the point rather than an accident of layering:\n\n- **`percent` is computed here, on the server.** One baseline adjustment,\n  one over-window rule, one place they can be got wrong. Shipping a\n  numerator and a denominator instead would invite the client to divide\n  them its own way, and the correct division is not the obvious one.\n- **`total_tokens` is NOT shipped.** The stored value keeps it (it is the\n  honest lifetime cost), but `tokenUsage.total` is a cumulative sum across\n  every response in the thread — unbounded, and measured at 253.8x the\n  window in the captured frame this slice's tests run on — and the single\n  most likely bug in any future UI is a meter\n  drawn from it. Handing the frontend both numbers and trusting it to pick\n  the right one is how that bug gets written. It cannot pick wrong if only\n  one number crosses the wire.",
         "required": [
-          "used_tokens"
+          "used_tokens",
+          "at_ms"
         ],
         "properties": {
+          "at_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Wall-clock ms of the codex frame this reading came from.\n\nShipped because the reading survives a reboot: it rides the runtime\nsnapshot, so a harness respawned by boot recovery or by lazy recovery\nserves whatever number was last observed — possibly months ago — and\nwithout this field a rehydrated reading is indistinguishable on the\nwire from a live one. A UI that draws a meter needs to be able to say\n\"as of then\", or to stop drawing it. The kernel does not pick a\nstaleness threshold; it ships the timestamp so a reader can."
+          },
           "context_window": {
             "type": [
               "integer",

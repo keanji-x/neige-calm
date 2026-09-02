@@ -1087,6 +1087,24 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
         // that reason does not transfer to a value whose whole content is
         // "the current number".
         //
+        // CROSS-THREAD GATE. `SpecHarness::run` subscribes to the daemon's
+        // *global* notification broadcast, so every harness on this box sees
+        // every `thread/tokenUsage/updated` frame from every thread. The only
+        // thing keeping card A's meter from showing card B's context is
+        // `on_notification`'s prologue — `notif.thread_id() != current_thread`
+        // — and its failure mode is a plausible-looking wrong number, never an
+        // error. `token_usage_from_a_foreign_thread_is_ignored` in
+        // `tests/cases/spec_harness_token_usage.rs` is the test that holds it.
+        //
+        // One lenient edge, recorded because it is real and NOT worth building
+        // machinery for: `other_thread_id` returns `None` for a frame with no
+        // `threadId`, so a frame lacking the key compares equal to a harness
+        // whose `inner.thread_id` is still `None` (pre-`thread/started`) and
+        // would be ingested by an unrelated harness. `threadId` is REQUIRED in
+        // the generated schema (see `harness/token_usage.rs` for the command
+        // that prints it), so reaching this needs upstream protocol drift.
+        // Note it; do not guard it.
+        //
         // Note the deliberate absence of a `persist_snapshot` call in this arm:
         // the terminal `persist_snapshot(inner)` below runs for every
         // notification and serialises the whole snapshot, this field included.
@@ -1104,11 +1122,11 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     // is still in hand to log against.
                     //
                     // This is not a formality: it is the alarm for our
-                    // occupancy proxy being wrong. `last.totalTokens` is
-                    // believed to track context occupancy but is unverified
-                    // across compaction, and an over-window reading is the
-                    // shape that failure takes. `percent` withholds the
-                    // percentage in that case (it does NOT clamp to 100% —
+                    // occupancy proxy being wrong, and it is calibrated. In
+                    // 181_344 real usage frames on this box, `last` exceeded
+                    // the window in 4 (0.002%, one session) — so this line
+                    // firing is genuinely news, not noise. `percent` withholds
+                    // the percentage in that case (it does NOT clamp to 100% —
                     // see its docs); this line is how anyone finds out.
                     if merged.exceeds_window() {
                         tracing::warn!(
@@ -1125,17 +1143,18 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
                     *slot = Some(merged);
                 }
                 // `last.totalTokens` is the only required part of the frame,
-                // and a frame without it yields no reading at all. Storing a
-                // zero would claim an empty context, which is a stronger and
-                // possibly false statement than "unknown"; the previous
-                // reading is left in place instead.
+                // and a frame without a usable one — absent, non-integer, or
+                // negative — yields no reading at all. Storing a zero would
+                // claim an empty context, which is a stronger and possibly
+                // false statement than "unknown"; the previous reading is left
+                // in place instead. See `TokenUsage::from_params`.
                 None => tracing::warn!(
                     target: "spec.harness.token_usage",
                     runtime_id = %inner.runtime_id,
                     card_id = %inner.card_id,
                     method,
-                    "spec harness dropping thread/tokenUsage/updated: no integer \
-                     tokenUsage.last.totalTokens in the frame"
+                    "spec harness dropping thread/tokenUsage/updated: no usable \
+                     (non-negative integer) tokenUsage.last.totalTokens in the frame"
                 ),
             }
         }
