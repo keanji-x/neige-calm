@@ -6,7 +6,14 @@ import { playwright } from '@vitest/browser-playwright';
 // second `define` block.
 // `dom-diagnostics.ts` no-ops outside the DOM projects, so it can live in the
 // shared list — a project added later gets the #1161 failure report for free.
-const setupFiles = ['./tools/vitest/build-constants.ts', './tools/vitest/dom-diagnostics.ts'];
+// `jsdom-match-media.ts` is in the shared list for the same reason and defends
+// itself the same way: no window, or a real `matchMedia` already there, and it
+// does nothing. See its own note for why the jsdom tier needs one at all.
+const setupFiles = [
+  './tools/vitest/build-constants.ts',
+  './tools/vitest/dom-diagnostics.ts',
+  './tools/vitest/jsdom-match-media.ts',
+];
 
 export default defineConfig({
   resolve: {
@@ -19,14 +26,28 @@ export default defineConfig({
       '@astryxdesign/core/Button',
       '@astryxdesign/core/Calendar',
       '@astryxdesign/core/Card',
+      /*
+       * `Chat` and `Typeahead` were reached by the composer long before this
+       * list mentioned them, and they were discovered mid-run: Vite optimised
+       * them on first import, announced "optimized dependencies changed", and
+       * reloaded the page under the suite that had just imported them. Measured
+       * on a cold `node_modules/.vite`: the reload lands as `Failed to fetch
+       * dynamically imported module` on `thread.browser.test.tsx`, which is a
+       * red run with nothing wrong in it. Adding `Markdown` made it reproducible
+       * by adding one more first-import to the same window; the two below were
+       * always in it.
+       */
+      '@astryxdesign/core/Chat',
       '@astryxdesign/core/Heading',
       '@astryxdesign/core/Icon',
       '@astryxdesign/core/IconButton',
       '@astryxdesign/core/List',
+      '@astryxdesign/core/Markdown',
       '@astryxdesign/core/MetadataList',
       '@astryxdesign/core/MoreMenu',
       '@astryxdesign/core/SegmentedControl',
       '@astryxdesign/core/TextInput',
+      '@astryxdesign/core/Typeahead',
     ],
   },
   test: {
