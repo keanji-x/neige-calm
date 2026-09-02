@@ -108,12 +108,24 @@
 //! is no longer representable, so the JSON-number hole is closed structurally.
 //!
 //! **Nothing above is a completeness claim, and this header must not be read as
-//! one** (#1194 residual 2). Every layer here is a LITERAL search:
-//! [`HttpMcpClient::new`] registers the raw credential plus its two
-//! percent-encoding cases (`%2F` and `%2f` — which hex case an upstream echoes
-//! is the upstream's choice, not ours), and `scrub_with` looks for exactly
-//! those substrings. Three shapes are known to walk straight through, and they
-//! are named here rather than left for the next reader to rediscover:
+//! one** (#1194 residual 2). [`HttpMcpClient::new`] registers exactly TWO forms
+//! and each has its own matching rule ([`SecretForm`]): the raw credential,
+//! matched byte-exactly because a credential is case-sensitive; and its
+//! percent-encoding, matched with the two hex digits of every `%XX` triplet
+//! compared case-INSENSITIVELY.
+//!
+//! That second rule covers the whole percent-encoding class — `%2F`, `%2f`, and
+//! every mixed spelling such as `sk-a%2Fb%2bc%3Dd`, whose case is chosen per
+//! triplet by whichever hop last re-encoded the string. It replaced an attempt
+//! to register the all-upper and all-lower literals side by side, which reaches
+//! 2 of the 2ⁿ combinations an n-triplet string can arrive in. **That is the
+//! shape of fix this list wants** — close a class with a matcher — and the
+//! reason the remaining gaps below are stated as a class each rather than as
+//! more literals to add.
+//!
+//! Three shapes are known to walk straight through, and they are named here
+//! rather than left for the next reader to rediscover. **The list is not
+//! exhaustive either:**
 //!
 //! * **any other encoding of the same bytes** — base64 (`c2stYWJj`), URL-safe
 //!   base64, hex, HTML entities, double percent-encoding. The set of alphabets
@@ -140,6 +152,7 @@
 //! longer a literal member of `secret_forms`, so a later `replace` misses it
 //! entirely and a partial credential ships.
 
+use std::collections::HashMap;
 use std::io::Read as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -339,13 +352,14 @@ pub struct HttpMcpClient {
     header_auth: Option<(String, String)>,
     /// Host only, for the per-call audit line required by risk R2.
     log_target: String,
-    /// Every literal form the secret takes on the wire (raw + percent-encoded).
+    /// Every form the secret takes on the wire (raw + percent-encoded), each
+    /// with its own matching rule — see [`SecretForm`].
     /// [`Self::scrub`] strips these from any string that could reach a log
     /// line, an `Event::PluginState.last_error`, an HTTP body, or a wave
     /// transcript. This is the belt to the "never format a `ureq::Error`"
     /// braces: an *upstream* 4xx body may quote the query string back at us,
     /// and that path is not ours to control.
-    secret_forms: Vec<String>,
+    secret_forms: Vec<SecretForm>,
     /// Built once (§ review finding 9): a fresh `ureq::Agent` re-parses the
     /// ~150-certificate webpki root store and gives up all connection/TLS
     /// reuse, per `tools/call`.
@@ -422,40 +436,46 @@ impl HttpMcpClient {
                 // key into an unexpected slot.
                 None => {}
             }
-            // Every literal form we know how to name, longest first, so
-            // scrubbing an encoded form is not pre-empted by a shorter raw
-            // substring match. This list is NOT exhaustive — see the module
-            // header for the shapes that walk through it.
+            // TWO forms, longest first, so scrubbing an encoded form is not
+            // pre-empted by a shorter raw substring match (the encoded form is
+            // never shorter than the raw one — `percent_encode` either copies a
+            // byte or expands it to three). This list is NOT exhaustive — see
+            // the module header for the shapes that walk through it.
             //
-            // BOTH hex cases of the percent-encoding are registered (#1194
-            // residual 2). We emit the uppercase one into the URL, but
-            // `%2f` and `%2F` are the same byte to every RFC 3986 parser, so an
-            // upstream that normalises, lowercases, or simply re-encodes our
-            // query string before echoing it back hands us a string that the
-            // uppercase literal does not match — and it would ship through
-            // `tools/list` descriptions and the wave transcript unredacted.
-            // Which case comes back is the upstream's choice, so we cover both
-            // rather than assume ours survives the round trip.
+            // The percent-encoded form is ONE registration covering every hex
+            // case (#1194 residual 2), because [`SecretForm::percent_encoded`]
+            // folds case per triplet. The first attempt at this residual
+            // registered an all-lowercase literal beside the all-uppercase one;
+            // that covers 2 of the 2ⁿ case combinations an n-triplet string can
+            // arrive in, and enumeration does not converge. The raw form stays
+            // byte-exact: a credential IS case-sensitive.
             //
             // The dedupe + `is_empty` filter are the braces to
             // `HttpCredential`'s belt. Empty: an empty pattern turns `scrub`
             // into a memory amplifier (see `scrub_with`), and this is the last
             // place that could register one — `percent_encode("")` is `""` too,
-            // so the filter has to cover the encoded forms as well. Duplicate:
-            // for a credential with no reserved characters all three forms are
-            // the same string, and a repeated pattern is wasted work whose
-            // second pass would scan the already-substituted text.
-            let forms = [
-                key.to_string(),
-                percent_encode(key),
-                percent_encode_lower(key),
-            ];
-            for form in forms {
-                if !form.is_empty() && !secret_forms.contains(&form) {
+            // so the filter has to cover the encoded form as well. Duplicate:
+            // a credential with no reserved characters encodes to itself, and a
+            // repeated pattern is wasted work whose second pass would scan the
+            // already-substituted text. Deduping on the PATTERN alone is sound
+            // precisely there and only there: two equal patterns can only both
+            // exist when the encoding was the identity, which means the pattern
+            // holds no `%`, which means its mask is all-`false` and the two
+            // matchers agree byte for byte.
+            let encoded = percent_encode(key);
+            for form in [
+                SecretForm::exact(key.to_string()),
+                SecretForm::percent_encoded(encoded),
+            ] {
+                if !form.pattern.is_empty()
+                    && !secret_forms
+                        .iter()
+                        .any(|f: &SecretForm| f.pattern == form.pattern)
+                {
                     secret_forms.push(form);
                 }
             }
-            secret_forms.sort_by_key(|s| std::cmp::Reverse(s.len()));
+            secret_forms.sort_by_key(|f| std::cmp::Reverse(f.pattern.len()));
         }
 
         let bringup_timeout = Duration::from_millis(block.bringup_timeout_ms());
@@ -734,7 +754,7 @@ impl HttpMcpClient {
 /// Recursion is bounded by `serde_json`'s own 128-level nesting limit, which
 /// rejects deeper documents before this function ever sees them; an
 /// attacker-controlled body therefore cannot drive this into a stack overflow.
-fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, RpcError> {
+fn parse_scrubbed(forms: &[SecretForm], text: &str, method: &str) -> Result<Value, RpcError> {
     let payload = strip_sse_envelope(text).ok_or_else(|| {
         RpcError::internal(format!(
             "mcp-http {method}: response carried no JSON payload"
@@ -765,7 +785,7 @@ fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, R
 /// Rekeying is entry-count preserving: keys that collide after redaction are
 /// disambiguated rather than merged. See the comment on the rekey branch for
 /// why that is not cosmetic.
-fn scrub_value(forms: &[String], v: &mut Value) {
+fn scrub_value(forms: &[SecretForm], v: &mut Value) {
     if forms.is_empty() {
         return;
     }
@@ -781,9 +801,7 @@ fn scrub_value(forms: &[String], v: &mut Value) {
             }
         }
         Value::Object(map) => {
-            let rekey = map
-                .keys()
-                .any(|k| forms.iter().any(|f| k.contains(f.as_str())));
+            let rekey = map.keys().any(|k| matches_any(forms, k));
             if rekey {
                 // #1194 residual 1 — this used to `collect()` straight back
                 // into a `Map`, which SILENTLY DROPS entries: two distinct keys
@@ -802,9 +820,33 @@ fn scrub_value(forms: &[String], v: &mut Value) {
                 // colliding key rendered to the same marker by construction —
                 // but the entry count, and every value hanging off it, survive.
                 //
-                // The suffix loop also has to step over a key that was ALREADY
-                // literally `<redacted>#2` in the upstream document, which is
-                // why it probes rather than counting.
+                // THREE properties the naive spelling of that got wrong:
+                //
+                // 1. **Untouched keys keep their names** (#1194 B4). A key the
+                //    scrubber did not change is upstream data — a real schema
+                //    property, possibly literally `<redacted>` — and renaming it
+                //    corrupts a document that never carried the credential. The
+                //    old single pass processed keys in `BTreeMap` order, so a
+                //    credential key sorting before a genuine `<redacted>` key
+                //    took that name and pushed the innocent one to
+                //    `<redacted>#2`. Pass 1 below reserves every unchanged key
+                //    first; pass 2 only ever picks a name that is still free.
+                // 2. **A generated name can never spell the credential**
+                //    (#1194 B1). `<redacted>#2` is itself a LEGAL credential
+                //    (printable ASCII, 12 chars, not number-shaped), so an
+                //    operator with that key would have this code MINT the secret
+                //    — after redaction, straight into `ExposedTool` and the wave
+                //    transcript. The candidate is therefore re-scrubbed and
+                //    rejected unless it survives unchanged: fail-closed on the
+                //    scrubber's own verdict, not on a "does it look like a
+                //    marker" heuristic.
+                // 3. **Assignment is linear, not quadratic** (#1194 B3).
+                //    Restarting the suffix search at 2 for every key makes a
+                //    document whose keys all redact to one base cost O(n²)
+                //    probes — measured at 59 s for a 2.4 MiB body of 19 683
+                //    such keys, from a stateless upstream we do not trust. One
+                //    monotone counter PER BASE makes the total probe count
+                //    linear in the entry count.
                 //
                 // Assignment is deterministic and independent of how the
                 // document was built: `serde_json::Map` is a `BTreeMap` here
@@ -813,15 +855,41 @@ fn scrub_value(forms: &[String], v: &mut Value) {
                 // same suffixes.
                 let taken = std::mem::take(map);
                 let mut rebuilt = serde_json::Map::with_capacity(taken.len());
+                let mut redacted: Vec<(String, Value)> = Vec::new();
+                // Pass 1 — reserve the names that are upstream's own.
                 for (k, v) in taken {
-                    let scrubbed = scrub_with(forms, k);
-                    let mut candidate = scrubbed.clone();
-                    let mut nth = 2u32;
-                    while rebuilt.contains_key(&candidate) {
-                        candidate = format!("{scrubbed}#{nth}");
-                        nth += 1;
+                    let scrubbed = scrub_with(forms, k.clone());
+                    if scrubbed == k {
+                        rebuilt.insert(k, v);
+                    } else {
+                        redacted.push((scrubbed, v));
                     }
-                    rebuilt.insert(candidate, v);
+                }
+                // Pass 2 — name the redacted ones around what pass 1 reserved.
+                //
+                // `next[base]` is how many names this base has already been
+                // given, so probing never revisits a taken suffix. `u64` cannot
+                // overflow here by a wide margin: the counter is bounded by the
+                // entry count plus the handful of skips rules (1) and (2) can
+                // force, and the entry count is bounded by `MAX_BODY_BYTES`
+                // (4 MiB) over the two bytes a `{}` -delimited entry needs.
+                let mut next: HashMap<String, u64> = HashMap::new();
+                for (base, v) in redacted {
+                    let counter = next.entry(base.clone()).or_insert(0);
+                    let name = loop {
+                        let candidate = if *counter == 0 {
+                            base.clone()
+                        } else {
+                            format!("{base}#{}", *counter + 1)
+                        };
+                        *counter += 1;
+                        if !rebuilt.contains_key(&candidate)
+                            && scrub_with(forms, candidate.clone()) == candidate
+                        {
+                            break candidate;
+                        }
+                    };
+                    rebuilt.insert(name, v);
                 }
                 *map = rebuilt;
             }
@@ -847,7 +915,103 @@ impl Drop for CancelOnDrop {
     }
 }
 
-/// Replace every literal in `forms` with `<redacted>`.
+/// The marker every recognised form of the credential is rewritten to.
+const REDACTED: &str = "<redacted>";
+
+/// One wire spelling of the credential, together with **how** it is matched.
+///
+/// The two spellings answer different questions, so they cannot share a matcher
+/// (#1194 residual 2):
+///
+/// * the **raw** credential is matched byte-exactly. An API key is
+///   case-SENSITIVE — `sk-Abc` and `sk-abc` are two different credentials — so
+///   folding case here would redact unrelated upstream text that merely differs
+///   in capitalisation from ours;
+/// * the **percent-encoded** form is matched with the two hex digits of each
+///   `%XX` triplet compared case-INSENSITIVELY. `%2f` and `%2F` are the same
+///   octet to every RFC 3986 parser, and the case is chosen per triplet by
+///   whoever last re-encoded the string. Registering "all upper" and "all lower"
+///   as two literals — which is what the first attempt at this residual did —
+///   covers 2 of the 2ⁿ combinations a string with n triplets can take, so
+///   `sk-a%2Fb%2bc%3Dd` walks straight through. Comparing per triplet closes
+///   the whole class at once instead of enumerating it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SecretForm {
+    pattern: String,
+    /// `None` ⇒ byte-exact. `Some(mask)` ⇒ `mask[i]` says whether byte `i` of
+    /// `pattern` compares ASCII-case-insensitively; it is `true` exactly on the
+    /// two hex digits of each `%XX` triplet.
+    hex_mask: Option<Vec<bool>>,
+}
+
+impl SecretForm {
+    /// A spelling matched byte for byte.
+    fn exact(pattern: String) -> Self {
+        Self {
+            pattern,
+            hex_mask: None,
+        }
+    }
+
+    /// A spelling produced by [`percent_encode`], matched with hex-case folded.
+    ///
+    /// The mask is derived from the pattern rather than tracked alongside it
+    /// because [`percent_encode`] emits `%` **only** as a triplet introducer (a
+    /// literal `%` in the credential becomes `%25`), so "the two bytes after a
+    /// `%`" names exactly the hex digits and nothing else.
+    fn percent_encoded(pattern: String) -> Self {
+        let b = pattern.as_bytes();
+        let mask = (0..b.len())
+            .map(|i| (i >= 1 && b[i - 1] == b'%') || (i >= 2 && b[i - 2] == b'%'))
+            .collect();
+        Self {
+            pattern,
+            hex_mask: Some(mask),
+        }
+    }
+
+    /// First byte offset at or after `from` where this form occurs.
+    ///
+    /// Only ever called for a percent-encoded pattern, which is ASCII by
+    /// construction, so every matched byte is ASCII and both the returned offset
+    /// and `offset + pattern.len()` are `char` boundaries.
+    fn find_from(&self, hay: &[u8], from: usize) -> Option<usize> {
+        let pat = self.pattern.as_bytes();
+        let mask = self.hex_mask.as_ref()?;
+        if pat.is_empty() || hay.len() < pat.len() {
+            return None;
+        }
+        'outer: for i in from..=(hay.len() - pat.len()) {
+            for (j, &p) in pat.iter().enumerate() {
+                let h = hay[i + j];
+                let hit = if mask[j] {
+                    h.eq_ignore_ascii_case(&p)
+                } else {
+                    h == p
+                };
+                if !hit {
+                    continue 'outer;
+                }
+            }
+            return Some(i);
+        }
+        None
+    }
+}
+
+/// Does any registered form occur in `s`?
+///
+/// Shares [`scrub_with`]'s matcher rather than restating it — a second
+/// "does it match" arithmetic beside the one that does the replacing is how a
+/// key gets rekeyed by one rule and left alone by the other.
+fn matches_any(forms: &[SecretForm], s: &str) -> bool {
+    forms.iter().any(|f| match &f.hex_mask {
+        None => s.contains(f.pattern.as_str()),
+        Some(_) => f.find_from(s.as_bytes(), 0).is_some(),
+    })
+}
+
+/// Replace every occurrence of every form in `forms` with [`REDACTED`].
 ///
 /// Free function (not a method) so the blocking closure in
 /// [`HttpMcpClient::request`] can scrub before truncating without capturing
@@ -860,17 +1024,54 @@ impl Drop for CancelOnDrop {
 /// expand ~11× and then be cloned into the status entry, the broadcast event,
 /// and the HTTP error body. The `debug_assert` keeps the invariant honest if a
 /// future caller builds `secret_forms` some other way.
-fn scrub_with(forms: &[String], s: String) -> String {
+///
+/// Forms are applied longest-first (see [`HttpMcpClient::new`]) and each pass
+/// resumes AFTER the marker it just wrote, so a replacement is never itself
+/// rescanned. [`REDACTED`] contains no `%` and no character of any credential
+/// spelling that is not also present in the surrounding text, so substitution
+/// does not manufacture a new match for a later form either.
+fn scrub_with(forms: &[SecretForm], s: String) -> String {
     let mut out = s;
     for form in forms {
-        debug_assert!(!form.is_empty(), "an empty scrub pattern is a memory bomb");
-        if form.is_empty() {
+        debug_assert!(
+            !form.pattern.is_empty(),
+            "an empty scrub pattern is a memory bomb"
+        );
+        if form.pattern.is_empty() {
             continue;
         }
-        if out.contains(form.as_str()) {
-            out = out.replace(form.as_str(), "<redacted>");
+        match &form.hex_mask {
+            // Byte-exact: keep using `str::replace`, which is UTF-8-safe for
+            // any pattern and uses a real substring search.
+            None => {
+                if out.contains(form.pattern.as_str()) {
+                    out = out.replace(form.pattern.as_str(), REDACTED);
+                }
+            }
+            Some(_) => out = replace_hex_insensitive(form, out),
         }
     }
+    out
+}
+
+/// The scan-and-splice half of [`scrub_with`] for a percent-encoded form.
+fn replace_hex_insensitive(form: &SecretForm, s: String) -> String {
+    let Some(mut at) = form.find_from(s.as_bytes(), 0) else {
+        return s;
+    };
+    let width = form.pattern.len();
+    let mut out = String::with_capacity(s.len());
+    let mut cursor = 0usize;
+    loop {
+        out.push_str(&s[cursor..at]);
+        out.push_str(REDACTED);
+        cursor = at + width;
+        match form.find_from(s.as_bytes(), cursor) {
+            Some(next) => at = next,
+            None => break,
+        }
+    }
+    out.push_str(&s[cursor..]);
     out
 }
 
@@ -929,27 +1130,23 @@ fn log_target(url: &str) -> String {
 /// that goes on the wire. We only need the characters that would break a query
 /// parameter; `url` is not a dependency of this crate and pulling one for eight
 /// bytes of logic is not worth it.
+///
+/// A lowercase-hex twin used to exist beside this, purely so the other hex case
+/// could be registered as a second scrub literal. It is gone: hex case is now a
+/// property of the MATCHER ([`SecretForm::percent_encoded`]), which is the only
+/// formulation that covers mixed-case triplets too.
+///
+/// `%` is emitted ONLY as a triplet introducer — a literal `%` in the input
+/// becomes `%25` — which is the invariant `SecretForm::percent_encoded`'s mask
+/// is derived from.
 fn percent_encode(s: &str) -> String {
-    percent_encode_hex(s, true)
-}
-
-/// The same encoding with lowercase hex digits. Never sent — it exists solely
-/// as a scrub pattern, because `%2f` and `%2F` are the same octet to an RFC
-/// 3986 parser and an upstream may echo our query string back in either case.
-/// See [`HttpMcpClient::new`].
-fn percent_encode_lower(s: &str) -> String {
-    percent_encode_hex(s, false)
-}
-
-fn percent_encode_hex(s: &str, upper: bool) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.as_bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(*byte as char)
             }
-            other if upper => out.push_str(&format!("%{other:02X}")),
-            other => out.push_str(&format!("%{other:02x}")),
+            other => out.push_str(&format!("%{other:02X}")),
         }
     }
     out
@@ -976,6 +1173,37 @@ fn read_capped(resp: ureq::Response) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Byte-exact scrub patterns, for the tests that drive `parse_scrubbed` /
+    /// `scrub_value` with a hand-picked credential rather than through
+    /// `HttpMcpClient::new`.
+    fn exact_forms(keys: &[&str]) -> Vec<SecretForm> {
+        keys.iter()
+            .map(|k| SecretForm::exact((*k).to_string()))
+            .collect()
+    }
+
+    /// Rewrite the two hex digits of every `%XX` triplet to lower case, leaving
+    /// everything else alone. Test-only: it produces the spelling an upstream
+    /// that normalises our query string may echo back, without production
+    /// needing to know how to emit it.
+    fn lowercase_triplets(s: &str) -> String {
+        let b = s.as_bytes();
+        let mut out = String::with_capacity(s.len());
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' && i + 2 < b.len() {
+                out.push('%');
+                out.push((b[i + 1] as char).to_ascii_lowercase());
+                out.push((b[i + 2] as char).to_ascii_lowercase());
+                i += 3;
+            } else {
+                out.push(b[i] as char);
+                i += 1;
+            }
+        }
+        out
+    }
 
     /// Shorthand for a credential the HTTP path will accept.
     fn cred(raw: &str) -> HttpCredential {
@@ -1363,7 +1591,7 @@ mod tests {
     #[test]
     fn a_json_shaped_credential_does_not_corrupt_an_innocent_response() {
         let key = r#"":"#;
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body =
             r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"t","description":"d"}]}}"#;
 
@@ -1389,7 +1617,7 @@ mod tests {
     #[test]
     fn a_backslash_credential_does_not_corrupt_an_escaped_response() {
         let key = r"abc\defgh";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         // The upstream describes a Windows path: `C:\dir` — `C:\\dir` on the
         // wire. Nothing here is the credential.
         let body = r#"{"result":{"tools":[{"name":"t","description":"C:\\dir"}]}}"#;
@@ -1413,7 +1641,7 @@ mod tests {
     #[test]
     fn a_control_character_credential_echoed_by_the_upstream_is_still_redacted() {
         let key = "line1\nline2xx";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body = serde_json::json!({
             "result": {
                 "tools": [{ "name": "t", "description": format!("rejected key {key}") }],
@@ -1451,7 +1679,7 @@ mod tests {
     #[test]
     fn object_keys_are_scrubbed_as_well_as_values() {
         let key = "sk-keyed-8213";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body = format!(r#"{{"result":{{"props":{{"{key}":1,"safe":2}}}}}}"#);
         let parsed = parse_scrubbed(&forms, &body, "tools/list").expect("must parse");
         let props = parsed
@@ -1480,7 +1708,10 @@ mod tests {
         let key = "sk-a/b+c-8213";
         let encoded = percent_encode(key);
         assert_ne!(encoded, key, "fixture needs two distinct literals");
-        let forms = vec![encoded.clone(), key.to_string()];
+        let forms = vec![
+            SecretForm::percent_encoded(encoded.clone()),
+            SecretForm::exact(key.to_string()),
+        ];
 
         let mut obj = serde_json::Map::new();
         obj.insert(key.to_string(), serde_json::json!(1));
@@ -1503,6 +1734,16 @@ mod tests {
         let mut values: Vec<u64> = obj.values().filter_map(Value::as_u64).collect();
         values.sort_unstable();
         assert_eq!(values, vec![1, 2, 3], "a value was lost: {v}");
+        // ⚠️ DO NOT relax the next two lines into a set assertion. They are not
+        // only about this document: WHICH key gets the bare marker and which
+        // gets `#2` is decided by `BTreeMap` iteration order, and `%` (0x25)
+        // sorts before `/` (0x2F), so the ENCODED key is processed first. That
+        // holds only while `serde_json`'s `preserve_order` feature is off — the
+        // assumption the rekey branch's determinism comment states and that
+        // nothing else in this crate checks. Turn the feature on (directly or
+        // through a dependency unifying features) and insertion order takes
+        // over, these two lines swap, and this test is the sentinel that says
+        // so. A set assertion would pass silently and delete that signal.
         assert_eq!(obj.get("<redacted>"), Some(&serde_json::json!(2)));
         assert_eq!(obj.get("<redacted>#2"), Some(&serde_json::json!(1)));
     }
@@ -1513,7 +1754,7 @@ mod tests {
     #[test]
     fn a_preexisting_marker_key_does_not_get_overwritten() {
         let key = "sk-collide-8213";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let mut obj = serde_json::Map::new();
         obj.insert(key.to_string(), serde_json::json!(1));
         obj.insert("<redacted>".to_string(), serde_json::json!(2));
@@ -1527,13 +1768,198 @@ mod tests {
         assert_eq!(values, vec![1, 2, 3], "a value was lost: {v}");
     }
 
-    /// #1194 residual 2a — which hex case comes back is the upstream's choice.
-    /// `%2f` and `%2F` are the same octet, so a server that normalises our
-    /// query string before echoing it would otherwise hand the credential
-    /// straight through to `tools/list` descriptions and the wave transcript.
+    /// #1194 B4 — a key the scrubber did NOT touch is upstream data, and its
+    /// name is not ours to change.
+    ///
+    /// The old single pass walked the map in `BTreeMap` order and let whoever
+    /// came first take `<redacted>`. When the credential key sorted before a
+    /// genuine `<redacted>` property, the credential took the name and the
+    /// innocent schema property was renamed to `<redacted>#2` — a rewrite of a
+    /// document that has nothing to do with the credential, landing in
+    /// `inputSchema.properties` and therefore in the agent-visible catalog.
+    ///
+    /// Both sort orders are covered because the defect is order-dependent:
+    /// with the credential sorting AFTER, the old code happened to be right,
+    /// so a single-order test would have passed over it.
     #[test]
-    fn both_percent_encoding_hex_cases_are_scrubbed() {
-        // Reserved characters in all three interesting classes: `/`, `+`, `=`.
+    fn an_untouched_upstream_key_keeps_its_own_name_in_either_sort_order() {
+        // `-` (0x2D) sorts before `<` (0x3C); `s` (0x73) sorts after it.
+        for (key, where_) in [
+            (
+                "-abc-defg",
+                "credential key sorts BEFORE the innocent marker key",
+            ),
+            ("sk-abc-defg", "credential key sorts AFTER it"),
+        ] {
+            let forms = exact_forms(&[key]);
+            assert!(
+                HttpCredential::parse(key).is_ok(),
+                "{where_}: fixture must be a real credential"
+            );
+            let mut obj = serde_json::Map::new();
+            obj.insert(
+                key.to_string(),
+                serde_json::json!("from the credential key"),
+            );
+            obj.insert(
+                "<redacted>".to_string(),
+                serde_json::json!("upstream's own"),
+            );
+            obj.insert("safe".to_string(), serde_json::json!(3));
+            let mut v = Value::Object(obj);
+            scrub_value(&forms, &mut v);
+            let obj = v.as_object().unwrap();
+
+            assert_eq!(obj.len(), 3, "{where_}: an entry was dropped: {v}");
+            // THE assertion: the innocent key kept BOTH its name and its value.
+            assert_eq!(
+                obj.get("<redacted>"),
+                Some(&serde_json::json!("upstream's own")),
+                "{where_}: a key that never held the credential was renamed \
+                 and/or had its value swapped: {v}"
+            );
+            assert_eq!(
+                obj.get("safe"),
+                Some(&serde_json::json!(3)),
+                "{where_}: {v}"
+            );
+            // …and the redacted one went somewhere else, without vanishing.
+            assert_eq!(
+                obj.get("<redacted>#2"),
+                Some(&serde_json::json!("from the credential key")),
+                "{where_}: {v}"
+            );
+        }
+    }
+
+    /// #1194 B1 — the disambiguating suffix must not be able to RE-MINT the
+    /// credential.
+    ///
+    /// `<redacted>#2` passes every rule in [`HttpCredential::parse`]: printable
+    /// ASCII, no quote/backslash/space, twelve characters, not number-shaped. An
+    /// operator may legitimately hold it. The suffix is appended AFTER the key
+    /// has been scrubbed, so a naive counter hands `<redacted>#2` — the
+    /// credential, verbatim — to `ExposedTool` and the wave transcript, on the
+    /// success path, with the redaction machinery reporting success.
+    ///
+    /// The fix is fail-closed on the scrubber's own verdict: a candidate name
+    /// is accepted only if re-scrubbing leaves it unchanged. This test drives
+    /// the real registration (`HttpMcpClient::new`), not a hand-built form list,
+    /// so it also proves the encoded spelling is what makes the two keys
+    /// collide in the first place.
+    #[test]
+    fn a_disambiguating_suffix_can_never_spell_the_credential() {
+        let key = "<redacted>#2";
+        assert!(
+            HttpCredential::parse(key).is_ok(),
+            "the premise: this really is a credential the kernel would accept"
+        );
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        let encoded = percent_encode(key);
+        assert_eq!(encoded, "%3Credacted%3E%232", "encoder shape changed");
+
+        // An upstream echoing our query string back in both spellings: two
+        // distinct keys that redact to the same base, which is what forces a
+        // suffix to be minted at all.
+        let mut obj = serde_json::Map::new();
+        obj.insert(key.to_string(), serde_json::json!(1));
+        obj.insert(encoded.clone(), serde_json::json!(2));
+        let mut v = Value::Object(obj);
+        scrub_value(&client.secret_forms, &mut v);
+
+        let rendered = v.to_string();
+        assert!(
+            !rendered.contains(key),
+            "the suffix reconstructed the credential verbatim: {rendered}"
+        );
+        assert!(
+            !rendered.contains(&encoded),
+            "the encoded spelling survived: {rendered}"
+        );
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.len(), 2, "an entry was dropped: {v}");
+        let mut values: Vec<u64> = obj.values().filter_map(Value::as_u64).collect();
+        values.sort_unstable();
+        assert_eq!(values, vec![1, 2], "a value was lost: {v}");
+        // Stated positively so the test cannot pass by refusing to name anything:
+        // it stepped OVER `#2` and landed on `#3`.
+        assert!(obj.contains_key("<redacted>"), "{v}");
+        assert!(obj.contains_key("<redacted>#3"), "{v}");
+    }
+
+    /// #1194 channel-A A1 — an object whose KEY was rekeyed must still have its
+    /// children walked.
+    ///
+    /// Moving the `for (_, child) in map.iter_mut()` recursion inside the `else`
+    /// of the rekey branch survives the whole 139-case suite, and it is a LEAK:
+    /// `{"<credential>": "see key <credential> in the docs"}` comes back with
+    /// the key redacted and the string value verbatim — into the `ExposedTool`
+    /// description an agent reads and into the wave transcript.
+    ///
+    /// Three shapes, because "the children" is not one thing: a scalar string
+    /// beside the rekeyed entry, a nested object one level down, and an object
+    /// inside an array. All three hang off the SAME rekeyed map, so all three
+    /// are lost by that one mutation.
+    #[test]
+    fn a_rekeyed_object_still_scrubs_its_children() {
+        let key = "sk-both-8213";
+        let forms = exact_forms(&[key]);
+        let body = serde_json::json!({
+            "result": {
+                // The rekey trigger and a sibling string value in one object.
+                key: 1,
+                "hint": format!("see key {key} in the docs"),
+                "nested": { "description": format!("pass {key} as the token") },
+                "tools": [
+                    { "name": "t", "description": format!("auth={key}") },
+                ],
+            }
+        })
+        .to_string();
+
+        let parsed = parse_scrubbed(&forms, &body, "tools/list").expect("must parse");
+        let rendered = parsed.to_string();
+        assert!(
+            !rendered.contains(key),
+            "the credential survived in a child of a rekeyed object: {rendered}"
+        );
+        // Each shape named individually, so a partial regression is legible.
+        assert_eq!(
+            parsed.pointer("/result/hint"),
+            Some(&Value::String("see key <redacted> in the docs".into())),
+            "sibling string value: {parsed}"
+        );
+        assert_eq!(
+            parsed.pointer("/result/nested/description"),
+            Some(&Value::String("pass <redacted> as the token".into())),
+            "nested object: {parsed}"
+        );
+        assert_eq!(
+            parsed.pointer("/result/tools/0/description"),
+            Some(&Value::String("auth=<redacted>".into())),
+            "object inside an array: {parsed}"
+        );
+    }
+
+    /// #1194 residual 2 — the hex case of a percent triplet is chosen PER
+    /// TRIPLET by whichever hop last re-encoded the string, so the spellings an
+    /// upstream may echo back are 2ⁿ, not 2.
+    ///
+    /// The `MIXED` cases below are the ones that make this test say something
+    /// the previous shape of the fix could not: registering the all-upper and
+    /// all-lower literals side by side redacts the first two rows and leaks
+    /// every other one. Each row is asserted individually AND collected, so a
+    /// regression reports the whole surface it reopened.
+    #[test]
+    fn every_hex_case_combination_of_the_encoded_form_is_scrubbed() {
+        // Reserved characters in three classes — `/`, `+`, `=` — so the encoded
+        // form has three independently-cased triplets.
         let key = "sk-a/b+c=d";
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
             "url": "https://mcp.example.com/mcp",
@@ -1544,29 +1970,107 @@ mod tests {
         let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
 
         let upper = percent_encode(key);
-        let lower = percent_encode_lower(key);
         assert_eq!(upper, "sk-a%2Fb%2Bc%3Dd", "encoder shape changed");
-        assert_eq!(lower, "sk-a%2fb%2bc%3dd", "encoder shape changed");
-        assert_ne!(upper, lower, "fixture needs two distinct literals");
+        assert_eq!(
+            lowercase_triplets(&upper),
+            "sk-a%2fb%2bc%3dd",
+            "fixture helper changed"
+        );
 
-        for form in [&upper, &lower] {
+        // All 2³ hex-case combinations of the three triplets, spelled out so
+        // the mixed ones are visibly present rather than implied by a loop.
+        let spellings = [
+            "sk-a%2Fb%2Bc%3Dd", // all upper — what we actually send
+            "sk-a%2fb%2bc%3dd", // all lower — a normalising proxy
+            "sk-a%2Fb%2bc%3Dd", // MIXED: the codex construction
+            "sk-a%2fb%2Bc%3dd", // MIXED
+            "sk-a%2Fb%2Bc%3dd", // MIXED
+            "sk-a%2fb%2bc%3Dd", // MIXED
+            "sk-a%2Fb%2bc%3dd", // MIXED
+            "sk-a%2fb%2Bc%3Dd", // MIXED
+        ];
+        let mut leaks = Vec::new();
+        for form in spellings {
             let msg = client.scrub(format!("upstream echoed ?api_key={form} back"));
-            assert!(!msg.contains(form.as_str()), "{form} survived: {msg}");
-            assert!(msg.contains("<redacted>"), "{msg}");
+            if msg.contains(form) {
+                leaks.push(format!("{form} survived: {msg}"));
+                continue;
+            }
+            assert!(msg.contains("<redacted>"), "{form}: {msg}");
         }
-        // The raw form still works, and no pattern is registered twice.
+        assert!(
+            leaks.is_empty(),
+            "these percent-encoding spellings reach the tool catalog and the \
+             wave transcript unredacted:\n  {}",
+            leaks.join("\n  ")
+        );
+
+        // The RAW form is still matched byte-exactly, and a value differing
+        // only in ASCII case from the credential is a DIFFERENT credential and
+        // must not be touched — hex-case folding is scoped to the triplets.
         assert!(!client.scrub(format!("boom {key}")).contains(key));
-        let mut sorted = client.secret_forms.clone();
-        sorted.sort();
-        let before = sorted.len();
-        sorted.dedup();
-        assert_eq!(before, sorted.len(), "duplicate scrub pattern registered");
-        assert_eq!(client.secret_forms.len(), 3, "{:?}", client.secret_forms);
+        let other = "SK-A/B+C=D";
+        assert_eq!(
+            client.scrub(format!("boom {other}")),
+            format!("boom {other}"),
+            "case folding must not escape the percent triplets"
+        );
+
+        // Two registrations, not three: the encoded form is one pattern with a
+        // matching rule, not a literal per hex case.
+        assert_eq!(client.secret_forms.len(), 2, "{:?}", client.secret_forms);
+        assert_eq!(
+            client.secret_forms,
+            vec![
+                SecretForm::percent_encoded(upper),
+                SecretForm::exact(key.to_string()),
+            ],
+            "longest-first ordering, and the raw form stays exact"
+        );
     }
 
-    /// A credential with no reserved characters encodes to itself in both hex
-    /// cases: the dedupe must leave exactly ONE pattern, not three copies that
-    /// each re-scan the already-substituted text.
+    /// #1194 channel-A N4, restated for the shape the fix actually took.
+    ///
+    /// The "upper == lower but != raw" middle state used to be a third
+    /// registration outcome worth a case of its own: a credential whose encoded
+    /// triplets contain no hex LETTER (`!` is `%21`) encodes to the same string
+    /// in both hex cases while still differing from the raw form, so the old
+    /// three-literal registration deduped down to two. That is no longer a
+    /// distinct state — there is one encoded registration regardless — but the
+    /// INPUT class is still real, so it is pinned here: a letter-free triplet
+    /// must match, and its (vacuous) case folding must not misfire.
+    #[test]
+    fn an_encoded_form_with_no_hex_letter_still_matches() {
+        let key = "sk-abc!d!";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+
+        let encoded = percent_encode(key);
+        assert_eq!(
+            encoded, "sk-abc%21d%21",
+            "fixture needs letter-free triplets"
+        );
+        assert_eq!(
+            lowercase_triplets(&encoded),
+            encoded,
+            "fixture must be the upper==lower state"
+        );
+        assert_ne!(encoded, key, "…but still distinct from the raw form");
+        assert_eq!(client.secret_forms.len(), 2, "{:?}", client.secret_forms);
+
+        let msg = client.scrub(format!("?api_key={encoded}"));
+        assert!(!msg.contains(&encoded), "{msg}");
+        assert!(msg.contains("<redacted>"), "{msg}");
+    }
+
+    /// A credential with no reserved characters encodes to itself: the dedupe
+    /// must leave exactly ONE pattern, not two copies whose second pass would
+    /// re-scan the already-substituted text.
     #[test]
     fn an_unreserved_credential_registers_exactly_one_form() {
         let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
@@ -1576,14 +2080,17 @@ mod tests {
         }))
         .unwrap();
         let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
-        assert_eq!(client.secret_forms, vec!["abcdefgh".to_string()]);
+        assert_eq!(
+            client.secret_forms,
+            vec![SecretForm::exact("abcdefgh".to_string())]
+        );
     }
 
     /// Deeply nested strings are reached, and a no-key client is a no-op.
     #[test]
     fn nesting_is_traversed_and_no_key_means_no_walk() {
         let key = "sk-nested-8213";
-        let forms = vec![key.to_string()];
+        let forms = exact_forms(&[key]);
         let body = format!(r#"{{"result":{{"a":[{{"b":[["{key}"]]}}]}}}}"#);
         let parsed = parse_scrubbed(&forms, &body, "x").unwrap();
         assert_eq!(
@@ -1593,6 +2100,74 @@ mod tests {
 
         let untouched = parse_scrubbed(&[], &body, "x").unwrap();
         assert!(untouched.to_string().contains(key));
+    }
+
+    /// #1194 B3 measurement harness — NOT a gate (it is `#[ignore]`d because it
+    /// allocates a multi-MiB document and is only meaningful in `--release`).
+    ///
+    /// Run with:
+    /// `cargo test --release -p calm-server --lib -- --ignored --nocapture
+    ///  plugin_host::http_mcp::tests::collision_suffix_assignment_scales`
+    ///
+    /// The adversarial construction is the one the review channel proposed:
+    /// concatenate NINE segments, each independently spelled as one of the
+    /// registered forms, so every one of the 3⁹ = 19 683 keys is DISTINCT on the
+    /// wire yet redacts to the same base. That is what makes the "probe until
+    /// free" loop quadratic — a construction where each base has only O(1)
+    /// pre-images cannot show it, which is why the two review channels reached
+    /// opposite verdicts on the same code.
+    ///
+    /// Measured on this box, `--release`, 19 683 keys / 2 480 058 key bytes:
+    ///
+    /// | `scrub_value` | wall     |
+    /// |---------------|----------|
+    /// | probe-from-2  | 58.976 s |
+    /// | per-base counter | 29.4 ms |
+    #[test]
+    #[ignore = "measurement harness; multi-MiB fixture, --release only"]
+    fn collision_suffix_assignment_scales() {
+        let key = "sk-a/b+c=d";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        // The alphabet is stated HERE, not read out of `secret_forms`, so the
+        // before/after numbers compare the same input: all three spellings are
+        // recognised in both worlds (as three literals before, as raw + a
+        // hex-case-insensitive encoded form after).
+        let spellings = [
+            key.to_string(),
+            percent_encode(key),
+            lowercase_triplets(&percent_encode(key)),
+        ];
+
+        let mut obj = serde_json::Map::new();
+        let segments = 9usize;
+        let total = spellings.len().pow(segments as u32);
+        for i in 0..total {
+            let mut k = String::new();
+            let mut n = i;
+            for _ in 0..segments {
+                k.push_str(&spellings[n % spellings.len()]);
+                n /= spellings.len();
+            }
+            obj.insert(k, serde_json::json!(1));
+        }
+        let n = obj.len();
+        let bytes: usize = obj.keys().map(String::len).sum();
+        let mut v = Value::Object(obj);
+        let t0 = std::time::Instant::now();
+        scrub_value(&client.secret_forms, &mut v);
+        let elapsed = t0.elapsed();
+        eprintln!(
+            "B3: spellings={} keys={n} key_bytes={bytes} scrub_value={:?}",
+            spellings.len(),
+            elapsed
+        );
+        assert_eq!(v.as_object().unwrap().len(), n, "entries were dropped");
     }
 
     /// No key configured ⇒ nothing to scrub, and no accidental blanket

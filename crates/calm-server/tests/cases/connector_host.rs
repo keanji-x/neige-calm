@@ -3013,10 +3013,22 @@ fn the_connector_phase_ceiling_is_the_documented_one() {
     // then the reconcile tail. This is the number the docs state.
     assert_eq!(MAX_CONNECTOR_AUTOSPAWN_WALL, Duration::from_millis(31_500));
     // The wall is exactly the ceiling of the widest budget the loop can adopt,
-    // never a hand-computed constant beside it. #1194 residual 3: the widening
-    // term is `CONNECTOR_LOOP_WIDENING_MARGIN`, not the per-connector
-    // `CONNECTOR_BRINGUP_SLACK` — the two were one constant, are equal today by
-    // coincidence, and this line must move with the one that actually feeds it.
+    // never a hand-computed constant beside it.
+    //
+    // #1194 residual 3 split one constant into two; the widening term below is
+    // the LOOP one. **Stated honestly: nothing here can enforce that choice.**
+    // `CONNECTOR_LOOP_WIDENING_MARGIN` and `CONNECTOR_BRINGUP_SLACK` are both
+    // 500 ms today, so swapping this line — or `widened_connector_budget`'s
+    // body — to the other constant is a mutation NO test in this repo kills.
+    // It is a human convention that the reference names the constant that
+    // actually feeds the expression, and its whole value is that the day the
+    // two values diverge, this line already points at the right one and the
+    // literal assertions above go red for the right reason.
+    //
+    // Making it machine-checkable would mean giving the two constants different
+    // values purely so a test could tell them apart — production arithmetic bent
+    // to serve a test, which is a worse trade than an honest comment. Do not
+    // upgrade this to a claim the suite does not back.
     assert_eq!(
         MAX_CONNECTOR_AUTOSPAWN_WALL,
         connector_phase_ceiling(MAX_CONNECTOR_BRINGUP_BUDGET + CONNECTOR_LOOP_WIDENING_MARGIN)
