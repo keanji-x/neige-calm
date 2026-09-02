@@ -413,6 +413,28 @@ describe('ChatThread', () => {
     expect(container.textContent).toBe('Rannpm test');
   });
 
+  /**
+   * The duration element's **whole** text, which is the only form of this
+   * assertion that holds.
+   *
+   * These cases used to read `container.textContent` with `toContain`, and a
+   * substring of the page cannot pin a number: `14.3s` contains `4.3s`,
+   * `11.0s` contains `1.0s`, `13m 02s` contains `3m 02s`. The `59_999` case was
+   * the clearest — `11m 00s` satisfies "contains `1m 00s`" *and* "does not
+   * contain `60.0s`" at the same time, so the pair that was supposed to bracket
+   * the boundary bracketed nothing. Every one of those is what a
+   * `formatActivityDuration` that mangles its own leading digit prints.
+   *
+   * The number is the last thing on the line's first row: a duration only
+   * renders on a line that is not running, and the live dot only renders on one
+   * that is. Reached positionally because the spans carry hashed CSS-module
+   * class names, which `architecture/no-class-dom-query` forbids querying.
+   */
+  function durationText(container: HTMLElement): string | null {
+    const row = container.querySelector('[data-nc-state]')!.children[0];
+    return row.children[row.children.length - 1].textContent;
+  }
+
   /*
    * A duration is printed only when it is one the reader felt. Both halves are
    * asserted: the absence is the load-bearing one, because every completed row
@@ -422,7 +444,7 @@ describe('ChatThread', () => {
     const { container, rerender } = render(
       <ChatThread conversation={conversation()} turns={[activity({ durationMs: 4_320 })]} />,
     );
-    expect(container.textContent).toContain('4.3s');
+    expect(durationText(container)).toBe('4.3s');
 
     rerender(
       <ChatThread conversation={conversation()} turns={[activity({ durationMs: 120 })]} />,
@@ -443,7 +465,7 @@ describe('ChatThread', () => {
     rerender(
       <ChatThread conversation={conversation()} turns={[activity({ durationMs: 1_000 })]} />,
     );
-    expect(container.textContent).toContain('1.0s');
+    expect(durationText(container)).toBe('1.0s');
   });
 
   /* `182_000`, not `192_000`: `3m 12s` needs no padding, so it is green against
@@ -452,19 +474,22 @@ describe('ChatThread', () => {
     const { container } = render(
       <ChatThread conversation={conversation()} turns={[activity({ durationMs: 182_000 })]} />,
     );
-    expect(container.textContent).toContain('3m 02s');
+    expect(durationText(container)).toBe('3m 02s');
   });
 
   /* One millisecond under a minute, which the seconds form would round to a
      `60.0s` that means the same thing as the `1m 00s` printed one millisecond
      later. The two formats exist to be read at a glance; a sixty in the one
-     that counts seconds defeats that. */
+     that counts seconds defeats that. The `not.toContain('60.0s')` that used to
+     stand beside this is gone rather than kept: an equality against the whole
+     string already excludes `60.0s` along with everything else, and as a
+     substring check it was the half of the pair that could be satisfied at the
+     same time as the other one. */
   it('never says sixty seconds', () => {
     const { container } = render(
       <ChatThread conversation={conversation()} turns={[activity({ durationMs: 59_999 })]} />,
     );
-    expect(container.textContent).toContain('1m 00s');
-    expect(container.textContent).not.toContain('60.0s');
+    expect(durationText(container)).toBe('1m 00s');
   });
 
   /* The view's own `!running` gate, which the domain's gate would otherwise be

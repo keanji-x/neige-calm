@@ -1113,18 +1113,25 @@
    * Two things earn a place beyond the verb and its noun, and both are gated so
    * they stay rare (`.activityDuration`, `.activityDetail` below). The second of
    * them needs its own row *inside this same box*, because `data-nc-state` lives
-   * on this element and a nested wrapper would move it — but the wrapping that
-   * makes that row possible is **not** here. It is on `.activityWrapped`, which
-   * the view puts on only the lines that have a detail to show.
+   * on this element and the rest of the app reads state off it. So this box is
+   * **not** the flex line: it is a plain block holding at most two children,
+   * `.activityRow` and `.activityDetail`, and the flex line is the first of
+   * them. The state attribute never moves, because the wrapper that appeared
+   * holds the *first row's* contents and sits under the same `<p>` — the detail
+   * stays inside the element that carries the state either way.
    *
-   * That split is the whole point, and it is not tidiness. This box is
-   * `nowrap`, so `.activityTarget` — `overflow: hidden`, therefore an automatic
-   * minimum size of zero — shrinks and ellipsizes beside the verb. Turn wrapping
-   * on and the flex algorithm fills the line and *wraps* before it shrinks, so a
-   * 64-character command (the clip the domain applies) at 11px mono is wider
-   * than the column and drops to a row of its own. That is not a change to
-   * failed lines; it is a second row under the majority of `Ran`s, on the one
-   * surface whose budget this note spends its whole length arguing.
+   * The structure is doing what a `flex-wrap` was reached for twice and cannot
+   * do. Wrapping is a property of the whole line, not of one item: a flex line
+   * **fills and wraps before it shrinks**, and `.activityTarget` is
+   * `overflow: hidden`, which zeroes its automatic minimum size. So with
+   * wrapping on, a 64-character command (the clip the domain applies) at 11px
+   * mono is wider than the 364px column and takes a row of its own *first* —
+   * and `Failed` and the duration, pushed off the end behind it, take a third.
+   * Four rows for what is meant to be two, and the ellipsis that was supposed to
+   * hold the line never applies. Confining the wrap to lines that have a detail
+   * only narrowed which lines it ruins. `.activityRow` is `nowrap` forever, so
+   * the noun shrinks beside its verb on every line there is, and the second row
+   * exists because it is a second *element*, not because the first one overflowed.
    *
    * It sits at the caption rank — 11px, `--text-3`, sans — under a reply set in
    * 13px sans. That distance is the point: an action must be legible when
@@ -1136,10 +1143,7 @@
    * the *message*, and they are not — they are what happened next.
    */
   .activity {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-2);
-    min-inline-size: 0;
+    display: block;
     padding-inline: 0;
     font-size: var(--text-xs);
     font-weight: var(--weight-normal);
@@ -1147,11 +1151,17 @@
     color: var(--text-3);
   }
 
-  /* The one line that has a second row, and therefore the only one allowed to
-     wrap. See `.activity` above for why this is a modifier and not a property
-     of every activity line. */
-  .activityWrapped {
-    flex-wrap: wrap;
+  /* The first row, and on all but a failed line the only one: verb, noun,
+     `Failed`, duration, live dot. `nowrap` is the load-bearing declaration —
+     see `.activity` above. `min-inline-size: 0` keeps the row itself from
+     refusing to be narrower than the command it holds, so the shrinking has
+     somewhere to happen. */
+  .activityRow {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    min-inline-size: 0;
   }
 
   /* The noun is the machine's own string — a command, a tool name. Mono says
@@ -1189,9 +1199,10 @@
 
   /*
    * The reason a run failed — the last line of what it printed, already clipped
-   * to one line in the domain. It takes the whole basis so it lands on its own
-   * row under the verb: it is the machine's own words about a failure, and
-   * squeezing it in beside `Failed` would leave room for about four of them.
+   * to one line in the domain. It is the `<p>`'s second block-level child, so it
+   * lands on its own row under the verb by being a block, not by overflowing
+   * one: it is the machine's own words about a failure, and squeezing it in
+   * beside `Failed` would leave room for about four of them.
    *
    * Mono and `--text-4`, the same register as `.activityTarget`, and for the
    * same reason: this is quoted from somewhere else. It stays `--text-4` rather
@@ -1199,14 +1210,15 @@
    * failed; this says *what*, and two lines of alarm colour for one failure is
    * the budget spent twice.
    *
-   * `min-inline-size: 0` plus `overflow: hidden` is the pair that actually
-   * holds the 364px column: a flex item's automatic minimum size is its content,
-   * so without the first the ellipsis never applies and a long tail widens the
-   * drawer instead of being cut.
+   * `overflow: hidden` is what actually holds the 364px column — without it a
+   * long tail widens the drawer instead of being cut. It no longer needs the
+   * `min-inline-size: 0` that used to sit beside it: that pair was there
+   * because this was a flex *item*, whose automatic minimum size is its
+   * content. A block child takes its parent's inline size and nothing else, so
+   * the ellipsis applies on its own.
    */
   .activityDetail {
-    flex-basis: 100%;
-    min-inline-size: 0;
+    display: block;
     overflow: hidden;
     font-family: var(--font-mono);
     color: var(--text-4);

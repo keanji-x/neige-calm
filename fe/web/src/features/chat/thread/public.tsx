@@ -1674,21 +1674,27 @@ function formatActivityDuration(durationMs: number): string {
  * and it is asserted there (`conversation.test.ts`), so this reads the field
  * rather than re-deriving the condition from `state`.
  *
- * The failure reason is a second row *inside the same `<p>`* rather than a
- * nested wrapper: `data-nc-state` is the shared attribute the rest of the app
- * reads state off, and it belongs on the element that is the line.
- * `.activityDetail` takes the full basis, so the reason lands under the verb
- * without any of them changing which element carries the state.
+ * The failure reason is a second row *inside the same `<p>`* — `data-nc-state`
+ * is the shared attribute the rest of the app reads state off, and it belongs
+ * on the element that is the line. So the `<p>` is the two-row box, and the
+ * first row gets a wrapper of its own: `.activityRow` holds the verb, the noun,
+ * `Failed`, the duration and the live dot as one `nowrap` flex line, and the
+ * reason is the `<p>`'s second child.
  *
- * That second row needs the box to wrap, and **only that row does** — hence
- * `.activityWrapped` rather than a `flex-wrap` on `.activity` itself. Wrapping
- * is not free for the lines that have no second row: a flex line fills and
- * wraps *before* it shrinks, so under an unconditional `flex-wrap` a
- * 64-character command in a 364px column stops ellipsizing beside `Ran` and
- * drops to a row of its own — turning every long `done` line into two, which is
- * the line budget `.activity`'s stylesheet note spends its whole length
- * defending. The modifier is keyed off `detail`, the same field that renders
- * the row, so the two can never disagree.
+ * The wrapper does not move the state anywhere. It holds the *first row's*
+ * contents; `data-nc-state` stays on the `<p>` above it, and the reason stays
+ * inside that same `<p>`, which is the containment `public.test.tsx` asserts.
+ * (An earlier note here said a nested wrapper would move the attribute. That is
+ * true of wrapping the whole line — it is not true of this shape, and the
+ * objection cost two rounds of trying to get a `flex-wrap` to do the job.)
+ *
+ * Which is what the wrap could not do. A flex line fills and wraps *before* it
+ * shrinks, and `.activityTarget`'s `overflow: hidden` zeroes its automatic
+ * minimum size, so a wrapping box gives a 64-character command a row of its own
+ * and pushes `Failed` and the duration onto a third — four rows on a failed
+ * line, and no ellipsis anywhere. Confining that to `detail !== null` moved the
+ * damage from every long `done` line onto every failed line; it did not fix it.
+ * Two rows is a fact about the structure now, not an outcome of a layout pass.
  */
 function ActivityLine({ activity, live }: {
   activity: ConversationActivity;
@@ -1699,21 +1705,19 @@ function ActivityLine({ activity, live }: {
     && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
     ? formatActivityDuration(activity.durationMs)
     : null;
-  const className = [
-    styles.activity,
-    activity.state === 'failed' ? styles.activityFailed : '',
-    activity.detail !== null ? styles.activityWrapped : '',
-  ].join(' ');
   return (
     <p
-      className={className}
+      className={`${styles.activity} ${activity.state === 'failed' ? styles.activityFailed : ''}`}
       data-nc-state={activity.state}
     >
-      <span>{activity.verb}</span>
-      {activity.target !== null && <span className={styles.activityTarget}>{activity.target}</span>}
-      {activity.state === 'failed' && <span className={styles.activityFailure}>Failed</span>}
-      {duration !== null && <span className={styles.activityDuration}>{duration}</span>}
-      {running && live && <span className={styles.live} aria-label="Working" />}
+      <span className={styles.activityRow}>
+        <span>{activity.verb}</span>
+        {activity.target !== null
+          && <span className={styles.activityTarget}>{activity.target}</span>}
+        {activity.state === 'failed' && <span className={styles.activityFailure}>Failed</span>}
+        {duration !== null && <span className={styles.activityDuration}>{duration}</span>}
+        {running && live && <span className={styles.live} aria-label="Working" />}
+      </span>
       {activity.detail !== null && (
         <span className={styles.activityDetail}>{activity.detail}</span>
       )}
