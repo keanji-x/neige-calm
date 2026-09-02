@@ -135,7 +135,16 @@ async fn workspace_row(repo: &SqlxRepo, wave_id: &str) -> (String, String, Optio
     .unwrap()
 }
 
-/// Entry point 1 of 5: `POST /api/waves` with no `cwd` — the #1131 title-only
+/// Entry point 1 of 4: `POST /api/waves` with no `cwd` — the #1131 title-only
+///
+/// #1300 — this enumeration said "of 5" until template seeding was removed.
+/// Entry point 2 was `seed_template_wave`, and the case that covered it
+/// (`seeded_template_waves_are_materialized`) is gone with the function: a
+/// template is a Rust constant now, so creating from one mints exactly the
+/// wave the caller asked for and there is no second workspace to materialize.
+/// The count is corrected rather than left at 5, because an enumeration that
+/// claims more coverage than it has is worse than none.
+///
 /// create the new FE sends.
 #[tokio::test]
 async fn title_only_create_allocates_and_materializes_a_managed_workspace() {
@@ -219,44 +228,6 @@ async fn explicit_cwd_stays_attached_and_is_never_git_inited() {
         !target.join(".git").exists(),
         "the server `git init`-ed a directory the user pointed at"
     );
-}
-
-/// Entry point 2 of 5: `seed_template_wave`, reached by creating a
-/// wave against a seeded template key.
-#[tokio::test]
-async fn seeded_template_waves_are_materialized() {
-    let b = boot().await;
-    let (status, body) = post(
-        b.app.clone(),
-        "/api/waves",
-        json!({
-            "cove_id": b.cove_id,
-            "title": "from template",
-            "template_id": "small-change",
-            "theme": theme(),
-        }),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED, "body={body}");
-
-    // Every wave now on the DB — the requested one plus the three system-cove
-    // templates the route seeds — must have a live repository behind it.
-    let rows: Vec<(String, String, String)> =
-        sqlx::query_as("SELECT id, workspace_kind, workspace_path FROM waves")
-            .fetch_all(b.repo.pool())
-            .await
-            .unwrap();
-    assert!(
-        rows.len() >= 2,
-        "expected the template seed to have run; got {rows:?}"
-    );
-    for (id, kind, path) in &rows {
-        assert_eq!(kind, "managed", "wave {id} at {path}");
-        assert!(
-            head_resolves(std::path::Path::new(path)),
-            "template-seeded wave {id} was not materialized ({path})"
-        );
-    }
 }
 
 /// §5 test 5 — materialization failure must surface as a non-2xx carrying the

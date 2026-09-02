@@ -6,10 +6,8 @@
 //! authorities and this endpoint *joins* them; it never copies or invents a
 //! third:
 //!
-//! * `id` / `title` — [`crate::templates::TEMPLATES`], the
-//!   Rust constants that also seed the template waves. Since #1230 the title is
-//!   the constant only until the template is seeded; after that it is the
-//!   seeded report's summary.
+//! * `id` / `title` — [`crate::templates::TEMPLATES`], the Rust constants
+//!   `POST /api/waves` instantiates from.
 //! * `input_schema` — the **owning plugin's** manifest `input_schema`, reached
 //!   through the same [`resolve_template_binding`] the create path uses. Absent
 //!   when no running trusted plugin declares that id, which is exactly the set
@@ -17,22 +15,19 @@
 //! * `tasks` — the template's own `task` blocks, projected to `key` + `goal`.
 //!   The picker shows them so "what does this template give me" is answered
 //!   with the template's own content instead of a prose description nobody
-//!   owns (see below). Since #1230 the blocks are read as whole payloads and
-//!   projected at the last moment; the projection also drops tombstones, which
-//!   the picker must not advertise but the write side must hand back intact.
+//!   owns (see below). The blocks are read as whole payloads and projected at
+//!   the last moment (#1230); the projection also drops tombstones, which the
+//!   picker must not advertise.
 //!
-//! `tasks` was read from a pure constant function and never from the template
-//! wave's stored report. #1230 changed which of those two clauses survives: the
-//! seeded report is the authority once it exists. #1300 S1 removed the *editor*
-//! but deliberately left that read authority alone — see "Read-only" below for
-//! why the two halves are separate slices.
+//! `tasks` is read from the same recipe body `POST /api/waves` instantiates —
+//! not from a second, typed list of keys and goals. That is the property worth
+//! keeping: a task the picker advertises and a task the created wave contains
+//! cannot differ, because there is nothing to keep in sync.
 //!
-//! The *read must not trigger a write* half is unchanged and load-bearing:
-//! `current_definition` looks the seeded wave up and gives up if it is absent;
-//! it never calls `ensure_templates`. A `GET` that mints three waves the first
-//! time somebody opens the New wave dialog is exactly what that forbids. A read
-//! *failure* on a seeded report is propagated, never swallowed into the constant
-//! fallback — answering with stale constants would turn an outage into drift.
+//! #1230 briefly moved that authority into a stored report so an editor could
+//! write to it; #1300 removed the editor (S1) and the stored report (S2), and
+//! the read went back to the constants. **This endpoint performs no write of
+//! any kind** — pinned by `wave_templates_read.rs`.
 //!
 //! Deliberately **no `description`**: `templates.rs` has no such
 //! field, and #1209 records that template facts are already spread across three
@@ -51,7 +46,7 @@
 //!
 //! The shape returned here did not change when the concepts merged.
 //!
-//! ## Read-only, and why the read authority did not move with it (#1300 S1)
+//! ## Read-only (#1300)
 //!
 //! `PUT /api/wave-templates/{id}` and the Settings › Templates editor existed
 //! between #1230 and #1300. They were built on the seeded template wave: a
@@ -61,18 +56,9 @@
 //! list append-only (a key is immutable for the life of its block, and a live
 //! task may only leave as a tombstone).
 //!
-//! #1300 removes template seeding, because it is the last production path on
-//! which the kernel writes a report as `EditAuthor::User`. The editor goes with
-//! it: it has no storage of its own, only the hidden wave.
-//!
-//! **That removal is two slices, and this file is why the order is fixed.** S1
-//! (this change) deletes the write side only. S2 deletes seeding and collapses
-//! [`current_definition`] onto the constants. Doing both halves here would
-//! leave a releasable state where this endpoint answers from the constants
-//! while `POST /api/waves` still forks a report a `PUT` may have edited — the
-//! picker showing one plan and create producing another, with both sides
-//! internally consistent and no test red. So until S2 lands, the seeded report
-//! stays the authority for what this endpoint reports.
+//! #1300 removed template seeding, because it was the last production path on
+//! which the kernel wrote a report as `EditAuthor::User`. The editor went with
+//! it: it had no storage of its own, only the hidden wave.
 //!
 //! Making templates editable again is a real option, but it needs its own
 //! persistence model and version semantics — not a wave borrowed as template
@@ -84,12 +70,9 @@
 //! removal quietly comes back.
 
 use crate::error::{ErrorBody, Result};
-use crate::routes::waves::{lookup_template_wave, resolve_template_binding};
+use crate::routes::waves::resolve_template_binding;
 use crate::state::{AppState, RouteState};
-use crate::templates::{
-    TEMPLATES, task_payload_key_and_goal, template_task_payloads, template_task_payloads_from_body,
-};
-use crate::wave_report::resolve_report_for_wave;
+use crate::templates::{TEMPLATES, task_payload_key_and_goal, template_task_payloads};
 use axum::{Json, Router, extract::State, routing::get};
 use serde::Serialize;
 use serde_json::Value;
@@ -161,7 +144,7 @@ pub(crate) async fn list_wave_templates(
         let input_schema = resolve_template_binding(&s, template.key)
             .await
             .and_then(|manifest| manifest.input_schema.clone());
-        let definition = current_definition(&s, template.key).await?;
+        let definition = current_definition(template.key);
         templates.push(WaveTemplate {
             id: template.key.to_string(),
             title: definition.title,
@@ -180,11 +163,22 @@ pub(crate) async fn list_wave_templates(
     Ok(Json(templates))
 }
 
-/// The current authority for a template's title and tasks: the seeded report if
-/// there is one, the built-in constants otherwise.
+/// A template's title and tasks: the Rust constants, and nothing else.
 ///
-/// Read-only. The `lookup_template_wave` miss is a plain "not seeded",
-/// never a reason to seed — see this module's note.
+/// #1300 — this used to prefer the seeded template wave's stored report and
+/// fall back to the constants only when the wave did not exist yet. That branch
+/// existed for #1230's editor: once a template could be saved, the saved report
+/// was what `POST /api/waves` forked, so reading the constants here would have
+/// advertised a task list create did not produce.
+///
+/// Both sides of that are gone. S1 removed the editor; S2 removed the seeded
+/// wave. `POST /api/waves` now instantiates the same constants this reads
+/// (`routes::waves::prepare_template_report`), so there is one authority and
+/// the drift the branch existed to prevent is not expressible.
+///
+/// Kept as a named function rather than inlined into the loop: it is the answer
+/// to "what is this template, right now", and it having exactly one source is
+/// the property worth being able to point at.
 struct Definition {
     title: String,
     /// Whole task-block payloads, never a narrowed struct — see
@@ -193,28 +187,17 @@ struct Definition {
     tasks: Vec<Value>,
 }
 
-async fn current_definition(s: &RouteState, key: &str) -> Result<Definition> {
-    // A seeded template's report is the authority. A *read failure* on it is an
-    // error, never a reason to answer with the constants: falling back would
-    // report stale constant content as current, i.e. turn an outage into
-    // exactly the drift this endpoint exists to remove.
-    if let Some(wave_id) = lookup_template_wave(s, key).await? {
-        let (_, _, report) = resolve_report_for_wave(s.repo.as_ref(), &wave_id).await?;
-        return Ok(Definition {
-            title: report.summary.clone(),
-            tasks: template_task_payloads_from_body(&report.body),
-        });
-    }
-    // `unwrap_or_default` is unreachable for a `TEMPLATES` key and
-    // stays a default rather than a panic: both tables are keyed off the same
+fn current_definition(key: &str) -> Definition {
+    // `unwrap_or_default` is unreachable for a `TEMPLATES` key and stays a
+    // default rather than a panic: both tables are keyed off the same
     // constants, and `listed_tasks_are_exactly_the_report_task_blocks` fails
     // loudly if one ever grows an entry the other lacks.
-    Ok(Definition {
+    Definition {
         title: TEMPLATES
             .iter()
             .find(|template| template.key == key)
             .map(|template| template.title.to_string())
             .unwrap_or_default(),
         tasks: template_task_payloads(key).unwrap_or_default(),
-    })
+    }
 }

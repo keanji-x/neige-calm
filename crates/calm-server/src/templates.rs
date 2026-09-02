@@ -197,11 +197,21 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Wav
     body.push_str("\n\n");
     for task in tasks {
         let mut payload = plan_template_task_block_payload(task);
-        // persist_report is User-authored (no production Kernel report
-        // writer). New task blocks must therefore declare `user`; fork
-        // rewrites `declared_by` to spec and forces ready:false.
+        // #1300 — declared here as `spec`, which is what an instantiated wave
+        // ends up with either way. Before #1300 this said `user` and the fork
+        // step rewrote it one instruction later; the `user` was not a claim
+        // about authorship but a consequence of the seeding write going through
+        // `persist_report` as `EditAuthor::User`, and `guard_task_declarations`
+        // requiring a new task block's `declared_by` to match its author.
+        //
+        // Instantiation no longer goes through `persist_report` at all
+        // (`routes::waves::prepare_template_report`), so nothing constrains
+        // this to the author of a write that does not happen. `spec` is the
+        // honest value: a recipe's tasks are pre-set, not user-declared, and
+        // they stay `ready: false` until the normal Spec/user flow releases
+        // them.
         payload["ready"] = json!(false);
-        payload["declared_by"] = json!("user");
+        payload["declared_by"] = json!("spec");
         body.push_str(&render_fence("task", &payload));
         body.push('\n');
     }
