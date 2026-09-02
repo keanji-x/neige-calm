@@ -27,7 +27,7 @@ astryx Chat 家族分两类：
 
 | 今天 | 改成 | 理由 |
 |---|---|---|
-| agent 回复 `<p>{turn.text}` 纯文本 | **`Markdown`**（`isStreaming` + 内置 `CodeBlock`） | 今天 agent 的 markdown / 代码块**根本不渲染**，塌成一段纯文本。库自带 parser 与增量解析，零外部依赖。 |
+| agent 回复 `<p>{turn.text}` 纯文本 | **`Markdown`**（内置 `CodeBlock`；**不传 `isStreaming`**，见 §2.5） | 今天 agent 的 markdown / 代码块**根本不渲染**，塌成一段纯文本。库自带 parser，零外部依赖。 |
 | `ActivityLine`（手写 `<p>`，verb + target + Failed） | **暂不换 `ChatToolCalls`** | 见 §2.3：换了会净亏。等 wire 长出工具明细再换。 |
 | `.said` / `.reply` 两个 `<p>` | **暂不换 `ChatMessage`** | 见 §2.4。 |
 | 空态 `<div className={styles.empty}>` | 不动 | 库的 `emptyState` 属于 `ChatMessageList`／`ChatLayout`，按 §1 不进来。 |
@@ -73,9 +73,21 @@ astryx Chat 家族分两类：
 
 `ChatMessage` 给的是 sender 感知的对齐（我们的 CSS 已经有）和 `metadata` 插槽（后续 message actions 的挂点）。但 actions 本身是内核阻塞的（§3 S4），所以现在换只是把两个调好的 `<p>` 换成库的 div，再把 `thread.module.css` 里 1551 行调过的排版重新贴一遍——**当期收益为零，回归面是全部 3900 行浏览器测试**。等 S4 真要落 actions 时连着换，那一次换是有载荷的。
 
+### 2.5 `isStreaming` 不传 —— 它不是增量解析，是打字机
+
+本设计的第一稿把 `isStreaming` 写成「增量解析 + 逐块淡入」并当作采纳理由之一。读了实现后这句话是错的：它把文本过 `useStreamingText`，那是一个**逐字符打字机** —— `CHARS_PER_TICK.natural = 10`，tick 由 `--duration-fast-min` 推出（约 13ms），也就是**扣着组件已经拿到的文本**按约 770 字符/秒放出来，直到标志位翻假才 snap 到全文。
+
+三条理由说明这是错的时钟：
+
+1. **我们已经有一个时钟，就是轮询。** 文本按 poll 的粒度跳着到，打字机是叠在前面的第二个更慢的时钟：2000 字的回答在**完全到齐之后**还要再放 ~2.6 秒。
+2. **它在一个被三处机制测量的滚动窗里持续长高。** follow-newest 读 `scrollHeight`，亮点规则在 scroll 与 resize 上重读每个 marker 的 rect。一个连续数秒每帧变高的块，正是对准了这个文件花了大量篇幅才调对的那套机制的一场 resize 风暴。
+3. **播放期间它把文本切成 `<span>`**（`wrapTextWithFade`），回复在动画结束前不是一个文本节点。实测：上游的 `wave-conversation.test.tsx` `[G5]` 在 `findByText('it runs waves')` 上失败，带 Testing Library 的「文本被拆散在多个元素里」提示 —— 这个用例本 PR 从未碰过。
+
+淡入对持有 token 流的消费方是真功能。我们不是，假装是要付上面三笔，换一个我们的数据本来也驱动不平滑的动画。
+
 ## 3. 切片
 
-- **S1｜回复渲染 Markdown**（本 PR）—— 唯一当期就能付清的一条：库替掉的是真机器（parser + 高亮 + 流式增量），不是一个 `<p>`。
+- **S1｜回复渲染 Markdown**（本 PR）—— 唯一当期就能付清的一条：库替掉的是真机器（CommonMark parser + 代码高亮），不是一个 `<p>`。
 - **S2｜附件**：依赖内核。今天写口只有 `POST /api/cards/{id}/spec/input { text }`，`crates/` 里没有任何 chat 附件通路。落地形态已定：`ChatComposerDrawer` + `ChatComposerInput.onFiles`（粘贴／拖放）+ `Thumbnail`。
 - **S3｜活动行换 `ChatToolCalls`**：依赖内核把工具调用的结束时间与结果明细放上 wire（§2.3）。
 - **S4｜message actions／编辑已发送消息／AI 弹出选项**：依赖内核 + 产品决策（编辑后重跑还是分叉？transcript 今天只有 `text`，带不了结构化选项集）。库侧也**没有**现成的「编辑态」组件，只有可以填内容的 `metadata` 插槽；换 `ChatMessage`（§2.4）与这一条同时做。
