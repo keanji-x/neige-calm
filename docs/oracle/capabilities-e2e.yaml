@@ -5088,10 +5088,12 @@
   family: wave-rename
   statement: >
     Creating a wave must land the reader in its spec conversation with the caret in the composer:
-    the shell marks the navigation it makes (`go({ openSpec: true })`), the wave route redeems
-    that mark against its own spec card, and the composer takes focus through `focusOnMount`. The
-    mark belongs to that one history entry and to nothing else: no other route may read or clear
-    it, redeeming strikes it off, and an entry whose landing never happened keeps it — so
+    the shell marks the navigation it makes (`go({ openSpec: true })`), the wave route consumes
+    that mark the first time its body mounts — striking it off unconditionally, and opening the
+    spec card in the same pass when the detail in hand has one — and the composer takes focus
+    through `focusOnMount`. The mark belongs to that one history entry and to nothing else: no
+    other route may read or clear it, that first mount strikes it off whether or not anything was
+    opened, and an entry whose body never mounted keeps it — so
     displaying that same entry again (a reload, the error box's Retry, or the Back button) arms it
     again, while any fresh navigation to the wave is a new entry and carries no mark.
   why: >
@@ -5110,9 +5112,13 @@
     failed landing complete the create the reader asked for, and what makes Back to that same
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
-  source: fe/web/src/app/shell/public.tsx:338; fe/web/src/app/router/navigation.ts:53,98-110,174-200;
+  source: fe/web/src/app/shell/public.tsx:338; fe/web/src/app/router/navigation.ts:53,98-110,180-206;
     fe/web/src/app/router/public.tsx:1510,1926-1932; fe/web/src/features/chat/thread/public.tsx:1801
-  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:194
+  # One line per clause of the statement, because no single case covers it: 194 the landing and the
+  # caret, 250 that a fresh navigation carries no mark, 287 that returning by Back to the entry whose
+  # landing failed arms it again, 316 that redeeming is one-shot, 344 that the mark is struck off even
+  # when there was no card to open.
+  authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:194,250,287,316,344
   owner_slice: app/router
   intentional_omission: false
   runtime_layer: app
