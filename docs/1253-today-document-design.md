@@ -1,205 +1,227 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r1**，待双通道 review。Issue：#1253。
-> 关联：#951（launchpad wave 与它的 report card 是本设计的载体）、#120（定时汇总属于那条线）、#1045（块时间戳对文档运行时同样有用）、#1234（手机端）。
+> 状态：设计 **r2**（经一轮双通道 review；两个通道均判 *fix-then-ship*，但 review 证据推翻了 r1 的载体决策，见 §0）。Issue：#1253。
+> r1 review 存档：`docs/_1253-design-review-{codex,subagent}.md`。
+> 关联：#951（launchpad wave 与它的 report card）、#120（定时汇总）、#1045（文档运行时）、#1234（手机端）。
 
-## 0. 问题
+## 0. r1 → r2：review 改掉了什么（先读这段）
+
+两个通道都认可方向（Today 改文档形态、AI 写进度），但 r1 有一条**载体错误**和一条**可达性错误**，各自足以让 r1 的实现计划整片作废。
+
+1. **r1 把 Today 的进度写进 launchpad wave 现有的 `wave-report` card——而那张卡自带的契约明令禁止这种写法。** `crates/calm-types/src/wave_report_contract_rules.md` 写死了「报告反映当下的状态，不是历史。每次更新 **REWRITE** 相关章节，让陈旧条目消失；历史由内核的 event timeline 承载」，`wave_report_section_rules.md` 又写死了四个 H1（概要/待你定/已完成/决策）「不要新增、不要重命名、不要调整顺序」，外加 1000 字散文预算。而 `today.rs` 正是用 `WaveReportPayload::initial()` 铸的这张卡，契约文本就在 body 里。**一份按日累积的进度日志和一份「当下快照、每次重写」的简报是相反的文体**；把两者塞进同一张卡，agent 会同时收到两套冲突指令。→ **D1/D2 重做**（§4）。
+
+2. **r1 §5.1 的 launchpad 解析链根本不可达。** 三重反证：`TodayLaunchpad` 响应里**没有 `report_card_id`**（它只活在内部 `EnsureTxResult`）；`GET /api/coves` 默认过滤掉 system cove（#175，`include_system=true` 才是逃生口），而新 FE 的 waves 是按 cove 扇出的，所以 launchpad wave 在 `workspace.waves` 里**由构造不可见**；`fe/core/domain/wave.ts` 的域模型又把 `purpose` 丢了。→ **§5.1 重写**。
+
+3. **D3（给 `ReportBlock` 加时间戳）的成本被 r1 低估了一个数量级。** 它不是「加两个字段」：`WaveReportPayload::SCHEMA_VERSION` 是 **Tier A**，doc comment 明写「同一个 PR 必须同时扩 `WaveReportCardHandler` 和前端 zod」，还要穿过 CRDT block entry、JSON 投影、MCP read、REST、wire、两个前端的 domain。而 r1 用来否掉「每天一份」的理由（「D3 用一个字段就买到了」）因此不成立。→ **D3 在 r2 里被删除**，日期身份改由载体自带。
+
+4. **备选 C（从 `wave.report_edited` 事件流派生块时间）不可实现**，不是「成本高」：该事件只有扁平的 `body_before/body_after`，没有 block id，重排/拆块后无法恢复「某块首次出现」。→ 明确否决，不再列为待评审。
+
+5. **素材源有一条现成的、purpose-built 却从没被用过的端点**：`GET /api/waves?since&until&cove_id`（#250 PR2，doc comment 直接写着 "calendar window query parameters"），全 `fe/` grep 不到任何调用方，而现在的日历在客户端重算同一件事。→ **D4/D5 必须先回答「为什么不是扩它」**（§4 D4）。
+
+6. **`calm.day.activity` 会是整个 MCP 面上第一个跨 cove 读**，不是「一个更宽的工具」，是一个新类别（现存最宽的 `calm.cove.outline` 是单 cove，且有 50 wave / 40 block / 32KB 三重截断）。→ 授权与截断纪律按 §951 裁决和 `report_links.rs` 的既有先例收紧（§4 D4）。
+
+7. **增长边界（r1 D6）是假的**：256KB 只约束非 prose 块的 canonical JSON，**prose 块没有尺寸上限**；一天可以创建任意多块；而且删掉旧内容并不减少占用——`wave.report_edited` 永久保存完整 `body_before/body_after`，删除只是把增长搬进事件表。→ **D6 重做**。
+
+8. 杂项：`turns` 的事实源是 `harness.item.added`，**它正在 30 天 prune allowlist 里**，r1「只依赖结构性事件」的说法把它引申错了；`POST /api/waves/{id}/conversations` **必须带 `Idempotency-Key`**，r1 的 `{text}` 调用漏了必需契约；`events` 表虽有 `idx_events_at`，但**全仓没有任何按 `at` 查询的读者**，且 `0004_events.sql` 明确警告「`at` 是墙钟，`id` 才是游标，永不混用」。
+
+r1 里活下来的：Today 该变成文档（§0 的问题陈述）、AI 写入通道无需内核改动、状态条守 §8.1、手动触发优先、切片按「FE 可独立交付」切。
+
+## 1. 问题
 
 Today 只有「当前状态」，没有「发生了什么」。
 
-`fe/web/src/features/today/public.tsx`（435 行）的主列是三段 `WaveRow` 列表——Waiting on you / Running / Recent——全部由同一份 `waves` 数组 filter 得到；右侧面板是周历，日格上的数字是「那天有几条 wave 活动」，点开换成同一种列表的另一份切片。中间还夹着一个写死 `Terminal is not wired up yet.` 的占位 section。
+`fe/web/src/features/today/public.tsx`（435 行）的主列是三段 `WaveRow` 列表——Waiting on you / Running / Recent——全部由同一份 `waves` 数组 filter 得到；右侧周历的日格数字是「那天有几条 wave 活动」，点开换成同一种列表的另一份切片；中间夹着一个写死 `Terminal is not wired up yet.` 的占位 section。
 
-所以这一页粗糙的根源不是样式，是**它答不出「今天做了什么」**。它现在的全部信息量约等于侧边栏加一个时钟。
+它现在的全部信息量约等于侧边栏加一个时钟。**一天结束时，这一页答不出「今天做了什么」。**
 
-本设计做两件事：主列改成文档形态，以及让一个 agent 把当天的活动写成进度段。
+## 2. 前提
 
-## 1. 前提
+**一、新 FE 尚未上生产**（沿用 `docs/1147-workspace-design.md` 的同名前提）。破坏性 DTO 变更可以一步到位。
 
-**一、新 FE 尚未上生产**（沿用 `docs/1147-workspace-design.md` 的同名前提）。破坏性的 DTO 变更可以一步到位，不加过渡层。
+**二、老数据不迁移、不兼容**（用户 2026-08-31 定调，含生产库 `:4040`）。
 
-**二、老数据不迁移、不兼容**（用户 2026-08-31 定调，范围含生产库 `:4040`）。因此 §4 的块时间戳不做存量回填，也不写兼容守卫。
+> ⚠️ 只豁免老数据。同一次运行内的并发、崩溃后重跑、幂等、失败回滚仍是硬要求。
 
-> ⚠️ 这条**只**豁免老数据。同一次运行内的并发、崩溃后重跑、幂等、失败回滚仍是硬要求。
+**三、不碰 Today terminal。** `features/today/README.md` 的 INV-TODAYTERM-* 原样保留。
 
-**三、本设计不碰 Today terminal。** `features/today/README.md` 里的 INV-TODAYTERM-001/003/005/006 描述的是尚未接线的 terminal 解析链，那条链的契约原样保留；本设计只是**共用它的前半段**（解析 launchpad wave），见 §5.1。
+## 3. 已确认的既有事实
 
-## 2. 已确认的既有事实
-
-以下每条都是读代码实测的结论，不是推测。它们决定了这件事的成本远低于「新做一个 Today」。
+每条都读了代码。**不写行号**——r1 的行号在一轮 review 内就腐化了两处；引 symbol 与文件。
 
 | 事实 | 位置 |
 |---|---|
-| launchpad wave 在 ensure 时**已经建了 `wave-report` card** | `crates/calm-server/src/routes/today.rs:229-242`，`report_card_id` 出现在 `EnsureTxResult` 与响应里 |
-| `waves.purpose = 'launchpad'` 已存在，且 `purpose` 已在 wire 上 | migration `0064_waves_launchpad_purpose.sql`；`fe/core/api/generated/wire.ts:379` |
-| 文档渲染器完整且已在生产路由使用 | `features/report/{document,outline,backlinks,task,candles,table,app}`；`app/router/public.tsx:1534` |
-| **AI 写 report 无需任何内核改动**：`CardRole::Assistant` 已被允许写块 | `mcp_server/tools/wave_report_blocks.rs:101,114,245,295,326`；角色定义 `calm-types/src/model.rs:28-32` |
-| 起一条 assistant 会话就是一个 REST 调用 | `POST /api/waves/{wave_id}/conversations {text}`，`routes/wave_conversations.rs:57` |
-| 人写块与 agent 写块是两条通道，互不冒充 | REST 要求 `X-Calm-Actor: user`（`wave_report_blocks.rs:74-81`），agent 走 MCP |
-| 结构性事件永久保留，不受 30 天 prune 影响 | `docs/events-retention.md`：allowlist 只含 `claude.hook` / `codex.hook` / `harness.*` / `overlay.set`，`wave.*` / `card.*` 由构造永久 |
-
-**结论：文档的载体、渲染器、写入通道、事件源全都已经在了。**缺的是四样东西——FE 没读过这份 report、没有分日的事实、agent 看不到跨 cove 的活动、以及这份文档没有增长边界。
-
-## 3. 缺口
-
-### 3.1 素材源（最大的一块）
-
-MCP 工具全表实测：`calm.admin.*`、`calm.cove.outline`、`calm.plan.*`、`calm.ratify.request`、`calm.report.*`、`calm.review.round`、`calm.task.*`、`calm.wave.{cat,cat_at,diff,log,ls,state}`。
-
-**没有一条能回答「过去 24 小时全工作区发生了什么」。**
-
-- `calm.wave.*` 全部按 MCP 身份解析到**调用者自己的 wave**（`tools/wave_file.rs::resolve_wave_for_identity`）。
-- `calm.cove.outline` 按 `identity.cove_id` 取报告卡（`tools/report_links.rs:69-82`），且 `visible_to_roles: &[CardRole::Spec]`。而 launchpad wave 在 **system cove** ——从它调这条工具，看到的是它自己，等于什么都没有。
-
-所以「AI 写今日进度」的素材源必须新做，而且它天然是一次**跨 cove 读**，是本设计里唯一的授权风险面。
-
-### 3.2 分日的事实来源
-
-`ReportBlock` 只有 `{ id, kind, rev, payload }`（`calm-types/src/wave_report.rs:16-21`）；文档级只有 `doc_rev`。**块没有时间戳。**
-
-于是「哪些块属于 9 月 2 日」目前只有一条路：解析 agent 写进 heading 的日期文本。那是 mirror-code——前端复述一遍 agent 应该遵守的格式约定，agent 写错一次就丢一整段，而没有任何东西会因此变红。见 §4 的三个备选与取舍。
-
-### 3.3 FE 没有 launchpad 解析链
-
-`grep launchpad fe/web/src` 只命中测试。`ensure` 端点没有生产调用方。
-
-### 3.4 增长边界
-
-块级上限 256KB（`report_blocks/kinds.rs:46`），**文档级没有块数上限**。Today 这份文档按天只增不减，而每次打开 Today 都要把整份 payload 读回来。这是设计必须给出答案的约束，不是可以留给以后的实现细节。
+| launchpad wave 的 ensure 端点存在且幂等，`waves.purpose='launchpad'` 由 partial unique index `idx_waves_one_launchpad` 保证单例 | `routes/today.rs`；migration `0064` |
+| **但 `ensure` 没有任何生产调用方**——只有路由声明、五处集成测试、旧 `web/` 的 generated types。新旧两个前端都不调它 | 全仓 grep |
+| `TodayLaunchpad` DTO **不含** `report_card_id` | `routes/today.rs::TodayLaunchpad` |
+| system cove 默认不在 `GET /api/coves` 里（#175），因此 launchpad wave 不在 FE 的 workspace 扇出中 | `routes/coves.rs::list_coves`；`app/providers/queries.ts::useWorkspace` |
+| 块渲染器完整且已在生产路由使用 | `features/report/*`；`app/router` 的 `WaveRoute → ReportDocument` |
+| **AI 写块无需内核改动**：`CardRole::Assistant` 已被允许调 `calm.report.blocks.*` / `write_markdown` | `mcp_server/tools/wave_report_blocks.rs`；`calm-types/src/model.rs::CardRole::Assistant` |
+| 人写块与 agent 写块是两条通道，互不冒充 | REST 强制 `X-Calm-Actor: user`；MCP 走 `ToolCallIdentity` |
+| `POST /api/waves/{id}/conversations` **必须带 `Idempotency-Key`**，语义是「同 key = 同一条可重试草稿」，五个 arm | `routes/wave_conversations.rs` |
+| 新增 card kind 是一个小 trait impl + 注册 | `calm-truth/src/card_kind.rs::CardKindHandler`（`kind_id` / `matcher` / `create_mode` / `schema_version` / `validate_payload`）+ `builtins.rs` |
+| `GET /api/waves?since&until&cove_id` 是为日历窗口专门做的，**且完全没有前端调用方** | `routes/waves.rs::list_waves_window`（#250 PR2） |
+| `events` 有 `idx_events_at`，但全仓无按 `at` 的读者；`at` 是墙钟，`id` 才是游标 | `0004_events.sql`、`0007_events_scope.sql` |
+| 结构性事件永久；**`harness.item.added` 不是结构性事件，它在 prune allowlist 里** | `docs/events-retention.md`；`calm-truth/src/events_prune.rs` |
+| `wave.report_edited` 永久保存完整 `body_before/body_after`（无 block id） | `calm-types/src/event.rs::WaveReportEdited` |
+| wave VCS 默认只留最近 50 个 commit——**它不是永久历史** | `calm-truth/src/wave_vcs/gc.rs` |
+| prose 块**没有尺寸上限**；256KB 只约束非 prose 块的 canonical JSON | `report_blocks/kinds.rs::MAX_CANONICAL_BYTES`、`report_blocks/mod.rs` |
 
 ## 4. 决策
 
-### D1 —— 文档的载体是 launchpad wave 现有的 `wave-report` card
+### D1 —— 新 card kind `daily-log`，一天一张卡，挂在 launchpad wave 上
 
-不新建表，不新建 card kind，不新建端点。
-
-理由：这张卡已经存在（§2），而 report 是内核的 Tier-A 持久载荷，自带块模型、`doc_rev` CAS、稳定块 id/锚点、outline、反链、`wave.report_edited` 事件、以及一整套 FE 渲染器。任何新载体都要把这些重做一遍。
-
-**被否的备选**：新建 `daily-digest` card kind。否的理由是它会造出第二种「文档」，而 #1045 正在收敛文档运行时的形态；多一种载体等于多一份要对齐的渲染路径。
-
-### D2 —— 单份累积文档，按天分段；Today 默认渲染今天那段
-
-一份 report，按日切段。Today 主体渲染「今天」的段；日历选别的日子，主体切到那天的段。
-
-**被否的备选 A：每天一份 wave/report。** 干净，但要新做每日 bootstrap、每日单例索引、GC，且日历要跨天预览时变成 N 次请求。成本高一档，收益只有「天然分段」——而 D3 用一个字段就买到了。
-
-**被否的备选 B：report 只存今天，每天覆盖。** 否——「我上周三干了什么」正是这一页要答的问题，覆盖等于把它销毁。
-
-**这条决策让日历第一次有了真正的用途**：它从「换一份 wave 列表」变成「翻文档的日期」。
-
-### D3 —— 分段依据是内核盖章的块时间戳，不是 agent 写的 heading 文本
-
-`ReportBlock` 增加 `created_at_ms`（与 `updated_at_ms`），由内核在 upsert 时盖章，**agent 不可写、不可改**；schema 版本随之推进。FE 分段 = 按工作区本地时区把块按 `created_at_ms` 分桶。
-
-**被否的备选 A：解析 heading 里的日期。** 这是 §3.2 的 mirror-code：前端复述格式约定，agent 写歪一次静默丢段。
-
-**被否的备选 B：块 id 编码日期（`day-2026-09-02`），服务端用正则约束。** 比 A 强——服务端校验能把约定变成内核事实——但它把「一天一块」写死进了 id 命名空间，agent 想在一天里既写叙述又写 task 列表就得发明 `day-2026-09-02.2` 之类的后缀，复杂度回流。
-
-**备选 C（保留在 §9 待评审）：从 `wave.report_edited` 事件流派生块的首次出现时间。** 不改 schema，且结构性事件永久保留（§2）。代价是 FE 要拉全量事件才能渲染一页，或者后端要新做一个派生端点——后者的成本已经不比加两个字段低了。
-
-> 语义上的诚实：`created_at_ms` 是「写入日」，不是「这段进度描述的哪一天」。二者在正常路径下重合（汇总当天跑）。补写昨天的进度会落到今天的段里——**这是已知且接受的局限**，不要在实现里用 heading 文本去「修正」它，那会把被否的备选 A 从后门放回来。
-
-### D4 —— 素材源是一条新的只读 MCP 工具 `calm.day.activity`
+这是 r2 最大的改动，直接来自 §0.1。
 
 ```
-calm.day.activity { since: <ms>, until: <ms> } -> {
-  waves: [{ id, title, cove_name, lifecycle, transitions: [...], turns: <n>,
-            report_edits: <n>, tasks: { completed, failed } }],
-  truncated?: <n>
-}
+launchpad wave (purpose='launchpad', system cove)
+├── spec card        （既有，不动）
+├── terminal card    （既有，不动）
+├── wave-report card （既有，不动 —— 它继续做「当下快照」）
+└── daily-log card × N   ← 新增，一天一张
 ```
 
-数据来自 `events` 表按 `at` 窗口查询 + `waves` 表联查。**只依赖结构性事件**（`wave.*` / `card.*`），因此不受 30 天 prune 横线影响（§2 末行）——这一点要写进工具的 doc comment，否则以后有人往里加 `harness.item.added` 就会静默拿到一个有洞的窗口。
+- **载体**：新 card kind，payload 复用 report 的**块模型**（`ReportBlock[]` + `doc_rev`），因此 `ReportDocument` 渲染器直接可用，**不新做渲染路径**。
+- **日期身份**：卡本身就是日期——确定性 card id（`daily-log:<launchpad_wave_id>:<YYYY-MM-DD>`）。日期身份由载体携带，**不需要块时间戳**（r1 D3 因此删除，连同 Tier-A schema bump）。
+- **契约**：这张卡自带**日志文体**的契约注释（当日追加、写产出不写过程、当日字数预算），与 `wave-report` 的「当下快照 / 每次重写 / 四个固定 H1」互不干扰。两种文体各有各的卡，这正是 §0.1 要解决的冲突。
+- **幂等**：同一天重复汇总 = upsert 同一张卡（INV-006 因此从「靠 agent 遵守 prompt」变成**载体层的确定性 id**）。
+- **日历索引**：列 launchpad wave 的 cards，一次请求拿到「哪些天有进度」——不需要每天一次请求。
+- **保留**：删一整天 = 删一张卡，边界清晰（见 D6）。
 
-**授权（本设计唯一的风险面）**，形状直接复用 #951 review 的裁决，不重新发明：
+**被否的备选 A：给 launchpad 的 `wave-report` 换一份专用契约**（codex 的建议）。不新增 kind，但要让 launchpad 的 report body 偏离 `WaveReportPayload::initial()`——而 `report_startup_read_required()` 正是按与 `initial()` **逐字相等**来判定的，偏离会让每条 launchpad spec 首轮都被强制 `calm.report.read`。为省一个小 trait impl（§3 末行：新 kind 很便宜）去动一个 Tier-A 判定式，划不来。
 
-- `visible_to_roles` **不足以**作为闸。它只按 role 分，而 launchpad 的 Spec/Assistant 与普通 wave 的 Spec/Assistant 是同一个 role。
-- `tools/call` 不看 `tools/list`。**因此 `tools/list` 与 `tools/call` 两处都要闸，且 handler 级 fail-closed。**
-- 判据是 DB 持久的 `waves.purpose = 'launchpad'`（§2），从解析出的 `ToolCallIdentity` 推导，**绝不从 args 取**。
-- 返回值**最小化 + 脱敏**：不含报告正文、不含会话正文、不含任何绝对路径（attached 仓库路径尤其不能出现——它是用户机器上的真实路径）、不含 cove/wave id 以外的机器标识。
+**被否的备选 B：每天一份 wave/report**（r1 D2 的备选 A，本轮重新评估）。它能天然拿到日期身份和契约文体，但**每个 wave 都要物化一个 managed 工作区并 `git init`**——一年 365 个 git 仓库。这条成本 r1 没算，现在算清楚了：否。
 
-### D5 —— 触发是手动的，且「没有活动就不发起会话」
+**被否的备选 C：塞进现有 `wave-report`**（r1 的 D1/D2）。见 §0.1。
 
-Today 上一个动作「写今日进度」→ `POST /api/waves/{launchpad}/conversations { text }` 起一条 assistant 会话，prompt 指示它 `calm.day.activity` → `calm.report.blocks.upsert`。**内核零改动**（§2）。
+### D2 —— Today 主体渲染选中日的 `daily-log`，日历是它的索引
 
-定时汇总属于 #120 的 schedule 线，本设计不做。
+日历从「换一份 wave 列表」变成「翻文档的日期」——这是它第一次有真正的用途。选中日无卡 = 空态。
 
-**空活动不发起**：FE 在触发前先判活动窗口是否为空（复用已加载的 waves/overlays，不新增请求），空则直接显示空态，不起会话。这条既省一次 agent 调用，也是「agent 不得编造进度」这个要求**唯一可证死的形式**——「必须诚实」证不了，「没有素材时根本没有调用」证得了。
+### D3 ~~块时间戳~~ —— 删除
 
-### D6 —— 保留最近 30 天，更早的段由汇总时删除
+见 §0.3。日期身份由 D1 的载体携带。
 
-回答 §3.4。汇总 agent 在写新段之前，用已有的 `calm.report.blocks.delete` 删掉超过 30 天的段。更早的历史由 wave 的 git 快照与事件流兜底，**不做 UI**。
+### D4 —— 素材源：先扩 `list_waves_window`，MCP 工具只包一层
 
-**被否的备选：不设边界。** 否——一份只增不减、每次打开 Today 都要整份读回的 JSON 是确定会出事的，而 #36/#854 的 events 膨胀事故就是这个形状。
+§0.5 的发现改变了这条的形状。分两层：
+
+**第一层（REST，扩既有端点）**：`GET /api/waves?since&until` 已经是为日历窗口做的，且无调用方。给它加**计数投影**（lifecycle 变迁数、report 编辑数、task completed/failed），成为工作区活动窗口的**唯一 server-side projection**。FE 和 MCP 共用它——这同时解决了 §0 的 D5 问题（见下）。
+
+**第二层（MCP）**：`calm.day.activity { since, until }` 是第一层的薄封装 + 授权闸，**不重新实现查询**（`feedback_mirror_code_must_call_the_original`：复述一遍必然产错）。
+
+**event-kind allowlist 必须显式列出**，且带两条注释：`harness.item.added` **在 prune allowlist 里**（所以 `turns` 要么删掉，要么改成一个可实现且不依赖可 prune 事件的定义——r2 倾向**删掉 `turns`**）；`at` 是墙钟而 `id` 是游标，窗口查询按 `at`，**不得与 id 游标混用**。
+
+**授权**（本设计唯一的风险面，形状取自 #951 裁决，不重新发明）：
+
+- descriptor 保持 `visible_to_roles: &[]`，只在**已验证身份**的 list 分支做 contextual augmentation；`tools/call` 不看 list，所以 handler **独立重查**。两处都闸。
+- 收敛成**唯一一个 gate helper** `day_activity_allowed(identity)`：role **仅 Assistant**（D5 只需要它）+ active session + wave 行存在 + `purpose='launchpad'` + cove/card 归属一致。unresolved / cross-session / dormant / missing row / DB error **一律拒**。
+- 判据只从解析出的 `ToolCallIdentity` 推导，**绝不从 args 取**。
+- 参数受限：`until <= now`，窗口至多一日。
+- 返回值最小化 + 脱敏 + **三重截断**（wave 数 / 每 wave 条目数 / 总字节），纪律照抄 `report_links.rs` 的既有先例，而不是 r1 那个光秃秃的 `truncated?`。
+
+### D5 —— 手动触发；「没有活动就不发起会话」判据来自 D4 第一层
+
+Today 一个动作「写今日进度」→ `POST /api/waves/{launchpad}/conversations`，**带 `Idempotency-Key`**（§3；key 的语义要在实现里明确是「同请求重试」而非「同日汇总」——后者由 D1 的确定性 card id 负责）。prompt 指示 agent：`calm.day.activity` → 写 `daily-log`。内核写通道零改动。
+
+**空活动不发起**：判据用 **D4 第一层的同一份 projection**，不是 r1 那个「FE 已加载的 waves 快照」——后者只有当前 lifecycle，看不到 report 编辑、task 结果、历史 lifecycle 变迁，能证明的只是「快照为空时没调用」，不是「活动窗口为空时没调用」。
+
+定时汇总属于 #120，不做。
+
+### D6 —— 边界写在服务端，不写在 prompt 里
+
+§0.7 说明 r1 的 D6 是假边界。r2：
+
+- **卡级硬上限**：单张 `daily-log` 的块数与总字节数由 `CardKindHandler::validate_payload` 拒绝越界——这是内核约束，不是 agent 自觉。**顺带补上 prose 块的尺寸上限**（现在没有，见 §3）。
+- **保留窗口**：超过 N 天的 `daily-log` 卡由**服务端 GC** 删除（`calm.admin.wave_gc` 是既有先例），不由「用户手动汇总且 agent 恰好遵守 prompt」这条脆链触发——连续无活动、agent 失败、CAS 冲突都会让 r1 的清理漏跑。
+- **诚实标注**：删除内容并不必然减少占用——`wave.report_edited` 类事件永久保存完整前后文。所以 GC 的收益是「读取路径不再变长」，不是「磁盘变小」。这一条要写进实现的 doc comment，免得下一个人以为 GC 是空间手段。
+- N 的取值仍是开放问题（§9 Q2）。
 
 ### D7 —— FE 形态：文档是主体，状态条守住 §8.1
 
-`fe-design.md` §8.1 的那条约束不能因为改版就丢：**用户打开这一页是要回答「有什么在等我？」**，而那个答案归位置和 `--warn` 像素，不归字号。
+`fe-design.md` §8.1 的约束不因改版而丢：**用户打开这一页是要回答「有什么在等我？」**，答案归位置和 `--warn` 像素，不归字号。
 
-- **顶部一行状态条**：`N waiting · N running`，以及等待中的那几条 wave（compact 行）。它排在文档之前。
-- **主体**：`ReportDocument` 渲染选中日的段。空态：「今天还没有进度」+ 触发按钮（无活动时按钮不出现，见 D5）。
-- **右面板**：日历（选日切主体）+ Running / Recent 降级到这里 + 现有 Conversations 模块不动。
-- terminal 占位 section 原样保留（§1 前提三）。
+- 顶部一行状态条：`N waiting · N running` + 等待中的 compact 行，排在文档之前。
+- 主体：`ReportDocument` 渲染选中日的 `daily-log`。空态「今天还没有进度」+ 触发按钮（无活动时按钮不出现，D5）。
+- 右面板：日历（选日切主体）+ Running / Recent 降级到这里 + 现有 Conversations 模块不动。
+- terminal 占位 section 原样保留。
 
 ## 5. 契约与不变量
 
-### 5.1 launchpad 解析：read-first，只在缺失时 ensure
+### 5.1 launchpad 解析（r1 版本不可达，见 §0.2）
 
 ```
-已加载的 waves 里找 purpose === 'launchpad'
-  ├─ 命中 → 用它的 wave-report card
-  └─ 缺失 → POST /api/today/launchpad/ensure，用返回的 report_card_id
+POST /api/today/launchpad/ensure   （幂等，无条件调用）
+  → wave_id
+  → GET wave detail，从 cards 里取 daily-log 卡
 ```
 
-任何**其它**错误（网络、5xx、鉴权）必须作为错误浮出来，**不得静默 ensure**。这与 terminal 链的 INV-TODAYTERM-001 是同一条规矩的同一个理由：静默重建会把「读失败」变成「悄悄铸了第二份」。
+三条随之而来的要求：
 
-注意与 terminal 链的差别：terminal 判据是 404，这里是「已加载列表里没有这一条」，因为 waves 列表已经在手，不该为了拿一个 id 多打一次请求。
+- **不从 `workspace.waves` 找 launchpad**。system cove 被 `GET /api/coves` 过滤掉是 #175 的既定行为，把 system wave 暴露进普通 workspace 扇出是错误的修法。
+- `ensure` 幂等，所以**无条件调用**比「先查后建」简单且更少一次往返。它的 `is_unique_constraint` 分支已经在处理并发撞 `idx_waves_one_launchpad` 的情况——PR1 要确认它覆盖的正是这个索引名。
+- `ensure` **从未在真实客户端上跑过**（§3 第二行），所以它是新路径，要按新路径验，包括并发。
+
+r1 的 INV-TODAYDOC-002（read-first + 非缺失错误必须报错）随此重写：**任何 `ensure` 失败都必须浮出来，不得静默重试或降级成空态**——理由与 terminal 链的 INV-TODAYTERM-001 相同：静默会把「读失败」变成「悄悄铸了第二份」。
 
 ### 5.2 不变量表
 
-| ID | 陈述 | 反例（必须红） | 正例（必须绿） |
-|---|---|---|---|
-| INV-TODAYDOC-001 | Today 的进度只写进 launchpad wave 的 `wave-report` card，没有第二真源 | 任何往别的 card / 表写进度的路径 | 全部进度块都挂在该 card 上 |
-| INV-TODAYDOC-002 | launchpad 解析 read-first；非缺失类错误必须报错，不得静默 ensure | 5xx 时静默调 ensure | 缺失时调 ensure；5xx 时浮出错误 |
-| INV-TODAYDOC-003 | 分段依据是内核盖章的时间戳，不是 agent 文本 | 前端出现任何按 heading 文本解析日期的分支 | 分段只读 `created_at_ms` |
-| INV-TODAYDOC-004 | `calm.day.activity` 对非 launchpad 身份 fail-closed，且 `tools/list` 与 `tools/call` 两处都闸 | 普通 wave 的 Spec 直接 `tools/call` 该工具拿到数据 | 普通身份两处都被拒 |
-| INV-TODAYDOC-005 | 活动摘要最小化：无正文、无绝对路径 | 返回体里出现 attached 仓库路径 | 只有 id / 标题 / cove 名 / 计数 |
-| INV-TODAYDOC-006 | 重复触发幂等：同一天重复汇总覆盖同一段，不产生第二段 | 点两次出现两段今天 | 第二次 upsert 覆盖 |
-| INV-TODAYDOC-007 | 活动窗口为空时不发起会话 | 空窗口仍起了 assistant 会话 | 空窗口直接渲染空态 |
-| INV-TODAYDOC-008 | 保留窗口 30 天，超出的段在汇总时删除 | 第 31 天的段仍在文档里 | 汇总后只剩 30 天 |
+r1 的 review 指出原表里有五条**证不死**、两条**是全称否定却只打算列举验证**。r2 逐条改成有载体的形式。
 
-INV-TODAYDOC-004 是**全称否定**，所以它要的是 fail-closed 的扫地测试（对每一个非 launchpad 身份 × 两个入口的矩阵），不是列举几个身份。INV-TODAYDOC-003 同理：它是「前端不存在这样的分支」，得靠一条针对 heading 文本的变异测试证死——把 agent 写的 heading 改成乱码，分段必须**不变**。
+| ID | 陈述（可证死的形式） | 反例（必须红） | 正例（必须绿） |
+|---|---|---|---|
+| INV-TODAYDOC-001 | 只有一条写 `daily-log` 的 API，且 card id 由确定性函数唯一决定 | 绕开该函数构造 card id 的调用点 | 全部写入过该函数 |
+| INV-TODAYDOC-002 | `ensure` 的任何失败都浮出为错误，不静默重试/降级 | 5xx 被吞成空态 | 5xx 浮出错误框 |
+| INV-TODAYDOC-003 | 分日只依赖 card id，前端不存在按文本解析日期的路径 | 改写卡内 heading 文本后分日结果改变 | heading 任意变化，分日不变（metamorphic） |
+| INV-TODAYDOC-004 | `day_activity_allowed` 是唯一判据，且当且仅当 predicate 成立时放行 | transport 的任一分支（unresolved / cross-session / dormant / missing row / DB error）绕过 | 全分支 iff 断言 |
+| INV-TODAYDOC-005 | 返回体字段是 **allowlist**（schema 层无 path / 无 body 字段） | schema 里出现 path 或正文字段 | 字段集合等于 allowlist |
+| INV-TODAYDOC-006 | 同日重复汇总落到同一张卡 | 出现两张同日 `daily-log` | 第二次 upsert 覆盖 |
+| INV-TODAYDOC-007 | 活动窗口（D4 第一层 projection）为空时不发起会话 | 空窗口起了会话 | 空窗口直接空态 |
+| INV-TODAYDOC-008 | 卡级块数/字节上限由 `validate_payload` 拒绝；保留窗口由服务端 GC 执行 | 越界 payload 被接受；第 N+1 天的卡在无人触发时仍存活 | 越界 400；GC 后只剩 N 天 |
+
+三条方法论备注，来自 r1 review：
+
+- **INV-004 是全称否定**，身份空间不止四个 `CardRole`——还有 unresolved daemon、card-bound/no-thread、cross-session、dormant、missing card/wave、`purpose` 为 null/其它、DB error。有限枚举证不了开放世界，所以形式必须是「gate helper 的 iff 测试」+「transport 每个分支的集成测试」，不是列举几个身份。
+- **INV-005 的值级「无绝对路径」不可证明**——合法的 `title` / `cove_name` 本身就可以是 `/home/x`。能证的是 **schema 层的字段 allowlist**，所以陈述改成那个。
+- **INV-003 用变异测试证死**：固定时间戳，把卡内 heading 换成任意合法/非法文本，分日结果必须**不变**。r1 那句「乱码 heading 变异」抓不到「只对合法日期 heading 生效」的隐藏分支，所以改成 metamorphic 形式。
 
 ## 6. 切片计划
 
-三个 PR，每个约 1k 行以内，各自可独立验证。
+r1 声称三个 PR「各自可独立验证」，review 指出这是**自相矛盾**的（PR3 同时依赖 PR1 的日期身份和 PR2 的 projection，而 §9 的开放问题恰好落在 PR1 里）。r2 显式给出 DAG。
+
+```
+PR1 ──┐
+      ├──> PR3
+PR2 ──┘
+```
 
 | PR | 内容 | 交付 / 证死的风险 |
 |---|---|---|
-| **PR1**（~1.1k） | D3 块时间戳（内核盖章 + schema 推进 + FE zod）+ D1/D2/D7 FE 文档化：launchpad read-first 解析、主体渲染选中日的段、状态条、日历选日、空态 | Today 变成文档且能按日翻。**分段风险**用 heading 变异测试证死。用手写 REST 块即可完整验证，不依赖 AI |
-| **PR2**（~0.9k） | D4 `calm.day.activity` + launchpad 双入口 fail-closed 闸 + 最小化/脱敏 | **授权风险**证死：非 launchpad 身份 × `tools/list`/`tools/call` 矩阵全拒；返回体断言无路径、无正文 |
-| **PR3**（~0.6k） | D5 触发闭环（动作 + prompt + 空活动不发起 + `doc_rev` CAS 幂等）+ D6 保留窗口 | 端到端：点一次按钮，今天的段出现；点第二次不长第二段；第 31 天的段消失 |
+| **PR1**（~1.0k） | D1 `daily-log` card kind（handler + 确定性 id + 卡级上限 + prose 上限）+ D2/D7 FE：无条件 `ensure` 解析、主体渲染选中日、状态条、日历索引、空态 | Today 变成文档且能按日翻。**分日风险**用 INV-003 的 metamorphic 测试证死。手写 REST 卡即可完整验证，**不依赖 AI**，也不依赖 PR2 |
+| **PR2**（~0.9k） | D4 第一层（扩 `list_waves_window` 的计数投影）+ 第二层（`calm.day.activity` 薄封装）+ `day_activity_allowed` 单一 gate + 截断纪律 | **授权风险**证死：gate 的 iff 测试 + transport 全分支矩阵；返回体 schema allowlist 断言 |
+| **PR3**（~0.6k） | D5 触发闭环（动作 + `Idempotency-Key` + prompt + 空活动不发起）+ D6 服务端 GC | 端到端：点一次，今天的卡出现；点第二次不长第二张；无活动时按钮不出现；GC 后只剩 N 天 |
 
-PR1 不依赖 PR2/PR3——文档形态本身就是 user-visible 的交付，AI 只是它的一个写入者。这也是有意的切法：如果 §9 的开放问题在 review 里翻案，翻的是 PR2/PR3，PR1 不受影响。
+**Q1/Q3（§9）落在 PR1 内，必须在 PR1 开工前关闭。** r1 说「开放问题翻案只影响 PR2/PR3」是错的。
 
 ## 7. 风险
 
-- **块时间戳是 schema 变更**，牵动 `calm-types` → `wire.ts` → FE zod → goldens。按 `feedback_run_ci_exact_command_locally` 的教训，PR1 的门禁必须跑 CI 的完整命令（整个 workspace + features + web build），不是子集。
-- **`calm.day.activity` 是跨 cove 读**。它是本设计里唯一能泄露用户机器信息的面，而 #951 的 review 已经在同一个位置踩过一次（「no role_gate change」当时是半真且危险的表述）。PR2 的 review 要按那份裁决逐条核对，不要重新推导。
-- **`ensure` 目前没有任何生产调用方**。`grep` 全仓：只有 `today.rs` 自己的路由声明、五处集成测试，以及旧 `web/` 客户端的 generated types——新旧两个前端都不调它。所以 §5.1 的 read-first 在**首次上线时必然走 ensure 分支**，且那条分支从未在真实客户端上跑过。PR1 必须把它当作新路径验（包括 §7 第三条的并发），不能假设它是热路径。
-- **0065/0066 显示 #951 的 proposals 通道已被回退**，说明 launchpad 这条线上有过一次撤退。结合上一条，PR1 开工前要确认 launchpad wave 在当前生产库里的实际状态（存在 / 不存在 / 存在但从未被使用）。
-- **单例由 DB 保证，但并发 ensure 的行为要验**。0064 带 partial unique index `idx_waves_one_launchpad ON waves(purpose) WHERE purpose = 'launchpad'`，所以「两条 launchpad wave」在数据层不可能——read-first 不需要定义取哪一条。剩下的风险在写侧：两个并发 ensure 会撞唯一约束，`today.rs` 已有 `is_unique_constraint` 分支，PR1 要确认它覆盖的正是这个索引名。
+- **`ensure` 是冷路径**（§3）。首次上线必然走它，且从未在真实客户端上跑过。按新路径验，含并发撞唯一索引。
+- **`calm.day.activity` 是全 MCP 面第一个跨 cove 读**，是一个新类别而非一个更宽的工具。#951 在同一个位置踩过一次（当时「no role_gate change」的表述是半真且危险的）。PR2 的 review 按那份裁决逐条核对，不重新推导。
+- **新 card kind 触及 Tier-A 边界**：`schema_version` / `validate_payload` / 前端 zod / goldens。按 `feedback_run_ci_exact_command_locally`，PR1 门禁跑 CI 完整命令（整个 workspace + features + web build），不是子集。
+- **0065/0066 显示 #951 的 proposals 通道已被回退**，launchpad 这条线上有过一次撤退。PR1 开工前确认 launchpad wave 在当前生产库里的实际状态。
+- **删除不等于省空间**（D6）。不要把 GC 当容量手段宣传。
 
 ## 8. 明确不做
 
 - 定时/自动汇总（→ #120）。
 - Today terminal 接线（→ 现有 INV-TODAYTERM-*）。
-- 30 天以前的历史 UI（D6）。
+- 保留窗口之外的历史 UI（D6）。
 - 手机端形态（→ #1234）。
-- 汇总内容的质量评价机制。本设计只保证「没有素材时不写」（INV-TODAYDOC-007），不保证「有素材时写得好」。
+- 汇总内容的质量评价。本设计只保证「没有素材时不写」（INV-007），不保证「有素材时写得好」。
 
 ## 9. 待评审的开放问题
 
-- **Q1**：D3 采纳 `created_at_ms` 盖章，还是备选 C（从 `wave.report_edited` 事件流派生）？取舍点是「两个字段 + schema 推进」对「不改 schema 但要新做派生路径」。倾向盖章。
-- **Q2**：D6 的 30 天是拍的。保留窗口该由什么决定——文档字节数、块数，还是天数？
-- **Q3**：状态条（D7）与文档的排序。等待中的 wave 排在文档之前是 §8.1 的直接推论，但也可能应该反过来——文档才是这一页改版后的主角。
-- **Q4**：`calm.day.activity` 的窗口该由 agent 传（`since/until`），还是由服务端从 launchpad 身份固定为「今天」？前者灵活，后者少一个可被滥用的参数。
+- **Q1**：D1 的 `daily-log` 是**一天一张卡**，还是**一张卡 + 日期键块**？前者日期身份更硬、GC 更简单；后者卡数少、单次读更省。倾向一天一张卡。**落在 PR1 内，开工前须关闭。**
+- **Q2**：D6 的保留窗口 N 由什么决定——天数、总字节，还是卡数？r1 的「30 天」是拍的。
+- **Q3**：D7 的状态条与文档的排序。等待中的 wave 排在文档之前是 §8.1 的直接推论，但也可能应该反过来——文档才是改版后的主角。**落在 PR1 内。**
+- **Q4**：D4 的窗口参数由 agent 传（`since/until`），还是由服务端从 launchpad 身份固定为「今天」？后者少一个可被滥用的参数，且与「窗口至多一日」的限制天然一致。
+- **Q5**：时区。全仓没有 workspace timezone 概念，现在的 Today 全部用浏览器本地 `Date` 分日。`daily-log` 的 `YYYY-MM-DD` 由谁定义——浏览器本地、服务端本地，还是新引入一个工作区时区设置？**这条 r1 完全没写，且它决定 card id，所以也落在 PR1 内。**
