@@ -39,7 +39,7 @@ use calm_server::error::CalmError;
 use calm_server::event::EventBus;
 use calm_server::plugin_host::lifecycle::LifecycleDb;
 use calm_server::plugin_host::{
-    HostError, Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus,
+    HostError, Manifest, PluginHost, PluginListDb, PluginRegistry, PluginRuntimeStatus,
 };
 use serde_json::json;
 use tempfile::TempDir;
@@ -96,6 +96,11 @@ struct BootOpts {
     enabled: bool,
     backoff: Option<(Vec<u64>, Duration, u32)>,
     lifecycle_db: Option<Arc<dyn LifecycleDb>>,
+    /// Narrow repo read used by boot autospawn's initial plugin enumeration.
+    plugin_list_db: Option<Arc<dyn PluginListDb>>,
+    /// Override for the initial plugin-list wall, so the wedged-read gate does
+    /// not wait out the production allowance.
+    plugin_list_wall: Option<Duration>,
     /// Pre-built repo, for the tests that must construct their
     /// [`LifecycleDb`] fake around the same handle the host will use.
     repo: Option<Arc<dyn Repo>>,
@@ -116,6 +121,8 @@ impl Default for BootOpts {
             enabled: true,
             backoff: None,
             lifecycle_db: None,
+            plugin_list_db: None,
+            plugin_list_wall: None,
             repo: None,
             plugins_disabled: Vec::new(),
             app_wall: None,
@@ -172,6 +179,12 @@ async fn boot_with(opts: BootOpts) -> Fx {
     }
     if let Some(db) = opts.lifecycle_db {
         host = host.with_lifecycle_db(db);
+    }
+    if let Some(db) = opts.plugin_list_db {
+        host = host.with_plugin_list_db(db);
+    }
+    if let Some(wall) = opts.plugin_list_wall {
+        host = host.with_plugin_list_wall(wall);
     }
     if let Some(wall) = opts.app_wall {
         host = host.with_app_autospawn_wall(wall);
@@ -1933,6 +1946,57 @@ async fn a19_a_wedged_lifecycle_lock_cannot_hang_boot() {
 }
 
 // ===========================================================================
+// #1238 — boot's initial plugin enumeration is bounded
+// ===========================================================================
+
+/// A repo substitute whose boot-time plugin enumeration genuinely never
+/// returns. It is intentionally narrower than `RouteRepo`: implementing that
+/// ~100-method trait would bury this one behavior in forwarding boilerplate.
+struct WedgedPluginListDb;
+
+#[async_trait]
+impl PluginListDb for WedgedPluginListDb {
+    async fn plugins_list_all(&self) -> Result<Vec<calm_server::model::Plugin>, CalmError> {
+        std::future::pending().await
+    }
+}
+
+/// A wedged `plugins_list_all` read must not hang boot before any per-plugin or
+/// connector fence can run.
+///
+/// Red witness before the fence was implemented: the test's one-second outer
+/// watchdog fired, and nextest reported `Elapsed(())` after 1.177 s. The
+/// pending future guarantees that a green result cannot come from the fake
+/// repo eventually recovering.
+#[tokio::test]
+async fn a22_a_wedged_plugin_list_cannot_hang_boot() {
+    const WALL: Duration = Duration::from_millis(300);
+    let fx = boot_with(BootOpts {
+        plugin_list_db: Some(Arc::new(WedgedPluginListDb)),
+        plugin_list_wall: Some(WALL),
+        ..Default::default()
+    })
+    .await;
+
+    let started = Instant::now();
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        fx.host.autospawn_enabled_within(Duration::from_millis(100)),
+    )
+    .await
+    .expect("boot never returned: `plugins_list_all` is outside every autospawn fence");
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= WALL,
+        "boot returned in {elapsed:?}, before the wedged list read's {WALL:?} fence fired"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "boot took {elapsed:?} against a {WALL:?} plugin-list wall"
+    );
+}
+
+// ===========================================================================
 // #1196 S1 review P0-1 — `reload` may not decide on a row read outside its
 // guard
 // ===========================================================================
@@ -2444,42 +2508,38 @@ async fn a21_the_app_boot_fence_terminal_never_waits_on_the_event_store() {
 // #1196 S1 review r4 — boot's upper bound is a pinned number, not a shape
 // ===========================================================================
 
-/// `APP_AUTOSPAWN_WALL` and the composed boot ceiling, pinned as literals.
+/// `PLUGIN_LIST_WALL`, `APP_AUTOSPAWN_WALL`, and the composed boot ceiling,
+/// pinned as literals.
 ///
-/// `a19` and `a21` both override the wall through
-/// `PluginHost::with_app_autospawn_wall`, so neither can see the production
-/// constant at all: editing `30 s` to `30 min` would leave every gate green
-/// while boot's real bound grew sixtyfold. This is the app-side counterpart of
-/// `the_connector_phase_ceiling_is_the_documented_one`, and it pins the same two
-/// things that test does — the constant, and the composition that turns it into
-/// the number the docs state.
+/// The behavioral gates override their walls through `PluginHost` builders, so
+/// they cannot see the production constants at all. This is the app/list-side
+/// counterpart of `the_connector_phase_ceiling_is_the_documented_one`: it pins
+/// each constant and literal outputs of the one composition that turns them
+/// into boot's closed bound, without duplicating that composition in the test.
 #[test]
 fn the_app_autospawn_wall_is_the_documented_one() {
     use calm_server::plugin_host::{
-        APP_AUTOSPAWN_WALL, MAX_CONNECTOR_AUTOSPAWN_WALL, boot_autospawn_ceiling,
+        APP_AUTOSPAWN_WALL, MAX_CONNECTOR_AUTOSPAWN_WALL, PLUGIN_LIST_WALL, boot_autospawn_ceiling,
     };
 
+    // One local indexed DB list read, with boot continuing on expiry.
+    assert_eq!(PLUGIN_LIST_WALL, Duration::from_secs(5));
     // Sized against a local fork/exec + `initialize` handshake + a few
     // persisted events — not against a network round trip.
     assert_eq!(APP_AUTOSPAWN_WALL, Duration::from_secs(30));
-    // The connector phase is a single fenced budget; the app half is `N ×` and
-    // that is the documented shape, not an accident.
-    assert_eq!(boot_autospawn_ceiling(0), MAX_CONNECTOR_AUTOSPAWN_WALL);
-    assert_eq!(
-        boot_autospawn_ceiling(1),
-        Duration::from_millis(30_000 + 31_500)
-    );
+    // Pin literal results, not a second copy of the production arithmetic.
+    assert_eq!(boot_autospawn_ceiling(0), Duration::from_millis(36_500));
+    assert_eq!(boot_autospawn_ceiling(1), Duration::from_millis(66_500));
     assert_eq!(
         boot_autospawn_ceiling(4),
-        Duration::from_millis(4 * 30_000 + 31_500),
-        "boot's total for a repo with four enabled app plugins: 4 × the app \
-         wall plus the whole connector phase ceiling. If either constant moves, \
-         change this line deliberately"
+        Duration::from_millis(156_500),
+        "if a constituent wall moves, change this pinned total deliberately"
     );
     // The ceiling is a real ceiling in both directions: it is never below
     // either component.
     assert!(boot_autospawn_ceiling(1) > MAX_CONNECTOR_AUTOSPAWN_WALL);
     assert!(boot_autospawn_ceiling(1) > APP_AUTOSPAWN_WALL);
+    assert!(boot_autospawn_ceiling(0) > PLUGIN_LIST_WALL);
 }
 
 // ===========================================================================
@@ -2489,12 +2549,12 @@ fn the_app_autospawn_wall_is_the_documented_one() {
 
 /// Two wedged `app` plugins cost **two** walls, not one shared one.
 ///
-/// `the_app_autospawn_wall_is_the_documented_one` asserts
-/// `boot_autospawn_ceiling(4) == 4 × APP_AUTOSPAWN_WALL + …`, but that is
-/// arithmetic on a `const fn`: it would hold verbatim if the loop fenced all
-/// apps with a single shared deadline, in which case the documented `N ×` shape
-/// would be a claim about a function nothing in boot uses that way. `a19` runs
-/// the fence for exactly one plugin, so no gate had ever executed the multiplier.
+/// `the_app_autospawn_wall_is_the_documented_one` pins the four-app output of
+/// `boot_autospawn_ceiling`, but that is only an output of a `const fn`: it would
+/// hold verbatim if the loop fenced all apps with a single shared deadline, in
+/// which case the documented `N ×` shape would be a claim about a function
+/// nothing in boot uses that way. `a19` runs the fence for exactly one plugin,
+/// so no gate had ever executed the multiplier.
 /// This one does: it is the smallest `n` at which "additive" and "shared" give
 /// different answers.
 ///
