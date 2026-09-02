@@ -82,12 +82,15 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, WavePageView } from 
  * Moved down from the page component (`public.tsx`'s local `taskStatusPhrase`),
  * which is where the wording used to live and is why the mobile surface had no
  * status at all. **S1b-3b deleted the page's copy** and **S1b-4b closed the
- * other surface**: both painters word a task's status from here — the mobile
- * Task row takes this `phrase` as its status text and, since S1b-4b's
- * accessible-description channel, as the row's `aria-describedby` text too — so
- * this is now the only authority on either surface. `mobile-projection.test.tsx`
- * carries a source scan holding that the mobile page words no task state of its
- * own.
+ * other surface**: both painters word a task's status from here, so this is now
+ * the only authority on either surface. Neither surface *prints* this string —
+ * the desktop's status dot is a graphic and the mobile row prints
+ * `status.token`, the bare word the stylesheet colours off. What the phrase
+ * reaches on mobile is the status carrier's `title` and, since S1b-4b's
+ * accessible-description channel, the text the row's `aria-describedby` names;
+ * on the desktop it is the dot's `title` and the `Status: ${phrase}` accessible
+ * name. `mobile-projection.test.tsx` carries a source scan holding that the
+ * mobile page words no task state of its own.
  */
 export function taskStatusPhrase(status: string, detail: string | null): string {
   return detail === null ? status : `${status} — ${detail}`;

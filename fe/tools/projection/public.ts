@@ -70,11 +70,16 @@
 //    them pins a second callback as *not* called: the two worker-card cases pin
 //    `onOpenCard` / `onOpenTask` against each other, and the delete case
 //    supplies `onOpenCard` and asserts it was never reached — so a delete that
-//    fires the correct callback **and** opens the card goes red. What remains
-//    unexhausted is the rest of the prop surface: no case enumerates *every*
-//    callback the page takes, so an action that additionally fires some third
-//    prop (`onRenameWave`, say) is still green. A fourth action, or a second
-//    surface, arrives with no cover at all.
+//    fires the correct callback **and** opens the card goes red. The **mobile**
+//    surface has its own, narrower half: `reveal-block` is the one action it
+//    supports, and `wave/page/public.test.tsx` taps a real mobile Task row and
+//    asserts `onOpenTask` was called once with the block id. That case pins no
+//    rival callback, so mobile has positive binding and payload but no
+//    exclusivity. What remains unexhausted on both surfaces is the rest of the
+//    prop surface: no case enumerates *every* callback the page takes, so an
+//    action that additionally fires some third prop (`onRenameWave`, say) is
+//    still green. A fourth action arrives with no cover at all, and so would a
+//    third surface.
 //  - **Interactivity of the host.** §6.3 declines this: a marker may sit on a
 //    `disabled` control, on an element with no role or tab stop, or on a plain
 //    `<span>`. Mobile rows require it — Astryx generates the interactive element
@@ -90,11 +95,14 @@
 //  - **`RowBadge.struck` — a formal field with no carrier in this framework at
 //    all.** `checkBadges` reads a badge's id, its position in the sequence and
 //    its text, and nothing else: a painter that ignored `struck`, or inverted
-//    it, is green under every code above. Its desktop coverage lives *outside*
-//    the projection — `wave/page/public.test.tsx` asserts the `taskWithdrawn`
-//    class on a withdrawn declaration badge and its absence on an ordinary one.
-//    That is a behavioural class assertion over one painter's stylesheet, not a
-//    projection obligation, and no other surface has even that.
+//    it, is green under every code above. Both surfaces cover it *outside* the
+//    projection, and neither of those is a projection obligation. Desktop:
+//    `wave/page/public.test.tsx` asserts the `taskWithdrawn` class on a
+//    withdrawn declaration badge and its absence on an ordinary one. Mobile:
+//    `wave/page/mobile-painter.test.tsx` makes the same both-ways class
+//    assertion, and `wave/page/mobile-task-row.browser.test.tsx` goes one
+//    further — it reads `text-decoration-line` back out of the cascade in a real
+//    engine, which is the half a class assertion cannot reach on either side.
 //  - **The projection is not onto, by design.** Nothing here says the DOM holds
 //    *only* what the view model names. A painter may add unmarked chrome,
 //    wrappers, counters and extra controls freely and stay green — that is a

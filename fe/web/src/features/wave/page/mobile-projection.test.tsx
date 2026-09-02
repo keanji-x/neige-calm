@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// #1234 S1b-4a — the **real mobile page** as a faithful projection of its view
-// model.
+// #1234 S1b-4a / S1b-4b — the **real mobile page** as a faithful projection of
+// its view model, for each row module it drills into.
 //
 // `mobile-painter.test.tsx` checks the painter in isolation, which is exactly
 // the shape §6.10 names: a green synthetic painter says nothing about whether
@@ -13,8 +13,9 @@
 // `.desktopPanelSurface` are siblings and both in the DOM in production — only
 // `inert` and `aria-hidden` distinguish them. Until this slice a whole-page scan
 // happened to work because the mobile side carried no markers; now both sides do,
-// and an unscoped scan would read the two as one tree with four modules in it.
-// Both projection suites scope, and for the same reason.
+// and an unscoped scan would read the two as one tree — the desktop panel's row
+// modules *plus* the one the reader drilled into, which is a module sequence no
+// view model names. Both projection suites scope, and for the same reason.
 //
 // **One module, not two.** `checkProjectionIn`'s `modules` argument is the
 // sequence this tree must hold — the desktop passes both row modules, mobile
@@ -35,8 +36,8 @@
 // takes the painter on trust: it cannot prove this DOM came from that painter,
 // and the painter built here is a second construction, not the page's. What
 // turns a green run into evidence is **`mobile-entry.test.tsx`**, which mocks
-// `paintMobileModule` and holds that the page calls it with the Cards module and
-// renders the value it hands back.
+// `paintMobileModule` and holds — for each row module — that the page calls it
+// with that module and renders the value it hands back.
 //
 // **The marker-literal hygiene guard is not repeated here.** It already covers
 // this branch: `desktop-projection.test.tsx`'s last describe scans the *whole* of

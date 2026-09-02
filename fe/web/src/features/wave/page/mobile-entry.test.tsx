@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 //
-// #1234 S1b-4a — the mobile **entry** oracle: it catches a page that **discards
-// the painter's whole return value**, and it catches a **bypass drawn beside
-// it**, marked or not. It does *not* prove "the mobile panel can only put
-// content on screen through the painter" — see the honest limit at the end of
-// this head.
+// #1234 S1b-4a / S1b-4b — the mobile **entry** oracle, over both row modules: it
+// catches a page that **discards the painter's whole return value**, and it
+// catches a **bypass drawn beside it**, marked or not. It does *not* prove "the
+// mobile panel can only put content on screen through the painter" — see the
+// honest limit at the end of this head.
 //
-// **Why this file exists.** `mobile-projection.test.tsx` checks that the
-// rendered mobile Cards page is a faithful projection of the view model, and
+// **Why this file exists.** `mobile-projection.test.tsx` checks that a rendered
+// mobile row-module page is a faithful projection of the view model, and
 // `checkProjectionIn` takes the painter on trust — it cannot prove the DOM it
 // reads came from that painter. "It was called" does not close that either: a
 // page can call the painter, throw the result away and draw its own list beside
@@ -16,9 +16,9 @@
 // the painted module, which leaves the subtree with neither a projection marker
 // **nor any of the fixture's own text** unless something other than the painter
 // put it there. The text half is what closes the cheapest bypass the marker
-// counts alone would miss: a hand-built, entirely unmarked copy of the Cards
-// list contributes no `data-nc-*` at all, but it cannot avoid printing `Cards` /
-// `Build log` / `harness`.
+// counts alone would miss: a hand-built, entirely unmarked copy of the drilled
+// list contributes no `data-nc-*` at all, but it cannot avoid printing the
+// module's own title and its rows' words.
 //
 // **The load-bearing assertions name no marker.** The call, the module equality,
 // the tag and the fixture's strings are all spelling-independent; only the
