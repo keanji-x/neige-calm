@@ -49,8 +49,14 @@
 #                            WORKFLOW_TEMPLATES  bound_workflow  workflowSelect
 #                            forge_workflow_e2e  workflowId
 #                            "## Bound Workflow Input"  "Workflow input:"
-#   MUST PASS (not ours):    "the rebase workflow", "Operator workflow:",
-#                            "a nested workflow must cancel explicitly",
+#   ALSO FAILS (English):    ANY plural "workflows" in ordinary prose —
+#                            "sibling workflows", "loopback workflows". The
+#                            pattern cannot distinguish those from the retired
+#                            manifest key and does not try; they go on the
+#                            allowlist (entry 13), they are not exempt.
+#   MUST PASS (not ours):    only the SINGULAR followed by a non-identifier —
+#                            "the rebase workflow", "Operator workflow:",
+#                            "a nested workflow must cancel explicitly" — plus
 #                            the `Workflow` <select> label in the legacy `web/`
 #                            bundle (renaming that is a USER-VISIBLE change,
 #                            out of #1268's mechanical-rename scope)
@@ -58,13 +64,23 @@
 # **The singular/plural asymmetry is real and is not a bug — but it is also not
 # "the English word is safe".** `workflows` ALWAYS matches, because the
 # trailing `s` is itself an identifier character; only the singular `workflow `
-# followed by a non-identifier survives. That is why landing #1268 required
-# rewording six pieces of prose that had nothing to do with templates
-# ("Sibling workflows", "options are shipped workflows", "future workflows
-# land here", "loopback workflows", ...) and re-wrapping a comment at
-# `web/e2e/_setup/replay-server.setup.ts:57-58` whose `.github/` prefix and
-# `workflows/ci.yml` had been split across two lines, defeating the lookbehind.
-# Anyone widening the prose here should expect the same.
+# followed by a non-identifier survives.
+#
+# The intended resolution for a genuine-English plural is an ALLOWLIST ENTRY
+# (entry 13), not a reword. #1268 first paid the pattern in rewords and that was
+# a mistake with a measurable cost: one of the reworded lines lived in
+# `fe/tools/mutation/runner.ts`, which is evidence-invalidating mutation
+# infrastructure, so a one-word prose edit flipped mutation selection to the full
+# 66-entry manifest. Distorting prose to satisfy a regex also destroys the
+# evidence that the regex is over-broad. Reword only when the new word is
+# genuinely more accurate (#1268 kept several such: comments that really were
+# about wave TEMPLATES, and the `GET /api/workflows` endpoint that no longer
+# exists under any name). The one non-reword edit worth keeping on its own
+# merits is the comment re-wrap at
+# `web/e2e/_setup/replay-server.setup.ts:57-58`, where `.github/` and
+# `workflows/ci.yml` had been split across two lines: that split defeated the
+# lookbehind AND made the path ungreppable, so gluing it back is an improvement
+# independent of this gate.
 #
 # The `.github/workflows/` directory is GitHub Actions' name, not ours, so a
 # `workflow` preceded by `.github/` is excluded by a lookbehind rather than by
@@ -181,6 +197,20 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #         lookbehind that exempts real `.github/workflows/` paths must not
 #         exempt this, or the fixture would stop being a near miss.
 1   fe/tools/mutation/runner.test.ts
+# --- 13. Ordinary English, allowlisted instead of reworded. Both lines are the
+#         plural `workflows` in running prose about GitHub Actions / operator
+#         habits, and neither has anything to do with wave templates. Clause 1
+#         cannot tell that plural apart from the retired manifest key (the
+#         trailing `s` IS the identifier character), so the honest resolution is
+#         an allowlist entry, not a euphemism.
+#         `fe/tools/mutation/runner.ts` matters beyond style: `fe/tools/mutation/**`
+#         is evidence-invalidating infrastructure (`evidenceInvalidatingDirectories`),
+#         so ANY edit to it — including a one-word prose reword — makes
+#         `selectedEntries` fail closed to the WHOLE manifest and runs all 66
+#         mutations. Paying that with a reword is how a vocabulary gate silently
+#         buys a 17-shard mutation sweep.
+1   fe/tools/mutation/runner.ts
+1   docker-compose.yml
 EOF
 
 # This script names the pattern it scans for and quotes several allowlisted

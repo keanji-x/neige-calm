@@ -541,7 +541,7 @@ const evidenceInvalidatingFiles = Object.freeze([
  * prefix, because that filter drops every non-`fe/` path on the floor: without this check a PR
  * touching only the workflow selected zero entries.
  *
- * Sibling CI files (`.github/workflows/other.yml`) and `.github/dependabot.yml` are deliberately
+ * Sibling workflows (`.github/workflows/other.yml`) and `.github/dependabot.yml` are deliberately
  * NOT in the set — they do not run vitest, so they cannot invalidate a recorded verdict.
  */
 export const evidenceInvalidatingRepoPaths = Object.freeze(['.github/workflows/ci.yml'] as const);
