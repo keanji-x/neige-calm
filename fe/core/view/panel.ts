@@ -28,8 +28,8 @@ export type RowBadge = Readonly<{ id: string; text: string; struck: boolean }>;
 export type RowStatus = Readonly<{
   /** The bare status word — a structural obligation: the renderer writes it
    *  into the row's status marker attribute, unchanged. The attribute is
-   *  deliberately not named here: it is `data-nc-task-status` today, and S1b
-   *  renames it to `data-nc-status` when the panel is rewritten. */
+   *  deliberately not named in this type: it is `MARKER.status`
+   *  (`data-nc-status`), declared once below. */
   token: string;
   /**
    * The finished, readable string — a text obligation: the canonical phrase
@@ -261,11 +261,13 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
  * does neither — these are platform-independent strings. **No DOM operation
  * belongs in this file.**
  *
- * `status` is spelled `data-nc-status` here, its final name. Until S1b-3
- * `public.tsx` still writes the old `data-nc-task-status`; that slice renames
- * every occurrence, and its oracle is that `rg "data-nc-task-status" fe`
- * returns zero hits. This slice defines the vocabulary and changes no existing
- * attribute.
+ * `status` is spelled `data-nc-status`, and since S1b-3a that is the tree's
+ * only spelling of the status marker: the desktop page's earlier name for it
+ * was renamed away, so the stylesheet, the page and this table no longer
+ * disagree by name. They still agree only by coincidence of spelling —
+ * `public.tsx` and `page.module.css` write the literal string rather than
+ * reading `MARKER`, which is what the paragraph above means by "not by way of
+ * this table".
  */
 export const MARKER = Object.freeze({
   /** Bijection anchor for a row module. Carries no text obligation. */

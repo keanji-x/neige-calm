@@ -725,7 +725,7 @@ export function WavePage({
                           {task.status !== null && (
                             <span
                               className={styles.taskDot}
-                              data-nc-task-status={task.status}
+                              data-nc-status={task.status}
                               role="img"
                               aria-label={`Status: ${taskStatusPhrase(task.status, task.statusDetail)}`}
                               title={taskStatusPhrase(task.status, task.statusDetail)}

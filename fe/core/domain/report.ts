@@ -1015,7 +1015,7 @@ export function deriveReportTasks(
      * nothing at all), let a `statusDetail` through with no state to qualify —
      * `Status:  — boom`, which both `taskStatusPhrase` and `ReportTaskRow`
      * document as the one shape they may not produce — and render as
-     * `data-nc-task-status=""`, which matches no dot form and so paints the
+     * `data-nc-status=""`, which matches no dot form and so paints the
      * neutral ring while claiming a run exists. Today's kernel serialises
      * `TaskStatus` to a fixed lowercase word and cannot emit this; the wire
      * type is what is being hardened against, not the current writer.
