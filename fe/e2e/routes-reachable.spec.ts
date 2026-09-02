@@ -16,7 +16,7 @@ test.afterEach(async ({ request }) => {
   createdCoveIds.length = 0;
 });
 
-test('the four application routes are reachable through the real kernel', async ({ page, request }) => {
+test('the application routes are reachable through the real kernel', async ({ page, request }) => {
   const errors = captureBrowserErrors(page);
   const version = await request.get('/api/version');
   expect(version.ok()).toBe(true);
@@ -30,6 +30,11 @@ test('the four application routes are reachable through the real kernel', async 
   const routes = [
     { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
     { path: `/next/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
+    /* #1211 — the new-wave page is a route like the others, so it belongs in
+       the reachability sweep: this is what would catch it failing to render at
+       all behind the real kernel. Anchored on the composer because the page has
+       no `data-nc-page-title` — deliberately, the greeting is its one title. */
+    { path: `/next/cove/${cove.id}/new`, anchor: page.getByLabel('What this wave should do') },
     { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
     { path: '/next/settings', anchor: page.getByRole('radiogroup', { name: 'Appearance' }) },
   ];

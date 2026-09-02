@@ -115,6 +115,7 @@
 - { path: fe/web/src/ui/drawer, type: directory, owner: ui/drawer, readonly: false, basis: "design §7.6 对话抽屉 (#997)" }
 - { path: fe/web/src/ui/viewport, type: directory, owner: ui/viewport, readonly: false, basis: "#1191 §3.2 唯一的 compact viewport 判据；architecture/single-viewport-source 的豁免目录" }
 - { path: fe/web/src/ui/icon, type: directory, owner: ui/icon, readonly: false, basis: "design §6.7 描边图标集；字形墨迹在同字号下差 1.75 倍 (#997)" }
+- { path: fe/web/src/ui/brand, type: directory, owner: ui/brand, readonly: false, basis: "#1211 品牌资产；neige-mark.svg 由 app/shell 的工作区栏与 features/cove 的新建页共同引用，放在 ui 是因为 features/** 不得进入 app/**" }
 - { path: fe/web/src/features/chat, type: directory, owner: features/chat, readonly: false, basis: "对话列表；数据源为 WorkerSessionProjection + HarnessItem，端点未落地 (#997)" }
 
 # Non-runtime styles owner (§3 diseases 6/7 and frozen interface §6.8).

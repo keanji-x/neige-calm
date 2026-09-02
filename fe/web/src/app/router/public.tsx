@@ -17,9 +17,10 @@ import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-qu
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
-import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
+import { coveOf, folderConflictMessage, type Cove } from '../../../../core/domain/cove.ts';
 import {
-  toWave, waveActivityFrom, waveDisplayTitle, type Wave, type WaveDetailWire,
+  toWave, waveActivityFrom, waveDetailOperation, waveDisplayTitle,
+  type Wave, type WaveDetailWire,
 } from '../../../../core/domain/wave.ts';
 import type {
   BoardHostItem, CardAddMenuEntry, CardHost, CardRegistry,
@@ -65,13 +66,15 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
-  ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
+  ApiError, coveConversationsQueryOptions, folderConflictOf, harnessItemsQueryOptions,
+  prefetchCoveList, runOperation,
   settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
   useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations,
   useWaveTemplateMutation, useWaveTemplates, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
+import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { AppShell, useOpenMobileSection, useRequestNewWave } from '../shell/public.tsx';
 import { useTheme } from '../theme/public.tsx';
 import { ConversationProvider, useConversationRegistry } from '../conversations/public.tsx';
@@ -837,6 +840,14 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <CoveRoute transport={transport} unauthorized={unauthorized} />,
   });
 
+  /* Declared after `coveRoute` and matched by its own literal segment: `/new`
+     is not a cove id, and TanStack prefers the more specific path. */
+  const newWaveRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/cove/$coveId/new',
+    component: () => <NewWaveRoute transport={transport} unauthorized={unauthorized} />,
+  });
+
   const waveRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/wave/$waveId',
@@ -863,7 +874,8 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   });
 
   return rootRoute.addChildren([
-    indexRoute, coveRoute, waveRoute, settingsRoute, templateListRoute, templateEditorRoute,
+    indexRoute, coveRoute, newWaveRoute, waveRoute, settingsRoute, templateListRoute,
+    templateEditorRoute,
   ]);
 }
 
@@ -1651,6 +1663,215 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   );
 }
 
+/**
+ * `/cove/$coveId/new` — the page you start a wave on (#1211).
+ *
+ * It owns the whole create, which used to be split between the shell (the POST,
+ * the 409, the navigation) and a dialog inside it. There is no reason for the
+ * shell to hold any of it now that the surface is a route: the rail's `+` and
+ * the cove page's `+` both just navigate here, and one route owning one
+ * operation is the shape every other write in this file already has.
+ *
+ * ## What it does NOT do yet: deliver the first message (#1299)
+ *
+ * The composer's sentence is the wave's *intent*, and its destination is the
+ * wave's spec card as the first message. That is deliberately **not** done
+ * here, and the reason is worth stating so nobody adds it back casually.
+ *
+ * Doing it from this page takes three writes — create, read the detail to find
+ * the spec card, post the message — and two review rounds established that the
+ * sequence cannot be made sound from a component:
+ *
+ *  * the reader can navigate away mid-flight; the requests are not cancelled,
+ *    the route unmounts, and the wave exists with the sentence lost and nothing
+ *    said; and
+ *  * `POST /api/cards/{id}/spec/input` carries no idempotency key, and the
+ *    server enqueues *before* it writes audit and responds — so a lost response
+ *    or a 500-after-enqueue makes any retry deliver the same sentence twice.
+ *
+ * Neither is a defect in this file; both are what running a distributed
+ * transaction in a component costs. The kernel already has the right shape —
+ * `POST /api/waves/{id}/conversations` takes a first message with a required
+ * `Idempotency-Key` and validates it *before* anything is minted — and #1299
+ * gives `POST /api/waves` the same treatment. When it lands this becomes one
+ * write and both failure classes stop existing rather than being defended
+ * against.
+ *
+ * Until then the sentence is not sent, the form says so where the reader can
+ * see it before pressing anything, and this route lands them on the wave with
+ * the spec conversation **already open** so saying it again is one keystroke.
+ * That read is best-effort in the honest sense: its only effect is a drawer.
+ *
+ * The create posts **no title** — the kernel stores the empty string and the
+ * spec agent names the wave through `calm.wave.rename` once it knows what the
+ * work is (#1211 S1).
+ */
+/**
+ * How long the create waits for the spec card before navigating without it.
+ *
+ * Short on purpose: this read buys a convenience (the drawer is already open),
+ * and the reader is standing in front of a submitted form. Anything long enough
+ * to feel like a hang is longer than the convenience is worth.
+ */
+const OPEN_SPEC_DEADLINE_MS = 1_500;
+
+function NewWaveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const coveId = useRouteParam('/cove/');
+  const workspace = useWorkspace(transport, unauthorized);
+  const waveMutations = useWaveMutations(transport, unauthorized);
+  const templates = useWaveTemplates(transport, unauthorized);
+  const registry = useConversationRegistry();
+  const go = useGo();
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const listDirectory = createDirectoryLister(transport, unauthorized);
+  /*
+   * "Is this route still the screen?" — read by the create continuation, which
+   * outlives the route whenever the reader navigates during a slow POST.
+   *
+   * The mount arm setting it back to `true` is load-bearing, not symmetry.
+   * React's StrictMode double-invokes effects in development (mount → cleanup →
+   * mount), so with only a cleanup arm the flag latched `false` on the very
+   * first render and *every* create silently stopped navigating. jsdom does not
+   * run StrictMode here, so the unit suite stayed green — the real-kernel e2e
+   * is what caught it.
+   */
+  const liveRef = useRef(true);
+  useEffect(() => {
+    liveRef.current = true;
+    return () => { liveRef.current = false; };
+  }, []);
+
+  /* The registry outlives this route (`ConversationProvider` is above the
+     shell), which is what lets the create ask the *next* page to open the spec
+     drawer on a card that does not exist here yet. */
+  /*
+   * Ask the wave page to open its spec conversation, so the reader lands ready
+   * to type — **before** navigating, and only if the read is quick.
+   *
+   * Two shapes were tried and both were wrong, in opposite directions:
+   *
+   *  * `await` it, then `go()`. The read has no timeout, so a slow one parked
+   *    the reader on a stuck "Creating…" with the wave already on the server.
+   *  * `go()`, then fire it and write the result whenever it lands. That write
+   *    is `requestOpen`, which is last-write-wins on a registry outliving every
+   *    route — so a late landing overwrote a conversation the reader had opened
+   *    in the meantime. A location guard did not fix it either: the reader can
+   *    leave this wave and come *back* before the read lands (an ABA), and the
+   *    guard cannot tell that their newer choice is the one that should win.
+   *
+   * Racing it against a short deadline resolves both, because it removes the
+   * late write entirely rather than trying to judge it. Win the race and the
+   * request is made while this route still owns the screen; lose it and the
+   * result is dropped on the floor — no registry write can ever arrive after
+   * the reader has moved on, so there is nothing to adjudicate.
+   *
+   * The cost, stated: on a slow read the drawer does not open and the reader
+   * opens the conversation themselves. That is the correct thing to lose — no
+   * message rides on this, it is a convenience.
+   */
+  const openSpecOnArrival = async (waveId: string): Promise<void> => {
+    const read = runOperation(transport, waveDetailOperation(waveId), unauthorized)
+      .then((detail) => detail.cards.find(
+        (card) => card.kind === 'codex' && isSpecHarnessPayload(card.payload),
+      ));
+    const timeout = new Promise<undefined>((resolve) => {
+      setTimeout(() => { resolve(undefined); }, OPEN_SPEC_DEADLINE_MS);
+    });
+    const specCard = await Promise.race([read.catch(() => undefined), timeout]);
+    /*
+     * `liveRef` guards the *write*, not just the navigation below.
+     *
+     * The deadline bounds how long this waits; it does not bound how long the
+     * **create** took to get here. A slow `POST /api/waves` gives the reader
+     * time to press Back, and the continuation still runs — so without this the
+     * race could be won after they had gone, and `requestOpen` writes into a
+     * registry that outlives every route. The symptom is not immediate and that
+     * is what makes it nasty: their *next* visit to that wave opens a Spec
+     * drawer nobody asked for.
+     *
+     * Found by review, by execution, after the first version of this redesign
+     * dropped the earlier location guard on the theory that the race had made
+     * it unnecessary. It had not: the race and the guard answer different
+     * questions — "how long do we wait" and "are we still the screen".
+     */
+    if (specCard !== undefined && liveRef.current) registry.requestOpen(specCard.id);
+  };
+
+  const submit = (draft: NewWaveDraft) => {
+    if (coveId === undefined) return;
+    setCreating(true);
+    setError(null);
+    void waveMutations.create({
+      cove_id: coveId,
+      /* No `title` (#1211): the sentence the reader typed is the wave's intent,
+         not its name, and it travels as the first message below. */
+      theme: readHostThemeRgb(),
+      // Spread, not two optional fields: no template leaves both keys absent,
+      // and `workflow_id: undefined` is not the same request as no
+      // `workflow_id` for anything that inspects the object before it is
+      // serialized.
+      ...(draft.workflow_id === undefined ? {} : { workflow_id: draft.workflow_id }),
+      ...(draft.workflow_input === undefined ? {} : { workflow_input: draft.workflow_input }),
+      /*
+       * Both keys or neither. `cwd` without `attach_folder` means "this path is
+       * already claimed by some cove", which the kernel answers with a 409
+       * whenever it is not — so the omitted-flag default is a request that
+       * fails for every folder the user has not already bound. `true` is what
+       * "I picked this folder for this cove" means, and it is a no-op when this
+       * cove already covers the path (`waves.rs`'s same-cove arm), so a second
+       * wave in the same repository does not conflict with the first.
+       */
+      ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
+    }).then(async (wave) => {
+      await openSpecOnArrival(wave.id).catch(() => undefined);
+      /*
+       * And only if the reader is still here.
+       *
+       * `POST /api/waves` can be slow, and nothing stops them pressing Back or
+       * picking a rail row while it is in flight. This route unmounts, but the
+       * promise continuation still runs — and an unguarded `go()` yanked them
+       * off the page they had just chosen and onto the wave. The wave is
+       * created either way and is in the rail; what they lose by not being
+       * navigated is nothing, and what they lose by being navigated is their
+       * own last action.
+       *
+       * **Known gap, #1299.** `liveRef` answers "did this route unmount", which
+       * is not the same question as "is this still the reader's surface". The
+       * mobile sheets (Pages / Coves) do not unmount the outlet — they cover it
+       * behind an `inert` `main` — so a create landing while a sheet is open
+       * still passes this guard and navigates underneath it. An earlier version
+       * of this comment claimed the dock was covered; it is not, and the fix is
+       * a real "is this surface current" signal rather than a mount flag.
+       */
+      if (!liveRef.current) return;
+      go({ name: 'wave', waveId: wave.id });
+    }).catch((failure: unknown) => {
+      const conflict = folderConflictOf(failure);
+      if (conflict !== null) {
+        // The 409 body names a cove by id and carries no `error` key, so the
+        // generic message below would be the bare word "Conflict".
+        const owner = workspace.coves.find((candidate) => candidate.id === conflict.cove_id);
+        setError(folderConflictMessage(conflict, owner?.name ?? null));
+        return;
+      }
+      setError(failure instanceof ApiError ? failure.message : 'Could not create the wave.');
+    }).finally(() => { setCreating(false); });
+  };
+
+  if (coveId === undefined) return <ErrorBox message="This cove could not be found." onRetry={() => { go({ name: 'today' }); }} />;
+  return (
+    <NewWaveForm
+      submitting={creating}
+      error={error}
+      templates={templates.templates}
+      templatesError={templates.error}
+      listDirectory={listDirectory}
+      onSubmit={submit}
+    />
+  );
+}
+
 function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const coveId = useRouteParam('/cove/');
   const workspace = useWorkspace(transport, unauthorized);
@@ -1658,11 +1879,11 @@ function CoveRoute({ transport, unauthorized }: { transport: ApiTransportPort; u
   const waveMutations = useWaveMutations(transport, unauthorized);
   const waveDeletion = useDeleteConfirm((waveId, signal) => waveMutations.remove(waveId, coveId ?? '', signal));
   const go = useGo();
-  /* The New wave dialog is the shell's, not this route's. Two surfaces open it
-     — every cove row's `+` in the rail and this page's WAVES module head — and
-     the rail is a sibling of the outlet, so a dialog owned here was reachable
-     from exactly one of them. One dialog, one set of strings; this route only
-     names the cove whose id the POST will send (hidden, not a form field). */
+  /* #1211 — the `+` navigates to `/cove/{id}/new`; there is no dialog. Two
+     surfaces reach it — every cove row's `+` in the rail and this page's WAVES
+     module head — and the rail is a sibling of the outlet, so the callback is
+     a context rather than a prop. This route only names the cove whose id the
+     new-wave page will post. */
   const requestNewWave = useRequestNewWave();
   /*
    * A cove's conversations are its own, listed by the server (#1098). They are

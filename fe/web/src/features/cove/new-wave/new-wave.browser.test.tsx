@@ -21,7 +21,7 @@
  */
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WaveTemplate } from '../../../../../core/domain/wave.ts';
 import { NewWaveForm } from './public.tsx';
@@ -29,7 +29,7 @@ import { NewWaveForm } from './public.tsx';
 /* The template chip, matched on either of the two things it can say: it asks
    while nothing is chosen and names the choice after. Never on the whole
    string — the rest of the name is what the assertions vary. */
-const TEMPLATE_CHIP = /^Choose a template$|^Template: /;
+const TEMPLATE_CHIP = /^Template: /;
 
 const TEMPLATES: readonly WaveTemplate[] = [{
   id: 'small-change',
@@ -53,12 +53,69 @@ function renderForm() {
          prop is required, which is deliberate — an optional one would let a
          call site render a picker that silently lists nothing. */
       listDirectory={vi.fn(() => Promise.resolve({ path: '/', parent: null, entries: [] }))}
-      titleRef={{ current: null }}
-      onCancel={vi.fn()}
       onSubmit={vi.fn()}
     />,
   );
 }
+
+/*
+ * The composer's focus ring, in a real browser because that is the only place
+ * the cascade and `:has()` actually resolve.
+ *
+ * It exists at all because the flat styling removed astryx's `:focus-within`
+ * shadow, which was the composer's *only* focus affordance — the editable sets
+ * `outline: none`. axe-core does not test focus visibility, so nothing else in
+ * the suite would notice it going missing again (WCAG 2.4.7).
+ *
+ * The second case is the one that made it `:has(… :focus)` rather than
+ * `:focus-within`: the chips are inside the same element, so `:focus-within`
+ * drew the composer's ring around a focused *chip* as well as the chip's own,
+ * which is two answers to "where am I".
+ */
+describe('the composer focus ring', () => {
+  /*
+   * `--accent` is supplied here because this project loads CSS Modules but not
+   * `styles/tokens.css`, and an undefined `var()` makes the whole declaration
+   * invalid — the ring would compute to `none` for a reason that has nothing to
+   * do with the selector. Measured, not assumed: without this the ring assertion
+   * failed while `:has()` support and focus were both confirmed good.
+   *
+   * What is under test is therefore the *rule* — does the selector match the
+   * composer body when the field has focus, and not when a chip does — with the
+   * colour standing in for the app's token.
+   */
+  beforeEach(() => { document.documentElement.style.setProperty('--accent', 'rgb(0, 0, 255)'); });
+  afterEach(() => { document.documentElement.style.removeProperty('--accent'); });
+
+  function composerBody(): HTMLElement {
+    const editable = screen.getByLabelText('What this wave should do');
+    const body = editable.closest('[data-density] > *');
+    if (!(body instanceof HTMLElement)) throw new Error('composer body not found');
+    return body;
+  }
+
+  it('shows a ring while the field has focus, and none once it leaves', async () => {
+    renderForm();
+    const field = screen.getByLabelText('What this wave should do');
+    /* The page focuses the field on arrival by design (#1161's rule on a
+       route), so "at rest" has to be reached by blurring rather than assumed —
+       the first cut asserted `none` on mount and failed against a ring that was
+       correctly there. */
+    await waitFor(() => { expect(document.activeElement).toBe(field); });
+    expect(getComputedStyle(composerBody()).boxShadow).not.toBe('none');
+
+    field.blur();
+    await waitFor(() => { expect(document.activeElement).not.toBe(field); });
+    expect(getComputedStyle(composerBody()).boxShadow).toBe('none');
+  });
+
+  it('does not ring the whole composer when a chip takes focus', async () => {
+    renderForm();
+    trigger().focus();
+    await waitFor(() => { expect(document.activeElement).toBe(trigger()); });
+    expect(getComputedStyle(composerBody()).boxShadow).toBe('none');
+  });
+});
 
 function trigger(): HTMLButtonElement {
   return screen.getByRole('button', { name: TEMPLATE_CHIP });

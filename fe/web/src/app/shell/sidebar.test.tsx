@@ -146,7 +146,8 @@ describe('cove row', () => {
     expect(chevron.getAttribute('aria-expanded')).toBe('true');
   });
 
-  /* The rail does not own the New wave dialog — `AppShell` does, because the
+  /* The rail does not own the new-wave surface — since #1211 it is a route,
+     and the rail only navigates. `AppShell` owns the seam, because the
      cove page's `+` opens the same one. All the row reports is which cove. */
   it('starts a wave in its own cove from the row, without navigating into it', async () => {
     const onNewWave = vi.fn();

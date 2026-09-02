@@ -223,7 +223,7 @@ export function TemplateEditorPage({
                 value={draft.title}
                 width="100%"
                 status={blankTitle
-                  ? { type: 'error', message: 'A template needs a title — the New wave dialog lists templates by it.' }
+                  ? { type: 'error', message: 'A template needs a title — the new-wave page lists templates by it.' }
                   : undefined}
                 onChange={(value: string) => edit({ ...draft, title: value })}
               />

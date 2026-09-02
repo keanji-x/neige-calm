@@ -31,6 +31,25 @@ export type NavTarget =
   | Readonly<{ name: 'today' }>
   | Readonly<{ name: 'cove'; coveId: string }>
   /**
+   * #1211 — starting a wave is a **place**, not a dialog.
+   *
+   * The `+` used to open a modal over whatever you were looking at. It is now
+   * a route: a page whose whole content is one composer, with the template and
+   * the folder as chips under it. That is the same grammar as everywhere else
+   * in the product — you say what you want — and unlike a modal it survives a
+   * refresh, can be linked, and has a real Back.
+   *
+   * The wave row is minted when the composer is submitted, not when this route
+   * is entered. Two reasons, one of each kind: **product** — a `+` that mints a
+   * row leaves an unnamed, intent-less wave in the rail every time someone
+   * changes their mind; and **mechanical** — picking a template *is* a fork of
+   * that template's report inside the create transaction
+   * (`routes/waves.rs`), and `WavePatch` carries no `workflow_id`, so a
+   * template chosen after the row exists has nowhere to go. Minting late keeps
+   * both choices where the kernel can still act on them.
+   */
+  | Readonly<{ name: 'new-wave'; coveId: string }>
+  /**
    * `blockId` lands the reader on one block of the wave's report (§8.3).
    * `cardId` opens the card-grid overlay on that card (`?card=`).
    * `panel` opens the mobile report's secondary panel (`?panel=`), `from`
@@ -64,6 +83,7 @@ export function pathFor(target: NavTarget): string {
   switch (target.name) {
     case 'today': return '/';
     case 'cove': return `/cove/${encodeURIComponent(target.coveId)}`;
+    case 'new-wave': return `/cove/${encodeURIComponent(target.coveId)}/new`;
     case 'wave': return `/wave/${encodeURIComponent(target.waveId)}`;
     case 'settings': return '/settings';
     case 'settings-templates': return '/settings/templates';

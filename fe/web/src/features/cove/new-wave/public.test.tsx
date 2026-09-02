@@ -17,23 +17,26 @@ const LISTING: DirectoryListing = {
 };
 
 /*
- * The Task field's accessible name. It is visually hidden — the field is one
- * line and the placeholder already says what it wants — so the name is
- * spelled out here deliberately: an unnamed textbox is unusable by screen
- * reader and by voice control, and this is the assertion that would catch its
- * removal.
+ * The composer's accessible name. It is not rendered — the placeholder already
+ * says what the field wants — so the name is spelled out here deliberately: an
+ * unnamed textbox is unusable by screen reader and by voice control, and this
+ * is the assertion that would catch its removal. astryx puts `label` on the
+ * `contenteditable` as `aria-label`, so it resolves by label query.
  */
 const TASK_LABEL = 'What this wave should do';
 
 /* The folder chip's copy, restated here for the same reason `TASK_LABEL` is:
    it is user-facing text, and a test that imported it from the component could
-   not fail when the component silently changed it. */
-const FOLDER_PLACEHOLDER = 'Choose a folder';
+   not fail when the component silently changed it. Since #1211 the chip names
+   the **default** rather than asking, and its accessible name says which
+   control it is on top of that. */
+const FOLDER_PLACEHOLDER = 'Neige workspace';
+const FOLDER_CHIP_NAME = `Folder: ${FOLDER_PLACEHOLDER}`;
 
-/* The template chip, matched on either of the two things it can say: it asks
-   while nothing is chosen and names the choice after. Never on the whole
-   string — the rest of the name is what the assertions vary. */
-const TEMPLATE_CHIP = /^Choose a template$|^Template: /;
+/* The template chip. It always names the current choice — "No template" until
+   one is picked — so the name has one shape, and the assertions vary the tail
+   after the colon. */
+const TEMPLATE_CHIP = /^Template: /;
 
 /** The bound template, shaped as the read endpoint returns it. */
 const ISSUE_DEV: WaveTemplate = {
@@ -76,8 +79,6 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
     error: null,
     templates: TEMPLATES,
     listDirectory: vi.fn(() => Promise.resolve(LISTING)),
-    titleRef: { current: null },
-    onCancel: vi.fn(),
     onSubmit,
     ...overrides,
   };
@@ -85,23 +86,16 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
 }
 
 /**
- * Walks the folder picker to `/srv/app` and confirms it.
- *
- * No dialog wraps the form here, so `DirectoryField` renders `DirectoryBrowser`
- * inline; that it pushes into the *surrounding* dialog instead is the shell's
- * test, because only there is there a dialog to push into.
- */
-/**
  * The folder chip while nothing is chosen.
  *
  * Named, not labelled: the chip carries its own `aria-label` rather than
- * sitting in a labelled field, and unset that label is the same sentence its
- * text shows. Once a folder is chosen the two part company — the text is the
- * basename, the name is the whole path — which is why this helper is only
- * good for the unset state.
+ * sitting in a labelled field. Unset, that name is the control's word plus the
+ * default it is holding; once a folder is chosen the visible text becomes the
+ * basename and the name carries the whole path, which is why this helper is
+ * only good for the unset state.
  */
 function folderChip(): HTMLButtonElement {
-  return screen.getByRole('button', { name: FOLDER_PLACEHOLDER });
+  return screen.getByRole('button', { name: FOLDER_CHIP_NAME });
 }
 
 async function pickTheListedFolder(): Promise<void> {
@@ -116,8 +110,18 @@ function submitButton(): HTMLButtonElement {
   return screen.getByRole('button', { name: /Create wave|Creating/ });
 }
 
-async function fillTitle(value = 'Ship the thing') {
-  await userEvent.type(screen.getByLabelText(TASK_LABEL), value);
+/*
+ * Types into the composer.
+ *
+ * `click` first, then `type`: the field is a `contenteditable`, and
+ * `userEvent.type` needs a caret inside it — without the click the keystrokes
+ * land on `<body>` and the assertion that follows fails for a reason that has
+ * nothing to do with what it is testing.
+ */
+async function fillMessage(value = 'Ship the thing') {
+  const field = screen.getByLabelText(TASK_LABEL);
+  await userEvent.click(field);
+  await userEvent.type(field, value);
 }
 
 /**
@@ -157,15 +161,15 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
 
   it('enables submit after typing a title', async () => {
     renderForm();
-    await fillTitle();
+    await fillMessage();
     expect(submitButton().disabled).toBe(false);
   });
 
   it('calls onSubmit with the trimmed title', async () => {
     const { props } = renderForm();
-    await fillTitle('  Ship the thing  ');
+    await fillMessage('  Ship the thing  ');
     await userEvent.click(submitButton());
-    expect(props.onSubmit).toHaveBeenCalledWith({ title: 'Ship the thing' });
+    expect(props.onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
   });
 
   /*
@@ -196,17 +200,22 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
    */
   it('asks for the task, a template and an optional folder — never a cove or claim control', async () => {
     const { props } = renderForm();
-    await fillTitle();
+    await fillMessage();
     // Present, and empty: the placeholder is what an unset folder shows, and an
     // unset folder is the managed default.
-    /* Unset, the chip asks — the same sentence shape as the template chip
-       beside it, and no row, paragraph or label around either. What it does
-       *not* hold is a path, which is the only thing that could be a value. */
+    /* Unset, the chip names the **default** — no row, paragraph or label
+       around it. What it does *not* hold is a path, which is the only thing
+       that could be a value. Its name and hover string say which control it is
+       on top of that, because the bare text does not survive being read on its
+       own. */
     expect(folderChip().textContent).toBe(FOLDER_PLACEHOLDER);
-    expect(folderChip().getAttribute('title')).toBe(FOLDER_PLACEHOLDER);
-    // And the dialog explains nothing under the row: two chips that say what
-    // they do is the whole of it.
-    expect(screen.queryByText(/workspace/i)).toBeNull();
+    expect(folderChip().getAttribute('title')).toBe(FOLDER_CHIP_NAME);
+    /* And nothing explains the mechanism under the row: two chips that name
+       what they hold is the whole of it. Matched on the mechanism's own words
+       rather than on /workspace/i — the chip itself now says "Neige
+       workspace", so the looser pattern would match the control it exists to
+       check is unaccompanied. */
+    expect(screen.queryByText(/allocates|git init|managed workspace/i)).toBeNull();
     // Empty means nothing was read: the picker only reaches its port on open.
     expect(props.listDirectory).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Cove')).toBeNull();
@@ -235,13 +244,25 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
    * `getByRole('textbox')` is true of both elements, so this asserts the tag
    * itself; anything weaker would stay green on a textarea.
    */
-  it('asks for the task on one line, named but with no label row', () => {
+  /*
+   * #1211 — the field is a composer, not a one-line input.
+   *
+   * It was `<input type="text">` because its value was the wave's `title`, and
+   * every surface that shows a title renders one truncated line. The value is
+   * now the wave's *intent*, delivered as the first message to the spec card,
+   * and an intent is a sentence: the field is astryx's `contenteditable`, it
+   * wraps, and Shift+Enter adds a line.
+   *
+   * `aria-multiline` is the assertion that would catch a silent regression to
+   * a single-line control, which is what `tagName === 'INPUT'` used to do.
+   */
+  it('asks for the task in a multi-line composer, named but with no label row', () => {
     renderForm();
-    const task = screen.getByLabelText<HTMLInputElement>(TASK_LABEL);
-    expect(task).toHaveProperty('tagName', 'INPUT');
-    expect(task).toHaveProperty('type', 'text');
+    const task = screen.getByLabelText(TASK_LABEL);
+    expect(task.getAttribute('contenteditable')).toBe('true');
+    expect(task.getAttribute('aria-multiline')).toBe('true');
     // The row the user asked us to reclaim: the prompt lives in the box.
-    expect(task.placeholder).toBe('What should this wave do?');
+    expect(screen.getByText('What should this wave do?')).toBeTruthy();
   });
 
   it('flips the label and blocks submit while submitting', () => {
@@ -254,26 +275,201 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     expect(screen.getByRole('alert').textContent).toContain('Could not create');
   });
 
-  it('cancels without submitting', async () => {
-    const { props } = renderForm();
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-    expect(props.onCancel).toHaveBeenCalledTimes(1);
-    expect(props.onSubmit).not.toHaveBeenCalled();
+  /*
+   * #1211 — there is no Cancel, and its absence is the assertion.
+   *
+   * The surface is a route: the way out is Back, and a button that means Back
+   * without touching history is a second, wrong exit. This replaces a test that
+   * clicked Cancel and checked `onCancel`; deleting it outright would have left
+   * nothing saying the button is *meant* to be gone, so the next reader adding
+   * one back would meet a green suite.
+   */
+  /*
+   * Enter must not throw the sentence away when the submit is refused.
+   *
+   * astryx's `ChatComposer.handleSubmit` is `onSubmit(trimmed); updateValue('')`
+   * — it clears the controlled value **unconditionally and synchronously after**
+   * calling us, and our `submit` returns early whenever the draft is not
+   * submittable. So the refusal path used to be: the text vanishes, nothing is
+   * created, and nothing is said.
+   *
+   * Driven through the bound template with no issue URL, which is the honest
+   * reproduction: `inputBlocker` is true, the send button is disabled, and the
+   * reader has every reason to think Enter is safe to press.
+   */
+  it('keeps the draft when Enter is pressed on a submit the form refuses', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('Ship the thing');
+    await userEvent.click(templateTrigger());
+    await userEvent.click(screen.getByRole('menuitem', { name: /^Issue development/ }));
+    // The blocked state the reader is in: no issue URL yet.
+    expect(submitButton().disabled).toBe(true);
+
+    await userEvent.click(screen.getByLabelText(TASK_LABEL));
+    await userEvent.keyboard('{Enter}');
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(screen.getByLabelText(TASK_LABEL).textContent).toBe('Ship the thing');
+  });
+
+  /* The other half of owning Enter: it still creates. Without this, the fix
+     for the case above ("stop Enter reaching astryx") would pass by disabling
+     Enter outright, which is the same defect wearing a different hat. */
+  it('creates on Enter when the draft is submittable', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('Ship the thing');
+    await userEvent.keyboard('{Enter}');
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
+  });
+
+  /* Shift+Enter is a newline, not a submit — the composer is multi-line, and
+     that is the only way to reach the second line. */
+  it('does not create on Shift+Enter', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('Ship the thing');
+    await userEvent.keyboard('{Shift>}{Enter}{/Shift}');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  /*
+   * Enter belongs to the field, not to the whole composer.
+   *
+   * The first cut of "own Enter" put the capture handler on the composer
+   * wrapper, which contains the footer chips *and* astryx's menu layer (its
+   * popover does not portal). Capturing there swallowed Enter for every control
+   * inside: the chips would not open, and — worst — arrowing to a template in
+   * the open menu and pressing Enter created a wave with **no** template
+   * instead of selecting one, then navigated away from it.
+   */
+  it('leaves Enter to the controls under the field', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('Ship the thing');
+
+    // The chip opens on Enter rather than creating a wave.
+    templateTrigger().focus();
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByRole('menu')).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    // And choosing inside the menu selects, rather than creating.
+    await userEvent.keyboard('{ArrowDown}');
+    await userEvent.keyboard('{Enter}');
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  /*
+   * The subtler half of "Enter is the field's": there are focusable controls
+   * *inside* the editable. astryx turns any paste over 200 characters into a
+   * token whose hover card carries an `Expand` button, and that button is a DOM
+   * descendant of the `contenteditable` — so a `closest()` check captured its
+   * Enter and created a wave instead of expanding the token. Pasting a long
+   * instruction here is entirely ordinary.
+   *
+   * The control is planted directly rather than driven through a real paste:
+   * what is under test is the guard's *target rule*, and jsdom's clipboard path
+   * would be testing astryx's tokeniser instead. Planting it is also the
+   * stricter case — it asserts the rule for any descendant control, not only
+   * the one shape astryx happens to render today.
+   */
+  it('leaves Enter to a control inside the field', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('Ship the thing');
+    const field = screen.getByLabelText(TASK_LABEL);
+
+    const expand = document.createElement('button');
+    expand.textContent = 'Expand';
+    /* `contenteditable="false"`, which is how a real embedded control is
+       mounted inside an editable — astryx sets exactly this on its token nodes
+       (`ChatComposerInput.tsx`). Without it the editable keeps focus and the
+       keydown targets the editable, so the case would pass for the wrong
+       reason: it would never exercise the descendant at all. */
+    expand.setAttribute('contenteditable', 'false');
+    field.appendChild(expand);
+    let clicks = 0;
+    expand.addEventListener('click', () => { clicks += 1; });
+    expand.focus();
+    expect(document.activeElement).toBe(expand);
+    await userEvent.keyboard('{Enter}');
+
+    expect(onSubmit).not.toHaveBeenCalled();
+    /* And the control still works. Both halves are needed: `stopPropagation`
+       alone stops the wave being created, and adding `preventDefault` alongside
+       it would kill native button activation and leave `Expand` permanently
+       dead — the other half of the original defect, which the first version of
+       this test could not see. Review caught that by mutation; this line is
+       what makes it visible here. */
+    expect(clicks).toBe(1);
+  });
+
+  it('leaves Enter to the folder chip', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('Ship the thing');
+    folderChip().focus();
+    await userEvent.keyboard('{Enter}');
+    expect(await screen.findByRole('dialog')).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  /*
+   * #1299 — the notice is the entire justification for shipping a composer that
+   * does not deliver what you type, so it is asserted rather than trusted.
+   * Without this, deleting the `headerContext` prop leaves every suite green
+   * and the field silently eats the sentence.
+   */
+  it('says the sentence will have to be repeated, before it is typed', () => {
+    renderForm();
+    const notice = screen.getByText("You'll say this again in the wave's chat");
+    expect(notice).toBeTruthy();
+    /* And says it to a screen reader too. The page puts the caret straight into
+       this field, so a reader who cannot see the notice would otherwise land
+       *inside* the control with no way to have been told — the silent-loss the
+       notice exists to prevent, for exactly the audience least able to recover
+       from it. Asserted as the field's description, not merely as text on the
+       page, because unassociated text near a focused field is not announced. */
+    expect(screen.getByLabelText(TASK_LABEL).getAttribute('aria-describedby'))
+      .toBe(notice.getAttribute('id'));
+  });
+
+  /*
+   * The IME half of owning Enter: while a candidate is being composed, Enter
+   * *accepts the candidate* and must not create a wave. Removing the
+   * `isComposing` guard leaves every other Enter case green, so this is the
+   * only thing standing between a CJK reader and a wave created mid-word.
+   *
+   * Driven with a real `compositionstart` and an `isComposing` keydown, because
+   * `userEvent.keyboard` cannot set that flag.
+   */
+  it('does not create while an IME candidate is being composed', async () => {
+    const { onSubmit } = renderForm();
+    await fillMessage('ship');
+    const field = screen.getByLabelText(TASK_LABEL);
+    field.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    field.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter', bubbles: true, cancelable: true, isComposing: true,
+    }));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('offers no Cancel — leaving a route is Back, not a button', () => {
+    renderForm();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
   });
 });
 
-describe('Start from — Blank is the default and stays free', () => {
-  it('selects Blank on open and submits no workflow_id at all', async () => {
+describe('Start from — no template is the default and stays free', () => {
+  it('selects no template on open and submits no workflow_id at all', async () => {
     const { onSubmit } = renderForm();
     /* The collapsed trigger *is* the answer to "what is selected" — there is
-       no checked radio left to read it off. Its accessible name is the field
-       label plus the current choice, which is also why a `<label htmlFor>`
-       cannot be used here: it would replace the choice with the label. */
-    expect(screen.getByRole('button', { name: 'Choose a template' })).toBe(templateTrigger());
-    await fillTitle();
+       no checked radio left to read it off. Its accessible name is the control's
+       word plus the current choice, which is also why a `<label htmlFor>`
+       cannot be used here: it would replace the choice with the label.
+       Since #1211 the unset chip names the default rather than asking, so the
+       name to expect on open is the default's, not a question. */
+    expect(screen.getByRole('button', { name: 'Template: No template' })).toBe(templateTrigger());
+    await fillMessage();
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ title: 'Ship the thing' });
+    expect(draft).toEqual({ message: 'Ship the thing' });
     // Not `null`, not `''` — the kernel 400s a whitespace-only id and the body
     // is `deny_unknown_fields`. Absence is the only spelling of "no template".
     expect(Object.hasOwn(draft, 'workflow_id')).toBe(false);
@@ -285,30 +481,30 @@ describe('Start from — Blank is the default and stays free', () => {
    * dialog that cannot create a wave. An empty list is what a pending or
    * failed read looks like from here.
    */
-  it('still creates a blank wave when the template read gave nothing', async () => {
+  it('still creates a wave when the template read gave nothing', async () => {
     const { props } = renderForm({ templates: [], templatesError: 'Could not load templates.' });
-    expect(screen.getByRole('button', { name: 'Choose a template' })).toBe(templateTrigger());
+    expect(screen.getByRole('button', { name: 'Template: No template' })).toBe(templateTrigger());
     await openTemplates();
     expect(screen.getAllByRole('menuitem')).toHaveLength(1);
     await userEvent.keyboard('{Escape}');
-    await fillTitle();
+    await fillMessage();
     expect(submitButton().disabled).toBe(false);
     await userEvent.click(submitButton());
-    expect(props.onSubmit).toHaveBeenCalledWith({ title: 'Ship the thing' });
+    expect(props.onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing' });
   });
 
   it('says the templates are missing without claiming the create failed', () => {
     renderForm({ templates: [], templatesError: 'Could not load templates.' });
     // A `status`, not an `alert`: nothing the user did failed.
     expect(screen.queryByRole('alert')).toBeNull();
-    expect(screen.getByText(/Could not load templates\..*still create a blank wave/)).toBeTruthy();
+    expect(screen.getByText(/Could not load templates\..*still create a wave without one/)).toBeTruthy();
   });
 });
 
 describe('Start from — an unbound template is id-only', () => {
   it('sends workflow_id and no workflow_input for small-change', async () => {
     const { onSubmit } = renderForm();
-    await fillTitle();
+    await fillMessage();
     await chooseTemplate('Small change');
     // The collapsed trigger carries the choice out of the closed menu.
     expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
@@ -317,7 +513,7 @@ describe('Start from — an unbound template is id-only', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ title: 'Ship the thing', workflow_id: 'small-change' });
+    expect(draft).toEqual({ message: 'Ship the thing', workflow_id: 'small-change' });
     // Sending `workflow_input` against an unbound template is a 400.
     expect(Object.hasOwn(draft, 'workflow_input')).toBe(false);
   });
@@ -325,7 +521,7 @@ describe('Start from — an unbound template is id-only', () => {
 
 describe('Start from — issue development expands under the group', () => {
   async function chooseIssueDev() {
-    await fillTitle();
+    await fillMessage();
     await chooseTemplate('Issue development');
   }
 
@@ -353,7 +549,7 @@ describe('Start from — issue development expands under the group', () => {
     expect(submitButton().disabled).toBe(false);
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
-      title: 'Ship the thing',
+      message: 'Ship the thing',
       workflow_id: 'issue-development',
       workflow_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
@@ -407,7 +603,7 @@ describe('Start from — issue development expands under the group', () => {
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
-      title: 'Ship the thing', workflow_id: 'issue-development',
+      message: 'Ship the thing', workflow_id: 'issue-development',
     });
   });
 
@@ -424,7 +620,7 @@ describe('Start from — issue development expands under the group', () => {
         tasks: [{ key: 'do-it', goal: 'Do the future thing.' }],
       }],
     });
-    await fillTitle();
+    await fillMessage();
     await chooseTemplate('Future template');
     expect(submitButton().disabled).toBe(true);
     expect(screen.getByText(/needs input this version cannot collect/)).toBeTruthy();
@@ -513,17 +709,19 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     await userEvent.keyboard('{Escape}');
     // A disabled submit is not a tab stop, so the walk below would end on the
     // document — fill the title first and the actions row is reachable.
-    await fillTitle();
+    await fillMessage();
     await userEvent.click(screen.getByLabelText(TASK_LABEL));
     const order: Element[] = [];
     for (let step = 0; step < 4; step += 1) {
       await userEvent.tab();
       if (document.activeElement !== null) order.push(document.activeElement);
     }
-    expect(order).toEqual([
+    /* Three stops, not four: Cancel is gone (#1211 — leaving a route is Back).
+       The fourth tab therefore leaves the composer entirely, which is why the
+       loop still takes four steps and the assertion takes the first three. */
+    expect(order.slice(0, 3)).toEqual([
       templateTrigger(),
       folderChip(),
-      screen.getByRole('button', { name: 'Cancel' }),
       submitButton(),
     ]);
   });
@@ -583,7 +781,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
   it('never requires a folder to submit', async () => {
     renderForm();
     expect(submitButton().disabled).toBe(true);
-    await fillTitle();
+    await fillMessage();
     // The title alone enables it: nothing about the folder gates the submit,
     // before or after the picker has been opened.
     expect(submitButton().disabled).toBe(false);
@@ -598,32 +796,74 @@ describe('The folder is optional, and its absence is the managed default', () =>
    */
   it('submits no cwd key at all when no folder was chosen', async () => {
     const { onSubmit } = renderForm();
-    await fillTitle('  Ship the thing  ');
+    await fillMessage('  Ship the thing  ');
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ title: 'Ship the thing' });
+    expect(draft).toEqual({ message: 'Ship the thing' });
     expect(Object.hasOwn(draft, 'cwd')).toBe(false);
+  });
+
+  /*
+   * CAP-WAVEWORKSPACE-003, and the regression it was rewritten for (#1211).
+   *
+   * `DirectoryField` decides how to open the picker by asking `useDialogView()`
+   * whether a dialog is above it: inside one it pushes a child view, outside
+   * one it falls back to rendering `DirectoryBrowser` **inline in the page**.
+   * Moving this form from a dialog onto a route silently took that fallback,
+   * and the picker became a file list unrolled under the chip — no focus trap,
+   * no Escape, no click-outside.
+   *
+   * So the assertion is on the *modal*, not on which component opened it: the
+   * browser must be inside an `aria-modal` dialog, and nothing may render it in
+   * the page. An assertion naming `DirectoryField` could not have caught the
+   * regression, because the control was still `DirectoryField`.
+   */
+  it('opens the picker in a modal dialog, never inline in the page', async () => {
+    renderForm();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await userEvent.click(folderChip());
+    const picker = await screen.findByRole('dialog');
+    expect(picker.getAttribute('aria-modal')).toBe('true');
+    expect(picker.getAttribute('aria-label')).toBe('Choose a directory');
+    // The browser is *inside* it — not a sibling left in the page behind it.
+    await within(picker).findByDisplayValue('/srv/app/');
+    expect(within(picker).getByRole('button', { name: 'Select this directory' })).toBeTruthy();
+
+    /* And it is the *only* one. Without this the assertions above pass while a
+       second browser is also unrolled inline in the page — the modal exists, so
+       "the browser is inside a modal" is satisfied, and the defect this case
+       exists to catch is sitting next to it.
+
+       `{ hidden: true }` is load-bearing, and the first cut of this line did
+       not have it. `Dialog` marks everything outside the portal `inert` +
+       `aria-hidden` while it is open, and Testing Library's role queries skip
+       that subtree by default — so a second, inline browser was invisible to
+       the count and the assertion passed with the defect on screen. Verified by
+       rendering one alongside: without `hidden` this case stays green, with it
+       the count is 2 and it fails. */
+    expect(screen.getAllByRole('button', { name: 'Select this directory', hidden: true }))
+      .toHaveLength(1);
   });
 
   it('submits the picked absolute path as cwd once a folder is chosen', async () => {
     const { onSubmit } = renderForm();
-    await fillTitle();
+    await fillMessage();
     await pickTheListedFolder();
     expect(onSubmit).not.toHaveBeenCalled();
     await userEvent.click(submitButton());
-    expect(onSubmit).toHaveBeenCalledWith({ title: 'Ship the thing', cwd: '/srv/app' });
+    expect(onSubmit).toHaveBeenCalledWith({ message: 'Ship the thing', cwd: '/srv/app' });
   });
 
   /* Create time is the only entry into the attached choice, so the way *back*
      to the default has to exist here too — there is no later screen for it. */
   it('drops back to the managed default when the chosen folder is cleared', async () => {
     const { onSubmit } = renderForm();
-    await fillTitle();
+    await fillMessage();
     await pickTheListedFolder();
     await userEvent.click(screen.getByRole('button', { name: 'Use a Neige workspace instead' }));
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ title: 'Ship the thing' });
+    expect(draft).toEqual({ message: 'Ship the thing' });
     expect(Object.hasOwn(draft, 'cwd')).toBe(false);
   });
 
@@ -651,12 +891,12 @@ describe('The folder is optional, and its absence is the managed default', () =>
    */
   it('carries the folder and the chosen template on one draft', async () => {
     const { onSubmit } = renderForm();
-    await fillTitle();
+    await fillMessage();
     await chooseTemplate('Small change');
     await pickTheListedFolder();
     await userEvent.click(submitButton());
     expect(onSubmit).toHaveBeenCalledWith({
-      title: 'Ship the thing', workflow_id: 'small-change', cwd: '/srv/app',
+      message: 'Ship the thing', workflow_id: 'small-change', cwd: '/srv/app',
     });
   });
 });

@@ -10,7 +10,7 @@ test.afterEach(async ({ request }) => {
   createdCoveIds.length = 0;
 });
 
-test('the four primary routes have no WCAG A or AA violations in light mode', async ({ page, request }) => {
+test('the primary routes have no WCAG A or AA violations in light mode', async ({ page, request }) => {
   const cove = await createCove(request);
   createdCoveIds.push(cove.id);
   const wave = await createWave(request, cove.id);
@@ -18,6 +18,12 @@ test('the four primary routes have no WCAG A or AA violations in light mode', as
   const routes = [
     { path: '/next/', anchor: page.locator('section[aria-label="Today terminal"]') },
     { path: `/next/cove/${cove.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: cove.name }) },
+    /* #1211 — the new-wave page. Added here rather than left to the create
+       spec: this is a real route with its own heading, a `contenteditable` and
+       two chips, and none of that is exercised for contrast or naming by a spec
+       that only drives it. It is anchored on the composer because the page has
+       no `data-nc-page-title` — deliberately, the greeting is its one title. */
+    { path: `/next/cove/${cove.id}/new`, anchor: page.getByLabel('What this wave should do') },
     { path: `/next/wave/${wave.id}`, anchor: page.locator('[data-nc-page-title]', { hasText: wave.title }) },
     { path: '/next/settings', anchor: page.getByRole('radiogroup', { name: 'Appearance' }) },
   ];

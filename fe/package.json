@@ -19,7 +19,7 @@
     "lint": "npm run lint:js && npm run lint:css && npm run lint:depcruise",
     "lint:js": "eslint . --max-warnings=0 && node tools/architecture/check-eslint-hygiene.mjs && node tools/architecture/check-tracked-fixtures.mjs && node tools/architecture/check-breakpoint-literals.mjs && node tools/ownership/check-readonly-change-requests.mjs && node tools/test-tier/check-test-tier.mjs",
     "lint:css": "stylelint 'web/**/*.css' '!web/dist/**' && node tools/styles/check-contrast.mjs",
-    "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs . && node tools/architecture/check-core-no-jsx.mjs core",
+    "lint:depcruise": "depcruise core web/src --config .dependency-cruiser.cjs && node tools/architecture/check-top-level.mjs . && node tools/architecture/check-core-no-jsx.mjs core && node tools/architecture/directory-picker-hosts.mjs web/src",
     "e2e": "playwright test"
   },
   "dependencies": {

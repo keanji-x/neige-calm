@@ -92,7 +92,7 @@ describe('route registration', () => {
 
   it('registers the product routes', () => {
     expect(registeredPaths()).toEqual([
-      '/', '/cove/$coveId', '/wave/$waveId',
+      '/', '/cove/$coveId', '/cove/$coveId/new', '/wave/$waveId',
       '/settings', '/settings/templates', '/settings/templates/$templateId',
     ]);
   });
@@ -125,6 +125,7 @@ describe('route registration', () => {
     const samples: { [K in NavTarget['name']]: Extract<NavTarget, { name: K }> } = {
       'today': { name: 'today' },
       'cove': { name: 'cove', coveId: 'c1' },
+      'new-wave': { name: 'new-wave', coveId: 'c1' },
       'wave': { name: 'wave', waveId: 'w1' },
       'settings': { name: 'settings' },
       'settings-templates': { name: 'settings-templates' },

@@ -305,8 +305,8 @@
     inline-size: var(--glyph);
     block-size: var(--glyph);
     background: currentcolor;
-    -webkit-mask: url('./neige-mark.svg') center / contain no-repeat;
-    mask: url('./neige-mark.svg') center / contain no-repeat;
+    -webkit-mask: url('../../ui/brand/neige-mark.svg') center / contain no-repeat;
+    mask: url('../../ui/brand/neige-mark.svg') center / contain no-repeat;
   }
 
   .brandText {

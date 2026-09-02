@@ -4885,14 +4885,14 @@
   kind: capability
   family: wave-workspace
   statement: >
-    The new-wave form must offer an optional folder control, and with none chosen `NewWaveDraft`
-    must carry no cwd key at all, so `AppShell` posts neither cwd nor `attach_folder`.
+    The new-wave page must offer an optional folder control, and with none chosen `NewWaveDraft`
+    must carry no cwd key at all, so `NewWaveRoute` posts neither cwd nor `attach_folder`.
   why: >
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/cove/new-wave/public.tsx:147-158,303-309; fe/web/src/app/shell/public.tsx:174
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:160
+  source: fe/web/src/features/cove/new-wave/public.tsx:205-227; fe/web/src/app/router/public.tsx:1718-1826
+  authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:259
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4912,8 +4912,8 @@
     no-op when this cove already covers the path (same-cove arm), so a second wave in one
     repository does not conflict. The legacy resolve round trip only ever chose false in that
     same-cove case, which the kernel's in-transaction scan already reaches atomically.
-  source: fe/web/src/app/shell/public.tsx:297-312
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:197
+  source: fe/web/src/app/router/public.tsx:1817-1825
+  authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:304
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -4925,16 +4925,60 @@
   kind: capability
   family: wave-workspace
   statement: >
-    The folder control must be the frozen `DirectoryField`, which pushes `DirectoryBrowser` into
-    the surrounding dialog — swapping that dialog's accessible name to "Choose a directory" —
-    rather than opening a second dialog.
+    The new-wave page must open `DirectoryBrowser` inside a modal `Dialog` and must render no
+    browser inline; every other surface that can show a directory picker is registered, with how
+    it hosts one, in `directory-picker-hosts`.
   why: >
-    Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
-    the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
-    break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:435-449
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:206-219
-  owner_slice: ui/directory-browser
+    The guarantee is the modal, not the component that opens it, and #1211 is why the difference
+    matters. `DirectoryField` chooses its behaviour by asking `useDialogView()` whether a dialog
+    is above it: inside one it pushes a child view, and outside one it silently falls back to
+    rendering the browser *inline*. When the new-wave form moved from a dialog onto a route that
+    fallback fired, and the picker became a file list unrolled under a chip — no focus trap, no
+    Escape, no click-outside. An invariant naming `DirectoryField` could not catch that, because
+    the control was still `DirectoryField`; one naming the modal does.
+    The earlier statement's "rather than opening a second dialog" was the *nesting* hazard from
+    E2E-CAP-WAVECREATE-014, and it is scoped to a form that is itself inside a dialog: there the
+    second dialog would fight the outer one's focus trap. On a route there is no outer dialog, so
+    the hazard is absent and the prohibition was over-wide. Nesting is still forbidden where it
+    can occur, and that half is now stated on its own carrier: CAP-WAVEWORKSPACE-006.
+    The first draft of this row replaced it with "no surface may render the browser inline",
+    which is a universal negative carried by a test that renders one component — it would have
+    said nothing about the next call site to take the fallback, i.e. exactly the failure it was
+    written for. Dual-channel review rejected it. The quantified half is therefore carried by a
+    fail-closed sweep instead (`tools/architecture/directory-picker-hosts.mjs`, wired into
+    `lint:depcruise`): every file rendering `DirectoryField` or `DirectoryBrowser` must be
+    registered with how it hosts the picker, so an unregistered call site is red before anyone
+    reads a test. This row keeps only what its own test can falsify.
+  source: fe/web/src/features/cove/new-wave/public.tsx:737-752
+  authoritative_test: fe/web/src/features/cove/new-wave/public.test.tsx:821
+  owner_slice: features/wave/create
+  intentional_omission: false
+  runtime_layer: features
+  verification_owner: unit
+  test_tier: jsdom
+  migration: migrated
+
+- id: CAP-WAVEWORKSPACE-006
+  kind: capability
+  family: wave-workspace
+  statement: >
+    A folder control rendered inside a dialog must push `DirectoryBrowser` into that same dialog
+    through `useDialogView`, swapping its accessible name, and must not open a second dialog.
+  why: >
+    The nesting half of what CAP-WAVEWORKSPACE-003 used to say, split out when -003 was narrowed
+    to "the picker is modal" in #1211. It has to be split rather than dropped: a second dialog
+    opened *inside* one fights the outer dialog's focus trap, which the outer dialog owns for its
+    whole lifetime, and -003 alone no longer forbids it.
+    It is stated on the call site where the hazard can actually occur. `features/wave/new-card`
+    renders inside `app/router`'s add-card dialog, so it keeps `DirectoryField` and takes the
+    child-view branch; `features/cove/new-wave` is a route with no dialog above it and is
+    deliberately out of scope here — that is what -003 covers.
+    Recorded as a new row because the old -003 wording was the *only* place either half was
+    written down, and E2E-CAP-WAVECREATE-014 — which its `why` pointed at — is a legacy pending
+    row describing `web/`'s NewTaskForm, not this app.
+  source: fe/web/src/ui/schema-form/fields/DirectoryField/public.tsx:79-90
+  authoritative_test: fe/web/src/features/wave/new-card/public.test.tsx:89
+  owner_slice: ui/schema-form
   intentional_omission: false
   runtime_layer: ui
   verification_owner: unit
@@ -4971,9 +5015,9 @@
     The 409 body carries no error key, so the generic normaliser in core/api/client.ts leaves
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
-    by the shell and not by the form.
-  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:154-162
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:163
+    by the route that owns the create and not by the presentational form.
+  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/router/public.tsx:1841-1848
+  authoritative_test: fe/web/src/app/router/new-wave-route.test.tsx:367
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features

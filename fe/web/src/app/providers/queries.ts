@@ -118,7 +118,7 @@ export const queryKeys = Object.freeze({
   /* #1209 — the New wave picker's list. Not invalidated by any event: the
      kernel's template keys are compile-time constants and the only thing that
      can move under them is a plugin starting or stopping, which changes an
-     `input_schema` the dialog reads when it opens. */
+     `input_schema` the new-wave page reads. */
   waveTemplates: () => ['wave-templates'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
@@ -509,9 +509,9 @@ export function settingsQueryOptions(transport: ApiTransportPort, unauthorized: 
 }
 
 /**
- * #1209 — templates for the New wave dialog.
+ * #1209 — templates for the new-wave page.
  *
- * `retry: false` and a plain failure are the point: the dialog degrades to
+ * `retry: false` and a plain failure are the point: the page degrades to
  * Blank-only when this read fails, and a retrying query would leave the entry
  * point spinning instead. Creating a wave must never depend on this list.
  */
@@ -524,10 +524,10 @@ export function waveTemplatesQueryOptions(transport: ApiTransportPort, unauthori
 }
 
 export type WaveTemplates = Readonly<{
-  /** Never `undefined`: for the New wave dialog, pending and failed both read
+  /** Never `undefined`: for the new-wave page, pending and failed both read
    *  as "Blank only". */
   templates: WaveTemplate[];
-  /** A notice for the dialog, not a blocker. `null` while pending. */
+  /** A notice for the page, not a blocker. `null` while pending. */
   error: string | null;
   /** `false` while the first read is still in flight — see `useWaveTemplates`. */
   loaded: boolean;
@@ -535,7 +535,7 @@ export type WaveTemplates = Readonly<{
 }>;
 
 /**
- * The New wave dialog's template list, collapsed to the two things the dialog
+ * The new-wave page's template list, collapsed to the two things the page
  * can act on. A hook and not raw `useQuery` at the call site so the shell's
  * contract tests keep mocking exactly one module (`providers/queries`) —
  * the same shape `useWorkspace` and the mutation hooks already have.

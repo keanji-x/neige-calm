@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createRef } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CardAddMenuEntry } from '../../../systems/cards/public.js';
 import type { ListDirectory } from '../../../ui/directory-browser/public.tsx';
+import { Dialog } from '../../../ui/dialog/public.tsx';
 import { AddCardMenu, NewCardForm } from './public.tsx';
 
 afterEach(cleanup);
@@ -66,6 +67,55 @@ describe('NewCardForm', () => {
     );
     return onSubmit;
   }
+
+  /*
+   * CAP-WAVEWORKSPACE-006 — the nesting half of what CAP-WAVEWORKSPACE-003 used
+   * to say, pinned on the call site where the hazard can occur.
+   *
+   * This form renders *inside* `app/router`'s add-card dialog, so its folder
+   * control must push `DirectoryBrowser` into that dialog through
+   * `useDialogView` and must not open a second one: a nested dialog fights the
+   * outer one's focus trap, which the outer dialog owns for its whole lifetime.
+   * (`features/cove/new-wave` is a route with no dialog above it and is
+   * deliberately the other case — see -003.)
+   *
+   * Driven through a real `Dialog`, not a stub: the branch under test *is*
+   * `DirectoryField` asking `useDialogView()` what is above it, and a fixture
+   * providing its own context would prove only that the fixture agrees with
+   * itself. The observable the child-view push guarantees is the outer dialog's
+   * accessible name changing — so that is what is asserted, on the same element
+   * both before and after.
+   */
+  it('pushes the folder picker into the surrounding dialog, opening no second one', async () => {
+    render(
+      <Dialog open onClose={vi.fn()} title="Add card">
+        <NewCardForm
+          entry={CODEX}
+          submitting={false}
+          error={null}
+          listDirectory={listDirectory}
+          firstFieldRef={createRef<HTMLInputElement>()}
+          onCancel={vi.fn()}
+          onSubmit={vi.fn()}
+        />
+      </Dialog>,
+    );
+    const outer = screen.getByRole('dialog');
+    expect(outer.getAttribute('aria-label')).toBe('Add card');
+
+    await userEvent.click(screen.getByRole('button', { name: /Working directory/ }));
+
+    // Still exactly one dialog, and it is the same element — the picker was
+    // pushed into it rather than stacked on top of it.
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog')).toBe(outer);
+    /* The accessible-name swap *is* the `useDialogView()` contract: the same
+       element that was "Add card" is now the picker. Asserted on the name
+       rather than on the words appearing somewhere, because the browser's own
+       chrome also says "Choose a directory" — matching text would pass even if
+       the picker had been stacked in a second dialog. */
+    await waitFor(() => expect(outer.getAttribute('aria-label')).toBe('Choose a directory'));
+  });
 
   it('renders the entry\'s declared fields and submits what was typed', async () => {
     const onSubmit = renderForm(CODEX);
