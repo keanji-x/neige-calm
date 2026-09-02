@@ -500,14 +500,7 @@ the spec agent maintains.
 fn spec_wake_authors_prose() -> String {
     crate::dispatcher::SPEC_WAKE_AUTHORS
         .iter()
-        .map(|author| {
-            let wire = serde_json::to_value(author)
-                .expect("EditAuthor serializes")
-                .as_str()
-                .expect("EditAuthor is a unit variant, i.e. a JSON string")
-                .to_string();
-            format!("`{wire}`")
-        })
+        .map(|author| format!("`{}`", author.wire_str()))
         .collect::<Vec<_>>()
         .join(" / ")
 }

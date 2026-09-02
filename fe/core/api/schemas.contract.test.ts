@@ -286,15 +286,58 @@ describe('spec harness transcript lifecycle events', () => {
     expect(result.success).toBe(false);
   });
 
-  // #1252 S0-2 — the reset telemetry is required on the wire, not optional:
-  // a defaulted 0 would be indistinguishable from an empty transcript.
-  it('rejects harness.transcript.cleared missing the reset telemetry', () => {
+  // #1252 R1/F1 — the Rust field is `Option<i64>` (so pre-#1252 event rows
+  // still replay instead of being dropped), and serde writes `None` as an
+  // explicit `null`. So the wire always carries all three keys, and `null`
+  // is the "this reset predates the telemetry" value.
+  it('parses harness.transcript.cleared with unmeasured (null) telemetry', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'harness.transcript.cleared',
+      data: {
+        runtime_id: 'runtime_2',
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+        cleared_item_count: null,
+        cleared_params_bytes: null,
+        card_age_ms_at_clear: null,
+      },
+    });
+    expect(parsed.ev).toBe('harness.transcript.cleared');
+    if (parsed.ev === 'harness.transcript.cleared') {
+      // null, NOT coerced to 0 — an unmeasured reset must stay
+      // distinguishable from one that measured an empty transcript.
+      expect(parsed.data.cleared_item_count).toBeNull();
+      expect(parsed.data.cleared_params_bytes).toBeNull();
+      expect(parsed.data.card_age_ms_at_clear).toBeNull();
+    }
+  });
+
+  // Still rejected: the keys themselves are not optional. serde emits them
+  // on every frame, so an absent key means the producer is not the kernel
+  // we think it is.
+  it('rejects harness.transcript.cleared missing the reset telemetry keys', () => {
     const result = wireEventSchema.safeParse({
       ev: 'harness.transcript.cleared',
       data: {
         runtime_id: 'runtime_2',
         card_id: 'card_spec_1',
         wave_id: 'wave_1',
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  // The type is still pinned when the field IS present.
+  it('rejects harness.transcript.cleared with non-numeric telemetry', () => {
+    const result = wireEventSchema.safeParse({
+      ev: 'harness.transcript.cleared',
+      data: {
+        runtime_id: 'runtime_2',
+        card_id: 'card_spec_1',
+        wave_id: 'wave_1',
+        cleared_item_count: '12',
+        cleared_params_bytes: 3400,
+        card_age_ms_at_clear: 86400000,
       },
     });
     expect(result.success).toBe(false);

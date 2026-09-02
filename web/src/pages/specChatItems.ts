@@ -82,7 +82,13 @@ const USER_SAYS_MARKER = 'User says:\n';
 
 const SYSTEM_LABELS: Array<[prefix: string, label: string]> = [
   ['A worker card finished a turn', 'Worker turn finished'],
+  // #1252 F2 — `Observation::ReportEdited::to_turn_text` renders two
+  // shapes. The first is the pre-#1252 sentence, still emitted verbatim for
+  // observations that were queued before the turn text carried an author;
+  // the second names the author (`user` / `plugin` / `assistant`). Both are
+  // the same chat row.
   ['The user edited the wave report', 'Report edited'],
+  ['The wave report was edited', 'Report edited'],
   ['A dispatched task completed', 'Task completed'],
   ['A dispatched task failed', 'Task failed'],
 ];

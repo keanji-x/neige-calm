@@ -1418,10 +1418,16 @@ pub(crate) fn harness_observation_from_event(
             log_tail: log_tail.clone(),
             attempt: *attempt,
         }),
-        Event::WaveReportEdited { body_after, .. } => Some(HarnessObservation::ReportEdited {
+        Event::WaveReportEdited {
+            body_after, author, ..
+        } => Some(HarnessObservation::ReportEdited {
             wave_id: wave_id.clone(),
             body_sha256: sha256_hex(body_after),
             body: body_after.clone(),
+            // #1252 S0 R1/F2 — the event's own attribution, carried through
+            // so the turn text names the real author instead of calling
+            // every edit a user edit.
+            author: Some(*author),
         }),
         Event::WorkspaceLeased {
             card_id,

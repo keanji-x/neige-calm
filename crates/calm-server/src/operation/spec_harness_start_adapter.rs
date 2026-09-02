@@ -1098,12 +1098,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         runtime_id: transcript_runtime_id,
                         card_id: transcript_card_id,
                         wave_id: transcript_wave_id,
-                        cleared_item_count: cleared_measure.item_count,
-                        cleared_params_bytes: cleared_measure.params_bytes,
+                        // Always `Some(..)` — the `Option` on the event exists
+                        // only so pre-#1252 rows still deserialize on replay.
+                        cleared_item_count: Some(cleared_measure.item_count),
+                        cleared_params_bytes: Some(cleared_measure.params_bytes),
                         // Card age at reset, from the card row this tx just
                         // wrote. Clamped at 0: a clock step backwards must
                         // not report a negative age.
-                        card_age_ms_at_clear: (now_ms() - card.created_at).max(0),
+                        card_age_ms_at_clear: Some((now_ms() - card.created_at).max(0)),
                     },
                 )
                 .await?;

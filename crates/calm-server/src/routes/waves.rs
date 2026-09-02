@@ -1852,11 +1852,25 @@ fn prepare_fork_report(
             // #1252 S0b — this arm `continue`s past the `validate_payload`
             // call at the bottom of the loop, so before #1252 a prose block
             // carrying a malformed ```neige-block fence forked through
-            // verbatim and landed as prose in the target wave. Every other
-            // write end refuses that via `validate_body_fences`; the fork is
-            // a write end too. Deliberately only the fence check: running
-            // `validate_payload` on prose blocks is a separate behaviour
-            // change and is not in this slice.
+            // verbatim and landed as prose in the target wave.
+            //
+            // What `validate_body_fences` actually covers today (#1252 R1/F3
+            // corrects an earlier "every other write end" claim here, which
+            // was false): its only production call sites are the two
+            // whole-body writes — `wave_report::apply_report_op`'s
+            // `ReportDocOp::Replace` and `::WriteMarkdown` arms. The
+            // `UpsertBlock` arm does NOT call it, and `ReportDoc::
+            // upsert_block` fence-checks only non-prose content
+            // (`if kind != KIND_PROSE`), so `calm.report.blocks.upsert` with
+            // `kind: "prose"` and a malformed fence is still accepted. That
+            // entrance is a known, still-open gap tracked under #1252;
+            // closing it is a separate behaviour change with its own blast
+            // radius and is deliberately not done here. Closing the fork
+            // exit is still worth it on its own: fork is the path that
+            // copies such a block into a *new* wave.
+            //
+            // Deliberately only the fence check: running `validate_payload`
+            // on prose blocks is a separate behaviour change too.
             if let Some(markdown) = block.payload.get("markdown").and_then(|v| v.as_str()) {
                 crate::wave_report_guard::validate_body_fences(markdown).map_err(|error| {
                     CalmError::BadRequest(format!(
@@ -3520,9 +3534,11 @@ mod tests {
 
     /// #1252 S0b — the `KIND_PROSE` arm `continue`s past the loop's
     /// `validate_payload`, so the fence check has to happen inside that arm.
-    /// A malformed ```` ```neige-block ```` fence in prose is refused at
-    /// every other write end (`wave_report_guard::validate_body_fences`);
-    /// forking is a write end too.
+    /// A malformed ```` ```neige-block ```` fence in prose is refused by
+    /// `wave_report_guard::validate_body_fences` at both whole-body write
+    /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`); forking is a write
+    /// end too. (Prose `UpsertBlock` remains an open entrance — see the
+    /// #1252 R1/F3 note on the production arm.)
     #[test]
     fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
         let prose = ReportBlock {
