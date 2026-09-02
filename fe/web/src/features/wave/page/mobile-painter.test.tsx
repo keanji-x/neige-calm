@@ -182,6 +182,35 @@ describe('the mobile painter’s capability table', () => {
   });
 });
 
+/*
+ * The unknown-module guard, which nothing reached.
+ *
+ * `const unknown: never = moduleKey` is an **exhaustiveness check and nothing
+ * more**: it fires when `RowModuleView['key']` gains a member and is erased
+ * entirely at runtime. The `throw` beside it is the runtime half — and mutating
+ * it into `return cardRow(row)` leaves `tsc` green and every legal fixture in
+ * this file green with it, because no legal fixture can carry a third key.
+ *
+ * So the case is built with a forced cast, which is the only thing that can
+ * produce the input the guard exists for: a module whose key is not in the
+ * union, arriving from a derivation that has changed underneath this painter.
+ * Painting it as a Cards row would report the fault far from its cause, which is
+ * exactly what the throw prevents.
+ */
+describe('the mobile painter’s unknown-module guard', () => {
+  it('throws on a module key it has no row for, rather than falling back', () => {
+    const future = { ...tasksModule, key: 'future' } as unknown as RowModuleView;
+    expect(() => paintMobileModule(painter(), future))
+      .toThrowError('the mobile painter has no future row');
+  });
+
+  /* Not vacuous: the same module with a legal key paints. Without this the case
+     above would also pass for a painter that threw on everything. */
+  it('and paints the very same module once its key is legal again', () => {
+    expect(() => paintMobileModule(painter(), tasksModule)).not.toThrow();
+  });
+});
+
 describe('the mobile painter is a faithful projection of a Cards module', () => {
   it('with a titled row and an untitled kernel-owned one', () => {
     expect(checkProjection(painter(), [cardsModule], mount)).toEqual([]);
