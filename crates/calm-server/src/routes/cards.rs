@@ -17,7 +17,7 @@ use crate::db::{RepoRead, RouteRepo};
 use crate::db::{write_with_actor_events_typed, write_with_event_typed};
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope, RatifyDecision};
-use crate::harness::{HarnessPhaseTag, Observation, is_harness_snapshot_value};
+use crate::harness::{HarnessPhaseTag, Observation, TokenUsage, is_harness_snapshot_value};
 use crate::ids::{ActorId, CardId, WaveId};
 use crate::model::{Card, CardPatch, CardRole, HarnessItem, NewCard, Wave, WaveLifecycle, new_id};
 use crate::operation::spec_harness_interrupt_adapter::SpecHarnessInterruptOperationPayload;
@@ -768,6 +768,62 @@ pub struct GetSpecRunResponse {
     pub runtime_id: Option<String>,
     /// Current harness phase, or null when the harness is dormant.
     pub phase: Option<HarnessPhaseTag>,
+    /// #1255 S3 — latest context-window usage, or null when the harness is
+    /// dormant or codex has not pushed a `thread/tokenUsage/updated` frame yet.
+    ///
+    /// Known consequence, recorded rather than fixed in this commit: a dormant
+    /// conversation reports `null` here even though the reading IS on disk in
+    /// `worker_sessions.handle_state`. This whole endpoint reads the live
+    /// in-memory harness (registry hit on the active runtime row) and answers
+    /// `phase: null` when there is none — see the handler. Token usage
+    /// inherits that exactly, so a card whose harness has been shut down shows
+    /// no meter until something respawns it. The UI slice decides whether
+    /// that is acceptable or whether the dormant path should fall back to the
+    /// persisted snapshot; the kernel slice does not pick for it.
+    pub token_usage: Option<SpecRunTokenUsage>,
+}
+
+/// #1255 S3 — the context-usage half of [`GetSpecRunResponse`].
+///
+/// A wire type distinct from the stored [`TokenUsage`], and the differences
+/// are the point rather than an accident of layering:
+///
+/// - **`percent` is computed here, on the server.** One baseline adjustment,
+///   one over-window rule, one place they can be got wrong. Shipping a
+///   numerator and a denominator instead would invite the client to divide
+///   them its own way, and the correct division is not the obvious one.
+/// - **`total_tokens` is NOT shipped.** The stored value keeps it (it is the
+///   honest lifetime cost), but `tokenUsage.total` is a cumulative sum across
+///   every response in the thread — unbounded, routinely several times the
+///   window — and the single most likely bug in any future UI is a meter
+///   drawn from it. Handing the frontend both numbers and trusting it to pick
+///   the right one is how that bug gets written. It cannot pick wrong if only
+///   one number crosses the wire.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SpecRunTokenUsage {
+    /// Tokens in the model's context as of the most recent response
+    /// (`tokenUsage.last.totalTokens` upstream). Always present — this is the
+    /// raw evidence, and it ships even when `percent` does not.
+    pub used_tokens: i64,
+    /// The model's context window, or null when codex has never reported one.
+    pub context_window: Option<i64>,
+    /// Context occupancy as a whole percentage, `0.0..=100.0`.
+    ///
+    /// Null means "no percentage can honestly be stated": no known window, a
+    /// window at or below the 12000-token baseline, or `used_tokens` above
+    /// the window. That last case is deliberately NOT clamped to 100 — see
+    /// `TokenUsage::percent`. Render the raw count with no meter.
+    pub percent: Option<f64>,
+}
+
+impl From<&TokenUsage> for SpecRunTokenUsage {
+    fn from(usage: &TokenUsage) -> Self {
+        Self {
+            used_tokens: usage.used_tokens,
+            context_window: usage.context_window,
+            percent: usage.percent(),
+        }
+    }
 }
 
 pub(crate) const MAX_SPEC_INPUT_CHARS: usize = 32_768;
@@ -1149,6 +1205,7 @@ pub(crate) async fn get_spec_run(
         card_id: card.id.clone(),
         runtime_id: None,
         phase: None,
+        token_usage: None,
     };
     let Some(runtime) = s
         .repo
@@ -1160,11 +1217,16 @@ pub(crate) async fn get_spec_run(
     let Some(harness) = s.harness.get(&runtime.id) else {
         return Ok(Json(dormant));
     };
-    let phase = harness.snapshot().await.phase;
+    // One snapshot read for both fields (#1255 S3). Taking two would let the
+    // phase and the usage come from different instants for no benefit —
+    // `snapshot_for` acquires a fistful of mutexes, so it is also the cheaper
+    // way round.
+    let snapshot = harness.snapshot().await;
     Ok(Json(GetSpecRunResponse {
         card_id: card.id,
         runtime_id: Some(runtime.id.clone()),
-        phase: Some(phase),
+        phase: Some(snapshot.phase),
+        token_usage: snapshot.token_usage.as_ref().map(SpecRunTokenUsage::from),
     }))
 }
 

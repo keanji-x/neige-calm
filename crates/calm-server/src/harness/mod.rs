@@ -5,6 +5,7 @@ pub mod registry;
 pub mod run_loop;
 pub mod snapshot;
 pub mod state;
+pub mod token_usage;
 
 use std::sync::Arc;
 
@@ -26,6 +27,7 @@ pub use registry::{HarnessRegistry, HarnessReservation, ReservationId, Slot};
 pub use run_loop::{SpecHarness, SpecHarnessParams};
 pub use snapshot::{HARNESS_MODE, HarnessPhaseTag, HarnessSnapshot, is_harness_snapshot_value};
 pub use state::{HarnessState, IssuingKind, run_status_for};
+pub use token_usage::{BASELINE_TOKENS, TokenUsage};
 
 /// #953 §5 — how [`spawn_recovered_harness`] claims the registry slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

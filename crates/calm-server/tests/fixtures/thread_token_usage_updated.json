@@ -1,0 +1,65 @@
+{
+  "_provenance": [
+    "HAND-AUTHORED FROM THE PINNED UPSTREAM SCHEMA. This is NOT a capture.",
+    "Transcribed from codex upstream tag rust-v0.151.0 — the exact version of the",
+    "binary this box spawns (~/.codex/packages/standalone/current/codex-package.json",
+    "-> 0.151.0). No codex turn was run to produce it: the only machine available",
+    "here is production, and #1255 forbids running real turns on it. Same posture,",
+    "and the same honesty requirement, as tests/fixtures/turn_plan_updated.json.",
+    "",
+    "Shape: { threadId, turnId, tokenUsage: { total, last, modelContextWindow } },",
+    "where `total` and `last` are both TokenUsageBreakdown:",
+    "  { totalTokens, inputTokens, cachedInputTokens, cacheWriteInputTokens,",
+    "    outputTokens, reasoningOutputTokens }.",
+    "`cacheWriteInputTokens` carries a serde default upstream, so a real frame may",
+    "omit it; it is written out here because a fixture that exercises the full",
+    "breakdown is more useful than one that exercises the default.",
+    "`modelContextWindow` is Option<i64> and serializes as an explicit null.",
+    "",
+    "READ THIS BEFORE USING THE NUMBERS. `total` is a LIFETIME sum over every",
+    "response in the thread; `last` is the most recent single response. The numbers",
+    "below are chosen to make that impossible to ignore: total.totalTokens is",
+    "1400000 against a 272000 window — 5.1x over — while last.totalTokens is 60000,",
+    "or about 18.5% occupancy after the 12000-token baseline adjustment. Any code",
+    "that renders ~535% is dividing by the wrong field. Do not 'fix' the fixture to",
+    "make total smaller; a total several times the window is the ordinary state of a",
+    "long thread, and this file is the regression evidence for it.",
+    "",
+    "`threadId` here is a PLACEHOLDER and is not part of the transcription. The",
+    "kernel's `on_notification` prologue drops any notification whose `threadId` is",
+    "not the harness's current thread, so the test substitutes its own seeded id",
+    "over this value before emitting the frame. Changing the literal below changes",
+    "nothing.",
+    "",
+    "This becomes a real capture the moment the arm this fixture tests runs against",
+    "a live thread: the value lands in `worker_sessions.handle_state` under",
+    "`token_usage`, and `GET /api/cards/{id}/spec/run` reads it back. Note that the",
+    "stored value is the DERIVED reading, not the frame — nothing persists the raw",
+    "payload, by design (see the arm's comment in harness/run_loop.rs). Confirming",
+    "the wire shape against production therefore means reading the codex stderr log",
+    "or re-deriving from a newer upstream tag, not querying our own database."
+  ],
+  "params": {
+    "threadId": "PLACEHOLDER-substituted-by-the-test",
+    "turnId": "turn-usage-1",
+    "tokenUsage": {
+      "total": {
+        "totalTokens": 1400000,
+        "inputTokens": 1330000,
+        "cachedInputTokens": 1100000,
+        "cacheWriteInputTokens": 90000,
+        "outputTokens": 70000,
+        "reasoningOutputTokens": 42000
+      },
+      "last": {
+        "totalTokens": 60000,
+        "inputTokens": 57000,
+        "cachedInputTokens": 51000,
+        "cacheWriteInputTokens": 3000,
+        "outputTokens": 3000,
+        "reasoningOutputTokens": 1800
+      },
+      "modelContextWindow": 272000
+    }
+  }
+}

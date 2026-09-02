@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::harness::Observation;
 use crate::harness::state::{HarnessState, IssuingKind};
+use crate::harness::token_usage::TokenUsage;
 
 // #679 PR1 — `HarnessPhaseTag` moved to `calm_types::harness` (TS-exported,
 // referenced by `Event::HarnessPhaseChanged`). Re-exported so the
@@ -44,6 +45,28 @@ pub struct HarnessSnapshot {
     pub issued_turn_head: Option<String>,
     #[serde(default)]
     pub wedged_reason: Option<String>,
+    /// #1255 S3 — latest `thread/tokenUsage/updated` reading for this thread.
+    ///
+    /// No `schema_version` bump for this field, and that is a checked claim,
+    /// not an assumption. `HarnessSnapshot` carries no
+    /// `#[serde(deny_unknown_fields)]` (nor does any type it nests), so the
+    /// two directions are:
+    ///
+    /// - **new binary reading an old snapshot**: the key is absent,
+    ///   `#[serde(default)]` supplies `None`, and `assert_known_schema` only
+    ///   ever compares the integer — which is unchanged.
+    /// - **old binary reading a new snapshot** (the rollback direction, and
+    ///   the one that actually forces a version bump when it fails): serde's
+    ///   default is to *ignore* unknown keys, so an old build drops
+    ///   `token_usage` and boots. It loses the reading, which is the correct
+    ///   loss for a value that is re-pushed on the next model response.
+    ///
+    /// Bumping the version for a purely additive, defaulted field would have
+    /// cost the opposite: `assert_known_schema` panics on an unknown version,
+    /// so a bump makes every live snapshot unreadable by the older binary —
+    /// it would turn a lossless rollback into a boot panic.
+    #[serde(default)]
+    pub token_usage: Option<TokenUsage>,
 }
 
 impl HarnessSnapshot {
@@ -62,6 +85,7 @@ impl HarnessSnapshot {
             last_seen_head: None,
             issued_turn_head: None,
             wedged_reason: None,
+            token_usage: None,
         }
     }
 
@@ -91,6 +115,10 @@ impl HarnessSnapshot {
             last_report_body_sha256,
             last_seen_head: None,
             issued_turn_head: None,
+            // Set by `snapshot_for` from `Inner`, exactly like
+            // `last_seen_head` / `issued_turn_head` above: `from_state` sees
+            // only `HarnessState`, and token usage does not live there.
+            token_usage: None,
             wedged_reason,
         }
     }
