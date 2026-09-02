@@ -17,9 +17,9 @@
 //!
 //! The table asserted by the tests below is the **declared intent** for each
 //! origin: it is written from the design ruling and from a reading of today's
-//! call sites, and it locks nothing but that declaration. It is **not** a
-//! captured baseline of production behaviour, and no test here proves that
-//! `policy_for` reproduces what production does today.
+//! call sites, and it locks nothing but that declaration. Nothing in it was
+//! observed from a running system, and no test here proves that `policy_for`
+//! reproduces what production does today.
 //!
 //! The behavioural-equivalence proof happens in **S1 step 2**, when
 //! `policy_for`'s output is compared against the quadruples the existing
@@ -42,6 +42,37 @@
 //! `guard_task_declarations` takes only [`WriteAttribution::Authored`], and
 //! [`WriteAttribution::Structural`] goes down the fork belt *by type*.
 //!
+//! # Why there is no `Plugin` origin
+//!
+//! Plugin attribution does not travel through `EditAuthor` alone.
+//! `EditAuthor::Plugin` is a deliberate unit variant; the plugin's actual id
+//! rides in the sibling field `WaveReportEdited::author_plugin_id`, which the
+//! event's own docs describe as `Some` exactly when `author == Plugin` and
+//! `None` for every other author.
+//!
+//! [`WritePolicy`] has no field that can carry that id — it names an actor, an
+//! attribution, an auto-promote verdict and a recorder requirement, and none of
+//! the four is a plugin id — and `wave_report::persist_report_with_shadow`
+//! writes `author_plugin_id: None` unconditionally, with no parameter to
+//! override it. A plugin origin threaded through this module would therefore
+//! emit `{author: plugin, author_plugin_id: None}`: the one combination that
+//! field says never occurs. So the origin is not merely unreachable today, it
+//! is the wrong shape for the value it would have to carry.
+//!
+//! Declaring it anyway has a concrete cost, and it is the cost that decided
+//! this. The day a real plugin write path is added, an already-present variant
+//! lets it compile without touching [`policy_for`] — the exhaustiveness error
+//! that should force a redesign never fires, and the impossible pair ships.
+//! This module's own rule ("an exemption that can be expressed will eventually
+//! be used") applies to the plugin case unchanged: a doc comment does not stop
+//! it, a missing variant does.
+//!
+//! Adding a plugin write path later therefore means doing both halves in one
+//! change: (a) add the [`WriteOrigin`] variant, so the compiler forces every
+//! match here to state its policy explicitly, and (b) derive
+//! `author_plugin_id` from that origin and plumb it through to
+//! `persist_report_with_shadow`, so the emitted pair is consistent.
+//!
 //! # Why there are no guard/CAS booleans here
 //!
 //! The three report guards are unconditional control flow inside
@@ -59,22 +90,6 @@ use calm_types::worker::WorkerSessionId;
 
 use crate::error::CalmError;
 
-/// A plugin's identity. `calm-types` has no `PluginId` newtype today —
-/// `ActorId::Plugin` carries a bare `String` — so this is the narrowest thing
-/// that keeps [`WriteOrigin::Plugin`] from being "a string".
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PluginId(String);
-
-impl PluginId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// The MCP-agent identity behind an agent-channel report write.
 ///
 /// Field types follow `mcp_server::registry::ToolCallIdentity`, the struct
@@ -82,18 +97,42 @@ impl PluginId {
 /// `ToolCallIdentity` stores `card_id`/`session_id` as `String` and `wave_id`
 /// as `Option<String>`.
 ///
-/// `wave_id` is **required** here, unlike on `ToolCallIdentity`. A report
-/// write is wave-scoped by construction, and the recorder gate already refuses
-/// (`Forbidden`) an agent principal without a wave — see
-/// `ToolCallIdentity::to_principal` returning `None` and
-/// `CardDecisionSinkRecorderShadowProbe::record` rejecting that `None`. Making
-/// it required moves that refusal to the point where the origin is built.
+/// # `wave_id` is required, and it is the *target* wave
+///
+/// `wave_id` is **required** here, unlike on `ToolCallIdentity`. A report write
+/// is wave-scoped by construction, and the recorder gate already refuses an
+/// agent principal without a wave — `ToolCallIdentity::to_principal` returns
+/// `None`, and `CardDecisionSinkRecorderShadowProbe::record` turns that `None`
+/// into `Forbidden`.
+///
+/// Making the field required makes "agent write with no wave" *unrepresentable
+/// in this type*, which is not the same as performing the refusal. **No code in
+/// this module refuses anything on this account** — the fields are public and
+/// there is no constructor. What the required field buys is that step 2's
+/// constructor cannot build an `AgentOrigin` without first resolving the
+/// `Option<String>`; producing the `Forbidden` for a `None` is that caller's
+/// job, because only the caller holds the request context the error names.
+///
+/// The wave this carries is the **wave being written**, as resolved for the
+/// call — `mcp_server::tools::wave_report::resolve_report_for_caller` reads it
+/// from the bound spec card's `wave_id`. It is *not* interchangeable with the
+/// wave that identity resolution attaches to the principal
+/// (`card_identity_get_by_session`, `transport.rs`), even though both read the
+/// same column today and are therefore equal. `decide_recorder` compares the
+/// card's own wave against the write target
+/// (`card_wave != wave`, `calm-truth/src/decision_gate.rs`), so the two are
+/// opposite sides of one comparison. When step 2 threads this through, it must
+/// keep supplying the recorder probe's target wave from *this* field and let
+/// the principal's wave come from identity resolution; collapsing them into a
+/// single value would make that comparison compare a value with itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentOrigin {
     pub card_id: CardId,
     pub role: CardRole,
     pub provider: AgentProvider,
     pub session_id: WorkerSessionId,
+    /// The wave whose report is being written. See the type docs: not the
+    /// principal's identity-resolved wave, even though they are equal today.
     pub wave_id: WaveId,
 }
 
@@ -105,12 +144,40 @@ pub struct AgentOrigin {
 /// extractor produced from the (validated) `X-Calm-Actor` header. That is the
 /// value this carries: fork emits no `WaveReportEdited`, so the initiator is
 /// the *only* place the fork's "who" survives.
+///
+/// # Why the constructor is fallible
+///
+/// [`TrustedInitiator::new`] accepts `ActorId::User` and nothing else, because
+/// that is the whole of what the fork route can produce. `Actor::to_actor_id`
+/// (`actor.rs`) yields exactly two shapes: `User`, and `AiCodex(CardId(""))`
+/// for the legacy `ai:codex` header — every other header value falls through
+/// its documented defensive default to `User`. The second shape cannot complete
+/// a fork either: the empty card id is rejected as
+/// `RoleViolation::EmptyAiCardId` when the wave-create events emit
+/// (`calm-truth/src/role_gate.rs`), so under `ai:codex` the route 403s rather
+/// than reaching a report copy.
+///
+/// A constructor over the whole `ActorId` enum would enforce nothing its name
+/// claims, and the origin it feeds is the one that matters most: `Fork` is the
+/// sole [`WriteAttribution::Structural`] source, the shape that goes down the
+/// fork belt *past* `guard_task_declarations`. Leaving the door open would let
+/// a later caller hand an agent identity to the one write that skips the author
+/// guard, silently and with no compile-time speed bump — the same failure mode
+/// the missing `Plugin` variant is there to prevent. Widening this is a
+/// deliberate one-line edit at a place that says why, which is the point.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedInitiator(ActorId);
 
 impl TrustedInitiator {
-    pub fn new(actor: ActorId) -> Self {
-        Self(actor)
+    /// Refuses any initiator the fork route cannot produce. See the type docs
+    /// for why the reachable set is `{ActorId::User}` today.
+    pub fn new(actor: ActorId) -> Result<Self, CalmError> {
+        if !matches!(actor, ActorId::User) {
+            return Err(CalmError::Forbidden(format!(
+                "fork initiator {actor:?} is not a shape the fork route can produce"
+            )));
+        }
+        Ok(Self(actor))
     }
 
     pub fn actor(&self) -> &ActorId {
@@ -124,6 +191,9 @@ impl TrustedInitiator {
 /// (`routes::waves::seed_template_wave` /
 /// `restamp_template_report_if_placeholder`) is being removed, and its removal
 /// is the blocking prerequisite for S1 step 2.
+///
+/// There is deliberately **no `Plugin` variant** either — see the module docs
+/// for why the shape is wrong and what adding one later has to include.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WriteOrigin {
     /// An MCP agent writing through `decision_sink::CardDecisionSink`.
@@ -134,9 +204,15 @@ pub enum WriteOrigin {
     ///
     /// Data-carrying, not a unit variant: the fork's `CardAdded` must be
     /// attributed to the actual initiator.
+    ///
+    /// Note what that does and does not buy today. [`TrustedInitiator`] admits
+    /// one shape (`ActorId::User`), so "pass the initiator through" and "return
+    /// the constant `ActorId::User`" produce identical output for every input,
+    /// and **no test can tell them apart**. The payload is kept because the
+    /// initiator is a real input of the fork's `CardAdded` attribution, so a
+    /// later widening of the admitted set lands as one edit in
+    /// `TrustedInitiator::new` and needs no change in [`policy_for`].
     Fork(TrustedInitiator),
-    /// A plugin-authored write.
-    Plugin(PluginId),
 }
 
 /// How a write is attributed in the edit log.
@@ -163,16 +239,40 @@ pub enum WriteAttribution {
 ///   `routes::wave_templates`, `routes::waves::update_wave_report`) and the
 ///   kernel template-seeding sites.
 ///
-/// So this enum has two variants, not three. The probe's payload is not
-/// carried here: it is derivable from [`AgentOrigin`]'s `session_id` /
-/// `wave_id`, and duplicating it would create a second place where the
-/// principal could disagree with the origin.
+/// So this enum has two variants, not three.
+///
+/// # Why the probe payload is not carried here
+///
+/// Not because it can be reconstructed from [`AgentOrigin`] — it cannot. The
+/// probe's `principal` is a `Principal::Agent`, which needs a `cove_id`
+/// (`calm-types/src/worker.rs`) that `AgentOrigin` does not have; production
+/// builds it in `ToolCallIdentity::to_principal` from `identity.cove_id`.
+///
+/// The reason is narrower and true: what the gate actually reads of the
+/// principal is its `session_id` and nothing else — `decide_recorder`
+/// destructures `Principal::Agent { session_id, .. }` and takes the target wave
+/// as a separate argument (`calm-truth/src/decision_gate.rs`). So an origin
+/// carrying `session_id` plus the write's target wave determines the same gate
+/// outcome as today for every input, and leaving the assembled probe out of
+/// this type avoids a second place where the principal could drift away from
+/// the origin. If a future gate reads `cove_id`, this stops holding and the
+/// origin has to grow the field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecorderRequirement {
     /// Consult the recorder gate for the origin's agent principal; a `Deny`
     /// fails the write.
     AgentGate,
     /// No recorder gate on this write.
+    ///
+    /// For the REST-user sites this is a statement about a real
+    /// `persist_report_with_shadow` call that passes `None`. For
+    /// [`WriteOrigin::Fork`] it is not: **the fork path never calls
+    /// `persist_report_with_shadow` at all.** It writes the copied report
+    /// inside the wave-creation transaction via `card_update_with_crdt_tx`
+    /// (`routes::waves::persist_fork_report_and_project_tasks_tx`) and emits no
+    /// `WaveReportEdited`. `NotGated` therefore records that a fork is subject
+    /// to no recorder decision — not that some fork call site was observed
+    /// passing `None`.
     NotGated,
 }
 
@@ -251,12 +351,6 @@ pub fn policy_for(origin: &WriteOrigin) -> Result<WritePolicy, CalmError> {
             auto_promote_draft: false,
             recorder: RecorderRequirement::NotGated,
         },
-        WriteOrigin::Plugin(plugin_id) => WritePolicy {
-            actor: ActorId::Plugin(plugin_id.as_str().to_string()),
-            attribution: WriteAttribution::Authored(EditAuthor::Plugin),
-            auto_promote_draft: false,
-            recorder: RecorderRequirement::NotGated,
-        },
     })
 }
 
@@ -287,6 +381,10 @@ mod tests {
             session_id: WorkerSessionId::from("sess_1".to_string()),
             wave_id: WaveId::from("w_1".to_string()),
         })
+    }
+
+    fn user_fork() -> TrustedInitiator {
+        TrustedInitiator::new(ActorId::User).expect("a user is a reachable fork initiator")
     }
 
     /// The declared intent for each origin, stated once. This asserts what
@@ -344,27 +442,9 @@ mod tests {
             ),
             (
                 "fork by user",
-                WriteOrigin::Fork(TrustedInitiator::new(ActorId::User)),
+                WriteOrigin::Fork(user_fork()),
                 ActorId::User,
                 WriteAttribution::Structural,
-                false,
-                RecorderRequirement::NotGated,
-            ),
-            (
-                "fork by agent",
-                WriteOrigin::Fork(TrustedInitiator::new(ActorId::AiCodex(CardId::from(
-                    "c_2".to_string(),
-                )))),
-                ActorId::AiCodex(CardId::from("c_2".to_string())),
-                WriteAttribution::Structural,
-                false,
-                RecorderRequirement::NotGated,
-            ),
-            (
-                "plugin",
-                WriteOrigin::Plugin(PluginId::new("git-forge")),
-                ActorId::Plugin("git-forge".to_string()),
-                WriteAttribution::Authored(EditAuthor::Plugin),
                 false,
                 RecorderRequirement::NotGated,
             ),
@@ -399,15 +479,41 @@ mod tests {
         }
     }
 
-    /// The fork is the one origin whose actor is not a constant: it must be
-    /// the initiator that was handed in, because the fork's `CardAdded` is the
-    /// only record of who forked.
+    // There is deliberately no `fork_carries_the_initiator_through` test. With
+    // `TrustedInitiator` admitting only `ActorId::User`, "carries the initiator
+    // through" and "hardcodes `ActorId::User`" have the same output on every
+    // constructible input, so such a test would assert nothing beyond the
+    // `fork by user` row of the table above. See the `WriteOrigin::Fork` docs.
+
+    /// `TrustedInitiator` is the fork's author-guard bypass in type form, so it
+    /// admits only the initiator shape the fork route can actually produce.
+    /// The refused shapes below are the ones a future caller would most
+    /// plausibly reach for.
     #[test]
-    fn fork_carries_the_initiator_through_rather_than_flattening_it() {
-        let initiator = ActorId::AiClaudeSession(WorkerSessionId::from("sess_fork".to_string()));
-        let policy =
-            policy_for(&WriteOrigin::Fork(TrustedInitiator::new(initiator.clone()))).unwrap();
-        assert_eq!(policy.actor(), &initiator);
+    fn a_trusted_initiator_refuses_every_shape_the_fork_route_cannot_produce() {
+        let refused = [
+            ActorId::AiCodex(CardId::from("c_2".to_string())),
+            ActorId::AiCodex(CardId::from(String::new())),
+            ActorId::AiClaudeSession(WorkerSessionId::from("sess_fork".to_string())),
+            ActorId::AiSpecSession(WorkerSessionId::from("sess_fork".to_string())),
+            ActorId::Kernel,
+            ActorId::Plugin("git-forge".to_string()),
+        ];
+        for actor in refused {
+            let error = TrustedInitiator::new(actor.clone())
+                .err()
+                .unwrap_or_else(|| panic!("{actor:?} must not be accepted as a fork initiator"));
+            assert!(
+                matches!(error, CalmError::Forbidden(_)),
+                "{actor:?}: expected Forbidden, got {error:?}"
+            );
+        }
+        assert_eq!(
+            TrustedInitiator::new(ActorId::User)
+                .expect("a user forks")
+                .actor(),
+            &ActorId::User
+        );
     }
 
     /// Structural attribution must not be reachable for anything but a fork:
@@ -418,7 +524,6 @@ mod tests {
             agent(CardRole::Spec, AgentProvider::Codex),
             agent(CardRole::Assistant, AgentProvider::Codex),
             WriteOrigin::RestUser,
-            WriteOrigin::Plugin(PluginId::new("git-forge")),
         ];
         for origin in origins {
             let policy = policy_for(&origin).unwrap();
@@ -439,11 +544,7 @@ mod tests {
                 .recorder(),
             RecorderRequirement::AgentGate
         );
-        for origin in [
-            WriteOrigin::RestUser,
-            WriteOrigin::Fork(TrustedInitiator::new(ActorId::User)),
-            WriteOrigin::Plugin(PluginId::new("git-forge")),
-        ] {
+        for origin in [WriteOrigin::RestUser, WriteOrigin::Fork(user_fork())] {
             assert_eq!(
                 policy_for(&origin).unwrap().recorder(),
                 RecorderRequirement::NotGated,
