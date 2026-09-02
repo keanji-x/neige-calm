@@ -134,7 +134,7 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "scheduler-test".into(),
             sort: None,
@@ -143,7 +143,7 @@ async fn boot() -> Boot {
             // without a materialized workspace is not a state any creation
             // route produces). Fixture waves carry a path like production ones.
             cwd: "/neige-fixture-workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1515,12 +1515,12 @@ async fn inv_1110_001_template_wave_does_not_dispatch() {
     let template_wave = boot
         .repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: boot.cove_id.clone(),
             title: "template-wave".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
@@ -3626,12 +3626,12 @@ async fn assert_claim_fence_race_lost(cross_wave: bool) {
         let child = boot
             .repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: boot.cove_id.clone(),
                 title: "fence child".into(),
                 sort: None,
                 cwd: String::new(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
@@ -4382,12 +4382,12 @@ async fn seed_stale_context_copies(
         let wave = boot
             .repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: source_wave.cove_id.clone(),
                 title: format!("restore cursor fixture {key_prefix} {index}"),
                 sort: None,
                 cwd: String::new(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
@@ -5709,12 +5709,12 @@ async fn assert_deletion_event_runs_context_sweep(event: Event, deleted_wave_id:
     let referenced = boot
         .repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: boot.cove_id.clone(),
             title: deleted_wave_id.into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
@@ -6130,12 +6130,12 @@ async fn closure_depth_exhaustion_truncates_and_cross_cove_is_rejected() {
     let foreign_wave = boot
         .repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: foreign_cove.id,
             title: "foreign".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
@@ -7725,9 +7725,9 @@ async fn seed_child_parent(
             title: format!("child {key}"),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

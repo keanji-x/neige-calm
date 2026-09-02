@@ -5189,24 +5189,24 @@
             ],
             "format": "double"
           },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "template_input": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme"
           },
           "title": {
             "type": "string",
             "description": "Issue #1211 — on this user-driven create path the title is no longer\nthe wave's intent, so the client may omit it entirely. Omitting it\nstores the **empty string** — there is no server-side default; the\n`Untitled wave` a user sees in a list is the frontend's display\nfallback (`fe/core/domain/wave.ts` `UNTITLED_WAVE_LABEL`). The spec\nagent then names the wave via `calm.wave.rename`, which only succeeds\nwhile the stored title is still blank. The type\nstays `String`: the empty string has always been a legal title and the\nserver applies no non-empty validation."
-          },
-          "workflow_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "workflow_input": {
-            "type": [
-              "object",
-              "null"
-            ]
           }
         },
         "additionalProperties": false
@@ -5953,25 +5953,25 @@
             ],
             "format": "double"
           },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "template_input": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Issue #891 / #1110 S2 — JSON input for the bound workflow. Only\naccepted when `template_id` names a running trusted workflow whose\nowning plugin Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
+          },
           "theme": {
             "$ref": "#/components/schemas/RequestTheme",
             "description": "Host browser's current theme RGB (#177). Required end-to-end so\nthe auto-minted spec card's terminal renderer answers codex's\nOSC 10/11 startup probe with matching colors. A body\nmissing this field is rejected at the deserialize layer (422):\nthe spec card is invisible to the user and a silent fallback\nwould mean every wave-from-the-UI spawned with a mis-tinted\ncomposer (the bug that motivated this refactor).\n\nDirect repo callers (`db::sqlite::wave_create_tx`, used by tests\nand a couple of non-route helpers) still pass a value here even\nthough the txn-level helper does not consume it — spec-card\nspawning is owned by `routes::waves::create_wave`. Tests can\nuse `RequestTheme::default_dark()` as a no-op sentinel."
           },
           "title": {
             "type": "string"
-          },
-          "workflow_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "workflow_input": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Issue #891 / #1110 S2 — JSON input for the bound workflow. Only\naccepted when `workflow_id` names a running trusted workflow whose\nowning plugin Manifest declares an `input_schema`; the `POST /api/waves`\nroute validates the value against that schema before any DB write. The\nkernel never interprets the blob — it is persisted verbatim and injected\ninto the spec harness developer instructions at thread-mint time.\n`#[serde(default)]` keeps the field purely additive under\n`deny_unknown_fields`."
           }
         },
         "additionalProperties": false
@@ -6894,6 +6894,20 @@
             "type": "number",
             "format": "double"
           },
+          "template_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Template this wave was created from.\n\nThe `serde(alias)` below is a deserialization-only compatibility read\nfor pre-#1209 event-log rows; serialization emits only this name."
+          },
+          "template_input": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Template input is validated at creation and otherwise remains opaque.\n\nCarries the same deserialization-only alias as `template_id`."
+          },
           "terminal_at": {
             "type": [
               "integer",
@@ -6908,19 +6922,6 @@
           "updated_at": {
             "type": "integer",
             "format": "int64"
-          },
-          "workflow_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "workflow_input": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Workflow input is validated at creation and otherwise remains opaque."
           },
           "workspace": {
             "$ref": "#/components/schemas/WaveWorkspace"
@@ -7626,7 +7627,7 @@
       },
       "WaveTemplate": {
         "type": "object",
-        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `workflow_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
+        "description": "One selectable starting point for a new wave.\n\n\"Blank\" is not in this list and never will be: it is the *absence* of a\ntemplate (`POST /api/waves` with no `template_id`), so the client renders it\nas its own default option rather than the server minting a pseudo-row for\nsomething that has no key, no title source, and no report to fork.",
         "required": [
           "id",
           "title",
@@ -7635,10 +7636,10 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "Template key. Passed back verbatim as `workflow_id` on\n`POST /api/waves` — see the seam note on this module."
+            "description": "Template key. Passed back verbatim as `template_id` on\n`POST /api/waves` — see the seam note on this module."
           },
           "input_schema": {
-            "description": "JSON Schema for `workflow_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `workflow_input` for it is a 400 on create."
+            "description": "JSON Schema for `template_input`, from the manifest of the running\ntrusted plugin bound to `id`. Absent means the template takes no input;\nsending `template_input` for it is a 400 on create."
           },
           "tasks": {
             "type": "array",

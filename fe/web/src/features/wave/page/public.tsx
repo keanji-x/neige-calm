@@ -19,7 +19,9 @@ import { MoreMenu as AstryxMoreMenu } from '@astryxdesign/core/MoreMenu';
 import { useEffect, useRef, type ReactNode } from 'react';
 
 import type { ReportOutlineItem, ReportTaskRow } from '../../../../../core/domain/report.ts';
-import { waveDisplayTitle, type CardWire, type Wave, type WaveLifecycle } from '../../../../../core/domain/wave.ts';
+import {
+  UNTITLED_WAVE_LABEL, waveDisplayTitle, type CardWire, type Wave, type WaveLifecycle,
+} from '../../../../../core/domain/wave.ts';
 import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
@@ -276,8 +278,22 @@ export function WavePage({
                 <Icon name="arrow-left" />
               </button>
             )}
+            {/*
+              The **raw** title, with the fallback handed over as the
+              placeholder (#1211). `waveDisplayTitle(wave.title)` here used to
+              be both, so the editor opened on an unnamed wave holding the
+              words `Untitled wave` — text the reader had to delete before
+              typing. The header still reads the same; only the box changed.
+
+              `emptyCommit="clear"` is the other half: a wave has a second
+              namer (the spec agent's `calm.wave.rename`, which succeeds only
+              while the title is empty), so clearing the name is a real request
+              here and not the cancel it is on a cove.
+            */}
             <h1 className={styles.titleHeading}><EditableTitle
-              value={waveDisplayTitle(wave.title)}
+              value={wave.title}
+              placeholder={UNTITLED_WAVE_LABEL}
+              emptyCommit="clear"
               onCommit={onRenameWave}
               editLabel="Rename wave"
               inputLabel="Wave title"

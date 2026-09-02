@@ -202,9 +202,16 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
    * does not pick one. The POST still requires `cove_id` this slice.
    */
   const [newWaveCoveId, setNewWaveCoveId] = useState<string | null>(null);
-  // Named explicitly rather than left to the dialog's first-focusable default,
-  // which is the Close button (#1161).
-  const newWaveTitleRef = useRef<HTMLInputElement | null>(null);
+  /*
+   * Named explicitly rather than left to the dialog's first-focusable default,
+   * which is the Close button (#1161).
+   *
+   * It aims at the form's **Start from** trigger. It used to aim at the task
+   * `<input>`, and that field is gone (#1211 S2) — leaving the ref where it
+   * was would have handed the opening focus back to Close, i.e. reintroduced
+   * #1161 by deleting a field rather than by forgetting a prop.
+   */
+  const newWaveStartFromRef = useRef<HTMLButtonElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   /*
@@ -287,13 +294,19 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
     setCreateError(null);
     void waveMutations.create({
       cove_id: newWaveCoveId,
-      title: draft.title,
+      /*
+       * No `title`, and not an empty string either (#1211 S2). The kernel's
+       * `#[serde(default)]` branch is what stores the empty title that
+       * `calm.wave.rename` is allowed to fill in; a `title: ''` on the wire
+       * reaches the same stored value today, but it says this client decided
+       * the name — and the whole point is that it did not.
+       */
       theme: readHostThemeRgb(),
       // Spread, not two optional fields: Blank leaves both keys absent, and
-      // `workflow_id: undefined` is not the same request as no `workflow_id`
+      // `template_id: undefined` is not the same request as no `template_id`
       // for anything that inspects the object before it is serialized.
-      ...(draft.workflow_id === undefined ? {} : { workflow_id: draft.workflow_id }),
-      ...(draft.workflow_input === undefined ? {} : { workflow_input: draft.workflow_input }),
+      ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
+      ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       /*
        * Both keys or neither. `cwd` without `attach_folder` means "this path is
        * already claimed by some cove", which the kernel answers with a 409
@@ -312,7 +325,17 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
       ...(draft.cwd === undefined ? {} : { cwd: draft.cwd, attach_folder: true }),
     }).then((wave) => {
       setNewWaveCoveId(null);
-      go({ name: 'wave', waveId: wave.id });
+      /*
+       * The wave is created unnamed and with nothing said in it (#1211 S2), so
+       * landing on a wave page with a shut drawer would be landing on a blank
+       * page with no visible way to begin. `openSpec` is a property of *this
+       * move*: it travels in the state of the history entry this navigation
+       * creates, and the wave route redeems it there (`useSpecOpenIntent`).
+       * It is not a request left lying in a provider — this callback also runs
+       * from the rail, with some other wave still on screen, and a global slot
+       * is readable and clearable by that wave's route body too.
+       */
+      go({ name: 'wave', waveId: wave.id, openSpec: true });
     }).catch((error: unknown) => {
       const conflict = folderConflictOf(error);
       if (conflict !== null) {
@@ -455,10 +478,10 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
         ))}
       </nav>
       <Dialog open={newWaveCoveId !== null} onClose={() => setNewWaveCoveId(null)} title="New wave"
-        initialFocusRef={newWaveTitleRef}>
+        initialFocusRef={newWaveStartFromRef}>
         {newWaveCoveId !== null && (
           <NewWaveForm
-            titleRef={newWaveTitleRef}
+            startFromRef={newWaveStartFromRef}
             submitting={creating}
             error={createError}
             templates={waveTemplates.templates}

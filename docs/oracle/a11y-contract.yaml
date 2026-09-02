@@ -593,7 +593,7 @@
   family: wave-create-form
   statement: >
     issue-dev 变体必须用原生 `<input type="checkbox">`（label 包裹 input）承载
-    `workflow_input.merge_policy`：未勾选（默认）提交 `"hold-for-ratify"`，勾选提交
+    `template_input.merge_policy`：未勾选（默认）提交 `"hold-for-ratify"`，勾选提交
     `"auto-merge"`
   why: >
     #891 slice ③ signoff r3：该字段是二元的，且项目没有 switch 原语，原生 checkbox

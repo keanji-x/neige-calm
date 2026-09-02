@@ -46,8 +46,25 @@ export type ConversationRegistry = Readonly<{
      leaves exactly one way, by the tab ending. Re-adding a removal door needs
      a caller that has a reason to slam it, not a symmetry argument. */
   requestedOpenId: string | null;
-  requestOpen: (conversationId: string) => void;
+  /**
+   * True while the pending open should also put the caret in the composer.
+   *
+   * Carried beside the id rather than folded into it because the two questions
+   * have different answers: every open request names a conversation, and only
+   * the one a just-created wave makes wants the caret — a reader who opened a
+   * row from Today asked to *read* it.
+   */
+  requestedOpenFocusesComposer: boolean;
+  requestOpen: (conversationId: string, options?: { focusComposer?: boolean }) => void;
   clearOpenRequest: () => void;
+  /* There is deliberately no "open the spec conversation of wave W" slot here
+     (#1211 S2). It was one, and a global slot cannot own that intent: the wave
+     the reader is leaving is still mounted when a create states it, and every
+     wave route body can read and clear a slot addressed to a different one.
+     The intent now travels in the history entry the create navigates to —
+     `app/router/navigation.ts`, `useSpecOpenIntent` — and reaches this
+     registry only as the ordinary `requestOpen` the target route issues once
+     it knows its own spec card. */
 }>;
 
 const ConversationContext = createContext<ConversationRegistry | null>(null);
@@ -67,7 +84,9 @@ function equalEntry(left: RememberedConversation | undefined, conversation: Conv
 
 export function ConversationProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<Readonly<Record<string, RememberedConversation>>>({});
-  const [requestedOpenId, setRequestedOpenId] = useState<string | null>(null);
+  const [openRequest, setOpenRequest] = useState<
+    { id: string; focusComposer: boolean } | null
+  >(null);
   const remember = useCallback((conversation: Conversation, turns: readonly TranscriptEntry[]) => {
     setEntries((current) => equalEntry(current[conversation.id], conversation, turns)
       ? current
@@ -85,15 +104,23 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
         : { ...current, [conversationId]: next };
     });
   }, []);
-  const requestOpen = useCallback((conversationId: string) => setRequestedOpenId(conversationId), []);
-  const clearOpenRequest = useCallback(() => setRequestedOpenId(null), []);
+  const requestOpen = useCallback(
+    (conversationId: string, options?: { focusComposer?: boolean }) =>
+      setOpenRequest({ id: conversationId, focusComposer: options?.focusComposer ?? false }),
+    [],
+  );
+  const clearOpenRequest = useCallback(() => setOpenRequest(null), []);
+  const requestedOpenId = openRequest?.id ?? null;
+  const requestedOpenFocusesComposer = openRequest?.focusComposer ?? false;
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
   const turnsOf = useCallback((conversationId: string) => entries[conversationId]?.turns ?? [], [entries]);
   const value = useMemo<ConversationRegistry>(
     () => ({
-      conversations, turnsOf, remember, updateExisting, requestedOpenId, requestOpen, clearOpenRequest,
+      conversations, turnsOf, remember, updateExisting,
+      requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
     }),
-    [clearOpenRequest, conversations, remember, requestOpen, requestedOpenId, turnsOf, updateExisting],
+    [clearOpenRequest, conversations, remember, requestOpen,
+      requestedOpenFocusesComposer, requestedOpenId, turnsOf, updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;
 }

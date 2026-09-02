@@ -110,12 +110,12 @@ async fn boot_recovery_includes_marked_plain_chat_but_excludes_pty_codex() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "plain chat recovery".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -217,12 +217,12 @@ async fn direct_recovery_boundary_rejects_cove_chat_spec_runtime() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "chat spec".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -313,12 +313,12 @@ async fn seed_recoverable_runtime(repo: &Arc<SqlxRepo>, tag: &str, thread_id: &s
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: tag.into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -423,12 +423,12 @@ async fn boot_recovery_respawns_harness_with_snapshot() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "boot".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -769,12 +769,12 @@ async fn boot_recovery_is_deferred_until_shared_daemon_is_running() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "boot-deferred".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -869,12 +869,12 @@ async fn boot_recovery_replays_events_since_snapshot_watermark() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "boot-replay".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1008,12 +1008,12 @@ async fn boot_recovery_skips_terminal_waves() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "boot-terminal".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1095,12 +1095,12 @@ async fn boot_recovery_skips_deferred_worker_session_phantom_ghost() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "boot-phantom".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1187,12 +1187,12 @@ async fn force_new_thread_recovery_after_phase2_crash() {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: cove.id,
                 title: "phase2 crash".into(),
                 sort: None,
                 cwd: "/tmp".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1410,12 +1410,12 @@ async fn boot_replay_suppresses_gated_self_report_and_replays_gate_result() {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "gate-replay".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1681,12 +1681,12 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "assistant recovery".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1696,12 +1696,12 @@ async fn boot_recovery_registers_the_assistant_without_replaying_the_spec_backlo
     // A cove chat wave alongside it: the #1098 recovery class must keep working.
     let chat_wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "cove chat".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

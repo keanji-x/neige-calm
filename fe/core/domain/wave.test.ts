@@ -45,7 +45,7 @@ describe('wave wire decode', () => {
   });
 
   it('drops server fields this slice does not model instead of failing the decode', () => {
-    expect(waveWireSchema.safeParse({ ...baseWire, workflow_id: null, purpose: null }).success).toBe(true);
+    expect(waveWireSchema.safeParse({ ...baseWire, template_id: null, purpose: null }).success).toBe(true);
   });
 
   it('maps the wire row onto the camelCase domain shape', () => {

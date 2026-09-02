@@ -593,12 +593,12 @@ mod tests {
             .unwrap();
         let wave = repo
             .wave_create(NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: cove.id,
                 title: "pending".into(),
                 sort: None,
                 cwd: "/workspace".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
                 attach_folder: false,
                 theme: crate::routes::theme::RequestTheme::default_dark(),

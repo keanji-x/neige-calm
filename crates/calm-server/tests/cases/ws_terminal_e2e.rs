@@ -90,14 +90,14 @@ async fn boot_full() -> (std::net::SocketAddr, axum::Router, String, TempDir) {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "e2e".into(),
             sort: None,
             // #1147 S6 — the terminal card's cwd defaults to the wave's
             // workspace; an empty workspace path is refused.
             cwd: "/neige-fixture-workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

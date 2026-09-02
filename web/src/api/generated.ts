@@ -1397,6 +1397,8 @@ export interface components {
             fork_report_from?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            template_input?: Record<string, never> | null;
             theme: components["schemas"]["RequestTheme"];
             /**
              * @description Issue #1211 — on this user-driven create path the title is no longer
@@ -1410,8 +1412,6 @@ export interface components {
              *     server applies no non-empty validation.
              */
             title?: string;
-            workflow_id?: string | null;
-            workflow_input?: Record<string, never> | null;
         };
         DeleteReportBlockBody: {
             /** Format: int32 */
@@ -1784,6 +1784,18 @@ export interface components {
             plugin_scope?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            /**
+             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
+             *     accepted when `template_id` names a running trusted workflow whose
+             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
+             *     route validates the value against that schema before any DB write. The
+             *     kernel never interprets the blob — it is persisted verbatim and injected
+             *     into the spec harness developer instructions at thread-mint time.
+             *     `#[serde(default)]` keeps the field purely additive under
+             *     `deny_unknown_fields`.
+             */
+            template_input?: Record<string, never> | null;
             /**
              * @description Host browser's current theme RGB (#177). Required end-to-end so
              *     the auto-minted spec card's terminal renderer answers codex's
@@ -1801,18 +1813,6 @@ export interface components {
              */
             theme: components["schemas"]["RequestTheme"];
             title: string;
-            workflow_id?: string | null;
-            /**
-             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
-             *     accepted when `workflow_id` names a running trusted workflow whose
-             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
-             *     route validates the value against that schema before any DB write. The
-             *     kernel never interprets the blob — it is persisted verbatim and injected
-             *     into the spec harness developer instructions at thread-mint time.
-             *     `#[serde(default)]` keeps the field purely additive under
-             *     `deny_unknown_fields`.
-             */
-            workflow_input?: Record<string, never> | null;
         };
         /** @description Body of `POST /api/waves/{wave_id}/conversations`: the first message. */
         NewWaveConversationBody: {
@@ -2273,6 +2273,19 @@ export interface components {
             /** Format: double */
             sort: number;
             /**
+             * @description Template this wave was created from.
+             *
+             *     The `serde(alias)` below is a deserialization-only compatibility read
+             *     for pre-#1209 event-log rows; serialization emits only this name.
+             */
+            template_id?: string | null;
+            /**
+             * @description Template input is validated at creation and otherwise remains opaque.
+             *
+             *     Carries the same deserialization-only alias as `template_id`.
+             */
+            template_input?: Record<string, never> | null;
+            /**
              * Format: int64
              * @description Issue #250 PR 2 — unix-ms timestamp the wave most recently
              *     entered a terminal lifecycle state (Done / Canceled / Failed),
@@ -2296,9 +2309,6 @@ export interface components {
             title: string;
             /** Format: int64 */
             updated_at: number;
-            workflow_id?: string | null;
-            /** @description Workflow input is validated at creation and otherwise remains opaque. */
-            workflow_input?: Record<string, never> | null;
             workspace?: components["schemas"]["WaveWorkspace"];
         };
         /** @description A report link from another wave that targets this wave. */
@@ -2612,20 +2622,20 @@ export interface components {
          * @description One selectable starting point for a new wave.
          *
          *     "Blank" is not in this list and never will be: it is the *absence* of a
-         *     template (`POST /api/waves` with no `workflow_id`), so the client renders it
+         *     template (`POST /api/waves` with no `template_id`), so the client renders it
          *     as its own default option rather than the server minting a pseudo-row for
          *     something that has no key, no title source, and no report to fork.
          */
         WaveTemplate: {
             /**
-             * @description Template key. Passed back verbatim as `workflow_id` on
+             * @description Template key. Passed back verbatim as `template_id` on
              *     `POST /api/waves` — see the seam note on this module.
              */
             id: string;
             /**
-             * @description JSON Schema for `workflow_input`, from the manifest of the running
+             * @description JSON Schema for `template_input`, from the manifest of the running
              *     trusted plugin bound to `id`. Absent means the template takes no input;
-             *     sending `workflow_input` for it is a 400 on create.
+             *     sending `template_input` for it is a 400 on create.
              */
             input_schema?: unknown;
             /**

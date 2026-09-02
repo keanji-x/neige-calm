@@ -1268,3 +1268,101 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
         1
     );
 }
+
+// ---------------------------------------------------------------------------
+// #1209 PR-2 test #18 — the two literal-SQL statements in `routes/today.rs`
+// survive the `workflow_id` -> `template_id` column rename.
+// ---------------------------------------------------------------------------
+//
+// This route is the one wave-create path that writes the wave column names as
+// hand-written SQL strings: an `INSERT INTO waves(... template_id, purpose,
+// template_input ...)` on the mint branch and an `UPDATE waves SET ...
+// template_id=NULL ... template_input=NULL` on the adopt branch. Neither goes
+// through `WAVE_SELECT_COLUMNS` or `wave_create_tx`, so a missed rename in
+// either one compiles cleanly, passes clippy, and fails at RUNTIME with
+// `no such column`.
+//
+// Two branches, two independent tests, on purpose: with only one of them the
+// other statement's stale column name is a green build. Mutation evidence: put
+// the old column name back in exactly one of the two statements and exactly one
+// of these two tests goes red.
+
+/// Mint branch — `INSERT INTO waves(...)` on an empty database.
+#[tokio::test]
+async fn today_launchpad_mint_branch_survives_the_column_rename() {
+    let b = boot().await;
+    let (status, body) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={body}");
+    let wave_id = body["wave_id"].as_str().expect("wave id").to_string();
+
+    // Read the two renamed columns by their new names. If the INSERT still
+    // named the old columns the request above would already have failed; this
+    // read additionally proves the row landed in the columns we think it did.
+    let (template_id, template_input): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT template_id, template_input FROM waves WHERE id=?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .expect("read the renamed columns off the minted launchpad");
+    assert_eq!(template_id, None, "the launchpad binds no template");
+    assert_eq!(
+        template_input, None,
+        "the launchpad carries no template input"
+    );
+}
+
+/// Adopt branch — `UPDATE waves SET ... template_id=NULL ...` over a
+/// pre-existing `purpose IS NULL AND title='Today'` row.
+///
+/// The legacy row is built with raw SQL rather than by calling `ensure` first,
+/// so this leg does NOT depend on the mint branch's INSERT. That independence
+/// is what makes the mutation evidence sharp: leave the old column name in
+/// exactly one of the two statements and exactly one of these two tests
+/// goes red.
+///
+/// The row is seeded with **non-NULL** values in both renamed columns so the
+/// clearing half of that UPDATE is actually exercised: against a row that was
+/// already NULL, an UPDATE that never touched those columns would look
+/// identical.
+#[tokio::test]
+async fn today_launchpad_adopt_branch_survives_the_column_rename() {
+    let b = boot().await;
+
+    // The launchpad lives in the system cove; mint it directly.
+    let mut tx = b.repo.pool().begin().await.unwrap();
+    let cove = calm_server::db::sqlite::cove_create_system_tx(&mut tx)
+        .await
+        .expect("system cove");
+    tx.commit().await.unwrap();
+
+    let wave_id = "legacy-today-wave".to_string();
+    sqlx::query(
+        "INSERT INTO waves (id, cove_id, title, sort, lifecycle, template_id, template_input, \
+         created_at, updated_at) \
+         VALUES (?1, ?2, 'Today', 0, 'draft', 'small-change', '{\"issue\":1209}', 1, 1)",
+    )
+    .bind(&wave_id)
+    .bind(cove.id.as_str())
+    .execute(b.repo.pool())
+    .await
+    .expect("seed a legacy Today row carrying both template columns");
+    let (status, adopted) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={adopted}");
+    assert_eq!(adopted["wave_id"].as_str(), Some(wave_id.as_str()));
+
+    let (purpose, template_id, template_input): (Option<String>, Option<String>, Option<String>) =
+        sqlx::query_as("SELECT purpose, template_id, template_input FROM waves WHERE id=?1")
+            .bind(&wave_id)
+            .fetch_one(b.repo.pool())
+            .await
+            .expect("read the renamed columns off the adopted launchpad");
+    assert_eq!(purpose.as_deref(), Some("launchpad"));
+    assert_eq!(
+        template_id, None,
+        "adoption must clear the template binding through the renamed column"
+    );
+    assert_eq!(
+        template_input, None,
+        "adoption must clear the template input through the renamed column"
+    );
+}

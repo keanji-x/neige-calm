@@ -674,8 +674,8 @@ async fn the_budget_kill_reaches_the_childs_descendants() {
     assert_recorded_descendant_dies(&pidfile, "the budget kill").await;
 }
 
-/// Poll the pid a fixture wrote until it is gone, then fail loudly (and
-/// clean up) if it never is.
+/// Poll the pid a fixture wrote until it is gone or has exited, then fail
+/// loudly (and clean up) if it never does.
 ///
 /// The pid is the assertion. "the call returned an error in ~200 ms" is
 /// not: the previous round's test passed with the kill deleted entirely.
@@ -686,21 +686,12 @@ async fn assert_recorded_descendant_dies(pidfile: &Path, what: &str) {
         .trim()
         .parse()
         .expect("the recorded pid must parse");
-    assert!(pid > 1, "implausible descendant pid {pid}");
-    // SAFETY: `kill(pid, 0)` only probes for existence; it delivers no
-    // signal and touches no memory.
-    let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
-
-    // The SIGKILL is asynchronous; give the kernel a moment, then insist.
-    for _ in 0..100 {
-        if !alive(pid) {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    // Do not leave a 30 s sleep behind if the assertion is about to fail.
-    unsafe { libc::kill(pid, libc::SIGKILL) };
-    panic!("descendant {pid} survived {what} (it was orphaned onto pid 1)");
+    crate::test_support::assert_pid_dead(
+        pid,
+        None,
+        &format!("descendant {pid} survived {what} (it was orphaned onto pid 1)"),
+    )
+    .await;
 }
 
 /// #1164 P3 r2 G3 — the guarantee must hold on the SUCCESS path too.

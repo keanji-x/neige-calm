@@ -149,6 +149,11 @@ pub enum HostError {
     )]
     WorkflowConflict {
         plugin_id: String,
+        /// #1209 PR-2 deliberately does NOT rename this to `template_id`: it is
+        /// the id a plugin declared in its manifest's `workflows[]` array, which
+        /// stays spelled `workflow` (renaming that key would break every
+        /// third-party manifest at parse time). This is plugin-side vocabulary,
+        /// not the kernel request-body field.
         workflow_id: String,
         held_by: String,
     },

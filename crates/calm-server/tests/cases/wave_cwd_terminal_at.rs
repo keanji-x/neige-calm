@@ -951,12 +951,12 @@ async fn post_api_waves_rejects_non_absolute_cwd() {
 /// lifecycle test).
 async fn seed_wave(repo: &Arc<dyn Repo>, cove_id: &str) -> calm_server::model::Wave {
     repo.wave_create(calm_server::model::NewWave {
-        workflow_input: None,
+        template_input: None,
         cove_id: cove_id.into(),
         title: "lifecycle-test".into(),
         sort: None,
         cwd: String::new(),
-        workflow_id: None,
+        template_id: None,
         plugin_scope: None,
         attach_folder: false,
         theme: calm_server::routes::theme::RequestTheme::default_dark(),
