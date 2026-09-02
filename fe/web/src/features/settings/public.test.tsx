@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -46,33 +46,29 @@ describe('Settings network form', () => {
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('');
   });
 
-  it('sends the edited value under the domain key', async () => {
+  it('commits the edited value when the field loses focus', async () => {
     const onSave = vi.fn();
     render(<NetworkPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://edge:8080');
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSave).not.toHaveBeenCalled();
+    await userEvent.tab();
     expect(onSave).toHaveBeenCalledWith({ [HTTPS_PROXY_KEY]: 'http://edge:8080' });
   });
 
-  // CR-6 — in flight the button is *busy*, not `disabled`. Astryx announces
-  // that with aria-busy and its spinner; the handler remains the activation
-  // guard, so focus is not thrown to <body> mid-action.
-  it('flips the save label and blocks the button while saving, without disabling it', () => {
-    render(<NetworkPane {...props({ saving: true })} />);
-    const save = screen.getByRole('button', { name: 'Saving…' });
-    expect(save.hasAttribute('disabled')).toBe(false);
-    expect(save.getAttribute('aria-disabled')).toBeNull();
-    expect(save.getAttribute('aria-busy')).toBe('true');
-    expect(save.dataset.ncState).toBe('busy');
+  it('commits on Enter without waiting for the field to be left', async () => {
+    const onSave = vi.fn();
+    render(<NetworkPane {...props({ onSave })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge:3128{Enter}');
+    expect(onSave).toHaveBeenCalledWith({ [HTTP_PROXY_KEY]: 'http://edge:3128' });
   });
 
-  it('marks only the ready Save label as visible before saving', async () => {
-    render(<NetworkPane {...props()} />);
+  it('does not write while the reader is still typing', async () => {
+    const onSave = vi.fn();
+    render(<NetworkPane {...props({ onSave })} />);
+    // Per-keystroke saving would PUT `h`, `ht`, `htt`… and leave whatever the
+    // reader stopped at as the workspace's proxy.
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge');
-    const save = screen.getByRole('button', { name: 'Save' });
-    expect(save.textContent).toContain('Save');
-    expect(screen.queryByRole('button', { name: 'Saving…' })).toBeNull();
-    expect(save.dataset.ncState).toBeUndefined();
+    expect(onSave).not.toHaveBeenCalled();
   });
 
   it('re-seeds the fields when the settings prop reports a new server value', () => {
@@ -138,45 +134,30 @@ describe('Settings states', () => {
     expect(onRetryLoad).toHaveBeenCalledTimes(1);
   });
 
-  it('surfaces a save failure as an alert', () => {
-    render(<NetworkPane {...props({ saveError: 'PUT /api/settings failed' })} />);
-    expect(screen.getByRole('alert').textContent).toBe('PUT /api/settings failed');
+  it('surfaces a save failure on the row that failed, keeping what was typed', async () => {
+    const view = render(<NetworkPane {...props({ onSave: vi.fn() })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge:3128');
+    await userEvent.tab();
+    view.rerender(<NetworkPane {...props({ saveError: 'PUT /api/settings failed' })} />);
+    expect(screen.getByRole('alert').textContent).toContain('PUT /api/settings failed');
+    expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://edge:3128');
   });
 
-  it('confirms a save through a status role and then retires the notice', () => {
-    vi.useFakeTimers();
-    try {
-      render(<NetworkPane {...props({ savedAt: 1234, savedNoticeMs: 10 })} />);
-      expect(screen.getByText('Saved.').getAttribute('role')).toBe('status');
-      act(() => { vi.advanceTimersByTime(20); });
-      expect(screen.queryByText('Saved.')).toBeNull();
-    } finally {
-      vi.useRealTimers();
-    }
+  it('confirms the commit on its own row and then retires the notice', async () => {
+    const view = render(<NetworkPane {...props({ onSave: vi.fn(), savedNoticeMs: 10 })} />);
+    await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://edge:8080');
+    await userEvent.tab();
+    view.rerender(<NetworkPane {...props({ savedAt: 1234, savedNoticeMs: 10 })} />);
+    // astryx renders a success status as `role="status"`; this pane has no
+    // buttons, so nothing else on it claims that role.
+    expect(screen.getByRole('status').textContent).toContain('Saved.');
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
   });
 
-  /*
-   * The e2e locator, pinned where it can actually run (`fe e2e` needs the real
-   * stack). `settings-roundtrip.spec.ts` reads `[data-nc-settings-saved]` and
-   * then asserts its text, because `role="status"` resolves to three elements
-   * on this page — each Astryx `Button` renders an unconditional empty live
-   * region with that role. Locating by the anchor and asserting the text are
-   * two independent claims; filtering the role by 'Saved.' would collapse them
-   * into one and could never distinguish "the save succeeded" from "the string
-   * happens to be on the page".
-   *
-   * Both halves are load-bearing: the anchor must appear *only* after a save,
-   * and it must carry that text. Deleting the attribute, or dropping the
-   * `showSaved &&` guard so the notice is always mounted, must turn this red.
-   */
-  it('exposes the saved notice at the anchor the e2e spec locates, and only after a save', () => {
-    const { unmount } = render(<NetworkPane {...props({ savedAt: null })} />);
-    expect(document.querySelectorAll('[data-nc-settings-saved]')).toHaveLength(0);
-    unmount();
-
+  it('shows no confirmation for a field the reader never committed', () => {
     render(<NetworkPane {...props({ savedAt: 1234 })} />);
-    const anchored = document.querySelectorAll('[data-nc-settings-saved]');
-    expect(anchored).toHaveLength(1);
-    expect(anchored[0]?.textContent).toBe('Saved.');
+    // A `savedAt` from someone else's commit must not decorate a row here.
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });
+

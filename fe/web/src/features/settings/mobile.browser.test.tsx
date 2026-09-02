@@ -11,7 +11,7 @@ afterEach(() => { document.body.replaceChildren(); });
 describe('Settings mobile presentation', () => {
   it('keeps one row shape and one trailing edge at phone width', async () => {
     await page.viewport(390, 844);
-    render(<NetworkPane
+    const { container } = render(<NetworkPane
       settings={{}}
       loadError={null}
       saving={false}
@@ -21,10 +21,15 @@ describe('Settings mobile presentation', () => {
       onRetryLoad={vi.fn()}
     />);
 
-    // One pane, one heading, and its rows — no group boxes to stack.
-    expect(page.getByRole('textbox', { name: 'HTTP proxy' })).toBeTruthy();
-    expect(page.getByRole('textbox', { name: 'HTTPS proxy' })).toBeTruthy();
-    expect(page.getByRole('button', { name: 'Save' })).toBeTruthy();
+    /*
+     * `expect(locator).toBeTruthy()` — which these three assertions used to be
+     * — cannot fail: a locator object is truthy whether or not it matches
+     * anything. `expect.element` is the form that actually queries the page.
+     */
+    await expect.element(page.getByRole('textbox', { name: 'HTTP proxy' })).toBeInTheDocument();
+    await expect.element(page.getByRole('textbox', { name: 'HTTPS proxy' })).toBeInTheDocument();
+    // No Save button: a proxy commits when its field is left (see `public.tsx`).
+    expect(container.querySelectorAll('button')).toHaveLength(0);
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     await page.screenshot({ path: '../../../../test-results/mobile-settings.png' });
   });

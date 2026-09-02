@@ -37,7 +37,6 @@
 // That set is small and has no "network" or "appearance", so each section takes
 // the nearest available sense and says why at the point of choice.
 
-import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
 import { Selector as AstryxSelector } from '@astryxdesign/core/Selector';
@@ -224,17 +223,23 @@ export type NetworkPaneProps = Readonly<{
 type Draft = { http: string; https: string };
 
 /**
- * INV-SETTINGS-001 — a field the user cleared is sent as `null`, never `''`.
+ * INV-SETTINGS-001 — a field the reader cleared is sent as `null`, never `''`.
  * The kernel deletes a key for either value, so the two converge; sending
- * `null` states the intent instead of leaning on that equivalence. Unchanged
- * keys are absent entirely, so a save never rewrites a value nobody touched.
+ * `null` states the intent instead of leaning on that equivalence. A commit
+ * carries **one** key, so a save never rewrites the field nobody touched.
  */
-function buildPatch(draft: Draft, seed: Draft): SettingsPatch {
-  const patch: Record<string, string | null> = {};
-  if (draft.http !== seed.http) patch[HTTP_PROXY_KEY] = draft.http === '' ? null : draft.http;
-  if (draft.https !== seed.https) patch[HTTPS_PROXY_KEY] = draft.https === '' ? null : draft.https;
-  return patch;
-}
+
+/**
+ * Which field a commit was for. Paired with `savedAt` / `saveError` so the
+ * confirmation and the failure land on the row the reader just left, rather
+ * than on the pane, where two proxy rows would share one message.
+ */
+type ProxyField = 'http' | 'https';
+
+const PROXY_KEY_OF: Readonly<Record<ProxyField, string>> = Object.freeze({
+  http: HTTP_PROXY_KEY,
+  https: HTTPS_PROXY_KEY,
+});
 
 export function NetworkPane({
   settings, loadError, saving, saveError, savedAt, onSave, onRetryLoad,
@@ -268,85 +273,74 @@ export function NetworkPane({
   }, [savedAt, savedNoticeMs]);
 
   const base = seed ?? { http: '', https: '' };
-  const dirty = draft.http !== base.http || draft.https !== base.https;
+  const [committed, setCommitted] = useState<ProxyField | null>(null);
   const showSaved = savedAt !== null && acknowledged !== savedAt;
+
+  /**
+   * Commit on **blur and Enter, not on every keystroke.**
+   *
+   * There is no Save button: a proxy is one value, and a settings screen that
+   * asks you to press Save for one value is asking you to do the app's
+   * bookkeeping. But a half-typed URL is not a value — saving per keystroke
+   * would PUT `h`, `ht`, `htt`… and leave whatever the reader stopped at as the
+   * workspace's proxy if they walked away mid-word. Leaving the field is the
+   * moment the value is finished, and Enter is the same intent stated
+   * explicitly.
+   *
+   * A value equal to the last one the server gave us commits nothing: focusing
+   * and leaving a field the reader never edited must not write.
+   */
+  const commit = (field: ProxyField) => {
+    if (draft[field] === base[field]) return;
+    setCommitted(field);
+    void onSave({ [PROXY_KEY_OF[field]]: draft[field] === '' ? null : draft[field] });
+  };
+
+  const statusFor = (field: ProxyField) => {
+    if (committed !== field) return undefined;
+    if (saveError !== null) return { type: 'error' as const, message: saveError };
+    if (showSaved) return { type: 'success' as const, message: 'Saved.' };
+    return undefined;
+  };
+
+  const proxyRow = (field: ProxyField, title: string) => (
+    <SettingRow
+      title={title}
+      description="Empty inherits the container's own proxy."
+      control={(
+        <AstryxTextInput
+          label={title}
+          isLabelHidden
+          value={draft[field]}
+          placeholder="http://127.0.0.1:10809"
+          status={statusFor(field)}
+          onChange={(value) => setDraft({ ...draft, [field]: value })}
+          onBlur={() => commit(field)}
+          onKeyDown={(event) => { if (event.key === 'Enter') commit(field); }}
+          width={CONTROL_WIDTH}
+          /* `data-nc-state` is the e2e seam for "a write is in flight"; the
+             field stays editable while it is, because a proxy save is one
+             request and blocking the field would drop the next keystroke. */
+          data-nc-state={saving && committed === field ? 'busy' : undefined}
+        />
+      )}
+    />
+  );
 
   return (
     <SettingsPane
       title="Network"
-      lede="Proxies used when launching new agent cards. Running cards keep the proxy they started with."
+      lede="Proxies used when launching new agent cards. Changes save when you leave the field; running cards keep the proxy they started with."
     >
       {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
       {/* INV-SETTINGS-002 — a loading line, never an empty field: an empty form
           would let the reader save blanks over real values. */}
       {!loaded && loadError === null && <AstryxText as="p" color="secondary">Loading settings…</AstryxText>}
       {loaded && (
-        <>
-          <SettingsList>
-            <SettingRow
-              title="HTTP proxy"
-              description="Empty inherits the container's own proxy."
-              control={(
-                <AstryxTextInput
-                  label="HTTP proxy"
-                  isLabelHidden
-                  value={draft.http}
-                  placeholder="http://127.0.0.1:10809"
-                  onChange={(value) => setDraft({ ...draft, http: value })}
-                  width={CONTROL_WIDTH}
-                />
-              )}
-            />
-            <SettingRow
-              title="HTTPS proxy"
-              description="Empty inherits the container's own proxy."
-              control={(
-                <AstryxTextInput
-                  label="HTTPS proxy"
-                  isLabelHidden
-                  value={draft.https}
-                  placeholder="http://127.0.0.1:10809"
-                  onChange={(value) => setDraft({ ...draft, https: value })}
-                  width={CONTROL_WIDTH}
-                />
-              )}
-            />
-          </SettingsList>
-          {/* The actions close the block they commit, at its trailing edge —
-              the same edge every control on the pane ends at. */}
-          <div className={styles.actions}>
-            <AstryxButton
-              label={saving ? 'Saving…' : 'Save'}
-              variant="primary"
-              isDisabled={!dirty && !saving}
-              isLoading={saving}
-              isInterruptible
-              data-nc-state={saving ? 'busy' : undefined}
-              onClick={() => { if (saving) return; void onSave(buildPatch(draft, base)); }}
-            />
-            <AstryxButton
-              label="Reset"
-              variant="secondary"
-              isDisabled={!dirty || saving}
-              data-nc-state={saving ? 'busy' : undefined}
-              onClick={() => { if (saving) return; setDraft(base); }}
-            />
-            {/*
-              * `data-nc-settings-saved` is the e2e seam, not decoration.
-              * `role="status"` cannot locate this span: every Astryx `Button`
-              * renders its own unconditional, empty-text `role="status"` live
-              * region for loading announcements, so the two buttons beside
-              * this one make `getByRole('status')` resolve to three elements.
-              * Filtering those by the text we are about to assert would be
-              * circular — it could only prove "some status says Saved.", never
-              * "the save succeeded".
-              */}
-            {showSaved && (
-              <span className={styles.saved} role="status" data-nc-settings-saved>Saved.</span>
-            )}
-          </div>
-          {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
-        </>
+        <SettingsList>
+          {proxyRow('http', 'HTTP proxy')}
+          {proxyRow('https', 'HTTPS proxy')}
+        </SettingsList>
       )}
     </SettingsPane>
   );

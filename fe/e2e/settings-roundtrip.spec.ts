@@ -31,12 +31,12 @@ test('persists network and appearance settings across reloads', async ({ page, r
   const proxy = `http://fe-e2e-${Date.now()}.invalid:3128`;
   await page.goto('/next/settings');
   await page.getByLabel('HTTP proxy').fill(proxy);
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
-  // Located by its own anchor, not by `role="status"`: each Astryx `Button`
-  // ships an unconditional empty live region with that role, so the role alone
-  // resolves to three elements here. Filtering them by 'Saved.' would make the
-  // locator and the assertion the same claim; the anchor keeps them separate.
-  await expect(page.locator('[data-nc-settings-saved]')).toHaveText('Saved.');
+  // There is no Save button: leaving the field is the commit. The confirmation
+  // is the field's own success status, which astryx renders as `role="status"`
+  // — unambiguous on this pane, which has no buttons to ship empty live
+  // regions of their own.
+  await page.getByLabel('HTTP proxy').blur();
+  await expect(page.getByRole('status')).toContainText('Saved.');
   expect(await readHttpProxy(request)).toBe(proxy);
 
   await page.reload();

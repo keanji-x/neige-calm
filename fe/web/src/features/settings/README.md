@@ -46,7 +46,7 @@ is two groups, and the nav column is where the second one goes.
 
 | Kind of setting | Control |
 | --- | --- |
-| free text | `TextInput`, `isLabelHidden` (the row's title is the label) |
+| free text | `TextInput`, `isLabelHidden` (the row's title is the label) — **commits on blur / Enter** |
 | one of several | `Selector` — a dropdown that states the current value |
 | on / off | `Switch` |
 | opens a screen | nothing: `onOpen`, and the row ends in a chevron |
@@ -90,6 +90,33 @@ action *on* the thing, not as the way back out of it.
 an `OWNERSHIP-CHANGE` trailer against an issue. The pane's `min-block-size`
 floor is the mitigation available from this layer, and it is not centring.
 
+## A setting has no Save button (INV-SETTINGS-003)
+
+A row commits itself. There is no Save and no Reset on a settings pane: a proxy
+is one value, and asking the reader to press Save for one value is asking them
+to do the app's bookkeeping.
+
+**Commit on blur and Enter, never per keystroke.** A half-typed URL is not a
+value — saving on change would `PUT` `h`, `ht`, `htt`… and leave whatever the
+reader stopped at as the workspace's proxy if they walked away mid-word.
+Leaving the field is the moment the value is finished; Enter is the same intent
+stated explicitly. Both are covered, and a mutation that moves the commit to
+`onChange` turns *"does not write while the reader is still typing"* red.
+
+**A field that was not edited writes nothing.** Focusing and leaving a row must
+not `PUT`; the guard compares against the last value the server gave us, and
+removing it turns *"writes nothing when a field is entered and left untouched"*
+red.
+
+**The confirmation and the failure land on the row that committed**, as that
+field's own success / error status, never as a pane-level banner: with two proxy
+rows, a pane-level message cannot say which one it is about. `saveError` keeps
+the typed value in place — a failed write must not also lose the text.
+
+The template *editor* keeps its Save button, and should: it commits a whole
+document — a title plus every task goal — where "leaving the field" is not the
+moment the edit is finished.
+
 ## `null` clears a key (INV-SETTINGS-001)
 
 A field the user blanked is sent as `null`, **never `''`**. `core/domain/settings`
@@ -98,9 +125,9 @@ same state — sending `null` states the intent instead of relying on that
 equivalence, and keeps the wire shape honest if the kernel ever stops treating
 `''` as a delete.
 
-A key the user did not touch is **absent** from the patch. A save therefore never
-rewrites a value nobody edited, so two tabs editing different keys cannot clobber
-each other.
+A commit carries **one** key — the row's own. A save therefore never rewrites a
+value nobody edited, so two tabs editing different keys cannot clobber each
+other.
 
 Re-seeding compares the incoming bag **by value**, not by object identity: a
 parent that hands back a fresh object every render must not wipe out what the
@@ -109,12 +136,13 @@ does the same thing with a serialized comparison, and seeds unconditionally on
 first sight — otherwise arriving with a save already in flight would leave the
 draft empty and the editor stuck on "Loading…".
 
-## Save is busy, not disabled (CR-6)
+## Save is busy, not disabled (CR-6) — template editor only
 
-While a save is in flight the button is **busy**, not `disabled`. Focus is on it
-at exactly that moment, and a native `disabled` element is not focusable, so
-disabling it would throw focus to `<body>` mid-action. The re-entry guard is in
-`onClick`, where it can be read.
+The one Save button left in this domain is the template editor's. While its save
+is in flight the button is **busy**, not `disabled`: focus is on it at exactly
+that moment, and a native `disabled` element is not focusable, so disabling it
+would throw focus to `<body>` mid-action. The re-entry guard is in `onClick`,
+where it can be read.
 
 ## Appearance is deliberately not server-persisted
 

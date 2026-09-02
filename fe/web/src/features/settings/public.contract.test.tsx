@@ -23,34 +23,35 @@ function props(overrides: Partial<NetworkPaneProps> = {}): NetworkPaneProps {
 }
 
 describe('INV-SETTINGS-001 the save patch states intent', () => {
-  it('keeps Save disabled until a field actually changes, and disables it again after Reset', async () => {
-    render(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box:3128' } })} />);
-    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true);
-
-    await userEvent.type(screen.getByLabelText('HTTP proxy'), '9');
-    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(false);
-
-    await userEvent.click(screen.getByRole('button', { name: 'Reset' }));
-    expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://box:3128');
-    expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true);
+  it('writes nothing when a field is entered and left untouched', async () => {
+    const onSave = vi.fn();
+    render(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'http://box:3128' } })} />);
+    // There is no Save button to press: leaving the field is the commit. A
+    // field the reader only tabbed through must therefore write nothing.
+    await userEvent.click(screen.getByLabelText('HTTP proxy'));
+    await userEvent.tab();
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
   });
 
-  it('sends null — not an empty string — for a proxy field the user cleared', async () => {
+  it('sends null — not an empty string — for a proxy field the reader cleared', async () => {
     const onSave = vi.fn();
     render(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'http://box:3128' } })} />);
     await userEvent.clear(screen.getByLabelText('HTTP proxy'));
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await userEvent.tab();
     expect(onSave).toHaveBeenCalledWith({ [HTTP_PROXY_KEY]: null });
   });
 
-  it('omits an unchanged key from the patch instead of resending its current value', async () => {
+  it('commits one key, never the whole form', async () => {
     const onSave = vi.fn();
     render(<NetworkPane {...props({
       onSave,
       settings: { [HTTP_PROXY_KEY]: 'http://box:3128', [HTTPS_PROXY_KEY]: 'http://box:3129' },
     })} />);
     await userEvent.type(screen.getByLabelText('HTTPS proxy'), '9');
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await userEvent.tab();
+    // The untouched key is absent, not resent: two tabs editing different keys
+    // cannot clobber each other.
     expect(onSave).toHaveBeenCalledWith({ [HTTPS_PROXY_KEY]: 'http://box:31299' });
   });
 });
