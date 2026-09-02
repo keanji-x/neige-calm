@@ -681,32 +681,47 @@ describe('buildTranscript', () => {
     ])).toEqual([]);
   });
 
-  it('never renders a turn/plan/updated row as a transcript line', () => {
-    const planParams = JSON.stringify({
-      threadId: 't', turnId: 'turn-plan-1', explanation: null,
-      plan: [{ step: 'audit', status: 'inProgress' }, { step: 'ship', status: 'pending' }],
-    });
-    const planRow = (overrides: Partial<HarnessItem>): HarnessItem => ({
+  /* The contract, not the mechanism: the transcript renders `item/started` and
+     `item/completed` and nothing else. `turn/plan/updated` (#1255) is the row
+     that made this worth stating — the kernel now writes codex's per-turn TODO
+     checklist into the same table the frontend polls — but the assertion is
+     deliberately written over *arbitrary* unknown methods, because a rule that
+     only names today's method is a rule that a future method walks past.
+
+     Note for anyone mutation-testing this: the `isTranscriptMethod` gate in
+     `buildTranscript` is a backstop, so deleting it does not turn this red —
+     both converters check the method themselves and must keep doing so (they
+     are exported and called directly elsewhere). What goes red here is a
+     converter being widened without anyone noticing, which is the failure this
+     is actually placed against. */
+  it('renders nothing for a method the transcript does not understand', () => {
+    const unknownRow = (method: string, overrides: Partial<HarnessItem> = {}): HarnessItem => ({
       id: 2, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',
-      item_uuid: null, item_type: null, method: 'turn/plan/updated',
-      params: planParams, created_at_ms: 1002, ...overrides,
+      item_uuid: null, item_type: null, method,
+      params: JSON.stringify({
+        threadId: 't', turnId: 'turn-plan-1', explanation: null,
+        plan: [{ step: 'audit', status: 'inProgress' }, { step: 'ship', status: 'pending' }],
+      }),
+      created_at_ms: 1002, ...overrides,
     });
 
-    // The row exactly as the kernel writes it: null item_uuid, null item_type.
-    expect(buildTranscript([planRow({})])).toEqual([]);
+    for (const method of ['turn/plan/updated', 'thread/realtime/sdp', 'item/updated']) {
+      // The row as the kernel writes a plan: null item_uuid, null item_type.
+      expect(buildTranscript([unknownRow(method)])).toEqual([]);
 
-    // And the fail-closed half: the *method* alone decides, whatever else the
-    // row carries. If a converter is ever widened — or a future writer stops
-    // leaving `item_type` null — a plan must still never become a line.
-    expect(buildTranscript([planRow({
-      item_type: 'commandExecution',
-      params: JSON.stringify({ completedAtMs: 1002, item: { command: 'ls' } }),
-    })])).toEqual([]);
+      // And with everything an `item/*` row would need to render — a known
+      // `item_type` and a well-formed `{ completedAtMs, item }` envelope — so
+      // that the *method* is provably the only reason nothing comes out.
+      expect(buildTranscript([unknownRow(method, {
+        item_type: 'commandExecution',
+        params: JSON.stringify({ completedAtMs: 1002, item: { command: 'ls' } }),
+      })])).toEqual([]);
+    }
 
     // It also does not disturb the lines around it.
     expect(buildTranscript([
       row(1, 'userMessage', 'item/completed', { content: [{ text: 'go' }] }),
-      planRow({}),
+      unknownRow('turn/plan/updated'),
       row(3, 'agentMessage', 'item/completed', { text: 'done' }, 'u3'),
     ]).map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
       .toEqual(['go', 'done']);

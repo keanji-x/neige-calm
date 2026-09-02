@@ -936,6 +936,30 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
 }
 
 /**
+ * The only notification methods the transcript knows how to render.
+ *
+ * An allowlist rather than a skip-list of the one method that prompted it
+ * (`turn/plan/updated`, codex's per-turn TODO checklist, which #1255 started
+ * writing into `harness_items` so its real shape can be read out of production
+ * before any UI is designed for it). Every *other* method — anything upstream
+ * adds tomorrow, not just today's plan — is then inert by construction here,
+ * instead of by two unrelated converters each independently happening to
+ * reject it.
+ *
+ * Honest about what this does and does not buy: `harnessItemToTurn` and
+ * `harnessItemToActivity` check the method themselves, and must keep doing so
+ * (they are exported and called directly — `harnessItemToTurn` from
+ * `web/src/app/router/public.tsx`). So this gate cannot change the output of
+ * `buildTranscript` today and no test can make it load-bearing; deleting it
+ * leaves the suite green. It is a fail-closed backstop, and stating the
+ * allowlist in the loop is what makes "the transcript renders `item/*` and
+ * nothing else" readable in one place rather than inferable from two callees.
+ */
+function isTranscriptMethod(method: string): boolean {
+  return method === 'item/started' || method === 'item/completed';
+}
+
+/**
  * The transcript: messages and actions in one list, in the order they happened.
  *
  * Three collapses, all of them there because the raw list is unreadable without
@@ -958,21 +982,9 @@ export function buildTranscript(items: readonly HarnessItem[]): readonly Transcr
   const byKey = new Map<string, TranscriptEntry>();
 
   for (const item of [...items].sort((left, right) => left.id - right.id)) {
-    /* `turn/plan/updated` is codex's TODO checklist for the running turn. The
-       kernel now stores it in `harness_items` (#1255) so its real shape can be
-       read out of production before any UI is designed for it; nothing in the
-       transcript is meant to render it yet.
-
-       This skip is DELIBERATELY REDUNDANT today: `harnessItemToTurn` requires
-       `item/completed`, and `harnessItemToActivity` requires
-       `item/started | item/completed` *and* a non-null `item_type` — a plan row
-       has neither method nor an `item_type`, so both converters already reject
-       it. What it fails closed against is that agreement quietly ending: two
-       unrelated converters happening to reject the same row is an implicit
-       contract, and this commit starts feeding these rows into a table the
-       frontend re-reads on every poll. If either converter is ever widened,
-       plan rows must still not appear as transcript lines by accident. */
-    if (item.method === 'turn/plan/updated') continue;
+    // Only methods the transcript understands get past here — see
+    // `isTranscriptMethod` for what this backstop is and is not worth.
+    if (!isTranscriptMethod(item.method)) continue;
     const turn = harnessItemToTurn(item);
     if (turn !== null) {
       const key = `turn-${item.id}`;
