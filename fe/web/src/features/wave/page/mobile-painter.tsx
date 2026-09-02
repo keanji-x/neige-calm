@@ -137,14 +137,26 @@ function statusWord(status: RowStatus): ReactNode {
   );
 }
 
-/** The `reveal-block` action, or null when the view model offered none. The
- *  lookup is by kind rather than by position: `paintModule` has already filtered
- *  the array against the capability table, so what survives is not the
- *  derivation's own sequence. */
-function reveal(row: PanelRow): Readonly<{ blockId: string; hint: string | null }> | null {
+/**
+ * The `reveal-block` action, or null when the view model offered none. The
+ * lookup is by kind rather than by position: `paintModule` has already filtered
+ * the array against the capability table, so what survives is not the
+ * derivation's own sequence.
+ *
+ * **All three of the action's fields come back, `label` included.** It would be
+ * true *today* that `deriveWavePageView` words a Task row's reveal with
+ * `label: null` — and a painter that read only `blockId` and `hint` would be
+ * green for exactly that reason, which is a fact about the derivation rather
+ * than about this file. `RowAction` carries `label` as a channel of its own and
+ * the projection checks it on both sides (`action-label`), so the painter
+ * consumes it and lets the view model decide whether there is one.
+ */
+function reveal(
+  row: PanelRow,
+): Readonly<{ blockId: string; label: string | null; hint: string | null }> | null {
   for (const action of row.actions) {
     if (action.kind !== 'reveal-block') continue;
-    return { blockId: action.blockId, hint: action.hint };
+    return { blockId: action.blockId, label: action.label, hint: action.hint };
   }
   return null;
 }
@@ -169,11 +181,15 @@ function reveal(row: PanelRow): Readonly<{ blockId: string; hint: string | null 
  * printing `Not ready` beside `running` is a row arguing with itself). D8 —
  * owner-approved, and the one visible behaviour change in this slice.
  *
- * **`label` is null on this action and no `aria-label` is emitted.** The row has
- * visible text, and a second accessible name would override it (WCAG 2.5.3);
- * `MobileListItem` composes one only from a *string* meta, and this lane is an
- * element. `hint` travels through the primitive's `hint` channel to the `<li>`'s
- * `title` — not through its visible `title` prop, which is the row's name.
+ * **`label` and `hint` are the action's two wording channels, and both are
+ * consumed.** `label` becomes the host's `aria-label` when the view model offers
+ * one and is **omitted entirely** when it is null — the row has visible text, and
+ * a fabricated second accessible name would override it (WCAG 2.5.3). The
+ * derivation words the Task reveal with `label: null` today, so the emitted
+ * shape is "no attribute"; that is the view model's call, not a rule this file
+ * writes down. `hint` travels through the primitive's `hint` channel to the
+ * `<li>`'s `title` — not through its visible `title` prop, which is the row's
+ * name.
  *
  * The `open-card` action the derivation offers on a worker-card task never
  * reaches here: this painter declares it unsupported, so `paintModule` filters it
@@ -198,6 +214,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
       {...(action === null ? {} : {
         rowActionMarker: 'reveal-block' satisfies RowAction['kind'],
         onSelect: () => deps.onOpenTask?.(action.blockId),
+        ...(action.label === null ? {} : { ariaLabel: action.label }),
         ...(action.hint === null ? {} : { hint: action.hint }),
       })}
       meta={meta.length === 0 ? undefined : <span className={styles.mobileRowMeta}>{meta}</span>}

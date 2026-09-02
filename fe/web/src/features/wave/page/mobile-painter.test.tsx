@@ -129,6 +129,28 @@ const notReady: PanelRow = {
   actions: [{ kind: 'reveal-block', blockId: 'block-5', label: null, hint: 'Show epsilon-fix in the report' }],
 };
 
+/**
+ * A `reveal-block` that **names itself**, and a synthetic row on purpose.
+ *
+ * `deriveWavePageView` words this action with `label: null` on every Task row it
+ * produces today, so a painter that never read `RowAction.label` is green
+ * against every derived fixture in this file — green by an invariant of
+ * `core/view/wave-page.ts` rather than by consuming the channel it is handed.
+ * `RowAction` declares `label` as a channel of its own and the projection checks
+ * it on both sides, so the painter owes it a case. `hint` is null here so the
+ * two channels cannot cover for one another.
+ */
+const namedReveal: PanelRow = {
+  id: 'block-6',
+  title: 'zeta-audit',
+  kind: null,
+  badges: [],
+  status: null,
+  actions: [{
+    kind: 'reveal-block', blockId: 'block-6', label: 'Reveal zeta-audit', hint: null,
+  }],
+};
+
 const tasksModule: RowModuleView = {
   key: 'tasks',
   title: 'Tasks',
@@ -210,6 +232,41 @@ describe('the mobile painter is a faithful projection of a Tasks module', () => 
 
   it('with zero rows', () => {
     expect(checkProjection(painter(), [emptyTasks], mount)).toEqual([]);
+  });
+
+  /* The label channel, which no derived fixture reaches: `action-label` is
+     checked on both sides, so a painter that dropped `RowAction.label` fails
+     here and only here. */
+  it('with a reveal that carries a label of its own', () => {
+    expect(checkProjection(painter(), [{ ...tasksModule, rows: [namedReveal] }], mount)).toEqual([]);
+  });
+});
+
+/*
+ * `RowAction.label`, in both directions.
+ *
+ * The projection case above is the mechanical half; these two say *where* the
+ * name goes and, more importantly, that a null label leaves **no attribute at
+ * all** rather than an empty or fabricated one. A painter hard-coding
+ * `ariaLabel: undefined` passes the first and fails nothing — so the pair is
+ * written against the same host element.
+ */
+describe('the mobile Task row’s action label', () => {
+  const paint = (module: RowModuleView) =>
+    render(<>{paintMobileModule(painter(), module)}</>).container;
+
+  it('becomes the action host’s accessible name when the view model offers one', () => {
+    const container = paint({ ...tasksModule, rows: [namedReveal] });
+    const row = container.querySelector('[data-nc-row="block-6"]');
+    expect(row?.getAttribute('data-nc-row-action')).toBe('reveal-block');
+    expect(row?.getAttribute('aria-label')).toBe('Reveal zeta-audit');
+  });
+
+  it('and leaves no aria-label behind when the view model offers none', () => {
+    const container = paint({ ...tasksModule, rows: [ready] });
+    const row = container.querySelector('[data-nc-row="block-1"]');
+    expect(row?.getAttribute('data-nc-row-action')).toBe('reveal-block');
+    expect(row?.hasAttribute('aria-label')).toBe(false);
   });
 });
 
