@@ -2819,21 +2819,28 @@
           "waves"
         ],
         "summary": "#1253 §5.1 — the read-only resolve the Today page load uses.",
-        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**404 twice, and the second one needs its reason stated correctly.** No\nlaunchpad wave is a 404, and the frontend renders that as an empty state\nrather than an error. A launchpad wave with no `wave-report` card is\n*also* a 404 — but not because that state is reachable: the wave and its\nreport card are created in **one transaction**\n(`today_launchpad_ensure_tx`), and the adopt-legacy branch has not yet\nwritten `purpose = 'launchpad'` when it commits, so a `purpose`-keyed read\ncannot observe a half-built launchpad. 404 is chosen because it is cheap\nand fail-closed, **not** because the intermediate state occurs.",
+        "description": "**This handler must never reach the harness.** `ensure_today_launchpad`\nmaterializes a workspace and then submits `spec-harness-start` and\n`.wait()`s on it; putting that on the page-load path would make the whole\nToday route fail hard whenever codex is unavailable, which is strictly\nworse than the Today page this replaces (it needed nothing to render). So\nthis endpoint reads two rows and returns. It does not call `ensure`, does\nnot materialize a workspace, and submits no operation — `ensure` hangs off\nan explicit user action only (INV-TODAYDOC-001).\n\n**Routine absence is data; anomalous absence is an error.** That is the\nwhole rule, and the two branches here are the two sides of it.\n\n*No launchpad wave* is the ordinary state of a fresh workspace, so it is\n`200` with a `null` body — not a 404. It was a 404 for one revision, on the\ngrounds that 404 is \"cheap and fail-closed\". That reasoning did not survive\ncontact with the fact that this is the **landing route**: every session on\na fresh workspace hit it, and the browser reports every 404 on its console\nerror stream, so an expected state was being transported as an error. CI\nfound it — two Playwright specs assert zero console errors and both load\nToday; one CI run logged the 404 thirty times, because the query refetches.\nThe alternative was allowlisting a 404 in those specs, which buys a\npermanent hole in a \"no console errors\" gate for a transient condition:\nonce #1253 PR2's trigger lands, first use mints a launchpad and the\nexemption outlives its reason.\n\n*A launchpad wave with no `wave-report` card* stays a `404`, and that is\nthe same rule rather than an exception to it. The wave and its report card\nare created in **one transaction** (`today_launchpad_ensure_tx`), and the\nadopt-legacy branch has not yet written `purpose = 'launchpad'` when it\ncommits, so a `purpose`-keyed read cannot observe a half-built launchpad.\nThe state is unreachable, so it produces no console noise in practice — and\nif it ever does occur, an error is the correct signal.\n\nDeliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence\nidiom. That 404 is **control flow**: its consumer bootstraps on it, so the\nstatus means \"go create one\" (INV-TODAYTERM-006 pins that chain). This one\nwould mean \"render the empty state\" — pure data, no action — so borrowing\nthe shape would discard the meaning.",
         "operationId": "resolve_today_launchpad",
         "responses": {
           "200": {
-            "description": "The launchpad wave and whether its report has been written",
+            "description": "The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TodayLaunchpadResolved"
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TodayLaunchpadResolved"
+                    }
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "No launchpad wave yet (page renders an empty state), or it carries no report card",
+            "description": "The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs.",
             "content": {
               "application/json": {
                 "schema": {

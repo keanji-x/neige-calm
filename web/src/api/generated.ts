@@ -775,15 +775,35 @@ export interface paths {
          *     not materialize a workspace, and submits no operation — `ensure` hangs off
          *     an explicit user action only (INV-TODAYDOC-001).
          *
-         *     **404 twice, and the second one needs its reason stated correctly.** No
-         *     launchpad wave is a 404, and the frontend renders that as an empty state
-         *     rather than an error. A launchpad wave with no `wave-report` card is
-         *     *also* a 404 — but not because that state is reachable: the wave and its
-         *     report card are created in **one transaction**
-         *     (`today_launchpad_ensure_tx`), and the adopt-legacy branch has not yet
-         *     written `purpose = 'launchpad'` when it commits, so a `purpose`-keyed read
-         *     cannot observe a half-built launchpad. 404 is chosen because it is cheap
-         *     and fail-closed, **not** because the intermediate state occurs.
+         *     **Routine absence is data; anomalous absence is an error.** That is the
+         *     whole rule, and the two branches here are the two sides of it.
+         *
+         *     *No launchpad wave* is the ordinary state of a fresh workspace, so it is
+         *     `200` with a `null` body — not a 404. It was a 404 for one revision, on the
+         *     grounds that 404 is "cheap and fail-closed". That reasoning did not survive
+         *     contact with the fact that this is the **landing route**: every session on
+         *     a fresh workspace hit it, and the browser reports every 404 on its console
+         *     error stream, so an expected state was being transported as an error. CI
+         *     found it — two Playwright specs assert zero console errors and both load
+         *     Today; one CI run logged the 404 thirty times, because the query refetches.
+         *     The alternative was allowlisting a 404 in those specs, which buys a
+         *     permanent hole in a "no console errors" gate for a transient condition:
+         *     once #1253 PR2's trigger lands, first use mints a launchpad and the
+         *     exemption outlives its reason.
+         *
+         *     *A launchpad wave with no `wave-report` card* stays a `404`, and that is
+         *     the same rule rather than an exception to it. The wave and its report card
+         *     are created in **one transaction** (`today_launchpad_ensure_tx`), and the
+         *     adopt-legacy branch has not yet written `purpose = 'launchpad'` when it
+         *     commits, so a `purpose`-keyed read cannot observe a half-built launchpad.
+         *     The state is unreachable, so it produces no console noise in practice — and
+         *     if it ever does occur, an error is the correct signal.
+         *
+         *     Deliberately NOT reusing `GET /api/cards/{id}/terminal`'s 404-for-absence
+         *     idiom. That 404 is **control flow**: its consumer bootstraps on it, so the
+         *     status means "go create one" (INV-TODAYTERM-006 pins that chain). This one
+         *     would mean "render the empty state" — pure data, no action — so borrowing
+         *     the shape would discard the meaning.
          */
         get: operations["resolve_today_launchpad"];
         put?: never;
@@ -5147,16 +5167,16 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The launchpad wave and whether its report has been written */
+            /** @description The launchpad wave and whether its report has been written, or `null` when no launchpad wave exists yet — the ordinary state of a fresh workspace, which the page renders as an empty state. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TodayLaunchpadResolved"];
+                    "application/json": null | components["schemas"]["TodayLaunchpadResolved"];
                 };
             };
-            /** @description No launchpad wave yet (page renders an empty state), or it carries no report card */
+            /** @description The launchpad wave exists but carries no `wave-report` card. Not a reachable state; see the handler docs. */
             404: {
                 headers: {
                     [name: string]: unknown;

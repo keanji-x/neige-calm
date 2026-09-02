@@ -36,10 +36,18 @@ Running and Recent are ambience and live in the panel.
   `POST /api/today/launchpad/ensure` materializes a workspace and waits on a
   `spec-harness-start` operation, so it must never be on this path; it belongs
   to an explicit action. There is no such action yet.
-- **INV-TODAYDOC-002** — a failed read is rendered as an error and the empty
-  state is suppressed. A 5xx that degrades into "nothing written today" tells
-  the reader their day was empty when the server was simply unreachable. 404 is
-  not a failure: it is the ordinary "no launchpad yet" answer.
+- **INV-TODAYDOC-002** — **`null` is data; any failure is an error.** A failed
+  read is rendered as an error and the empty state is suppressed: a 5xx that
+  degrades into "nothing written today" tells the reader their day was empty
+  when the server was simply unreachable.
+
+  There is no status-code special case. "No launchpad yet" is a 200 carrying a
+  null body, so the frontend never inspects a status to decide whether an
+  answer is data. It briefly did — the endpoint returned 404 and this layer
+  translated it — and that put a browser console error on every fresh-workspace
+  session of the landing route, failing two Playwright specs that assert none.
+  Routine absence is data; anomalous absence (a launchpad with no report card)
+  is still a 404, and correctly so.
 
   This covers the wave detail as well as the resolve, and the two document
   reads have **three** failure-shaped states that must not be collapsed:

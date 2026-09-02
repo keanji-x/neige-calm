@@ -29,7 +29,8 @@ import { bootTestCardRuntime } from './test-card-runtime.ts';
 
 const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
 const ok = (body: unknown): ApiTransportResponse => ({ status: 200, statusText: 'OK', body });
-const notFound = (): ApiTransportResponse => ({ status: 404, statusText: 'Not Found', body: { error: 'not found' } });
+/** The server's answer when no launchpad wave exists yet: 200, body `null`. */
+const noLaunchpad = (): ApiTransportResponse => ({ status: 200, statusText: 'OK', body: null });
 const fail = (message: string): ApiTransportResponse => ({ status: 500, statusText: 'Server Error', body: { error: message } });
 
 const coves = [{ id: 'c1', name: 'One', color: '#123456', sort: 1, kind: 'user', created_at: 1, updated_at: 1 }];
@@ -162,11 +163,33 @@ describe('INV-TODAYDOC-001 the page load only resolves', () => {
   });
 
   it('renders the empty state, and no bootstrap, when there is no launchpad at all', async () => {
-    const { requests } = renderToday({ resolve: notFound(), body: INITIAL_BODY });
+    /* `200 null`, not `404`. Routine absence is data: a fresh workspace has no
+       launchpad, and that is the ordinary state of this route rather than a
+       failure. It was a 404 for one revision, which put a browser console
+       error on every fresh-workspace session and failed the two Playwright
+       specs that assert none. Feeding a 404 here now takes the error branch
+       and this case goes red — which is the point. */
+    const { requests } = renderToday({ resolve: noLaunchpad(), body: INITIAL_BODY });
     expect(await screen.findByText(EMPTY_COPY)).toBeTruthy();
+    expect(screen.queryAllByRole('alert')).toEqual([]);
     expect(requests.filter((request) => request.method !== 'GET')).toEqual([]);
     // No launchpad means no wave to read either.
     expect(requests.map((request) => request.path)).not.toContain('/api/waves/lp');
+  });
+
+  it('treats a 404 as a failure, not as an empty day', async () => {
+    /* The other half of the contract, and the reason the status code moved.
+       404 no longer means "nothing yet" anywhere in this frontend: there is no
+       status-code special case left, so an unexpected 404 surfaces like any
+       other transport failure instead of being silently rendered as an empty
+       workspace. */
+    renderToday({
+      resolve: { status: 404, statusText: 'Not Found', body: { error: 'launchpad route missing' } },
+      body: INITIAL_BODY,
+    });
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.some((alert) => alert.textContent?.includes('launchpad route missing'))).toBe(true);
+    expect(screen.queryByText(EMPTY_COPY)).toBeNull();
   });
 });
 

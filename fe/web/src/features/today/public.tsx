@@ -77,8 +77,8 @@ export type TodayPageProps = Readonly<{
    * The launchpad resolve (`GET /api/today/launchpad`), §5.1.
    *
    * `undefined` while the read is in flight, `null` when the server answered
-   * 404 — "there is no launchpad yet", which is an empty state and not a
-   * failure.
+   * "there is no launchpad yet" — a 200 with a null body, which is an empty
+   * state and not a failure.
    *
    * **`report_has_noninitial_content` is the empty-state predicate, and it is
    * the server's** (INV-TODAYDOC-003). Nothing on this page may re-derive it

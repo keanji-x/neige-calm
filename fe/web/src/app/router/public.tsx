@@ -1659,8 +1659,9 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
    * whenever codex is down — worse than the Today this replaces, which needed
    * nothing to render. `ensure` belongs to an explicit action; PR1 has none.
    *
-   * A 404 arrives as `null` ("nothing yet" → empty state). Everything else
-   * arrives as an error and is rendered as one (INV-TODAYDOC-002).
+   * "Nothing yet" arrives as `null` in the body and becomes the empty state.
+   * Every failure — including a 404, which no longer means anything special
+   * here — arrives as an error and is rendered as one (INV-TODAYDOC-002).
    */
   const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
   const launchpad = launchpadQuery.data;
@@ -1766,7 +1767,8 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       )}
       conversationList={chat.list}
         conversationAction={chat.action}
-      /* Undefined while the resolve is in flight, `null` on 404. The page
+      /* Undefined while the resolve is in flight, `null` when the server says
+         there is no launchpad yet. The page
          decides the empty state from `report_has_noninitial_content` and from
          nothing else — see INV-TODAYDOC-003 on `TodayPageProps.launchpad`. */
       launchpad={launchpadQuery.isError ? undefined : launchpad}

@@ -1118,15 +1118,27 @@ async fn write_report_payload(b: &Boot, card_id: &str, payload: &Value) {
 }
 
 /// INV-TODAYDOC-001 — the page-load path is a *read*. Before any launchpad
-/// exists it answers 404 (the frontend's empty state) and leaves the database
-/// and the workspace root exactly as it found them: no cove, no wave, no card,
-/// and above all no `spec-harness-start` operation, because submitting one is
-/// what would make Today's first paint depend on codex being up.
+/// exists it answers `200 null` and leaves the database and the workspace root
+/// exactly as it found them: no cove, no wave, no card, and above all no
+/// `spec-harness-start` operation, because submitting one is what would make
+/// Today's first paint depend on codex being up.
+///
+/// **`200 null`, not `404`, and that is a contract this pins rather than an
+/// incidental detail.** A fresh workspace having no launchpad is the ordinary
+/// state of the landing route; a 404 put a browser console error on every such
+/// session and broke two Playwright specs that assert none. Routine absence is
+/// data. (The anomalous absence — a launchpad with no report card — is still a
+/// 404; see `resolve_404s_when_the_launchpad_has_no_report_card`.)
 #[tokio::test]
-async fn resolve_is_a_pure_read_and_404s_before_the_launchpad_exists() {
+async fn resolve_is_a_pure_read_and_answers_null_before_the_launchpad_exists() {
     let b = boot().await;
     let (status, body) = resolve(b.app.clone()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body,
+        Value::Null,
+        "routine absence must be a null body, not an error status: {body}"
+    );
     assert_eq!(count(&b, "SELECT COUNT(*) FROM waves").await, 0);
     assert_eq!(count(&b, "SELECT COUNT(*) FROM coves").await, 0);
     assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);

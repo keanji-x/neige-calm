@@ -611,6 +611,17 @@ impl AppState {
     /// #1253 — arm the system-cove mint rendezvous so the concurrency case can
     /// *create* that race instead of hoping for it.
     ///
+    /// **These builders are an attribute-sensitive run: adding a function
+    /// between an existing `#[cfg(..)]` and the function it was written for
+    /// silently retargets the attribute.** This one was first inserted
+    /// immediately above `with_workspace_root` and stole its
+    /// `#[cfg(feature = "fixtures")]`, leaving that function unconditional
+    /// while the `rebuild_operation_runtime` it calls stayed fixtures-only —
+    /// so the non-fixtures lib stopped compiling, and nothing that enables
+    /// `fixtures` (which is every test command, via the dev-dep self-loop)
+    /// could see it. Put a new builder *after* a complete function, never
+    /// between a function and the attributes above it.
+    ///
     /// Gating the BUILDER behind `fixtures` costs nothing the "production and
     /// test run the same instructions" rule protects: the field itself is
     /// unconditional and the mint path's `if let Some(..)` is compiled into

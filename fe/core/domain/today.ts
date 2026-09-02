@@ -20,9 +20,9 @@
 //
 // The endpoint is a pure read. It deliberately does NOT bootstrap: the Today
 // page load must not depend on codex being reachable, and `ensure` — the
-// bootstrap — materializes a workspace and waits on a harness operation. 404
-// is its normal "not there yet" answer, which is an empty state and not an
-// error.
+// bootstrap — materializes a workspace and waits on a harness operation. Its
+// normal "not there yet" answer is a 200 carrying `null`, which is an empty
+// state and not an error.
 
 import { z } from 'zod';
 
@@ -48,7 +48,25 @@ export const todayLaunchpadSchema = z.object({
 
 export type TodayLaunchpadWire = z.infer<typeof todayLaunchpadSchema>;
 
-/** The Today page load's only new request. Read-only; 404 ⇒ nothing yet. */
-export function todayLaunchpadOperation(): ApiOperation<TodayLaunchpadWire> {
-  return { method: 'GET', path: '/api/today/launchpad', responseSchema: todayLaunchpadSchema };
+/**
+ * The response: the launchpad, or `null` when there is not one yet.
+ *
+ * **`null` is data, not a failure.** A fresh workspace has no launchpad wave,
+ * which is the ordinary state of this route, so the server says so with a 200
+ * and a null body rather than a 404. It used to be a 404 and the frontend
+ * translated it here; that made every session on a fresh workspace log a
+ * browser console error for a state the design calls normal, and broke two
+ * Playwright specs that assert zero console errors. The translation is gone
+ * along with the status code — there is no longer any status this layer treats
+ * specially.
+ */
+export const todayLaunchpadResponseSchema = todayLaunchpadSchema.nullable();
+
+/** The Today page load's only new request. Read-only; `null` ⇒ nothing yet. */
+export function todayLaunchpadOperation(): ApiOperation<TodayLaunchpadWire | null> {
+  return {
+    method: 'GET',
+    path: '/api/today/launchpad',
+    responseSchema: todayLaunchpadResponseSchema,
+  };
 }

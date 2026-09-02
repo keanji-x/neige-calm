@@ -38,10 +38,10 @@ describe('web api request callpoints', () => {
       'app/auth/session-gate.tsx',
       'app/providers/queries.ts',
     ]);
-    /* Three calls, two files. `app/providers/queries.ts` holds two of them:
-       `runOperation`, and #1253's Today launchpad resolve, which needs the
-       failure rather than an exception so it can turn a 404 into data while
-       every other failure stays an error.
+    /* Two calls, two files: `runOperation` and the session probe. #1253 briefly
+       added a third, to turn the Today launchpad resolve's 404 into data; that
+       endpoint now returns 200 with a null body, so the special case and its
+       call site are both gone and the count is back where it was.
 
        What the arities pin is that the third argument is always written out,
        NOT that a channel is always supplied: `session-gate` passes `undefined`
@@ -49,7 +49,7 @@ describe('web api request callpoints', () => {
        everywhere makes that omission a visible decision at the call site
        rather than something a caller can drift into by leaving the argument
        off. */
-    expect(callpoints.flatMap((path) => performApiRequestArities(readFileSync(path, 'utf8')))).toEqual([3, 3, 3]);
+    expect(callpoints.flatMap((path) => performApiRequestArities(readFileSync(path, 'utf8')))).toEqual([3, 3]);
   });
 
   it('detects whitespace before the call parenthesis without matching similar names', () => {

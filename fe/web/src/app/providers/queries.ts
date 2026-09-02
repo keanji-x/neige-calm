@@ -525,26 +525,20 @@ export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | nul
  * #1253 §5.1 — the Today page load's resolve. A pure read: it never
  * bootstraps, so the first paint of Today does not depend on codex being up.
  *
- * **404 is data, every other failure is an error, and the split is
- * load-bearing** (INV-TODAYDOC-002). "There is no launchpad yet" is the empty
- * state and arrives as `null`; a 500, a timeout or a schema mismatch must
- * reach the reader as an error box. Folding them together — returning `null`
- * for any failure — would make an unreachable server look exactly like a fresh
- * workspace, which is the silent-degradation this invariant exists to forbid.
+ * **`null` is data; any failure is an error** (INV-TODAYDOC-002). "There is no
+ * launchpad yet" arrives as a 200 with a null body and becomes the empty
+ * state; a 500, a timeout or a schema mismatch reaches the reader as an error
+ * box. There is no status-code special case left to get wrong — this used to
+ * convert a 404 into `null` here, and the endpoint now says `null` itself.
+ * Folding the two together — treating any failure as "nothing yet" — would
+ * make an unreachable server look exactly like a fresh workspace, which is the
+ * silent degradation this invariant exists to forbid.
  */
 export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.todayLaunchpad(),
-    queryFn: async (): Promise<TodayLaunchpadWire | null> => {
-      const result = await performApiRequest(transport, todayLaunchpadOperation(), unauthorized);
-      if (result.status === 'ready') return result.value;
-      /* Duck-typed on `status` rather than on the failure kind, the same way
-         the Today terminal's resolve chain is specified to read a 404
-         (INV-TODAYTERM-006): transport and decode failures carry no status and
-         must not be mistaken for "nothing there". */
-      if ('status' in result.error && result.error.status === 404) return null;
-      throw new ApiError(result.error);
-    },
+    queryFn: (): Promise<TodayLaunchpadWire | null> =>
+      runOperation(transport, todayLaunchpadOperation(), unauthorized),
   };
 }
 
