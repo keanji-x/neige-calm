@@ -261,6 +261,8 @@ impl BootState {
         AppState {
             repo: route_repo,
             events: self.events,
+            system_cove_mint: Arc::new(crate::routes::today::SystemCoveMintCounters::default()),
+            system_cove_mint_rendezvous: None,
             daemon: self.daemon,
             terminal_renderer: self.terminal_renderer,
             plugin: self.plugin,
@@ -303,6 +305,15 @@ pub struct AppState {
     /// must funnel them through `db::write_with_event_typed`.
     pub repo: Arc<dyn RouteRepo>,
     pub events: EventBus,
+    /// #1253 — per-server observation of the one race in `routes::today` that
+    /// is reachable. See [`crate::routes::today::SystemCoveMintCounters`] for
+    /// why it lives on the state rather than in a `static`, and why it is not
+    /// gated behind `fixtures`.
+    pub system_cove_mint: Arc<crate::routes::today::SystemCoveMintCounters>,
+    /// #1253 — `None` in production. Armed by the system-cove concurrency case
+    /// so that race is created rather than waited for; see
+    /// [`crate::routes::today::SystemCoveMintRendezvous`].
+    pub system_cove_mint_rendezvous: crate::routes::today::SystemCoveMintRendezvous,
     pub daemon: Arc<DaemonClient>,
     pub terminal_renderer: Arc<TerminalRendererRegistry>,
     pub plugin: Arc<PluginHost>,
@@ -594,6 +605,35 @@ impl AppState {
         // when this state drops.
         self.workspace_root_guard = None;
         self.rebuild_operation_runtime();
+        self
+    }
+
+    /// #1253 — arm the system-cove mint rendezvous so the concurrency case can
+    /// *create* that race instead of hoping for it.
+    ///
+    /// **These builders are an attribute-sensitive run: adding a function
+    /// between an existing `#[cfg(..)]` and the function it was written for
+    /// silently retargets the attribute.** This one was first inserted
+    /// immediately above `with_workspace_root` and stole its
+    /// `#[cfg(feature = "fixtures")]`, leaving that function unconditional
+    /// while the `rebuild_operation_runtime` it calls stayed fixtures-only —
+    /// so the non-fixtures lib stopped compiling, and nothing that enables
+    /// `fixtures` (which is every test command, via the dev-dep self-loop)
+    /// could see it. Put a new builder *after* a complete function, never
+    /// between a function and the attributes above it.
+    ///
+    /// Gating the BUILDER behind `fixtures` costs nothing the "production and
+    /// test run the same instructions" rule protects: the field itself is
+    /// unconditional and the mint path's `if let Some(..)` is compiled into
+    /// every build. Only the ability to arm it is test-only, exactly like
+    /// `with_workspace_root` above.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn with_system_cove_mint_rendezvous(
+        mut self,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.system_cove_mint_rendezvous = Some(barrier);
         self
     }
 
