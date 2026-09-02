@@ -1111,10 +1111,20 @@
    * conversation is what is read.
    *
    * Two things earn a place beyond the verb and its noun, and both are gated so
-   * they stay rare (`.activityDuration`, `.activityDetail` below). `flex-wrap`
-   * is here for the second of them: the reason a run failed gets its own row
-   * *inside this same box*, because `data-nc-state` lives on this element and a
-   * nested wrapper would move it.
+   * they stay rare (`.activityDuration`, `.activityDetail` below). The second of
+   * them needs its own row *inside this same box*, because `data-nc-state` lives
+   * on this element and a nested wrapper would move it — but the wrapping that
+   * makes that row possible is **not** here. It is on `.activityWrapped`, which
+   * the view puts on only the lines that have a detail to show.
+   *
+   * That split is the whole point, and it is not tidiness. This box is
+   * `nowrap`, so `.activityTarget` — `overflow: hidden`, therefore an automatic
+   * minimum size of zero — shrinks and ellipsizes beside the verb. Turn wrapping
+   * on and the flex algorithm fills the line and *wraps* before it shrinks, so a
+   * 64-character command (the clip the domain applies) at 11px mono is wider
+   * than the column and drops to a row of its own. That is not a change to
+   * failed lines; it is a second row under the majority of `Ran`s, on the one
+   * surface whose budget this note spends its whole length arguing.
    *
    * It sits at the caption rank — 11px, `--text-3`, sans — under a reply set in
    * 13px sans. That distance is the point: an action must be legible when
@@ -1127,7 +1137,6 @@
    */
   .activity {
     display: flex;
-    flex-wrap: wrap;
     align-items: baseline;
     gap: var(--space-2);
     min-inline-size: 0;
@@ -1136,6 +1145,13 @@
     font-weight: var(--weight-normal);
     line-height: var(--leading-snug);
     color: var(--text-3);
+  }
+
+  /* The one line that has a second row, and therefore the only one allowed to
+     wrap. See `.activity` above for why this is a modifier and not a property
+     of every activity line. */
+  .activityWrapped {
+    flex-wrap: wrap;
   }
 
   /* The noun is the machine's own string — a command, a tool name. Mono says

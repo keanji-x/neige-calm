@@ -63,7 +63,22 @@ astryx Chat 家族分两类：
 
 原计划把 `ActivityLine` 换成 `ChatToolCalls`。读完实现后撤回。本节原本给了三条理由；**第一条是错的，下面就地更正**，结论改由剩下两条重新推出（复核于 `@astryxdesign/core` 0.1.3，`node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx`）。
 
-1. ~~**它的全部增量字段，我们的 wire 一个都填不了。**~~ **这条是错的，而且错在事实层，不是判断层。** 当时写的是「单个时间戳，没有配对的结束时间，凑不出真实耗时；结果明细在 `/api/cards/{id}/harness/items` 上不存在」。实测：`item/completed` 的 payload 一直带着 `durationMs`，shell 运行还带着 `aggregatedOutput`——本文档自己引用过的那条逐字抓包（`conversation.test.ts` 的 captured wire row）两样都有，内核也是原样存 `params`（`db/sqlite/out_of_domain.rs` 写入未经过滤）。**丢字段的是我们自己的 `harnessItemToActivity`**：它读了 `exitCode`/`status`/`error` 判失败，然后把这两个字段扔掉。#1255 S1 已经把它们接回 `ConversationActivity`（`durationMs` + 仅失败时的 `detail`），所以库的 `duration` 与 `resultDetail` 现在**有真值可填**。真正没有来源的只有三个：`node`（沙箱名）、`additions`/`deletions`（增删行数）——这三个 wire 上确实没有。
+1. ~~**它的全部增量字段，我们的 wire 一个都填不了。**~~ **这条是错的，而且错在事实层，不是判断层。** 当时写的是「单个时间戳，没有配对的结束时间，凑不出真实耗时；结果明细在 `/api/cards/{id}/harness/items` 上不存在」。实测：`item/completed` 的 payload 一直带着 `durationMs`，shell 运行还带着 `aggregatedOutput`——本文档自己引用过的那条逐字抓包（`conversation.test.ts` 的 captured wire row）两样都有，内核也是原样存 `params`（`db/sqlite/out_of_domain.rs` 写入未经过滤）。**丢字段的是我们自己的 `harnessItemToActivity`**：它读了 `exitCode`/`status`/`error` 判失败，然后把这两个字段扔掉。#1255 S1 已经把它们接回 `ConversationActivity`（`durationMs` + 仅失败时的 `detail`），所以库的 `duration` 与 `resultDetail` 现在**有真值可填**。
+
+   逐字段核对 `ChatToolCallItem`（`ChatToolCalls.tsx:50-75`，共十二个成员），相对我们的 `{ verb, target, state }` 多出九个，不是原来数的五个：
+
+   | 字段 | 我们的来源 |
+   |---|---|
+   | `duration` | `durationMs`（S1 接回） |
+   | `resultDetail` | `detail`（S1 接回，仅失败行） |
+   | `errorMessage` | `detail`（同上；库只把它挂进 `title`，见第 2 条） |
+   | `key` | `ConversationActivity.id` |
+   | `data` | 就是我们这条 `ConversationActivity` 本身 |
+   | `node`（沙箱名） | **无** |
+   | `additions`/`deletions`（增删行数） | **无** |
+   | `stats`（标签后的自由 `ReactNode`） | **无**——不是 wire 缺字段，是这一行没有第三样值得印的东西 |
+
+   所以「真正没有来源的」是四个而不是三个；而 `errorMessage` 现在填得上这件事，恰恰是**加强**下面第 2 条的论据，不是削弱：我们有那句话，库只肯把它藏进 tooltip。
 2. **失败信号会从「一个词」退化成「一个图标」。** 今天失败行印出可见的 `Failed`（`.activityFailure`，CSS 注释称之为「这里唯一值得上颜色的状态」）。库版的 error 态是 `ChatToolCalls.tsx:380-399`：一个状态图标，错误文本只挂在 `title` 上（`:381`），**没有可见文字**；全文件 grep `aria-label` 零命中。这是可读性与无障碍的双向倒退。**仍然成立。**
 3. **每行的状态 locator 会整个消失。** `themeProps('chat-tool-calls')` 只出现在两处，都是根节点（`:521`、`:540`）；`CallRow` 的行 `<div>`（`:364-368`）只有 `role`/`tabIndex` 与 stylex 类，不带任何 `data-*`。我们今天的 `data-nc-state="failed"` 是行级的，且被 `public.test.tsx:379` 断言。换过去后行级状态只剩图标颜色，没有任何可断言的钩子。**仍然成立。**
 

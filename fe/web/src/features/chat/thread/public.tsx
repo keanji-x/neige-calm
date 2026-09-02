@@ -1642,10 +1642,21 @@ function Reply({ text }: { text: string }) {
  */
 const ACTIVITY_DURATION_FLOOR_MS = 1_000;
 
-/** `4.3s` under a minute, `3m 12s` over it — the seconds zero-padded so the
- *  two-part form does not read as `3m 2s` for a shorter interval than `3m 12s`. */
+/**
+ * `4.3s` under a minute, `3m 12s` over it — the seconds zero-padded so the
+ * two-part form does not read as `3m 2s` for a shorter interval than `3m 12s`.
+ *
+ * The branch is decided on the number **as it will be read**, not as it
+ * arrived. Deciding on the raw milliseconds puts everything in
+ * `[59_950, 60_000)` on the sub-minute side, where `toFixed(1)` rounds it to
+ * `60.0s` — a reading that is exactly what having two formats exists to avoid,
+ * printed one millisecond away from `1m 00s`. Rounding to tenths first and
+ * testing *that* means the minute form takes over at the instant the seconds
+ * form would have said sixty.
+ */
 function formatActivityDuration(durationMs: number): string {
-  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)}s`;
+  const tenths = Math.round(durationMs / 100);
+  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
   const seconds = Math.round(durationMs / 1_000);
   return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
 }
@@ -1665,9 +1676,19 @@ function formatActivityDuration(durationMs: number): string {
  *
  * The failure reason is a second row *inside the same `<p>`* rather than a
  * nested wrapper: `data-nc-state` is the shared attribute the rest of the app
- * reads state off, and it belongs on the element that is the line. `.activity`
- * wraps, and `.activityDetail` takes the full basis, so the reason lands under
- * the verb without any of them changing which element carries the state.
+ * reads state off, and it belongs on the element that is the line.
+ * `.activityDetail` takes the full basis, so the reason lands under the verb
+ * without any of them changing which element carries the state.
+ *
+ * That second row needs the box to wrap, and **only that row does** — hence
+ * `.activityWrapped` rather than a `flex-wrap` on `.activity` itself. Wrapping
+ * is not free for the lines that have no second row: a flex line fills and
+ * wraps *before* it shrinks, so under an unconditional `flex-wrap` a
+ * 64-character command in a 364px column stops ellipsizing beside `Ran` and
+ * drops to a row of its own — turning every long `done` line into two, which is
+ * the line budget `.activity`'s stylesheet note spends its whole length
+ * defending. The modifier is keyed off `detail`, the same field that renders
+ * the row, so the two can never disagree.
  */
 function ActivityLine({ activity, live }: {
   activity: ConversationActivity;
@@ -1678,9 +1699,14 @@ function ActivityLine({ activity, live }: {
     && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
     ? formatActivityDuration(activity.durationMs)
     : null;
+  const className = [
+    styles.activity,
+    activity.state === 'failed' ? styles.activityFailed : '',
+    activity.detail !== null ? styles.activityWrapped : '',
+  ].join(' ');
   return (
     <p
-      className={`${styles.activity} ${activity.state === 'failed' ? styles.activityFailed : ''}`}
+      className={className}
       data-nc-state={activity.state}
     >
       <span>{activity.verb}</span>

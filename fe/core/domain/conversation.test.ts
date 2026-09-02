@@ -407,12 +407,31 @@ describe('harnessItemToActivity', () => {
     expect(detail!.endsWith('…')).toBe(true);
   });
 
+  /*
+   * ── A stated reason outranks a guessed one ──────────────────────────────
+   *
+   * A killed or timed-out command carries both: `error` says why it stopped and
+   * `aggregatedOutput` is a partial capture whose last line is whatever
+   * progress happened to be printed before the axe fell. Reading the tail here
+   * prints `Compiling serde v1.0.219` under a red `Failed` and never says the
+   * word "timed out" — strictly worse than printing nothing at all.
+   */
+  it('says the machine’s own reason, not the tail it was cut off in', () => {
+    expect(harnessItemToActivity(shellRun({
+      command: 'cargo build',
+      aggregatedOutput: '   Compiling serde v1.0.219\n',
+      error: 'command timed out after 600s',
+      exitCode: 124,
+      status: 'completed',
+    }))).toMatchObject({ state: 'failed', detail: 'command timed out after 600s' });
+  });
+
   /* MCP tools have no stdout at all; their reason is the `error` member, and
      both spellings of it are on our wire. */
   it.each([
     ['an object with a message', { message: 'wave is not attached' }],
     ['a bare string', 'wave is not attached'],
-  ])('falls back to the mcp error when it is %s', (_label, error) => {
+  ])('reads the mcp error when it is %s', (_label, error) => {
     expect(harnessItemToActivity(row({
       item_type: 'mcpToolCall',
       params: JSON.stringify({
@@ -421,10 +440,17 @@ describe('harnessItemToActivity', () => {
     }))).toMatchObject({ state: 'failed', detail: 'wave is not attached', durationMs: 45 });
   });
 
+  /* The payload **carries** a `durationMs` here, and that is the whole point: a
+     started row is the item as codex knew it at the start, nothing stops a
+     number riding along on it, and a row still saying `Running` must not print
+     an interval that has not ended. Fed a payload without the key, this case
+     passes with or without the gate that enforces that. */
   it('has no duration on a row that has not finished', () => {
     expect(harnessItemToActivity(row({
       method: 'item/started',
-      params: JSON.stringify({ item: { command: 'ls', type: 'commandExecution' } }),
+      params: JSON.stringify({
+        item: { command: 'ls', durationMs: 5_000, type: 'commandExecution' },
+      }),
     }))).toMatchObject({ state: 'running', durationMs: null, detail: null });
   });
 

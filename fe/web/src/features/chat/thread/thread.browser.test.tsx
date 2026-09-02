@@ -38,7 +38,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import '../../../styles/entry.css';
 
 import { ChatComposer, ChatThread } from './public.tsx';
-import type { Conversation, ConversationTurn } from '../../../../../core/domain/conversation.ts';
+import type {
+  Conversation, ConversationActivity, ConversationTurn, TranscriptEntry,
+} from '../../../../../core/domain/conversation.ts';
 import { Drawer } from '../../../ui/drawer/public.tsx';
 import drawerStyles from '../../../ui/drawer/drawer.module.css';
 import { useState } from '../../../ui/state/public.ts';
@@ -598,7 +600,7 @@ const DRAWER_BLOCK_INSETS = 20 + 28;
  * and bounded by the seam, so that case no longer exists.
  */
 function RailPane({ turns, paneHeight = 400, panelSpan = 396 }: {
-  turns: readonly ConversationTurn[];
+  turns: readonly TranscriptEntry[];
   paneHeight?: number;
   panelSpan?: number;
 }) {
@@ -3029,6 +3031,98 @@ describe('the reply’s type, through Astryx’s markdown', () => {
 
     expect(heading.fontFamily).toBe(probe({ fontFamily: 'var(--font-serif)' }).fontFamily);
     expect(heading.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-display)' }).fontFamily);
+  });
+});
+
+/*
+ * ── How many rows an activity line costs, which only an engine can say ─────
+ *
+ * `.activityDetail` needs the line box to wrap, and the first version of that
+ * put `flex-wrap: wrap` on `.activity` itself. That is not a change confined to
+ * failed lines: a flex line **fills and wraps before it shrinks**, and
+ * `.activityTarget` is `overflow: hidden`, which zeroes its automatic minimum
+ * size — so under `nowrap` a 64-character command shrinks and ellipsizes beside
+ * `Ran`, and under `wrap` the same command (11px mono, ~420px, in a 364px
+ * column) takes a row of its own. Every long `done` line silently became two,
+ * on the surface whose own stylesheet note spends its length arguing the line
+ * budget.
+ *
+ * jsdom computes no layout, so `nowrap` and `wrap` produce identical DOM and
+ * identical `textContent` there; `public.test.tsx` cannot see this and could not
+ * be made to. It is a claim about rows on a page, which means it is a claim only
+ * a rendering engine can be asked about, and this is the file that asks.
+ *
+ * The pair brackets the behaviour rather than pinning one side of it. A test
+ * that only said "the failed line takes two rows" is green under the
+ * unconditional wrap that caused the regression; a test that only said "the
+ * done line takes one" is green under no wrapping at all, which loses the
+ * detail row entirely. Both together admit exactly one implementation.
+ */
+describe('the activity line’s row count, as the engine lays it out', () => {
+  /** A real command as the domain hands it over: `clip()` cuts at
+   *  `ACTIVITY_TARGET_MAX` and marks the cut, so 64 characters is exactly the
+   *  widest noun that can reach this component — the worst case, and a common
+   *  one, since every `cargo`/`npm` invocation with flags is longer than that. */
+  const LONG_TARGET = 'cargo clippy --workspace --all-targets --all-features -- -D war…';
+
+  function activity(overrides: Partial<ConversationActivity>): ConversationActivity {
+    return {
+      id: 'a1', author: 'activity', verb: 'Ran', target: LONG_TARGET, state: 'done',
+      durationMs: null, detail: null, atMs: 0, ...overrides,
+    };
+  }
+
+  /** The activity paragraphs on the page, in order. `[data-nc-state]` is the
+   *  component's own hook and a static selector; the spans inside it carry only
+   *  hashed module classes, so they are reached positionally. */
+  const lines = () => [...document.querySelectorAll<HTMLElement>('p[data-nc-state]')];
+
+  /* The verb and the noun, which are the first two children of every line. */
+  const verbOf = (line: HTMLElement) => line.children[0] as HTMLElement;
+  const nounOf = (line: HTMLElement) => line.children[1] as HTMLElement;
+
+  it('keeps a long done line on one row, ellipsized beside the verb', async () => {
+    await page.viewport(1400, 900);
+    expect(LONG_TARGET).toHaveLength(64);
+    render(<RailPane turns={[activity({}), activity({ id: 'a2', target: 'ls' })]} />);
+    await frame();
+
+    const [long, short] = lines();
+    /* Same height as a line whose noun is two characters: the long one did not
+       gain a row. Compared against a rendered sibling rather than a literal,
+       so the case survives a change to the caption's leading. */
+    expect(long.getBoundingClientRect().height)
+      .toBe(short.getBoundingClientRect().height);
+    /* And the noun is on the verb's own row — the shape `nowrap` produces.
+       Stated as an overlap rather than an equal `offsetTop`: the two spans are
+       set in different families and aligned on their *baselines*, so their
+       boxes legitimately start a pixel apart on the same row. What cannot
+       happen on one row is the noun starting below where the verb ends. */
+    expect(nounOf(long).getBoundingClientRect().top)
+      .toBeLessThan(verbOf(long).getBoundingClientRect().bottom);
+    /* It is ellipsized rather than merely fitting, which is the other half of
+       "shrink, don't wrap": the box is narrower than the text inside it. */
+    expect(nounOf(long).clientWidth).toBeLessThan(nounOf(long).scrollWidth);
+  });
+
+  it('gives a failed line’s reason a row of its own', async () => {
+    await page.viewport(1400, 900);
+    render(<RailPane turns={[
+      activity({ state: 'failed', detail: 'error: no test specified' }),
+      activity({ id: 'a2', target: 'ls' }),
+    ]}
+    />);
+    await frame();
+
+    const [failed, done] = lines();
+    expect(failed.getBoundingClientRect().height)
+      .toBeGreaterThan(done.getBoundingClientRect().height);
+    /* Specifically two rows, and specifically the *detail* on the second one:
+       the reason is the last child, and it sits below the verb. */
+    const detail = failed.children[failed.children.length - 1] as HTMLElement;
+    expect(detail.textContent).toBe('error: no test specified');
+    expect(detail.getBoundingClientRect().top)
+      .toBeGreaterThanOrEqual(verbOf(failed).getBoundingClientRect().bottom);
   });
 });
 

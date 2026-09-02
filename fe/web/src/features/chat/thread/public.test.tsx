@@ -389,16 +389,21 @@ describe('ChatThread', () => {
    * reason joins it on its own row inside the same `<p>`, so `data-nc-state`
    * does not move.
    */
-  it('prints the reason on a failed line', () => {
+  it('prints the reason inside the element that carries the state', () => {
     const { container } = render(
       <ChatThread
         conversation={conversation()}
         turns={[activity({ state: 'failed', detail: 'error: no test specified' })]}
       />,
     );
-    expect(screen.getByText('error: no test specified')).toBeTruthy();
     expect(screen.getByText('Failed')).toBeTruthy();
-    expect(container.querySelector('[data-nc-state="failed"]')).toBeTruthy();
+    /* Containment, not co-existence. "the text is somewhere on the page" and
+       "a failed element is somewhere on the page" are both satisfied by the
+       shape this design rejects — the reason rendered as a sibling *outside*
+       the element holding `data-nc-state`, which is what would force the state
+       onto a new host. Reading the text off that element is the assertion. */
+    const line = container.querySelector('[data-nc-state="failed"]')!;
+    expect(line.textContent).toContain('error: no test specified');
   });
 
   it('prints nothing but the line itself when the action succeeded', () => {
@@ -425,11 +430,53 @@ describe('ChatThread', () => {
     expect(container.textContent).toBe('Rannpm test');
   });
 
+  /* The floor itself, at the two values that straddle it. Asserted against a
+     pair one millisecond apart because any other pair pins an interval rather
+     than a number: `4_320` against `120` passes for every floor in between,
+     including a floor of four seconds. */
+  it('draws the line at one second, to the millisecond', () => {
+    const { container, rerender } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 999 })]} />,
+    );
+    expect(container.textContent).toBe('Rannpm test');
+
+    rerender(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 1_000 })]} />,
+    );
+    expect(container.textContent).toContain('1.0s');
+  });
+
+  /* `182_000`, not `192_000`: `3m 12s` needs no padding, so it is green against
+     a `formatActivityDuration` with the `padStart` deleted. `3m 02s` is not. */
   it('reads a multi-minute action in minutes and padded seconds', () => {
     const { container } = render(
-      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 192_000 })]} />,
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 182_000 })]} />,
     );
-    expect(container.textContent).toContain('3m 12s');
+    expect(container.textContent).toContain('3m 02s');
+  });
+
+  /* One millisecond under a minute, which the seconds form would round to a
+     `60.0s` that means the same thing as the `1m 00s` printed one millisecond
+     later. The two formats exist to be read at a glance; a sixty in the one
+     that counts seconds defeats that. */
+  it('never says sixty seconds', () => {
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 59_999 })]} />,
+    );
+    expect(container.textContent).toContain('1m 00s');
+    expect(container.textContent).not.toContain('60.0s');
+  });
+
+  /* The view's own `!running` gate, which the domain's gate would otherwise be
+     the only thing standing between a live line and a finished number. */
+  it('says nothing about elapsed time while the action is still running', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[activity({ state: 'running', verb: 'Running', durationMs: 5_000 })]}
+      />,
+    );
+    expect(container.textContent).toBe('Runningnpm test');
   });
 
   it('shows exactly one live mark after a completed activity while live', () => {

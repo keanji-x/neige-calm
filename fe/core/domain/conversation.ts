@@ -801,10 +801,50 @@ function activityShape(itemType: string, item: Record<string, unknown>): Activit
  * this — so the invariant "an activity field is one short line, never a
  * payload" is a property of the type, provable in a domain test, rather than a
  * discipline every renderer of that type has to remember.
+ *
+ * **`error` before the tail, because a statement outranks a guess.** These two
+ * sources are not two spellings of one fact. `error` is the machine *stating*
+ * why it stopped; the last line of `aggregatedOutput` is us *inferring* it from
+ * whatever happened to be printed last. They co-occur on exactly the rows where
+ * the difference matters — a killed or timed-out command carries `error:
+ * 'command timed out after 600s'` and an `aggregatedOutput` that is a partial
+ * capture, so its tail is some unrelated line of progress
+ * (`Compiling serde v1.0.219`) and reading it loses the only sentence that
+ * explains the red. That `error` belongs to a `commandExecution` at all is not
+ * an edge case smuggled in here: `harnessItemToActivity` treats `error != null`
+ * as a failure signal for *every* item type, so this ordering is what that
+ * model already implies.
+ *
+ * **The tail's known hole, stated rather than patched.** With `error` handled
+ * above, the tail is what is left when the machine said nothing — the best
+ * available guess, and a good one for the runners that dominate this surface:
+ * `cargo`, `npm`, nextest, pytest and vitest all end on their own failure
+ * summary. It is wrong for a compound command that ends on a success line
+ * (`make && ./run`, where `make` prints `Build succeeded.` and `./run` exits
+ * non-zero quietly): the reader gets a cheerful sentence under a red `Failed`.
+ * Scanning the capture for lines that "look like an error" would trade this for
+ * a heuristic on unknown output that is wrong in less predictable ways, so it
+ * is not done. What carries the weight instead is the *register*: the detail is
+ * rendered as quoted machine output beside a red `Failed`, never as our own
+ * prose about the failure, so the worst case is a line of transcript that does
+ * not help — not a line that lies.
  */
 function failureDetail(payload: Record<string, unknown>): string | null {
-  // The tail first, because that is where the reason is. An all-blank capture
-  // has no tail to show and falls through rather than reporting emptiness.
+  // What the machine said, in both spellings that are on our wire — a string in
+  // some servers, `{ message }` in others. A blank one states nothing and falls
+  // through to the tail rather than blanking the line.
+  const error = payload.error;
+  const stated = typeof error === 'string' ? error
+    : (typeof error === 'object' && error !== null
+      && typeof (error as { message?: unknown }).message === 'string'
+      ? (error as { message: string }).message : null);
+  if (stated !== null) {
+    const line = clip(stated);
+    if (line !== null) return line;
+  }
+  // Otherwise the tail: a shell puts its error there and a test runner puts its
+  // count there. An all-blank capture has no tail and reports nothing rather
+  // than reporting emptiness.
   const output = payload.aggregatedOutput;
   if (typeof output === 'string') {
     const lines = output.split('\n');
@@ -812,14 +852,6 @@ function failureDetail(payload: Record<string, unknown>): string | null {
       const line = clip(lines[index] ?? '');
       if (line !== null) return line;
     }
-  }
-  // MCP tools have no stdout. Their `error` is a string in some servers and
-  // `{ message }` in others; both spellings are on our own wire.
-  const error = payload.error;
-  if (typeof error === 'string') return clip(error);
-  if (typeof error === 'object' && error !== null
-    && typeof (error as { message?: unknown }).message === 'string') {
-    return clip((error as { message: string }).message);
   }
   return null;
 }
@@ -851,7 +883,12 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
     verb: done ? shape.done : shape.running,
     target: shape.target,
     state: failed ? 'failed' : (done ? 'done' : 'running'),
-    durationMs: typeof payload.durationMs === 'number' && Number.isFinite(payload.durationMs)
+    /* `done &&` is the gate, not a redundancy: an `item/started` payload is the
+       item as codex knew it at the start and nothing stops a duration riding
+       along, but a duration on a line still saying `Running` would be a number
+       for an interval that has not ended. */
+    durationMs: done && typeof payload.durationMs === 'number'
+      && Number.isFinite(payload.durationMs)
       ? payload.durationMs : null,
     detail: failed ? failureDetail(payload) : null,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
