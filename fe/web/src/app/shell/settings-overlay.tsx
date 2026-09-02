@@ -131,27 +131,16 @@ function AppearancePaneHost() {
 function NetworkPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const save = useSettingsMutation(transport, unauthorized);
   const settings = useQuery(settingsQueryOptions(transport, unauthorized));
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
   return (
     <NetworkPane
       settings={settings.data?.settings}
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}
-      saving={saving}
-      saveError={saveError}
-      savedAt={savedAt}
-      onSave={(patch) => {
-        setSaving(true);
-        setSaveError(null);
-        return save(patch)
-          .then(() => { setSavedAt(Date.now()); })
-          .catch((error: unknown) => {
-            setSaveError(error instanceof Error ? error.message : 'Save failed.');
-          })
-          .finally(() => { setSaving(false); });
-      }}
+      /* The promise is the whole contract: the pane follows each commit's own
+         request, so a failure lands on the row that failed. This host holds no
+         `saving` / `saveError` / `savedAt` of its own — one triple for two rows
+         is what put HTTP's failure on the HTTPS row. */
+      onSave={(patch) => save(patch).then(() => undefined)}
     />
   );
 }
@@ -171,8 +160,8 @@ function PluginsPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
       plugins={plugins.data}
       loadError={plugins.error instanceof Error ? plugins.error.message : null}
       onRetryLoad={() => { void plugins.refetch(); }}
-      pendingId={mutations.pendingId}
-      actionError={mutations.error}
+      pendingIds={mutations.pendingIds}
+      errors={mutations.errors}
       onSetEnabled={mutations.setEnabled}
     />
   );

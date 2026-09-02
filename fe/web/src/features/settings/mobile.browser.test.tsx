@@ -14,9 +14,6 @@ describe('Settings mobile presentation', () => {
     const { container } = render(<NetworkPane
       settings={{}}
       loadError={null}
-      saving={false}
-      saveError={null}
-      savedAt={null}
       onSave={vi.fn()}
       onRetryLoad={vi.fn()}
     />);
@@ -47,23 +44,20 @@ describe('Settings confirmation and example text', () => {
    */
   it('confirms with a tick whose word is only in the live region', async () => {
     await page.viewport(1180, 640);
-    const view = render(<NetworkPane
-      settings={{}} loadError={null} saving={false} saveError={null} savedAt={null}
-      onSave={vi.fn()} onRetryLoad={vi.fn()}
+    render(<NetworkPane
+      settings={{}} loadError={null} onSave={() => Promise.resolve()} onRetryLoad={vi.fn()}
     />);
     // Driven through real user events: the commit is a React `onBlur`, and a
     // raw `input.value = …` does not reach React's own value tracker.
     await page.getByRole('textbox', { name: 'HTTP proxy' }).fill('http://edge:3128');
     await page.getByRole('textbox', { name: 'HTTPS proxy' }).click();
-    view.rerender(<NetworkPane
-      settings={{}} loadError={null} saving={false} saveError={null} savedAt={1234}
-      onSave={vi.fn()} onRetryLoad={vi.fn()}
-    />);
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 
-    // Announced: exactly one live region, carrying the word.
-    const announced = [...document.querySelectorAll('[role="status"]')];
-    expect(announced.map((node) => node.textContent)).toEqual(['Saved.']);
+    // Announced: the committed row's live region carries the word, and the
+    // other row's stays empty.
+    const announced = [...document.querySelectorAll('[role="status"]')].map((n) => n.textContent);
+    expect(announced).toEqual(['Saved.', '']);
 
     /*
      * Not drawn — and asserted over *every* node that says the word, not just
@@ -90,8 +84,8 @@ describe('Settings confirmation and example text', () => {
   it('paints an example lighter than a value', async () => {
     await page.viewport(1180, 640);
     render(<NetworkPane
-      settings={{ http_proxy: 'http://typed:3128' }} loadError={null} saving={false}
-      saveError={null} savedAt={null} onSave={vi.fn()} onRetryLoad={vi.fn()}
+      settings={{ http_proxy: 'http://typed:3128' }} loadError={null}
+      onSave={vi.fn()} onRetryLoad={vi.fn()}
     />);
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
 

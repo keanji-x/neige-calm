@@ -44,6 +44,7 @@ import {
   createWaveConversationOperation, waveConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
+import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
 
@@ -118,8 +119,8 @@ export const queryKeys = Object.freeze({
   waveReportPrefix: () => ['wave-report'] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
-  /* Settings › Plugins. `plugin.state` arrives on the event stream, so this
-     list is refetched by the bridge's prefix invalidation rather than polled. */
+  /* Settings › Plugins. Not reached by any event policy — see
+     `pluginsQueryOptions` for why, and for what stands in for one. */
   plugins: () => ['plugins'] as const,
   /* #1209 — the New wave picker's list. Not invalidated by any event: the
      kernel's template keys are compile-time constants and the only thing that
@@ -834,43 +835,96 @@ export function useWaveTemplateMutation(
  * Settings › Plugins — the installed list.
  *
  * `retry: false` for the same reason the template read has it: this list is a
- * screen the user is looking at, and a failed read must say so and offer Retry
- * rather than sit spinning through three silent attempts.
+ * screen the reader is looking at, and a failed read must say so and offer
+ * Retry rather than sit spinning through three silent attempts.
+ *
+ * **`plugin.state` does not refresh this list.** `core/events/invalidation-plan`
+ * maps that event to `noop('No plugin list query exists.')` — a reason that was
+ * true until this query was added, and `core/events` is a frozen module whose
+ * change needs its own issue. Without help, enabling a plugin would leave the
+ * row reading `spawning` for as long as the pane stayed open, which is exactly
+ * the transition the reader is waiting on.
+ *
+ * So the query polls *only while some row is in motion*: a `spawning` or
+ * `installing` plugin is a state the kernel is actively leaving, and every
+ * other state is one nothing will change without a write from this screen. The
+ * poll therefore stops on its own, and a settled list costs nothing.
  */
+/* Frozen array, not a `Set`: `architecture/no-module-runtime-state` rejects a
+   module-level `new`, and two entries do not need a hash lookup. */
+const PLUGIN_TRANSIENT_STATES = Object.freeze(['spawning', 'installing'] as const);
+
 export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
   return {
     queryKey: queryKeys.plugins(),
     queryFn: (): Promise<PluginListItem[]> => runOperation(transport, pluginsOperation(), unauthorized),
     retry: false,
+    refetchInterval: (query: { state: { data?: PluginListItem[] } }) =>
+      (query.state.data ?? []).some((plugin) =>
+        (PLUGIN_TRANSIENT_STATES as readonly string[]).includes(plugin.state))
+        ? PLUGIN_POLL_MS
+        : false as const,
   };
 }
 
+const PLUGIN_POLL_MS = 1500;
+
 export type PluginMutations = Readonly<{
-  /** The plugin a lifecycle write is in flight for, or `null`. */
-  pendingId: string | null;
-  error: string | null;
+  /** The plugins a lifecycle write is in flight for. */
+  pendingIds: ReadonlySet<string>;
+  /** The last failure per plugin, so one plugin's error cannot label another. */
+  errors: ReadonlyMap<string, string>;
   setEnabled: (id: string, enabled: boolean) => void;
 }>;
 
 /**
  * Enable / disable.
  *
+ * **Per plugin, not per hook.** A single `useMutation` exposes only the latest
+ * call's `variables` and `error`, so toggling two plugins in quick succession
+ * moved the spinner onto the second one — the first row snapped back to its
+ * server value mid-flight — and a failure on the first was attributed to
+ * whichever call happened last, or lost entirely. The pending set and the
+ * error map are keyed by plugin id, which is the only thing that makes two
+ * concurrent writes describable.
+ *
  * The response is **not** written through to the cached list: enable answers as
  * soon as the row flips, while the supervisor is still bringing the process up,
  * so its `state` is a snapshot that is already stale by the time it lands. An
- * invalidation asks the kernel what is actually true, and `plugin.state` events
- * carry the row the rest of the way (`spawning` → `running` / `crashed`).
+ * invalidation asks the kernel what is actually true.
  */
 export function usePluginMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): PluginMutations {
   const client = useQueryClient();
+  const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [errors, setErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
   const write = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
-    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.plugins() }); },
+    onMutate: ({ id }) => {
+      setPendingIds((current) => new Set(current).add(id));
+      setErrors((current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    },
+    onError: (error, { id }) => {
+      setErrors((current) => new Map(current)
+        .set(id, error instanceof Error ? error.message : 'Could not change this plugin.'));
+    },
+    onSettled: (_data, _error, { id }) => {
+      setPendingIds((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.plugins() });
+    },
   });
   return {
-    pendingId: write.isPending ? write.variables?.id ?? null : null,
-    error: write.error instanceof Error ? write.error.message : null,
+    pendingIds,
+    errors,
     setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
   };
 }

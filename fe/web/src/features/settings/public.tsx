@@ -44,7 +44,7 @@ import { SideNav as AstryxSideNav, SideNavItem as AstryxSideNavItem } from '@ast
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
 import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
@@ -211,10 +211,11 @@ export type NetworkPaneProps = Readonly<{
   /** `undefined` means "still loading" — never render an empty form for it. */
   settings: Readonly<Record<string, string>> | undefined;
   loadError: string | null;
-  saving: boolean;
-  saveError: string | null;
-  /** Timestamp of the last successful save; drives the transient confirmation. */
-  savedAt: number | null;
+  /**
+   * Commits one key. The returned promise **is** the row's status: this pane
+   * follows it per field, so the confirmation and the failure belong to the
+   * request they came from.
+   */
   onSave: (patch: SettingsPatch) => void | Promise<void>;
   onRetryLoad: () => void;
   /** Tests shorten the confirmation window; production uses the default. */
@@ -223,28 +224,51 @@ export type NetworkPaneProps = Readonly<{
 
 type Draft = { http: string; https: string };
 
-/**
- * INV-SETTINGS-001 — a field the reader cleared is sent as `null`, never `''`.
- * The kernel deletes a key for either value, so the two converge; sending
- * `null` states the intent instead of leaning on that equivalence. A commit
- * carries **one** key, so a save never rewrites the field nobody touched.
- */
-
-/**
- * Which field a commit was for. Paired with `savedAt` / `saveError` so the
- * confirmation and the failure land on the row the reader just left, rather
- * than on the pane, where two proxy rows would share one message.
- */
+/** Which field a commit was for. */
 type ProxyField = 'http' | 'https';
+
+const PROXY_FIELDS = Object.freeze(['http', 'https'] as const);
 
 const PROXY_KEY_OF: Readonly<Record<ProxyField, string>> = Object.freeze({
   http: HTTP_PROXY_KEY,
   https: HTTPS_PROXY_KEY,
 });
 
+const PROXY_LABEL_OF: Readonly<Record<ProxyField, string>> = Object.freeze({
+  http: 'HTTP proxy',
+  https: 'HTTPS proxy',
+});
+
+/**
+ * What one row's last commit is doing.
+ *
+ * Per field, and derived from that field's own promise — **not** from a
+ * pane-level `saving` / `saveError` / `savedAt` triple with a single "which row
+ * was it" pointer beside it. That shape was wrong in three measurable ways, all
+ * reproduced before this was written:
+ *
+ *   * commit HTTP, then commit HTTPS, then HTTP's request fails ⇒ the failure
+ *     painted on the **HTTPS** row, and HTTP's failure was never shown at all,
+ *     so the reader left believing a proxy was saved that was not;
+ *   * a still-unretired confirmation from HTTP's save turned into a green tick
+ *     on HTTPS the moment HTTPS was committed — before its request resolved;
+ *   * `saving` cleared when the first of two flights settled, so the busy
+ *     marker lied about the other.
+ *
+ * `seq` is what makes a stale response harmless: a second commit on the same
+ * field bumps it, and a response whose sequence is no longer current is
+ * dropped rather than allowed to overwrite the newer one's outcome.
+ */
+type RowStatus =
+  | Readonly<{ phase: 'idle' }>
+  | Readonly<{ phase: 'saving' }>
+  | Readonly<{ phase: 'saved'; at: number }>
+  | Readonly<{ phase: 'failed'; message: string }>;
+
+const IDLE: RowStatus = Object.freeze({ phase: 'idle' });
+
 export function NetworkPane({
-  settings, loadError, saving, saveError, savedAt, onSave, onRetryLoad,
-  savedNoticeMs = SAVED_NOTICE_MS,
+  settings, loadError, onSave, onRetryLoad, savedNoticeMs = SAVED_NOTICE_MS,
 }: NetworkPaneProps) {
   const loaded = settings !== undefined;
   const incoming: Draft = {
@@ -254,7 +278,7 @@ export function NetworkPane({
 
   // Seeding compares by *value*, not by object identity: a parent that hands
   // back a fresh object on every render (a query cache does) must not wipe out
-  // what the user is typing. A genuine server change does re-seed.
+  // what the reader is typing. A genuine server change does re-seed.
   const [seed, setSeed] = useState<Draft | null>(null);
   const [draft, setDraft] = useState<Draft>({ http: '', https: '' });
   if (loaded && (seed === null || seed.http !== incoming.http || seed.https !== incoming.https)) {
@@ -266,19 +290,14 @@ export function NetworkPane({
     }));
   }
 
-  const [acknowledged, setAcknowledged] = useState<number | null>(null);
-  useEffect(() => {
-    if (savedAt === null) return;
-    const id = setTimeout(() => setAcknowledged(savedAt), savedNoticeMs);
-    return () => clearTimeout(id);
-  }, [savedAt, savedNoticeMs]);
-
   const base = seed ?? { http: '', https: '' };
-  const [committed, setCommitted] = useState<ProxyField | null>(null);
-  const showSaved = savedAt !== null && acknowledged !== savedAt;
+  const [status, setStatus] = useState<Readonly<Record<ProxyField, RowStatus>>>(
+    { http: IDLE, https: IDLE },
+  );
+  const sequence = useRef<Record<ProxyField, number>>({ http: 0, https: 0 });
 
   /**
-   * Commit on **blur and Enter, not on every keystroke.**
+   * Commit on **blur and Enter, never per keystroke.**
    *
    * There is no Save button: a proxy is one value, and a settings screen that
    * asks you to press Save for one value is asking you to do the app's
@@ -291,56 +310,106 @@ export function NetworkPane({
    * A value equal to the last one the server gave us commits nothing: focusing
    * and leaving a field the reader never edited must not write.
    */
-  const commit = (field: ProxyField) => {
-    if (draft[field] === base[field]) return;
-    setCommitted(field);
-    void onSave({ [PROXY_KEY_OF[field]]: draft[field] === '' ? null : draft[field] });
+  const commit = (field: ProxyField, value: string, previous: string) => {
+    if (value === previous) return;
+    const ticket = (sequence.current[field] += 1);
+    const settle = (next: RowStatus) => {
+      // A response for a superseded commit says nothing about the current one.
+      if (sequence.current[field] !== ticket) return;
+      setStatus((current) => ({ ...current, [field]: next }));
+    };
+    setStatus((current) => ({ ...current, [field]: { phase: 'saving' } }));
+    void Promise.resolve(onSave({ [PROXY_KEY_OF[field]]: value === '' ? null : value }))
+      .then(() => { settle({ phase: 'saved', at: Date.now() }); })
+      .catch((error: unknown) => {
+        settle({ phase: 'failed', message: error instanceof Error ? error.message : 'Save failed.' });
+      });
   };
+
+  /*
+   * Closing the dialog commits what is in the fields.
+   *
+   * Escape and a backdrop click unmount the focused input, and removing a
+   * focused element fires **no** blur — so without this the reader's typing
+   * left with the dialog, silently, on a screen whose whole premise is that it
+   * saves itself. The refs are what make it correct at unmount time: the
+   * cleanup runs once, after the last render, and must read the values from
+   * then rather than the ones captured when the effect was created.
+   */
+  const pending = useRef({ draft, base, onSave });
+  pending.current = { draft, base, onSave };
+  useEffect(() => () => {
+    const { draft: last, base: seeded, onSave: save } = pending.current;
+    for (const field of PROXY_FIELDS) {
+      if (last[field] === seeded[field]) continue;
+      const value = last[field];
+      void Promise.resolve(save({ [PROXY_KEY_OF[field]]: value === '' ? null : value })).catch(() => {
+        // Nothing is mounted to report to. The write still went out; the next
+        // visit re-reads the bag and shows whatever actually landed.
+      });
+    }
+  }, []);
+
+  /* The confirmation retires on its own, per row. */
+  useEffect(() => {
+    const saved = PROXY_FIELDS.filter((field) => status[field].phase === 'saved');
+    if (saved.length === 0) return;
+    const id = setTimeout(() => {
+      setStatus((current) => {
+        const next = { ...current };
+        for (const field of saved) if (next[field].phase === 'saved') next[field] = IDLE;
+        return next;
+      });
+    }, savedNoticeMs);
+    return () => clearTimeout(id);
+  }, [status, savedNoticeMs]);
 
   /**
    * The confirmation is the **tick and nothing else**.
    *
-   * "Saved." beside a green tick is the tick said twice: the mark already means
-   * exactly that, and the word costs the row a line that then reflows the rows
-   * under it every time you leave a field. A failure keeps its sentence,
-   * because "something went wrong" is not a thing a mark can say.
+   * "Saved." beside a green tick is the tick said twice, and the word costs the
+   * row a line that then reflows the rows under it every time you leave a
+   * field. A failure keeps its sentence, because "something went wrong" is not
+   * a thing a mark can say.
    *
-   * The word does not disappear for a screen reader, though — it moves to the
-   * visually-hidden live region beside the field (`SavedAnnouncement`), which
-   * is also what the tests and the e2e spec locate. A tick with no accessible
-   * name would make the confirmation sighted-only.
+   * The word does not disappear for a screen reader: it goes to the
+   * always-mounted live region beside the field. Always-mounted matters —
+   * screen readers commonly do not announce a region that arrives in the same
+   * mutation as its text, so the region has to exist before it has something
+   * to say.
    */
   const statusFor = (field: ProxyField) => {
-    if (committed !== field) return undefined;
-    if (saveError !== null) return { type: 'error' as const, message: saveError };
-    if (showSaved) return { type: 'success' as const };
+    const row = status[field];
+    if (row.phase === 'failed') return { type: 'error' as const, message: row.message };
+    if (row.phase === 'saved') return { type: 'success' as const };
     return undefined;
   };
 
-  const proxyRow = (field: ProxyField, title: string) => (
+  const proxyRow = (field: ProxyField) => (
     <SettingRow
-      title={title}
+      key={field}
+      title={PROXY_LABEL_OF[field]}
       description="Empty inherits the container's own proxy."
       control={(
         <>
-        {committed === field && showSaved && saveError === null && (
-          <AstryxVisuallyHidden role="status">Saved.</AstryxVisuallyHidden>
-        )}
-        <AstryxTextInput
-          label={title}
-          isLabelHidden
-          value={draft[field]}
-          placeholder="http://127.0.0.1:10809"
-          status={statusFor(field)}
-          onChange={(value) => setDraft({ ...draft, [field]: value })}
-          onBlur={() => commit(field)}
-          onKeyDown={(event) => { if (event.key === 'Enter') commit(field); }}
-          width={CONTROL_WIDTH}
-          /* `data-nc-state` is the e2e seam for "a write is in flight"; the
-             field stays editable while it is, because a proxy save is one
-             request and blocking the field would drop the next keystroke. */
-          data-nc-state={saving && committed === field ? 'busy' : undefined}
-        />
+          <AstryxVisuallyHidden role="status">
+            {status[field].phase === 'saved' ? 'Saved.' : ''}
+          </AstryxVisuallyHidden>
+          <AstryxTextInput
+            label={PROXY_LABEL_OF[field]}
+            isLabelHidden
+            value={draft[field]}
+            placeholder="http://127.0.0.1:10809"
+            status={statusFor(field)}
+            onChange={(value) => setDraft({ ...draft, [field]: value })}
+            onBlur={() => commit(field, draft[field], base[field])}
+            onKeyDown={(event) => { if (event.key === 'Enter') commit(field, draft[field], base[field]); }}
+            width={CONTROL_WIDTH}
+            /* The field stays editable while its write is in flight: a proxy
+               save is one request, and blocking the field would drop the next
+               keystroke. */
+            data-nc-state={status[field].phase === 'saving' ? 'busy' : undefined}
+          />
         </>
       )}
     />
@@ -355,12 +424,7 @@ export function NetworkPane({
       {/* INV-SETTINGS-002 — a loading line, never an empty field: an empty form
           would let the reader save blanks over real values. */}
       {!loaded && loadError === null && <AstryxText as="p" color="secondary">Loading settings…</AstryxText>}
-      {loaded && (
-        <SettingsList>
-          {proxyRow('http', 'HTTP proxy')}
-          {proxyRow('https', 'HTTPS proxy')}
-        </SettingsList>
-      )}
+      {loaded && <SettingsList>{PROXY_FIELDS.map((field) => proxyRow(field))}</SettingsList>}
     </SettingsPane>
   );
 }

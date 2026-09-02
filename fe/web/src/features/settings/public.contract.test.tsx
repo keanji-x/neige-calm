@@ -13,9 +13,6 @@ function props(overrides: Partial<NetworkPaneProps> = {}): NetworkPaneProps {
   return {
     settings: {},
     loadError: null,
-    saving: false,
-    saveError: null,
-    savedAt: null,
     onSave: vi.fn(),
     onRetryLoad: vi.fn(),
     ...overrides,
@@ -67,7 +64,7 @@ describe('INV-SETTINGS-002 loading never shows an empty form', () => {
 
 describe('INV-A11Y-061 navigation shape', () => {
   it('renders no native link anywhere, in any state', () => {
-    const { container } = render(<NetworkPane {...props({ savedAt: 1, saveError: 'x', loadError: 'y' })} />);
+    const { container } = render(<NetworkPane {...props({ loadError: 'y' })} />);
     expect(container.querySelectorAll('a').length).toBe(0);
   });
 

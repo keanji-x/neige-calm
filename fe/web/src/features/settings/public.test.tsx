@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -23,9 +23,6 @@ function props(overrides: Partial<NetworkPaneProps> = {}): NetworkPaneProps {
   return {
     settings: {},
     loadError: null,
-    saving: false,
-    saveError: null,
-    savedAt: null,
     onSave: vi.fn(),
     onRetryLoad: vi.fn(),
     ...overrides,
@@ -87,15 +84,20 @@ describe('Settings network form', () => {
   });
 
   it('preserves a field edited during an in-flight save when the response updates another field', async () => {
+    let settle = () => undefined as void;
+    const onSave = vi.fn(() => new Promise<void>((resolve) => { settle = resolve; }));
     const view = render(<NetworkPane {...props({
       settings: { [HTTP_PROXY_KEY]: 'http://old-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
-      saving: true,
+      onSave,
     })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), '-edited');
+    await userEvent.tab();                       // HTTP in flight
     await userEvent.clear(screen.getByLabelText('HTTPS proxy'));
     await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://typed-during-save');
+    await act(async () => { settle(); await Promise.resolve(); });
     view.rerender(<NetworkPane {...props({
-      settings: { [HTTP_PROXY_KEY]: 'http://saved-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
-      saving: false, savedAt: 123,
+      settings: { [HTTP_PROXY_KEY]: 'http://old-http-edited', [HTTPS_PROXY_KEY]: 'http://old-https' },
+      onSave,
     })} />);
     expect(screen.getByLabelText<HTMLInputElement>('HTTPS proxy').value).toBe('http://typed-during-save');
   });
@@ -135,29 +137,114 @@ describe('Settings states', () => {
   });
 
   it('surfaces a save failure on the row that failed, keeping what was typed', async () => {
-    const view = render(<NetworkPane {...props({ onSave: vi.fn() })} />);
+    const onSave = vi.fn(() => Promise.reject(new Error('PUT /api/settings failed')));
+    render(<NetworkPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge:3128');
-    await userEvent.tab();
-    view.rerender(<NetworkPane {...props({ saveError: 'PUT /api/settings failed' })} />);
-    expect(screen.getByRole('alert').textContent).toContain('PUT /api/settings failed');
+    await act(async () => { await userEvent.tab(); });
+    const row = screen.getByLabelText('HTTP proxy').closest('li');
+    expect(row?.textContent).toContain('PUT /api/settings failed');
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://edge:3128');
+    // The other row is untouched: one failed request describes one row.
+    expect(screen.getByLabelText('HTTPS proxy').closest('li')?.textContent)
+      .not.toContain('PUT /api/settings failed');
   });
 
   it('confirms the commit on its own row and then retires the notice', async () => {
-    const view = render(<NetworkPane {...props({ onSave: vi.fn(), savedNoticeMs: 10 })} />);
+    const onSave = vi.fn(() => Promise.resolve());
+    render(<NetworkPane {...props({ onSave, savedNoticeMs: 10 })} />);
     await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://edge:8080');
-    await userEvent.tab();
-    view.rerender(<NetworkPane {...props({ savedAt: 1234, savedNoticeMs: 10 })} />);
-    // astryx renders a success status as `role="status"`; this pane has no
-    // buttons, so nothing else on it claims that role.
-    expect(screen.getByRole('status').textContent).toContain('Saved.');
-    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+    await act(async () => { await userEvent.tab(); });
+    const row = screen.getByLabelText('HTTPS proxy').closest('li');
+    expect(row?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
+    await waitFor(() => {
+      expect(row?.querySelector('[role="status"]')?.textContent).toBe('');
+    });
   });
 
-  it('shows no confirmation for a field the reader never committed', () => {
-    render(<NetworkPane {...props({ savedAt: 1234 })} />);
-    // A `savedAt` from someone else's commit must not decorate a row here.
-    expect(screen.queryByRole('status')).toBeNull();
+  it('mounts the live region before it has anything to say', () => {
+    render(<NetworkPane {...props()} />);
+    /*
+     * Always mounted, empty. A live region that arrives in the same mutation as
+     * its text is commonly not announced at all, which would leave the tick as
+     * the only confirmation — and a tick has no accessible name.
+     */
+    expect(screen.getAllByRole('status').map((node) => node.textContent)).toEqual(['', '']);
   });
 });
 
+type Deferred = { promise: Promise<void>; resolve: () => void; reject: (error: Error) => void };
+
+function deferred(): Deferred {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+/*
+ * Two rows share one screen but not one status. Every case here was a
+ * reproduced defect first: the pane used to read a pane-level
+ * `saving`/`saveError`/`savedAt` triple with a single "which row" pointer, and
+ * these four sequences are what that shape got wrong.
+ */
+describe('Settings network commits, per row', () => {
+  it('does not paint one row failure on the other row', async () => {
+    const flights: Deferred[] = [];
+    const onSave = vi.fn(() => { const d = deferred(); flights.push(d); return d.promise; });
+    render(<NetworkPane {...props({ onSave })} />);
+
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://a:1');
+    await userEvent.tab();                       // commit A (in flight)
+    await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://b:2');
+    await userEvent.tab();                       // commit B (in flight)
+    await act(async () => { flights[1]?.resolve(); await Promise.resolve(); });
+    await act(async () => { flights[0]?.reject(new Error('A failed')); await Promise.resolve(); });
+
+    const httpsRow = screen.getByLabelText('HTTPS proxy').closest('li');
+    const httpRow = screen.getByLabelText('HTTP proxy').closest('li');
+    expect(httpRow?.textContent).toContain('A failed');
+    expect(httpsRow?.textContent).not.toContain('A failed');
+  });
+
+  it('does not confirm a commit that has not resolved', async () => {
+    const flights: Deferred[] = [];
+    const onSave = vi.fn(() => { const d = deferred(); flights.push(d); return d.promise; });
+    render(<NetworkPane {...props({ onSave })} />);
+
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://a:1');
+    await userEvent.tab();
+    await act(async () => { flights[0]?.resolve(); await Promise.resolve(); });
+    const httpRow = screen.getByLabelText('HTTP proxy').closest('li');
+    expect(httpRow?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
+
+    await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://b:2');
+    await userEvent.tab();                        // B in flight, unresolved
+    const httpsRow = screen.getByLabelText('HTTPS proxy').closest('li');
+    expect(httpsRow?.querySelector('[role="status"]')?.textContent).toBe('');
+  });
+
+  it('drops a superseded response instead of letting it overwrite the newer one', async () => {
+    const flights: Deferred[] = [];
+    const onSave = vi.fn(() => { const d = deferred(); flights.push(d); return d.promise; });
+    render(<NetworkPane {...props({ onSave })} />);
+
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.type(field, 'http://one:1');
+    await userEvent.tab();                        // commit 1
+    await userEvent.type(field, '2');
+    await userEvent.tab();                        // commit 2 supersedes it
+    await act(async () => { flights[1]?.resolve(); await Promise.resolve(); });
+    await act(async () => { flights[0]?.reject(new Error('stale failure')); await Promise.resolve(); });
+
+    const httpRow = field.closest('li');
+    expect(httpRow?.textContent).not.toContain('stale failure');
+  });
+
+  it('commits an edit the reader leaves by closing the pane', async () => {
+    const onSave = vi.fn();
+    const view = render(<NetworkPane {...props({ onSave })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://typed:9');
+    view.unmount();     // Escape / backdrop close unmounts a focused input: no blur fires.
+    expect(onSave).toHaveBeenCalledWith({ [HTTP_PROXY_KEY]: 'http://typed:9' });
+  });
+});

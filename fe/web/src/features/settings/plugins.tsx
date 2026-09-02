@@ -36,11 +36,12 @@ export type PluginsPaneProps = Readonly<{
   plugins: readonly PluginListItem[] | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
-  /** The plugin a lifecycle write is in flight for, or `null`. */
-  pendingId: string | null;
-  /** The last lifecycle write's failure. Sits above the list, not inside a row:
-   *  the row it belongs to may have been re-read and replaced by then. */
-  actionError: string | null;
+  /** The plugins a lifecycle write is in flight for. A set, not one id: two
+   *  switches can be in flight at once, and one spinner cannot describe both. */
+  pendingIds: ReadonlySet<string>;
+  /** The last failure **per plugin**. One shared string put one plugin's error
+   *  under another plugin's name as soon as two writes overlapped. */
+  errors: ReadonlyMap<string, string>;
   onSetEnabled: (id: string, enabled: boolean) => void;
 }>;
 
@@ -63,7 +64,7 @@ function stateVariant(state: PluginState): 'success' | 'warning' | 'error' | 'in
 }
 
 export function PluginsPane({
-  plugins, loadError, onRetryLoad, pendingId, actionError, onSetEnabled,
+  plugins, loadError, onRetryLoad, pendingIds, errors, onSetEnabled,
 }: PluginsPaneProps) {
   return (
     <SettingsPane
@@ -71,8 +72,6 @@ export function PluginsPane({
       lede="What the workspace can do beyond its own kernel. Disabling one keeps its configuration; nothing it created is removed."
     >
       {loadError !== null && <ErrorBox message={loadError} onRetry={onRetryLoad} />}
-      {actionError !== null && <p className={styles.error} role="alert">{actionError}</p>}
-
       {plugins === undefined
         ? loadError === null && <AstryxText as="p" color="secondary">Loading plugins…</AstryxText>
         : plugins.length === 0
@@ -96,6 +95,11 @@ export function PluginsPane({
                       {plugin.last_error !== undefined && (
                         <span className={styles.error} role="alert">{plugin.last_error}</span>
                       )}
+                      {/* This plugin's own failed write, under this plugin's
+                          own name. */}
+                      {errors.get(plugin.id) !== undefined && (
+                        <span className={styles.error} role="alert">{errors.get(plugin.id)}</span>
+                      )}
                     </span>
                   )}
                   /* The state badge leads the row: it is the column a reader
@@ -109,7 +113,7 @@ export function PluginsPane({
                       label={`Enable ${plugin.manifest_name}`}
                       isLabelHidden
                       value={plugin.enabled}
-                      isLoading={pendingId === plugin.id}
+                      isLoading={pendingIds.has(plugin.id)}
                       onChange={(next) => onSetEnabled(plugin.id, next)}
                     />
                   )}

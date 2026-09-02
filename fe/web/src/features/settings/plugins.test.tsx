@@ -38,8 +38,8 @@ function props(overrides: Partial<PluginsPaneProps> = {}): PluginsPaneProps {
     plugins: [plugin()],
     loadError: null,
     onRetryLoad: vi.fn(),
-    pendingId: null,
-    actionError: null,
+    pendingIds: new Set<string>(),
+    errors: new Map<string, string>(),
     onSetEnabled: vi.fn(),
     ...overrides,
   };
