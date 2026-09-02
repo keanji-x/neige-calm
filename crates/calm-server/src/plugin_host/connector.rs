@@ -11,8 +11,10 @@
 //!   the existing code is careful to avoid (`plugin_host::mod` §"Process
 //!   table"), and a non-`Clone` client would have forced exactly that.
 //! * [`read_secrets`] — §2.4's `secrets.json`. No DB table in v0.
-//! * [`materialize_http_tools`] — §2.7's synthesis of `ExposedTool` entries for
-//!   a connector whose tool catalog does not live in `exposes_tools`.
+//! * [`materialize_http_tools`] / [`materialize_cli_tools`] — §2.7's synthesis
+//!   of `ExposedTool` entries for a connector whose tool catalog does not live
+//!   in `exposes_tools` (an upstream `tools/list` for `mcp-http`, the manifest's
+//!   own `cli_query.tools` for `cli-query`).
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
@@ -21,8 +23,9 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use super::cli_query::CliQueryRuntime;
 use super::http_mcp::HttpMcpClient;
-use super::manifest::{ExposedTool, McpHttpBlock, validate_connector_tool_name};
+use super::manifest::{CliQueryBlock, ExposedTool, McpHttpBlock, validate_connector_tool_name};
 use super::mcp::McpClient;
 
 /// File name of the per-connector secret bundle, read only by the kernel.
@@ -43,11 +46,11 @@ pub enum ConnectorClient {
     Stdio(Arc<McpClient>),
     /// `kind: mcp-http` — remote streamable-HTTP MCP server.
     Http(Arc<HttpMcpClient>),
-    // NOTE: there is deliberately no `Cli` variant. `kind: cli-query` parses
-    // and validates in this slice but its enable path fails before any runtime
-    // is constructed (#1164 P3), so a variant here would be a state no code
-    // path can reach — dead weight that a reader would mistake for a live
-    // capability. P3 reintroduces it together with the executor.
+    /// `kind: cli-query` — a pinned local query binary, exec'd per call
+    /// (#1164 P3). No child process is supervised: the runtime holds the
+    /// resolved path plus the child environment, and each `tools/call` forks a
+    /// fresh, short-lived process.
+    Cli(Arc<CliQueryRuntime>),
 }
 
 impl std::fmt::Debug for ConnectorClient {
@@ -57,6 +60,7 @@ impl std::fmt::Debug for ConnectorClient {
         f.write_str(match self {
             Self::Stdio(_) => "ConnectorClient::Stdio",
             Self::Http(_) => "ConnectorClient::Http",
+            Self::Cli(_) => "ConnectorClient::Cli",
         })
     }
 }
@@ -67,6 +71,7 @@ impl ConnectorClient {
         match self {
             Self::Stdio(_) => "stdio",
             Self::Http(_) => "mcp-http",
+            Self::Cli(_) => "cli-query",
         }
     }
 
@@ -396,10 +401,33 @@ pub fn materialize_http_tools(
     out
 }
 
-// NOTE: there is no `materialize_cli_tools` here. `kind: cli-query` has no
-// enable path that reaches materialization in this slice, so the function had
-// no production caller — only its own test. #1164 P3 adds it alongside the
-// executor that would actually call it.
+/// The `cli-query` half of §2.7: turn the manifest's hand-declared
+/// `cli_query.tools` into `ExposedTool` entries.
+///
+/// There is no upstream to ask — the manifest IS the catalog — so unlike
+/// [`materialize_http_tools`] nothing can be "allowlisted but missing". What is
+/// shared is the name rule: a rejected name is warned about and skipped, never
+/// fatal, so one bad entry does not take the whole connector down.
+pub fn materialize_cli_tools(plugin_id: &str, block: &CliQueryBlock) -> Vec<ExposedTool> {
+    let mut out = Vec::new();
+    for tool in &block.tools {
+        if let Err(e) = validate_connector_tool_name(&tool.name, "cli_query.tools") {
+            tracing::warn!(plugin_id = %plugin_id, tool = %tool.name, error = %e, "skipping tool");
+            continue;
+        }
+        out.push(ExposedTool {
+            name: tool.name.clone(),
+            description: tool.description.clone(),
+            // `kind` stays `None` for the same reason as the HTTP path (D6): a
+            // forge action would hand this tool the forge credential
+            // passthrough, which is exactly what `cli-query` must never get.
+            kind: None,
+            input_schema: Some(tool.input_schema.clone()),
+            annotations: None,
+        });
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -426,6 +454,39 @@ mod tests {
         assert_eq!(tools[0].name, "list_reports");
         assert_eq!(tools[0].description.as_deref(), Some("d"));
         assert_eq!(tools[0].input_schema, Some(json!({ "type": "object" })));
+    }
+
+    #[test]
+    fn cli_materialization_carries_the_manifest_catalog_verbatim() {
+        let block: crate::plugin_host::manifest::CliQueryBlock = serde_json::from_value(json!({
+            "command": "/usr/bin/longbridge",
+            "tools": [
+                { "name": "quote", "description": "Get a quote",
+                  "input_schema": { "type": "object",
+                                    "properties": { "symbol": { "type": "string" } } },
+                  "args": ["quote", "{{symbol}}"] },
+                // A name the connector rule refuses: skipped, not fatal.
+                { "name": "two words", "input_schema": {}, "args": [] },
+            ],
+        }))
+        .unwrap();
+        let tools = materialize_cli_tools("c", &block);
+        assert_eq!(tools.len(), 1, "{tools:?}");
+        assert_eq!(tools[0].name, "quote");
+        assert_eq!(tools[0].description.as_deref(), Some("Get a quote"));
+        assert!(
+            tools[0].kind.is_none(),
+            "connector tools are never forge actions"
+        );
+        assert!(
+            tools[0]
+                .input_schema
+                .as_ref()
+                .and_then(|s| s.pointer("/properties/symbol"))
+                .is_some(),
+            "the declared schema must be carried: {:?}",
+            tools[0].input_schema
+        );
     }
 
     #[test]

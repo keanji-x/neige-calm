@@ -26,17 +26,19 @@
 //! places. Adding a fourth spelling of "what this template is" to serve one
 //! label is how the drift starts. The three titles are self-describing.
 //!
-//! ## The vocabulary seam, on purpose (#1209)
+//! ## The vocabulary seam, closed (#1209)
 //!
-//! This endpoint says **template**. The write side — `POST /api/waves` — still
-//! says `workflow_id`, because on that field the name is accurate: it is the
-//! thing the plugin-binding path resolves. #1209 rules that the two concepts
-//! should merge into one (`template`, optionally bound to a plugin), and that
-//! the merge waits for a forcing function. Until then the seam stays visible
-//! and documented here rather than papered over with a `template_id` alias:
-//! two wire fields doing one job is worse than one recorded seam.
+//! One concept (template), one field (`workflow_id`). This endpoint lists it,
+//! `POST /api/waves` admits by it, and **the admission test is only "is it in
+//! the roster"** — there is no second path in. A plugin's manifest
+//! `workflows[]` array declares *which roster keys this plugin claims*; that is
+//! not a second spelling of the concept but a documented adapter boundary (see
+//! the field docs on `plugin_host::manifest::Manifest::workflows`).
 //!
-//! When the merge lands, the shape returned here does not change.
+//! (#1209 PR-2 renames the wire field to `template_id`. The seam is already
+//! gone as of PR-1; what is left is spelling.)
+//!
+//! The shape returned here did not change when the concepts merged.
 
 use crate::error::{ErrorBody, Result};
 use crate::routes::waves::resolve_trusted_workflow;

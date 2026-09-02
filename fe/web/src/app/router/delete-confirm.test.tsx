@@ -65,7 +65,18 @@ it('requires the shared confirmation before deleting from the CoveRoute panel', 
   render(<QueryClientProvider client={client}><ThemeProvider storage={{ getItem: () => null, setItem: () => undefined }}>
     <RouterProvider router={router} />
   </ThemeProvider></QueryClientProvider>);
-  await userEvent.click(await screen.findByRole('button', { name: 'Delete Risky' }));
+  /*
+   * Scoped to the panel, like the Today case above, because the *page* holds two
+   * buttons by this name: the CoveRoute panel's row and the sidebar's listing of
+   * the same wave. An unscoped `findByRole` resolves on the first poll at which
+   * exactly one exists and throws once both do, so what it was really asserting
+   * was that the two subtrees settle in different frames — measured on
+   * `origin/main` with a 200ms wait after the first match: two matches. Any
+   * change that lets them commit together turns this green test red without
+   * touching what it is about, which is what #1245 hit.
+   */
+  const panel = await screen.findByRole('complementary');
+  await userEvent.click(await within(panel).findByRole('button', { name: 'Delete Risky' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(0);
   await userEvent.click(screen.getByRole('button', { name: 'Delete wave' }));
   expect(requests.filter((request) => request.method === 'DELETE')).toHaveLength(1);
