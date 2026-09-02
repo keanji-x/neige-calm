@@ -34,7 +34,9 @@ import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
 import { PanelCard, PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
+import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
+import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
 import styles from './page.module.css';
 
 export type WavePageProps = Readonly<{
@@ -145,6 +147,27 @@ export function WavePage({
   const [mobileCardMotion, setMobileCardMotion] = useState<'none' | 'forward' | 'back'>('none');
   const mobileCard = mobileCardId === null ? undefined : cards.find((card) => card.id === mobileCardId);
   const lifecycle = headerLifecycle(wave.lifecycle);
+  /*
+   * ── The desktop panel goes through `core/view` (#1234 S1b-3b) ────────────
+   *
+   * One derivation, one traversal, one painter. What this file used to do — walk
+   * `cards` and `tasks` itself and spell each row's DOM inline — is what let the
+   * two viewports drift apart in the first place.
+   *
+   * **This file may not spell a projection marker.** Not one of the six
+   * attribute names in `core/view/panel.ts`'s `MARKER` table, in either their
+   * attribute spelling or their `dataset` one. That is not style: those
+   * attributes appearing in the rendered panel is the *evidence* the painter
+   * ran, and the evidence is worth nothing if this file can write them itself.
+   * `desktop-projection.test.tsx` asserts the absence mechanically, over this
+   * file's own source and in both spellings — which is why this comment names
+   * none of them.
+   *
+   * The page's other markers (`data-nc-wave-page`, `data-nc-role`,
+   * `data-nc-panel`, the two inventory markers, …) are this page's own and stay.
+   */
+  const panelView = deriveWavePageView({ cards, tasks });
+  const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
   const mobilePanelRef = useRef<HTMLElement | null>(null);
   const mobileActionsRef = useRef<HTMLSpanElement | null>(null);
   const previousPanel = useRef<MobilePanelKind | null>(null);
@@ -503,65 +526,18 @@ export function WavePage({
               </MobileListPage>
             ))}
           </div>
-          <div className={styles.desktopPanelSurface} aria-hidden={mobilePanelOpen ? true : undefined} inert={mobilePanelOpen}>
+          <div
+            className={styles.desktopPanelSurface}
+            /* The projection's root on this surface. `.mobileListSurface` is a
+               sibling and is in the DOM at the same time (the desktop side only
+               takes `inert`), so a whole-page scan would mix the two the moment
+               S1b-4 marks the mobile rows. */
+            data-nc-desktop-panel=""
+            aria-hidden={mobilePanelOpen ? true : undefined}
+            inert={mobilePanelOpen}
+          >
           <PanelCard>
-            <PanelModule title="Cards" action={cardsAction}>
-              {cards.length === 0
-                ? <PanelEmpty>No cards yet.</PanelEmpty>
-                : (
-                  <ul className={styles.cards} data-nc-card-inventory="">
-                    {cards.map((card) => {
-                      const title = card.title ?? null;
-                      /*
-                        The delete is a **sibling** of the row button, not a
-                        child of it: nesting one interactive element inside
-                        another is invalid HTML and trips axe's
-                        `nested-interactive`. Same construction, same hover
-                        reveal and same trailing column as `features/wave/row`'s
-                        panel variant — a card row and a wave row are the same
-                        kind of row in the same kind of card.
-
-                        `deletable === false` is the kernel saying it owns this
-                        row (the wave report, the spec harness). Those rows say
-                        `kernel-owned` where the × would be, so the absent
-                        control has a reason printed next to it rather than
-                        being a hole the reader has to explain.
-                      */
-                      const removable = onDeleteCard !== undefined && card.deletable;
-                      return (
-                        <li key={card.id} className={styles.cardItem}>
-                          <button
-                            type="button"
-                            className={`${styles.cardRow} ${removable ? styles.cardRowRemovable : ''}`}
-                            onClick={() => onOpenCard?.(card.id)}
-                          >
-                            <span className={styles.cardKind}>{title ?? card.kind}</span>
-                            <span className={styles.cardMeta}>
-                              {/* Only when a title took the name slot — an
-                                  untitled card is already showing its kind
-                                  there, and printing it twice is noise. */}
-                              {title !== null && <span className={styles.cardKindTag}>{card.kind}</span>}
-                              {!card.deletable && <span className={styles.kernelOwned}>kernel-owned</span>}
-                            </span>
-                          </button>
-                          {removable && (
-                            <button
-                              type="button"
-                              data-nc-role="icon"
-                              className={styles.cardRemove}
-                              aria-label={`Delete card ${title ?? card.kind}`}
-                              title="Delete card"
-                              onClick={() => onDeleteCard(card.id)}
-                            >
-                              <Icon name="close" size="sm" />
-                            </button>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-            </PanelModule>
+            {paintDesktopPanel(desktopPainter, { rowModules: panelView.rowModules.filter((m) => m.key === 'cards') })}
             {/*
               ── FOLDER became TASKS ─────────────────────────────────────────
               *
