@@ -13,9 +13,11 @@
 // and not a field that landed in the wrong carrier.
 //
 // It is **not** "every observable field". Since S1b-1, `RowAction` carries
-// `label` and `hint` — two more observable fields, in `aria-label` / `title` —
-// and this suite covers neither. Their carrier check is S1b-2's
-// `checkProjection` against S1b-3's markers; see the exclusions below.
+// `label` and `hint` — two more observable fields, in `aria-label` / `title`.
+// Those **are** covered here, but only as *row-scoped membership*: each derived
+// sentence must equal one of the attribute values the row's own subtree
+// carries. Which element carries it is still S1b-2's `checkProjection` against
+// S1b-3's markers; see the exclusions below.
 //
 //  - **A dropped field is not this suite's job.** The text assertions are
 //    occurrence *lower bounds*, and deleting a derived field only removes an
@@ -58,19 +60,38 @@
 //    `card.id` / `task.blockId`) and every action *payload* reach only React
 //    keys and callbacks (`public.tsx:516,638`), so asserting them would fail
 //    against a correct page.
-//  - **Action labels — excluded, and still excluded after S1b-1.** The page
-//    writes four sentences: `Delete card ${…}` (`:536`), `Delete card`
+//  - **Action wording — covered since S1b-1, as row-scoped membership.** The
+//    page writes four sentences: `Delete card ${…}` (`:536`), `Delete card`
 //    (`:537`), `Show ${task.key} in the report` (`:642`), `Open the worker card
-//    for ${task.key}` (`:747`). As of S1b-1 `RowAction` **does** carry all four,
-//    in its `label` / `hint` fields — the wording moved into `core` for the same
-//    reason `taskStatusPhrase` did, so that S1b's two painters do not each
-//    re-invent it. What has *not* moved is any check that the page's copies and
-//    `core`'s agree: these are `aria-label` / `title` values, and this suite
-//    reads `textContent` only (see the paragraph above). The correspondence
-//    between a `RowAction`'s wording and the attribute that carries it is
-//    S1b-2's `checkProjection`, against S1b-3's markers. Until then the wording
-//    is held by `core/view/wave-page.test.ts`'s expected values plus manual
-//    comparison with `public.tsx`, and `public.tsx` keeps its own copies.
+//    for ${task.key}` (`:747`). As of S1b-1 `RowAction` carries all four in its
+//    `label` / `hint` fields — the wording moved into `core` for the same reason
+//    `taskStatusPhrase` did, so that S1b's two painters do not each re-invent
+//    it. S1b-1 does **not** touch `public.tsx`, so the tree now holds two copies
+//    of each sentence, which is exactly the drift class #1234 exists to remove.
+//    `expectActionWording` below is what keeps the two copies pinned together
+//    until S1b-3 rewrites the page: for every action with a non-null `hint`, the
+//    sentence must be **equal to** one of the `title` values in the row's own
+//    subtree, and likewise `label` against `aria-label`. Three properties of
+//    that check are load-bearing and none of them is decoration:
+//      * it is set membership (`toContain` over an **array** of attribute
+//        values), not a substring test on a joined blob — the joined-blob form
+//        is what let two real mutations stay green (see the paragraph above);
+//      * it is scoped to the row's `<li>`, so a sentence rendered for a
+//        *different* row cannot stand in;
+//      * it is *not* an exhaustive projection. The page carries no
+//        `data-nc-row-action` markers yet (S1b-3 adds them), so the check cannot
+//        say *which element* carries which sentence, nor that the row carries no
+//        extra action. That is `checkProjection`'s job in S1b-2/3, and a green
+//        run here must not be read as "the projection is verified".
+//  - **The null side of `label` / `hint` — not covered, deliberately.** A Cards
+//    row's `open-card` derives `label: null, hint: null` ("the derivation
+//    invented no wording for the row body", `wave-page.ts`'s `cardRow`). No
+//    assertion here holds that: the row's subtree carries other `title` /
+//    `aria-label` values (the delete control's, and on Task rows the status
+//    dot's), so "no such attribute exists in this row" would be false against a
+//    correct page, and any weaker phrasing would not be checking the null. The
+//    claim that a null wording stays null is `core/view/wave-page.test.ts`'s;
+//    the claim that a painter emits no attribute for it is S1b-2/3's.
 //  - **`badge.struck` — excluded, S1b's.** It is only a class difference
 //    (`taskWithdrawn` vs `taskNote`, `:663-665`); neither `textContent` nor any
 //    marker this page carries distinguishes them.
@@ -87,7 +108,7 @@
 //    model" (`core/view/wave-page.ts`, `deriveWavePageView`) is likewise
 //    S1b's `checkProjection` to hold, once `paintPanel` walks the sequence.
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import type { CardWire } from '../../../../../core/domain/wave.ts';
@@ -101,6 +122,11 @@ import { card, renderPage } from './test-fixtures.tsx';
  *
  *  - a titled card **and** an untitled one, so `row.kind` is exercised on both
  *    sides of its condition;
+ *  - the titled card is deletable **and** the render passes `onDeleteCard`, so
+ *    the page actually paints the × (`public.tsx:514` needs both halves) and
+ *    `delete-card`'s two sentences have a carrier to be found in. Without the
+ *    callback the control is not drawn at all and the assertion would be
+ *    vacuous;
  *  - the untitled card is kernel-owned, so its row prints its kind exactly once
  *    and a derivation that emitted `kind` unconditionally would be asking the
  *    row for a second occurrence that is not there;
@@ -157,11 +183,49 @@ function renderedRows(container: Element, key: RowModuleView['key']): readonly E
  *  Note what that exclusion no longer means. `Status: ` is still renderer
  *  chrome, but since S1b-1 `Delete card ${…}` / `Delete card` / `Show … in the
  *  report` / `Open the worker card for …` are **`RowAction.label` / `.hint`,
- *  owned by `core`** — not page-authored chrome. They are skipped here because
- *  this suite counts visible text, not because nobody owns them; their carrier
- *  check belongs to S1b-2/3. */
+ *  owned by `core`**. They stay out of *this* count because they are not
+ *  visible text — `expectActionWording` checks them against the attributes that
+ *  actually carry them instead. */
 function visibleText(root: Element): string {
   return root.textContent ?? '';
+}
+
+/** Every value of `attribute` inside the row's subtree, the row element
+ *  included, as a **list of whole values** — never joined. Membership in this
+ *  list is an exact string equality against one rendered attribute; a joined
+ *  string would turn the same assertion into a substring test, which is the
+ *  shape two earlier mutations survived.
+ *
+ *  The two selectors are spelled as literals and chosen by a branch, for the
+ *  same reason `renderedRows` does it: `no-class-dom-query` requires a static
+ *  selector. */
+function attributeValues(root: Element, attribute: 'title' | 'aria-label'): readonly string[] {
+  const carriers = attribute === 'title'
+    ? root.querySelectorAll('[title]')
+    : root.querySelectorAll('[aria-label]');
+  const values: string[] = [];
+  for (const element of [root, ...carriers]) {
+    const value = element.getAttribute(attribute);
+    if (value !== null) values.push(value);
+  }
+  return values;
+}
+
+/**
+ * The row's derived action wording, against the row's own attribute values.
+ *
+ * Row-scoped membership, not projection: see the file head. `null` sides are
+ * not asserted — the Cards row body's `open-card` is `{label: null, hint:
+ * null}` and no assertion here covers that.
+ */
+function expectActionWording(rowElement: Element, row: PanelRow, where: string): void {
+  const titles = attributeValues(rowElement, 'title');
+  const labels = attributeValues(rowElement, 'aria-label');
+  row.actions.forEach((action, index) => {
+    const at = `${where}.actions[${index}] (${action.kind})`;
+    if (action.hint !== null) expect(titles, `${at}: hint`).toContain(action.hint);
+    if (action.label !== null) expect(labels, `${at}: label`).toContain(action.label);
+  });
 }
 
 function occurrences(haystack: string, needle: string): number {
@@ -220,7 +284,7 @@ function expectFieldsPresent(text: string, fields: readonly string[], where: str
 
 describe('deriveWavePageView against the rendered desktop panel', () => {
   it('renders every derived module title, and every row field inside its own row', () => {
-    const { container } = renderPage({ cards: CARDS, tasks: TASKS });
+    const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
     const view = deriveWavePageView({ cards: CARDS, tasks: TASKS });
     const whole = visibleText(container);
 
@@ -228,10 +292,12 @@ describe('deriveWavePageView against the rendered desktop panel', () => {
        on, asserted rather than assumed: `card-2` has no title, so its row
        prints its kind exactly **once** and an unconditional `kind` would be
        asking for a second occurrence that is not there. `deletable: false` is
-       the other half — a deletable card would add a `Delete card harness`
-       control, and while that label no longer enters the count (only
-       `textContent` does), the fixture should not depend on that to stay
-       discriminating. */
+       the other half — the render now passes `onDeleteCard`, so a deletable
+       `card-2` would paint a × carrying `Delete card harness`; that sentence is
+       an `aria-label` and so cannot enter the `textContent` count, but the
+       fixture should not depend on that to stay discriminating, and keeping the
+       row control-free keeps the arm's teeth independent of which carrier each
+       assertion reads. */
     expect(CARDS[1]).toMatchObject({ title: null, deletable: false });
 
     for (const module of view.rowModules) {
@@ -247,6 +313,7 @@ describe('deriveWavePageView against the rendered desktop panel', () => {
         const fields = rowFields(row);
         expectFieldsPresent(visibleText(element), fields, `${module.key}[${index}]`);
         expectStatus(element, row, `${module.key}[${index}]`);
+        expectActionWording(element, row, `${module.key}[${index}]`);
         /* The coarse claim the slice's acceptance names: every field reaches
            the page at all. Kept alongside the scoped one so a regression that
            moves a field out of its row still reads differently from one that
