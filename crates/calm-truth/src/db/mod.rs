@@ -321,6 +321,16 @@ pub trait RepoRead: Send + Sync + 'static {
     // ---- waves
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
+    /// #1253 PR1 — the Today launchpad wave, or `None` before it has ever
+    /// been minted.
+    ///
+    /// `purpose = 'launchpad'` is the same predicate
+    /// `today_launchpad_ensure_tx` selects on, and migration 0064's partial
+    /// unique index `idx_waves_one_launchpad` makes it single-valued, so this
+    /// is a lookup and not a "first of many". It lives here rather than as a
+    /// SELECT inside the route because a route-local `SELECT` over `waves`
+    /// would be a second column list to keep in step with `WAVE_SELECT_COLUMNS`.
+    async fn wave_get_launchpad(&self) -> Result<Option<Wave>>;
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
     /// Issue #250 PR 2 — calendar window query.
     ///
