@@ -564,10 +564,12 @@ export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthor
  * What IS true immediately is that the launchpad now carries a conversation, so
  * the conversation lists — and only those — are invalidated. That "and only
  * those" is asserted, not asserted-in-prose:
- * `today-summary-write.contract.test.tsx` drives this hook and checks that
- * neither `['today-launchpad']` nor `['wave', id]` appears. Without it, the
- * document tests in `app/router` could pass on a refetch from here instead of
- * on the invalidation policy they exist to pin.
+ * `today-summary-write.contract.test.tsx` drives this hook and asserts the
+ * invalidated set by EQUALITY, so a third key added here turns it red too —
+ * "and only those" is the claim, and a denylist of the two keys that would hurt
+ * most would not have been it. Without that guard the document tests in
+ * `app/router` could pass on a refetch from here instead of on the invalidation
+ * policy they exist to pin.
  */
 export type TodaySummaryMutation = Readonly<{
   write: () => void;

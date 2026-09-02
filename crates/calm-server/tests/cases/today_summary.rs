@@ -246,18 +246,29 @@ impl Boot {
             .unwrap()
     }
 
-    /// Every `harness.user_message.enqueued` row's `char_count`, oldest first.
+    /// Every `harness.user_message.enqueued` row for **this card**, oldest
+    /// first, as its `char_count`.
     ///
-    /// The counts are how a bootstrap message is told from a summary message:
-    /// the two texts differ in length, so the sequence says *which* messages
-    /// were sent and in what order — which is the whole content of
-    /// INV-TODAYDOC-010. A bare `COUNT(*)` would be satisfied by three
-    /// bootstraps.
-    async fn enqueued_char_counts(&self) -> Vec<i64> {
+    /// **This is a COUNT of enqueues and nothing else. The lengths are not a
+    /// discriminator and must not be used as one.** An earlier version of this
+    /// doc said the opposite — that "the two texts differ in length, so the
+    /// sequence says which messages were sent" — and that claim is exactly what
+    /// this round disproved: a foreign message can stand in for the bootstrap
+    /// and a length assertion cannot tell. Use [`Boot::delivered`] for "which
+    /// message"; use this only for "how many enqueues are on the permanent
+    /// record".
+    ///
+    /// Scoped to one card on purpose. It feeds `expected_total` in the
+    /// concurrency case, where an unscoped count would silently start including
+    /// any message some other part of the fixture enqueued — and the symptom
+    /// would be a ten-second timeout rather than a legible failure.
+    async fn enqueued_char_counts(&self, card_id: &str) -> Vec<i64> {
         sqlx::query_scalar(
             "SELECT json_extract(payload, '$.char_count') FROM events \
-              WHERE kind = 'harness.user_message.enqueued' ORDER BY id",
+              WHERE kind = 'harness.user_message.enqueued' AND scope_card = ?1 \
+              ORDER BY id",
         )
+        .bind(card_id)
         .fetch_all(self.repo.pool())
         .await
         .unwrap()
@@ -266,13 +277,13 @@ impl Boot {
     /// The distinct `events.actor` values behind one event kind, sorted.
     ///
     /// The audit log's own column, read the way an auditor would. Nothing else
-    /// in this file looks at attribution, and until it did, the 30 lines of
-    /// reasoning on `synthetic_actor` were unguarded: the mutation that
-    /// forwards the caller's declared actor went red only because a downstream
-    /// authorization gate happens to reject an AI actor carrying no card
-    /// context today. Relax that gate — or re-attribute `ai:codex` once a card
-    /// IS in scope — and the summary would start being recorded as an agent
-    /// starting itself, with nothing turning red.
+    /// in this file looks at attribution, and until it did, the reasoning on
+    /// `synthetic_actor` was unguarded: the mutation that forwards the caller's
+    /// declared actor goes red only because a downstream authorization gate
+    /// rejects an AI actor carrying no card context today. Relax that gate — or
+    /// re-attribute `ai:codex` once a card IS in scope — and the summary would
+    /// start being recorded as an agent starting itself, with nothing turning
+    /// red.
     async fn actors_for(&self, kind: &str) -> Vec<String> {
         sqlx::query_scalar("SELECT DISTINCT actor FROM events WHERE kind = ?1 ORDER BY actor")
             .bind(kind)
@@ -281,11 +292,15 @@ impl Boot {
             .unwrap()
     }
 
-    /// The distinct actors of every event written after `mark` about `card_id`.
+    /// The distinct actors of every event of one kind written after `mark`
+    /// about `card_id`.
     ///
     /// Watermarked because the card already carries the first trigger's events
-    /// by the time the dormancy is staged; without it "some event somewhere is
-    /// the kernel's" would be true before the restart ever ran.
+    /// by the time a dormancy is staged; without it "some event somewhere is
+    /// the kernel's" would be true before the restart ever ran. Keyed by kind
+    /// for the same reason: an earlier version asked only "any event about this
+    /// card", which stayed green while the restart was attributed to the user,
+    /// because unrelated kernel-authored rows land in the same window.
     async fn actors_for_card_after(&self, mark: i64, card_id: &str, kind: &str) -> Vec<String> {
         sqlx::query_scalar(
             "SELECT DISTINCT actor FROM events \
@@ -317,13 +332,19 @@ impl Boot {
     /// assertion structurally cannot make that distinction, which is why this
     /// matches the bytes.
     ///
-    /// **Where the bytes come from.** A message is, at any instant, in exactly
-    /// one of two places: still queued in the persisted harness snapshot
+    /// **Where the bytes come from.** A message is normally in one of two
+    /// places: still queued in the persisted harness snapshot
     /// (`worker_sessions.handle_state_json` → `pending_queue`), or already
     /// folded into a turn the harness issued, which the fake app-server records
     /// verbatim. Reading only the first is a race — the run loop drains on its
     /// own tick, and a first draft of this helper measured 2 messages after
     /// three triggers because of it.
+    ///
+    /// "One of two" is not exact, and the retry loop is what absorbs the
+    /// difference: between a turn being issued and `persist_snapshot` landing,
+    /// the same message is briefly in **both**, so a single read can
+    /// over-count. Retrying until the total matches `expected_total` settles on
+    /// the consistent reading; it is not a formality.
     ///
     /// `expected_total` is how many messages the caller knows were sent; the
     /// read is retried until the needles account for exactly that many, which
@@ -343,8 +364,18 @@ impl Boot {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let mut texts: Vec<String> = Vec::new();
+            // The NEWEST session only, not every session this card has had.
+            //
+            // A dormant restart mints a second `worker_sessions` row and the
+            // new harness inherits the old one's still-undelivered queue, so
+            // summing across rows counts those messages twice — measured, the
+            // dormant case read [2, 3] where the truth was [1, 2]. Reading the
+            // newest row is right rather than merely convenient: a message that
+            // was actually delivered has left the queue and is in a turn, and
+            // turns are read below across the whole fake, so nothing is lost.
             let states: Vec<Option<String>> = sqlx::query_scalar(
-                "SELECT handle_state_json FROM worker_sessions WHERE card_id = ?1 ORDER BY id",
+                "SELECT handle_state_json FROM worker_sessions WHERE card_id = ?1 \
+                  ORDER BY created_at_ms DESC, id DESC LIMIT 1",
             )
             .bind(card_id)
             .fetch_all(self.repo.pool())
@@ -457,9 +488,12 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
         "no conversation card may exist after a refusal"
     );
     assert_eq!(
-        b.enqueued_char_counts().await,
-        Vec::<i64>::new(),
-        "no message may be enqueued after a refusal"
+        b.scalar("SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued'")
+            .await,
+        0,
+        "no message may be enqueued after a refusal — asserted over the whole \
+         table, because a refusal has no card to scope to and any enqueue at \
+         all is the defect"
     );
 
     // --- and now the same endpoint, with activity ---
@@ -473,7 +507,8 @@ async fn an_empty_activity_window_refuses_without_creating_or_sending_anything()
         1
     );
     assert_eq!(
-        b.enqueued_char_counts().await.len(),
+        b.scalar("SELECT COUNT(*) FROM events WHERE kind = 'harness.user_message.enqueued'")
+            .await,
         2,
         "with activity the same endpoint creates the conversation and sends \
          both messages — which is what makes the refusal assertions above mean \
@@ -534,7 +569,7 @@ async fn the_first_trigger_sends_bootstrap_and_summary_and_each_later_one_sends_
          race the per-card first-message claim exists to prevent"
     );
     assert_eq!(
-        b.enqueued_char_counts().await.len(),
+        b.enqueued_char_counts(&card_id).await.len(),
         4,
         "…and the permanent audit rows agree with the delivered messages"
     );
@@ -793,10 +828,21 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
         "the recovery must not erase the transcript — that is the difference \
          between re-submitting a start and going through `/spec/reset`"
     );
+    /*
+     * Identity, not a count. If the dormant retry re-sent the BOOTSTRAP text
+     * instead of the summary, a length assertion would read 3 and pass, the
+     * actor assertion would pass, and the trigger would have silently done
+     * nothing the user asked for. This is the one branch where a content error
+     * is uniquely possible — the retry re-sends a text the handler chose — and
+     * no other case covers it.
+     */
     assert_eq!(
-        b.enqueued_char_counts().await.len(),
-        3,
-        "and the summary the trigger was for must actually have been sent"
+        b.delivered(&card_id, &[TODAY_SUMMARY_BOOTSTRAP_TEXT, SUMMARY_MARKER], 3)
+            .await,
+        vec![1, 2],
+        "the recovery must deliver the SUMMARY the trigger was for — one \
+         bootstrap in total (from the mint) and two summaries, not a second \
+         bootstrap"
     );
     /*
      * The restart is the kernel's, and it is the one place in this module that
@@ -881,7 +927,7 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
     let (status, first) = b.summary(None).await;
     assert_eq!(status, StatusCode::OK, "body={first}");
     let card_id = first["card_id"].as_str().unwrap().to_string();
-    assert_eq!(b.enqueued_char_counts().await.len(), 2);
+    assert_eq!(b.enqueued_char_counts(&card_id).await.len(), 2);
 
     // …then take away the evidence rows that mint wrote — BOTH of them, which
     // is what "an empty transcript" means to the predicate.
@@ -895,7 +941,7 @@ async fn a_card_left_with_an_empty_transcript_still_receives_the_bootstrap() {
     .rows_affected();
     assert_eq!(removed, 2, "the fixture removes both rows the mint wrote");
     assert_eq!(
-        b.enqueued_char_counts().await,
+        b.enqueued_char_counts(&card_id).await,
         Vec::<i64>::new(),
         "the fixture must actually reproduce the empty transcript, or this \
          case proves nothing"
@@ -1099,13 +1145,22 @@ async fn a_create_that_loses_the_key_race_resolves_the_card_and_still_sends() {
 /// `deletable: false` and never goes away.
 ///
 /// The race is **created**, not hoped for: both requests park at a rendezvous
-/// placed after the transcript read's arrival counter and before the claim, so
-/// they are guaranteed to contend, and `bootstrap_arrivals == 2` is what proves
-/// it rather than a scheduler that happened to interleave them.
+/// placed before the claim, so they are guaranteed to contend rather than
+/// depending on a scheduler that happens to interleave them. The
+/// `bootstrap_arrivals` check below is a fixture sanity check and nothing more
+/// — see its message for why it cannot be the proof.
 ///
-/// The state is staged on a **separate server over the same database**, because
-/// a `Barrier::new(2)` would park the staging request forever — it has no
-/// partner. Same fixture shape as the re-point case.
+/// **Two servers, one in-memory database, and that coupling matters.** The
+/// state is staged on a separate server because a `Barrier::new(2)` would park
+/// the staging request forever — it has no partner (same fixture shape as the
+/// re-point case). The consequence is that the staging server's harness stays
+/// alive against the same `worker_sessions` row while `b` recovers a second
+/// harness from the persisted snapshot. It is stable — 25 unmutated runs, and
+/// the mutation is 8/8 red with the double-bootstrap signature rather than a
+/// timeout — but the coupling is real: if the staging server ever failed to
+/// drain its queue, `b` would re-deliver those pending messages and the counts
+/// here would move. `delivered` is scoped to this server's fake app-server,
+/// which is what keeps the staging server's own two messages out of the totals.
 #[tokio::test]
 async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() {
     let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
@@ -1157,8 +1212,12 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
     let (_, _, arrivals) = b.create_counters.snapshot();
     assert_eq!(
         arrivals, 2,
-        "both triggers must have reached the transcript read; without that the \
-         assertion below is satisfied by a run in which nothing raced"
+        "both triggers reached the bootstrap block. This is a sanity check on \
+         the fixture, NOT the proof that they raced: the counter increments \
+         before the transcript is read, so it cannot witness two requests \
+         seeing an empty transcript. What makes them race is the rendezvous \
+         they both park at — and a missing partner would hang there rather than \
+         reach this line"
     );
     /*
      * Scoped to THIS server: the staging server's own two messages went to its
@@ -1170,7 +1229,7 @@ async fn two_concurrent_triggers_on_an_empty_transcript_deliver_one_bootstrap() 
      * fails on the assertion below with both counts in the message, instead of
      * timing out with no diagnosis.
      */
-    let enqueued = b.enqueued_char_counts().await.len();
+    let enqueued = b.enqueued_char_counts(&card_id).await.len();
     assert_eq!(
         b.delivered(
             &card_id,

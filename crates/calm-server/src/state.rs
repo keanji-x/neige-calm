@@ -151,6 +151,15 @@ pub struct RouteState {
     ///      for the same card while still holding its guard, and
     ///      `tokio::sync::Mutex` is not reentrant. That is why these are two
     ///      maps.
+    ///    * *There are now THREE forward-order nestings, not one.*
+    ///      `create_cove_conversation` was the first; `create_wave_conversation`
+    ///      (#1189) and `routes::today_summary`'s bootstrap recovery (#1253 PR2)
+    ///      are the others, and all three hold this claim across
+    ///      `send_spec_input` → `ensure_live_spec_harness`. The Today path also
+    ///      holds it across a `spec-harness-start` operation on its dormant
+    ///      branch, which blocks on a codex RPC; that submits no per-card lock
+    ///      of its own (the adapter's mint map is private and is taken and
+    ///      released inside the operation), so it closes no cycle.
     ///    * *Taking the two maps in the reverse order* does NOT self-deadlock
     ///      — they are different mutexes, so one task alone completes fine.
     ///      It deadlocks only when it runs concurrently with a

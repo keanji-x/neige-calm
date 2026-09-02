@@ -58,14 +58,20 @@ it('invalidates the conversation lists and nothing the document is read through'
   await act(async () => { write?.(); await Promise.resolve(); });
   await act(async () => { await Promise.resolve(); });
 
-  expect(invalidated).toContainEqual([...queryKeys.waveConversationsPrefix()]);
   /*
-   * The two the event bridge owns. Asserting their ABSENCE is the point: with
+   * The FULL set, not a denylist of the two keys that would hurt most.
+   *
+   * A first version asserted `toContain(conversations)` plus `not.toContain`
+   * for `['today-launchpad']` and `['wave', id]`, which is what the comment in
+   * `queries.ts` claims ("and only those") minus the "only": a third
+   * invalidation added later would have passed. Equality is what makes the
+   * sentence true.
+   *
+   * Why the two named absences matter enough to have been singled out: with
    * either of them here, `today-document.test.tsx`'s "redraws when the agent's
    * report edit arrives" cases could pass on this refetch instead of on the
-   * invalidation policy they are meant to pin — a green test measuring the
-   * wrong mechanism.
+   * invalidation policy they exist to pin — a green test measuring the wrong
+   * mechanism.
    */
-  expect(invalidated).not.toContainEqual([...queryKeys.todayLaunchpad()]);
-  expect(invalidated).not.toContainEqual([...queryKeys.waveDetail('lp')]);
+  expect(invalidated).toEqual([[...queryKeys.waveConversationsPrefix()]]);
 });

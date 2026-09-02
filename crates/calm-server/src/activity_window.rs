@@ -39,32 +39,32 @@
 //!
 //! The same hazard points forward: an emitter that logs one of the allowlisted
 //! kinds at `EventScope::System` writes a row this projection cannot see, and
-//! nothing in the schema forbids that. As of #1253 PR2 no emitter does — the
-//! call sites below were enumerated by grepping the event **variant names**
-//! across `crates/calm-server/src` and reading the scope each is paired with:
+//! nothing — no type, no migration, no test — forbids that.
 //!
-//! * `wave.lifecycle_changed` — `routes::waves::update_wave`,
-//!   `wave_lifecycle::apply_requested_transition_in_tx`,
-//!   `wave_lifecycle::auto_transition_if_current_in_tx`, `reaper/mod.rs`,
-//!   `scheduler/mod.rs`, `bin/replay.rs`: all `EventScope::Wave`.
-//! * `wave.report_edited` — `wave_report::persist_report`, the single writer
-//!   every REST and MCP path funnels through: `EventScope::Wave`.
-//! * `task.completed` / `task.failed` —
-//!   `decision_sink::commit_worker_task_report` (`EventScope::Card`, which
-//!   populates `scope_wave` as well), plus `reaper/mod.rs` and three sites in
-//!   `scheduler/mod.rs`, all `EventScope::Wave`.
+//! **There is deliberately no enumeration of emitters here any more.** Two were
+//! written and both were wrong. The first named three sites; review found four
+//! more (`reaper`, `scheduler`, `bin/replay`). The second named those; review
+//! then found two further `task.*` producers, and grepping the two variant
+//! constructors across `crates/calm-server/src` returns on the order of forty
+//! matches spread over `dispatcher`, `scheduler`, `reaper`, `decision_sink` and
+//! three MCP tools. A list that has been incomplete twice, in a file nothing
+//! recompiles when an emitter is added, is not evidence — it is a comment that
+//! reads like evidence, which is worse than saying nothing.
 //!
-//! **This list was incomplete once, and in the worst place.** A first pass
-//! grepped only each kind's constructor and missed the reaper, the scheduler
-//! and the replay binary — four sites — and it missed them for `task.*`, the
-//! one pair with no end-to-end test behind it. Re-derive rather than trust it.
+//! So what is actually known is stated instead, with its carrier:
 //!
-//! Two of the four are pinned end to end against their real emitters
-//! (`today_summary::a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity`);
-//! the task pair is **not**, and its scope rests on that reading rather than on
-//! a test. Say so rather than widening the sentence: a future emitter is what
-//! would break this, and a future emitter is exactly what an enumeration cannot
-//! cover.
+//! * **Verified by execution, per kind**: `wave.report_edited` and
+//!   `wave.lifecycle_changed` are driven through their production REST routes
+//!   and counted, by
+//!   `today_summary::a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_activity`.
+//! * **Assumed, and unpinned**: that every `task.completed` / `task.failed`
+//!   emitter uses a wave or card scope. Spot reads support it and no
+//!   counter-example is known, but no test drives one and no enumeration of
+//!   them should be trusted.
+//!
+//! What would settle it is a guard rather than a list: a kernel-level rule that
+//! these kinds may not be logged at `System` scope, or one end-to-end case per
+//! kind. Neither is in this slice.
 //!
 //! # Counts only — this is what bounds the prompt
 //!

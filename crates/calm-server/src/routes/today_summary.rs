@@ -260,9 +260,13 @@ pub struct TodaySummaryCreateCounters {
     pub attempts: AtomicU64,
     /// Creates that lost the key race and took D5's 409 fallback.
     pub conflicts: AtomicU64,
-    /// Requests that reached the bootstrap decision point. Two of these means
-    /// both were about to read the transcript — i.e. the race that needs the
-    /// first-message claim actually happened.
+    /// Requests that reached the bootstrap decision block.
+    ///
+    /// It is incremented *before* the transcript is read, so it does **not**
+    /// witness "both requests saw an empty transcript" — an earlier comment
+    /// claimed that and two review channels independently caught it. What
+    /// creates the race is the rendezvous; this only says how many requests got
+    /// as far as the block.
     pub bootstrap_arrivals: AtomicU64,
 }
 
@@ -530,8 +534,14 @@ pub(crate) async fn write_today_summary(
     // locks; nothing in the tree takes those and then this claim, so that
     // nesting closes no cycle.
     {
-        // Counted before the rendezvous so a case can tell "both requests
-        // observed an empty transcript" from "the second read the first's row".
+        // Counts requests that reached this block. That is ALL it proves — not
+        // that two requests observed an empty transcript, which it cannot know:
+        // it increments before `user_message_already_enqueued` runs. **The
+        // barrier below is what creates the race**; the counter is a cheap
+        // sanity check that the arm was entered the expected number of times,
+        // and it is close to vacuous on its own, because a `Barrier::new(2)`
+        // with a missing partner parks forever and no assertion is ever
+        // reached.
         app.today_summary_create
             .bootstrap_arrivals
             .fetch_add(1, Ordering::Relaxed);
@@ -541,6 +551,15 @@ pub(crate) async fn write_today_summary(
         if let Some(barrier) = &app.today_summary_bootstrap_rendezvous {
             barrier.wait().await;
         }
+        // Held across genuinely blocking work, which is worth stating because
+        // the obvious assumption is the opposite: on the dormant branch
+        // `send_summary` submits a `spec-harness-start` and waits on it, and
+        // that operation performs a codex `thread/start` RPC. So a slow or
+        // wedged app-server holds this claim for as long as the operation runs.
+        // The blast radius is one card — the map is per-card and every other
+        // taker of it works on a different conversation — and the nesting is
+        // still the permitted one, but "only cheap work happens under the
+        // claim" is not true here.
         let _first_message_claim =
             lock_card(&s.conversation_first_message_locks, &derived.card_id).await;
         if !user_message_already_enqueued(&w, &wave_id, &derived.card_id).await? {
