@@ -24,6 +24,7 @@
 
 import { Badge as AstryxBadge } from '@astryxdesign/core/Badge';
 import { Heading as AstryxHeading } from '@astryxdesign/core/Heading';
+import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
 import { Switch as AstryxSwitch } from '@astryxdesign/core/Switch';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 
@@ -86,38 +87,49 @@ export function PluginsPane({
             : plugins.length === 0
               ? <AstryxText as="p" color="secondary">No plugins installed.</AstryxText>
               : (
-                <ul className={styles.pluginList}>
+                <AstryxList hasDividers density="balanced">
                   {plugins.map((plugin) => (
-                    <li key={plugin.id} className={styles.pluginRow}>
-                      <div className={styles.pluginText}>
-                        <div className={styles.pluginHead}>
-                          <AstryxText as="span">{plugin.manifest_name}</AstryxText>
-                          <AstryxBadge variant={stateVariant(plugin.state)} label={plugin.state} />
-                        </div>
-                        <span className={styles.pluginMeta}>{plugin.id} · {plugin.version}</span>
-                        {plugin.manifest_description !== undefined && (
-                          <AstryxText as="p" color="secondary">{plugin.manifest_description}</AstryxText>
-                        )}
-                        {/* The reason a row is `crashed` or `unavailable`. Kept
-                            inside the row and not hoisted to a banner: it is a
-                            property of this plugin, and two failing plugins
-                            must not collapse into one message. */}
-                        {plugin.last_error !== undefined && (
-                          <p className={styles.error} role="alert">{plugin.last_error}</p>
-                        )}
-                      </div>
-                      <AstryxSwitch
-                        // Named after the plugin: a list of switches all called
-                        // "Enabled" is one a screen reader cannot navigate.
-                        label={`Enable ${plugin.manifest_name}`}
-                        isLabelHidden
-                        value={plugin.enabled}
-                        isLoading={pendingId === plugin.id}
-                        onChange={(next) => onSetEnabled(plugin.id, next)}
-                      />
-                    </li>
+                    <AstryxListItem
+                      key={plugin.id}
+                      /* Same row grammar as the template list: identity on the
+                         left, the row's one control at the end. These rows do
+                         **not** drill in, so they carry no `onClick` and no
+                         chevron — astryx's list guidance rejects an
+                         interactive control inside an interactive row, and a
+                         row that is both a switch and a link is two intents on
+                         one target. */
+                      label={plugin.manifest_name}
+                      description={(
+                        <span className={styles.pluginMeta}>
+                          <span className={styles.pluginId}>{plugin.id} · {plugin.version}</span>
+                          {plugin.manifest_description !== undefined && (
+                            <span>{plugin.manifest_description}</span>
+                          )}
+                          {/* The reason a row is `crashed` or `unavailable`.
+                              Inside the row, not hoisted to a banner: it is a
+                              property of this plugin, and two failing plugins
+                              must not collapse into one message. */}
+                          {plugin.last_error !== undefined && (
+                            <span className={styles.error} role="alert">{plugin.last_error}</span>
+                          )}
+                        </span>
+                      )}
+                      startContent={<AstryxBadge variant={stateVariant(plugin.state)} label={plugin.state} />}
+                      endContent={(
+                        <AstryxSwitch
+                          // Named after the plugin: a list of switches all
+                          // called "Enabled" is one a screen reader cannot
+                          // navigate.
+                          label={`Enable ${plugin.manifest_name}`}
+                          isLabelHidden
+                          value={plugin.enabled}
+                          isLoading={pendingId === plugin.id}
+                          onChange={(next) => onSetEnabled(plugin.id, next)}
+                        />
+                      )}
+                    />
                   ))}
-                </ul>
+                </AstryxList>
               )}
         </section>
       </div>

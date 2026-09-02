@@ -25,7 +25,13 @@
     display: grid;
     grid-template-columns: auto minmax(0, 1fr);
     gap: var(--space-9);
-    min-block-size: min(30rem, 60dvh);
+    /* The overlay is top-aligned by `ui/dialog`'s frozen `.dialog-overlay-wide`
+       (`align-items: start`), which this layer may not change. A taller floor
+       is what is available: the panel then spans most of the viewport's height,
+       so the space above and below it reads as the dialog's own margin rather
+       than as a panel that slid up. It is not centring, and it is not pretending
+       to be. */
+    min-block-size: min(42rem, 78dvh);
   }
 
   .sectionNav {
@@ -138,76 +144,19 @@
 
   }
 
-  /*
-   * The template list (#1230). A hairline between rows and nothing else — per
-   * the boundary ladder one channel does the separating, so no second box
-   * inside the section card that already frames this list.
-   */
-  .templateList {
-    list-style: none;
-    margin: var(--space-0);
-    padding: var(--space-0);
-  }
 
-  .templateRow {
+  /* `ListItem`'s description slot holds up to three lines for a plugin — id
+     and version, the manifest's own sentence, and the failure that explains a
+     red badge. They stack; only the identity line is monospaced, because it is
+     the one the reader copies. */
+  .pluginMeta {
     display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding-block: var(--space-4);
-    border-block-start: 1px solid var(--hairline);
-  }
-
-  .templateList > .templateRow:first-child {
-    border-block-start: none;
-  }
-
-  /* The row's content is one astryx HStack, which sizes to its children: the
-     Edit button ended up against the template's name with the rest of the row
-     empty to its right. Stretching the stack is what makes its own
-     `justify="between"` mean the row's two ends. */
-  .templateRow > :first-child {
-    flex: 1 1 auto;
-    min-inline-size: 0;
-  }
-
-  /* The plugin list. Same one-channel separation as the template list: a
-     hairline between rows, no box around each one. */
-  .pluginList {
-    list-style: none;
-    margin: var(--space-0);
-    padding: var(--space-0);
-  }
-
-  .pluginRow {
-    display: flex;
-    align-items: start;
-    justify-content: space-between;
-    gap: var(--space-6);
-    padding-block: var(--space-6);
-    border-block-start: 1px solid var(--hairline);
-  }
-
-  .pluginList > .pluginRow:first-child {
-    border-block-start: none;
-  }
-
-  .pluginText {
-    display: flex;
-    min-inline-size: 0;
     flex-direction: column;
     gap: var(--space-2);
+    align-items: start;
   }
 
-  .pluginHead {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: var(--space-3);
-  }
-
-  .pluginMeta {
+  .pluginId {
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     line-height: var(--leading-snug);

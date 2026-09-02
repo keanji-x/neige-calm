@@ -49,12 +49,41 @@ deliberately **not** here. Each is its own screen with its own failure modes,
 and the kernel routes for them (`routes/plugins.rs`) exist whenever they are
 picked up.
 
-## The shape: nav column + label-left rows
+## The row grammar (one spec for every pane)
+
+Every row on every settings pane is one of exactly two shapes. Nothing here is
+hand-laid out; both come from `@astryxdesign/core`.
+
+| Shape | What it is | Built from | Ends with |
+| --- | --- | --- | --- |
+| **Control row** | one setting you change in place | `FormLayout direction="horizontal-labels"` — label in the left column, control in the right | its control (`TextInput`, `SegmentedControl`, …) |
+| **Object row** | one item in a collection | `List hasDividers` + `ListItem` — name as `label`, secondary lines as `description` | a `Switch` (state) **or** a `chevron-right` (drills in) |
+
+A control astryx does not label visually — `SegmentedControl`'s `label` is
+`aria-label` only — is wrapped in `Field`, which is what astryx documents that
+wrapper for. That is what puts `Theme` in the label column with the proxy rows.
+
+**There is no Edit button.** A template row *is* the affordance: one target, one
+chevron, named after the template it opens. A row plus a button inside it is two
+targets for one intent, and astryx's list guidance rejects an interactive
+control inside an interactive row. The same rule is why a plugin row — which
+carries a `Switch` — is not clickable.
+
+**Going back from a second level** is a `‹ Parent` ghost button above the
+title, never a filled button beside it: a filled button beside a title reads as
+an action *on* the thing, not as the way back out of it.
+
+## The frame: nav column + panes
 
 The pane follows astryx's own settings guidance rather than an invented layout:
-`FormLayout direction="horizontal-labels"` — *"use horizontal-labels for
-settings pages where labels sit beside their inputs"* — with a group heading,
-its rows, and a `Divider` between groups.
+*"use horizontal-labels for settings pages where labels sit beside their
+inputs"* — a group heading, its rows, and a `Divider` between groups.
+
+**The overlay is top-aligned, not centred.** `.dialog-overlay-wide` hard-codes
+`align-items: start` and lives in `styles/`, which is frozen; changing it needs
+an `OWNERSHIP-CHANGE` trailer against an issue. The pane's `min-block-size`
+floor is the mitigation available from this layer — a taller panel leaves
+symmetric-looking margin — and it is not centring.
 
 **No cards.** Bordered cards were the previous shape and they said the wrong
 thing: a card is a boundary, and Network / Appearance / About are three parts of
