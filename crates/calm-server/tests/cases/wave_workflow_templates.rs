@@ -1,6 +1,6 @@
 //! #1110 S6 — seed workflow template waves; auto-fork on create.
 //!
-//! Matching `workflow_id` lazily seeds three system-cove template waves
+//! Matching `template_id` lazily seeds three system-cove template waves
 //! (overlay `template_key`) and forks that report when `fork_report_from`
 //! is omitted. Lists still hide templates; detail returns them. Explicit
 //! `fork_report_from` is not overwritten.
@@ -117,6 +117,30 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
+}
+
+/// Like [`post`], but returns the body as raw text.
+///
+/// Extractor-level rejections (`#1209` test #16) are produced by axum, not by
+/// this crate's `CalmError`, so they are `text/plain` and not the usual
+/// `{"error": ...}` envelope. Parsing them as JSON yields `null` and throws the
+/// message away, which would leave the assertions unable to tell an
+/// unknown-field rejection from any other 4xx.
+async fn post_text(app: axum::Router, uri: &str, body: Value) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
 async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -256,7 +280,7 @@ fn task_blocks(payload: &WaveReportPayload) -> Vec<&Value> {
 }
 
 #[tokio::test]
-async fn matching_workflow_id_seeds_one_wave_per_template_key() {
+async fn matching_template_id_seeds_one_wave_per_template_key() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -264,7 +288,7 @@ async fn matching_workflow_id_seeds_one_wave_per_template_key() {
         create_body(
             &boot.cove_id,
             "first-issue-dev",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
@@ -355,7 +379,7 @@ async fn matching_workflow_id_seeds_one_wave_per_template_key() {
         create_body(
             &boot.cove_id,
             "second-issue-dev",
-            json!({ "workflow_id": SMALL_CHANGE }),
+            json!({ "template_id": SMALL_CHANGE }),
         ),
     )
     .await;
@@ -373,12 +397,12 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
         create_body(
             &boot.cove_id,
             "forked-issue-dev",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert_eq!(body["workflow_id"], ISSUE_DEVELOPMENT);
+    assert_eq!(body["template_id"], ISSUE_DEVELOPMENT);
     assert!(
         body["plugin_scope"].is_null(),
         "empty plugin registry leaves plugin_scope null, body={body}"
@@ -473,7 +497,7 @@ async fn explicit_fork_report_from_is_not_overwritten() {
             &boot.cove_id,
             "explicit-fork",
             json!({
-                "workflow_id": ISSUE_DEVELOPMENT,
+                "template_id": ISSUE_DEVELOPMENT,
                 "fork_report_from": source_id,
             }),
         ),
@@ -506,12 +530,12 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
             create_body(
                 &boot.cove_id,
                 &format!("forked-{key}"),
-                json!({ "workflow_id": key }),
+                json!({ "template_id": key }),
             ),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "key={key} body={body}");
-        assert_eq!(body["workflow_id"], key);
+        assert_eq!(body["template_id"], key);
         assert!(body["plugin_scope"].is_null());
         let wave_id = body["id"].as_str().unwrap();
         let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
@@ -587,7 +611,7 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
         create_body(
             &boot.cove_id,
             "after-stolen-key",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
@@ -616,7 +640,7 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
 }
 
 #[tokio::test]
-async fn unknown_workflow_id_still_400s() {
+async fn unknown_template_id_still_400s() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app,
@@ -624,7 +648,7 @@ async fn unknown_workflow_id_still_400s() {
         create_body(
             &boot.cove_id,
             "unknown-workflow",
-            json!({ "workflow_id": "missing-workflow" }),
+            json!({ "template_id": "missing-workflow" }),
         ),
     )
     .await;
@@ -651,8 +675,8 @@ async fn unknown_workflow_id_still_400s() {
 ///
 /// 1. **No `input_schema`.** Copying the stub in
 ///    `tests/cases/wave_templates_read.rs` verbatim brings one along, and its
-///    `required` list makes a create *without* `workflow_input` fail the
-///    required-input check (`validate_workflow_input_binding`) — a 400 that
+///    `required` list makes a create *without* `template_input` fail the
+///    required-input check (`validate_template_input_binding`) — a 400 that
 ///    arrives no matter what the admission rule is. Test #8 would then be green
 ///    even with the pre-#1209 plugin fallback restored, i.e. green precisely
 ///    when the thing it exists to detect is back.
@@ -660,7 +684,7 @@ async fn unknown_workflow_id_still_400s() {
 ///    `create_accepts_exactly_the_listed_templates` depends on that (see its
 ///    doc comment). Merging the two fixtures would break that test for reasons
 ///    that have nothing to do with admission.
-async fn boot_with_trusted_plugin(declared_workflow_ids: &[&str]) -> Boot {
+async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -703,7 +727,7 @@ async fn boot_with_trusted_plugin(declared_workflow_ids: &[&str]) -> Boot {
     )
     .expect("symlink stub plugin");
 
-    let workflows: Vec<Value> = declared_workflow_ids
+    let workflows: Vec<Value> = declared_template_ids
         .iter()
         .map(|id| json!({ "id": id }))
         .collect();
@@ -801,7 +825,7 @@ async fn boot_with_trusted_plugin(declared_workflow_ids: &[&str]) -> Boot {
 /// spelling). It then goes red on the **status code**, not on wording.
 /// Restoring only the old wording turns leg 2 of the error assertion red.
 #[tokio::test]
-async fn plugin_declared_non_template_workflow_id_is_rejected() {
+async fn plugin_declared_non_template_id_is_rejected() {
     const NOT_A_TEMPLATE: &str = "not-a-template";
     let boot = boot_with_trusted_plugin(&[NOT_A_TEMPLATE, ISSUE_DEVELOPMENT]).await;
 
@@ -815,7 +839,7 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
         create_body(
             &boot.cove_id,
             "bound-control",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
@@ -833,7 +857,7 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
         create_body(
             &boot.cove_id,
             "plugin-declared-non-template",
-            json!({ "workflow_id": NOT_A_TEMPLATE }),
+            json!({ "template_id": NOT_A_TEMPLATE }),
         ),
     )
     .await;
@@ -845,7 +869,7 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
     let error = body["error"].as_str().unwrap_or("");
     assert!(error.contains("known wave template"), "body={body}");
     assert!(
-        !error.contains("requires `workflow_input`"),
+        !error.contains("requires `template_input`"),
         "rejected for input validation, not admission — the fixture's stub must \
          not declare an input_schema; body={body}"
     );
@@ -868,12 +892,12 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
 ///
 /// **Premise, and it is load-bearing:** `boot()` starts no plugins. With no
 /// running trusted plugin, `resolve_trusted_workflow` is `None` for every id,
-/// so `validate_workflow_input_binding(None, None)` short-circuits `Ok(())` and
+/// so `validate_template_input_binding(None, None)` short-circuits `Ok(())` and
 /// `issue-development` never reaches the required-input arm. That is what makes
 /// `== 201` correct for *every* listed id. If this harness ever grows a plugin
 /// fixture, this case must keep using the no-plugin one; if the premise has to
 /// be relaxed, widen the assertion to an explicit allowance
-/// (`201 || (400 && "requires `workflow_input`")`) — do **not** weaken it to
+/// (`201 || (400 && "requires `template_input`")`) — do **not** weaken it to
 /// "the body does not say `known wave template`". That weaker form is green for
 /// a re-worded special case such as
 /// `if id == "investigation" { return Err(BadRequest("investigation is disabled")) }`,
@@ -906,7 +930,7 @@ async fn create_accepts_exactly_the_listed_templates() {
             create_body(
                 &boot.cove_id,
                 &format!("listed-{id}"),
-                json!({ "workflow_id": id }),
+                json!({ "template_id": id }),
             ),
         )
         .await;
@@ -924,7 +948,7 @@ async fn create_accepts_exactly_the_listed_templates() {
             create_body(
                 &boot.cove_id,
                 &format!("absent-{absent}"),
-                json!({ "workflow_id": absent }),
+                json!({ "template_id": absent }),
             ),
         )
         .await;
@@ -985,7 +1009,7 @@ async fn listing_wave_templates_does_not_materialize_seed_state() {
         create_body(
             &boot.cove_id,
             "seed-for-inv-1209",
-            json!({ "workflow_id": SMALL_CHANGE }),
+            json!({ "template_id": SMALL_CHANGE }),
         ),
     )
     .await;
@@ -1005,7 +1029,7 @@ async fn listing_wave_templates_does_not_materialize_seed_state() {
     );
 }
 
-/// #1209 test #12 — a whitespace-only `workflow_id` is rejected **by
+/// #1209 test #12 — a whitespace-only `template_id` is rejected **by
 /// admission**.
 ///
 /// #1209 deleted the dedicated `trim().is_empty()` guard: whitespace is simply
@@ -1015,12 +1039,12 @@ async fn listing_wave_templates_does_not_materialize_seed_state() {
 ///
 /// The mutation this catches is the guard coming back as a *skip* —
 /// `if id.trim().is_empty() { /* treat as no template chosen */ }`, yielding
-/// 201, a null `plugin_scope` and no fork. `unknown_workflow_id_still_400s`
+/// 201, a null `plugin_scope` and no fork. `unknown_template_id_still_400s`
 /// sends `missing-workflow` and stays green through that change; this one does
 /// not. The request deliberately carries a valid `cove_id`, no `cwd` and no
-/// `workflow_input`, so no other validation can supply the 400.
+/// `template_input`, so no other validation can supply the 400.
 #[tokio::test]
-async fn blank_workflow_id_is_rejected() {
+async fn blank_template_id_is_rejected() {
     let boot = boot().await;
     let before = db_snapshot(&boot.repo).await;
     let (status, body) = post(
@@ -1030,7 +1054,7 @@ async fn blank_workflow_id_is_rejected() {
             "cove_id": boot.cove_id,
             "title": "blank workflow id",
             "theme": theme(),
-            "workflow_id": "   ",
+            "template_id": "   ",
         }),
     )
     .await;
@@ -1096,7 +1120,7 @@ async fn pre_transaction_404_unknown_cove_with_template_does_not_seed() {
             "cove_id": "cove_does_not_exist",
             "title": "unknown cove",
             "theme": theme(),
-            "workflow_id": SMALL_CHANGE,
+            "template_id": SMALL_CHANGE,
         }),
         StatusCode::NOT_FOUND,
     )
@@ -1113,7 +1137,7 @@ async fn pre_transaction_400_relative_cwd_with_template_does_not_seed() {
             "cwd": "relative/not/absolute",
             "attach_folder": false,
             "theme": theme(),
-            "workflow_id": SMALL_CHANGE,
+            "template_id": SMALL_CHANGE,
         }),
         StatusCode::BAD_REQUEST,
     )
@@ -1135,7 +1159,7 @@ async fn pre_transaction_400_non_repo_cwd_with_template_does_not_seed() {
             "cwd": non_repo.path().display().to_string(),
             "attach_folder": false,
             "theme": theme(),
-            "workflow_id": SMALL_CHANGE,
+            "template_id": SMALL_CHANGE,
         }),
         StatusCode::BAD_REQUEST,
     )
@@ -1256,7 +1280,7 @@ async fn an_edited_goal_reaches_the_picker_and_the_forked_wave() {
         create_body(
             &boot.cove_id,
             "forked-after-edit",
-            json!({ "workflow_id": SMALL_CHANGE }),
+            json!({ "template_id": SMALL_CHANGE }),
         ),
     )
     .await;
@@ -1395,7 +1419,7 @@ async fn a_task_can_be_appended_and_reaches_a_forked_wave() {
         create_body(
             &boot.cove_id,
             "forked-after-append",
-            json!({ "workflow_id": INVESTIGATION }),
+            json!({ "template_id": INVESTIGATION }),
         ),
     )
     .await;
@@ -1724,7 +1748,7 @@ async fn a_save_preserves_blocks_it_does_not_edit() {
         create_body(
             &boot.cove_id,
             "seed-for-preserve",
-            json!({ "workflow_id": SMALL_CHANGE }),
+            json!({ "template_id": SMALL_CHANGE }),
         ),
     )
     .await;
@@ -1902,7 +1926,7 @@ async fn the_write_endpoint_and_create_admit_exactly_the_same_ids() {
             create_body(
                 &boot.cove_id,
                 &format!("unknown-{unknown}"),
-                json!({ "workflow_id": unknown }),
+                json!({ "template_id": unknown }),
             ),
         )
         .await;
@@ -2106,4 +2130,127 @@ async fn template_report_body(boot: &Boot, key: &str) -> String {
         .unwrap_or_else(|| panic!("template `{key}` is not seeded"));
     let (_, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
     report_card_payload(&detail).body
+}
+
+// ---------------------------------------------------------------------------
+// #1209 PR-2 test #16 — the write side knows exactly one spelling.
+// ---------------------------------------------------------------------------
+
+/// Shared body of the three legs below. Asserts the request is rejected at the
+/// **serde extractor**: `CreateWaveRequest` carries
+/// `#[serde(deny_unknown_fields)]`, so the pre-rename key is an unknown field
+/// and the handler is never entered — `admit_template` does not run.
+///
+/// **Status is 422, not 400.** The #1209 design predicted 400; the observed
+/// behaviour is axum's `JsonRejection::JsonDataError`, which is
+/// `422 Unprocessable Entity` with a plain-text body. The ruling the design
+/// actually makes still holds — "reject loudly at the serde layer, do not
+/// declare the old key as a field" — and the status code is a consequence of
+/// the extractor, not something this slice chose. It is pinned here rather
+/// than customised, because customising it would mean declaring `workflow_id`
+/// on `CreateWaveRequest`, i.e. reintroducing the writeable alias #1209
+/// rejects.
+///
+/// The assertions therefore look for serde's own wording and explicitly
+/// require the admission wording to be **absent**: an admission-flavoured
+/// error would mean the old key had become a declared field again.
+async fn assert_old_spelling_is_an_unknown_field(leg: &str, body_json: Value, unknown_key: &str) {
+    let boot = boot().await;
+    let before = db_snapshot(&boot.repo).await;
+    let (status, text) = post_text(boot.app.clone(), "/api/waves", body_json).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{leg}: body={text}"
+    );
+    assert!(
+        text.contains("unknown field"),
+        "{leg}: expected a serde unknown-field rejection, body={text}"
+    );
+    assert!(
+        text.contains(unknown_key),
+        "{leg}: rejection must name `{unknown_key}`, body={text}"
+    );
+    assert!(
+        !text.contains("known wave template"),
+        "{leg}: the old spelling must not reach `admit_template` — reaching it \
+         means `CreateWaveRequest` declares the old key again, body={text}"
+    );
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "{leg}: a rejected create must not write"
+    );
+}
+
+/// #1209 PR-2 (design §3.5, matrix row 18) — the pre-rename `template_id`
+/// spelling.
+///
+/// This is the only pin on the whole rejection policy: the request body is a
+/// live contract, so the old spelling must fail loudly rather than be silently
+/// accepted through an alias. Mutation: give `CreateWaveRequest` back a
+/// `workflow_id` field — even as a bare `#[serde(alias)]` — and this goes red
+/// (the request would then be accepted, so both the status and the body
+/// assertion fail).
+///
+/// Three separate tests, not a loop over three bodies: a loop stops at the
+/// first failure, so the later legs would never be shown to discriminate.
+#[tokio::test]
+async fn old_template_id_spelling_is_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "row 18: workflow_id alone",
+        json!({
+            "cove_id": "",
+            "title": "old id spelling",
+            "attach_folder": false,
+            "theme": theme(),
+            "workflow_id": SMALL_CHANGE,
+        }),
+        "workflow_id",
+    )
+    .await;
+}
+
+/// #1209 PR-2 (design §3.5, matrix row 19) — the pre-rename `template_input`
+/// spelling, paired with the *new* `template_id`. Half-migrated callers must
+/// fail too; accepting this shape would be the "partially works" outcome
+/// `docs/upgrade-stability.md` forbids.
+#[tokio::test]
+async fn old_template_input_spelling_is_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "row 19: new template_id + old workflow_input",
+        json!({
+            "cove_id": "",
+            "title": "old input spelling",
+            "attach_folder": false,
+            "theme": theme(),
+            "template_id": SMALL_CHANGE,
+            "workflow_input": { "issue_url": "https://example.invalid/1" },
+        }),
+        "workflow_input",
+    )
+    .await;
+}
+
+/// #1209 PR-2 (design §3.5, matrix row 20) — both spellings at once.
+///
+/// This leg is what pins "the write side knows exactly ONE name". Rows 18/19
+/// would both stay green under an implementation that accepted either spelling
+/// but not both; only this one fails if the rejected option B (a writeable
+/// alias) comes back through the side door.
+#[tokio::test]
+async fn both_spellings_together_are_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "row 20: template_id and workflow_id together",
+        json!({
+            "cove_id": "",
+            "title": "both spellings",
+            "attach_folder": false,
+            "theme": theme(),
+            "template_id": SMALL_CHANGE,
+            "workflow_id": SMALL_CHANGE,
+        }),
+        "workflow_id",
+    )
+    .await;
 }

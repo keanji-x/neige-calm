@@ -1,7 +1,7 @@
 // NewTaskForm issue-dev variant tests — issue #891 slice ③ (design §5③).
 //
 // Surface: the `variant="issue-dev"` flavor of NewTaskForm — URL-driven
-// title prefill, disable-on-invalid gating, the exact `workflow_input`
+// title prefill, disable-on-invalid gating, the exact `template_input`
 // submit body (pinned), the raw-JSON escape hatch, server-400
 // surfacing, and the guarantee that the plain 'task' variant's body is
 // unchanged (no workflow keys at all). Same harness style as
@@ -84,7 +84,7 @@ describe('NewTaskForm issue-dev — fields + prefill', () => {
     // description.
     const autoMerge = screen.getByRole('checkbox', { name: /auto-merge/i });
     expect(autoMerge).toHaveAccessibleDescription(/waits for your approval/i);
-    expect(screen.getByText(/raw workflow_input json/i)).toBeTruthy();
+    expect(screen.getByText(/raw template_input json/i)).toBeTruthy();
     // #891 signoff: no notes textarea — it duplicated the
     // task-description free-text. notes stays schema-only; the raw-JSON
     // escape hatch is the way to send one.
@@ -106,7 +106,7 @@ describe('NewTaskForm issue-dev — fields + prefill', () => {
     expect(screen.getByRole('form', { name: /new task/i })).toBeTruthy();
     expect(screen.queryByLabelText(/github issue url/i)).toBeNull();
     expect(screen.queryByRole('checkbox', { name: /auto-merge/i })).toBeNull();
-    expect(screen.queryByText(/raw workflow_input json/i)).toBeNull();
+    expect(screen.queryByText(/raw template_input json/i)).toBeNull();
   });
 
   it('prefills the title as dev #<n> once the URL parses, and defaults to hold-for-ratify (auto-merge unchecked)', async () => {
@@ -171,7 +171,7 @@ describe('NewTaskForm issue-dev — validation gating', () => {
 });
 
 describe('NewTaskForm issue-dev — submit body', () => {
-  it('pins the exact create body: workflow_id + derived workflow_input, no notes key ever', async () => {
+  it('pins the exact create body: template_id + derived template_input, no notes key ever', async () => {
     vi.spyOn(api, 'listCoves').mockResolvedValue([ATLAS]);
     vi.spyOn(api, 'resolveCovePath').mockResolvedValue(null);
     const createSpy = mockCreatedWave();
@@ -193,8 +193,8 @@ describe('NewTaskForm issue-dev — submit body', () => {
       cwd: '/Users/me/code/new',
       attach_folder: true,
       theme: DARK_THEME_RGB,
-      workflow_id: 'issue-development',
-      workflow_input: {
+      template_id: 'issue-development',
+      template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/891',
         repo: 'keanji-x/neige-calm',
         issue_number: 891,
@@ -217,7 +217,7 @@ describe('NewTaskForm issue-dev — submit body', () => {
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
 
-    expect(createSpy.mock.calls[0][0].workflow_input).toEqual({
+    expect(createSpy.mock.calls[0][0].template_input).toEqual({
       issue_url: ISSUE_URL,
       repo: 'keanji-x/neige-calm',
       issue_number: 891,
@@ -258,7 +258,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     renderForm();
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
-    const ta = screen.getByLabelText(/raw workflow_input json/i) as HTMLTextAreaElement;
+    const ta = screen.getByLabelText(/raw template_input json/i) as HTMLTextAreaElement;
     expect(JSON.parse(ta.value)).toEqual({
       issue_url: ISSUE_URL,
       repo: 'keanji-x/neige-calm',
@@ -283,7 +283,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
 
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await fillCwd(user);
-    const ta = screen.getByLabelText(/raw workflow_input json/i) as HTMLTextAreaElement;
+    const ta = screen.getByLabelText(/raw template_input json/i) as HTMLTextAreaElement;
     const raw = {
       issue_url: 'https://github.com/o/r/issues/7',
       repo: 'o/r',
@@ -299,9 +299,9 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
 
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
-    expect(createSpy.mock.calls[0][0].workflow_input).toEqual(raw);
-    // workflow_id stays hardcoded even under raw mode (F5).
-    expect(createSpy.mock.calls[0][0].workflow_id).toBe('issue-development');
+    expect(createSpy.mock.calls[0][0].template_input).toEqual(raw);
+    // template_id stays hardcoded even under raw mode (F5).
+    expect(createSpy.mock.calls[0][0].template_id).toBe('issue-development');
   });
 
   it('invalid raw JSON shows an inline error (wired via aria-describedby) and disables submit; reset works directly from the malformed state', async () => {
@@ -314,7 +314,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     await fillCwd(user);
     expect(screen.getByRole('button', { name: /create task/i })).toBeEnabled();
 
-    const ta = screen.getByLabelText(/raw workflow_input json/i) as HTMLTextAreaElement;
+    const ta = screen.getByLabelText(/raw template_input json/i) as HTMLTextAreaElement;
     await user.clear(ta);
     await user.click(ta);
     await user.paste('{"broken":');
@@ -347,7 +347,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     await user.type(screen.getByLabelText(/github issue url/i), ISSUE_URL);
     await fillCwd(user);
 
-    const ta = screen.getByLabelText(/raw workflow_input json/i) as HTMLTextAreaElement;
+    const ta = screen.getByLabelText(/raw template_input json/i) as HTMLTextAreaElement;
     await user.clear(ta);
     // '' does not parse — submit is gated, but the way out is one click.
     expect(screen.getByText(/invalid json/i)).toBeTruthy();
@@ -370,7 +370,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     // Pre-override, the always-visible summary carries no override flag.
     expect(screen.queryByText(/overriding form fields/i)).toBeNull();
 
-    const ta = screen.getByLabelText(/raw workflow_input json/i) as HTMLTextAreaElement;
+    const ta = screen.getByLabelText(/raw template_input json/i) as HTMLTextAreaElement;
     const raw = {
       issue_url: 'https://github.com/o/r/issues/7',
       repo: 'o/r',
@@ -384,7 +384,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     // even when the <details> is collapsed — a stale raw blob must never
     // ship silently.
     expect(
-      screen.getByText(/raw workflow_input json — overriding form fields/i),
+      screen.getByText(/raw template_input json — overriding form fields/i),
     ).toBeTruthy();
 
     // Now edit the URL field. Raw-wins is design-sanctioned: the derived
@@ -393,7 +393,7 @@ describe('NewTaskForm issue-dev — raw JSON escape hatch', () => {
     await user.type(urlInput, 'https://github.com/other/repo/issues/999');
     await user.click(screen.getByRole('button', { name: /create task/i }));
     await waitFor(() => expect(createSpy).toHaveBeenCalled());
-    expect(createSpy.mock.calls[0][0].workflow_input).toEqual(raw);
+    expect(createSpy.mock.calls[0][0].template_input).toEqual(raw);
   });
 });
 
@@ -405,7 +405,7 @@ describe('NewTaskForm issue-dev — server 400 surfacing', () => {
       new CalmApiError(
         400,
         'bad_request',
-        'workflow_input.merge_policy: expected one of ["hold-for-ratify","auto-merge"]',
+        'template_input.merge_policy: expected one of ["hold-for-ratify","auto-merge"]',
       ),
     );
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -417,7 +417,7 @@ describe('NewTaskForm issue-dev — server 400 surfacing', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('alert').textContent).toMatch(
-        /workflow_input\.merge_policy: expected one of/i,
+        /template_input\.merge_policy: expected one of/i,
       );
     });
   });

@@ -1,7 +1,7 @@
 //! #1110 S6 — kernel-seeded workflow template reports.
 //!
 //! Three system-cove template waves hold the former git-forge plan as
-//! report `task` blocks. `POST /api/waves` with a matching `workflow_id`
+//! report `task` blocks. `POST /api/waves` with a matching `template_id`
 //! forks that report. Overlay payload `{schemaVersion:1, template_key}`
 //! is the stable lookup.
 
@@ -419,7 +419,7 @@ extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN again.
 
 Record root_cause each round; repeated facets should drive a class fix.
 
-Workflow input: the wave's bound `workflow_input` JSON is the task's \
+Workflow input: the wave's bound `template_input` JSON is the task's \
 source of truth, not the wave title.
 
 Ingest (inspect-issue): derive the wave goal from gh.issue.view on \

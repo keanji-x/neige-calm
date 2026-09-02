@@ -62,7 +62,7 @@ pub const SPEC_SESSION_ID: &str = "codex-forge-e2e-spec-session";
 
 pub struct FixtureSpec {
     pub goal: Option<String>,
-    pub workflow_id: Option<String>,
+    pub template_id: Option<String>,
     pub plan_source: PlanSource,
     pub issue_body: Option<FixtureIssue>,
     pub require_task_gates: bool,
@@ -180,7 +180,7 @@ pub async fn boot_real_codex_worker_fixture(codex_bin: PathBuf) -> Result<Fixtur
     boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(forge_goal()),
-            workflow_id: None,
+            template_id: None,
             plan_source: PlanSource::Injected,
             issue_body: None,
             require_task_gates: true,
@@ -266,12 +266,12 @@ pub async fn boot_forge_e2e_fixture(
         .expect("create cove");
     let wave = repo_dyn
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "codex-forge-e2e".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
-            workflow_id: spec.workflow_id.clone(),
+            template_id: spec.template_id.clone(),
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

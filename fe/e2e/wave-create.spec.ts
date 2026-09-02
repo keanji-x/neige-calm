@@ -58,10 +58,10 @@ test('creates a wave from the cove page and persists it', async ({ page, request
   expect(body).not.toHaveProperty('cwd');
   expect(body).not.toHaveProperty('attach_folder');
   // `toMatchObject` above would not notice these, and no-template must not send
-  // them: the kernel 400s an empty `workflow_id` and the body is
+  // them: the kernel 400s an empty `template_id` and the body is
   // `deny_unknown_fields`.
-  expect(body).not.toHaveProperty('workflow_id');
-  expect(body).not.toHaveProperty('workflow_input');
+  expect(body).not.toHaveProperty('template_id');
+  expect(body).not.toHaveProperty('template_input');
 
   await expect(page).toHaveURL(/\/wave\/[0-9a-f-]+$/i);
   await expect(page.locator('[data-nc-page-title]', { hasText: title })).toBeVisible();
@@ -142,9 +142,9 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
     dialog.getByRole('button', { name: 'Create wave' }).click(),
   ]);
   const body = createRequest.postDataJSON() as Record<string, unknown>;
-  expect(body).toMatchObject({ cove_id: cove.id, title, workflow_id: 'small-change' });
-  // Unbound template: the kernel rejects `workflow_input` against it.
-  expect(body).not.toHaveProperty('workflow_input');
+  expect(body).toMatchObject({ cove_id: cove.id, title, template_id: 'small-change' });
+  // Unbound template: the kernel rejects `template_input` against it.
+  expect(body).not.toHaveProperty('template_input');
 
   await expect(page).toHaveURL(/\/wave\/[0-9a-f-]+$/i);
   await expect(page.locator('[data-nc-page-title]', { hasText: title })).toBeVisible();
@@ -155,7 +155,7 @@ test('creates a wave from a template and seeds its report', async ({ page, reque
   expect(waveId).toBeTruthy();
   const detail = await request.get(`/api/waves/${waveId}`);
   expect(detail.ok()).toBe(true);
-  expect((await detail.json() as { wave: { workflow_id: string | null } }).wave.workflow_id)
+  expect((await detail.json() as { wave: { template_id: string | null } }).wave.template_id)
     .toBe('small-change');
   expect(errors).toEqual([]);
 });

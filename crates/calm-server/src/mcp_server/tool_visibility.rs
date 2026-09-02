@@ -15,7 +15,7 @@
 //! harness's descriptor-unresolved degradation (vanilla prompt): the tools
 //! are withdrawn together with the plugin context rather than silently
 //! widened back to the union. The gate reads `waves.plugin_scope` only —
-//! it does not look up `workflows[]` by `workflow_id`.
+//! it does not look up `workflows[]` by `template_id`.
 
 use std::sync::Arc;
 
@@ -58,7 +58,7 @@ impl WavePluginScope {
 ///   bound-ness cannot be proven, so fail closed rather than widen to the
 ///   union.
 ///
-/// Does not consult `wave.workflow_id` or `manifest.workflows[]`.
+/// Does not consult `wave.template_id` or `manifest.workflows[]`.
 pub(crate) async fn plugin_scope_for_wave(
     ctx: &Arc<AppContext>,
     wave_id: Option<&str>,
@@ -197,16 +197,16 @@ mod tests {
             WavePluginScope::None
         );
 
-        // #1110 S4 flatten pin: workflow_id alone is not the gate even
+        // #1110 S4 flatten pin: template_id alone is not the gate even
         // when the matching plugin is running.
         let leftover_workflow = repo
             .wave_create(crate::model::NewWave {
-                workflow_input: None,
+                template_input: None,
                 cove_id: unbound_wave.cove_id.clone(),
                 title: "workflow-id leftover".into(),
                 sort: None,
                 cwd: String::new(),
-                workflow_id: Some(WORKFLOW_ID.into()),
+                template_id: Some(WORKFLOW_ID.into()),
                 plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
@@ -337,12 +337,12 @@ mod tests {
             .await
             .expect("create cove");
         repo.wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "tool visibility".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: plugin_scope.map(str::to_string),
             attach_folder: false,
             theme: RequestTheme::default_dark(),

@@ -341,11 +341,12 @@ mod tests {
 
     /// Every process whose `/proc/<pid>/cmdline` mentions `needle`.
     ///
-    /// A pid file cannot witness these tests: the sweep is fast enough that a
-    /// shell fixture never reaches its second command, so "the pid file is
-    /// missing" is indistinguishable from "the script never ran". Scanning for
-    /// a unique path is decisive in both directions — with teardown removed the
-    /// `sleep 30` sits there for half a minute and the scan finds it.
+    /// A pid file cannot witness the unclaimed-child test: the sweep is fast
+    /// enough that a shell fixture may never reach its second command, so "the
+    /// pid file is missing" is indistinguishable from "the script never ran".
+    /// Scanning for the unique script path instead witnesses the wrapper group
+    /// leader. It does not match the backgrounded `sleep 30` after the shell
+    /// execs it; the claimed-child test observes that descendant by its pid.
     #[cfg(unix)]
     fn processes_matching(needle: &str) -> Vec<i32> {
         let mut found = Vec::new();
@@ -390,6 +391,8 @@ mod tests {
     /// group sweep. Each test therefore either observes a DESCENDANT (flag on,
     /// exactly as production sets it) or turns the flag off so
     /// `GroupChild::drop` is the only mechanism left.
+    /// The flag-off arm witnesses teardown of the leader, but only a descendant
+    /// witness proves that the teardown used process-group kill semantics.
     #[cfg(unix)]
     fn group_leader_command(
         script: &std::path::Path,
@@ -407,8 +410,10 @@ mod tests {
         cmd
     }
 
-    /// A wrapper that backgrounds a long-lived grandchild, under a path unique
-    /// to this test so `processes_matching` can find both.
+    /// A wrapper whose unique path lets `processes_matching` find the group
+    /// leader. It also backgrounds a long-lived grandchild and records that
+    /// descendant's pid so it can be observed after its cmdline becomes
+    /// `sleep 30`.
     #[cfg(unix)]
     fn wrapper_script(dir: &std::path::Path) -> std::path::PathBuf {
         use std::os::unix::fs::PermissionsExt;
@@ -542,15 +547,17 @@ mod tests {
             .trim()
             .parse()
             .unwrap();
+        let gc_start_time = crate::proc_identity::read_proc_start_time(gc);
 
         drop(child);
 
         assert_all_gone(&needle, "dropping a claimed child leaked its group").await;
-        // SAFETY: existence probe only, no signal delivered.
-        assert!(
-            unsafe { libc::kill(gc, 0) } != 0,
-            "the recorded grandchild {gc} outlived the drop"
-        );
+        crate::test_support::assert_pid_dead(
+            gc,
+            gc_start_time,
+            &format!("the recorded grandchild {gc} outlived the drop"),
+        )
+        .await;
     }
 
     /// An under-cap stream is read whole, and `len > cap` — the truncation

@@ -140,7 +140,43 @@ export const waveFsWaveWorkspaceSchema = z
   })
   .strict();
 
-export const waveFsWaveSchema = z.object({
+/**
+ * #1209 PR-2 — one-way read compatibility for the pre-rename wave keys.
+ *
+ * This reader is the most dangerous of the three: its input is `wave.json` /
+ * FS-snapshot files **already written to disk**, which spell the template
+ * fields `workflow_id` / `workflow_input`. Both new fields carry
+ * `.default(null)`, so renaming the keys and nothing else would have made every
+ * existing snapshot hydrate as `template_id: null` without a single error —
+ * fail-open, exactly what the compatibility read exists to prevent. (And the
+ * schema is `.strict()`, so leaving the old key in place would instead reject
+ * the snapshot outright.)
+ *
+ * Deliberately a preprocess step and NOT an optional field on the schema:
+ * making the old key part of the shape would give it two spellings again. The
+ * old keys are dropped, and only copied over when the new key is absent.
+ *
+ * Each of the three zod readers in this repo carries its own copy of this
+ * function on purpose. A shared helper would make "the third reader was never
+ * wired up" a green regression.
+ */
+function normalizeLegacyTemplateKeys(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const row = raw as Record<string, unknown>;
+  if (!('workflow_id' in row) && !('workflow_input' in row)) return raw;
+  const { workflow_id: legacyId, workflow_input: legacyInput, ...rest } = row;
+  return {
+    ...rest,
+    ...(rest.template_id === undefined && legacyId !== undefined
+      ? { template_id: legacyId }
+      : {}),
+    ...(rest.template_input === undefined && legacyInput !== undefined
+      ? { template_input: legacyInput }
+      : {}),
+  };
+}
+
+const waveFsWaveObjectSchema = z.object({
   id: z.string(),
   cove_id: z.string(),
   title: z.string(),
@@ -149,15 +185,15 @@ export const waveFsWaveSchema = z.object({
   pinned_at: z.number().nullable(),
   lifecycle: waveFsWaveLifecycleSchema,
   cwd: z.string(),
-  workflow_id: z.string().nullable().default(null),
+  template_id: z.string().nullable().default(null),
   plugin_scope: z.string().nullable().default(null),
   purpose: z.string().nullable().default(null),
   /**
    * Issue #891 — opaque bound-workflow input JSON; `z.unknown()` mirrors the
    * `#[ts(type = "unknown")]` override on the Rust side. Legacy wave.json
-   * snapshots without the key hydrate as `null` (same as `workflow_id`).
+   * snapshots without the key hydrate as `null` (same as `template_id`).
    */
-  workflow_input: z.unknown().default(null),
+  template_input: z.unknown().default(null),
   terminal_at: z.number().nullable(),
   /**
    * Defaulted so `wave.json` snapshots written before #1147 keep parsing —
@@ -172,3 +208,8 @@ export const waveFsWaveSchema = z.object({
   created_at: z.number(),
   updated_at: z.number(),
 }).strict();
+
+export const waveFsWaveSchema = z.preprocess(
+  normalizeLegacyTemplateKeys,
+  waveFsWaveObjectSchema,
+);

@@ -53,12 +53,12 @@ async fn seeded_repo() -> (Arc<SqlxRepo>, WaveId) {
     let wave = RepoSyncDomainRaw::wave_create(
         repo.as_ref(),
         NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "reaper-test".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

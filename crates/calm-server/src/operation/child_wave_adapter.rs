@@ -259,9 +259,9 @@ impl ProviderAdapter for ChildWaveAdapter {
                 // parent's path so no plan can pick up an inherited path
                 // through a field that is supposed to be dead here.
                 cwd: String::new(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: parent_plugin_scope,
-                workflow_input: None,
+                template_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -582,9 +582,9 @@ mod tests {
                 title: "parent".into(),
                 sort: None,
                 cwd: "/parent-cwd".into(),
-                workflow_id: Some("must-not-inherit".into()),
+                template_id: Some("must-not-inherit".into()),
                 plugin_scope: Some("must-inherit-plugin".into()),
-                workflow_input: Some(json!({"must":"not-inherit"})),
+                template_input: Some(json!({"must":"not-inherit"})),
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -835,9 +835,9 @@ mod tests {
                 title: "parent".into(),
                 sort: None,
                 cwd: "/ignored-by-managed".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
-                workflow_input: None,
+                template_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -975,9 +975,9 @@ mod tests {
                 title: "parent".into(),
                 sort: None,
                 cwd: "/ignored-by-managed".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
-                workflow_input: None,
+                template_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -1166,9 +1166,9 @@ mod tests {
                 title: "parent".into(),
                 sort: None,
                 cwd: user_path.clone(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
-                workflow_input: None,
+                template_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             },
@@ -1347,7 +1347,7 @@ mod tests {
             Option<i64>,
         );
         let inherited: InheritedChildFields = sqlx::query_as(
-            "SELECT workspace_path,workflow_id,plugin_scope,workflow_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
+            "SELECT workspace_path,template_id,plugin_scope,template_input,purpose,lifecycle,archived_at,pinned_at,terminal_at \
              FROM waves WHERE id=?1",
         )
         .bind(child_id)
@@ -1358,13 +1358,13 @@ mod tests {
             inherited.0, expected_child_workspace,
             "an attached parent's path IS inherited (design D7, S4 amendment)"
         );
-        assert_eq!(inherited.1, None, "workflow_id must not inherit");
+        assert_eq!(inherited.1, None, "template_id must not inherit");
         assert_eq!(
             inherited.2.as_deref(),
             Some("must-inherit-plugin"),
             "plugin_scope must inherit so Only(X) does not widen to All"
         );
-        assert_eq!(inherited.3, None, "workflow_input must not inherit");
+        assert_eq!(inherited.3, None, "template_input must not inherit");
         assert_eq!(inherited.4, None, "purpose must not inherit");
         assert_eq!(
             inherited.5, "draft",

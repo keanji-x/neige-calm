@@ -52,7 +52,7 @@ const ISSUE_DEV: WaveTemplate = {
   ],
 };
 /** Unbound templates: no `input_schema`, therefore no fields, therefore no
-    `workflow_input` on the wire. */
+    `template_input` on the wire. */
 const SMALL_CHANGE: WaveTemplate = {
   id: 'small-change',
   title: 'Small change',
@@ -263,7 +263,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
 });
 
 describe('Start from — Blank is the default and stays free', () => {
-  it('selects Blank on open and submits no workflow_id at all', async () => {
+  it('selects Blank on open and submits no template_id at all', async () => {
     const { onSubmit } = renderForm();
     /* The collapsed trigger *is* the answer to "what is selected" — there is
        no checked radio left to read it off. Its accessible name is the field
@@ -276,7 +276,7 @@ describe('Start from — Blank is the default and stays free', () => {
     expect(draft).toEqual({ title: 'Ship the thing' });
     // Not `null`, not `''` — the kernel 400s a whitespace-only id and the body
     // is `deny_unknown_fields`. Absence is the only spelling of "no template".
-    expect(Object.hasOwn(draft, 'workflow_id')).toBe(false);
+    expect(Object.hasOwn(draft, 'template_id')).toBe(false);
   });
 
   /*
@@ -306,7 +306,7 @@ describe('Start from — Blank is the default and stays free', () => {
 });
 
 describe('Start from — an unbound template is id-only', () => {
-  it('sends workflow_id and no workflow_input for small-change', async () => {
+  it('sends template_id and no template_input for small-change', async () => {
     const { onSubmit } = renderForm();
     await fillTitle();
     await chooseTemplate('Small change');
@@ -317,9 +317,9 @@ describe('Start from — an unbound template is id-only', () => {
     expect(screen.queryByRole('checkbox')).toBeNull();
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
-    expect(draft).toEqual({ title: 'Ship the thing', workflow_id: 'small-change' });
-    // Sending `workflow_input` against an unbound template is a 400.
-    expect(Object.hasOwn(draft, 'workflow_input')).toBe(false);
+    expect(draft).toEqual({ title: 'Ship the thing', template_id: 'small-change' });
+    // Sending `template_input` against an unbound template is a 400.
+    expect(Object.hasOwn(draft, 'template_input')).toBe(false);
   });
 });
 
@@ -354,8 +354,8 @@ describe('Start from — issue development expands under the group', () => {
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
       title: 'Ship the thing',
-      workflow_id: 'issue-development',
-      workflow_input: {
+      template_id: 'issue-development',
+      template_input: {
         issue_url: 'https://github.com/keanji-x/neige-calm/issues/1209',
         repo: 'keanji-x/neige-calm',
         issue_number: 1209,
@@ -371,8 +371,8 @@ describe('Start from — issue development expands under the group', () => {
     await userEvent.type(screen.getByLabelText('Issue URL'), 'https://github.com/o/r/issues/7');
     await userEvent.click(screen.getByRole('checkbox'));
     await userEvent.click(submitButton());
-    const [draft] = onSubmit.mock.calls[0] as [{ workflow_input: { merge_policy: string } }];
-    expect(draft.workflow_input.merge_policy).toBe('auto-merge');
+    const [draft] = onSubmit.mock.calls[0] as [{ template_input: { merge_policy: string } }];
+    expect(draft.template_input.merge_policy).toBe('auto-merge');
   });
 
   /*
@@ -396,7 +396,7 @@ describe('Start from — issue development expands under the group', () => {
 
   /*
    * A stopped plugin drops the schema on the read side, so the create path
-   * would reject `workflow_input`. The picker must follow: still offerable
+   * would reject `template_input`. The picker must follow: still offerable
    * (the report still seeds), just with no fields.
    */
   it('offers issue development with no fields when nothing is bound to it', async () => {
@@ -407,7 +407,7 @@ describe('Start from — issue development expands under the group', () => {
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
     await userEvent.click(submitButton());
     expect(props.onSubmit).toHaveBeenCalledWith({
-      title: 'Ship the thing', workflow_id: 'issue-development',
+      title: 'Ship the thing', template_id: 'issue-development',
     });
   });
 
@@ -656,7 +656,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
     await pickTheListedFolder();
     await userEvent.click(submitButton());
     expect(onSubmit).toHaveBeenCalledWith({
-      title: 'Ship the thing', workflow_id: 'small-change', cwd: '/srv/app',
+      title: 'Ship the thing', template_id: 'small-change', cwd: '/srv/app',
     });
   });
 });

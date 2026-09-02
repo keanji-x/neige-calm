@@ -642,6 +642,18 @@ export type ConversationActivity = Readonly<{
   /** What it acted on, already trimmed to something readable. Never a payload. */
   target: string | null;
   state: ActivityState;
+  /**
+   * How long the action took, straight off `item/completed`'s own `durationMs`.
+   * `null` while it is still running, and `null` on the rows codex does not
+   * time. It is a measured number, not a difference of two timestamps: pairing
+   * `started` with `completed` would measure our poll, not the action.
+   */
+  durationMs: number | null;
+  /**
+   * Why it failed, in one clipped line. `null` on anything that did not fail —
+   * see `failureDetail` for why that asymmetry is the rule and not an omission.
+   */
+  detail: string | null;
   atMs: number;
 }>;
 
@@ -765,6 +777,120 @@ function activityShape(itemType: string, item: Record<string, unknown>): Activit
   }
 }
 
+/**
+ * ── The reason a failed line has, and a done line does not ──────────────────
+ *
+ * `item/completed` has carried `durationMs` and — for a shell run —
+ * `aggregatedOutput` from the beginning; the verbatim capture in
+ * `conversation.test.ts` has both. The kernel stores `params` unfiltered
+ * (`out_of_domain.rs` writes the payload as it arrived). It was *this* function
+ * that read `exitCode`/`status`/`error`, decided the line said `Failed`, and
+ * then threw away the only text that said what failed. A reader looking at a
+ * red line in the drawer had to leave the drawer to find out why.
+ *
+ * **Only on failure.** `aggregatedOutput` is the whole captured stdout+stderr —
+ * kilobytes on a normal build. On a line that succeeded, its tail is noise
+ * printed under every `Ran` in a 364px column, which is precisely the "drawer
+ * becomes a log viewer" that `.activity`'s own stylesheet note refuses. On a
+ * line that failed it is the one thing the reader wants, and it is usually the
+ * last line of it: that is where a shell puts the error and where a test runner
+ * puts the count.
+ *
+ * **Clipped here, not in the view.** This "domain" is already a presentation
+ * domain — `verb` is an English phrase and `target` is `clip()`ed right beside
+ * this — so the invariant "an activity field is one short line, never a
+ * payload" is a property of the type, provable in a domain test, rather than a
+ * discipline every renderer of that type has to remember.
+ *
+ * **One rule for both carriers: the informative line is the last non-empty
+ * one.** `aggregatedOutput` and `error` look like different kinds of text — a
+ * kilobyte transcript against a short message — but they are read the same way,
+ * and for the same reason: both are *machine* strings, and a machine writes the
+ * thing it is finally reporting last. A shell prints its progress and then its
+ * error. An anyhow-style chain prints its outermost wrapper and then its
+ * `Caused by:` root. Reading `error` from the front is how the drawer used to
+ * throw away exactly the sentence the reader opened the line for — the two
+ * failed `mcpToolCall` rows in the production database are both
+ * `tool call error: tool call failed for \`calm/…\`` followed by a blank line,
+ * `Caused by:`, and then the only useful clause
+ * (`Mcp error: -32602: message must be non-empty`;
+ * `` `tasks` must be a non-empty array ``). So `informativeLine` is one
+ * function used by both, not because the code was duplicated but because the
+ * two carriers must not be allowed to drift back apart.
+ *
+ * **Measured, not assumed.** Against every failed row in the production
+ * database: 24 failed `commandExecution` rows, and the last non-empty line is
+ * the real reason in 22 of them — `NameError: name 'PY' is not defined`,
+ * `jq: error (at <stdin>:13885): Cannot index number with string "event_id"`,
+ * `ls: 无法访问 'docs/player-capabilities.md': 没有那个文件或目录`,
+ * `========================= 1 failed, 16 passed in 0.50s =========================`.
+ * The worst of the two misses is a bare `^`, the caret a SQL error points at a
+ * column with. And 2 failed `mcpToolCall` rows, both carrying `error` as an
+ * object with a multi-line `message` and **neither** carrying an
+ * `aggregatedOutput` at all — for them `error` is not a fallback, it is the
+ * only source there is.
+ *
+ * **`error` before the tail, because a statement outranks a guess.** These two
+ * sources are not two spellings of one fact. `error` is the machine *stating*
+ * why it stopped; the tail of `aggregatedOutput` is us *inferring* it from
+ * whatever happened to be printed last. Where they co-occur the difference
+ * decides the line: a killed or timed-out command would carry `error: 'command
+ * timed out after 600s'` and an `aggregatedOutput` that is a partial capture,
+ * whose tail is some unrelated line of progress (`Compiling serde v1.0.219`),
+ * and reading it loses the only sentence that explains the red. Honestly
+ * though, this ordering is defensive rather than load-bearing today: **none of
+ * the 24 failed `commandExecution` rows carries an `error` member at all**, so
+ * on current data the two branches never compete. It is written this way
+ * because `harnessItemToActivity` already treats `error != null` as a failure
+ * signal for *every* item type, so the day a shell row does carry one, that
+ * model has already promised which of the two wins.
+ *
+ * **The tail's known hole, stated rather than patched.** With `error` handled
+ * above, the tail is what is left when the machine said nothing — the best
+ * available guess, and the 22-of-24 above is what that guess is worth on real
+ * data: `cargo`, `npm`, nextest, pytest and vitest all end on their own failure
+ * summary. It is wrong for a compound command that ends on a success line
+ * (`make && ./run`, where `make` prints `Build succeeded.` and `./run` exits
+ * non-zero quietly): the reader gets a cheerful sentence under a red `Failed`.
+ * Scanning the capture for lines that "look like an error" would trade this for
+ * a heuristic on unknown output that is wrong in less predictable ways, so it
+ * is not done. What carries the weight instead is the *register*: the detail is
+ * rendered as quoted machine output beside a red `Failed`, never as our own
+ * prose about the failure, so the worst case is a line of transcript that does
+ * not help — not a line that lies.
+ */
+/** The last non-empty line of a machine string, clipped — the single reading
+ *  rule `failureDetail` applies to both of its sources. `null` when there is no
+ *  such line, so an all-blank string reports nothing rather than emptiness. */
+function informativeLine(text: string): string | null {
+  const lines = text.split('\n');
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = clip(lines[index] ?? '');
+    if (line !== null) return line;
+  }
+  return null;
+}
+
+function failureDetail(payload: Record<string, unknown>): string | null {
+  // What the machine said, in both spellings that are on our wire — a string in
+  // some servers, `{ message }` in others. A blank one states nothing and falls
+  // through to the tail rather than blanking the line.
+  const error = payload.error;
+  const stated = typeof error === 'string' ? error
+    : (typeof error === 'object' && error !== null
+      && typeof (error as { message?: unknown }).message === 'string'
+      ? (error as { message: string }).message : null);
+  if (stated !== null) {
+    const line = informativeLine(stated);
+    if (line !== null) return line;
+  }
+  // Otherwise the tail: a shell puts its error there and a test runner puts its
+  // count there.
+  const output = payload.aggregatedOutput;
+  if (typeof output === 'string') return informativeLine(output);
+  return null;
+}
+
 export function harnessItemToActivity(item: HarnessItem): ConversationActivity | null {
   if (isAgentMessage(item.item_type) || isUserMessage(item.item_type)) return null;
   if (item.method !== 'item/started' && item.method !== 'item/completed') return null;
@@ -792,6 +918,18 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
     verb: done ? shape.done : shape.running,
     target: shape.target,
     state: failed ? 'failed' : (done ? 'done' : 'running'),
+    /* `done &&` is belt-and-braces, and knowingly so. On the 1970 `item/started`
+       rows in the production database `durationMs` is *present* — as JSON
+       `null`, not absent — which the `typeof` test already rejects on its own.
+       The gate is kept because what it states is the rule (a line still saying
+       `Running` must not print an interval that has not ended) rather than the
+       shape one emitter happens to send; a started payload is the item as codex
+       knew it at the start, and nothing in the protocol stops a number riding
+       along on it tomorrow. */
+    durationMs: done && typeof payload.durationMs === 'number'
+      && Number.isFinite(payload.durationMs)
+      ? payload.durationMs : null,
+    detail: failed ? failureDetail(payload) : null,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
   };

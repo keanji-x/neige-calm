@@ -35,7 +35,7 @@
 //
 // "No template" is a first-class option and the default, and it is **not** a
 // row the server sent: it is the absence of a template, i.e. a create with no
-// `workflow_id` — precisely today's behaviour. Everything about this list is
+// `template_id` — precisely today's behaviour. Everything about this list is
 // arranged so that staying on it is free. In particular `templates` may be
 // empty because the read failed or has not landed, and the dialog is fully
 // usable in that state: this is the app's only wave-creation entry point, and
@@ -44,12 +44,13 @@
 // The words on screen are the reader's, not the codebase's. The chip asks
 // ("Choose a template") until there is something to name, and the sentinel is
 // "No template" in the list — `Blank` was this file's own word for "no
-// `workflow_id` on the wire", and it had ended up on a control read by someone
+// `template_id` on the wire", and it had ended up on a control read by someone
 // who has not been told this app has workflows.
 //
-// The vocabulary seam is deliberate and recorded in #1209: the read side says
-// *template*, the write side says `workflow_id`. This form speaks the read
-// side's word to the user and the write side's word on the wire.
+// One concept, one word, one field: the list, the chip and the wire all say
+// *template* / `template_id`. (#1209 removed the vocabulary seam this comment
+// used to describe, where the read side and the write side used different
+// words for the same thing.)
 //
 // ### Collapsed, not spread out
 //
@@ -154,8 +155,8 @@ import styles from './new-wave.module.css';
 export type NewWaveDraft = Readonly<{
   title: string;
   /** Absent for Blank — never `null` or `''`, which the kernel 400s. */
-  workflow_id?: string;
-  workflow_input?: Readonly<Record<string, unknown>>;
+  template_id?: string;
+  template_input?: Readonly<Record<string, unknown>>;
   /**
    * Absolute path, **or the key is absent**. Absent is not "the empty string":
    * the caller distinguishes the two to decide whether the request carries
@@ -219,7 +220,7 @@ const BLANK = '';
 /**
  * The two things the template chip can say, and neither of them is "Blank".
  *
- * `Blank` was the codebase's word for "no `workflow_id` on the wire", and it
+ * `Blank` was the codebase's word for "no `template_id` on the wire", and it
  * had leaked onto a chip a person reads before they know this app has
  * workflows at all. What a reader needs from an unset control is what it is
  * *for*, in the words they would use themselves — so unset the chip asks, and
@@ -331,15 +332,15 @@ export function NewWaveForm({
     const folder = cwd.trim();
     const base = { title: title.trim(), ...(folder === '' ? {} : { cwd: folder }) };
     if (effectiveSelection === BLANK) return base;
-    if (parsedIssue === null) return { ...base, workflow_id: effectiveSelection };
+    if (parsedIssue === null) return { ...base, template_id: effectiveSelection };
     // The kernel applies no schema defaults, so `merge_policy` always travels
     // explicitly. Unchecked is `hold-for-ratify`: the default direction is
     // "wait for a human", and flipping it would auto-merge by omission.
     const mergePolicy: MergePolicy = autoMerge ? 'auto-merge' : 'hold-for-ratify';
     return {
       ...base,
-      workflow_id: effectiveSelection,
-      workflow_input: { ...parsedIssue, merge_policy: mergePolicy },
+      template_id: effectiveSelection,
+      template_input: { ...parsedIssue, merge_policy: mergePolicy },
     };
   }
 

@@ -904,9 +904,9 @@ async fn list_returns_only_marked_chat_cards() {
             title: "ordinary".into(),
             sort: None,
             cwd: "/workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })
@@ -1057,9 +1057,9 @@ async fn spec_input_accepts_the_chat_card_and_still_refuses_a_pty_codex_card() {
             title: "pty".into(),
             sort: None,
             cwd: "/workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

@@ -4891,7 +4891,7 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/cove/new-wave/public.tsx:147-158,303-309; fe/web/src/app/shell/public.tsx:174
+  source: fe/web/src/features/cove/new-wave/public.tsx:148-159,304-310; fe/web/src/app/shell/public.tsx:174
   authoritative_test: fe/web/src/app/shell/public.test.tsx:160
   owner_slice: features/wave/create
   intentional_omission: false
@@ -4932,7 +4932,7 @@
     Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
     the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
     break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:435-449
+  source: fe/web/src/features/cove/new-wave/public.tsx:436-450
   authoritative_test: fe/web/src/app/shell/public.test.tsx:206-219
   owner_slice: ui/directory-browser
   intentional_omission: false

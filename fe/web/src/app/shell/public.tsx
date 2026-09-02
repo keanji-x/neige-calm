@@ -295,10 +295,10 @@ export function AppShell({
       title: draft.title,
       theme: readHostThemeRgb(),
       // Spread, not two optional fields: Blank leaves both keys absent, and
-      // `workflow_id: undefined` is not the same request as no `workflow_id`
+      // `template_id: undefined` is not the same request as no `template_id`
       // for anything that inspects the object before it is serialized.
-      ...(draft.workflow_id === undefined ? {} : { workflow_id: draft.workflow_id }),
-      ...(draft.workflow_input === undefined ? {} : { workflow_input: draft.workflow_input }),
+      ...(draft.template_id === undefined ? {} : { template_id: draft.template_id }),
+      ...(draft.template_input === undefined ? {} : { template_input: draft.template_input }),
       /*
        * Both keys or neither. `cwd` without `attach_folder` means "this path is
        * already claimed by some cove", which the kernel answers with a 409

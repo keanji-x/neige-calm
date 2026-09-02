@@ -38,12 +38,12 @@ async fn terminal_worker_harness_with_workspace(workspace: &str) -> TerminalWork
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         repo.as_ref(),
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "terminal workers".into(),
             sort: None,
             cwd: workspace.to_string(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
