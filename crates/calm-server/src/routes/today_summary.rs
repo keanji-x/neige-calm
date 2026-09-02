@@ -81,7 +81,7 @@ pub fn router() -> Router<AppState> {
 /// What that precedent was defending against — `insert_operation`'s permanent
 /// 409 on "same key, different payload hash", with no pruner on `operations` —
 /// is instead handled by removing the variables from the payload, which is what
-/// [`synthetic_actor`], the `card_get` branch and [`BOOTSTRAP_TEXT`] between
+/// [`synthetic_actor`], the `card_get` branch and [`TODAY_SUMMARY_BOOTSTRAP_TEXT`] between
 /// them do.
 pub const TODAY_SUMMARY_CONVERSATION_KEY: &str = "today-summary";
 
@@ -153,7 +153,7 @@ fn synthetic_actor() -> Actor {
 /// agent told to write the report would then write one with no material. Told
 /// to wait, it spends a harmless empty turn instead. Same purpose as
 /// INV-TODAYDOC-007, one layer in.
-const BOOTSTRAP_TEXT: &str = "You are this workspace's daily-progress writer. \
+pub const TODAY_SUMMARY_BOOTSTRAP_TEXT: &str = "You are this workspace's daily-progress writer. \
      Stand by and do nothing yet: do not read or touch the wave report until a \
      later message tells you the day's activity. When that message arrives, \
      rewrite the report in full following the maintenance contract carried in \
@@ -293,7 +293,7 @@ pub(crate) async fn write_today_summary(
             headers,
             Path(wave_id.clone()),
             Json(NewWaveConversationBody {
-                text: BOOTSTRAP_TEXT.to_string(),
+                text: TODAY_SUMMARY_BOOTSTRAP_TEXT.to_string(),
             }),
         )
         .await?;
@@ -454,7 +454,7 @@ mod tests {
         );
         // The bootstrap travels the same channel and is validated by
         // `validate_first_message` under the identical ceiling.
-        assert!(BOOTSTRAP_TEXT.chars().count() < crate::routes::cards::MAX_SPEC_INPUT_CHARS);
-        assert!(!BOOTSTRAP_TEXT.trim().is_empty());
+        assert!(TODAY_SUMMARY_BOOTSTRAP_TEXT.chars().count() < crate::routes::cards::MAX_SPEC_INPUT_CHARS);
+        assert!(!TODAY_SUMMARY_BOOTSTRAP_TEXT.trim().is_empty());
     }
 }
