@@ -246,7 +246,9 @@ descope 的直接后果。文档只有一份且每次 REWRITE，不增长；1000
 
   **空态判据是服务端的 `report_has_noninitial_content`，不是「report 为空」。** `readWaveReport` 对 canonical 初始 report 返回**非空**——`initial()` 的 body 含契约注释和四个 H1，字符串非空——而 `ReportDocument` 只在 `report === null` 时渲染空态。所以照 r4 的写法，空态永远不会出现，用户第一次打开看到的是四个空标题。判据用 §5.1 resolve 返回的 `report_has_noninitial_content`，它在服务端复用 `report_startup_read_required()` 的 canonical 判据；**不在 FE 镜像初始 body 文本**（那是 mirror code）。
 
-  **它是一个近似，要写明。** `report_startup_read_required()` 答的是「这份 report 被**任何人**写过没有」，不是「今日汇总跑过没有」——它只比较 `summary + body`，刻意忽略 `doc_rev` 与 `blocks`。所以汇总跑过一次之后空态永不回来，哪怕内容陈旧、或最后的写者是用户手改（甚至 D1 记的第二写者复活）。descope 之后这可以接受，**所以字段就叫 `report_has_noninitial_content`**——名字说的是它实际答的那个问题，不是「曾经汇总过」。若哪天真需要后者，得用持久 marker/event，不能复用这个 helper。
+  **它是一个近似，要写明。** `report_startup_read_required()` 答的是「这份 report 被**任何人**写过没有」，不是「今日汇总跑过没有」——它只比较 `summary + body`，刻意忽略 `doc_rev` 与 `blocks`。所以只要内容非初始，它就为真，哪怕内容陈旧、或最后的写者是用户手改（甚至 D1 记的第二写者复活）。descope 之后这可以接受，
+
+  > **r11 二次确认轮更正：初稿这里写的是「汇总跑过一次之后空态永不回来」，那是错的，而且方向危险。** 判据是**纯内容比较**、不查任何历史：把 `summary`/`body` 逐字节还原成 canonical initial，它就翻回 `false`，空态**会**回来。所以它**不是**一个持久的「今日汇总跑过」标记，**PR2 不得拿它去抑制重跑按钮**——用户还原一次文档，抑制就无声失效。要「曾经汇总过」必须另立持久 marker/event。这句错误陈述当时同时出现在设计正文、模块 README 与端点响应描述里，三处都已改；`wave_report.rs`、`routes/today.rs` 的字段正文与 `today.ts` 一直是对的。**所以字段就叫 `report_has_noninitial_content`**——名字说的是它实际答的那个问题，不是「曾经汇总过」。若哪天真需要后者，得用持久 marker/event，不能复用这个 helper。
 
   按钮在无活动时不出现，但那只是 UI；真正的闸在服务端（D5）。
 - 右面板：日历（现有行为）+ Running / Recent + 现有 Conversations 模块。
