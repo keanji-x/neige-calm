@@ -4979,8 +4979,8 @@
     `ApiError` holding the status text alone: undecoded, the only thing the user is told is
     "Conflict". The cove name comes from the workspace read, which is why the decode is rendered
     by the shell and not by the form.
-  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:154-162
-  authoritative_test: fe/web/src/app/shell/public.test.tsx:163
+  source: fe/core/domain/cove.ts:159-196; fe/web/src/app/shell/public.tsx:338-346
+  authoritative_test: fe/web/src/app/shell/public.test.tsx:294
   owner_slice: features/wave/create
   intentional_omission: false
   runtime_layer: features
@@ -5073,7 +5073,7 @@
     typing. It could not be *stored* — resubmitting it hit the unchanged-value arm and wrote
     nothing — so the defect is the text in the box, not a write, and a fix aimed at persistence
     would have been aimed at nothing.
-  source: fe/web/src/ui/editable-title/public.tsx:16-46,127-131; fe/web/src/features/wave/page/public.tsx:293-300
+  source: fe/web/src/ui/editable-title/public.tsx:16-46,141-143; fe/web/src/features/wave/page/public.tsx:293-300
   authoritative_test: fe/web/src/features/wave/page/public.contract.test.tsx:154
   owner_slice: ui/editable-title
   intentional_omission: false
