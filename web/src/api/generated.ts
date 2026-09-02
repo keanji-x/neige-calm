@@ -4264,6 +4264,15 @@ export interface operations {
                     "application/json": components["schemas"]["Overlay"];
                 };
             };
+            /** @description Reserved kernel namespace (plugin_id or entity_kind) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Internal error */
             500: {
                 headers: {
@@ -4294,6 +4303,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Reserved kernel namespace (plugin_id or entity_kind) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
             };
             /** @description Internal error */
             500: {

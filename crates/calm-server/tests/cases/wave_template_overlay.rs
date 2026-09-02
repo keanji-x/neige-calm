@@ -17,14 +17,14 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::EventBus;
 use calm_server::model::{NewCove, NewOverlay};
-use calm_server::validation::{
-    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
-    template_overlay_payload,
-};
 use calm_server::plugin_host::{PluginHost, PluginRegistry};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
+use calm_server::validation::{
+    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
+    template_overlay_payload,
+};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -417,9 +417,7 @@ async fn overlay_post_cannot_mark_an_existing_wave_as_template() {
         .await
         .expect("overlays");
     assert!(
-        !overlays
-            .iter()
-            .any(|o| o.kind == OVERLAY_TEMPLATE_KIND),
+        !overlays.iter().any(|o| o.kind == OVERLAY_TEMPLATE_KIND),
         "refused write must not land: {overlays:?}"
     );
     let (status, list) = get(boot.app.clone(), "/api/waves").await;
