@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY } from '../../../../core/domain/settings.ts';
-import { SettingsPage, type SettingsPageProps } from './public.tsx';
+import { AppearancePane, NetworkPane, type NetworkPaneProps } from './public.tsx';
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn(() => ({
@@ -19,7 +19,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
+function props(overrides: Partial<NetworkPaneProps> = {}): NetworkPaneProps {
   return {
     settings: {},
     loadError: null,
@@ -28,15 +28,13 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     savedAt: null,
     onSave: vi.fn(),
     onRetryLoad: vi.fn(),
-    themeMode: 'system',
-    onThemeModeChange: vi.fn(),
     ...overrides,
   };
 }
 
 describe('Settings network form', () => {
   it('seeds the proxy fields from the settings bag', () => {
-    render(<SettingsPage {...props({
+    render(<NetworkPane {...props({
       settings: { [HTTP_PROXY_KEY]: 'http://box:3128', [HTTPS_PROXY_KEY]: 'http://box:3129' },
     })} />);
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://box:3128');
@@ -44,13 +42,13 @@ describe('Settings network form', () => {
   });
 
   it('shows an empty field when the key is absent from the bag', () => {
-    render(<SettingsPage {...props()} />);
+    render(<NetworkPane {...props()} />);
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('');
   });
 
   it('sends the edited value under the domain key', async () => {
     const onSave = vi.fn();
-    render(<SettingsPage {...props({ onSave })} />);
+    render(<NetworkPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://edge:8080');
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(onSave).toHaveBeenCalledWith({ [HTTPS_PROXY_KEY]: 'http://edge:8080' });
@@ -60,7 +58,7 @@ describe('Settings network form', () => {
   // that with aria-busy and its spinner; the handler remains the activation
   // guard, so focus is not thrown to <body> mid-action.
   it('flips the save label and blocks the button while saving, without disabling it', () => {
-    render(<SettingsPage {...props({ saving: true })} />);
+    render(<NetworkPane {...props({ saving: true })} />);
     const save = screen.getByRole('button', { name: 'Saving…' });
     expect(save.hasAttribute('disabled')).toBe(false);
     expect(save.getAttribute('aria-disabled')).toBeNull();
@@ -69,7 +67,7 @@ describe('Settings network form', () => {
   });
 
   it('marks only the ready Save label as visible before saving', async () => {
-    render(<SettingsPage {...props()} />);
+    render(<NetworkPane {...props()} />);
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://edge');
     const save = screen.getByRole('button', { name: 'Save' });
     expect(save.textContent).toContain('Save');
@@ -78,28 +76,28 @@ describe('Settings network form', () => {
   });
 
   it('re-seeds the fields when the settings prop reports a new server value', () => {
-    const view = render(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://old' } })} />);
-    view.rerender(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://new' } })} />);
+    const view = render(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://old' } })} />);
+    view.rerender(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://new' } })} />);
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://new');
   });
 
   it('keeps what the user typed when the parent re-renders with an equal bag', async () => {
-    const view = render(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box' } })} />);
+    const view = render(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box' } })} />);
     await userEvent.clear(screen.getByLabelText('HTTP proxy'));
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://typed');
     // A fresh object with identical values — a query cache does this.
-    view.rerender(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box' } })} />);
+    view.rerender(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box' } })} />);
     expect(screen.getByLabelText<HTMLInputElement>('HTTP proxy').value).toBe('http://typed');
   });
 
   it('preserves a field edited during an in-flight save when the response updates another field', async () => {
-    const view = render(<SettingsPage {...props({
+    const view = render(<NetworkPane {...props({
       settings: { [HTTP_PROXY_KEY]: 'http://old-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
       saving: true,
     })} />);
     await userEvent.clear(screen.getByLabelText('HTTPS proxy'));
     await userEvent.type(screen.getByLabelText('HTTPS proxy'), 'http://typed-during-save');
-    view.rerender(<SettingsPage {...props({
+    view.rerender(<NetworkPane {...props({
       settings: { [HTTP_PROXY_KEY]: 'http://saved-http', [HTTPS_PROXY_KEY]: 'http://old-https' },
       saving: false, savedAt: 123,
     })} />);
@@ -108,36 +106,26 @@ describe('Settings network form', () => {
 });
 
 describe('Settings appearance', () => {
-  it('moves and selects with radiogroup arrow keys', async () => {
+  it('states the current theme on a dropdown and reports the one the reader picks', async () => {
     const onThemeModeChange = vi.fn();
-    render(<SettingsPage {...props({ themeMode: 'system', onThemeModeChange })} />);
-    const system = screen.getByRole('radio', { name: 'System' });
-    system.focus();
-    await userEvent.keyboard('{ArrowRight}');
-    expect(onThemeModeChange).toHaveBeenCalledWith('light');
-    expect(document.activeElement).toBe(screen.getByRole('radio', { name: 'Light' }));
-  });
-  it('reports the selected mode without going through onSave', async () => {
-    const onThemeModeChange = vi.fn();
-    const onSave = vi.fn();
-    render(<SettingsPage {...props({ onThemeModeChange, onSave })} />);
-    await userEvent.click(screen.getByRole('radio', { name: 'Dark' }));
+    render(<AppearancePane themeMode="system" onThemeModeChange={onThemeModeChange} />);
+    const control = screen.getByRole('combobox', { name: 'Theme' });
+    expect(control.textContent).toContain('System');
+
+    await userEvent.click(control);
+    await userEvent.click(await screen.findByRole('option', { name: 'Dark' }));
     expect(onThemeModeChange).toHaveBeenCalledWith('dark');
-    expect(onSave).not.toHaveBeenCalled();
   });
 
-  it('marks the active mode as checked in the Theme radiogroup', () => {
-    render(<SettingsPage {...props({ themeMode: 'light' })} />);
-    const group = screen.getByRole('radiogroup', { name: 'Theme' });
-    expect(group).toBeTruthy();
-    expect(screen.getByRole('radio', { name: 'Light' }).getAttribute('aria-checked')).toBe('true');
-    expect(screen.getByRole('radio', { name: 'System' }).getAttribute('aria-checked')).toBe('false');
+  it('shows the active mode, not the first option', () => {
+    render(<AppearancePane themeMode="light" onThemeModeChange={vi.fn()} />);
+    expect(screen.getByRole('combobox', { name: 'Theme' }).textContent).toContain('Light');
   });
 });
 
 describe('Settings states', () => {
   it('surfaces a load failure as an alert', () => {
-    render(<SettingsPage {...props({ settings: undefined, loadError: 'settings unreachable' })} />);
+    render(<NetworkPane {...props({ settings: undefined, loadError: 'settings unreachable' })} />);
     expect(screen.getByRole('alert')).toBeTruthy();
     expect(screen.getByText('settings unreachable')).toBeTruthy();
     expect(screen.queryByText('Loading settings…')).toBeNull();
@@ -145,20 +133,20 @@ describe('Settings states', () => {
 
   it('retries a failed settings read from the in-place error', async () => {
     const onRetryLoad = vi.fn();
-    render(<SettingsPage {...props({ settings: undefined, loadError: 'settings unreachable', onRetryLoad })} />);
+    render(<NetworkPane {...props({ settings: undefined, loadError: 'settings unreachable', onRetryLoad })} />);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetryLoad).toHaveBeenCalledTimes(1);
   });
 
   it('surfaces a save failure as an alert', () => {
-    render(<SettingsPage {...props({ saveError: 'PUT /api/settings failed' })} />);
+    render(<NetworkPane {...props({ saveError: 'PUT /api/settings failed' })} />);
     expect(screen.getByRole('alert').textContent).toBe('PUT /api/settings failed');
   });
 
   it('confirms a save through a status role and then retires the notice', () => {
     vi.useFakeTimers();
     try {
-      render(<SettingsPage {...props({ savedAt: 1234, savedNoticeMs: 10 })} />);
+      render(<NetworkPane {...props({ savedAt: 1234, savedNoticeMs: 10 })} />);
       expect(screen.getByText('Saved.').getAttribute('role')).toBe('status');
       act(() => { vi.advanceTimersByTime(20); });
       expect(screen.queryByText('Saved.')).toBeNull();
@@ -182,11 +170,11 @@ describe('Settings states', () => {
    * `showSaved &&` guard so the notice is always mounted, must turn this red.
    */
   it('exposes the saved notice at the anchor the e2e spec locates, and only after a save', () => {
-    const { unmount } = render(<SettingsPage {...props({ savedAt: null })} />);
+    const { unmount } = render(<NetworkPane {...props({ savedAt: null })} />);
     expect(document.querySelectorAll('[data-nc-settings-saved]')).toHaveLength(0);
     unmount();
 
-    render(<SettingsPage {...props({ savedAt: 1234 })} />);
+    render(<NetworkPane {...props({ savedAt: 1234 })} />);
     const anchored = document.querySelectorAll('[data-nc-settings-saved]');
     expect(anchored).toHaveLength(1);
     expect(anchored[0]?.textContent).toBe('Saved.');

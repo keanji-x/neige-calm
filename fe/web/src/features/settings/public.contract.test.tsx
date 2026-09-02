@@ -5,11 +5,11 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY } from '../../../../core/domain/settings.ts';
-import { SettingsPage, SettingsSurface, type SettingsPageProps } from './public.tsx';
+import { NetworkPane, SettingsSurface, type NetworkPaneProps } from './public.tsx';
 
 afterEach(cleanup);
 
-function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
+function props(overrides: Partial<NetworkPaneProps> = {}): NetworkPaneProps {
   return {
     settings: {},
     loadError: null,
@@ -18,15 +18,13 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     savedAt: null,
     onSave: vi.fn(),
     onRetryLoad: vi.fn(),
-    themeMode: 'system',
-    onThemeModeChange: vi.fn(),
     ...overrides,
   };
 }
 
 describe('INV-SETTINGS-001 the save patch states intent', () => {
   it('keeps Save disabled until a field actually changes, and disables it again after Reset', async () => {
-    render(<SettingsPage {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box:3128' } })} />);
+    render(<NetworkPane {...props({ settings: { [HTTP_PROXY_KEY]: 'http://box:3128' } })} />);
     expect(screen.getByRole('button', { name: 'Save' }).hasAttribute('disabled')).toBe(true);
 
     await userEvent.type(screen.getByLabelText('HTTP proxy'), '9');
@@ -39,7 +37,7 @@ describe('INV-SETTINGS-001 the save patch states intent', () => {
 
   it('sends null — not an empty string — for a proxy field the user cleared', async () => {
     const onSave = vi.fn();
-    render(<SettingsPage {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'http://box:3128' } })} />);
+    render(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'http://box:3128' } })} />);
     await userEvent.clear(screen.getByLabelText('HTTP proxy'));
     await userEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(onSave).toHaveBeenCalledWith({ [HTTP_PROXY_KEY]: null });
@@ -47,7 +45,7 @@ describe('INV-SETTINGS-001 the save patch states intent', () => {
 
   it('omits an unchanged key from the patch instead of resending its current value', async () => {
     const onSave = vi.fn();
-    render(<SettingsPage {...props({
+    render(<NetworkPane {...props({
       onSave,
       settings: { [HTTP_PROXY_KEY]: 'http://box:3128', [HTTPS_PROXY_KEY]: 'http://box:3129' },
     })} />);
@@ -59,7 +57,7 @@ describe('INV-SETTINGS-001 the save patch states intent', () => {
 
 describe('INV-SETTINGS-002 loading never shows an empty form', () => {
   it('renders no text input at all while the settings bag is undefined', () => {
-    render(<SettingsPage {...props({ settings: undefined })} />);
+    render(<NetworkPane {...props({ settings: undefined })} />);
     // An empty form here would let the user save blanks over real values.
     expect(screen.queryAllByRole('textbox').length).toBe(0);
     expect(screen.getByText('Loading settings…')).toBeTruthy();
@@ -68,21 +66,21 @@ describe('INV-SETTINGS-002 loading never shows an empty form', () => {
 
 describe('INV-A11Y-061 navigation shape', () => {
   it('renders no native link anywhere, in any state', () => {
-    const { container } = render(<SettingsPage {...props({ savedAt: 1, saveError: 'x', loadError: 'y' })} />);
+    const { container } = render(<NetworkPane {...props({ savedAt: 1, saveError: 'x', loadError: 'y' })} />);
     expect(container.querySelectorAll('a').length).toBe(0);
   });
 
   it('names every settings section on a button, and marks the current one', async () => {
     const onSelectSection = vi.fn();
     render(
-      <SettingsSurface section="general" onSelectSection={onSelectSection}>
+      <SettingsSurface section="network" onSelectSection={onSelectSection}>
         <span>pane</span>
       </SettingsSurface>,
     );
     const nav = screen.getByRole('navigation', { name: 'Settings sections' });
     expect([...nav.querySelectorAll('button')].map((node) => node.textContent))
-      .toEqual(['General', 'Templates', 'Plugins']);
-    expect(screen.getByRole('button', { name: 'General' }).getAttribute('aria-current')).toBe('page');
+      .toEqual(['Network', 'Appearance', 'Templates', 'Plugins', 'About']);
+    expect(screen.getByRole('button', { name: 'Network' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('button', { name: 'Plugins' }).getAttribute('aria-current')).toBeNull();
 
     await userEvent.click(screen.getByRole('button', { name: 'Plugins' }));

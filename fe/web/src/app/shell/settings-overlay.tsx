@@ -28,7 +28,8 @@ import type { ApiTransportPort } from '../../../../core/api/types.ts';
 import type { UnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { PluginsPane } from '../../features/settings/plugins.tsx';
 import {
-  SettingsPage, SettingsSurface, type SettingsSection, type ThemeMode as SettingsThemeMode,
+  AboutPane, AppearancePane, NetworkPane, SettingsSurface,
+  type SettingsSection, type ThemeMode as SettingsThemeMode,
 } from '../../features/settings/public.tsx';
 import { TemplateEditorPage, TemplateListPage } from '../../features/settings/templates.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
@@ -37,7 +38,7 @@ import {
   pluginsQueryOptions, settingsQueryOptions, usePluginMutations, useSettingsMutation,
   useWaveTemplateMutation, useWaveTemplates,
 } from '../providers/queries.ts';
-import { routeParamFromPath, useCurrentPath, useGo } from '../router/navigation.ts';
+import { routeParamFromPath, useCurrentPath, useGo, type NavTarget } from '../router/navigation.ts';
 import { useTheme } from '../theme/public.tsx';
 
 /**
@@ -47,10 +48,23 @@ import { useTheme } from '../theme/public.tsx';
  * has to reach a pane, and no other path may open the dialog.
  */
 export function settingsSectionForPath(path: string): SettingsSection | null {
-  if (path === '/settings') return 'general';
+  if (path === '/settings') return 'network';
+  if (path === '/settings/appearance') return 'appearance';
   if (path === '/settings/plugins') return 'plugins';
+  if (path === '/settings/about') return 'about';
   if (path === '/settings/templates' || path.startsWith('/settings/templates/')) return 'templates';
   return null;
+}
+
+/** The route each nav entry navigates to. `network` is the bare `/settings`. */
+function targetForSection(section: SettingsSection): NavTarget {
+  switch (section) {
+    case 'network': return { name: 'settings' };
+    case 'appearance': return { name: 'settings-appearance' };
+    case 'templates': return { name: 'settings-templates' };
+    case 'plugins': return { name: 'settings-plugins' };
+    case 'about': return { name: 'settings-about' };
+  }
 }
 
 export type SettingsOverlayProps = Readonly<{
@@ -73,43 +87,61 @@ export function SettingsOverlay({ transport, unauthorized }: SettingsOverlayProp
       wide
     >
       <SettingsSurface
-        section={section ?? 'general'}
-        onSelectSection={(next) => {
-          go(next === 'general'
-            ? { name: 'settings' }
-            : next === 'templates' ? { name: 'settings-templates' } : { name: 'settings-plugins' });
-        }}
+        section={section ?? 'network'}
+        onSelectSection={(next) => go(targetForSection(next))}
       >
-        {section === 'plugins'
-          ? <PluginsPaneHost transport={transport} unauthorized={unauthorized} />
-          : section === 'templates'
-            ? <TemplatesPaneHost path={path} transport={transport} unauthorized={unauthorized} />
-            : <GeneralPaneHost transport={transport} unauthorized={unauthorized} />}
+        <SectionPane
+          section={section ?? 'network'}
+          path={path}
+          transport={transport}
+          unauthorized={unauthorized}
+        />
       </SettingsSurface>
     </Dialog>
   );
 }
 
-function GeneralPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
+/** One switch, so a new section cannot forget to be rendered. */
+function SectionPane({ section, path, transport, unauthorized }: SettingsOverlayProps & {
+  section: SettingsSection;
+  path: string;
+}) {
+  switch (section) {
+    case 'appearance': return <AppearancePaneHost />;
+    case 'templates': return <TemplatesPaneHost path={path} transport={transport} unauthorized={unauthorized} />;
+    case 'plugins': return <PluginsPaneHost transport={transport} unauthorized={unauthorized} />;
+    case 'about': return <AboutPane />;
+    case 'network': return <NetworkPaneHost transport={transport} unauthorized={unauthorized} />;
+  }
+}
+
+function AppearancePaneHost() {
   const theme = useTheme();
+  return (
+    <AppearancePane
+      // `app/theme` and `features/settings` each own their copy of the mode
+      // union — features may not import app. The adaptation is here, and the
+      // two unions are only kept in step by this line.
+      themeMode={theme.mode satisfies SettingsThemeMode}
+      onThemeModeChange={(mode) => theme.setMode(mode)}
+    />
+  );
+}
+
+function NetworkPaneHost({ transport, unauthorized }: SettingsOverlayProps) {
   const save = useSettingsMutation(transport, unauthorized);
   const settings = useQuery(settingsQueryOptions(transport, unauthorized));
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   return (
-    <SettingsPage
+    <NetworkPane
       settings={settings.data?.settings}
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}
       saving={saving}
       saveError={saveError}
       savedAt={savedAt}
-      // `app/theme` and `features/settings` each own their copy of the mode
-      // union — features may not import app. The adaptation is here, and the
-      // two unions are only kept in step by this line.
-      themeMode={theme.mode satisfies SettingsThemeMode}
-      onThemeModeChange={(mode) => theme.setMode(mode)}
       onSave={(patch) => {
         setSaving(true);
         setSaveError(null);

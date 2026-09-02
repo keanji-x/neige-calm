@@ -35,10 +35,10 @@
 import type { WaveTemplate, WaveTemplateGoalEdit } from '../../../../core/domain/wave.ts';
 import { Icon } from '../../ui/icon/public.tsx';
 import { useState } from '../../ui/state/public.ts';
+import { SettingRow, SettingsList, SettingsPane } from './public.tsx';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
 import { Heading } from '@astryxdesign/core/Heading';
-import { List, ListItem } from '@astryxdesign/core/List';
 import { FormLayout } from '@astryxdesign/core/FormLayout';
 import { HStack } from '@astryxdesign/core/HStack';
 import { Text } from '@astryxdesign/core/Text';
@@ -79,47 +79,38 @@ export function TemplateListPage({
   templates, loadError, onRetryLoad, onEdit,
 }: TemplateListProps) {
   return (
-    <div className={styles.paneBody}>
-      <VStack className={styles.form} gap={4} align="stretch">
-        <Heading level={3}>Templates</Heading>
-        <Text as="p" color="secondary">
-          What a new wave starts from. Editing a template changes every wave created
-          from it afterwards; waves already created keep the plan they were forked with.
-        </Text>
-        {loadError !== null && (
-          <VStack gap={2} align="start">
-            <Banner status="error" title={loadError} role="alert" />
-            <Button type="button" variant="secondary" label="Retry" onClick={onRetryLoad} />
-          </VStack>
+    <SettingsPane
+      title="Templates"
+      lede="What a new wave starts from. Editing one changes every wave created from it afterwards; waves already created keep the plan they were forked with."
+    >
+      {loadError !== null && (
+        <VStack gap={2} align="start">
+          <Banner status="error" title={loadError} role="alert" />
+          <Button type="button" variant="secondary" label="Retry" onClick={onRetryLoad} />
+        </VStack>
+      )}
+      {templates === undefined
+        ? loadError === null && <Text as="p" color="secondary">Loading templates…</Text>
+        : (
+          <SettingsList>
+            {templates.map((template) => (
+              <SettingRow
+                key={template.id}
+                title={template.title}
+                /* The count, not the task list: the list is what the next
+                   screen is for, and repeating it here was what made the old
+                   inline version unreadable. */
+                description={template.tasks.length === 1 ? '1 task' : `${template.tasks.length} tasks`}
+                /* A drill-in row: the row is the target and the chevron says
+                   so. There is no Edit button — a row plus a button inside it
+                   is two targets for one intent, and three buttons all called
+                   "Edit" was a list a screen reader could not navigate. */
+                onOpen={() => onEdit(template.id)}
+              />
+            ))}
+          </SettingsList>
         )}
-        {templates === undefined
-          ? loadError === null && <Text as="p" color="secondary">Loading templates…</Text>
-          : (
-            <List hasDividers density="balanced">
-              {templates.map((template) => (
-                <ListItem
-                  key={template.id}
-                  label={template.title}
-                  /* The count, not the task list: the list is what the next
-                     screen is for, and repeating it here was what made the old
-                     inline version unreadable. */
-                  description={template.tasks.length === 1 ? '1 task' : `${template.tasks.length} tasks`}
-                  /* The **row** drills in, and the chevron says so — there is
-                     no Edit button. A row that opens a screen is one target
-                     with one affordance; a row plus a button inside it is two
-                     targets for one intent, and astryx's own list guidance
-                     rejects an interactive control inside an interactive row.
-                     The row's accessible name is the template's name, so the
-                     three rows are distinguishable — three buttons all called
-                     "Edit" was a list a screen reader could not navigate. */
-                  endContent={<Icon name="chevron-right" />}
-                  onClick={() => onEdit(template.id)}
-                />
-              ))}
-            </List>
-          )}
-      </VStack>
-    </div>
+    </SettingsPane>
   );
 }
 

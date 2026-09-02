@@ -2,132 +2,93 @@
 
 Workspace settings. Every surface here is presentational: it never calls an API.
 The bag, the in-flight flag, the error strings and the callbacks all arrive as
-props; the router owns fetching and mutating.
+props; `app/shell/settings-overlay` owns fetching and mutating.
 
-Four surfaces, four routes:
+## The standard
 
-| Route | Component | File |
+**One nav entry per group. One pane per entry. One row shape.**
+
+A settings group that wants a heading is a nav entry — not a block stacked on a
+pane. That is why Network, Appearance and About are three entries and not three
+headed sections of one "General" page: a pane holding three headed groups is a
+pile, and the reader has to scroll to discover what is in it.
+
+A row is:
+
+```
+title                                                            [ control ]
+one sentence
+```
+
+Left-aligned text, right-aligned control, both flush with the pane's two edges,
+a hairline between rows and nothing else. Every control is the same width
+(`CONTROL_WIDTH`), so a pane has exactly one trailing edge whatever sits on it —
+a text field, a dropdown, a toggle, a chevron.
+
+That row is `SettingRow`, and it is the **only** way to put anything on a pane.
+A row is either something you set (`control`) or somewhere you go (`onOpen`),
+never both — the props type makes the pair unrepresentable, and astryx's list
+guidance rejects an interactive control inside an interactive row for the same
+reason: two targets for one intent.
+
+### Hierarchy
+
+Three levels, and only three:
+
+1. the dialog title — `Settings`
+2. the pane — a heading plus **one sentence** saying what the group is for
+3. the rows
+
+The lede is required by the props. A group that cannot be said in one sentence
+is two groups, and the nav column is where the second one goes.
+
+### Choosing a control
+
+| Kind of setting | Control |
+| --- | --- |
+| free text | `TextInput`, `isLabelHidden` (the row's title is the label) |
+| one of several | `Selector` — a dropdown that states the current value |
+| on / off | `Switch` |
+| opens a screen | nothing: `onOpen`, and the row ends in a chevron |
+| read-only fact | the value as plain text |
+
+Theme is a `Selector` and **not** a segmented control: three fixed segments
+spend the row's whole trailing edge showing two options nobody picked, and they
+cannot grow — a fourth theme would have to change the control.
+
+### Icons
+
+Astryx's built-in registry only. That set has 26 semantic names and none of them
+is "network" or "appearance", so each nav entry takes the nearest available
+sense and says so where it is chosen (`externalLink` for traffic leaving the
+machine, `viewColumns` for how the app is painted, `copy` for the thing a new
+wave is copied from, `wrench` for tooling, `info` for read-only facts). The app
+deliberately does not draw one-off glyphs for this.
+
+## Sections and routes
+
+| Route | Section | Component |
 | --- | --- | --- |
-| `/settings` | `SettingsPage` | `public.tsx` |
-| `/settings/templates` | `TemplateListPage` | `templates.tsx` |
-| `/settings/templates/$templateId` | `TemplateEditorPage` | `templates.tsx` |
-| `/settings/plugins` | `PluginsPane` | `plugins.tsx` |
+| `/settings` | Network | `NetworkPane` (`public.tsx`) |
+| `/settings/appearance` | Appearance | `AppearancePane` (`public.tsx`) |
+| `/settings/templates` | Templates | `TemplateListPage` (`templates.tsx`) |
+| `/settings/templates/$templateId` | Templates › one template | `TemplateEditorPage` |
+| `/settings/plugins` | Plugins | `PluginsPane` (`plugins.tsx`) |
+| `/settings/about` | About | `AboutPane` (`public.tsx`) |
 
-Real routes rather than page-local state: Back leaves the template editor
-instead of leaving Settings, and one template's editor is a URL.
+Real routes rather than pane-local state: Back leaves the template editor
+instead of leaving Settings, and every pane can be linked to. The dialog around
+them is owned by `app/shell` so it survives navigation between its own sections
+— see `app/shell/settings-overlay.tsx`.
 
-## The frame: `SettingsSurface`
-
-All four render inside `SettingsSurface` — a nav column naming the three groups
-(General / Templates / Plugins) beside the pane for the current one. The nav
-rows **navigate**: each is a route, so the column is `<nav>` + `<button>`s
-carrying `aria-current="page"`, never tabs holding page state.
-
-The app layer puts that frame inside `ui/dialog`, so Settings is an overlay you
-step into from wherever you were and leave with Escape, the `×`, or the scrim.
-Neither the frame nor any pane renders a page header or a breadcrumb: the dialog
-supplies the title and the one close affordance, and the nav column already
-names the group. The template *editor* keeps a back control, because it is a
-level below the list that the nav column cannot express.
-
-## Plugins (`plugins.tsx`)
-
-The installed list from `GET /api/plugins`, with one write: the enable/disable
-switch. Enabled is a *state of the plugin*, so it is a switch and not a pair of
-buttons whose label inverts what they report.
-
-`enabled` and `state` are both on the row because they answer different
-questions and routinely disagree — `enabled` is what the operator asked for and
-the kernel persisted, `state` is what the supervisor achieved. Enabled +
-`crashed`, or enabled + `unavailable` (a connector whose upstream never
-answered, and nothing will retry it), is the case a reader opens this screen
-for. `unavailable` is painted **warning, not error**: it is a connector's normal
-terminal state, and red would blame the kernel for an upstream's silence.
-
-Install, uninstall, config editing, log tailing and token rotation are
-deliberately **not** here. Each is its own screen with its own failure modes,
-and the kernel routes for them (`routes/plugins.rs`) exist whenever they are
-picked up.
-
-## The row grammar (one spec for every pane)
-
-Every row on every settings pane is one of exactly two shapes. Nothing here is
-hand-laid out; both come from `@astryxdesign/core`.
-
-| Shape | What it is | Built from | Ends with |
-| --- | --- | --- | --- |
-| **Control row** | one setting you change in place | `FormLayout direction="horizontal-labels"` — label in the left column, control in the right | its control (`TextInput`, `SegmentedControl`, …) |
-| **Object row** | one item in a collection | `List hasDividers` + `ListItem` — name as `label`, secondary lines as `description` | a `Switch` (state) **or** a `chevron-right` (drills in) |
-
-A control astryx does not label visually — `SegmentedControl`'s `label` is
-`aria-label` only — is wrapped in `Field`, which is what astryx documents that
-wrapper for. That is what puts `Theme` in the label column with the proxy rows.
-
-**There is no Edit button.** A template row *is* the affordance: one target, one
-chevron, named after the template it opens. A row plus a button inside it is two
-targets for one intent, and astryx's list guidance rejects an interactive
-control inside an interactive row. The same rule is why a plugin row — which
-carries a `Switch` — is not clickable.
-
-**Going back from a second level** is a `‹ Parent` ghost button above the
-title, never a filled button beside it: a filled button beside a title reads as
-an action *on* the thing, not as the way back out of it.
-
-## The frame: nav column + panes
-
-The pane follows astryx's own settings guidance rather than an invented layout:
-*"use horizontal-labels for settings pages where labels sit beside their
-inputs"* — a group heading, its rows, and a `Divider` between groups.
+**Going back from a second level** is a `‹ Parent` ghost button above the title,
+never a filled button beside it: a filled button beside a title reads as an
+action *on* the thing, not as the way back out of it.
 
 **The overlay is top-aligned, not centred.** `.dialog-overlay-wide` hard-codes
 `align-items: start` and lives in `styles/`, which is frozen; changing it needs
 an `OWNERSHIP-CHANGE` trailer against an issue. The pane's `min-block-size`
-floor is the mitigation available from this layer — a taller panel leaves
-symmetric-looking margin — and it is not centring.
-
-**No cards.** Bordered cards were the previous shape and they said the wrong
-thing: a card is a boundary, and Network / Appearance / About are three parts of
-one screen, not three objects. One channel (the hairline) does the separating.
-
-**The nav column is astryx `SideNav` / `SideNavItem isSelected`**, not a
-hand-rolled list of buttons. The hand-rolled one was a worse copy of a component
-the design system already ships, and its selected pill hung outside the column
-on a negative margin where the dialog body's `overflow: auto` clipped half of it
-off. `SideNavItem` renders a `<button>` for an `onClick` without an `href`,
-which keeps INV-A11Y-061; `aria-current="page"` is stamped on top, because
-`isSelected` is a visual state and the current route is a fact a screen reader
-has to be told.
-
-A control astryx does not label visually — `SegmentedControl`'s `label` is
-`aria-label` only — gets wrapped in `Field`, which is what astryx documents that
-wrapper for. That is what puts `Theme` in the label column with the rows above
-it.
-
-## Built from `@astryxdesign/core`
-
-`SegmentedControl`, `TextInput`, `Button`, `Banner`, `Heading`, `MetadataList`,
-`VStack`/`HStack`. The CSS module is down to the page frame, the form measure,
-the saved-notice colour and the template list rows — the old field/label/input/
-action-row/segmented-control/About rules were **deleted, not commented out**,
-because astryx owns that styling now.
-
-Three places astryx does not fit, each with the reasoning at its call site:
-
-- **`Button` renders a native `disabled`** unless the button is interruptible,
-  which would break CR-6 (below). Saves pass `isLoading` + `isInterruptible`.
-- **Every `Button` renders an unconditional `role="status"` live region**, so
-  `getByRole('status')` can never be unique on a page with buttons. The
-  `Saved.` assertion finds the node by text and then checks its role.
-- **`Spinner` calls `window.matchMedia` unguarded** and jsdom has none. Stubbed
-  per test file, never globally: `app/theme` deliberately branches on
-  `matchMedia` being absent, and a global polyfill would hide that path.
-
-## Sections
-
-- **Network** — HTTP / HTTPS proxy inputs seeded from the settings bag.
-- **Appearance** — a `SegmentedControl` labelled `Theme` (the group heading is
-  `Appearance`), Light / Dark / System, reporting through `onThemeModeChange`.
-- **About** — build-time `version` / `build` in a `MetadataList`.
+floor is the mitigation available from this layer, and it is not centring.
 
 ## `null` clears a key (INV-SETTINGS-001)
 
@@ -164,7 +125,7 @@ to this union at the router seam.
 
 ## Loading is not an empty form (INV-SETTINGS-002)
 
-While `settings === undefined` the Network section renders a loading line and
+While `settings === undefined` the Network pane renders a loading line and
 **no text input at all**. An empty form would let the user save blanks over real
 values before the bag has landed. The template list and editor hold the same
 rule for their own reads.
@@ -194,8 +155,8 @@ what it is given.
 
 - Errors render in `role="alert"`; `savedAt` drives a transient `Saved.` in
   `role="status"`.
-- Each template's Edit button is named after its template — three buttons all
-  called "Edit" is a list a screen reader cannot navigate.
+- A template row is named after its template — the row *is* the drill-in
+  target, so there is no "Edit" button to name.
 - **Intentionally not done:** no `<a href>` anywhere (INV-A11Y-061).
 
 ## Test contract

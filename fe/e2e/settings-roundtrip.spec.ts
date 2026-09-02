@@ -41,10 +41,15 @@ test('persists network and appearance settings across reloads', async ({ page, r
 
   await page.reload();
   await expect(page.getByLabel('HTTP proxy')).toHaveValue(proxy);
-  await page.getByRole('radio', { name: 'Dark' }).click();
+
+  // Appearance is its own section now, and theme is a dropdown rather than a
+  // segmented control: it states the current value and lists the rest on ask.
+  await page.goto('/next/settings/appearance');
+  await page.getByRole('combobox', { name: 'Theme' }).click();
+  await page.getByRole('option', { name: 'Dark' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await page.reload();
-  await expect(page.getByRole('radio', { name: 'Dark' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.getByRole('combobox', { name: 'Theme' })).toContainText('Dark');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   expect(errors).toEqual([]);
 });

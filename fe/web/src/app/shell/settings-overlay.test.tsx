@@ -75,8 +75,10 @@ function renderApp(initialEntry: string) {
 
 describe('settingsSectionForPath', () => {
   it('maps every settings path to a pane and nothing else to one', () => {
-    expect(settingsSectionForPath('/settings')).toBe('general');
+    expect(settingsSectionForPath('/settings')).toBe('network');
+    expect(settingsSectionForPath('/settings/appearance')).toBe('appearance');
     expect(settingsSectionForPath('/settings/plugins')).toBe('plugins');
+    expect(settingsSectionForPath('/settings/about')).toBe('about');
     expect(settingsSectionForPath('/settings/templates')).toBe('templates');
     expect(settingsSectionForPath('/settings/templates/issue-development')).toBe('templates');
     // The dialog stays shut everywhere else — including on a path that merely

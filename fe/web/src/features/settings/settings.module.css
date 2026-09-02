@@ -67,11 +67,18 @@
     min-block-size: 0;
   }
 
-  /* The segmented control sizes to its three options. Without this it fills the
-     grid's input column, leaving a wide empty track to the right of "System"
-     that reads as a broken control rather than a chosen width. */
-  .themeControl {
-    inline-size: fit-content;
+  /* The rows of a pane. `List` draws the hairlines; this only says how wide the
+     column of rows is, which is what makes every control on the pane end at one
+     trailing edge. */
+  .list {
+    inline-size: 100%;
+    max-inline-size: var(--measure-list);
+  }
+
+  /* A row's own two edges. The text block takes what is left after the control,
+     so a long description wraps instead of pushing the control off the edge. */
+  .row {
+    gap: var(--space-6);
   }
 
   /* A group is a heading, its rows, and the space around them. The separation

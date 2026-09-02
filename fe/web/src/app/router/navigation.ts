@@ -55,7 +55,14 @@ export type NavTarget =
   | Readonly<{ name: 'settings-templates' }>
   | Readonly<{ name: 'settings-template'; templateId: string }>
   /** Settings › Plugins — the installed list and its enable/disable switch. */
-  | Readonly<{ name: 'settings-plugins' }>;
+  | Readonly<{ name: 'settings-plugins' }>
+  /**
+   * Appearance and About are sections of their own rather than blocks stacked
+   * on one page: a settings group with its own heading is a nav entry, and a
+   * pane holding three of them is the pile that shape produced.
+   */
+  | Readonly<{ name: 'settings-appearance' }>
+  | Readonly<{ name: 'settings-about' }>;
 
 export type GoOptions = Readonly<{ replace?: boolean }>;
 
@@ -71,6 +78,8 @@ export function pathFor(target: NavTarget): string {
     case 'settings-templates': return '/settings/templates';
     case 'settings-template': return `/settings/templates/${encodeURIComponent(target.templateId)}`;
     case 'settings-plugins': return '/settings/plugins';
+    case 'settings-appearance': return '/settings/appearance';
+    case 'settings-about': return '/settings/about';
   }
 }
 

@@ -877,9 +877,21 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: renderNothing,
   });
 
+  const appearanceRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/appearance',
+    component: renderNothing,
+  });
+
+  const aboutRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/about',
+    component: renderNothing,
+  });
+
   return rootRoute.addChildren([
     indexRoute, coveRoute, waveRoute, settingsRoute, templateListRoute, templateEditorRoute,
-    pluginsRoute,
+    pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }
 

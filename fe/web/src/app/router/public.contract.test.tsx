@@ -94,7 +94,7 @@ describe('route registration', () => {
     expect(registeredPaths()).toEqual([
       '/', '/cove/$coveId', '/wave/$waveId',
       '/settings', '/settings/templates', '/settings/templates/$templateId',
-      '/settings/plugins',
+      '/settings/plugins', '/settings/appearance', '/settings/about',
     ]);
   });
 
@@ -131,6 +131,8 @@ describe('route registration', () => {
       'settings-templates': { name: 'settings-templates' },
       'settings-template': { name: 'settings-template', templateId: 't1' },
       'settings-plugins': { name: 'settings-plugins' },
+      'settings-appearance': { name: 'settings-appearance' },
+      'settings-about': { name: 'settings-about' },
     };
     const targets: NavTarget[] = Object.values(samples);
     // A registered path with `$param` matches a concrete path of the same

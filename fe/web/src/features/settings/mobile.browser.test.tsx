@@ -4,14 +4,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import '../../styles/entry.css';
 
-import { SettingsPage } from './public.tsx';
+import { NetworkPane } from './public.tsx';
 
 afterEach(() => { document.body.replaceChildren(); });
 
 describe('Settings mobile presentation', () => {
-  it('uses astryx form controls and one group per settings heading', async () => {
+  it('keeps one row shape and one trailing edge at phone width', async () => {
     await page.viewport(390, 844);
-    const { container } = render(<SettingsPage
+    render(<NetworkPane
       settings={{}}
       loadError={null}
       saving={false}
@@ -19,18 +19,11 @@ describe('Settings mobile presentation', () => {
       savedAt={null}
       onSave={vi.fn()}
       onRetryLoad={vi.fn()}
-      themeMode="system"
-      onThemeModeChange={vi.fn()}
     />);
 
-    // Network, Appearance, About — three groups, asserted by count rather than
-    // `toBeGreaterThan` so adding one is a deliberate edit here. They are
-    // headings and hairlines now, not cards: a card is a boundary, and these
-    // are three parts of one screen.
-    expect(container.querySelectorAll('section[aria-labelledby^="nc-settings-"]')).toHaveLength(3);
+    // One pane, one heading, and its rows — no group boxes to stack.
     expect(page.getByRole('textbox', { name: 'HTTP proxy' })).toBeTruthy();
     expect(page.getByRole('textbox', { name: 'HTTPS proxy' })).toBeTruthy();
-    expect(page.getByRole('radiogroup', { name: 'Theme' })).toBeTruthy();
     expect(page.getByRole('button', { name: 'Save' })).toBeTruthy();
     await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
     await page.screenshot({ path: '../../../../test-results/mobile-settings.png' });
