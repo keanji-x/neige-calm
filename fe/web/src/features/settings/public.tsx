@@ -43,6 +43,7 @@ import { Selector as AstryxSelector } from '@astryxdesign/core/Selector';
 import { SideNav as AstryxSideNav, SideNavItem as AstryxSideNavItem } from '@astryxdesign/core/SideNav';
 import { Text as AstryxText } from '@astryxdesign/core/Text';
 import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
+import { VisuallyHidden as AstryxVisuallyHidden } from '@astryxdesign/core/VisuallyHidden';
 import { useEffect, type ReactNode } from 'react';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
@@ -296,10 +297,23 @@ export function NetworkPane({
     void onSave({ [PROXY_KEY_OF[field]]: draft[field] === '' ? null : draft[field] });
   };
 
+  /**
+   * The confirmation is the **tick and nothing else**.
+   *
+   * "Saved." beside a green tick is the tick said twice: the mark already means
+   * exactly that, and the word costs the row a line that then reflows the rows
+   * under it every time you leave a field. A failure keeps its sentence,
+   * because "something went wrong" is not a thing a mark can say.
+   *
+   * The word does not disappear for a screen reader, though — it moves to the
+   * visually-hidden live region beside the field (`SavedAnnouncement`), which
+   * is also what the tests and the e2e spec locate. A tick with no accessible
+   * name would make the confirmation sighted-only.
+   */
   const statusFor = (field: ProxyField) => {
     if (committed !== field) return undefined;
     if (saveError !== null) return { type: 'error' as const, message: saveError };
-    if (showSaved) return { type: 'success' as const, message: 'Saved.' };
+    if (showSaved) return { type: 'success' as const };
     return undefined;
   };
 
@@ -308,6 +322,10 @@ export function NetworkPane({
       title={title}
       description="Empty inherits the container's own proxy."
       control={(
+        <>
+        {committed === field && showSaved && saveError === null && (
+          <AstryxVisuallyHidden role="status">Saved.</AstryxVisuallyHidden>
+        )}
         <AstryxTextInput
           label={title}
           isLabelHidden
@@ -323,6 +341,7 @@ export function NetworkPane({
              request and blocking the field would drop the next keystroke. */
           data-nc-state={saving && committed === field ? 'busy' : undefined}
         />
+        </>
       )}
     />
   );

@@ -75,6 +75,17 @@
     max-inline-size: var(--measure-list);
   }
 
+  /*
+   * A placeholder is an **example**, and it has to be legible as one at a
+   * glance: astryx's own placeholder tone is --text-2, one step off body text,
+   * so a suggested proxy read as a set one. This is the app's lightest text
+   * token, which is the only step in the scale wide enough to say "not your
+   * value" without a second channel (italics, quotes) doing the saying.
+   */
+  .row input::placeholder {
+    color: var(--text-4);
+  }
+
   /* A row's own two edges. The text block takes what is left after the control,
      so a long description wraps instead of pushing the control off the edge. */
   .row {

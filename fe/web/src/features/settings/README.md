@@ -108,10 +108,28 @@ not `PUT`; the guard compares against the last value the server gave us, and
 removing it turns *"writes nothing when a field is entered and left untouched"*
 red.
 
-**The confirmation and the failure land on the row that committed**, as that
-field's own success / error status, never as a pane-level banner: with two proxy
-rows, a pane-level message cannot say which one it is about. `saveError` keeps
-the typed value in place — a failed write must not also lose the text.
+**The confirmation is a tick, and only a tick.** "Saved." beside a green mark is
+the mark said twice, and the word costs the row a line that reflows every row
+under it each time you leave a field. The word is not gone, though — it moves to
+a visually-hidden live region beside the field, which is what a screen reader
+announces and what the tests and the e2e spec locate. A tick with no accessible
+name would make the confirmation sighted-only. A *failure* keeps its sentence:
+"something went wrong" is not a thing a mark can say.
+
+**The confirmation and the failure land on the row that committed**, never as a
+pane-level banner: with two proxy rows, a pane-level message cannot say which
+one it is about. `saveError` keeps the typed value in place — a failed write
+must not also lose the text.
+
+**An example is painted lighter than a value.** A placeholder is a suggestion,
+and astryx's own placeholder tone is one step off body text, which read as a
+setting somebody had made. Settings rows drop it to the lightest text token —
+the only step in the scale wide enough to say "not your value" without a second
+channel (italics, quotes) doing the saying.
+
+Both are claims about *paint*, so both are held in the browser tier
+(`mobile.browser.test.tsx`): jsdom reports every element as visible and declines
+to compute `::placeholder`, so neither is falsifiable there.
 
 The template *editor* keeps its Save button, and should: it commits a whole
 document — a title plus every task goal — where "leaving the field" is not the
