@@ -95,12 +95,15 @@ describe('MobileListItem hint', () => {
 
 /*
  * #1234 S1b-4a did not change this rule — and that is exactly why it is pinned
- * here. `MobileListItem` has seven call sites (Outline, Conversations, Today,
- * `app/shell`'s lists, the wave page's own drill-downs), and this slice reworked
- * the primitive around them: `onSelect` became optional, `hint` and two marker
- * channels arrived. "The accessible name still composes the way it always did"
- * was, until this block, held up by reading the diff. On a shared primitive that
- * is not enough, so the composition is asserted in all four of its cases.
+ * here. `MobileListItem` has seven call sites: `app/shell`'s Pages list, its
+ * Coves list and a cove's Waves list, this page's Outline rows (parent and
+ * child) and its Tasks rows, and the Cards row the painter now composes. Six of
+ * the seven pass a string meta, so the composed name is live behaviour, not a
+ * corner. This slice reworked the primitive around them — `onSelect` became
+ * optional, `hint` and two marker channels arrived — and "the accessible name
+ * still composes the way it always did" was, until this block, held up by
+ * reading the diff. On a shared primitive that is not enough, so the
+ * composition is asserted in all four of its cases.
  *
  * The mobile Cards row is the third case: its meta lane is an element, not a
  * string, so `metaLabel` is null and the row carries no `aria-label` at all —
