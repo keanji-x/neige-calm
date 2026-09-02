@@ -23,11 +23,12 @@
 // and that is what `mobile-projection.test.tsx` runs.
 //
 // **Scope: Cards.** The mobile Tasks page and the mobile navigation sequence are
-// still hand-composed in `public.tsx` and arrive in S1b-4b. `row()` therefore
-// throws rather than guessing when it is handed a Tasks module — a Task row's
-// composition (a status carrier in the meta lane, `reveal-block` on the row
-// root) is not this file's yet, and silently painting a Cards row for it would
-// be a projection fault reported far from its cause.
+// still hand-composed in `public.tsx` and arrive in S1b-4b. Handed a Tasks
+// module, the pending row leaf therefore throws while the module is finished,
+// rather than guessing — a Task row's composition (a status carrier in the meta
+// lane, `reveal-block` on the row root) is not this file's yet, and silently
+// painting a Cards row for it would be a projection fault reported far from its
+// cause.
 
 import type { ReactNode } from 'react';
 

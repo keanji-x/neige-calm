@@ -458,11 +458,15 @@ describe('WavePage card inventory', () => {
    * capability table), so the mobile Cards row is not a control.
    *
    * What survives of the old case's intent is its first assertion — the mobile
-   * row must not reach `onOpenCard` — and it is stronger now: there is nothing
-   * to click. The affordance's absence is also asserted structurally in
-   * `mobile-projection.test.tsx`; this case keeps it here, where the desktop's
-   * own `onOpenCard` wiring is asserted one test above, so the two surfaces'
-   * opposite answers to the same prop sit side by side.
+   * row must not reach `onOpenCard` — and it is stronger now: within the mobile
+   * panel there is no button bearing this row's visible name. That is this
+   * line's reach, and no more: a control renamed away from `/Build log/` would
+   * slip past it. The name-independent guarantee — *no* button under any
+   * `[data-nc-row]`, on a render where the desktop's row actions do exist — is
+   * the pair of button counts in `mobile-projection.test.tsx`'s "offers no card
+   * affordance" case. This case keeps the behavioural half here, where the
+   * desktop's own `onOpenCard` wiring is asserted one test above, so the two
+   * surfaces' opposite answers to the same prop sit side by side.
    */
   it('offers no card control on the mobile page: the row is text, not a landing', async () => {
     const onOpenCard = vi.fn();

@@ -169,12 +169,13 @@ describe('the rendered mobile Cards page projects its view model faithfully', ()
   });
 
   /*
-   * The three visible consequences of the capability table, asserted on the real
-   * page: no delete control, no row control, and — because the row is not a
-   * button — the accessible name of the Cards list is carried by visible text.
-   * The projection cannot see any of this (§6.3 declines interactivity), which
-   * is why it is a behaviour assertion beside it rather than a code in the
-   * checker.
+   * The two visible consequences of the capability table, asserted on the real
+   * page: no delete control and no row control — so, the row being no button,
+   * it remains represented by visible text (which the projection checks above)
+   * rather than by a control's name. Nothing here computes an accessible name;
+   * the assertions below are button counts. The projection cannot see
+   * interactivity at all (§6.3 declines it), which is why this is a behaviour
+   * assertion beside it rather than a code in the checker.
    */
   it('offers no card affordance: no delete, and the row is not a control', () => {
     const { container } = renderPage({ cards: CARDS, panel: 'cards', onDeleteCard: vi.fn() });

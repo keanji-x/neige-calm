@@ -269,7 +269,8 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
 
 /**
  * The DOM marker attribute names — read by the checker, by tests, and **since
- * S1b-3b by one production renderer.**
+ * S1b-3b by production renderers: the desktop panel, and since S1b-4a the
+ * mobile Cards page.**
  *
  * To be precise about the present: `checkProjection` (S1b-2) reads this table in
  * full — every marker here has a selector in `tools/projection/public.ts`, and

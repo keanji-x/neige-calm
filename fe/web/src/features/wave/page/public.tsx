@@ -487,7 +487,7 @@ export function WavePage({
                 * a time, so this is `paintModule` (Δ2), and the module sequence
                 * lives in the navigation menu above.
                 *
-                * The three card affordances are gone by decision, not by
+                * The two card actions are gone by decision, not by
                 * omission — see `mobile-painter.tsx`'s capability table.
               */
               paintMobileModule(mobilePainter, rowModule(panelView, 'cards'))

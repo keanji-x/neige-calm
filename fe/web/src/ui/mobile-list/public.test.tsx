@@ -93,6 +93,64 @@ describe('MobileListItem hint', () => {
   });
 });
 
+/*
+ * #1234 S1b-4a did not change this rule — and that is exactly why it is pinned
+ * here. `MobileListItem` has seven call sites (Outline, Conversations, Today,
+ * `app/shell`'s lists, the wave page's own drill-downs), and this slice reworked
+ * the primitive around them: `onSelect` became optional, `hint` and two marker
+ * channels arrived. "The accessible name still composes the way it always did"
+ * was, until this block, held up by reading the diff. On a shared primitive that
+ * is not enough, so the composition is asserted in all four of its cases.
+ *
+ * The mobile Cards row is the third case: its meta lane is an element, not a
+ * string, so `metaLabel` is null and the row carries no `aria-label` at all —
+ * the row's name is the visible text, which is what the projection compares.
+ */
+describe('MobileListItem accessible name', () => {
+  const label = (container: HTMLElement) => container.querySelector('li')?.getAttribute('aria-label');
+
+  it('prefers an explicit ariaLabel over the composed name', () => {
+    const { container } = render(row({ ariaLabel: 'Open the build log', meta: 'terminal' }));
+    expect(label(container)).toBe('Open the build log');
+  });
+
+  it('composes title and a string meta', () => {
+    const { container } = render(row({ meta: 'terminal' }));
+    expect(label(container)).toBe('Build log, terminal');
+  });
+
+  it('composes title and a numeric meta', () => {
+    const { container } = render(row({ meta: 3 }));
+    expect(label(container)).toBe('Build log, 3');
+  });
+
+  /* A ReactNode meta has no string form to append, so nothing is composed —
+     rather than an `aria-label` of `Build log, [object Object]`. */
+  it('emits no aria-label when meta is a node rather than a string or number', () => {
+    const { container } = render(row({ meta: <span>terminal</span> }));
+    expect(container.querySelector('li')?.hasAttribute('aria-label')).toBe(false);
+    expect(container.querySelector('[aria-label]')).toBeNull();
+    /* The meta is still on screen — the row is named by what it shows. */
+    expect(container.textContent).toContain('terminal');
+  });
+
+  it('emits no aria-label when neither ariaLabel nor meta is given', () => {
+    const { container } = render(row());
+    expect(container.querySelector('li')?.hasAttribute('aria-label')).toBe(false);
+    expect(container.querySelector('[aria-label]')).toBeNull();
+  });
+
+  /* The carrier is the `<li>` in both shapes: making a row interactive does not
+     move the composed name onto the generated control, which keeps only the
+     visible label. Pinned so a future `onSelect` change cannot relocate it
+     silently. */
+  it('keeps the composed name on the li when the row is interactive', () => {
+    const { container } = render(row({ meta: 'terminal', onSelect: vi.fn() }));
+    expect(label(container)).toBe('Build log, terminal');
+    expect(container.querySelector('button')?.hasAttribute('aria-label')).toBe(false);
+  });
+});
+
 describe('MobileListItem markers', () => {
   it('puts the row marker on the root li', () => {
     const { container } = render(row({ rowMarker: 'card-1' }));
