@@ -95,12 +95,13 @@ describe('paintModule', () => {
  * `delete-card` unsupported and paint one anyway with nothing to notice.
  *
  * The guarantee is deliberately narrow — it constrains the actions handed to
- * `row()`, and that is the whole of what this suite (or anything else in the
- * tree today) observes. Once S1b-2's `checkProjection` exists it will follow
- * that how many `[data-nc-row-action]` markers a faithful painter emits is
- * constrained too; there is no such check yet. Even then it will **not** say an
- * unsupported control cannot be drawn: a painter may draw an extra control that
- * carries no marker at all.
+ * `row()`, and that is the whole of what *this suite* observes. S1b-2's
+ * `checkProjection` now carries the consequence at the marker level: how many
+ * `[data-nc-row-action]` markers a painter emits is constrained too, for the
+ * painters it is run over — which today are synthetic, since no production
+ * painter is wired to it until S1b-3/4. Neither claim says an unsupported
+ * control cannot be drawn: a painter may draw an extra control that carries no
+ * marker at all.
  */
 describe('paintModule action filtering', () => {
   /*

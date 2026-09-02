@@ -19,8 +19,9 @@
 // **Each malicious painter asserts `toEqual`, not `toContain`.** "Something
 // went red" is not evidence that the obligation under test is the one that
 // caught it. Where two obligations are entangled by construction the expected
-// array holds both codes and says why; there are exactly two such places
-// (badge nesting, and status co-hosted on the row element).
+// array holds both codes and says why; there is exactly one such place (badge
+// nesting: a badge inside a badge *is* a carrier holding a descendant content
+// marker, so the leaf rule cannot be avoided).
 
 import { render } from '@testing-library/react';
 import type { ReactNode } from 'react';
@@ -74,6 +75,21 @@ const plainRow: PanelRow = Object.freeze({
   id: 'c2', title: 'Sweep', kind: null, badges: Object.freeze([]), status: null, actions: Object.freeze([]),
 });
 
+/** The "only unsupported" half of §3.5's action-shape pair: under
+ *  `deleteUnsupported` this row is left with no action at all, where `cardRow`
+ *  keeps `open-card`. Without both halves, "the filter removed everything" and
+ *  "the filter removed the right one" are the same observation. */
+const deleteOnlyRow: PanelRow = Object.freeze({
+  id: 'c3',
+  title: 'Purge',
+  kind: 'chore',
+  badges: Object.freeze([]),
+  status: null,
+  actions: Object.freeze<readonly RowAction[]>([
+    Object.freeze({ kind: 'delete-card', cardId: 'c3', label: 'Delete card Purge', hint: 'Delete card' }),
+  ]),
+});
+
 const taskRow: PanelRow = Object.freeze({
   id: 't1',
   title: 'T-1',
@@ -88,16 +104,146 @@ const taskRow: PanelRow = Object.freeze({
   ]),
 });
 
+/** The empty-token row. `core/domain/report.ts` treats `status === ''` as a
+ *  legitimate state, and an empty token makes the text obligation vacuously
+ *  true — a checker that compared the token by truthiness rather than by
+ *  equality would never be caught without it. */
+const blankStatusRow: PanelRow = Object.freeze({
+  id: 't2',
+  title: 'T-2',
+  kind: 'triage',
+  badges: Object.freeze([]),
+  status: Object.freeze({ token: '', phrase: 'No status yet' }),
+  actions: Object.freeze([]),
+});
+
 const cards: RowModuleView = Object.freeze({
-  key: 'cards', title: 'Cards', empty: 'No cards yet', rows: Object.freeze([cardRow, plainRow]),
+  key: 'cards', title: 'Cards', empty: 'No cards yet', rows: Object.freeze([cardRow, plainRow, deleteOnlyRow]),
 });
 const tasks: RowModuleView = Object.freeze({
-  key: 'tasks', title: 'Tasks', empty: 'No tasks yet', rows: Object.freeze([taskRow]),
+  key: 'tasks', title: 'Tasks', empty: 'No tasks yet', rows: Object.freeze([taskRow, blankStatusRow]),
 });
 const emptyTasks: RowModuleView = Object.freeze({ ...tasks, rows: Object.freeze([]) });
+const emptyCards: RowModuleView = Object.freeze({ ...cards, rows: Object.freeze([]) });
 
 const view: readonly RowModuleView[] = Object.freeze([cards, tasks]);
 const withEmpty: readonly RowModuleView[] = Object.freeze([cards, emptyTasks]);
+const withEmptyCards: readonly RowModuleView[] = Object.freeze([emptyCards, tasks]);
+
+// ── The fixture shape guard (§3.5, oracle preconditions) ─────────────────────
+
+/** Every module list this suite hands to `checkProjection`. The guard below
+ *  asserts over exactly this set, so a fixture added without the shape it was
+ *  meant to bring cannot slip in silently. */
+const FIXTURES: readonly (readonly RowModuleView[])[] = Object.freeze([view, withEmpty, withEmptyCards]);
+
+const ALL_MODULES: readonly RowModuleView[] = FIXTURES.flatMap((fixture) => [...fixture]);
+const ALL_ROWS: readonly PanelRow[] = ALL_MODULES.flatMap((module) => [...module.rows]);
+
+const ACTION_KINDS: readonly RowAction['kind'][] =
+  Object.freeze<readonly RowAction['kind'][]>(['reveal-block', 'open-card', 'delete-card']);
+
+/** The capability table the action-shape clauses are stated against. Support is
+ *  a painter fact, so "only unsupported" is only meaningful relative to one. */
+const shapeTable = deleteUnsupported;
+const supportedOf = (row: PanelRow): readonly RowAction[] =>
+  row.actions.filter((action) => shapeTable[action.kind].supported);
+const unsupportedOf = (row: PanelRow): readonly RowAction[] =>
+  row.actions.filter((action) => !shapeTable[action.kind].supported);
+
+/*
+ * These are **oracle preconditions, not obligations of the projection.** They do
+ * not say anything is true of the renderer; they say the fixtures above are
+ * discriminating enough for the malicious painters below to mean what they
+ * claim. A fixture where every row's `title` equals its `kind` would let a
+ * checker that confused the two fields stay green, and no assertion in the rest
+ * of this file would notice.
+ *
+ * **What this guard is worth, precisely (§6.9).** It makes the checklist
+ * *executed* — every clause §3.5 spells out is asserted here, and a fixture edit
+ * that drops a shape goes red naming the shape. It does **not** make the
+ * checklist *complete*: the clauses are a hand-written list, and a new field on
+ * `RowBadge` / `RowStatus` / `PanelRow`, or a new distinguishing shape nobody
+ * thought of, arrives with no clause and nothing here will ask for one. Keeping
+ * the list adequate is a review obligation, not a mechanical one.
+ */
+describe('fixture shape guard', () => {
+  it('the action-kind list this guard iterates is the capability table in full', () => {
+    // A new `RowAction['kind']` must be added to the `Record`-typed table or the
+    // file will not typecheck; this pins the guard's own list to that table, so
+    // the new kind cannot then be omitted from the coverage clause below.
+    expect([...ACTION_KINDS].sort()).toEqual(Object.keys(allSupported).sort());
+  });
+
+  it('at least two fixtures', () => {
+    expect(FIXTURES.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('in every row, title and kind are non-empty and neither contains the other', () => {
+    for (const row of ALL_ROWS) {
+      expect(row.title).not.toEqual('');
+      if (row.kind === null) continue;
+      expect(row.kind).not.toEqual('');
+      expect(row.title.includes(row.kind)).toBe(false);
+      expect(row.kind.includes(row.title)).toBe(false);
+    }
+  });
+
+  it('at least one row has title !== kind', () => {
+    expect(ALL_ROWS.some((row) => row.kind !== null && row.title !== row.kind)).toBe(true);
+  });
+
+  it('kind is exercised both null and non-null', () => {
+    expect(ALL_ROWS.some((row) => row.kind === null)).toBe(true);
+    expect(ALL_ROWS.some((row) => row.kind !== null)).toBe(true);
+  });
+
+  it('status is exercised both null and non-null', () => {
+    expect(ALL_ROWS.some((row) => row.status === null)).toBe(true);
+    expect(ALL_ROWS.some((row) => row.status !== null)).toBe(true);
+  });
+
+  it('at least one status has phrase !== token', () => {
+    expect(ALL_ROWS.some((row) => row.status !== null && row.status.phrase !== row.status.token)).toBe(true);
+  });
+
+  it('at least one status has an empty token', () => {
+    expect(ALL_ROWS.some((row) => row.status !== null && row.status.token === '')).toBe(true);
+  });
+
+  it('badge counts cover zero, one and more than one', () => {
+    const counts = ALL_ROWS.map((row) => row.badges.length);
+    expect(counts).toContain(0);
+    expect(counts).toContain(1);
+    expect(counts.some((count) => count > 1)).toBe(true);
+  });
+
+  it('some row carries two badges with the same text and different ids', () => {
+    expect(ALL_ROWS.some((row) => row.badges.some((badge, index) =>
+      row.badges.some((other, otherIndex) =>
+        index !== otherIndex && other.text === badge.text && other.id !== badge.id)))).toBe(true);
+  });
+
+  it('every action kind appears at least once', () => {
+    const painted = ALL_ROWS.flatMap((row) => row.actions.map((action) => action.kind));
+    for (const kind of ACTION_KINDS) expect(painted).toContain(kind);
+  });
+
+  it('some row holds only unsupported actions, and some row holds an unsupported plus a supported one', () => {
+    expect(ALL_ROWS.some((row) => unsupportedOf(row).length > 0 && supportedOf(row).length === 0)).toBe(true);
+    expect(ALL_ROWS.some((row) => unsupportedOf(row).length > 0 && supportedOf(row).length > 0)).toBe(true);
+  });
+
+  it('every module key is exercised both empty and non-empty', () => {
+    const keys = new Set(ALL_MODULES.map((module) => module.key));
+    expect(keys.size).toBeGreaterThan(0);
+    for (const key of keys) {
+      const mine = ALL_MODULES.filter((module) => module.key === key);
+      expect(mine.some((module) => module.rows.length === 0)).toBe(true);
+      expect(mine.some((module) => module.rows.length > 0)).toBe(true);
+    }
+  });
+});
 
 // ── Marked JSX, out of which every painter below is composed ─────────────────
 
@@ -360,6 +506,22 @@ describe('A / action layer, and D — the action wording', () => {
     expect(codesOf(painter, view)).toEqual(['action-sequence']);
   });
 
+  it('action-sequence: a supported action is duplicated in place', () => {
+    // The third counter-example every layer owes: drop, reorder, **copy**. The
+    // extra-and-missing cases above are both killed by a checker that only
+    // verifies "every kind present is one the view model expects" — a set
+    // containment — because that is exactly what an extra *unsupported* kind and
+    // a missing kind each break. A duplicate leaves the set unchanged and only
+    // the multiplicity wrong, so it is the case that forces sequence equality.
+    // Mutating `sameSequence` here into a containment test turns this red and
+    // nothing else in this describe green-to-red for the right reason.
+    const painter = rowVariant('c1', (row, parts) => rowEl(row, (
+      <>{parts.title}{parts.kind}{parts.badges}{parts.status}{parts.actions}
+        <span key="copy" {...mark(MARKER.action, 'open-card')} /></>
+    )));
+    expect(codesOf(painter, view)).toEqual(['action-sequence']);
+  });
+
   it('action-nesting: one action host is painted inside another', () => {
     const painter = rowVariant('c1', (row, parts) => rowEl(row, (
       <>{parts.title}{parts.kind}{parts.badges}{parts.status}
@@ -455,10 +617,14 @@ describe('B / status', () => {
     expect(codesOf(painter, view)).toEqual(['status-phrase']);
   });
 
-  it('a status marker co-hosted on the row element is caught twice over', () => {
-    // Entangled by construction, and both halves are the point: the row element
-    // carries two content markers (E), and the row then owns zero status
-    // descendants (B). Asserted as the exact pair rather than relaxed.
+  it('a status marker co-hosted on the row element is exactly marker-co-host', () => {
+    // The obligation broken here is E and only E. An earlier `owned()` started
+    // its ownership search at `parentElement`, which excluded the container
+    // itself, so this row appeared to own *zero* status elements and
+    // `status-cardinality` fired alongside — read at the time as an entanglement
+    // "by construction". It was not: it was the ownership bug. The row owns the
+    // marker it carries, the cardinality is 1 as the view model says, and the
+    // co-hosting is the single fault reported.
     const painter = rowVariant('t1', (row, parts) => (
       <div
         key={row.id}
@@ -467,7 +633,7 @@ describe('B / status', () => {
         title="Dispatched a moment ago"
       >{parts.title}{parts.kind}{parts.badges}{parts.actions}</div>
     ));
-    expect(codesOf(painter, view)).toEqual(['marker-co-host', 'status-cardinality']);
+    expect(codesOf(painter, view)).toEqual(['marker-co-host']);
   });
 });
 
@@ -551,6 +717,20 @@ describe('C / field carriers', () => {
     expect(codesOf(painter, view)).toEqual(['field-partition']);
   });
 
+  it('field-domain: a carrier names a field outside the closed value set', () => {
+    // `FIELD` calls its members the permitted values, and until this code existed
+    // nothing checked that: `data-nc-field="bogus"` matched none of the four
+    // value-specific selectors, so a misspelled field marker was invisible —
+    // neither counted nor reported. A typo'd `title` would have shown up only as
+    // `field-cardinality` pointing at the wrong obligation.
+    const painter = rowVariant('c1', (row, parts) => rowEl(row, (
+      <>{parts.title}{parts.kind}
+        <span key="bogus" {...mark(MARKER.field, 'bogus')}>Ingest</span>
+        {parts.badges}{parts.status}{parts.actions}</>
+    )));
+    expect(codesOf(painter, view)).toEqual(['field-domain']);
+  });
+
   it('carrier-not-leaf: a content marker is painted inside a field carrier', () => {
     // The badge is the row's real, single badge — the bijection is intact, so
     // only the leaf rule can catch this. Without it, `textContent` comparison on
@@ -610,8 +790,55 @@ describe('a faithful painter is green', () => {
     expect(checkProjection(faithful, view, mount)).toEqual([]);
   });
 
-  it('on a module with zero rows', () => {
+  it('on a Tasks module with zero rows', () => {
     expect(checkProjection(faithful, withEmpty, mount)).toEqual([]);
+  });
+
+  it('on a Cards module with zero rows', () => {
+    expect(checkProjection(faithful, withEmptyCards, mount)).toEqual([]);
+  });
+
+  it('when the row element is itself the action host — the mobile shape', () => {
+    /*
+     * §3.5 allows this and mobile requires it: the whole list item is the
+     * tappable control, so `data-nc-row` and `data-nc-row-action` share one
+     * element. `data-nc-row-action` is a host annotation rather than a content
+     * marker, so co-hosting it is not the E violation that a second *content*
+     * marker would be.
+     *
+     * This is a false-red guard with a date on it: the checker's ownership scope
+     * began at `parentElement`, which reads this row as owning zero actions and
+     * reports `action-sequence` against a correct painter. S1b-4 would have hit
+     * it on its first render.
+     *
+     * The element is a `<div>` because this file's `mount` has no `<ul>` to put
+     * an `<li>` in; the tag is immaterial to the checker, which by §6.3 declines
+     * to look at host interactivity at all.
+     */
+    const tapRow: PanelRow = Object.freeze({
+      id: 'm1',
+      title: 'Ingest',
+      kind: 'worker',
+      badges: Object.freeze([]),
+      status: null,
+      actions: Object.freeze<readonly RowAction[]>([
+        Object.freeze({ kind: 'open-card', cardId: 'm1', label: 'Open card Ingest', hint: null }),
+      ]),
+    });
+    const tapView: readonly RowModuleView[] = Object.freeze([Object.freeze({
+      key: 'cards', title: 'Cards', empty: 'No cards yet', rows: Object.freeze([tapRow]),
+    })]);
+    const painter = variant({
+      row: (row) => (
+        <div
+          key={row.id}
+          {...mark(MARKER.row, row.id)}
+          {...mark(MARKER.action, row.actions[0].kind)}
+          aria-label={row.actions[0].label ?? undefined}
+        >{titleField(row.title)}{row.kind === null ? null : kindField(row.kind)}</div>
+      ),
+    });
+    expect(checkProjection(painter, tapView, mount)).toEqual([]);
   });
 
   it('when the painter invents chrome of its own — projection is not required to be onto', () => {
