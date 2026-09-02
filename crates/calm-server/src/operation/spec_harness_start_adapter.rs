@@ -691,23 +691,8 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let mut snapshot = initial_snapshot_with_goal(payload.goal.clone());
         if let Some(inherited) = inherited_snapshot {
             snapshot.push_watermark = inherited.push_watermark;
-            // A non-empty inherited queue REPLACES the seeded goal: that
-            // session already has its drive, and keeping both would issue the
-            // seed a second time on top of work the agent has not answered yet.
-            //
-            // #1211 fix round 1 (F1): an EMPTY inherited queue is not a drive,
-            // so it must not silently delete the seed. `/spec/reset` is the
-            // only caller that both defers (`force_new_thread: true`) and
-            // carries a goal, and its goal is the spec card's own
-            // `payload.prompt` — the rendered seed a parent spec wrote when it
-            // opened a child wave. Nobody is in the loop to type that child's
-            // first turn, so dropping the seed here left the restarted harness
-            // with nothing at all to run. Every other deferring caller passes
-            // `goal: None`, where both branches are identical.
-            if !inherited.pending_queue.is_empty() {
-                snapshot.pending_queue = inherited.pending_queue;
-                snapshot.pending_envelope_ids = inherited.pending_envelope_ids;
-            }
+            snapshot.pending_queue = inherited.pending_queue;
+            snapshot.pending_envelope_ids = inherited.pending_envelope_ids;
             snapshot.align_pending_envelope_ids();
         }
 
