@@ -155,7 +155,9 @@ export function MobileListItem({
    * whichever control Astryx actually generated, falling back to the `<li>` for
    * a row that is not interactive. `public.test.tsx` asserts the attribute is on
    * the **button** rather than the `<li>`, so the day Astryx moves that control
-   * this goes red instead of going quiet.
+   * this goes red instead of going quiet — and the effect below counts the
+   * controls rather than taking the first, so the day Astryx generates *two* it
+   * throws instead of describing one of them.
    *
    * Absent unless passed: neither the span nor the attribute exists otherwise.
    */
@@ -208,11 +210,41 @@ export function MobileListItem({
     if (accessibleDescription === undefined) return undefined;
     const root = rootRef.current;
     if (root === null) return undefined;
-    /* The control Astryx generated for an interactive row — the element that
-       takes focus, and therefore the only one an `aria-describedby` reaches a
-       reader through. A non-interactive row has none, and the container is the
-       honest fallback rather than a silently dropped description. */
-    const host = root.querySelector(':scope > button, :scope > a') ?? root;
+    /*
+     * The control Astryx generated for an interactive row — the element that
+     * takes focus, and therefore the only one an `aria-describedby` reaches a
+     * reader through. A non-interactive row has none, and the container is the
+     * honest fallback rather than a silently dropped description.
+     *
+     * **The count is checked, and `querySelector` was not enough.** Taking the
+     * first match is safe only while there is exactly one; the day Astryx's
+     * `Item` renders a second direct-child control — a trailing action button
+     * beside the invisible one, say — the first match still gets described, the
+     * second focusable control gets nothing, and *every existing assertion here
+     * stays green*, because they all read the first one too. The structural
+     * change that this file's tests do catch is a control moving deeper (the
+     * selector then finds none and the description lands on the `<li>` while a
+     * button is focusable); the multiplicity change is the one they cannot see.
+     *
+     * So the expected count is asserted, in both directions, and a surprise
+     * throws rather than degrading: an interactive row must generate exactly one
+     * direct-child control, and an inert row exactly none. Failing loud is the
+     * right side here because the alternative is an accessibility hole that is
+     * invisible from the DOM — nothing about a described first button says that
+     * a second one was skipped. This can only fire on an Astryx upgrade that
+     * changed the markup, which is precisely when someone must look.
+     */
+    const controls = root.querySelectorAll(':scope > button, :scope > a');
+    const expected = interactive ? 1 : 0;
+    if (controls.length !== expected) {
+      throw new Error(
+        `MobileListItem: ${interactive ? 'an interactive' : 'a non-interactive'} row expects `
+        + `${expected} control as a direct child of its <li>, but the list primitive rendered `
+        + `${controls.length}. The row's accessible description has no single host to attach `
+        + 'to; this component has to be updated for the new markup.',
+      );
+    }
+    const host = interactive ? controls[0] : root;
     host.setAttribute('aria-describedby', descriptionId);
     return () => { host.removeAttribute('aria-describedby'); };
   }, [accessibleDescription, descriptionId, interactive]);

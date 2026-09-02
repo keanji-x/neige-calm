@@ -221,6 +221,49 @@ describe('MobileListItem accessible description', () => {
     expect(container.querySelector('button')).toBeNull();
     expect(describedText(container.querySelector('li'))).toBe('failed — not a git repository');
   });
+
+  /*
+   * #1234 S1b-4b — **the two cases below are the ones "Astryx changing shape
+   * turns this red" did not actually cover.**
+   *
+   * The cases above read the description off the first direct-child control, and
+   * so did the implementation. That pair catches a control moving *deeper* — the
+   * selector finds nothing, the description lands on the `<li>`, and the
+   * assertion that it is on the button fails. It does not catch a control being
+   * *joined*: with `<li><button>row</button><button>action</button></li>` the
+   * first match is still described, every assertion above still passes, and the
+   * second focusable control silently has no description. Multiplicity, not
+   * nesting, is the blind spot.
+   *
+   * The counterexample is built by putting the extra control into the rendered
+   * `<li>` directly — the markup Astryx would produce, without waiting for an
+   * Astryx that produces it — and then changing the description so the effect
+   * re-runs against it. What must happen is a throw, not a best guess: a
+   * described first button looks identical, from the DOM, to a correct row.
+   */
+  const withExtraControl = (
+    props: Partial<Parameters<typeof MobileListItem>[0]>,
+  ): (() => void) => {
+    const { container, rerender } = render(row({ ...props, accessibleDescription: 'first' }));
+    container.querySelector('li')!.append(document.createElement('button'));
+    /* A different description, so the effect's deps change and it re-runs over
+       the markup as it now stands. */
+    return () => { rerender(row({ ...props, accessibleDescription: 'second' })); };
+  };
+
+  it('refuses to choose when an interactive row holds two direct-child controls', () => {
+    const rerenderWithTwo = withExtraControl({ onSelect: vi.fn() });
+    expect(rerenderWithTwo).toThrow(/an interactive row expects 1 control .* rendered 2/s);
+  });
+
+  /* The inert row's own direction of the same check. It is not symmetry for its
+     own sake: a row with no `onSelect` that somehow has a focusable control is a
+     row whose description sits on the `<li>` while the thing a reader focuses
+     has none — the same hole, reached from the other side. */
+  it('refuses to fall back to the li when an inert row holds a control', () => {
+    const rerenderWithOne = withExtraControl({});
+    expect(rerenderWithOne).toThrow(/a non-interactive row expects 0 control .* rendered 1/s);
+  });
 });
 
 /*
