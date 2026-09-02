@@ -40,7 +40,7 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, WavePageView } from 
  *
  * The status word comes **first and always**, because this string is the
  * run-state phrase inside the dot's accessible name — the desktop's label is
- * `Status: ${phrase}` (`public.tsx:730`), and this function produces only the
+ * `Status: ${phrase}` (`desktop-painter.tsx`'s `statusDot`), and this produces only the
  * `${phrase}` half. The colour carries nothing on its own, and a reader
  * who lands here must get `failed` before any prose about it. The reason is
  * appended, never substituted: `failed — wave … is not a git repository` is
@@ -53,15 +53,17 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, WavePageView } from 
  *
  * Moved down from the page component (`public.tsx`'s local `taskStatusPhrase`),
  * which is where the wording used to live and is why the mobile surface had no
- * status at all. **The page still carries its own copy until S1b rewrites the
- * panel**; this one is the authority, that one is scheduled for deletion.
+ * status at all. **S1b-3b deleted the page's copy**: the desktop panel words
+ * its status from here now, so on that surface this is the only authority. The
+ * mobile surface still re-words state by hand (S1b-4).
  */
 export function taskStatusPhrase(status: string, detail: string | null): string {
   return detail === null ? status : `${status} — ${detail}`;
 }
 
 /**
- * The Cards module (`public.tsx:492-546`).
+ * The Cards module (`wave/page/desktop-painter.tsx`'s `cardRow`; it was
+ * `public.tsx:492-546` until S1b-3b moved it).
  *
  * Two rules are easy to get subtly wrong and are therefore spelled out:
  *
@@ -75,7 +77,7 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  *
  * **Known non-equivalence with the desktop page, on purpose.** The page emits
  * its delete control when `onDeleteCard !== undefined && card.deletable`
- * (`:514`) — half of that condition is *whether the host passed a callback*,
+ * — half of that condition is *whether the host passed a callback*,
  * which a derivation over `{cards, tasks}` cannot see and should not: "this
  * platform does not offer deletion" is a renderer capability, and it belongs in
  * the painter's action table (S1b's `ActionSupport`), not in the view model.
@@ -85,8 +87,8 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  * **The action wording is the page's, copied per row** (`RowAction`'s
  * docstring): the row body is the open affordance and carries a visible name,
  * so it needs neither an `aria-label` (that would override the visible text,
- * WCAG 2.5.3) nor a `title` — `:517` gives it neither. The × is an icon-only
- * control, so it takes the accessible name `Delete card ${name}` (`:536`) and
+ * WCAG 2.5.3) nor a `title`, and the painter gives it neither. The × is an
+ * icon-only control, so it takes the accessible name `Delete card ${name}` and
  * the bare pointer hint `Delete card`. `name` is `row.title` itself, not a
  * second `title ?? card.kind`: a re-computation is one more copy that can
  * drift from the name actually printed.
@@ -117,7 +119,8 @@ function cardRow(card: CardWire): PanelRow {
 }
 
 /**
- * The Tasks module (`public.tsx:580-757`).
+ * The Tasks module (`wave/page/desktop-painter.tsx`'s `taskRow`; it was
+ * `public.tsx:580-757` until S1b-3b moved it).
  *
  * `declaration` and `status` are read **independently**, and this function
  * imposes no precedence between them. That a dispatched task stops printing its
@@ -128,7 +131,7 @@ function cardRow(card: CardWire): PanelRow {
  *
  * The row always reveals its block; the *kind* is the worker-card affordance,
  * and the desktop's condition for painting it as a **control** is two nested
- * tests, not one (`:741-751`): the outer `task.kind !== null` decides whether
+ * tests, not one: the outer `task.kind !== null` decides whether
  * the kind is drawn at all, and only inside it does `workerCardId === null`
  * choose between a label `<span>` and a `<button>`. So a clickable worker card
  * exists exactly when `task.kind !== null && workerCardId !== null`, and both
@@ -146,13 +149,13 @@ function cardRow(card: CardWire): PanelRow {
  * state, and S1b's painters would inherit a rule the page does not have.
  *
  * `status.phrase` deliberately does **not** carry the `Status: ` prefix: that
- * prefix exists only in the desktop's accessible name (`:730`), while `:731`
- * puts the bare phrase in `title`. The prefix is renderer chrome (see
+ * prefix exists only in the desktop's accessible name, while the dot's `title`
+ * carries the bare phrase. The prefix is renderer chrome (see
  * `panel.ts`'s `RowStatus`), not wording the view model owns.
  *
  * **Both controls here have visible text and so take no `aria-label`**: the
- * reveal button wraps the task key (`:642`) and the kind button shows the kind
- * (`:747`). Each gets only a pointer `title` naming where it goes —
+ * reveal button wraps the task key and the kind button shows the kind. Each
+ * gets only a pointer `title` naming where it goes —
  * `Show ${key} in the report` and `Open the worker card for ${key}`. Note that
  * this second sentence is `open-card`'s wording *on a Task row only*; the
  * Cards row's `open-card` has no wording at all, which is why `RowAction`

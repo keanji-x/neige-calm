@@ -30,7 +30,10 @@
 // test and the app each call the painter factory separately — and it does
 // **not** say `mount` is faithful: a `mount` that ignored `painted` and
 // fabricated a correct tree would pass everything here. Both are trust
-// boundaries, carried by S1b-3/4's real page tests.
+// boundaries. For the **desktop** they are carried by S1b-3b: the page is
+// rendered for real and checked through `checkProjectionIn`, and the page's own
+// source may spell no marker name, so the markers in that tree can only have
+// been written by the painter. The mobile surface has no such carrier yet.
 //
 // **Violations are returned, not thrown.** Each carries a stable `code`, so a
 // malicious painter's *isolation* is mechanically assertable

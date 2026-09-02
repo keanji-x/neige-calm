@@ -33,7 +33,7 @@ import type { ReactNode } from 'react';
 
 import { FIELD, MARKER, paintPanel } from '../../../../../core/view/panel.ts';
 import type {
-  ActionSupport, PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, WavePageView,
+  ActionSupport, PanelRow, RowAction, RowBadge, RowModuleView, RowPainter, RowStatus, WavePageView,
 } from '../../../../../core/view/panel.ts';
 import { Icon } from '../../../ui/icon/public.tsx';
 import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
@@ -96,6 +96,34 @@ function wording(action: Control): Readonly<Record<string, string>> {
     ...(action.label === null ? {} : { 'aria-label': action.label }),
     ...(action.hint === null ? {} : { title: action.hint }),
   };
+}
+
+/**
+ * The status dot (`public.tsx`'s former `:741-749`).
+ *
+ * Three carriers, unchanged. `data-nc-status` holds the **bare token**, which is
+ * what the stylesheet keys colour off — folding the kernel's reason into it
+ * would leave a failed row uncoloured. `title` holds the phrase a pointer gets.
+ * `aria-label` holds `Status: ${phrase}`, and that prefix is **painter chrome**:
+ * it is deliberately not part of `RowStatus.phrase` (see `core/view/panel.ts`),
+ * and the projection reads the other two carriers only, which is what leaves the
+ * prefix this renderer's decision to make.
+ *
+ * It sits *inside* the reveal button on purpose — the row's whole job is to
+ * reveal the block, and being a DOM child is what makes the click bubble, so the
+ * dot owns its hover without owning the click. Its trailing position is CSS.
+ */
+function statusDot(status: RowStatus): ReactNode {
+  return (
+    <span
+      key="status"
+      className={styles.taskDot}
+      {...mark(MARKER.status, status.token)}
+      role="img"
+      aria-label={`Status: ${status.phrase}`}
+      title={status.phrase}
+    />
+  );
 }
 
 function cardBadge(badge: RowBadge): ReactNode {
@@ -161,6 +189,85 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 }
 
 /**
+ * A Task row (`public.tsx`'s former `:654-769`).
+ *
+ * **Two controls in one row, and the second is a sibling.** The row used to be
+ * one `<button>` that decided for the reader which of two landings it took; a
+ * dispatched task then had no way back to its declaration at all. The reveal
+ * button always reveals the block; the *kind* is the worker-card affordance, and
+ * only when there is a card to open. A `<button>` may not nest inside a
+ * `<button>`, which is the mechanical reason the row is a plain `<li>`.
+ *
+ * **"The row reveals the block" is a CSS fact, not DOM containment.**
+ * `.taskReveal::before` paints an invisible sheet over the whole `<li>`, and the
+ * two things that stay above it are the kind button and the status dot. That
+ * claim is hit-tested in `task-row.browser.test.tsx`; jsdom reports this same
+ * tree whether the sheet covers the row or nothing, which is why the geometry is
+ * not asserted anywhere near here.
+ *
+ * **The kind carries two markers, and that is legal.** It is the `kind` field's
+ * carrier *and*, when there is a card, the `open-card` host — and
+ * `data-nc-row-action` is a host annotation, not a content marker, so the
+ * one-content-marker-per-element rule is not engaged. The declaration badge and
+ * the status dot sit inside the reveal button for the same reason: an action
+ * host does not own the field text underneath it.
+ *
+ * The kind is drawn from `row.kind`, and the *control* form from the presence of
+ * the `open-card` action — which the derivation produces exactly when
+ * `kind !== null && workerCardId !== null`, the page's own former two nested
+ * tests. If a view model ever offered `open-card` on a row with no kind, this
+ * paints no host for it and the projection says `action-sequence`: unreachable
+ * today, and loud rather than silent if it stops being.
+ */
+function taskRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
+  const reveal = control(row, 'reveal-block');
+  const open = control(row, 'open-card');
+  return (
+    <li key={row.id} className={styles.taskRow} {...mark(MARKER.row, row.id)}>
+      <button
+        type="button"
+        className={styles.taskReveal}
+        {...(reveal === null ? {} : { ...mark(MARKER.action, 'reveal-block'), ...wording(reveal) })}
+        onClick={reveal === null ? undefined : () => deps.onOpenTask?.(reveal.id)}
+      >
+        {/* Mono: the key is the literal other reports and the kernel address
+            this task by (§2.2). */}
+        <span className={styles.taskKey} {...mark(MARKER.field, FIELD.title)}>{row.title}</span>
+        {/* The declaration's own word — `Not ready`, `Withdrawn`, `Unreadable` —
+            and nothing else: the run is the dot. `struck` is the withdrawal, and
+            it is the view model's fact now rather than a second reading of
+            `task.state` here. */}
+        {row.badges.map((badge) => (
+          <span
+            key={badge.id}
+            className={badge.struck ? styles.taskWithdrawn : styles.taskNote}
+            {...mark(MARKER.badge, badge.id)}
+          >{badge.text}</span>
+        ))}
+        {row.status !== null && statusDot(row.status)}
+      </button>
+      {/* The kind is a word either way — what changes is whether it is a
+          control. `title` describes the destination without touching the
+          accessible name, which stays the visible word (WCAG 2.5.3). */}
+      {row.kind !== null && (open === null
+        ? <span className={styles.taskKind} {...mark(MARKER.field, FIELD.kind)}>{row.kind}</span>
+        : (
+          <button
+            type="button"
+            className={styles.taskKindButton}
+            {...mark(MARKER.field, FIELD.kind)}
+            {...mark(MARKER.action, 'open-card')}
+            {...wording(open)}
+            onClick={() => deps.onOpenCard?.(open.id)}
+          >
+            {row.kind}
+          </button>
+        ))}
+    </li>
+  );
+}
+
+/**
  * The desktop panel's painter, rebuilt per render.
  *
  * **The capability table is computed here, from the host props**, and that is
@@ -191,10 +298,7 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
 
     row: (row) => ({
       slot: 'row',
-      paint: (moduleKey) => {
-        if (moduleKey === 'cards') return cardRow(row, deps);
-        throw new Error('#1234 S1b-3b: the Tasks row is wired in the next step');
-      },
+      paint: (moduleKey) => (moduleKey === 'cards' ? cardRow(row, deps) : taskRow(row, deps)),
     }),
 
     empty: (text) => ({
@@ -215,7 +319,10 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
             moduleMarker={parts.key}
             titleFieldMarker={FIELD.moduleTitle}
           >
-            {rows ? <ul className={styles.cards} data-nc-card-inventory="">{children}</ul> : children}
+            {!rows ? children
+              : parts.key === 'cards'
+                ? <ul className={styles.cards} data-nc-card-inventory="">{children}</ul>
+                : <ul className={styles.tasks} data-nc-task-inventory="">{children}</ul>}
           </PanelModule>
         );
       },
