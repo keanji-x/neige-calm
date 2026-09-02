@@ -37,7 +37,6 @@ function listProps(overrides: Partial<TemplateListProps> = {}): TemplateListProp
     templates: [SMALL_CHANGE],
     loadError: null,
     onRetryLoad: vi.fn(),
-    onOpenSettings: vi.fn(),
     onEdit: vi.fn(),
     ...overrides,
   };
@@ -96,12 +95,6 @@ describe('Template list', () => {
     expect(onRetryLoad).toHaveBeenCalledTimes(1);
   });
 
-  it('leaves for Settings through the breadcrumb callback', async () => {
-    const onOpenSettings = vi.fn();
-    render(<TemplateListPage {...listProps({ onOpenSettings })} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    expect(onOpenSettings).toHaveBeenCalledTimes(1);
-  });
 });
 
 describe('Template editor', () => {

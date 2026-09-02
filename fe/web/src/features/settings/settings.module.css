@@ -1,22 +1,81 @@
 @layer features {
-  .mobileHeader {
-    display: none;
+  /*
+   * The overlay's two columns. The nav column is fixed at a measure that fits
+   * the longest label plus its padding; the pane takes the rest and is the only
+   * thing that scrolls, so switching groups never moves the nav under the
+   * pointer.
+   *
+   * The block size is a floor, not a height: a short group (General) and a long
+   * one (a template's task list) must not resize the panel between them, which
+   * is §2.6's "no reflow from our own chrome" applied to a dialog.
+   */
+  .surface {
+    display: grid;
+    grid-template-columns: 12rem minmax(0, 1fr);
+    gap: var(--space-8);
+
+    /* Centred and capped rather than filling the dialog's full measure: the
+       panel is the app's one wide overlay (--measure-page), and a 544px form
+       hard against its left edge reads as a layout that failed to fill, not as
+       whitespace someone chose. */
+    inline-size: 100%;
+    max-inline-size: 60rem;
+    margin-inline: auto;
+    min-block-size: min(30rem, 60dvh);
   }
 
-  .page {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: var(--space-8);
-    max-inline-size: var(--measure-page);
+  .sectionNav {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    border-inline-end: 1px solid var(--hairline);
+    padding-inline-end: var(--space-4);
+  }
+
+  .sectionNavItem {
+    min-block-size: var(--control-h-lg);
+    padding-block: var(--space-3);
+    padding-inline: var(--space-4);
+    border: none;
+    border-radius: var(--radius-md);
+    background: none;
+    font-size: var(--text-base);
+    font-weight: var(--weight-normal);
+    line-height: var(--leading-tight);
+    color: var(--text-2);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  .sectionNavItem:hover {
+    background: var(--overlay-hover);
+    color: var(--text);
+  }
+
+  /* The current group is the one emphasis on this column — same rule the rail
+     holds to: exactly one thing may carry --accent, and it is where you are. */
+  .sectionNavItem[data-nc-current] {
+    background: var(--accent-soft);
+    font-weight: var(--weight-medium);
+    color: var(--accent);
+  }
+
+  .pane {
+    display: flex;
+    min-block-size: 0;
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .paneBody {
+    display: flex;
     flex: 1 1 auto;
     min-block-size: 0;
-    overflow: auto;
-    padding-block: 0 var(--space-11);
-    padding-inline: var(--space-10);
+    flex-direction: column;
   }
 
   /*
-   * Capped at 544 and start-aligned. The 636px to its right is page whitespace,
+   * Capped at 544 and start-aligned. The space to its right is pane whitespace,
    * not a hole: a second column there would be work invented to fill space, and
    * §7.3's empty-rectangle rule measures the main column only.
    */
@@ -89,18 +148,27 @@
   }
 
   @media (width < 60rem) {
-    .page {
+    /* One column: the nav becomes a row above the pane. A 12rem column beside a
+       phone-width pane leaves the pane too narrow to hold a form field, so the
+       axis flips rather than the column shrinking. */
+    .surface {
+      grid-template-columns: minmax(0, 1fr);
       gap: var(--space-6);
-      max-inline-size: none;
-      padding-inline: var(--space-8);
+      min-block-size: 0;
     }
 
-    .page > :first-child {
-      display: none;
+    .sectionNav {
+      flex-direction: row;
+      overflow-x: auto;
+      border-block-end: 1px solid var(--hairline);
+      border-inline-end: none;
+      padding-block-end: var(--space-3);
+      padding-inline-end: 0;
     }
 
-    .mobileHeader {
-      display: block;
+    .sectionNavItem {
+      flex: 0 0 auto;
+      min-block-size: var(--rail-w-collapsed);
     }
 
     .form {
@@ -140,10 +208,68 @@
     border-block-start: none;
   }
 
+  /* The row's content is one astryx HStack, which sizes to its children: the
+     Edit button ended up against the template's name with the rest of the row
+     empty to its right. Stretching the stack is what makes its own
+     `justify="between"` mean the row's two ends. */
+  .templateRow > :first-child {
+    flex: 1 1 auto;
+    min-inline-size: 0;
+  }
+
   .templateName {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+  }
+
+  /* Wider than the 544 form measure: a plugin row is a name, a state, a
+     description and a switch on one line, and at form width the switch lands
+     under the description. */
+  .pluginForm {
+    max-inline-size: var(--measure-list);
+  }
+
+  /* The plugin list. Same one-channel separation as the template list: a
+     hairline between rows, no box around each one. */
+  .pluginList {
+    list-style: none;
+    margin: var(--space-0);
+    padding: var(--space-0);
+  }
+
+  .pluginRow {
+    display: flex;
+    align-items: start;
+    justify-content: space-between;
+    gap: var(--space-6);
+    padding-block: var(--space-6);
+    border-block-start: 1px solid var(--hairline);
+  }
+
+  .pluginList > .pluginRow:first-child {
+    border-block-start: none;
+  }
+
+  .pluginText {
+    display: flex;
+    min-inline-size: 0;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .pluginHead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .pluginMeta {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-snug);
+    color: var(--text-3);
   }
 
   /* Set apart from the tasks above it: this row creates, the ones above edit. */

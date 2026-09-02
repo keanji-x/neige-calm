@@ -4,16 +4,50 @@ Workspace settings. Every surface here is presentational: it never calls an API.
 The bag, the in-flight flag, the error strings and the callbacks all arrive as
 props; the router owns fetching and mutating.
 
-Three surfaces, three routes (#1230):
+Four surfaces, four routes:
 
 | Route | Component | File |
 | --- | --- | --- |
 | `/settings` | `SettingsPage` | `public.tsx` |
 | `/settings/templates` | `TemplateListPage` | `templates.tsx` |
 | `/settings/templates/$templateId` | `TemplateEditorPage` | `templates.tsx` |
+| `/settings/plugins` | `PluginsPane` | `plugins.tsx` |
 
 Real routes rather than page-local state: Back leaves the template editor
 instead of leaving Settings, and one template's editor is a URL.
+
+## The frame: `SettingsSurface`
+
+All four render inside `SettingsSurface` — a nav column naming the three groups
+(General / Templates / Plugins) beside the pane for the current one. The nav
+rows **navigate**: each is a route, so the column is `<nav>` + `<button>`s
+carrying `aria-current="page"`, never tabs holding page state.
+
+The app layer puts that frame inside `ui/dialog`, so Settings is an overlay you
+step into from wherever you were and leave with Escape, the `×`, or the scrim.
+Neither the frame nor any pane renders a page header or a breadcrumb: the dialog
+supplies the title and the one close affordance, and the nav column already
+names the group. The template *editor* keeps a back control, because it is a
+level below the list that the nav column cannot express.
+
+## Plugins (`plugins.tsx`)
+
+The installed list from `GET /api/plugins`, with one write: the enable/disable
+switch. Enabled is a *state of the plugin*, so it is a switch and not a pair of
+buttons whose label inverts what they report.
+
+`enabled` and `state` are both on the row because they answer different
+questions and routinely disagree — `enabled` is what the operator asked for and
+the kernel persisted, `state` is what the supervisor achieved. Enabled +
+`crashed`, or enabled + `unavailable` (a connector whose upstream never
+answered, and nothing will retry it), is the case a reader opens this screen
+for. `unavailable` is painted **warning, not error**: it is a connector's normal
+terminal state, and red would blame the kernel for an upstream's silence.
+
+Install, uninstall, config editing, log tailing and token rotation are
+deliberately **not** here. Each is its own screen with its own failure modes,
+and the kernel routes for them (`routes/plugins.rs`) exist whenever they are
+picked up.
 
 ## Built from `@astryxdesign/core`
 
@@ -36,10 +70,7 @@ Three places astryx does not fit, each with the reasoning at its call site:
 
 ## Sections
 
-- **Breadcrumb** — the ancestor is a `<button>` that calls a callback, followed
-  by a non-interactive current crumb.
 - **Network** — HTTP / HTTPS proxy inputs seeded from the settings bag.
-- **Templates** — one row that drills in to the template list.
 - **Appearance** — a `SegmentedControl` labelled `Appearance`, Light / Dark /
   System, reporting through `onThemeModeChange`.
 - **About** — build-time `version` / `build` in a `MetadataList`.

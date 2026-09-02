@@ -25,6 +25,9 @@ import {
   type ReportBlock, type TaskVerdict, type WaveBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
+  pluginsOperation, setPluginEnabledOperation, type PluginListItem,
+} from '../../../../core/domain/plugins.ts';
+import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
@@ -115,6 +118,9 @@ export const queryKeys = Object.freeze({
   waveReportPrefix: () => ['wave-report'] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  /* Settings › Plugins. `plugin.state` arrives on the event stream, so this
+     list is refetched by the bridge's prefix invalidation rather than polled. */
+  plugins: () => ['plugins'] as const,
   /* #1209 — the New wave picker's list. Not invalidated by any event: the
      kernel's template keys are compile-time constants and the only thing that
      can move under them is a plugin starting or stopping, which changes an
@@ -822,6 +828,51 @@ export function useWaveTemplateMutation(
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.waveTemplates() }); },
   });
   return (save) => mutation.mutateAsync(save);
+}
+
+/**
+ * Settings › Plugins — the installed list.
+ *
+ * `retry: false` for the same reason the template read has it: this list is a
+ * screen the user is looking at, and a failed read must say so and offer Retry
+ * rather than sit spinning through three silent attempts.
+ */
+export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.plugins(),
+    queryFn: (): Promise<PluginListItem[]> => runOperation(transport, pluginsOperation(), unauthorized),
+    retry: false,
+  };
+}
+
+export type PluginMutations = Readonly<{
+  /** The plugin a lifecycle write is in flight for, or `null`. */
+  pendingId: string | null;
+  error: string | null;
+  setEnabled: (id: string, enabled: boolean) => void;
+}>;
+
+/**
+ * Enable / disable.
+ *
+ * The response is **not** written through to the cached list: enable answers as
+ * soon as the row flips, while the supervisor is still bringing the process up,
+ * so its `state` is a snapshot that is already stale by the time it lands. An
+ * invalidation asks the kernel what is actually true, and `plugin.state` events
+ * carry the row the rest of the way (`spawning` → `running` / `crashed`).
+ */
+export function usePluginMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): PluginMutations {
+  const client = useQueryClient();
+  const write = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.plugins() }); },
+  });
+  return {
+    pendingId: write.isPending ? write.variables?.id ?? null : null,
+    error: write.error instanceof Error ? write.error.message : null,
+    setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
+  };
 }
 
 export function useSettingsMutation(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): (patch: SettingsPatch) => Promise<SettingsBag> {

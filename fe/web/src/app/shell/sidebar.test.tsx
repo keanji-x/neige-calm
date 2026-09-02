@@ -52,6 +52,7 @@ function renderSidebar(props: Partial<Props> = {}) {
           collapsed={merged.collapsed ?? false}
           onToggleCollapsed={merged.onToggleCollapsed ?? vi.fn()}
           onOpenSettings={merged.onOpenSettings ?? vi.fn()}
+          onOpenPlugins={merged.onOpenPlugins ?? vi.fn()}
           onSignOut={merged.onSignOut ?? vi.fn()}
           userLabel={merged.userLabel}
           readError={merged.readError}
@@ -300,22 +301,27 @@ describe('pin', () => {
 });
 
 describe('user menu', () => {
-  it('opens Settings and Sign out from the avatar, and calls the injected callbacks', async () => {
+  it('opens Settings, Plugins and Sign out from the avatar, and calls the injected callbacks', async () => {
     const onOpenSettings = vi.fn();
+    const onOpenPlugins = vi.fn();
     const onSignOut = vi.fn();
-    renderSidebar({ onOpenSettings, onSignOut, userLabel: 'Kenji Xie' });
+    renderSidebar({ onOpenSettings, onOpenPlugins, onSignOut, userLabel: 'Kenji Xie' });
 
     const avatar = screen.getByRole('button', { name: 'Account menu for Kenji Xie' });
     expect(avatar.textContent).toBe('KX');
     await userEvent.click(avatar);
-    // Theme cycles in place (system -> light -> dark) rather than opening a
-    // submenu: three modes is not enough to earn one, and the current mode has
-    // to be readable without opening anything further.
+    // Two destinations and the way out. The theme cycler is deliberately gone:
+    // it was the one item that acted instead of navigating, and Settings ›
+    // General states the same preference where its effect is visible.
     expect(screen.getAllByRole('menuitem').map((node) => node.textContent))
-      .toEqual(['Theme: system (light)', 'Settings', 'Sign out']);
+      .toEqual(['Settings', 'Plugins', 'Sign out']);
 
     await userEvent.click(screen.getByRole('menuitem', { name: 'Settings' }));
     expect(onOpenSettings).toHaveBeenCalledTimes(1);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Account menu for Kenji Xie' }));
+    await userEvent.click(screen.getByRole('menuitem', { name: 'Plugins' }));
+    expect(onOpenPlugins).toHaveBeenCalledTimes(1);
 
     await userEvent.click(screen.getByRole('button', { name: 'Account menu for Kenji Xie' }));
     await userEvent.click(screen.getByRole('menuitem', { name: 'Sign out' }));

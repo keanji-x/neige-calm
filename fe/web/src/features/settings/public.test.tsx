@@ -28,22 +28,11 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     savedAt: null,
     onSave: vi.fn(),
     onRetryLoad: vi.fn(),
-    onOpenToday: vi.fn(),
     themeMode: 'system',
     onThemeModeChange: vi.fn(),
-    onOpenTemplates: vi.fn(),
     ...overrides,
   };
 }
-
-describe('Settings breadcrumb', () => {
-  it('leaves for Today through the callback', async () => {
-    const onOpenToday = vi.fn();
-    render(<SettingsPage {...props({ onOpenToday })} />);
-    await userEvent.click(screen.getByRole('button', { name: 'Today' }));
-    expect(onOpenToday).toHaveBeenCalledTimes(1);
-  });
-});
 
 describe('Settings network form', () => {
   it('seeds the proxy fields from the settings bag', () => {

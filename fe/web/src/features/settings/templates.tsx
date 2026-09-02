@@ -33,7 +33,6 @@
 // untouched, because the server stores exactly what it is given.
 
 import type { WaveTemplate, WaveTemplateGoalEdit } from '../../../../core/domain/wave.ts';
-import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import { Banner } from '@astryxdesign/core/Banner';
 import { Button } from '@astryxdesign/core/Button';
@@ -64,20 +63,22 @@ export type TemplateListProps = Readonly<{
   templates: readonly WaveTemplate[] | undefined;
   loadError: string | null;
   onRetryLoad: () => void;
-  onOpenSettings: () => void;
   onEdit: (templateId: string) => void;
 }>;
 
+/*
+ * No page header on either surface: the Settings nav column already names this
+ * group, and a title repeating the row the reader just clicked is the second
+ * copy of one fact. The editor keeps a back control because it is a level
+ * *below* the list, which the nav column cannot express.
+ */
 export function TemplateListPage({
-  templates, loadError, onRetryLoad, onOpenSettings, onEdit,
+  templates, loadError, onRetryLoad, onEdit,
 }: TemplateListProps) {
   return (
-    <div className={styles.page}>
-      <PageHeader
-        breadcrumb={<Breadcrumb ancestor="Settings" onNavigate={onOpenSettings} />}
-        title={<PageTitle>Templates</PageTitle>}
-      />
+    <div className={styles.paneBody}>
       <VStack className={styles.form} gap={4} align="stretch">
+        <Heading level={2}>Templates</Heading>
         <Text as="p" color="secondary">
           What a new wave starts from. Editing a template changes every wave created
           from it afterwards; waves already created keep the plan they were forked with.
@@ -202,12 +203,18 @@ export function TemplateEditorPage({
   const submittable = dirty && !blankTitle && !blankGoal;
 
   return (
-    <div className={styles.page}>
-      <PageHeader
-        breadcrumb={<Breadcrumb ancestor="Templates" onNavigate={onOpenTemplates} />}
-        title={<PageTitle>{template?.title ?? 'Template'}</PageTitle>}
-      />
+    <div className={styles.paneBody}>
       <VStack className={styles.form} gap={4} align="stretch">
+        <HStack gap={3} align="center">
+          <Button
+            type="button"
+            variant="secondary"
+            label="Templates"
+            aria-label="Back to templates"
+            onClick={onOpenTemplates}
+          />
+          <Heading level={2}>{template?.title ?? 'Template'}</Heading>
+        </HStack>
         {loadError !== null && (
           <VStack gap={2} align="start">
             <Banner status="error" title={loadError} role="alert" />

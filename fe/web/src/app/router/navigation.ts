@@ -53,7 +53,9 @@ export type NavTarget =
    * be linked to.
    */
   | Readonly<{ name: 'settings-templates' }>
-  | Readonly<{ name: 'settings-template'; templateId: string }>;
+  | Readonly<{ name: 'settings-template'; templateId: string }>
+  /** Settings › Plugins — the installed list and its enable/disable switch. */
+  | Readonly<{ name: 'settings-plugins' }>;
 
 export type GoOptions = Readonly<{ replace?: boolean }>;
 
@@ -68,6 +70,7 @@ export function pathFor(target: NavTarget): string {
     case 'settings': return '/settings';
     case 'settings-templates': return '/settings/templates';
     case 'settings-template': return `/settings/templates/${encodeURIComponent(target.templateId)}`;
+    case 'settings-plugins': return '/settings/plugins';
   }
 }
 

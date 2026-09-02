@@ -1,6 +1,22 @@
 // Settings — workspace preferences. Presentational and props-driven: it never
 // calls an API. Loading, saving and error state all arrive as props, and the
 // patch it builds leaves through `onSave` (features must not import app).
+//
+// ## Why an overlay with a nav column
+//
+// Settings used to be a page with four stacked cards, and #1230 added a fifth
+// group (Templates) as a drill-in row. Stacking is what a settings screen does
+// until it has more than one group of groups: Network is one line of the same
+// thought as Appearance, Templates and Plugins are each their own screen with
+// their own reads and their own failure. A column that names the groups says
+// that in the layout instead of making the reader scroll to discover it.
+//
+// It renders inside a dialog (`ui/dialog`, supplied by the app layer) rather
+// than as a full page for the reason the reader keeps stating by pressing
+// Escape: Settings is somewhere you *step into* from wherever you were, and the
+// way out should be the same one gesture everywhere in the app. The sections
+// stay real routes underneath — `SettingsSurface` is chrome, not state, so Back
+// still leaves the template editor rather than leaving Settings.
 
 import { Button as AstryxButton } from '@astryxdesign/core/Button';
 import { Card as AstryxCard } from '@astryxdesign/core/Card';
@@ -13,14 +29,67 @@ import {
   SegmentedControlItem as AstryxSegmentedControlItem,
 } from '@astryxdesign/core/SegmentedControl';
 import { TextInput as AstryxTextInput } from '@astryxdesign/core/TextInput';
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY, type SettingsPatch } from '../../../../core/domain/settings.ts';
-import { Breadcrumb, PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { ErrorBox } from '../../ui/error-box/public.tsx';
-import { MobileHeader } from '../../ui/mobile-header/public.tsx';
 import { useState } from '../../ui/state/public.ts';
 import styles from './settings.module.css';
+
+/**
+ * The groups the nav column lists, in the order it lists them.
+ *
+ * `general` first because it is the only one that is settings in the narrow
+ * sense — a form you fill in. The other two are places, and a place belongs
+ * below the thing you came here to change.
+ */
+export type SettingsSection = 'general' | 'templates' | 'plugins';
+
+const SETTINGS_SECTIONS = Object.freeze([
+  Object.freeze({ id: 'general', label: 'General' }),
+  Object.freeze({ id: 'templates', label: 'Templates' }),
+  Object.freeze({ id: 'plugins', label: 'Plugins' }),
+] as const);
+
+export type SettingsSurfaceProps = Readonly<{
+  section: SettingsSection;
+  onSelectSection: (section: SettingsSection) => void;
+  children: ReactNode;
+}>;
+
+/**
+ * The two-column frame every Settings route renders inside: a nav column that
+ * names the groups, and the pane for the current one.
+ *
+ * The nav rows are `<button>`s, not links (INV-A11Y-061), and the current one
+ * carries `aria-current="page"` — they *are* navigation, each one a route, so
+ * the current row has to say so to a screen reader and not only to a stripe of
+ * accent colour.
+ *
+ * The dialog above supplies the title and the `×`; this component deliberately
+ * has neither, so there is exactly one close affordance on screen.
+ */
+export function SettingsSurface({ section, onSelectSection, children }: SettingsSurfaceProps) {
+  return (
+    <div className={styles.surface}>
+      <nav className={styles.sectionNav} aria-label="Settings sections">
+        {SETTINGS_SECTIONS.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            className={styles.sectionNavItem}
+            aria-current={entry.id === section ? 'page' : undefined}
+            data-nc-current={entry.id === section ? '' : undefined}
+            onClick={() => onSelectSection(entry.id)}
+          >
+            {entry.label}
+          </button>
+        ))}
+      </nav>
+      <div className={styles.pane}>{children}</div>
+    </div>
+  );
+}
 
 /**
  * Mirrors `app/theme`'s mode union by value. `features/**` must not import
@@ -39,13 +108,10 @@ export type SettingsPageProps = Readonly<{
   savedAt: number | null;
   onSave: (patch: SettingsPatch) => void | Promise<void>;
   onRetryLoad: () => void;
-  onOpenToday: () => void;
   themeMode: ThemeMode;
   onThemeModeChange: (mode: ThemeMode) => void;
   /** Tests shorten the confirmation window; production uses the default. */
   savedNoticeMs?: number;
-  /** Opens Settings › Templates (#1230). */
-  onOpenTemplates: () => void;
 }>;
 
 const THEME_MODES = Object.freeze(['light', 'dark', 'system'] as const);
@@ -71,8 +137,8 @@ function buildPatch(draft: Draft, seed: Draft): SettingsPatch {
 }
 
 export function SettingsPage({
-  settings, loadError, saving, saveError, savedAt, onSave, onRetryLoad, onOpenToday,
-  themeMode, onThemeModeChange, savedNoticeMs = SAVED_NOTICE_MS, onOpenTemplates,
+  settings, loadError, saving, saveError, savedAt, onSave, onRetryLoad,
+  themeMode, onThemeModeChange, savedNoticeMs = SAVED_NOTICE_MS,
 }: SettingsPageProps) {
   const loaded = settings !== undefined;
   const incoming: Draft = {
@@ -106,14 +172,7 @@ export function SettingsPage({
   const showSaved = savedAt !== null && acknowledged !== savedAt;
 
   return (
-    <div className={styles.page}>
-      {/* Two rows: breadcrumb + title, no machine identity. --header-h is 62. */}
-      <PageHeader
-        breadcrumb={<Breadcrumb ancestor="Today" onNavigate={onOpenToday} />}
-        title={<PageTitle>Settings</PageTitle>}
-      />
-      <div className={styles.mobileHeader}><MobileHeader title="Settings" level={1} /></div>
-
+    <div className={styles.paneBody}>
       <div className={styles.form}>
         <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
           <section className={styles.section} aria-labelledby="nc-settings-network">
@@ -175,26 +234,6 @@ export function SettingsPage({
                   {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
                 </>
               ) : null}
-          </section>
-        </AstryxCard>
-
-        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
-          <section className={styles.section} aria-labelledby="nc-settings-templates">
-            <h2 className={styles.sectionLabel} id="nc-settings-templates">Templates</h2>
-            {/*
-              * A row that drills in, not the editor inlined (#1230). Settings
-              * stays readable at any number of templates, and the editor
-              * becomes a place Back can leave — it is a route, not page state.
-              */}
-            <p className={styles.hint}>What a new wave starts from.</p>
-            <div className={styles.actions}>
-              <AstryxButton
-                label="Edit templates"
-                variant="secondary"
-                size="lg"
-                onClick={onOpenTemplates}
-              />
-            </div>
           </section>
         </AstryxCard>
 

@@ -23,10 +23,7 @@ import { useState } from '../../ui/state/public.ts';
 import { TypedDeleteBody, useTypedConfirm } from '../../ui/typed-confirm/public.tsx';
 import type { NavTarget } from '../router/navigation.ts';
 import { routeParamFromPath } from '../router/navigation.ts';
-import { useTheme } from '../theme/public.tsx';
 import styles from './shell.module.css';
-
-const NEXT_THEME_MODE = Object.freeze({ system: 'light', light: 'dark', dark: 'system' } as const);
 
 export type SidebarProps = Readonly<{
   coves: readonly Cove[];
@@ -44,6 +41,8 @@ export type SidebarProps = Readonly<{
   onSetPinned: (waveId: string, pinned: boolean) => void | Promise<void>;
   onDeleteWave: (waveId: string, signal: AbortSignal) => void | Promise<void>;
   onOpenSettings: () => void;
+  /** Settings › Plugins, reachable without walking through Settings first. */
+  onOpenPlugins: () => void;
   /** The shell never signs out itself; the owner of the session does. */
   onSignOut: () => void;
   /** Owned by the shell: collapsing changes the shell grid, not just the rail. */
@@ -90,11 +89,10 @@ function randomCoveColor(): string {
 export function Sidebar({
   coves, wavesByCove, waves, currentPath, onGo,
   onCreateCove, onDeleteCove, onNewWave, onSetPinned, onDeleteWave,
-  onOpenSettings, onSignOut, collapsed, onToggleCollapsed,
+  onOpenSettings, onOpenPlugins, onSignOut, collapsed, onToggleCollapsed,
   userLabel = 'You', nowMs, readError = null, activityError = null,
   readLoading = false, onRetryRead = () => undefined,
 }: SidebarProps) {
-  const { mode, resolved, setMode } = useTheme();
   const [expandedOverride, setExpandedOverride] = useState<ReadonlyMap<string, boolean>>(() => new Map());
   const [creatingCove, setCreatingCove] = useState(false);
   const [coveDraft, setCoveDraft] = useState('');
@@ -308,9 +306,17 @@ export function Sidebar({
 
       <div className={styles.userRow}>
             <Menu
+              /*
+               * Two destinations and the way out. The theme cycler that used to
+               * sit on top is gone: it was the only item here that *did*
+               * something instead of taking you somewhere, it cycled blind
+               * through three modes with the result off-screen behind the
+               * menu, and Settings › General states the same preference as
+               * three labelled options you can see the effect of.
+               */
               items={[
-                { label: `Theme: ${mode} (${resolved})`, onSelect: () => setMode(NEXT_THEME_MODE[mode]) },
                 { label: 'Settings', onSelect: onOpenSettings },
+                { label: 'Plugins', onSelect: onOpenPlugins },
                 { label: 'Sign out', onSelect: onSignOut },
               ]}
               wrapClassName={styles.menuWrap}

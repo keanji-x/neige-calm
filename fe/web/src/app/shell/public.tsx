@@ -52,6 +52,8 @@ export type AppShellProps = Readonly<{
   transport: ApiTransportPort;
   unauthorized: UnauthorizedChannel;
   onOpenSettings: () => void;
+  /** Settings › Plugins, from the rail's account menu. */
+  onOpenPlugins: () => void;
   onSignOut: () => void;
   /** Pinned by tests so `pinned_at` assertions are stable. */
   nowMs?: number;
@@ -115,7 +117,9 @@ export function useOpenMobileSection(): OpenMobileSection {
 type CoveSelection = Readonly<{ coveId: string | null; motion: 'none' | 'forward' | 'back' }>;
 const NO_COVE_SELECTED: CoveSelection = Object.freeze({ coveId: null, motion: 'none' });
 
-export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
+export function AppShell({
+  transport, unauthorized, onOpenSettings, onOpenPlugins, onSignOut, nowMs, userLabel,
+}: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
   const coveMutations = useCoveMutations(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
@@ -399,6 +403,7 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
               await waveMutations.remove(waveId, coveId, signal);
             }}
             onOpenSettings={() => { closeMobileSection(); onOpenSettings(); }}
+            onOpenPlugins={() => { closeMobileSection(); onOpenPlugins(); }}
             onSignOut={() => { closeMobileSection(); onSignOut(); }}
             userLabel={userLabel}
           />}

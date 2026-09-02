@@ -12,7 +12,7 @@
 import {
   createRootRoute, createRoute, createRouter, type AnyRoute,
 } from '@tanstack/react-router';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, type ReactNode } from 'react';
 import { useInfiniteQuery, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import type { ApiTransportPort } from '../../../../core/api/types.ts';
@@ -29,7 +29,10 @@ import {
 } from '../../systems/cards/public.js';
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
-import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
+import {
+  SettingsPage, SettingsSurface, type SettingsSection, type ThemeMode as SettingsThemeMode,
+} from '../../features/settings/public.tsx';
+import { PluginsPane } from '../../features/settings/plugins.tsx';
 import { TemplateEditorPage, TemplateListPage } from '../../features/settings/templates.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
@@ -65,9 +68,9 @@ import { Icon } from '../../ui/icon/public.tsx';
 import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
-  ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
-  settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations,
+  ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, pluginsQueryOptions,
+  prefetchCoveList, settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
+  usePluginMutations, useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations,
   useWaveTemplateMutation, useWaveTemplates, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
@@ -862,8 +865,15 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <TemplateEditorRoute transport={transport} unauthorized={unauthorized} />,
   });
 
+  const pluginsRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/plugins',
+    component: () => <PluginsRoute transport={transport} unauthorized={unauthorized} />,
+  });
+
   return rootRoute.addChildren([
     indexRoute, coveRoute, waveRoute, settingsRoute, templateListRoute, templateEditorRoute,
+    pluginsRoute,
   ]);
 }
 
@@ -883,6 +893,7 @@ function ShellRoute({ transport, unauthorized, onSignOut }: { transport: ApiTran
         transport={transport}
         unauthorized={unauthorized}
         onOpenSettings={() => go({ name: 'settings' })}
+        onOpenPlugins={() => go({ name: 'settings-plugins' })}
         onSignOut={onSignOut}
       />
     </ConversationProvider>
@@ -2444,8 +2455,41 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   );
 }
 
-function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+/**
+ * The dialog every Settings route renders inside.
+ *
+ * Settings is a place you step into from wherever you were and leave with one
+ * gesture — Escape, the `×`, or the scrim — so it is an overlay, and the
+ * overlay is `ui/dialog`'s: the focus trap, the Escape handling and the restore
+ * of the opener's focus are already correct there, and a second implementation
+ * of a modal is the thing this app does not need.
+ *
+ * The sections stay **real routes** underneath (`/settings`,
+ * `/settings/templates`, `/settings/plugins`): the nav column navigates, so
+ * Back still leaves the template editor rather than leaving Settings, and every
+ * pane can be linked to. `onClose` goes to Today rather than calling
+ * `history.back()` — a cold-start deep link to `/settings/plugins` has nothing
+ * to go back to, and walking out of the app is not "close this dialog".
+ */
+function SettingsOverlay({ section, children }: { section: SettingsSection; children: ReactNode }) {
   const go = useGo();
+  return (
+    <Dialog open onClose={() => go({ name: 'today' })} title="Settings" wide>
+      <SettingsSurface
+        section={section}
+        onSelectSection={(next) => {
+          go(next === 'general'
+            ? { name: 'settings' }
+            : next === 'templates' ? { name: 'settings-templates' } : { name: 'settings-plugins' });
+        }}
+      >
+        {children}
+      </SettingsSurface>
+    </Dialog>
+  );
+}
+
+function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
   const theme = useTheme();
   const save = useSettingsMutation(transport, unauthorized);
   const settings = useQuery(settingsQueryOptions(transport, unauthorized));
@@ -2453,15 +2497,14 @@ function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPor
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   return (
+    <SettingsOverlay section="general">
     <SettingsPage
       settings={settings.data?.settings}
-      onOpenTemplates={() => go({ name: 'settings-templates' })}
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}
       saving={saving}
       saveError={saveError}
       savedAt={savedAt}
-      onOpenToday={() => go({ name: 'today' })}
       // `app/theme` and `features/settings` each own their copy of the mode
       // union — features may not import app. The adaptation is here, and the
       // two unions are only kept in step by this line.
@@ -2478,6 +2521,31 @@ function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPor
           .finally(() => { setSaving(false); });
       }}
     />
+    </SettingsOverlay>
+  );
+}
+
+/**
+ * Settings › Plugins — the installed list, read here and rendered there.
+ *
+ * The list is not primed by a route loader: it is one screen's read, it fails
+ * loudly on its own (`retry: false`), and a loader would make opening any other
+ * settings pane wait on it.
+ */
+function PluginsRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const plugins = useQuery(pluginsQueryOptions(transport, unauthorized));
+  const mutations = usePluginMutations(transport, unauthorized);
+  return (
+    <SettingsOverlay section="plugins">
+      <PluginsPane
+        plugins={plugins.data}
+        loadError={plugins.error instanceof Error ? plugins.error.message : null}
+        onRetryLoad={() => { void plugins.refetch(); }}
+        pendingId={mutations.pendingId}
+        actionError={mutations.error}
+        onSetEnabled={mutations.setEnabled}
+      />
+    </SettingsOverlay>
   );
 }
 
@@ -2496,13 +2564,14 @@ function TemplateListRoute({ transport, unauthorized }: { transport: ApiTranspor
   const go = useGo();
   const templates = useWaveTemplates(transport, unauthorized);
   return (
-    <TemplateListPage
-      templates={templates.loaded ? templates.templates : undefined}
-      loadError={templates.error}
-      onRetryLoad={templates.refetch}
-      onOpenSettings={() => go({ name: 'settings' })}
-      onEdit={(templateId) => go({ name: 'settings-template', templateId })}
-    />
+    <SettingsOverlay section="templates">
+      <TemplateListPage
+        templates={templates.loaded ? templates.templates : undefined}
+        loadError={templates.error}
+        onRetryLoad={templates.refetch}
+        onEdit={(templateId) => go({ name: 'settings-template', templateId })}
+      />
+    </SettingsOverlay>
   );
 }
 
@@ -2540,6 +2609,7 @@ function TemplateEditorSave({ templateId, transport, unauthorized }: {
     ? templates.templates.find((entry) => entry.id === templateId)
     : undefined;
   return (
+    <SettingsOverlay section="templates">
     <TemplateEditorPage
       template={template}
       /* An id that names no template is a load failure for this route, not an
@@ -2564,5 +2634,6 @@ function TemplateEditorSave({ templateId, transport, unauthorized }: {
           .finally(() => { setSaving(false); });
       }}
     />
+    </SettingsOverlay>
   );
 }

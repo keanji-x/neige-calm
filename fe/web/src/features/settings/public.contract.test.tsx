@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { HTTPS_PROXY_KEY, HTTP_PROXY_KEY } from '../../../../core/domain/settings.ts';
-import { SettingsPage, type SettingsPageProps } from './public.tsx';
+import { SettingsPage, SettingsSurface, type SettingsPageProps } from './public.tsx';
 
 afterEach(cleanup);
 
@@ -18,10 +18,8 @@ function props(overrides: Partial<SettingsPageProps> = {}): SettingsPageProps {
     savedAt: null,
     onSave: vi.fn(),
     onRetryLoad: vi.fn(),
-    onOpenToday: vi.fn(),
     themeMode: 'system',
     onThemeModeChange: vi.fn(),
-    onOpenTemplates: vi.fn(),
     ...overrides,
   };
 }
@@ -69,9 +67,25 @@ describe('INV-SETTINGS-002 loading never shows an empty form', () => {
 });
 
 describe('INV-A11Y-061 navigation shape', () => {
-  it('routes the breadcrumb through a button, never a native link', () => {
+  it('renders no native link anywhere, in any state', () => {
     const { container } = render(<SettingsPage {...props({ savedAt: 1, saveError: 'x', loadError: 'y' })} />);
     expect(container.querySelectorAll('a').length).toBe(0);
-    expect(screen.getByRole('button', { name: 'Today' }).tagName).toBe('BUTTON');
+  });
+
+  it('names every settings section on a button, and marks the current one', async () => {
+    const onSelectSection = vi.fn();
+    render(
+      <SettingsSurface section="general" onSelectSection={onSelectSection}>
+        <span>pane</span>
+      </SettingsSurface>,
+    );
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+    expect([...nav.querySelectorAll('button')].map((node) => node.textContent))
+      .toEqual(['General', 'Templates', 'Plugins']);
+    expect(screen.getByRole('button', { name: 'General' }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('button', { name: 'Plugins' }).getAttribute('aria-current')).toBeNull();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Plugins' }));
+    expect(onSelectSection.mock.calls).toEqual([['plugins']]);
   });
 });
