@@ -28,8 +28,14 @@
 // **The honest limit.** The text assertions are bound to *this fixture's*
 // strings, so a bypass rendering different content, or content only for inputs
 // this fixture does not use, is outside them. And the module *sequence* — that
-// the mobile navigation offers Cards and Tasks, in that order — is not this
-// file's claim at all: the menu is still written by hand and is S1b-4b's (Δ2).
+// the mobile navigation offers Cards and Tasks, in that order — is still not this
+// file's claim: it is `public.test.tsx`'s "the drill-down menu offers exactly the
+// derived row modules" (Δ2), which reads the menu rather than a painter call.
+//
+// **Both row modules since S1b-4b.** The Tasks describe below is the same four
+// assertions over the Tasks branch; the fixture there renders cards *as well*,
+// so "it passed the right module" is a live question rather than one the input
+// forecloses.
 //
 // **Why a whole file for it.** `vi.mock` is module-wide, so arming it in
 // `mobile-projection.test.tsx` would put a mock underneath that suite's
@@ -39,6 +45,7 @@ import { cleanup } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import type { CardWire } from '../../../../../core/domain/wave.ts';
 import { MARKER } from '../../../../../core/view/panel.ts';
 import type { RowModuleView, RowPainter } from '../../../../../core/view/panel.ts';
@@ -97,6 +104,24 @@ const CARDS: readonly CardWire[] = [
  * `mobile-projection.test.tsx`'s question.
  */
 const PAINTED_TEXT: readonly string[] = ['Cards', 'Build log', 'harness'];
+
+/** The Tasks fixture (S1b-4b). `beta-gate` carries a run, so its row prints a
+ *  word only the painter can produce here — the page has no wording of its own
+ *  left. */
+const TASKS: readonly ReportTaskRow[] = [
+  {
+    blockId: 'block-1', key: 'alpha-impl', state: 'ready', declaration: null,
+    status: null, statusDetail: null, kind: 'codex', workerCardId: null,
+  },
+  {
+    blockId: 'block-2', key: 'beta-gate', state: 'not-ready', declaration: null,
+    status: 'failed', statusDetail: 'not a git repository',
+    kind: 'terminal', workerCardId: 'card-9',
+  },
+];
+
+/** The module title, both task keys, and the status word. */
+const PAINTED_TASK_TEXT: readonly string[] = ['Tasks', 'alpha-impl', 'beta-gate', 'failed'];
 
 /** The mobile panel subtree — the same root `mobile-projection.test.tsx` scopes
  *  to, and for the same reason: the desktop surface is a sibling that is in the
@@ -160,6 +185,64 @@ describe('the page paints its mobile Cards page through paintMobileModule', () =
        are still zero. */
     for (const text of PAINTED_TEXT) {
       expect(root.textContent, `no unmarked copy of ${text} survives`).not.toContain(text);
+    }
+  });
+});
+
+describe('the page paints its mobile Tasks page through paintMobileModule', () => {
+  it('calls it once, with the Tasks module of the derived view', () => {
+    renderPage({ cards: CARDS, tasks: TASKS, panel: 'tasks', onOpenTask: vi.fn() });
+
+    expect(calls.length, 'paintMobileModule calls').toBe(1);
+    /* Equality against the derivation run independently here: it catches a page
+       that passed the Cards module, a hand-built one, or a filtered copy. The
+       page is rendered *with cards too*, so passing the wrong module is a live
+       possibility rather than one the fixture forecloses. */
+    const expected = deriveWavePageView({ cards: CARDS, tasks: TASKS }).rowModules
+      .find((module) => module.key === 'tasks');
+    expect(calls[0].module).toEqual(expected);
+    expect(calls[0].module.key).toBe('tasks');
+    expect(calls[0].module.rows.map((row) => row.id)).toEqual(['block-1', 'block-2']);
+  });
+
+  it('renders what it handed back, inside the mobile panel', () => {
+    const { container } = renderPage({
+      cards: CARDS, tasks: TASKS, panel: 'tasks', onOpenTask: vi.fn(),
+    });
+    const root = mobilePanel(container);
+
+    expect(root.querySelectorAll('[data-entry-oracle-tag]').length, 'the painter’s node').toBe(1);
+    expect(MARKER.module).toBe('data-nc-module');
+    expect(MARKER.row).toBe('data-nc-row');
+    expect(root.querySelectorAll('[data-nc-module]').length).toBe(1);
+    expect(root.querySelectorAll('[data-nc-row]').length).toBe(TASKS.length);
+    for (const text of PAINTED_TASK_TEXT) {
+      expect(root.textContent, `wrap renders ${text}`).toContain(text);
+    }
+  });
+
+  /* "It was called" does not catch a page that calls the painter and draws its
+     own Tasks list beside it — which is exactly the shape this branch had until
+     this slice. With the painter's output replaced by a bare tag, neither a
+     marker nor any of the fixture's own strings may survive. */
+  it('and draws no Tasks list of its own beside it, for this fixture', () => {
+    mode = 'replace';
+    const { container } = renderPage({
+      cards: CARDS, tasks: TASKS, panel: 'tasks', onOpenTask: vi.fn(),
+    });
+    const root = mobilePanel(container);
+
+    expect(root.querySelectorAll('[data-entry-oracle-tag]').length).toBe(1);
+    expect(root.querySelectorAll('[data-nc-module]').length, 'modules the page drew itself').toBe(0);
+    expect(root.querySelectorAll('[data-nc-row]').length, 'rows the page drew itself').toBe(0);
+    for (const text of PAINTED_TASK_TEXT) {
+      expect(root.textContent, `no unmarked copy of ${text} survives`).not.toContain(text);
+    }
+    /* The wording the branch used to invent is gone with it: a hand-built copy
+       that fell back to the old four words would still be caught above by the
+       task keys, and this pins the words themselves. */
+    for (const word of ['Ready', 'Not ready', 'Withdrawn', 'Unreadable']) {
+      expect(root.textContent, `no ${word} survives`).not.toContain(word);
     }
   });
 });

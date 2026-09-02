@@ -26,9 +26,7 @@ import { DELETE_WAVE_COPY } from '../../../ui/confirm-dialog/copy.ts';
 import { ConfirmDialog } from '../../../ui/dialog/public.tsx';
 import { EditableTitle } from '../../../ui/editable-title/public.tsx';
 import { Icon } from '../../../ui/icon/public.tsx';
-import {
-  MobileList, MobileListEmpty, MobileListItem, MobileListPage,
-} from '../../../ui/mobile-list/public.tsx';
+import { MobileList, MobileListItem, MobileListPage } from '../../../ui/mobile-list/public.tsx';
 import { MobileHeader } from '../../../ui/mobile-header/public.tsx';
 import { PageHeader } from '../../../ui/page-header/public.tsx';
 import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedback/public.tsx';
@@ -178,10 +176,12 @@ export function WavePage({
    * The page's other markers (`data-nc-wave-page`, `data-nc-role`,
    * `data-nc-panel`, the two inventory markers, …) are this page's own and stay.
    *
-   * **Since S1b-4a the mobile Cards page is a second renderer of the same
-   * derivation** (`paintMobileModule`), with `mobile-entry.test.tsx` holding
-   * that call the way `desktop-entry.test.tsx` holds the desktop's. The mobile
-   * Tasks page is still hand-composed below; that is S1b-4b.
+   * **Since S1b-4a/4b both mobile row-module pages are renderers of the same
+   * derivation** (`paintMobileModule`, one call per drill-down), with
+   * `mobile-entry.test.tsx` holding those calls the way `desktop-entry.test.tsx`
+   * holds the desktop's. `Outline` and `Conversations` are not row modules and
+   * stay hand-composed: they are not in `rowModules`, and pushing them in would
+   * let this page's navigation decide the view model's contents.
    */
   const panelView = deriveWavePageView({ cards, tasks });
   const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
@@ -253,7 +253,16 @@ export function WavePage({
   /* Rebuilt per render, like the desktop's: the page chrome it closes over —
      where Back goes, how the page animates in — is a fact about this render. */
   const mobilePainter = makeMobilePainter({
-    onOpenTask, backLabel: 'Report', onBack: closeMobilePanel, motion: mobileCardMotion,
+    /* The reveal navigation clears `?panel=` itself (§1.4), so the panel is left
+       rather than closed — closing it here too would be two moves for one. That
+       wrapper is why the painter takes a handler instead of the page's prop. */
+    onOpenTask: (blockId) => {
+      leaveMobilePanel();
+      onOpenTask?.(blockId);
+    },
+    backLabel: 'Report',
+    onBack: closeMobilePanel,
+    motion: mobileCardMotion,
   });
 
   const mobileActions = !boardOpen ? (
@@ -492,29 +501,17 @@ export function WavePage({
               */
               paintMobileModule(mobilePainter, rowModule(panelView, 'cards'))
             ) : mobilePanelKind === 'tasks' ? (
-              <MobileListPage
-                title="Tasks"
-                backLabel="Report"
-                motion={mobileCardMotion}
-                onBack={closeMobilePanel}
-              >
-                <MobileList>
-                  {tasks.map((task) => (
-                    <MobileListItem
-                      key={task.blockId}
-                      title={task.key}
-                      meta={task.state === 'ready' ? 'Ready'
-                        : task.state === 'withdrawn' ? 'Withdrawn'
-                          : task.state === 'unreadable' ? 'Unreadable' : 'Not ready'}
-                      onSelect={() => {
-                        leaveMobilePanel();
-                        onOpenTask?.(task.blockId);
-                      }}
-                    />
-                  ))}
-                  {tasks.length === 0 && <MobileListEmpty>No tasks declared yet.</MobileListEmpty>}
-                </MobileList>
-              </MobileListPage>
+              /*
+                ── The mobile Tasks page goes through `core/view` (#1234 S1b-4b) ──
+                *
+                * The other half of the drift, and the louder one: this branch
+                * used to re-word `task.state` into four words of its own, so a
+                * `ready` task said `Ready` here and nothing on the desktop, and
+                * a dispatched one said `Not ready` here while the desktop showed
+                * the run. Both rules are `deriveReportTasks`' and now arrive
+                * through the derivation — a visible change, on the record as D8.
+              */
+              paintMobileModule(mobilePainter, rowModule(panelView, 'tasks'))
             ) : (
               <MobileListPage
                 title="Conversations"
