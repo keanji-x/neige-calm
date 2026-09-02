@@ -3002,20 +3002,36 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
 #[test]
 fn the_connector_phase_ceiling_is_the_documented_one() {
     use calm_server::plugin_host::{
-        CONNECTOR_AUTOSPAWN_BUDGET, MAX_CONNECTOR_AUTOSPAWN_WALL, MAX_CONNECTOR_BRINGUP_BUDGET,
-        connector_phase_ceiling,
+        CONNECTOR_AUTOSPAWN_BUDGET, CONNECTOR_LOOP_WIDENING_MARGIN, MAX_CONNECTOR_AUTOSPAWN_WALL,
+        MAX_CONNECTOR_BRINGUP_BUDGET, connector_phase_ceiling,
     };
 
-    // 2 × 15 s (the validated per-request bring-up ceiling) + 500 ms slack.
+    // 2 × 15 s (the validated per-request bring-up ceiling) + 500 ms
+    // per-connector slack.
     assert_eq!(MAX_CONNECTOR_BRINGUP_BUDGET, Duration::from_millis(30_500));
-    // …widened by another slack so the per-connector bound fires first, and
+    // …widened by the LOOP margin so the per-connector bound fires first, and
     // then the reconcile tail. This is the number the docs state.
     assert_eq!(MAX_CONNECTOR_AUTOSPAWN_WALL, Duration::from_millis(31_500));
     // The wall is exactly the ceiling of the widest budget the loop can adopt,
     // never a hand-computed constant beside it.
+    //
+    // #1194 residual 3 split one constant into two; the widening term below is
+    // the LOOP one. **Stated honestly: nothing here can enforce that choice.**
+    // `CONNECTOR_LOOP_WIDENING_MARGIN` and `CONNECTOR_BRINGUP_SLACK` are both
+    // 500 ms today, so swapping this line — or `widened_connector_budget`'s
+    // body — to the other constant is a mutation NO test in this repo kills.
+    // It is a human convention that the reference names the constant that
+    // actually feeds the expression, and its whole value is that the day the
+    // two values diverge, this line already points at the right one and the
+    // literal assertions above go red for the right reason.
+    //
+    // Making it machine-checkable would mean giving the two constants different
+    // values purely so a test could tell them apart — production arithmetic bent
+    // to serve a test, which is a worse trade than an honest comment. Do not
+    // upgrade this to a claim the suite does not back.
     assert_eq!(
         MAX_CONNECTOR_AUTOSPAWN_WALL,
-        connector_phase_ceiling(MAX_CONNECTOR_BRINGUP_BUDGET + Duration::from_millis(500))
+        connector_phase_ceiling(MAX_CONNECTOR_BRINGUP_BUDGET + CONNECTOR_LOOP_WIDENING_MARGIN)
     );
     // And the floor is a floor: the widened budget is never below the constant.
     assert!(MAX_CONNECTOR_AUTOSPAWN_WALL > connector_phase_ceiling(CONNECTOR_AUTOSPAWN_BUDGET));
@@ -3200,6 +3216,64 @@ async fn a_number_shaped_credential_never_reaches_the_wire() {
         assert!(
             stub.queries().is_empty(),
             "{numeric:?} reached the wire: {:?}",
+            stub.queries()
+        );
+        assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
+    }
+}
+
+// ===========================================================================
+// #1194 round 4 — a credential overlapping the redaction marker is refused at
+// the source
+// ===========================================================================
+
+/// One scrub pass never rescans what it wrote, so a credential that shares text
+/// with `<redacted>` can be re-formed out of its own redaction: with
+/// `redacted>y`, the upstream string `redacted>yy` scrubs to `<redacted>y`,
+/// which carries the credential verbatim into `ExposedTool` and the wave
+/// transcript. Round 3 accepted these credentials and recorded the leak as an
+/// open residual; they are refused now.
+///
+/// Driven through the real `spawn` — and therefore the real
+/// `connect_mcp_http` → `HttpCredential::parse` boundary — because the unit
+/// tests in `http_mcp.rs` cannot show that this rule is on the production path
+/// at all. One case per overlap direction.
+#[tokio::test]
+async fn a_credential_overlapping_the_redaction_marker_never_reaches_the_wire() {
+    for (overlapping, direction) in [
+        ("redacted>y", "begins with a suffix of the marker"),
+        ("abcdef-<", "ends with a prefix of the marker"),
+        ("sk-<redacted>-x", "contains the marker"),
+        ("edacted>#", "is a piece of the marker"),
+    ] {
+        let stub = StubServer::start(StubMode::Normal).await;
+        let b = boot().await;
+        let dir = write_connector(&b.plugins_dir, &stub.url(), 5_000, 0o600);
+        let secrets = dir.join("secrets.json");
+        std::fs::write(&secrets, json!({ SECRET_NAME: overlapping }).to_string()).unwrap();
+        std::fs::set_permissions(&secrets, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let host = b.host();
+        seed_row(&b, CONNECTOR_ID).await;
+
+        let err = match host.spawn(CONNECTOR_ID).await {
+            Err(HostError::ConnectorUnavailable { reason, .. }) => reason,
+            other => {
+                panic!("{overlapping:?} ({direction}) must not bring a connector up: {other:?}")
+            }
+        };
+        assert!(
+            err.contains("overlaps the marker"),
+            "{overlapping:?} ({direction}): the refusal must say what is wrong: {err}"
+        );
+        // Persisted and broadcast as `PluginState.last_error`: it may quote
+        // neither the credential nor — since some of these ARE pieces of it —
+        // the marker.
+        assert!(!err.contains(overlapping), "{overlapping:?}: {err}");
+        assert!(!err.contains("<redacted>"), "{overlapping:?}: {err}");
+        // Nothing was sent: the client is never constructed.
+        assert!(
+            stub.queries().is_empty(),
+            "{overlapping:?} reached the wire: {:?}",
             stub.queries()
         );
         assert!(!host.running_plugin_ids().await.contains(CONNECTOR_ID));
