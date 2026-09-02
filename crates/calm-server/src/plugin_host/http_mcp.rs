@@ -104,8 +104,33 @@
 //! That rule is the number **grammar** (`-1234567`, `1.234567`, `1E5`,
 //! `1234e567` are all of them), delegated to serde_json rather than re-derived
 //! from characters — see [`is_number_shaped`].
-//! Constraining the credential removes the case; there is nothing left to
-//! classify as residual.
+//! Constraining the credential removes *that* case: a number-shaped credential
+//! is no longer representable, so the JSON-number hole is closed structurally.
+//!
+//! **Nothing above is a completeness claim, and this header must not be read as
+//! one** (#1194 residual 2). Every layer here is a LITERAL search:
+//! [`HttpMcpClient::new`] registers the raw credential plus its two
+//! percent-encoding cases (`%2F` and `%2f` — which hex case an upstream echoes
+//! is the upstream's choice, not ours), and `scrub_with` looks for exactly
+//! those substrings. Three shapes are known to walk straight through, and they
+//! are named here rather than left for the next reader to rediscover:
+//!
+//! * **any other encoding of the same bytes** — base64 (`c2stYWJj`), URL-safe
+//!   base64, hex, HTML entities, double percent-encoding. The set of alphabets
+//!   an upstream may choose is not ours to bound, so adding literals does not
+//!   converge;
+//! * **the credential split across two JSON strings** — `["sk-ab", "cd"]`, or a
+//!   key holding one half and its value the other. No single string contains
+//!   the literal, so no single `replace` matches, yet a reader of the rendered
+//!   document reassembles it for free;
+//! * **any non-literal re-derivation** — a hash the operator can reverse from a
+//!   short key, a checksum, the credential embedded in an upstream-built URL
+//!   with different escaping than [`percent_encode`] produces.
+//!
+//! What actually closes the class is not extending this list: it is not putting
+//! the credential where an upstream can echo it at all (`api_key_in: header`,
+//! the main proposal on #1194). Until that lands, treat this module as a net
+//! over the shapes that have actually been observed, not as containment.
 //!
 //! The raw-text scrub survives in exactly one place: the non-2xx arm, where the
 //! body is an arbitrary error page with nothing to parse. There the
@@ -397,19 +422,38 @@ impl HttpMcpClient {
                 // key into an unexpected slot.
                 None => {}
             }
-            // Both literal forms, longest first, so scrubbing the encoded form
-            // is not pre-empted by a shorter raw substring match.
+            // Every literal form we know how to name, longest first, so
+            // scrubbing an encoded form is not pre-empted by a shorter raw
+            // substring match. This list is NOT exhaustive — see the module
+            // header for the shapes that walk through it.
             //
-            // The `is_empty` filters are the braces to `HttpCredential`'s belt:
-            // an empty pattern turns `scrub` into a memory amplifier (see
-            // `scrub_with`), and this is the last place that could register
-            // one. `percent_encode("")` is also `""`, hence both guards.
-            let encoded = percent_encode(key);
-            if !key.is_empty() {
-                secret_forms.push(key.to_string());
-            }
-            if encoded != key && !encoded.is_empty() {
-                secret_forms.push(encoded);
+            // BOTH hex cases of the percent-encoding are registered (#1194
+            // residual 2). We emit the uppercase one into the URL, but
+            // `%2f` and `%2F` are the same byte to every RFC 3986 parser, so an
+            // upstream that normalises, lowercases, or simply re-encodes our
+            // query string before echoing it back hands us a string that the
+            // uppercase literal does not match — and it would ship through
+            // `tools/list` descriptions and the wave transcript unredacted.
+            // Which case comes back is the upstream's choice, so we cover both
+            // rather than assume ours survives the round trip.
+            //
+            // The dedupe + `is_empty` filter are the braces to
+            // `HttpCredential`'s belt. Empty: an empty pattern turns `scrub`
+            // into a memory amplifier (see `scrub_with`), and this is the last
+            // place that could register one — `percent_encode("")` is `""` too,
+            // so the filter has to cover the encoded forms as well. Duplicate:
+            // for a credential with no reserved characters all three forms are
+            // the same string, and a repeated pattern is wasted work whose
+            // second pass would scan the already-substituted text.
+            let forms = [
+                key.to_string(),
+                percent_encode(key),
+                percent_encode_lower(key),
+            ];
+            for form in forms {
+                if !form.is_empty() && !secret_forms.contains(&form) {
+                    secret_forms.push(form);
+                }
             }
             secret_forms.sort_by_key(|s| std::cmp::Reverse(s.len()));
         }
@@ -717,6 +761,10 @@ fn parse_scrubbed(forms: &[String], text: &str, method: &str) -> Result<Value, R
 /// `{"<our-api-key>": "…"}`, and a `tools/list` entry's `inputSchema`
 /// properties are object keys that reach `ExposedTool` and, from there, the
 /// agent-visible tool catalog.
+///
+/// Rekeying is entry-count preserving: keys that collide after redaction are
+/// disambiguated rather than merged. See the comment on the rekey branch for
+/// why that is not cosmetic.
 fn scrub_value(forms: &[String], v: &mut Value) {
     if forms.is_empty() {
         return;
@@ -737,11 +785,45 @@ fn scrub_value(forms: &[String], v: &mut Value) {
                 .keys()
                 .any(|k| forms.iter().any(|f| k.contains(f.as_str())));
             if rekey {
+                // #1194 residual 1 — this used to `collect()` straight back
+                // into a `Map`, which SILENTLY DROPS entries: two distinct keys
+                // that both scrub to `<redacted>` collapse to one, and the
+                // surviving value is whichever came last. That is data loss on
+                // a path whose entire job is to hand the caller a faithful
+                // document minus the credential — and it is reachable without
+                // anything exotic, because an upstream that echoes our query
+                // string may well report the raw and the percent-encoded form
+                // as sibling keys, both of which are now scrub patterns
+                // (`HttpMcpClient::new` registers three).
+                //
+                // A collision therefore gets a disambiguating suffix
+                // (`<redacted>`, `<redacted>#2`, …) instead of disappearing.
+                // The reader still learns nothing about the credential — every
+                // colliding key rendered to the same marker by construction —
+                // but the entry count, and every value hanging off it, survive.
+                //
+                // The suffix loop also has to step over a key that was ALREADY
+                // literally `<redacted>#2` in the upstream document, which is
+                // why it probes rather than counting.
+                //
+                // Assignment is deterministic and independent of how the
+                // document was built: `serde_json::Map` is a `BTreeMap` here
+                // (the `preserve_order` feature is off), so `into_iter` yields
+                // keys in sorted order and the same key set always produces the
+                // same suffixes.
                 let taken = std::mem::take(map);
-                *map = taken
-                    .into_iter()
-                    .map(|(k, v)| (scrub_with(forms, k), v))
-                    .collect();
+                let mut rebuilt = serde_json::Map::with_capacity(taken.len());
+                for (k, v) in taken {
+                    let scrubbed = scrub_with(forms, k);
+                    let mut candidate = scrubbed.clone();
+                    let mut nth = 2u32;
+                    while rebuilt.contains_key(&candidate) {
+                        candidate = format!("{scrubbed}#{nth}");
+                        nth += 1;
+                    }
+                    rebuilt.insert(candidate, v);
+                }
+                *map = rebuilt;
             }
             for (_, child) in map.iter_mut() {
                 scrub_value(forms, child);
@@ -843,17 +925,31 @@ fn log_target(url: &str) -> String {
     format!("{scheme}://{authority}")
 }
 
-/// Minimal percent-encoding for query-string values. We only need the
-/// characters that would break a query parameter; `url` is not a dependency of
-/// this crate and pulling one for eight bytes of logic is not worth it.
+/// Minimal percent-encoding for query-string values, uppercase hex — the form
+/// that goes on the wire. We only need the characters that would break a query
+/// parameter; `url` is not a dependency of this crate and pulling one for eight
+/// bytes of logic is not worth it.
 fn percent_encode(s: &str) -> String {
+    percent_encode_hex(s, true)
+}
+
+/// The same encoding with lowercase hex digits. Never sent — it exists solely
+/// as a scrub pattern, because `%2f` and `%2F` are the same octet to an RFC
+/// 3986 parser and an upstream may echo our query string back in either case.
+/// See [`HttpMcpClient::new`].
+fn percent_encode_lower(s: &str) -> String {
+    percent_encode_hex(s, false)
+}
+
+fn percent_encode_hex(s: &str, upper: bool) -> String {
     let mut out = String::with_capacity(s.len());
     for byte in s.as_bytes() {
         match byte {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(*byte as char)
             }
-            other => out.push_str(&format!("%{other:02X}")),
+            other if upper => out.push_str(&format!("%{other:02X}")),
+            other => out.push_str(&format!("%{other:02x}")),
         }
     }
     out
@@ -1366,6 +1462,121 @@ mod tests {
         assert!(!props.contains_key(key), "key survived: {parsed}");
         assert_eq!(props.get("<redacted>"), Some(&serde_json::json!(1)));
         assert_eq!(props.get("safe"), Some(&serde_json::json!(2)));
+    }
+
+    /// #1194 residual 1 — two DIFFERENT keys that redact to the same marker
+    /// must not collapse into one entry.
+    ///
+    /// Drives `scrub_value` directly rather than restating what it does: build
+    /// an object whose keys are the raw and the percent-encoded form of the
+    /// same credential (exactly what an upstream echoing our query string back
+    /// alongside its decoded parse produces), then assert on the entry COUNT
+    /// and on both values being reachable. The old `collect()` kept whichever
+    /// came last and dropped the other — a green "the key is redacted"
+    /// assertion would have passed over it, which is why the count is the
+    /// load-bearing line here.
+    #[test]
+    fn two_keys_redacting_to_the_same_marker_do_not_collapse() {
+        let key = "sk-a/b+c-8213";
+        let encoded = percent_encode(key);
+        assert_ne!(encoded, key, "fixture needs two distinct literals");
+        let forms = vec![encoded.clone(), key.to_string()];
+
+        let mut obj = serde_json::Map::new();
+        obj.insert(key.to_string(), serde_json::json!(1));
+        obj.insert(encoded.clone(), serde_json::json!(2));
+        obj.insert("safe".to_string(), serde_json::json!(3));
+        let mut v = Value::Object(obj);
+        assert_eq!(v.as_object().unwrap().len(), 3, "fixture must start with 3");
+
+        scrub_value(&forms, &mut v);
+        let obj = v.as_object().unwrap();
+
+        assert_eq!(obj.len(), 3, "an entry was silently dropped: {v}");
+        assert_eq!(obj.get("safe"), Some(&serde_json::json!(3)));
+        // Neither credential form survives in any key…
+        for k in obj.keys() {
+            assert!(!k.contains(key), "raw key survived: {v}");
+            assert!(!k.contains(&encoded), "encoded key survived: {v}");
+        }
+        // …and both values are still reachable, under distinguishable markers.
+        let mut values: Vec<u64> = obj.values().filter_map(Value::as_u64).collect();
+        values.sort_unstable();
+        assert_eq!(values, vec![1, 2, 3], "a value was lost: {v}");
+        assert_eq!(obj.get("<redacted>"), Some(&serde_json::json!(2)));
+        assert_eq!(obj.get("<redacted>#2"), Some(&serde_json::json!(1)));
+    }
+
+    /// The suffix must step over a marker the upstream itself already used,
+    /// otherwise the collision handling reintroduces the very drop it exists to
+    /// prevent — one level along.
+    #[test]
+    fn a_preexisting_marker_key_does_not_get_overwritten() {
+        let key = "sk-collide-8213";
+        let forms = vec![key.to_string()];
+        let mut obj = serde_json::Map::new();
+        obj.insert(key.to_string(), serde_json::json!(1));
+        obj.insert("<redacted>".to_string(), serde_json::json!(2));
+        obj.insert("<redacted>#2".to_string(), serde_json::json!(3));
+        let mut v = Value::Object(obj);
+        scrub_value(&forms, &mut v);
+        let obj = v.as_object().unwrap();
+        assert_eq!(obj.len(), 3, "an entry was dropped: {v}");
+        let mut values: Vec<u64> = obj.values().filter_map(Value::as_u64).collect();
+        values.sort_unstable();
+        assert_eq!(values, vec![1, 2, 3], "a value was lost: {v}");
+    }
+
+    /// #1194 residual 2a — which hex case comes back is the upstream's choice.
+    /// `%2f` and `%2F` are the same octet, so a server that normalises our
+    /// query string before echoing it would otherwise hand the credential
+    /// straight through to `tools/list` descriptions and the wave transcript.
+    #[test]
+    fn both_percent_encoding_hex_cases_are_scrubbed() {
+        // Reserved characters in all three interesting classes: `/`, `+`, `=`.
+        let key = "sk-a/b+c=d";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+
+        let upper = percent_encode(key);
+        let lower = percent_encode_lower(key);
+        assert_eq!(upper, "sk-a%2Fb%2Bc%3Dd", "encoder shape changed");
+        assert_eq!(lower, "sk-a%2fb%2bc%3dd", "encoder shape changed");
+        assert_ne!(upper, lower, "fixture needs two distinct literals");
+
+        for form in [&upper, &lower] {
+            let msg = client.scrub(format!("upstream echoed ?api_key={form} back"));
+            assert!(!msg.contains(form.as_str()), "{form} survived: {msg}");
+            assert!(msg.contains("<redacted>"), "{msg}");
+        }
+        // The raw form still works, and no pattern is registered twice.
+        assert!(!client.scrub(format!("boom {key}")).contains(key));
+        let mut sorted = client.secret_forms.clone();
+        sorted.sort();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(before, sorted.len(), "duplicate scrub pattern registered");
+        assert_eq!(client.secret_forms.len(), 3, "{:?}", client.secret_forms);
+    }
+
+    /// A credential with no reserved characters encodes to itself in both hex
+    /// cases: the dedupe must leave exactly ONE pattern, not three copies that
+    /// each re-scan the already-substituted text.
+    #[test]
+    fn an_unreserved_credential_registers_exactly_one_form() {
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred("abcdefgh")));
+        assert_eq!(client.secret_forms, vec!["abcdefgh".to_string()]);
     }
 
     /// Deeply nested strings are reached, and a no-key client is a no-op.

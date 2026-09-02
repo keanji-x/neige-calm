@@ -3002,20 +3002,24 @@ async fn a_slow_event_store_cannot_hold_boot_past_the_phase_ceiling() {
 #[test]
 fn the_connector_phase_ceiling_is_the_documented_one() {
     use calm_server::plugin_host::{
-        CONNECTOR_AUTOSPAWN_BUDGET, MAX_CONNECTOR_AUTOSPAWN_WALL, MAX_CONNECTOR_BRINGUP_BUDGET,
-        connector_phase_ceiling,
+        CONNECTOR_AUTOSPAWN_BUDGET, CONNECTOR_LOOP_WIDENING_MARGIN, MAX_CONNECTOR_AUTOSPAWN_WALL,
+        MAX_CONNECTOR_BRINGUP_BUDGET, connector_phase_ceiling,
     };
 
-    // 2 × 15 s (the validated per-request bring-up ceiling) + 500 ms slack.
+    // 2 × 15 s (the validated per-request bring-up ceiling) + 500 ms
+    // per-connector slack.
     assert_eq!(MAX_CONNECTOR_BRINGUP_BUDGET, Duration::from_millis(30_500));
-    // …widened by another slack so the per-connector bound fires first, and
+    // …widened by the LOOP margin so the per-connector bound fires first, and
     // then the reconcile tail. This is the number the docs state.
     assert_eq!(MAX_CONNECTOR_AUTOSPAWN_WALL, Duration::from_millis(31_500));
     // The wall is exactly the ceiling of the widest budget the loop can adopt,
-    // never a hand-computed constant beside it.
+    // never a hand-computed constant beside it. #1194 residual 3: the widening
+    // term is `CONNECTOR_LOOP_WIDENING_MARGIN`, not the per-connector
+    // `CONNECTOR_BRINGUP_SLACK` — the two were one constant, are equal today by
+    // coincidence, and this line must move with the one that actually feeds it.
     assert_eq!(
         MAX_CONNECTOR_AUTOSPAWN_WALL,
-        connector_phase_ceiling(MAX_CONNECTOR_BRINGUP_BUDGET + Duration::from_millis(500))
+        connector_phase_ceiling(MAX_CONNECTOR_BRINGUP_BUDGET + CONNECTOR_LOOP_WIDENING_MARGIN)
     );
     // And the floor is a floor: the widened budget is never below the constant.
     assert!(MAX_CONNECTOR_AUTOSPAWN_WALL > connector_phase_ceiling(CONNECTOR_AUTOSPAWN_BUDGET));
