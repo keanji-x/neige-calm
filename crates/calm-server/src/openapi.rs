@@ -21,7 +21,8 @@ use crate::model::{
 use crate::report_backlinks::BacklinkQuote;
 use crate::routes::cards::{
     CreateCardBody, GetSpecRunResponse, HarnessItemsQuery, InterruptSpecCardResponse,
-    ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, ViaToolCall,
+    ResetSpecCardResponse, SendSpecInputRequest, SendSpecInputResponse, SpecRunTokenUsage,
+    ViaToolCall,
 };
 use crate::routes::claude_cards::NewClaudeCardBody;
 use crate::routes::codex_cards::NewCodexCardBody;
@@ -213,6 +214,7 @@ use utoipa::OpenApi;
         crate::routes::wave_conversations::NewWaveConversationBody,
         InterruptSpecCardResponse,
         GetSpecRunResponse,
+        SpecRunTokenUsage,
         HarnessPhaseTag,
         ResetSpecCardResponse,
         // Issue #229 PR B — wave-report card payload shape (kernel-owned;
