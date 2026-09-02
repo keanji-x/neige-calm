@@ -15,11 +15,15 @@ use calm_server::db::prelude::*;
 use calm_server::db::sqlite::SqlxRepo;
 use calm_server::event::{EditAuthor, EventBus};
 use calm_server::ids::ActorId;
-use calm_server::model::{NewCove, NewPlugin};
+use calm_server::model::{NewCove, NewOverlay, NewPlugin};
 use calm_server::plugin_host::{Manifest, PluginHost, PluginRegistry, PluginRuntimeStatus};
 use calm_server::routes;
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use calm_server::state::{AppState, DaemonClient};
+use calm_server::validation::{
+    OVERLAY_TEMPLATE_ENTITY_KIND, OVERLAY_TEMPLATE_KIND, OVERLAY_TEMPLATE_PLUGIN_ID,
+    template_overlay_payload_with_key,
+};
 use calm_server::wave_cove_cache::WaveCoveCache;
 use calm_server::wave_report::{WaveReportPayload, persist_report, resolve_report_for_wave};
 use http_body_util::BodyExt;
@@ -566,7 +570,10 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={stolen}");
     let stolen_id = stolen["id"].as_str().unwrap().to_string();
-    let (status, overlay) = post(
+    // #1297 closed the front door on this forge: `POST /api/overlays` now
+    // refuses the reserved `kernel` / `view` namespaces outright. Assert that
+    // first — it is the cheap layer, and it is the one a client can reach.
+    let (status, refused) = post(
         boot.app.clone(),
         "/api/overlays",
         json!({
@@ -578,7 +585,23 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "body={overlay}");
+    assert_eq!(status, StatusCode::FORBIDDEN, "body={refused}");
+
+    // Then plant the stolen key anyway, through the kernel-internal writer,
+    // so the deeper invariant this test exists for still gets exercised: even
+    // a row that *did* land — via a future internal bug, a restored backup, or
+    // a row predating #1297 — must not hijack the auto-fork lookup, because
+    // that lookup also requires the wave to live in the system cove.
+    boot.repo
+        .overlay_upsert(NewOverlay {
+            plugin_id: OVERLAY_TEMPLATE_PLUGIN_ID.into(),
+            entity_kind: OVERLAY_TEMPLATE_ENTITY_KIND.into(),
+            entity_id: stolen_id.clone(),
+            kind: OVERLAY_TEMPLATE_KIND.into(),
+            payload: template_overlay_payload_with_key(ISSUE_DEVELOPMENT),
+        })
+        .await
+        .expect("plant stolen template_key");
     let (stolen_wave, report_card, current) =
         resolve_report_for_wave(boot.repo.as_ref(), &stolen_id)
             .await

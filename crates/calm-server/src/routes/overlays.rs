@@ -3,7 +3,9 @@
 //!
 //! Writes (`upsert`, `delete`) eventually come from plugins via MCP and live
 //! in `plugin_host`. For M1 we expose write endpoints too so we can hand-test
-//! overlay rendering without a real plugin.
+//! overlay rendering without a real plugin. That hand-testing affordance is
+//! bounded by [`ensure_overlay_write_allowed`] (#1297): it reaches the same
+//! surface a plugin gets, never the kernel's own reserved namespaces.
 //!
 //! Writes go through `Repo::write_with_event` via `write_with_event_typed`
 //! per Scope A — see `routes/coves.rs` for the template.
@@ -12,12 +14,13 @@ use crate::actor::Actor;
 use crate::db::RepoRead;
 use crate::db::sqlite::{overlay_delete_tx, overlay_upsert_tx};
 use crate::db::write_with_event_typed;
-use crate::error::{ErrorBody, Result};
+use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::{Event, EventScope};
 use crate::model::{NewOverlay, Overlay};
 use crate::state::{AppState, RouteState};
 use crate::validation::{
-    OVERLAY_ENTITY_SCOPE_REGISTRY, should_skip_overlay, validate_overlay_payload,
+    KERNEL_OVERLAY_PLUGIN_ID, OVERLAY_ENTITY_SCOPE_REGISTRY, should_skip_overlay,
+    validate_overlay_payload,
 };
 use axum::{
     Json, Router,
@@ -41,6 +44,51 @@ pub(crate) async fn overlay_scope(
         .route_scope(repo, entity_kind, entity_id)
         .await
         .map_err(Into::into)
+}
+
+/// Admission gate for the public overlay write endpoints (issue #1297).
+///
+/// Two reserved namespaces must be unforgeable from outside the process:
+///
+///   * **`entity_kind`** — `view` and `system` hold kernel projections that
+///     the kernel reads back as fact. A `kernel/view/template` row decides
+///     whether the scheduler dispatches a wave's tasks at all
+///     (`scheduler::…` admission and its in-claim backstop), whether a spec
+///     harness may start, and whether the wave appears in `GET /api/waves`.
+///     Before this gate, any client with a session could POST that row onto
+///     a *running* wave and silently strand it — dispatch stops and the wave
+///     vanishes from the list, with nothing in the UI to say why.
+///   * **`plugin_id`** — `"kernel"` is the namespace `card_fsm` stamps on
+///     its own rows precisely so they are "unambiguously kernel-owned". A
+///     client writing under it forges that ownership.
+///
+/// The `entity_kind` half is not a new criterion: the registry column it
+/// asks is the same one the plugin RPC path has always asked
+/// (`plugin_host::callbacks::overlay_set`). This endpoint simply never
+/// asked it — the gap was one entry point wide, not one rule wide.
+///
+/// Both are permission failures rather than shape failures, so they answer
+/// 403, and both run *before* `validate_overlay_payload` so a refused write
+/// never reveals whether its payload would have parsed.
+///
+/// Kernel-internal writers are unaffected: they call `overlay_upsert_tx`
+/// directly (wave structure creation, `card_fsm`, `child_wave_adapter`) and
+/// never traverse this router.
+fn ensure_overlay_write_allowed(plugin_id: &str, entity_kind: &str) -> Result<()> {
+    if plugin_id == KERNEL_OVERLAY_PLUGIN_ID {
+        return Err(CalmError::Forbidden(format!(
+            "plugin_id `{KERNEL_OVERLAY_PLUGIN_ID}` is reserved for kernel-authored overlays",
+        )));
+    }
+    if !OVERLAY_ENTITY_SCOPE_REGISTRY.externally_writable(entity_kind) {
+        let kinds = OVERLAY_ENTITY_SCOPE_REGISTRY
+            .externally_writable_kinds()
+            .join(", ");
+        return Err(CalmError::Forbidden(format!(
+            "entity_kind must be one of [{kinds}], got `{entity_kind}`",
+        )));
+    }
+    Ok(())
 }
 
 pub fn router() -> Router<AppState> {
@@ -121,6 +169,7 @@ pub(super) fn filter_unsupported_overlay_versions(overlays: Vec<Overlay>) -> Vec
     request_body = NewOverlay,
     responses(
         (status = 200, description = "Overlay upserted", body = Overlay),
+        (status = 403, description = "Reserved kernel namespace (plugin_id or entity_kind)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -129,6 +178,8 @@ pub(crate) async fn upsert_overlay(
     actor: Actor,
     Json(p): Json<NewOverlay>,
 ) -> Result<Json<Overlay>> {
+    // #1297: reserved namespaces first — permission before shape.
+    ensure_overlay_write_allowed(&p.plugin_id, &p.entity_kind)?;
     // D4: kernel-owned overlay kinds (status/progress/eta/now) must match
     // their shape; plugin-defined kinds stay opaque.
     validate_overlay_payload(&p.kind, &p.payload)?;
@@ -166,6 +217,7 @@ pub struct OverlayDeleteBody {
     request_body = OverlayDeleteBody,
     responses(
         (status = 204, description = "Overlay deleted"),
+        (status = 403, description = "Reserved kernel namespace (plugin_id or entity_kind)", body = ErrorBody),
         (status = 500, description = "Internal error", body = ErrorBody),
     ),
 )]
@@ -174,6 +226,9 @@ pub(crate) async fn delete_overlay(
     actor: Actor,
     Json(b): Json<OverlayDeleteBody>,
 ) -> Result<StatusCode> {
+    // #1297: deleting a kernel-authored row is the second half of the forge
+    // — mark a wave as a template, act, then remove the evidence.
+    ensure_overlay_write_allowed(&b.plugin_id, &b.entity_kind)?;
     let scope = overlay_scope(s.repo.as_ref(), &b.entity_kind, &b.entity_id).await?;
     let (_unit, _id) = write_with_event_typed(
         s.repo.as_ref(),
