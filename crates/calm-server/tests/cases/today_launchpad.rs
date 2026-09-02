@@ -1250,7 +1250,26 @@ async fn an_unreadable_report_payload_reads_as_having_content() {
 /// never the defect — the call sites were.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_first_ensure_retries_the_system_cove_race() {
-    let b = boot().await;
+    // ON DISK, not `sqlite::memory:`, and that is what makes this case a gate
+    // rather than a coin flip.
+    //
+    // sqlite does not support WAL for in-memory databases, so the shared-cache
+    // memory DB every other case here uses falls back to a journal mode where
+    // a writer takes an exclusive lock and READERS BLOCK. The losing requests'
+    // `cove_get_system()` then waits behind the winner's whole transaction and
+    // returns `Some`, so nobody ever reaches the mint and the unique violation
+    // never happens: measured, the in-memory form passed 10/10 against a
+    // deliberately broken retry arm. On disk `after_connect` really does get
+    // WAL, readers do not block, and every request reads `None` before any of
+    // them writes.
+    let tmp = TempDir::new().unwrap();
+    let database = tmp.path().join("calm.db");
+    let repo = Arc::new(
+        SqlxRepo::open(&format!("sqlite://{}?mode=rwc", database.display()))
+            .await
+            .unwrap(),
+    );
+    let b = boot_with(tmp, repo, "workspaces").await;
     let (first, second) = tokio::join!(ensure(b.app.clone()), ensure(b.app.clone()));
     for (status, body) in [&first, &second] {
         assert!(

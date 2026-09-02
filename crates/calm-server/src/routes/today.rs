@@ -484,12 +484,11 @@ pub(crate) async fn ensure_today_launchpad(
             // page loads can both read `None` and both reach the mint.
             // `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
             // drives that race through the route.
-            Err(e) if is_unique_constraint(&e, "coves.kind") => {
-                app.repo
-                    .cove_get_system()
-                    .await?
-                    .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?
-            }
+            Err(e) if is_unique_constraint(&e, SYSTEM_COVE_UNIQUE) => app
+                .repo
+                .cove_get_system()
+                .await?
+                .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?,
             Err(e) => return Err(e),
         }
     };
