@@ -49,24 +49,24 @@ export const todayLaunchpadSchema = z.object({
 export type TodayLaunchpadWire = z.infer<typeof todayLaunchpadSchema>;
 
 /**
- * The response: the launchpad, or `null` when there is not one yet.
+ * The Today page load's only new request. Read-only; `null` ⇒ nothing yet.
  *
  * **`null` is data, not a failure.** A fresh workspace has no launchpad wave,
  * which is the ordinary state of this route, so the server says so with a 200
  * and a null body rather than a 404. It used to be a 404 and the frontend
- * translated it here; that made every session on a fresh workspace log a
- * browser console error for a state the design calls normal, and broke two
- * Playwright specs that assert zero console errors. The translation is gone
- * along with the status code — there is no longer any status this layer treats
- * specially.
+ * translated it in `queries.ts`; that made every session on a fresh workspace
+ * log a browser console error for a state the design calls normal, and broke
+ * two Playwright specs that assert zero console errors. The translation is gone
+ * along with the status code — no layer here treats any status specially now.
+ *
+ * `.nullable()` is applied here rather than hoisted to a module constant:
+ * `architecture/no-module-runtime-state` forbids the resulting object at module
+ * scope, and a schema built per call costs nothing on a once-per-page read.
  */
-export const todayLaunchpadResponseSchema = todayLaunchpadSchema.nullable();
-
-/** The Today page load's only new request. Read-only; `null` ⇒ nothing yet. */
 export function todayLaunchpadOperation(): ApiOperation<TodayLaunchpadWire | null> {
   return {
     method: 'GET',
     path: '/api/today/launchpad',
-    responseSchema: todayLaunchpadResponseSchema,
+    responseSchema: todayLaunchpadSchema.nullable(),
   };
 }
