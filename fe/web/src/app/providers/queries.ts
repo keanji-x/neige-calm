@@ -25,6 +25,9 @@ import {
   type ReportBlock, type TaskVerdict, type WaveBacklinks,
 } from '../../../../core/domain/report.ts';
 import {
+  pluginsOperation, setPluginEnabledOperation, type PluginListItem,
+} from '../../../../core/domain/plugins.ts';
+import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
@@ -41,6 +44,7 @@ import {
   createWaveConversationOperation, waveConversationsOperation,
   type Conversation,
 } from '../../../../core/domain/conversation.ts';
+import { useState } from '../../ui/state/public.ts';
 import type { ServerVersionInfo } from './public.tsx';
 import type { HarnessItem } from '../../../../core/api/generated/wire.ts';
 
@@ -115,6 +119,9 @@ export const queryKeys = Object.freeze({
   waveReportPrefix: () => ['wave-report'] as const,
   overlaysByKind: (entityKind: 'wave' | 'card') => ['overlays', entityKind] as const,
   settings: () => ['settings'] as const,
+  /* Settings › Plugins. Not reached by any event policy — see
+     `pluginsQueryOptions` for why, and for what stands in for one. */
+  plugins: () => ['plugins'] as const,
   /* #1209 — the New wave picker's list. Not invalidated by any event: the
      kernel's template keys are compile-time constants and the only thing that
      can move under them is a plugin starting or stopping, which changes an
@@ -824,13 +831,140 @@ export function useWaveTemplateMutation(
   return (save) => mutation.mutateAsync(save);
 }
 
+/**
+ * Settings › Plugins — the installed list.
+ *
+ * `retry: false` for the same reason the template read has it: this list is a
+ * screen the reader is looking at, and a failed read must say so and offer
+ * Retry rather than sit spinning through three silent attempts.
+ *
+ * **`plugin.state` does not refresh this list.** `core/events/invalidation-plan`
+ * maps that event to `noop('No plugin list query exists.')` — a reason that was
+ * true until this query was added, and `core/events` is a frozen module whose
+ * change needs its own issue. Without help, enabling a plugin would leave the
+ * row reading `spawning` for as long as the pane stayed open, which is exactly
+ * the transition the reader is waiting on.
+ *
+ * So the query polls *only while some row is in motion*: a `spawning` or
+ * `installing` plugin is a state the kernel is actively leaving, and every
+ * other state is one nothing will change without a write from this screen. The
+ * poll therefore stops on its own, and a settled list costs nothing.
+ */
+/* Frozen array, not a `Set`: `architecture/no-module-runtime-state` rejects a
+   module-level `new`, and two entries do not need a hash lookup. */
+const PLUGIN_TRANSIENT_STATES = Object.freeze(['spawning', 'installing'] as const);
+
+export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.plugins(),
+    queryFn: (): Promise<PluginListItem[]> => runOperation(transport, pluginsOperation(), unauthorized),
+    retry: false,
+    /*
+     * Polls **only while a row is in motion**, and only while this pane holds
+     * the query — leaving Settings drops the observer and the interval with it.
+     * That visibility is the bound.
+     *
+     * A counted cap was tried and was worse: `dataUpdateCount` also counts the
+     * invalidation every enable/disable fires, it lives on the cached query
+     * rather than on this visit, and it never resets — so a handful of toggles
+     * exhausted the budget and left the poll permanently off, which is the one
+     * failure mode this exists to prevent.
+     */
+    refetchInterval: (query: { state: { data?: PluginListItem[] } }) =>
+      (query.state.data ?? []).some((plugin) =>
+        (PLUGIN_TRANSIENT_STATES as readonly string[]).includes(plugin.state))
+        ? PLUGIN_POLL_MS
+        : false as const,
+  };
+}
+
+const PLUGIN_POLL_MS = 2000;
+
+export type PluginMutations = Readonly<{
+  /** The plugins a lifecycle write is in flight for. */
+  pendingIds: ReadonlySet<string>;
+  /** The last failure per plugin, so one plugin's error cannot label another. */
+  errors: ReadonlyMap<string, string>;
+  setEnabled: (id: string, enabled: boolean) => void;
+}>;
+
+/**
+ * Enable / disable.
+ *
+ * **Per plugin, not per hook.** A single `useMutation` exposes only the latest
+ * call's `variables` and `error`, so toggling two plugins in quick succession
+ * moved the spinner onto the second one — the first row snapped back to its
+ * server value mid-flight — and a failure on the first was attributed to
+ * whichever call happened last, or lost entirely. The pending set and the
+ * error map are keyed by plugin id, which is the only thing that makes two
+ * concurrent writes describable.
+ *
+ * The response is **not** written through to the cached list: enable answers as
+ * soon as the row flips, while the supervisor is still bringing the process up,
+ * so its `state` is a snapshot that is already stale by the time it lands. An
+ * invalidation asks the kernel what is actually true.
+ */
+export function usePluginMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): PluginMutations {
+  const client = useQueryClient();
+  /* A **count** per id, not membership: the switch stays usable while a write
+     is in flight, so one plugin can have two. With a set, the first response
+     cleared the marker while the second write was still out, and the row read
+     idle mid-flight. */
+  const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const [errors, setErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
+  const write = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
+    onMutate: ({ id }) => {
+      setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
+      setErrors((current) => {
+        if (!current.has(id)) return current;
+        const next = new Map(current);
+        next.delete(id);
+        return next;
+      });
+    },
+    onError: (error, { id }) => {
+      setErrors((current) => new Map(current)
+        .set(id, error instanceof Error ? error.message : 'Could not change this plugin.'));
+    },
+    onSettled: (_data, _error, { id }) => {
+      setPending((current) => {
+        const next = new Map(current);
+        const left = (current.get(id) ?? 1) - 1;
+        if (left <= 0) next.delete(id); else next.set(id, left);
+        return next;
+      });
+      void client.invalidateQueries({ queryKey: queryKeys.plugins() });
+    },
+  });
+  return {
+    pendingIds: new Set(pending.keys()),
+    errors,
+    setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
+  };
+}
+
 export function useSettingsMutation(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): (patch: SettingsPatch) => Promise<SettingsBag> {
   const client = useQueryClient();
   const save = useMutation({
     mutationFn: (patch: SettingsPatch) => runOperation(transport, putSettingsOperation(patch), unauthorized),
-    // PUT answers with the full bag, so writing it through avoids a refetch
-    // that would briefly render the pre-save values.
-    onSuccess: (bag) => { client.setQueryData(queryKeys.settings(), bag); },
+    /*
+     * Invalidate; do **not** write the response through.
+     *
+     * The PUT answers with the whole bag, which used to be written straight
+     * into the cache to avoid a refetch. That is only sound while writes cannot
+     * overlap, and Settings › Network commits per field: change a proxy, leave
+     * the field, change it again, leave again, and the first response can land
+     * last. Written through, its older bag becomes the cache — measured: the
+     * field reverted to the earlier value, under a green tick, while the server
+     * held the newer one, and every other reader of `['settings']` saw the
+     * stale bag until something refetched.
+     *
+     * A refetch cannot invert like that: it asks after the write settled, and
+     * the last answer is the server's own state.
+     */
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.settings() }); },
   });
   return (patch) => save.mutateAsync(patch);
 }
