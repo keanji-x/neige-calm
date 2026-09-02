@@ -144,4 +144,47 @@ describe('WavePage delete confirm contract', () => {
     expect(onRenameWave).toHaveBeenCalledTimes(1);
     expect(onRenameWave).toHaveBeenCalledWith('Beta');
   });
+
+  /*
+   * #1211 — an unnamed wave. The header reads the fallback; the *editor* does
+   * not, because the two are separate props now (`value` / `placeholder`).
+   * Red when the page goes back to passing `waveDisplayTitle(wave.title)` as
+   * the value: the box would open holding `Untitled wave`.
+   */
+  it('shows Untitled wave in the header and opens an empty box on it', async () => {
+    renderPage({ wave: wave({ title: '' }) });
+    const title = screen.getByRole('button', { name: 'Rename wave' });
+    expect(title.textContent).toBe('Untitled wave');
+    await userEvent.click(title);
+    expect(screen.getByRole<HTMLInputElement>('textbox', { name: 'Wave title' }).value).toBe('');
+  });
+
+  /*
+   * #1211 — clearing the name is a request on a wave, because the spec agent's
+   * `calm.wave.rename` is a second namer that only fires while the title is
+   * empty. On a cove the same gesture is a cancel; the difference is the
+   * explicit `emptyCommit` this page passes, and this is its wave-side half.
+   * Red when the page drops that prop or the primitive re-hardcodes 'cancel'.
+   */
+  it('asks to clear the name when the box is emptied and committed', async () => {
+    const onRenameWave = vi.fn();
+    renderPage({ wave: wave({ title: 'Alpha' }), onRenameWave });
+    await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
+    await userEvent.clear(screen.getByRole('textbox', { name: 'Wave title' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Wave title' }), '{Enter}');
+    expect(onRenameWave.mock.calls).toEqual([['']]);
+  });
+
+  /*
+   * And the no-op that survives it: a wave that is already unnamed has no
+   * state change to ask for. Red when 'clear' is implemented as "always send
+   * when empty".
+   */
+  it('asks for nothing when an already-unnamed wave is committed empty', async () => {
+    const onRenameWave = vi.fn();
+    renderPage({ wave: wave({ title: '' }), onRenameWave });
+    await userEvent.click(screen.getByRole('button', { name: 'Rename wave' }));
+    await userEvent.type(screen.getByRole('textbox', { name: 'Wave title' }), '{Enter}');
+    expect(onRenameWave).not.toHaveBeenCalled();
+  });
 });

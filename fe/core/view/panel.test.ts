@@ -264,9 +264,9 @@ describe('DOM marker vocabulary', () => {
     });
   });
 
-  /* The status marker is defined at its **final** name. `public.tsx` still
-     writes `data-nc-task-status` until S1b-3, whose oracle is that
-     `rg "data-nc-task-status" fe` returns zero hits. */
+  /* The status marker is defined at its **final** name, and since S1b-3a that
+     is also the name `public.tsx` and `page.module.css` write: the earlier
+     spelling of this attribute is gone from the tree. */
   it('spells the status marker at its post-rename name', () => {
     expect(MARKER.status).toBe('data-nc-status');
   });

@@ -38,9 +38,9 @@
 //
 // Separately, two fields of `row.status`. These are **not** lower bounds but
 // exact equalities against the carrier the page already marks
-// (`[data-nc-task-status]`, `public.tsx:725-733`):
+// (`[data-nc-status]`, `public.tsx:725-733`):
 // `status.phrase` against that node's `title` (`:731` is the bare phrase) and
-// `status.token` against the `data-nc-task-status` attribute (`:729`). A row
+// `status.token` against the `data-nc-status` attribute (`:729`). A row
 // whose derived `status` is null must have no such node.
 //
 // **Attributes are not "observable text" here.** An earlier version folded
@@ -263,21 +263,21 @@ function rowFields(row: PanelRow): readonly string[] {
  *
  * Exact equality, not an occurrence bound: the phrase's carrier is `title`
  * (`public.tsx:731`), which is the bare phrase, and the token's carrier is the
- * `data-nc-task-status` attribute (`:729`). The dot's `aria-label` (`:730`) is
+ * `data-nc-status` attribute (`:729`). The dot's `aria-label` (`:730`) is
  * `Status: ${phrase}` and is deliberately **not** asserted — that prefix is
  * renderer chrome the view model does not own (`core/view/panel.ts`,
  * `RowStatus.phrase`), and asserting the label would license moving the prefix
  * into `core`, which is a mutation this suite has been shown to miss.
  */
 function expectStatus(rowElement: Element, row: PanelRow, where: string): void {
-  const dot = rowElement.querySelector('[data-nc-task-status]');
+  const dot = rowElement.querySelector('[data-nc-status]');
   if (row.status === null) {
     expect(dot, `${where}: derived no status, so the page must paint no dot`).toBeNull();
     return;
   }
   expect(dot, `${where}: status dot`).not.toBeNull();
   expect(dot?.getAttribute('title'), `${where}: phrase`).toBe(row.status.phrase);
-  expect(dot?.getAttribute('data-nc-task-status'), `${where}: token`).toBe(row.status.token);
+  expect(dot?.getAttribute('data-nc-status'), `${where}: token`).toBe(row.status.token);
 }
 
 /**

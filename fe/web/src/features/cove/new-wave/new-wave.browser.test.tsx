@@ -53,7 +53,7 @@ function renderForm() {
          prop is required, which is deliberate — an optional one would let a
          call site render a picker that silently lists nothing. */
       listDirectory={vi.fn(() => Promise.resolve({ path: '/', parent: null, entries: [] }))}
-      titleRef={{ current: null }}
+      startFromRef={{ current: null }}
       onCancel={vi.fn()}
       onSubmit={vi.fn()}
     />,

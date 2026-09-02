@@ -9,7 +9,7 @@
 //
 //  - **The S1a text and status rules** — `row.title`, `row.kind`, `badge.text`,
 //    `module.title`, `module.empty`, and `status.token` / `status.phrase`
-//    against the page's `[data-nc-task-status]` node — are held by
+//    against the page's `[data-nc-status]` node — are held by
 //    `web/src/features/wave/page/view-characterization.test.tsx` against the
 //    unmodified page. For those, this file is not allowed to be self-consistent
 //    and wrong.
