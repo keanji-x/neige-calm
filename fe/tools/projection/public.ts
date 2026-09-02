@@ -33,31 +33,39 @@
 // boundaries. For the **desktop** they are carried by S1b-3b: the page is
 // rendered for real and checked through `checkProjectionIn`, and
 // `desktop-entry.test.tsx` holds that the page calls `paintDesktopPanel` with
-// the whole view and renders what it hands back — which is what makes a marked
-// node in that tree evidence the painter wrote it. (The page's marker-literal
-// source scan is a narrower guard beside that, not the carrier; see
-// `checkProjectionIn`.) The mobile surface has no such carrier yet.
+// the whole view and renders what it hands back. That is the best evidence we
+// have that a marked node in that tree came from the painter — not a proof:
+// see the standing list below for the residue it leaves. (The page's
+// marker-literal source scan is a narrower guard beside it, not the carrier;
+// see `checkProjectionIn`.) The mobile surface has no such carrier yet.
 //
 // **Violations are returned, not thrown.** Each carries a stable `code`, so a
 // malicious painter's *isolation* is mechanically assertable
 // (`expect(codes).toEqual(['field-text'])`) rather than "something went red".
 //
-// **Not covered — the standing list.** None of these has a carrier anywhere, and
-// a green `checkProjection` says nothing about them:
+// **Not covered by `checkProjection` itself — the standing list.** A green
+// `checkProjection` says nothing about any of these. Some have no carrier
+// anywhere; others have a **partial** desktop carrier outside this framework,
+// and each entry says which:
 //
 //  - **`mount` fidelity** and **the production painter factory** — the two trust
 //    boundaries named above; S1b-3/4's real page tests carry them.
-//  - **Handler binding.** Whether a marked host runs anything, whether the
-//    action's payload (`cardId` / `blockId`) reaches the *right* callback, and
-//    whether that callback is the one the row's action names. A painter that
-//    wires every action to the same handler is green here. **This is a gap in
-//    the framework, not a gap in the desktop panel**: for the three actions
-//    that exist today, `wave/page/public.test.tsx` drives the real page and
-//    asserts each payload against the callback it must reach — `onOpenTask`
-//    with the block id, `onOpenCard` with the worker card's id and `onOpenTask`
-//    not called, `onDeleteCard` with the row's wire id exactly once — plus that
-//    no delete is offered without `onDeleteCard` or on a kernel-owned card. A
-//    fourth action, or a second surface, arrives with no such cover.
+//  - **Handler binding — the expected *positive* binding has a desktop carrier;
+//    extra callbacks are not exhausted.** This framework checks none of it:
+//    whether a marked host runs anything, whether the payload (`cardId` /
+//    `blockId`) reaches the right callback, whether that callback is the one the
+//    row's action names. A painter that wires every action to the same handler
+//    is green here. Outside it, `wave/page/public.test.tsx` drives the real
+//    desktop page and asserts, for each of the three actions that exist today,
+//    that the callback it must reach was called with the right payload —
+//    `onOpenTask` with the block id, `onOpenCard` with the worker card's id,
+//    `onDeleteCard` with the row's wire id exactly once — plus that no delete is
+//    offered without `onDeleteCard` or on a kernel-owned card. **What that does
+//    not give is exclusivity.** Only the two worker-card cases pin a second
+//    callback as *not* called (`onOpenCard` / `onOpenTask` against each other);
+//    the delete case passes no `onOpenCard` and asserts nothing about it, so an
+//    action that fires the correct callback **and** a spurious extra one stays
+//    green. A fourth action, or a second surface, arrives with no cover at all.
 //  - **Interactivity of the host.** §6.3 declines this: a marker may sit on a
 //    `disabled` control, on an element with no role or tab stop, or on a plain
 //    `<span>`. Mobile rows require it — Astryx generates the interactive element
@@ -84,6 +92,16 @@
 //    'nc-module'`), through a marker-channel prop (`ui/panel-card` takes
 //    three), or from an imported component that carries its own. The scan is
 //    a hygiene guard; `desktop-entry.test.tsx` is the oracle.
+//  - **What the entry oracle does not close either — content the painter did
+//    not produce.** `desktop-entry.test.tsx` catches the painter's whole return
+//    value being discarded, and catches a bypass that carries markers. Its
+//    `replace` case additionally asserts that the fixture's own module titles
+//    and row text vanish with the painter's output, which catches a *hand-built,
+//    unmarked* second copy of the same modules rendered beside the real one. But
+//    that half is bound to **that fixture's strings**: a parallel unmarked tree
+//    printing different content, or one that only appears for inputs the fixture
+//    does not use, is outside every check we have. "All content in the desktop
+//    panel comes from the painter" is not proven anywhere.
 //  - **The characterization suite is no longer independent.**
 //    `wave/page/view-characterization.test.tsx` compared the derivation against
 //    a hand-written page; since S1b-3b the page renders *from* that derivation,

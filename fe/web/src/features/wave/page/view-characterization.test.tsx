@@ -19,9 +19,12 @@
 //
 // **What it still guards, and what now guards the rest.**
 //
-//  - Still here: the derived fields really reach the rendered DOM, in the right
-//    multiplicity, inside their own row — a same-source regression against the
-//    *rendering path*. A painter or a page that drops a derived field, prints
+//  - Still here: the derived fields really reach the rendered DOM, in **at
+//    least** the derived multiplicity, inside their own row — a same-source
+//    regression against the *rendering path*. (`expectFieldsPresent` compares
+//    with `>=`, so a field printed more often than the view model says is not
+//    red here; the exact-carrier question is `checkProjection`'s.) A painter or
+//    a page that drops a derived field, prints
 //    it once where the view model says twice, or renders a populated module's
 //    empty text goes red here, because the derivation and the DOM disagree even
 //    though the derivation is shared.

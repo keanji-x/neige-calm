@@ -1,7 +1,9 @@
 // @vitest-environment jsdom
 //
-// #1234 S1b-3b — the **entry** oracle: the page really goes through
-// `paintDesktopPanel`, and the panel it shows really is what came back.
+// #1234 S1b-3b — the **entry** oracle: it catches a page that **discards the
+// painter's whole return value**, and it catches a **marker-bearing bypass**
+// drawn beside it. It does *not* prove "the page can only put content on screen
+// through the painter" — see the honest limit at the end of this head.
 //
 // **Why this file exists.** `desktop-projection.test.tsx` checks that the
 // rendered desktop panel is a faithful projection of the view model, and
@@ -29,8 +31,22 @@
 // and draws its own panel beside it. So the mock's return value is tagged, and
 // the tag has to be *in the desktop panel subtree*; and in the third case the
 // mock returns the tag **instead of** the painted modules, which leaves the
-// subtree with no module and no row marker in it unless something other than
-// the painter put them there.
+// subtree with neither a projection marker **nor any of the fixture's own
+// module titles and row text** in it unless something other than the painter
+// put them there. The text half is what closes the cheapest bypass the marker
+// counts alone would miss: a page that renders the painter's output *and*
+// hand-builds a second, entirely unmarked copy of the same modules beside it
+// would satisfy every marker count here, because in `replace` the painter
+// contributes no markers and the hand-built copy carries none either — but it
+// cannot avoid printing `Cards` / `Build log` / `alpha-gate`.
+//
+// **The honest limit.** Even so, this file does not close "the page's content
+// can only come from the painter". The text assertions are bound to *this
+// fixture's* strings, so a bypass that renders different content, or content
+// only for inputs this fixture does not use, is outside them. And the module /
+// row counts in the last two cases name `MARKER.module` / `MARKER.row`
+// directly, so **only the tag half of this oracle is spelling-independent**;
+// the marker half inherits the same spelling-boundness the source scan has.
 //
 // **Why a whole file for it.** `vi.mock` is module-wide, so arming this one in
 // `desktop-projection.test.tsx` would put a mock underneath that suite's
@@ -99,6 +115,23 @@ const TASKS: readonly ReportTaskRow[] = [
   },
 ];
 
+/**
+ * Strings only the painted row modules can put on screen: the two module
+ * titles, both card names (`card-2` is untitled, so its name is its kind) and
+ * both task keys.
+ *
+ * These are what make the `replace` case bite against a **hand-built, unmarked**
+ * second copy of the panel: such a copy contributes no `data-nc-*` attribute,
+ * so the marker counts stay at zero, but it still has to print the text.
+ *
+ * Read as substrings of the subtree's `textContent`, deliberately: the point is
+ * "this content is not on screen at all", not which element carries it — that is
+ * `desktop-projection.test.tsx`'s question.
+ */
+const PAINTED_TEXT: readonly string[] = [
+  'Cards', 'Tasks', 'Build log', 'harness', 'alpha-gate', 'beta-gate',
+];
+
 /** The desktop panel subtree — the same root `desktop-projection.test.tsx`
  *  scopes to, and for the same reason: the mobile surface is a sibling that is
  *  in the DOM at the same time. */
@@ -135,6 +168,12 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
     expect(MARKER.row).toBe('data-nc-row');
     expect(root.querySelectorAll('[data-nc-module]').length).toBe(2);
     expect(root.querySelectorAll('[data-nc-row]').length).toBe(CARDS.length + TASKS.length);
+    /* And the text those modules print is on screen — which is what makes its
+       absence in `replace` below a real observation rather than a string that
+       was never rendered on this page in the first place. */
+    for (const text of PAINTED_TEXT) {
+      expect(root.textContent, `wrap renders ${text}`).toContain(text);
+    }
   });
 
   it('and draws no row module of its own beside it', () => {
@@ -149,5 +188,12 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
        zero is the right number here and not an accident of scoping. */
     expect(root.querySelectorAll('[data-nc-module]').length, 'modules the page drew itself').toBe(0);
     expect(root.querySelectorAll('[data-nc-row]').length, 'rows the page drew itself').toBe(0);
+    /* The markers are gone **and so is the content**. Without this second half
+       a page that renders the painter's return value and hand-builds an
+       unmarked duplicate panel beside it stays green: the duplicate carries no
+       `data-nc-*`, so both counts above are still zero. */
+    for (const text of PAINTED_TEXT) {
+      expect(root.textContent, `no unmarked copy of ${text} survives`).not.toContain(text);
+    }
   });
 });

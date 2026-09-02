@@ -20,8 +20,12 @@
 // and the painter built here is a second construction, not the page's. What
 // turns a green run into evidence is **`desktop-entry.test.tsx`**, which mocks
 // `paintDesktopPanel` and holds that the page calls it with the whole view and
-// renders the value it hands back. That oracle names no marker, so no spelling
-// of one can go round it.
+// renders the value it hands back. **Its load-bearing half — the tag it plants
+// in the painter's return value — names no marker**, so no spelling of one can
+// go round that; its other assertions do count `data-nc-module` /
+// `data-nc-row` and are as spelling-bound as the scan below. See that file's
+// head for the residue, and `tools/projection/public.ts`'s standing list for
+// what nothing covers.
 //
 // The last describe below is a **second, narrower** guard, and its scope is
 // worth being exact about: the page's source may spell none of `MARKER`'s
@@ -210,9 +214,9 @@ describe('the rendered desktop panel projects its view model faithfully', () => 
   });
 });
 
-// ── The structural constraint that makes the above mean something ────────────
+// ── A hygiene guard beside the above, not a premise of it ────────────────────
 
-describe('the page writes no projection marker of its own', () => {
+describe('marker-literal hygiene guard: the page spells no MARKER name', () => {
   /*
    * A hygiene guard, not the entry oracle — see the file head for what it does
    * and does not close, and `desktop-entry.test.tsx` for the claim that the

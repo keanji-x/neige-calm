@@ -1,28 +1,43 @@
 // The wave page's panel, derived once for every viewport (#1234).
 //
-// Every rule below is taken from the **desktop** panel as it stands in
-// `web/src/features/wave/page/public.tsx`; the desktop side is the richer of
-// the two surfaces, so it is the oracle.
+// Every rule below was **read off the desktop** panel in
+// `web/src/features/wave/page/public.tsx`, the richer of the two surfaces, back
+// when that page spelled the panel inline. Since S1b-3b the direction is
+// reversed: the desktop renders *from* this derivation, so this file is the
+// authority and the page is no longer an oracle for it.
 //
-// **What holds that correspondence, and over what.** Two different things, and
-// they cover different fields:
+// **What holds that correspondence, and over what — as it stands after S1b-3b.**
+// The page no longer *re-expresses* these rules: it calls this derivation and
+// paints the result. So nothing compares this file against an independently
+// written page any more, and the work is split three ways:
 //
-//  - **The S1a text and status rules** — `row.title`, `row.kind`, `badge.text`,
-//    `module.title`, `module.empty`, and `status.token` / `status.phrase`
-//    against the page's `[data-nc-status]` node — are held by
-//    `web/src/features/wave/page/view-characterization.test.tsx` against the
-//    unmodified page. For those, this file is not allowed to be self-consistent
-//    and wrong.
-//  - **The action wording added in S1b-1** — `RowAction.label` / `.hint`, the
-//    four sentences below — is held by that same suite, but by a weaker check
-//    than the text fields get. `expectActionWording` requires each non-null
-//    sentence to be **equal to one of the attribute values inside that row's own
-//    subtree** (`hint` against `title`, `label` against `aria-label`), so a
-//    wording that drifts from `public.tsx` goes red on a gate, not only in
-//    review. What that check does **not** say: which element carries which
-//    sentence, that a null wording stays null, and that the row carries no extra
-//    action. Those three arrive with S1b-2's `checkProjection` over S1b-3's
-//    markers.
+//  - **Semantic correctness of the rules below** — that `row.kind` is dropped
+//    for an untitled card, that `kernel-owned` is the `deletable === false`
+//    case, that `statusDetail` is appended and never substituted, that the
+//    worker-card action needs both `kind !== null` and `workerCardId !== null` —
+//    is held by `core/view/wave-page.test.ts` (with `core/view/panel.test.ts`
+//    for the traversal). Those are unit tests over this function's output; they
+//    are what stops this file being self-consistent and wrong, and their §5.1 /
+//    §5.2 mutations have been run. The **action wording** below
+//    (`RowAction.label` / `.hint`) is pinned there too, but only as literal
+//    expected strings — since the page renders from here, rewording a sentence
+//    in both places at once is a change no gate objects to. That is deliberate:
+//    this file is the wording's home now.
+//  - **That the derived fields become the rendered projection** — each field in
+//    its own carrier, the exact set and order of a row's actions, module order —
+//    is `web/src/features/wave/page/desktop-projection.test.tsx` over the real
+//    page, with `desktop-entry.test.tsx` holding that the page goes through
+//    `paintDesktopPanel` at all.
+//  - **That the user can actually do the three things** — payload, callback,
+//    and the delete control's presence — is behaviour, asserted as behaviour in
+//    `web/src/features/wave/page/public.test.tsx`.
+//
+// **What `view-characterization.test.tsx` is now, since another file's head
+// used to get this wrong:** a *same-source* regression against the rendering
+// path. Both sides of its comparisons come from this derivation, so it can no
+// longer catch a rule this file misreads — it catches a field that never
+// reached the DOM. Its own head says so; do not restore any claim here that it
+// checks this file against an unmodified page.
 //
 // **Signature note.** The design writes `deriveWavePageView(wave, cards, tasks)`
 // because a later slice adds the report outline, which needs the wave. Neither
@@ -143,11 +158,13 @@ function cardRow(card: CardWire): PanelRow {
  * halves are reproduced here.
  *
  * **The second half is not defending against an input that happens.** Upstream,
- * `core/domain/report.ts:968-975` makes `kind === null` equivalent to
- * `withdrawn` / `unreadable` / tombstoned, and `:1008-1009` + `:1047` give
- * exactly those states an undefined verdict and therefore a null
- * `workerCardId` — so `{ kind: null, workerCardId: 'x' }` is unreachable in
- * production. The condition is here because this function's contract is to be
+ * `deriveReportTasks` (`core/domain/report.ts`) decides both fields, and it
+ * makes them null together: `kind` is read off the live declaration and is null
+ * for exactly the unreadable and tombstoned blocks, while `decorated` is false
+ * for exactly the `unreadable` / `withdrawn` states — and a row that is not
+ * `decorated` gets no verdict, so its `workerCardId` is null too. Hence
+ * `{ kind: null, workerCardId: 'x' }` is unreachable in production. (Symbol
+ * references, not line numbers, for the reason given above.) The condition is here because this function's contract is to be
  * a **faithful copy of the desktop's judgement**, not to be a filter that
  * happens to agree with it on today's inputs. Dropping the `kind` test would
  * make the derivation right by coincidence of an upstream invariant it does not

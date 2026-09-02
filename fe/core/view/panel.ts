@@ -10,8 +10,12 @@
 // This module holds the vocabulary of that view model plus `paintModule` /
 // `paintPanel`, the traversals S1b's renderers are meant to share. Since S1b-3b
 // the **desktop panel is one of those renderers**: `features/wave/page`'s
-// `desktop-painter.tsx` is a `RowPainter`, and `public.tsx` renders the panel
-// card by calling `paintPanel` and nothing else. The mobile surface still
+// `desktop-painter.tsx` is a `RowPainter`, and `public.tsx` produces the panel
+// card's **row modules** by calling that file's `paintDesktopPanel` wrapper —
+// which calls `paintPanel` — instead of spelling their DOM inline. The panel
+// card is not only those modules: the page still composes `Referenced by` and
+// `Conversations` beside them, and those are router-fed slots outside the view
+// model (§3.2 below). The mobile surface still
 // composes its lists by hand — that is S1b-4. See `paintModule`'s docstring for
 // what that does and does not buy. Everything here is data and pure functions;
 // `core` may not import React or touch the DOM (`fe/core/AGENTS.md`), so a
@@ -173,9 +177,11 @@ export type RowPainter<T> = Readonly<{
 
 /**
  * Paint one module: the traversal both of S1b's renderers are to go through,
- * and which will then be their single shared one. Today the callers are
- * `paintPanel`, this module's own unit tests, and S1b-2's `checkProjection`;
- * the production renderers are wired in S1b-3 (desktop) and S1b-4 (mobile).
+ * and which will then be their single shared one. Its callers are `paintPanel`,
+ * this module's own unit tests, and S1b-2's `checkProjection`. The **desktop**
+ * production renderer reaches it through `paintPanel` as of S1b-3b
+ * (`wave/page/public.tsx` → `paintDesktopPanel` → `paintPanel`); the mobile one
+ * is still hand-composed and arrives in S1b-4.
  *
  * **The empty state is exclusive** (#1234 §5.20): `empty()` is called when the
  * module has zero rows and *only* then, and `row()` is called for every row and
@@ -210,9 +216,13 @@ export type RowPainter<T> = Readonly<{
  *    painter ran; markers reach a DOM by other routes than a literal.) That is
  *    an argument about one surface, not a rule this module can state, and the
  *    mobile surface does not have it yet (§6.10).
- *  - Whether a supported action is actually wired to a live handler is not
- *    checked anywhere, and is not checked by S1b-2 either — see
- *    `ActionSupport`.
+ *  - Whether a supported action is actually wired to a live handler is **not
+ *    checked by the projection framework** — not here and not by S1b-2 (see
+ *    `ActionSupport`). It is not unchecked everywhere: for the desktop's three
+ *    actions `wave/page/public.test.tsx` drives the real page and asserts the
+ *    payload reaching the callback the action names. That cover is positive
+ *    only — an extra, spurious callback on the same gesture is not excluded —
+ *    and `tools/projection/public.ts`'s standing list keeps the exact terms.
  */
 export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T {
   const paintRow = (row: PanelRow): T => painter.row({
@@ -237,8 +247,11 @@ export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T
  * wires it, and there is nothing for `paintPanel` to do there. Today the mobile
  * surface calls neither.
  *
- * **The desktop does call this** (S1b-3b): `wave/page/public.tsx` renders its
- * panel card as `paintDesktopPanel(painter, view)` and composes no row itself.
+ * **The desktop does reach this** (S1b-3b): `wave/page/public.tsx` renders the
+ * **row modules** of its panel card as `paintDesktopPanel(painter, view)`,
+ * which calls this, and composes no row itself. The card around them is still
+ * the page's — `Referenced by` and `Conversations` sit beside the painted
+ * modules and are outside the view model.
  * What holds that is not this function — it cannot notice a caller that walks
  * away — but the page-level constraint described in `paintModule`. Do not read
  * this docstring as saying every renderer goes through here: the mobile one
@@ -307,10 +320,11 @@ export const MARKER = Object.freeze({
    *  subtraction, and `label` / `hint` are read off `aria-label` / `title`.
    *
    *  **Not `data-nc-action`**, which is already taken and is a *styling*
-   *  protocol: `styles/base.css:207` gives every `[data-nc-action]` a button
-   *  geometry (inline-flex, `--control-h`, border, pointer cursor) and
-   *  `:225-248` freezes its value domain to `primary | secondary | tertiary |
-   *  destructive` (`styles/README.md:33`). A row painter writing
+   *  protocol: `styles/base.css`'s global `[data-nc-action]` rule gives every
+   *  such element a button geometry (inline-flex, `--control-h`, border,
+   *  pointer cursor), and the per-value rules beside it freeze the attribute's
+   *  domain to the four-way vocabulary `primary | secondary | tertiary |
+   *  destructive` that `styles/README.md` documents. A row painter writing
    *  `data-nc-action="open-card"` would silently inherit button styling on a
    *  desktop control and on a mobile `<li>`, and hand the frozen vocabulary a
    *  fifth value. The row-scoped marker therefore gets its own name. */
