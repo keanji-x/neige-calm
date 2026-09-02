@@ -1424,7 +1424,7 @@
     wave.template_id / purpose / terminal_at → null、wave.template_input → null（#891）、
     pinned_at → null。理由一致："不要为了加一个字段就逼所有录制会话重写 fixture"。
     每条默认值都有配对的测试断言旧 payload 解析后拿到那个默认值。
-  source: web/src/api/schemas.ts:19-136
+  source: web/src/api/schemas.ts:19-215
   authoritative_test: web/src/api/schemas.test.ts:45-64,146-149,697-713
   owner_slice: core/schemas/wire-types
   intentional_omission: false
