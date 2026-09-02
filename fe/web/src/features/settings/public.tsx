@@ -312,15 +312,31 @@ export function NetworkPane({
    */
   const sent = useRef<Record<ProxyField, string | null>>({ http: null, https: null });
 
+  const [status, setStatus] = useState<Readonly<Record<ProxyField, RowStatus>>>(
+    { http: IDLE, https: IDLE },
+  );
+  /* Read by the re-seed block (render phase) and by the unmount cleanup, both
+     of which need the *current* verdicts rather than a captured render's. */
+  const statusRef = useRef(status);
+  statusRef.current = status;
+
   if (loaded && (seed === null || seed.http !== incoming.http || seed.https !== incoming.https)) {
     const previous = seed;
     setSeed(incoming);
-    /* Only where the bag *confirms* what we sent. Clearing both entries on any
-       new bag dropped the reference for a field whose write was still in
-       flight — after which the next blur, or the close cleanup, sent the same
-       value again. */
+    /*
+     * A new bag makes the server's word the reference again — **except** for a
+     * field whose write is still out, whose reference is what that write said.
+     *
+     * Two shapes were tried and were wrong. Clearing unconditionally dropped
+     * the reference mid-flight, so the next blur or the close cleanup sent the
+     * same value twice. Clearing only when the bag *equals* what was sent
+     * looked safer and was worse: a server that normalises the value, or
+     * another client writing meanwhile, means no bag ever equals it, and the
+     * stale entry then outranks every future bag — after which retyping that
+     * exact value is a silent no-op forever.
+     */
     for (const field of PROXY_FIELDS) {
-      if (sent.current[field] === incoming[field]) sent.current[field] = null;
+      if (statusRef.current[field].phase !== 'saving') sent.current[field] = null;
     }
     setDraft((current) => ({
       http: previous === null || current.http === previous.http ? incoming.http : current.http,
@@ -329,9 +345,6 @@ export function NetworkPane({
   }
 
   const base = seed ?? { http: '', https: '' };
-  const [status, setStatus] = useState<Readonly<Record<ProxyField, RowStatus>>>(
-    { http: IDLE, https: IDLE },
-  );
   const sequence = useRef<Record<ProxyField, number>>({ http: 0, https: 0 });
   const referenceFor = (field: ProxyField) => sent.current[field] ?? base[field];
 
@@ -356,17 +369,23 @@ export function NetworkPane({
     const settle = (next: RowStatus) => {
       // A response for a superseded commit says nothing about the current one.
       if (sequence.current[field] !== ticket) return;
+      /*
+       * The reference rolls back **here**, inside the ticket check, and not in
+       * the `catch`: an older request failing after a newer one went out would
+       * otherwise wipe the reference belonging to the newer, still-in-flight
+       * value, and the next blur — or the close cleanup — would send it twice.
+       */
+      if (next.phase === 'failed') sent.current[field] = null;
       setStatus((current) => ({ ...current, [field]: next }));
     };
     setStatus((current) => ({ ...current, [field]: { phase: 'saving', value } }));
     void Promise.resolve(onSave({ [PROXY_KEY_OF[field]]: value === '' ? null : value }))
       .then(() => { settle({ phase: 'saved', at: Date.now(), value }); })
       .catch((error: unknown) => {
-        /* The reference goes back to the server's bag: `sent` records what the
-           server was told and *took*. Leaving a failed value in it made the
-           obvious retry — refocus, Enter — a no-op, so a failed save could not
-           be retried at all and the row went quiet on the next keystroke. */
-        sent.current[field] = null;
+        /* `settle` rolls the reference back when this failure is the current
+           one: `sent` records what the server was told and *took*, and leaving
+           a failed value in it made the obvious retry — refocus, Enter — a
+           no-op, so a failed save could not be retried at all. */
         settle({ phase: 'failed', message: error instanceof Error ? error.message : 'Save failed.', value });
       });
   };
@@ -389,6 +408,15 @@ export function NetworkPane({
       // The same guard the blur path uses: what was already sent is not resent
       // just because the bag has not echoed it back yet.
       if (last[field] === (sent.current[field] ?? seeded[field])) continue;
+      /*
+       * And never the value the reader just watched fail. Clearing `sent` on a
+       * failure is what makes an explicit retry — refocus, Enter — work; it
+       * must not also turn *closing the dialog* into a silent retry, landing a
+       * write the reader was told had not happened, with nothing mounted to
+       * tell them it since had.
+       */
+      const verdict = statusRef.current[field];
+      if (verdict.phase === 'failed' && verdict.value === last[field]) continue;
       const value = last[field];
       void Promise.resolve(save({ [PROXY_KEY_OF[field]]: value === '' ? null : value })).catch(() => {
         // Nothing is mounted to report to. The write still went out; the next
@@ -451,7 +479,22 @@ export function NetworkPane({
             value={draft[field]}
             placeholder="http://127.0.0.1:10809"
             status={statusFor(field)}
-            onChange={(value) => setDraft({ ...draft, [field]: value })}
+            onChange={(value) => {
+              setDraft({ ...draft, [field]: value });
+              /*
+                * Withdrawn, not hidden. Value-tagging alone only *hid* a
+                * settled verdict while the draft differed, so typing away from
+                * a failed value and back again brought the old error back —
+                * and, for a success, re-announced "Saved." to a screen reader
+                * with no request behind it. An in-flight commit keeps its
+                * status: it is still about to say something.
+                */
+              setStatus((current) => {
+                const row = current[field];
+                if (row.phase === 'idle' || row.phase === 'saving') return current;
+                return row.value === value ? current : { ...current, [field]: IDLE };
+              });
+            }}
             onBlur={() => commit(field, draft[field])}
             onKeyDown={(event) => { if (event.key === 'Enter') commit(field, draft[field]); }}
             width={CONTROL_WIDTH}

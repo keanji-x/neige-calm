@@ -357,6 +357,85 @@ describe('Settings network commits, per row', () => {
     expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('');
   });
 
+  it('does not let an older failure clear the reference for a newer in-flight value', async () => {
+    const flights: Deferred[] = [];
+    const onSave = vi.fn(() => { const d = deferred(); flights.push(d); return d.promise; });
+    const view = render(<NetworkPane {...props({ onSave })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.type(field, 'A');
+    await userEvent.tab();                       // commit A, ticket 1
+    await userEvent.type(field, 'B');
+    await userEvent.tab();                       // commit AB, ticket 2, still out
+    await act(async () => { flights[0]?.reject(new Error('older failed')); await Promise.resolve(); });
+
+    /*
+     * A's failure is superseded and says nothing about the value now in the
+     * field. Rolling the reference back on it would make the still-in-flight
+     * value look unsent, and the next blur — or the close below — would send
+     * it a second time.
+     */
+    await userEvent.click(field);
+    await act(async () => { await userEvent.tab(); });
+    expect(onSave).toHaveBeenCalledTimes(2);
+    view.unmount();
+    expect(onSave).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not silently retry, on close, a value the reader watched fail', async () => {
+    const onSave = vi.fn(() => Promise.reject(new Error('unreachable')));
+    const view = render(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'B' } })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'X');
+    await act(async () => { await userEvent.tab(); });
+    expect(field.closest('li')?.textContent).toContain('unreachable');
+
+    view.unmount();
+    /*
+     * Clearing the reference on failure is what makes an explicit retry work.
+     * It must not also make *closing* a retry: the reader was told the write
+     * did not happen, and a second attempt landing afterwards — with nothing
+     * mounted to say so — makes that a lie.
+     */
+    expect(onSave).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not bring a withdrawn verdict back when the draft returns to its value', async () => {
+    const onSave = vi.fn(() => Promise.reject(new Error('unreachable')));
+    render(<NetworkPane {...props({ onSave })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.type(field, 'X');
+    await act(async () => { await userEvent.tab(); });
+    expect(field.closest('li')?.textContent).toContain('unreachable');
+
+    await userEvent.type(field, 'Y');            // moves away — verdict withdrawn
+    await userEvent.keyboard('{Backspace}');     // …and back to exactly X
+    // The old message must not reappear: nothing has been sent since.
+    expect(field.closest('li')?.textContent).not.toContain('unreachable');
+  });
+
+  it('keeps a reference the server never echoes from silencing a later edit', async () => {
+    const onSave = vi.fn(() => Promise.resolve());
+    const view = render(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'A' } })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'X');
+    await act(async () => { await userEvent.tab(); });          // commit X, succeeds
+
+    /*
+     * The bag comes back **normalised** — the server stored `X/`, not `X`. A
+     * reference kept until the bag equals what was sent would never clear, and
+     * would then outrank every future bag: retyping `X` becomes a silent
+     * no-op forever.
+     */
+    view.rerender(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'X/' } })} />);
+    await userEvent.clear(field);
+    await userEvent.type(field, 'X');
+    await act(async () => { await userEvent.tab(); });
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(onSave).toHaveBeenLastCalledWith({ [HTTP_PROXY_KEY]: 'X' });
+  });
+
   it('commits an edit the reader leaves by closing the pane', async () => {
     const onSave = vi.fn(() => Promise.resolve());
     const view = render(<NetworkPane {...props({ onSave })} />);
