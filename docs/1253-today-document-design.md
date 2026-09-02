@@ -1,6 +1,6 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r7**（六轮双通道 review 后。r6 收敛确认轮零 BLOCKER；r7 是编辑级收尾：切片表与 §10 的三处陈述还停在 r5，会把已关闭的 BLOCKER 塞回实现 brief）。Issue：#1253。
+> 状态：设计 **r8**（六轮双通道 review 后收敛。r8 推翻 r6 的一条裁决——workspace digest 不能掺进 conversation key，因为那个 key 同时决定 card id）。Issue：#1253。
 > review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|-r3|-r4|-r5|-r6].md`（六轮共十二份）。
 > 关联：#951（launchpad wave 与它的 report 卡；两写者约束已留注记）、#120（定时汇总与日程队列）、#1045、#1234。
 
@@ -167,7 +167,9 @@ r5 删掉了 r4 的第二层（见 §0b.4）。活动**不由 agent 去查**，�
 
 **窗口是半开区间 `[start, next_start)`**，按 `at` 查询，**不与 id 游标混用**（`0004_events.sql` 的警告抄进 doc comment）。另一条要抄的：`0007_events_scope.sql` 明写老行一律 `scope_kind='system'` 且**不做 payload 回填**，所以跨过升级点的窗口会静默漏掉老事件。
 
-**投影是 O(1) 的，因此 prompt 有可证明的长度界。** 删掉 MCP 层时把截断纪律一起删了，但注入 prompt 这条路仍有硬上限：`validate_first_message` 与 `spec/input` 都拒绝超过 **32,768 Unicode 字符**（`MAX_SPEC_INPUT_CHARS`）。裁决：**projection 只返回固定几个计数**（每 kind 一个全局计数 + 最多 N 条 wave 级明细，N 写死），DTO 形状 O(1) 与工作区规模无关。若哪天要返回可变长明细，必须同时恢复确定性字符预算（预算须覆盖模板文本本身），并配 32,768 / 32,769 与 CJK 边界用例。
+**投影是 O(1) 的，因此 prompt 有可证明的长度界。** 删掉 MCP 层时把截断纪律一起删了，但注入 prompt 这条路仍有硬上限：`validate_first_message` 与 `spec/input` 都拒绝超过 **32,768 Unicode 字符**（`MAX_SPEC_INPUT_CHARS`）。裁决：**projection 只返回计数，不返回任何可变长字符串**——每个 allowlist kind 一个整数，外加受影响 wave 的数量。没有 wave 标题、没有 cove 名、没有明细列表。这样 prompt 长度是模板文本 + 几个整数，可以静态算出上界，无需字符预算也无需边界用例。
+
+> r6 写的是「最多 N 条 wave 级明细，N 写死」——那只限行数不限长度，固定条数的可变长字符串仍然证不出 ≤32,768。若将来确实要明细，必须同时给出覆盖模板本身的确定性字符预算 + 32,768 / 32,769 / CJK 边界用例；在那之前不做。
 
 **时区**：日界仍需定义，但 descope 后它**不再是主键**，只是窗口边界。取服务端本地日；跨时区错位的代价写进 doc comment（单机 LAN 单用户下无害，「何时不再无害」要写清）。不引入 workspace timezone 设置——那是独立的产品决策，不该被本 issue 顺手绑架。
 
@@ -185,8 +187,8 @@ r4 把「复用当天那条会话」压在 `Idempotency-Key` 上，两个通道�
 **「按需先建，然后一律 spec input」——不是两条并列分支**（r5 的写法两个通道都判 BLOCKER，见 §0c.1）：
 
 ```
-key     = summary_key(workspace_key_digest(cwd))   ← 见下：不能是裸 "today-summary"
-card_id = derive_wave_conversation_keys(launchpad_wave, key).card_id
+card_id = derive_wave_conversation_keys(launchpad_wave, "today-summary").card_id
+          ← 裸 key。见下：digest 绝不能掺进这里，它同时决定 card id
 if card_get(card_id) 不存在:
     POST /api/waves/{launchpad}/conversations   ← 只发静态 bootstrap 文本
 POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，带活动摘要
@@ -196,11 +198,16 @@ POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，�
 - **然后无条件走一次 spec input**。r5 把摘要只交给「重跑」分支，而创建路径的 `text` 是唯一送达 agent 的东西（create 成功后立即 `send_spec_input`，此后 `user_message_already_enqueued` 保证不再补发）——所以 r5 的**第一次使用必然产出无素材的汇总**，而那正是用户唯一会看的第一印象。
 - **分支判据必须是 `card_get(derived.card_id)`，不能靠列表或启发式**：`Stuck` 补偿会留下卡却没有 runtime，而且那张卡 `deletable: false` 用户删不掉；选错分支就直接撞下面的 dormant 死路。
 
-**key 里必须掺 workspace digest，不能是裸 `today-summary`。** 创建路径把整个 `SpecHarnessStartOperationPayload` 送进 `stable_payload_hash`，其中含 `actor` 与 `cwd: wave.workspace.path`；`insert_operation` 对「同 key + 不同 payload_hash」**硬 409，而 `operations` 全仓无 pruner ⇒ 永久**。这正是 `today.rs` 里逐字记过的事故（*"409, on every request, forever"*），当时的解法就是把 workspace digest 掺进 key。launchpad 的路径明确允许 re-point，而 owner/dev 两个账号都存在，所以这条不是理论风险。
+**key 必须是裸 `today-summary`，_不_ 掺 workspace digest——r6 在这里判反了，r8 改回来。** 创建路径把整个 `SpecHarnessStartOperationPayload` 送进 `stable_payload_hash`，其中含 `actor` 与 `cwd: wave.workspace.path`；`insert_operation` 对「同 key + 不同 payload_hash」**硬 409，而 `operations` 全仓无 pruner ⇒ 永久**。这正是 `today.rs` 里逐字记过的事故（*"409, on every request, forever"*），当时的解法是把 workspace digest 掺进 key。r6 照搬了那个解法——**但它搬不过来**：`derive_wave_conversation_keys` 用同一个 digest 同时喂 **card_id 和 operation_key**（`conversation_keys.rs` 的 doc comment 写死：card 是 `conv-{digest[..32]}`，operation key 是 `wave-conversation-{digest}`）。所以 key 掺了 cwd，**card id 也跟着变**：一次 re-point 就派生出第二张会话卡，直接推翻「全生命周期一条汇总 conversation」；而伪码若按裸 key 查卡、用 digest key 创建，创建出来的又不是查的那张。`today.rs` 的 key 不承担 conversation identity，这里的承担——所以那个解法在这条路径上是错的。
 
-因此：**actor 固定为单一值**（服务端合成路径可以直接构造，不必透传请求 actor；`today.rs` 已有 `"actor":"kernel"` 的先例。这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决），key 比照 `today.rs` 掺 `workspace_key_digest(cwd)`，并加兜底——**创建返回 409 conflict ⇒ resolve 派生卡 ⇒ 转 spec input**（此时卡必然已存在，因为 hash 冲突意味着有过一次成功的 start）。
+**正确的解法是把 payload 里的变量消掉，而不是把变量塞进 key。** payload 是 `{actor, wave_id, spec_card_id, report_card_id, sort, cwd}`：`wave_id` 固定；`spec_card_id` 由裸 key 派生因而固定；`report_card_id`/`sort` 本就是 `None`。所以只剩两个变量——
 
-> **自愿付的代价，要写在明处**：key 掺了 workspace digest，所以一次 workspace re-point 会派生出**一张新的会话卡**，而旧卡 `deletable: false`（REST 删除被拒），会一直留在 Conversations 列表里。这是为了换掉「永久 409」而接受的，不是疏漏。
+1. **`actor` 固定为单一值**。服务端合成路径可以直接构造，不必透传请求 actor（`today.rs` 已有 `"actor":"kernel"` 的先例，`Actor` 是裸 newtype）。这消掉了「owner/dev 两个账号各点一次就永久 409」。这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决。
+2. **`cwd` 只在 workspace re-point 时变**，而 re-point 之后我们**不会再调 create**——分支判据是 `card_get(derived.card_id)`，卡已存在就直接走 spec input，且那张卡 `deletable: false` 不会消失。所以「succeeded 之后 payload 变了」这个永久 409 的触发条件在本路径上到不了。
+
+**残余窗口**（写在明处）：create 尝试过但**没有成功**（`Stuck`，arm (c) 持续 500），期间又发生了 re-point——此时同 key 不同 hash 会 409。`retryable_operation_key` 的 `#N` 逃逸只在 `phase == Failed` 时给，`Stuck` 不给。这个窗口窄且已是 fail-closed 的已知态，接受；实现时把它写进错误文案，别让人误以为是 bug。
+
+兜底仍然保留：**创建返回 409 conflict ⇒ resolve 派生卡 ⇒ 转 spec input**（若卡存在）。
 
 **dormant 恢复规则（不写就等于按钮会永久死掉）：** `send_spec_input` → `ensure_live_spec_harness` 有四种失败：无 active runtime / 无 thread / snapshot 损坏 → **409 `spec_harness_dormant`**；`Starting` → 503；共享 app-server 未运行 → 503；`observe` 的有界 `try_send`（`OBSERVATION_BUFFER = 256`）→ 503。在「全生命周期只有一条会话」的裁决下，**一次 dormant 就让这个按钮永久失效**，只能靠人手 reset。**裁决：重新提交一次 `spec-harness-start`，不要走 `/spec/reset`。** 两者不等价，而差别是用户可见的——`reset_spec_harness_card` 写死 `reset_harness_items: true`，会**清空这条会话的 transcript**，而这条会话正是用户要看的那个 conversation。直接提交 start（`reset_harness_items: false`、`force_new_thread: true`、`create_card: None`、新 operation_key）能恢复而不擦历史；它也不会被幂等短路，因为 reset 路径用的是 `operation_key: new_id()` + `idempotency_key: None`。503 类按可重试错误浮出。这条挂进 INV-002。
 
@@ -208,7 +215,9 @@ POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，�
 
 > 注意这条**不是**「内核保证只有一条」——内核对每 wave 的 assistant 会话数没有任何上界，任意 key 都派生新卡，而 Today 的 Conversations 模块本来就有 `+`。可证的是纯函数性质，不是数据库计数，见 INV-010。
 
-**触发不保证一轮一 turn。** `run_loop::maybe_issue_turn` 一次 `drain` 把整个 pending 队列拼成一条 `joined_observation_text` 只发**一个** `turn_start`，发车前还有 `debounce_min_idle=250ms` / `debounce_max_wait=5s`。所以连点三次的典型结果是 **2 个 turn**，不是 3。设计**接受合并**，INV-010 因此改证「每次触发都留下一条永久的 `harness.user_message.enqueued`」，而不是数 turn（见 §5.2）。
+**触发不保证一轮一 turn。** `run_loop::maybe_issue_turn` 一次 `drain` 把整个 pending 队列拼成一条 `joined_observation_text` 只发**一个** `turn_start`。所以连点多次的典型结果是 turn 被合并。设计**接受合并**，INV-010 因此改证「每次触发都留下一条永久的 `harness.user_message.enqueued`」，而不是数 turn（见 §5.2）。
+
+> **`UserMessage` 是 hard-fire，绕过 250ms/5s 去抖**（r6 把去抖写成了合并的原因，那是错的）。合不合并只取决于两条消息有没有赶在同一次 50ms tick 前入队。所以**首次触发有可能先跑一个 bootstrap-only 的 turn**。因此 bootstrap 文本必须写成「待命，收到指令前不要动 report」——一个无害的空转，而不是让 agent 在没有素材时先写一版。这条和 INV-007 是同一个目的。
 
 > 还有一个更坏的模式要防：pending 队列满 256 且折叠后超过 `MAX_FOLDED_USER_MESSAGE_CHARS`（4×32768）时，观测会被**直接丢弃**，只留一条 warn 日志——「点了，什么都没发生，且没有错误返回」。这与 INV-010 要防的是同一类，实现时要让它至少可观测。
 
@@ -265,20 +274,20 @@ GET wave detail                 → readWaveReport 自己按 kind 定位那张�
 | ID | 陈述（可证死的形式） | 反例（必须红） | 正例（必须绿） |
 |---|---|---|---|
 | INV-TODAYDOC-001 | 页面加载只走只读 resolve；`ensure` 只在显式动作上调用 | 加载路径触发 ensure | 加载只 resolve；404 → 空态 |
-| INV-TODAYDOC-002 | 动作路径上 `ensure` 的任何失败浮出为错误，不静默降级 | 5xx 被吞成空态 | 5xx 浮出错误框 |
-| INV-TODAYDOC-003 | 空态判据是服务端 `report_has_noninitial_content`；FE 不解析 report body 文本 | canonical 初始 report 下渲染出四个空标题而非空态；或 FE 出现按 body 文本判断的分支 | 从未汇总 → 空态 + 按钮 |
+| INV-TODAYDOC-002 | 动作路径上的失败浮出为错误，不静默降级；`spec_harness_dormant` 走一次 start 重提交后重试，仍失败则浮出 | 5xx 被吞成空态；**或** dormant 被静默吞掉／无限重试／走了会清空 transcript 的 `/spec/reset` | 5xx 浮出错误框；dormant → 重提交 start → 单次重试 → 成功或浮出 |
+| INV-TODAYDOC-003 | 空态判据是服务端 `report_has_noninitial_content`；FE 不解析 report body 文本 | canonical 初始 report 下渲染出四个空标题而非空态；或 FE 出现按 body 文本判断的分支 | canonical initial payload（含 `doc_rev`/`blocks` 已被 CRDT 物化的那一格）→ 空态 + 按钮 |
 | ~~INV-TODAYDOC-004~~ | ~~`day_activity_allowed`~~ | 随 D4 第二层一并删除（§0b.4） | — |
 | ~~INV-TODAYDOC-005~~ | ~~返回体字段 allowlist~~ | 随 D4 第二层一并删除 | — |
 | INV-TODAYDOC-006 | 活动窗口是半开区间；相邻两天不重复计数 | 午夜边界事件被两天各计一次 | 边界事件恰好计一次 |
 | INV-TODAYDOC-007 | **`POST /api/today/summary` 自身**在活动窗口为空时既不建会话也不发消息 | 空窗口下打该端点，仍产生了会话或 `harness.user_message.enqueued` | 空窗口 → 409/204，两者皆无 |
-| INV-TODAYDOC-010 | 每次成功触发都**新增**至少一条 `harness.user_message.enqueued`，其中含活动摘要那条（允许 harness 合并 turn） | 第二次触发后没有新增 enqueued 行（r4 的 no-op 病） | 三次触发 → 三次新增；首次那次是 2 行（bootstrap + 摘要） |
-| INV-TODAYDOC-011 | **本端点的 key builder** 在同一 workspace 下恒定：不同登录身份、多次请求派生同一 `card_id` | 换登录身份或重复请求派生出不同 card_id | golden 钉住 key builder 的输出 |
+| INV-TODAYDOC-010 | **首次**成功触发新增 2 行 `harness.user_message.enqueued`（bootstrap + 摘要），**其后每次**新增 1 行（摘要）；允许 harness 合并 turn | 第二次触发后没有新增 enqueued 行（r4 的 no-op 病） | 三次触发 → 2 + 1 + 1 = 4 行 |
+| INV-TODAYDOC-011 | 本端点用的是**裸常量 key**，`card_id` 与 actor / cwd / 请求次数无关 | key 里混入 actor、cwd digest 或任何随请求变化的量 | 换登录身份、re-point 后重复请求，派生同一 `card_id`（golden 钉住） |
 
 方法论备注：
 
 - **INV-007 是收窄后的陈述，不是全称否定。** r5 写成「服务端在空窗口时拒绝发起」，但闸只在这一个端点里：同一个已认证用户可以直接打 `POST /api/waves/{launchpad}/conversations`（wave 级守卫只拒 cove-chat，launchpad 不在其列）或 `POST /api/cards/{id}/spec/input`。**那两条路故意不在射程内**——用户自己手打不是要防的事，要防的是「按钮在没素材时也发起」。写成全称就是一条按字面读自己就红的假不变量。§8 的「没有素材时不写」同步收窄。
 - **INV-010 换了证明层。** r5 要求「点三次跑三轮」，而 harness 的 drain + debounce 语义使它**必红或只能靠时序凑绿**（见 D5）。改证 `harness.user_message.enqueued` —— 它是永久 kind、每次入队一行，既抓得住 r4 的 no-op 病（那才是真正要防的回归），又不与合并 turn 冲突。
-- **INV-011 取代 r5 的「全生命周期只有一条会话」。** 内核对每 wave 的 assistant 会话数没有上界，端到端数数量证不了它。但要钉对对象：`derive_wave_conversation_keys` 的确定性**已经**被 `conversation_keys.rs` 现成的 golden 钉死了，照它写等于删掉本设计全部新代码也照样绿。本设计新引入的是 **key builder**（`today-summary` + `workspace_key_digest(cwd)`），INV-011 钉的必须是它。
+- **INV-011 取代 r5 的「全生命周期只有一条会话」。** 内核对每 wave 的 assistant 会话数没有上界，端到端数数量证不了它。也不能照抄 `conversation_keys.rs` 现成的 golden——`derive_wave_conversation_keys` 的确定性已经被那条钉死了，照它写等于删掉本设计全部新代码也照样绿。INV-011 钉的是**本端点选 key 的那段代码**，而 r8 之后它要证的恰恰是「key 里什么都不许掺」（见 D5：掺 digest 会连带改掉 card id）。
 - **INV-010 证的是「入队」，不是「送达」。** enqueued 事件写在 `observe` 成功之后，而 D5 记的折叠溢出丢弃发生在更后面的 run_loop 里——观测被丢时这条仍然绿。与 INV-003 一样是可接受的近似，写在这里免得下一轮有人拿它当「送达」的证据。
 - **INV-010 的正例不能写成绝对计数 3。** 首次触发按新流程会留下**两行**（create 内部的 bootstrap 一行 + 紧随的摘要一行），所以断言按「每次触发的增量 ≥1 且含摘要那条」写。
 - **INV-003 防的是 mirror code**：`initial()` 的 body 文本是内核事实，FE 复述必然产错。判据来自服务端。**已验证 blocks-only 写不会漏判**——`calm.report.blocks.*` 每次落库都从 CRDT 重投影出 `body` 再写回 payload，所以只比 summary+body 的判据会翻真。但要补**反方向**断言：canonical 初始 payload 且 `doc_rev`/`blocks` 已被 CRDT 物化时（该函数**刻意**忽略这两者），`report_has_noninitial_content` 仍须为 false——这正是 r4 判据翻车的那一格。
