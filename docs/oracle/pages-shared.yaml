@@ -1794,12 +1794,15 @@
   kind: invariant
   family: spec-chat-items
   statement: >
-    没有 "User says:" 标记的用户消息,若以 SYSTEM_LABELS 四个前缀之一开头(worker 完成/报告被编辑/
-    任务完成/任务失败),必须归为 system 条目并带对应短标签;否则归为 user 且 clamp=true。
+    没有 "User says:" 标记的用户消息,若以 SYSTEM_LABELS 表中任一前缀开头,必须归为 system 条目并带该
+    前缀映射的短标签;否则归为 user 且 clamp=true。前缀条目数不设上限(同一标签可有多条句式前缀:
+    "报告被编辑" 就同时收 "The user edited the wave report" 与带作者的 "The wave report was edited"),
+    但标签集合恒为四类:worker 完成/报告被编辑/任务完成/任务失败。
   why: >
     这四类是内核代用户注入的系统提示,显示成"你说的话"会误导;剩下的无标记文本(如 wave-goal)是长文,
-    默认折叠("renders wave-goal fallback as a clamped user bubble")。
-  source: web/src/pages/specChatItems.ts:83-94,206-228
+    默认折叠("renders wave-goal fallback as a clamped user bubble")。内核对同一类观察可能换句式
+    (#1252 给 report_edited 加了 author),所以约束落在标签集合上,而不是前缀条数。
+  source: web/src/pages/specChatItems.ts:83-95,206-228
   authoritative_test: web/src/pages/specChatItems.test.ts:123
   owner_slice: features/spec/chat-items
   intentional_omission: false
