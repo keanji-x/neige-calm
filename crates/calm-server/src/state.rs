@@ -598,17 +598,6 @@ impl AppState {
     /// the adapter reject the very workspace the routes just created — the
     /// containment assertion would compare against the wrong root.
     #[cfg(feature = "fixtures")]
-    /// #1253 — arm the system-cove mint rendezvous. Test-only in practice;
-    /// production never calls it and the field stays `None`.
-    #[doc(hidden)]
-    pub fn with_system_cove_mint_rendezvous(
-        mut self,
-        barrier: std::sync::Arc<tokio::sync::Barrier>,
-    ) -> Self {
-        self.system_cove_mint_rendezvous = Some(barrier);
-        self
-    }
-
     pub fn with_workspace_root(mut self, root: PathBuf) -> Self {
         self.route.workspace_root = root;
         // Release the auto-allocated sandbox: the caller supplied its own root,
@@ -616,6 +605,24 @@ impl AppState {
         // when this state drops.
         self.workspace_root_guard = None;
         self.rebuild_operation_runtime();
+        self
+    }
+
+    /// #1253 — arm the system-cove mint rendezvous so the concurrency case can
+    /// *create* that race instead of hoping for it.
+    ///
+    /// Gating the BUILDER behind `fixtures` costs nothing the "production and
+    /// test run the same instructions" rule protects: the field itself is
+    /// unconditional and the mint path's `if let Some(..)` is compiled into
+    /// every build. Only the ability to arm it is test-only, exactly like
+    /// `with_workspace_root` above.
+    #[cfg(feature = "fixtures")]
+    #[doc(hidden)]
+    pub fn with_system_cove_mint_rendezvous(
+        mut self,
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    ) -> Self {
+        self.system_cove_mint_rendezvous = Some(barrier);
         self
     }
 
