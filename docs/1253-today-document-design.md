@@ -1,7 +1,7 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r8**（六轮双通道 review 后收敛。r8 推翻 r6 的一条裁决——workspace digest 不能掺进 conversation key，因为那个 key 同时决定 card id）。Issue：#1253。
-> review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|-r3|-r4|-r5|-r6].md`（六轮共十二份）。
+> 状态：设计 **r9**（七轮双通道 review 后收敛）。Issue：#1253。
+> review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|…|-r7].md`。
 > 关联：#951（launchpad wave 与它的 report 卡；两写者约束已留注记）、#120（定时汇总与日程队列）、#1045、#1234。
 
 ## 0. r3 → r4：为什么砍掉跨天历史
@@ -200,10 +200,12 @@ POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，�
 
 **key 必须是裸 `today-summary`，_不_ 掺 workspace digest——r6 在这里判反了，r8 改回来。** 创建路径把整个 `SpecHarnessStartOperationPayload` 送进 `stable_payload_hash`，其中含 `actor` 与 `cwd: wave.workspace.path`；`insert_operation` 对「同 key + 不同 payload_hash」**硬 409，而 `operations` 全仓无 pruner ⇒ 永久**。这正是 `today.rs` 里逐字记过的事故（*"409, on every request, forever"*），当时的解法是把 workspace digest 掺进 key。r6 照搬了那个解法——**但它搬不过来**：`derive_wave_conversation_keys` 用同一个 digest 同时喂 **card_id 和 operation_key**（`conversation_keys.rs` 的 doc comment 写死：card 是 `conv-{digest[..32]}`，operation key 是 `wave-conversation-{digest}`）。所以 key 掺了 cwd，**card id 也跟着变**：一次 re-point 就派生出第二张会话卡，直接推翻「全生命周期一条汇总 conversation」；而伪码若按裸 key 查卡、用 digest key 创建，创建出来的又不是查的那张。`today.rs` 的 key 不承担 conversation identity，这里的承担——所以那个解法在这条路径上是错的。
 
-**正确的解法是把 payload 里的变量消掉，而不是把变量塞进 key。** payload 是 `{actor, wave_id, spec_card_id, report_card_id, sort, cwd}`：`wave_id` 固定；`spec_card_id` 由裸 key 派生因而固定；`report_card_id`/`sort` 本就是 `None`。所以只剩两个变量——
+**正确的解法是把 payload 里的变量消掉，而不是把变量塞进 key。** `SpecHarnessStartOperationPayload` 有 **11 个字段**（穷举，别只数前几个）：`wave_id` 固定；`spec_card_id` 由裸 key 派生因而固定；`report_card_id` / `sort` / `goal` 是 `None`；`reset_harness_items: false`、`force_new_thread: true`、`profile: Assistant`、`create_card`（内含同一个裸 key）都是常量。所以只剩**三个**变量——
 
-1. **`actor` 固定为单一值**。服务端合成路径可以直接构造，不必透传请求 actor（`today.rs` 已有 `"actor":"kernel"` 的先例，`Actor` 是裸 newtype）。这消掉了「owner/dev 两个账号各点一次就永久 409」。这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决。
-2. **`cwd` 只在 workspace re-point 时变**，而 re-point 之后我们**不会再调 create**——分支判据是 `card_get(derived.card_id)`，卡已存在就直接走 spec input，且那张卡 `deletable: false` 不会消失。所以「succeeded 之后 payload 变了」这个永久 409 的触发条件在本路径上到不了。
+1. **`actor` 固定为单一值**，但理由要说准：`Actor::to_actor_id()` 把 `"user"` **和一切非 `ai:codex` 的值**都映射成 `ActorId::User`，而中间件只放行 `user` / `ai:<id>`。所以「owner/dev 两个人类账号各点一次」根本到不了——两者同为 `ActorId::User`。**真正的变量通道是客户端自带的 `X-Calm-Actor: ai:<id>`**，服务端合成路径不透传它即可消掉。
+   **实现约束**：若要按 kernel 归属，**不能**经 `Actor::to_actor_id()`（它会把 kernel 也压成 `User`），必须直接构造 `ActorId`。这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决。
+2. **`cwd` 只在 workspace re-point 时变**，而 re-point 之后我们**不会再调 create**——分支判据是 `card_get(derived.card_id)`，卡已存在就直接走 spec input，且那张卡 `deletable: false` 不会消失（`plan_compensation` 的注释逐字写明：补偿第一次出错就 `Stuck`、不再重驱，遗留的卡带 `deletable: false`）。所以「succeeded 之后 payload 变了」这个永久 409 的触发条件在本路径上到不了。
+3. **`first_message_sha256`** —— 它由 D5 上一段的「bootstrap 文本必须逐字节静态」管住。这一条要和上面两条一起读：**三个变量各有各的约束，缺一条这个论证就不成立**。
 
 **残余窗口**（写在明处）：create 尝试过但**没有成功**（`Stuck`，arm (c) 持续 500），期间又发生了 re-point——此时同 key 不同 hash 会 409。`retryable_operation_key` 的 `#N` 逃逸只在 `phase == Failed` 时给，`Stuck` 不给。这个窗口窄且已是 fail-closed 的已知态，接受；实现时把它写进错误文案，别让人误以为是 bug。
 
@@ -304,7 +306,7 @@ PR1（纯 FE + 一个只读端点） ──> PR2
 | PR | 内容 | 交付 / 证死的风险 |
 |---|---|---|
 | **PR1**（~0.7k） | §5.1 窄只读 resolve 端点（`{wave_id, report_has_noninitial_content}`；中间态算 404；修**两处** `is_unique_constraint`）+ D2/D7 FE：主体渲染 launchpad 的 report、状态条、空态、日历保持现状 | Today 变成文档形态。**读路径风险**用 INV-001/002 证死（加载不得触发 ensure）；**空态风险**用 INV-003 证死（canonical 初始 report 必须渲染空态而不是四个空标题）。手写 REST 块即可验，不依赖 AI |
-| **PR2**（~0.6k） | D4 `workspace_activity_window`（event-first + allowlist + 半开区间 + 自反排除）+ D5 `POST /api/today/summary`（服务端空活动闸 + prompt 注入 + **按需先建、一律 spec input 的单一路径** + 掺 workspace digest 的确定性 key + dormant 恢复） | **闸的风险**用 INV-007 证死（打这个端点、空窗口必须既不建会话也不发消息）；**边界风险**：INV-006 午夜用例；**有效性风险**用 INV-010 证死（三次触发 → 三次新增 `harness.user_message.enqueued`，**允许合并 turn**）|
+| **PR2**（~0.6k） | D4 `workspace_activity_window`（event-first + allowlist + 半开区间 + 自反排除）+ D5 `POST /api/today/summary`（服务端空活动闸 + prompt 注入 + **按需先建、一律 spec input 的单一路径** + **裸常量 key**（digest 绝不掺，见 D5）+ 静态 bootstrap + dormant 走重提交 start） | **闸的风险**用 INV-007 证死（打这个端点、空窗口必须既不建会话也不发消息）；**边界风险**：INV-006 午夜用例；**有效性风险**用 INV-010 证死（首次 2 行、其后每次 1 行 `harness.user_message.enqueued`，三次共 4 行，**允许合并 turn**）|
 
 PR2 比 r4 小了约三分之一：删掉 MCP 工具那一层，连带 `day_activity_allowed`、截断纪律和两条不变量一起消失。
 
@@ -335,7 +337,7 @@ PR2 比 r4 小了约三分之一：删掉 MCP 工具那一层，连带 `day_acti
 
 前四轮的 Q1–Q5 随 descope 全部消解（日期身份、保留窗口、时区主键都不存在了）。**Q6 已定**：汇总写者 = assistant，谁复活 concierge 谁负责裁决分段；这条约束**已同时写进 #951**（issue 注记，含「REWRITE 语义下冲突静默丢内容不报错」这个理由），而不是只留在本 issue——否则复活它的人读不到。
 
-## 10. 四轮 review 的账
+## 10. 七轮 review 的账
 
 留给下一个读这份文档的人，因为过程本身是结论的一部分。
 
@@ -345,11 +347,14 @@ PR2 比 r4 小了约三分之一：删掉 MCP 工具那一层，连带 `day_acti
 | r2 | 新 card kind `daily-log` | 写通道硬绑 `wave-report`；role_gate ∧ 唯一索引的钳形 |
 | r3 | 每天一份 wave | system cove 不可删 → GC 无执行器；每天 +1 条常驻 harness |
 | r4 | 回到 launchpad 的卡（descope 掉历史） | `Idempotency-Key` 撑不起重跑；MCP 工具模型看不见 |
-| r5 | 同 r4，删掉 MCP 层 | — |
+| r5 | 同 r4，删掉 MCP 层 | `Idempotency-Key` 撑不起重跑（同 key 第二次静默 no-op）；「点三次跑三轮」被 harness 的 drain 语义证伪 |
+| r6 | 同上 | 切片表还停在 r5，会把已关闭的 BLOCKER 写回实现 brief；workspace digest 掺进 conversation key 会连带改 card id |
+| r7–r8 | 同上 | 切片表**第二次**停在旧版（同一处、同一形状）|
 
 **同一个错犯了四次**：把某个上下文下为真的结论搬到新上下文里，不重验。r2 搬的是 r1 的「AI 写块无需内核改动」；r3 反向过度纠正成「每一条都是不做改动」；r4 把 #951 关于**插件**工具的可见性裁决搬到了**内置**工具上。教训已写进 `feedback_facts_dont_survive_carrier_swap`：换载体时事实表**逐行**重验，并标注每条绑定在哪个载体上——§3 的最后一列就是这么来的。
 
 两条更普适的：
 
 - **「不做改动」和「已确认」是同一个病的两个方向。** 过度推销零成本和搬运旧结论一样危险。
+- **切片表是拆 brief 的载体，它比不变量表更容易变成事故。** §5.2 改对了、§6 忘了同步，两轮里发生了两次——按切片表派活的人不会去读不变量表。**任何一处裁决翻案，先改切片表。**
 - **一条只约束「不多」不约束「有效」的不变量会绿着骗人。** INV-010 因此补了有效性反例。但补的第一版（「点三次必须真的跑三轮」）又被 harness 的 drain + debounce 证伪——**换证明层比换措辞更难，也更该做**：最终改证每次触发留下一条永久的 `harness.user_message.enqueued`，并明确接受合并 turn。
