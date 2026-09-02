@@ -414,10 +414,6 @@ fn stored(actor: ActorId) -> String {
 /// than by its size.
 const SUMMARY_MARKER: &str = "Today's activity across the workspace";
 
-fn bootstrap_chars() -> i64 {
-    TODAY_SUMMARY_BOOTSTRAP_TEXT.chars().count() as i64
-}
-
 /// INV-TODAYDOC-007 — the endpoint refuses an empty window and leaves nothing
 /// behind.
 ///
