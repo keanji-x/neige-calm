@@ -906,7 +906,7 @@ async fn boot_plugin_host(
     std::os::unix::fs::symlink(Path::new(TOOLCALL_BIN), trusted_bin_dir.join("stub"))
         .expect("symlink trusted stub plugin");
     let trusted_manifest_json = json!({
-        "manifest_version": 1,
+        "manifest_version": 2,
         "id": trusted_plugin_id,
         "version": "0.1.0",
         "min_kernel_version": "0.0.1",

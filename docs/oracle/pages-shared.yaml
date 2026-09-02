@@ -3539,7 +3539,8 @@
   kind: invariant
   family: new-task-form
   statement: >
-    issue-dev 变体硬编码 template_id = 'issue-development';v1 刻意没有模板发现端点。
+    issue-dev 变体硬编码 template_id = 'issue-development';legacy NewTaskForm 刻意不消费
+    `GET /api/wave-templates`(该端点存在,由 fe/ 的 new-wave 对话框消费)。
   why: >
     源码注释(#891 design §6 F5):"If the git-forge plugin isn't running, the create POST 400s with a
     readable message that the normal submit-error path surfaces."

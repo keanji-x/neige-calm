@@ -18,7 +18,42 @@ use thiserror::Error;
 /// fields default; missing required fields fail in `parse`.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Manifest {
-    /// Always `1` for M3. Other values are rejected by `parse`.
+    /// Which spelling of the template-binding array this file uses.
+    ///
+    /// * `1` — the array was spelled `workflows`. That spelling is **gone**
+    ///   (see [`Manifest::reject_retired_workflows_key`]), so a v1 file is
+    ///   still accepted only when it declares no bindings at all — nothing
+    ///   about such a file changed in #1268 and it reads identically on either
+    ///   kernel.
+    /// * `2` — the array is spelled `templates` (#1268).
+    ///
+    /// Any other value is rejected by [`Manifest::validate`].
+    ///
+    /// **Why a bump at all**, given the retired-key guard already covers the
+    /// upgrade direction: it is the *rollback* direction that needs it. A
+    /// `templates[]` manifest handed to a pre-#1268 kernel hits a parser that
+    /// ignores unknown top-level keys, so the binding list silently defaults
+    /// to empty and `issue-development` loses its `input_schema` with no error
+    /// and no log. Declaring `2` makes that old kernel's own
+    /// `manifest_version != 1` check refuse the file by version instead —
+    /// which is why [`Manifest::validate`] *requires* `2` from any manifest
+    /// that actually declares a binding.
+    ///
+    /// **And why the requirement is scoped to those manifests rather than to
+    /// all of them.** Requiring `2` everywhere would refuse every existing
+    /// binding-less manifest — and the boot loader turns a parse failure into
+    /// `warn!` + skip (`registry::load_from_dir`), so those plugins would just
+    /// disappear, which is the same silent-loss shape this bump exists to
+    /// remove. A manifest with no bindings has nothing to lose on rollback: it
+    /// reads identically on a pre-#1268 and a post-#1268 kernel, because the
+    /// only thing the two disagree about is the name of an array it does not
+    /// have. Scoping the requirement to manifests that *do* declare a binding
+    /// is therefore what keeps binding-less manifests working across both
+    /// kernels while still closing the rollback hazard completely — every
+    /// manifest that could lose a binding is forced onto `2`, and every
+    /// manifest that could not is left alone. This is not hypothetical: the
+    /// plugin roots on real deployments hold connector manifests
+    /// (`kind: "mcp-http"`, `cli-query`) that never declared one.
     pub manifest_version: u32,
 
     /// Reverse-DNS or slug, see `is_valid_plugin_id`. Stable across versions.
@@ -656,7 +691,9 @@ impl Manifest {
             return Err(ManifestError::invalid("<root>", "manifest is empty"));
         }
         let m: Manifest = serde_json::from_str(s)?;
-        m.reject_retired_workflows_key(s)?;
+        // Raw-text guard first: when a file carries the retired key, "rename it
+        // to `templates`" is the actionable message, not "wrong version".
+        Self::reject_retired_workflows_key(s)?;
         m.validate()?;
         Ok(m)
     }
@@ -673,8 +710,15 @@ impl Manifest {
     /// that is at most a few KB and is read once per install/reload.
     ///
     /// This runs on the *raw text*, not on the deserialized struct, precisely
-    /// because the struct is where the evidence has already been discarded.
-    fn reject_retired_workflows_key(&self, s: &str) -> Result<(), ManifestError> {
+    /// because the struct is where the evidence has already been discarded —
+    /// hence an associated fn with no `&self`: there is nothing in the parsed
+    /// value for it to consult, and a `&self` receiver would invite exactly the
+    /// misreading this paragraph exists to prevent.
+    ///
+    /// Deliberately **not** conditioned on `manifest_version`: the retired key
+    /// is refused at every declared version, so "v1 said `workflows`" is never
+    /// a way back in.
+    fn reject_retired_workflows_key(s: &str) -> Result<(), ManifestError> {
         let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(s) else {
             // Not an object, or not valid JSON — `serde_json::from_str::<Manifest>`
             // above already succeeded, so this branch is unreachable in practice;
@@ -694,11 +738,39 @@ impl Manifest {
     /// Validate an already-deserialized manifest. Exposed publicly so callers
     /// holding a `Manifest` (e.g. after editing in-memory) can re-check it.
     pub fn validate(&self) -> Result<(), ManifestError> {
-        if self.manifest_version != 1 {
+        if !(1..=2).contains(&self.manifest_version) {
             return Err(ManifestError::invalid(
                 "manifest_version",
                 format!(
-                    "M3 only accepts manifest_version=1, got {}",
+                    "only manifest_version 1 or 2 is accepted, got {}",
+                    self.manifest_version
+                ),
+            ));
+        }
+
+        // #1268 — a manifest that actually declares a binding MUST say 2.
+        //
+        // This is the whole point of the bump, and it is deliberately scoped to
+        // files that have something to lose. The hazard is rollback: a
+        // `templates[]` file read by a pre-#1268 kernel parses clean (unknown
+        // top-level keys are ignored), declares no binding, and silently drops
+        // `issue-development`'s `input_schema`. Declaring 2 turns that into the
+        // old kernel's own `manifest_version != 1` refusal.
+        //
+        // A manifest with no bindings has no such exposure — it reads
+        // identically on both kernels — so it is left alone rather than broken
+        // for symmetry. That matters in practice: the plugin install root on a
+        // real deployment holds connector manifests (`kind: "mcp-http"`,
+        // `cli-query`) that never declared a binding, and the boot loader
+        // treats a parse failure as `warn!` + skip (`registry.rs`), i.e. losing
+        // them would be quiet — the exact failure shape this rule exists to
+        // remove.
+        if !self.templates.is_empty() && self.manifest_version < 2 {
+            return Err(ManifestError::invalid(
+                "manifest_version",
+                format!(
+                    "must be 2 to declare `templates` (#1268 renamed the array; \
+                     a v1 kernel would ignore it and silently bind nothing), got {}",
                     self.manifest_version
                 ),
             ));
@@ -1530,7 +1602,7 @@ mod tests {
 
     fn template_manifest_value() -> Value {
         json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": "dev.neige.template-test",
             "version": "1.0.0",
             "min_kernel_version": "0.0.1",
@@ -1586,6 +1658,82 @@ mod tests {
             reason.contains("templates"),
             "the refusal must name the new key, got {reason:?}"
         );
+    }
+
+    /// #1268 — the **rollback** direction, which the retired-key guard cannot
+    /// reach.
+    ///
+    /// The guard runs in *this* kernel, so it protects an operator moving
+    /// forward. Moving backward, a `templates[]` manifest is handed to a
+    /// pre-#1268 parser that ignores unknown top-level keys: it parses clean,
+    /// binds nothing, and `issue-development` loses its `input_schema` with no
+    /// error and no log. The only thing an old kernel *will* refuse on its own
+    /// is a `manifest_version` it does not know — so a manifest that declares a
+    /// binding is required to say `2`, and that requirement is what this pins.
+    ///
+    /// The error names the field rather than the array, because the fix is to
+    /// the version line.
+    #[test]
+    fn declaring_templates_at_version_1_is_refused_naming_the_version() {
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(1);
+        let err =
+            parse_manifest_value(v).expect_err("a v1 file must not be allowed to declare bindings");
+        let ManifestError::Invalid { field, reason } = &err else {
+            panic!("expected a field-level Invalid, got {err:?}");
+        };
+        assert_eq!(field, "manifest_version");
+        assert!(
+            reason.contains('2'),
+            "the refusal must say which version to declare, got {reason:?}"
+        );
+    }
+
+    /// The scope of that rule, stated as a test rather than a comment: a
+    /// manifest with **no** bindings is untouched by #1268 and keeps loading at
+    /// version 1.
+    ///
+    /// This is not symmetry for its own sake. The plugin install root on a real
+    /// deployment holds connector manifests that never declared a binding, and
+    /// the boot loader turns a parse failure into `warn!` + skip — so
+    /// tightening the rule to "every manifest must say 2" would silently drop
+    /// working plugins, which is the same failure shape #1268 exists to remove.
+    #[test]
+    fn a_binding_less_manifest_still_loads_at_version_1() {
+        let mut v = template_manifest_value();
+        v["manifest_version"] = json!(1);
+        v.as_object_mut()
+            .expect("manifest fixture is an object")
+            .remove("templates");
+        let m = parse_manifest_value(v).expect("a v1 manifest without bindings is still valid");
+        assert_eq!(m.manifest_version, 1);
+        assert!(m.templates.is_empty());
+
+        // An explicitly empty array is the same case: nothing to lose on
+        // rollback, so it must not be treated as "declares a binding".
+        let mut empty = template_manifest_value();
+        empty["manifest_version"] = json!(1);
+        empty["templates"] = json!([]);
+        parse_manifest_value(empty).expect("an empty `templates` array declares no binding");
+    }
+
+    /// Version 2 is the current epoch and parses with its bindings intact.
+    #[test]
+    fn version_2_with_templates_parses() {
+        let m = parse_manifest_value(template_manifest_value()).expect("v2 manifest");
+        assert_eq!(m.manifest_version, 2);
+        assert_eq!(m.templates[0].id, "issue-development");
+    }
+
+    /// The shipped plugin is on the current epoch — otherwise the rule above
+    /// would be pinned only by hand-built fixtures while the one manifest that
+    /// actually ships stayed on the retired one.
+    #[test]
+    fn the_shipped_git_forge_manifest_declares_version_2() {
+        let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
+            .expect("shipped git-forge manifest");
+        assert_eq!(m.manifest_version, 2);
+        assert!(!m.templates.is_empty());
     }
 
     /// The other direction: nothing about the check makes an ordinary unknown
@@ -1888,18 +2036,27 @@ mod tests {
 
     #[test]
     fn bad_manifest_version_fails() {
-        let json = r#"{
-            "manifest_version": 2,
+        // #1268 widened the accepted set to {1, 2}, so the "unknown epoch"
+        // case has to be probed on both sides of it — a single sample above
+        // the range would stay green if the check were rewritten as `>= 1`.
+        for version in ["0", "3", "99"] {
+            let json = format!(
+                r#"{{
+            "manifest_version": {version},
             "id": "a.b",
             "version": "1.0.0",
             "min_kernel_version": "0.1.0",
             "display_name": "X",
-            "entrypoint": { "command": "bin/x" }
-        }"#;
-        let err = Manifest::parse(json).unwrap_err();
-        match err {
-            ManifestError::Invalid { field, .. } => assert_eq!(field, "manifest_version"),
-            other => panic!("wrong variant: {other:?}"),
+            "entrypoint": {{ "command": "bin/x" }}
+        }}"#
+            );
+            let err = Manifest::parse(&json).unwrap_err();
+            match err {
+                ManifestError::Invalid { field, .. } => {
+                    assert_eq!(field, "manifest_version", "version {version}")
+                }
+                other => panic!("version {version}: wrong variant: {other:?}"),
+            }
         }
     }
 
@@ -2247,7 +2404,7 @@ mod connector_kind_tests {
 
     fn base(extra: Value) -> String {
         let mut m = json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": "conn-x",
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",

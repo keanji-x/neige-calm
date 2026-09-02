@@ -115,8 +115,8 @@ export interface NewTaskFormProps {
   variant?: 'task' | 'issue-dev';
 }
 
-/** #891 (design §6 F5) — v1 has no template-discovery
- *  endpoint, so the issue-dev variant hardcodes the shipped template id.
+/** #891 (design §6 F5) — this legacy form deliberately does not consume
+ *  `GET /api/wave-templates`, so the issue-dev variant hardcodes the id.
  *  If the git-forge plugin isn't running, the create POST 400s with a
  *  readable message that the normal submit-error path surfaces. */
 const ISSUE_DEV_TEMPLATE_ID = 'issue-development';

@@ -106,7 +106,10 @@ fn template_descriptor_surface_is_id_only() {
         if name == "TemplateDescriptor" {
             continue;
         }
-        if name.contains("Template") || name.ends_with("Descriptor") {
+        // Both spellings: #1268 renamed the type, but the ban has to keep
+        // catching a type reintroduced under the retired prefix — otherwise
+        // the rename would have quietly reopened the hole this test closes.
+        if name.contains("Workflow") || name.contains("Template") || name.ends_with("Descriptor") {
             public_template_types.insert(name);
         }
     }

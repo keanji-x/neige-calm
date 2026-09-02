@@ -461,6 +461,36 @@ no binding at all, and the only symptom would be `issue-development` losing its
 `input_schema` — every later `template_input` create failing with a 400 that
 points nowhere near the cause.
 
+**`manifest_version` moved 1 → 2, but only for manifests that declare a
+binding.** The guard above protects you moving *forward*. Moving *backward* it
+cannot help: a `templates[]` manifest handed to a pre-#1268 kernel parses
+clean, because that kernel ignores unknown top-level keys — it binds nothing,
+`issue-development` loses its `input_schema`, and there is no error and no log.
+The one thing an old kernel refuses on its own is a `manifest_version` it does
+not know, so any manifest declaring a non-empty `templates[]` must now say
+`"manifest_version": 2`:
+
+```
+manifest validation failed at `manifest_version`: must be 2 to declare
+`templates` (#1268 renamed the array; a v1 kernel would ignore it and
+silently bind nothing), got 1
+```
+
+A manifest that declares **no** bindings keeps working at version 1 and needs
+no edit. That scoping is intentional: such a file reads identically on both
+kernels (the only thing they disagree about is the name of an array it does not
+have), and forcing it to 2 would refuse every existing connector manifest for
+no benefit — see the boot-path note below for why that would be quiet.
+
+**Boot is lenient; install and reload are strict.** `POST /api/plugins`
+(install) and `/reload` surface a manifest error to the caller. The boot-time
+registry load does not: `registry::load_from_dir` logs
+`manifest load failed — skipping plugin` at WARN and continues, so a plugin
+whose manifest this release refuses simply **does not appear** after a restart
+— no failed startup, no error in the UI. Run the scan below *before* you
+upgrade rather than relying on noticing at boot, and if a plugin goes missing
+after a restart, grep the server log for `manifest load failed`.
+
 What #1209 changed, and #1268 did not, is the *acceptance* semantics:
 declaring an id outside the roster does not let `POST /api/waves` create a
 wave bound to it. That request returns
@@ -481,9 +511,10 @@ floor and will show the refresh curtain instead of issuing such a request.
 
 **Scan your installed plugins before upgrading.** Run this in the plugin
 install root; any output names a plugin this release will break. It reports
-both failure modes: a manifest still carrying the retired `workflows` key
-(refused at parse time), and a declared id outside the roster (parses, but
-cannot be bound):
+all three failure modes: a manifest still carrying the retired `workflows` key
+(refused at parse time), a manifest declaring `templates[]` while still at
+`manifest_version: 1` (also refused), and a declared id outside the roster
+(parses, but cannot be bound):
 
 ```sh
 for m in <plugins_dir>/*/manifest.json; do
@@ -494,6 +525,9 @@ for m in <plugins_dir>/*/manifest.json; do
   jq -r --argjson roster '["issue-development","small-change","investigation"]' \
     'if has("workflows") then
        "\(input_filename): retired `workflows` key — rename it to `templates`"
+     else empty end,
+     if ((.templates // []) | length) > 0 and (.manifest_version != 2) then
+       "\(input_filename): declares `templates` at manifest_version \(.manifest_version) — must be 2"
      else empty end,
      ((.templates // [])[].id | select(. as $i | $roster | index($i) | not)
       | "\(input_filename): \(.)")' "$m"

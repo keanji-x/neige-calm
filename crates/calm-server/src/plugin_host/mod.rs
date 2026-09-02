@@ -3308,7 +3308,7 @@ mod template_conflict_tests {
 
     fn manifest_with_template(id: &str, template_id: &str) -> Manifest {
         let json = serde_json::json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": id,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",

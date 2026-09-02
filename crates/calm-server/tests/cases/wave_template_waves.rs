@@ -733,7 +733,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
         .collect();
     let manifest = Manifest::parse(
         &json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": plugin_id,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",

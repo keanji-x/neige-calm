@@ -15,7 +15,9 @@
 # #1268 then removed the *rest* of the vocabulary — the plugin-manifest
 # `workflows[]` key, `WorkflowDescriptor`, `HostError::WorkflowConflict`,
 # `workflow_templates.rs` and its exports, `resolve_trusted_workflow`, the
-# `## Bound Workflow Input` prompt heading. #1209 had deliberately spared the
+# `## Bound Workflow Input` prompt heading (that heading and the intro's
+# `Workflow input:` line are covered by the literal alternations below, not by
+# the identifier clause). #1209 had deliberately spared the
 # plugin side because renaming a parsed key of a Tier A third-party contract
 # breaks every existing manifest at parse time; the user confirmed there are no
 # third-party plugins, so that cost's payer is the empty set and the exemption
@@ -31,18 +33,38 @@
 # WHAT THE PATTERN COVERS, STATED HONESTLY
 # ---------------------------------------------------------------------------
 #
-# It matches `workflow` (any case) only when it is **adjacent to an identifier
-# character** on one side or the other — i.e. when it is part of a name or a
-# data key, not when it is the ordinary English word:
+# Two alternations, and the first one is narrower than "any `workflow`":
+#
+# 1. `workflow` (any case) **adjacent to an identifier character** on one side
+#    or the other — part of a name or a data key.
+# 2. Two literal phrases that clause 1 structurally cannot reach, because their
+#    `workflow` is followed by a space: the spec-harness prompt heading
+#    `Bound Workflow Input` and the `ISSUE_DEVELOPMENT_INTRO` line
+#    `Workflow input:`. Both are agent-visible text that #1268 rewrote. The
+#    heading is also pinned by the whole-document prompt golden; the intro line
+#    had NO pin at all before this clause, so reverting it was the one edit in
+#    this slice that could have gone green.
 #
 #   MUST FAIL (vocabulary):  workflow_id  workflows  WorkflowDescriptor
 #                            WORKFLOW_TEMPLATES  bound_workflow  workflowSelect
 #                            forge_workflow_e2e  workflowId
+#                            "## Bound Workflow Input"  "Workflow input:"
 #   MUST PASS (not ours):    "the rebase workflow", "Operator workflow:",
 #                            "a nested workflow must cancel explicitly",
 #                            the `Workflow` <select> label in the legacy `web/`
 #                            bundle (renaming that is a USER-VISIBLE change,
 #                            out of #1268's mechanical-rename scope)
+#
+# **The singular/plural asymmetry is real and is not a bug — but it is also not
+# "the English word is safe".** `workflows` ALWAYS matches, because the
+# trailing `s` is itself an identifier character; only the singular `workflow `
+# followed by a non-identifier survives. That is why landing #1268 required
+# rewording six pieces of prose that had nothing to do with templates
+# ("Sibling workflows", "options are shipped workflows", "future workflows
+# land here", "loopback workflows", ...) and re-wrapping a comment at
+# `web/e2e/_setup/replay-server.setup.ts:57-58` whose `.github/` prefix and
+# `workflows/ci.yml` had been split across two lines, defeating the lookbehind.
+# Anyone widening the prose here should expect the same.
 #
 # The `.github/workflows/` directory is GitHub Actions' name, not ours, so a
 # `workflow` preceded by `.github/` is excluded by a lookbehind rather than by
@@ -67,7 +89,7 @@
 
 set -uo pipefail
 
-PATTERN='(?<!\.github/)(?:workflow[a-z0-9_]|[a-z0-9_]workflow)'
+PATTERN='(?<!\.github/)(?:workflow[a-z0-9_]|[a-z0-9_]workflow)|Bound Workflow Input|Workflow input:'
 
 # ---------------------------------------------------------------------------
 # Allowlist: "<expected line count> <path>  # reason"
@@ -92,12 +114,14 @@ read -r -d '' ALLOWLIST <<'EOF' || true
 #        renaming them would break the fixture.
 13  crates/calm-truth/src/db/sqlite/wave_plugin_scope_migration_tests.rs
 4   crates/calm-truth/src/db/sqlite/wave_template_rename_migration_tests.rs
-# --- 4. #1268's own loud-failure guard. `Manifest` tolerates unknown top-level
+# --- 4. #1268's own loud-failure guard, plus the `manifest_version` rule that
+#        covers the rollback direction. `Manifest` tolerates unknown top-level
 #        keys, so a manifest still spelling the array `workflows` would parse
 #        into `templates: []` and silently declare no binding. `Manifest::parse`
-#        refuses it by name; the check and its two tests must spell the retired
-#        key, because that string IS the thing being refused.
-10  crates/calm-server/src/plugin_host/manifest.rs
+#        refuses it by name; the check, its two tests, and the field doc that
+#        explains what version 1 meant must all spell the retired key, because
+#        that string IS the thing being refused.
+13  crates/calm-server/src/plugin_host/manifest.rs
 # --- 5. The compatibility read itself. `calm_types::Wave` carries a
 #        deserialize-only `#[serde(alias)]` so historical `wave.updated` rows —
 #        which are immutable history — still replay with their template

@@ -490,7 +490,7 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     }) as HTMLSelectElement;
   }
 
-  it('opens on the plain "None" workflow with the select visible, and no visible title row', async () => {
+  it('opens on the plain "None" template with the select visible, and no visible title row', async () => {
     const { dialog } = await openNewWaveDialog();
     const select = templateSelect(dialog);
     expect(select.value).toBe('task');

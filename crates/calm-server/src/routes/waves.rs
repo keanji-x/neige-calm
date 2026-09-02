@@ -3132,7 +3132,7 @@ pub(crate) async fn delete_wave(
     // retire these rows do not come through this handler.
     //
     // **Scope is the whole system cove, not just the launchpad — deliberately.**
-    // The system cove also holds the template-template waves
+    // The system cove also holds the template waves
     // `ensure_templates` seeds, so those become undeletable through
     // the API too. Accepted, ruled on 2026-09-01: they are kernel-seeded and
     // rebuilt at boot, deleting one has never been a meaningful user action,
@@ -3638,7 +3638,7 @@ mod tests {
 
         fn plugin(input_schema: Option<Value>) -> Manifest {
             let mut v = json!({
-                "manifest_version": 1,
+                "manifest_version": 2,
                 "id": "dev.neige.git-forge",
                 "version": "1.0.0",
                 "min_kernel_version": "0.0.1",

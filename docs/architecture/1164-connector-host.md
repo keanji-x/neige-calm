@@ -95,6 +95,12 @@ pub enum ConnectorKind {
 
 ### 2.2 `mcp-http`
 
+> **【2026-09-02 · #1268】** 下面两个示例里的 `"manifest_version": 1` 仍然**有效**，
+> 无需修改：#1268 把 `manifest_version` 提到 2，但**只对声明了非空 `templates[]`
+> 的 manifest 强制**。connector（`mcp-http` / `cli-query`）从不声明模板绑定
+> （§3「通道上不存在的能力」），在两代内核上读法完全相同，因此留在 1 是对的。
+> 详见 `plugin_host::manifest::Manifest::manifest_version` 的字段文档。
+
 ```jsonc
 { "manifest_version": 1, "kind": "mcp-http",
   "id": "mcp-wisburg", "version": "0.1.0", "min_kernel_version": "0.0.1",
