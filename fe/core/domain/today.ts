@@ -3,8 +3,8 @@
 // Today's document is not a thing this frontend invents: it is the `wave-report`
 // card of the kernel's single `purpose = 'launchpad'` wave, read through the
 // ordinary wave detail and located by `readWaveReport` in `./report.ts`. What
-// this module adds is the one fact the wave detail cannot answer — **has that
-// report ever been written by anyone?**
+// this module adds is the one fact the wave detail cannot answer — **does that
+// report currently hold anything other than its freshly-minted skeleton?**
 //
 // That question has to be answered by the server, and the reason is the whole
 // point of the module. `readWaveReport` returns a NON-null report for a
@@ -31,14 +31,17 @@ import type { ApiOperation } from '../api/types.js';
 export const todayLaunchpadSchema = z.object({
   wave_id: z.string(),
   /**
-   * The server's answer to "has anyone written this report".
+   * Whether the report's CURRENT content differs from a freshly-minted one.
    *
-   * It is an approximation of "has today's summary run", and the name says
-   * which one it actually is. It compares the report's `summary` + `body`
-   * against the canonical freshly-minted pair and ignores `doc_rev`/`blocks`,
-   * so a CRDT-materialized placeholder still reads `false`; and it flips on
-   * *any* writer, including a human editing the document by hand, and never
-   * flips back.
+   * The name is the contract, and it is not "has ever been written": the
+   * server compares `summary` + `body` against the canonical freshly-minted
+   * pair and consults no history, so text restored byte-for-byte to that pair
+   * reads `false` again whatever happened in between. `doc_rev` and `blocks`
+   * are ignored, so a CRDT-materialized placeholder also reads `false`.
+   *
+   * It is therefore an approximation of "has today's summary run" in both
+   * directions: any writer flips it, including a human editing by hand, and a
+   * revert un-flips it.
    */
   report_has_noninitial_content: z.boolean(),
 });

@@ -69,14 +69,21 @@ pub struct TodayLaunchpadResolved {
     /// canonical "has this been written" predicate. It is deliberately NOT
     /// named `report_started`, and the difference is not cosmetic (design D7):
     ///
-    /// * It answers "has anyone written this report", not "has today's summary
-    ///   run". A user hand-editing the document flips it to `true` just as a
-    ///   summary agent would, and once true it never returns to false — a
-    ///   stale document still reads as content. Anything that really needs
-    ///   "did the summary run" needs a durable marker or event, not this.
+    /// * **It is a statement about the report's CURRENT content, not about its
+    ///   history.** The name says exactly that, and the name is the contract:
+    ///   it is `has_noninitial_content`, not `has_ever_been_written`. Restoring
+    ///   `summary` and `body` byte-for-byte to the canonical initial pair
+    ///   flips it back to `false`, whatever happened in between — no history is
+    ///   consulted, so none can be reported.
+    /// * It therefore also answers "has *anyone* written it", not "has today's
+    ///   summary run": a user hand-editing the document flips it exactly as a
+    ///   summary agent would, and a stale document still reads as content.
+    ///   Anything that really needs "did the summary run" needs a durable
+    ///   marker or event, not this.
     /// * It compares `summary + body` only; `doc_rev` and `blocks` are
     ///   deliberately ignored, so a canonical placeholder that CRDT has
-    ///   already materialised still reads `false`.
+    ///   already materialised still reads `false` — and so does a report whose
+    ///   text was reverted to canonical while those two stayed non-zero.
     ///
     /// The frontend must not re-derive this by looking at the report body:
     /// `readWaveReport` returns non-null for the canonical initial report

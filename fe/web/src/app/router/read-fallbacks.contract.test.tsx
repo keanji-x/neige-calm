@@ -24,8 +24,13 @@ const fail = (message: string): ApiTransportResponse => ({ status: 500, statusTe
 /* #1253 — none of the cases in this file are about the Today launchpad, and
    404 is that endpoint's ordinary "no launchpad yet" answer. Answering it here
    rather than letting each case's catch-all `ok([])` reach it keeps a decode
-   failure out of every Today render below; a case that wants the resolve to
-   fail says so by handling the path itself. */
+   failure out of every Today render below.
+
+   This short-circuit is UNCONDITIONAL: a case's own `reply` never sees this
+   path. That is deliberate — one answer for the whole file beats seven copies
+   of it — but it means a case that needs the resolve to behave differently has
+   to change this wrapper, not its own `reply`. The resolve's own states are
+   covered in `today-document.test.tsx`, which is where they belong. */
 const TODAY_LAUNCHPAD_PATH = '/api/today/launchpad';
 const notFound = (): ApiTransportResponse => ({ status: 404, statusText: 'Not Found', body: { error: 'not found' } });
 

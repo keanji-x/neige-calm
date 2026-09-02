@@ -36,10 +36,20 @@ Running and Recent are ambience and live in the panel.
   `POST /api/today/launchpad/ensure` materializes a workspace and waits on a
   `spec-harness-start` operation, so it must never be on this path; it belongs
   to an explicit action. There is no such action yet.
-- **INV-TODAYDOC-002** — a failed resolve is rendered as an error and the empty
+- **INV-TODAYDOC-002** — a failed read is rendered as an error and the empty
   state is suppressed. A 5xx that degrades into "nothing written today" tells
   the reader their day was empty when the server was simply unreachable. 404 is
   not a failure: it is the ordinary "no launchpad yet" answer.
+
+  This covers the wave detail as well as the resolve, and the two document
+  reads have **three** failure-shaped states that must not be collapsed:
+  in flight (which is every page load, because the detail query cannot start
+  until the resolve returns a wave id), detail read failed, and payload
+  undecodable. `readWaveReport() === null` is true in all three, so a single
+  `ReportDocument` `empty` for all of them once told a reader whose server was
+  unreachable that their build was too old, with no retry. `app/router` splits
+  them; `app/router/today-document.test.tsx` owns the coverage, because this
+  feature cannot see the interleaving.
 - **INV-TODAYDOC-003** — the empty state is decided by the server's
   `report_has_noninitial_content` and by nothing else. **Never null-check the
   report, and never read its text.** The kernel's freshly-minted report is a
@@ -51,6 +61,25 @@ Running and Recent are ambience and live in the panel.
   edit as readily as on an agent's, and never flips back.
 - **No trigger button.** `POST /api/today/summary` lands in #1253 PR2. Until
   then the empty state is text only — not a stub, not a disabled control.
+- **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's
+  reason for putting it above the document, so an uncapped list would not be a
+  cosmetic problem — it would falsify the layout's justification. The overflow
+  sits behind one disclosure control rather than being dropped: RUNNING and
+  RECENT both exclude anything already counted as waiting.
+- **The first-run page owns a document too.** `coves` is the *user-visible*
+  list — #175 filters the system cove out of `GET /api/coves` and the launchpad
+  lives there — so "no waves, no coves" is an ordinary state for a workspace
+  whose only content is the day's report.
+
+### TODO(#1253 PR2) — the document does not refresh on a report edit
+
+`core/events/invalidation-plan.ts`'s `wave.report_edited` policy invalidates
+`['wave-files']`, `['wave-report']` and `['wave-backlinks']` — **not**
+`['wave', id]`, which is the key this document is read through, and not
+`['today-launchpad']`, which is the key the empty-state predicate is read
+through. Neither matters in PR1, because PR1 has no action that can change
+either value. Whoever lands `POST /api/today/summary` must fix **both** keys,
+or the first bug report will be "I clicked the button and nothing happened".
 
 ## Deliberate gaps (do not "fix" these by accident)
 

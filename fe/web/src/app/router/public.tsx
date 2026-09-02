@@ -1613,15 +1613,60 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const launchpadWaveId = launchpad?.wave_id ?? '';
   /* The document itself comes from the ordinary wave detail — the resolve
      carries no `report_card_id` because `readWaveReport` locates the card by
-     `kind === 'wave-report'` and that field would have no consumer (§5.1). */
+     `kind === 'wave-report'` and that field would have no consumer (§5.1).
+
+     Gated on the server's own answer, not merely on having a wave id: when
+     `report_has_noninitial_content` is false there is nothing to draw, so the
+     page load stays at one request. It also keeps the states below honest —
+     every one of them is then about a document the reader is actually owed. */
+  const launchpadHasContent = launchpad?.report_has_noninitial_content === true;
   const launchpadDetailQuery = useQuery({
     ...waveDetailQueryOptions(transport, launchpadWaveId, unauthorized),
-    enabled: launchpadWaveId !== '',
+    enabled: launchpadWaveId !== '' && launchpadHasContent,
   });
   const launchpadReport = useMemo(
     () => readWaveReport(launchpadDetailQuery.data?.cards ?? []),
     [launchpadDetailQuery.data],
   );
+  /*
+   * Three states, three answers — and they must not be collapsed.
+   *
+   * `readWaveReport(...) === null` is true in all three: while the detail is
+   * in flight (which is EVERY page load, because this query cannot start until
+   * the resolve has answered), when the detail read fails, and when the
+   * payload genuinely will not decode. Handing all three to `ReportDocument`'s
+   * `empty` told a reader whose server was unreachable that their build was
+   * too old, with no retry — the same silent-degradation INV-TODAYDOC-002
+   * forbids, just with a worse lie in place of the empty state.
+   */
+  const launchpadDocument = launchpadDetailQuery.isError
+    ? (
+      <ErrorBox
+        message={`Today's progress is unavailable: ${launchpadDetailQuery.error.message}`}
+        onRetry={() => { void launchpadDetailQuery.refetch(); }}
+      />
+    )
+    : launchpadDetailQuery.data === undefined
+      // In flight. Nothing, not a placeholder: this frame is one round trip
+      // long on a healthy server, and a skeleton that flashes on every load is
+      // more motion than information.
+      ? null
+      : (
+        <ReportDocument
+          report={launchpadReport}
+          /* The ONLY remaining reason `report` can be null here: the detail
+             arrived, the server says the report has been written, and this
+             build could not decode the payload. Neither of the other two
+             states reaches this branch any more. */
+          empty={<ReportEmpty
+            lead="Today's report could not be read."
+            hints={[
+              'The server says it has been written, so this is a decoding problem, not an empty day.',
+              'The report\'s payload is probably newer than this build.',
+            ]}
+          />}
+        />
+      );
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -1666,24 +1711,7 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
          decides the empty state from `report_has_noninitial_content` and from
          nothing else — see INV-TODAYDOC-003 on `TodayPageProps.launchpad`. */
       launchpad={launchpadQuery.isError ? undefined : launchpad}
-      launchpadDocument={
-        <ReportDocument
-          report={launchpadReport}
-          /* Deliberately NOT Today's empty-state copy. Reaching this branch
-             means the server said the report HAS been written and this build
-             could not read the payload it sent — a different fact, and one
-             that must not be spelled like an empty day. (Sharing the wording
-             also made an INV-TODAYDOC-003 test pass on the frame before the
-             wave detail landed, which is how it was found.) */
-          empty={<ReportEmpty
-            lead="Today's report could not be read."
-            hints={[
-              'The server says it has been written, so this is a decoding problem, not an empty day.',
-              'The report\'s payload is probably newer than this build.',
-            ]}
-          />}
-        />
-      }
+      launchpadDocument={launchpadDocument}
       launchpadError={launchpadQuery.isError
         ? <ErrorBox
           message={`Today's progress is unavailable: ${launchpadQuery.error.message}`}

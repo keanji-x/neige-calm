@@ -136,6 +136,24 @@ const UNKNOWN_COVE = 'Unknown cove';
 /** It answers "what happened while I was away", not "browse the archive". */
 const RECENT_LIMIT = 12;
 
+/**
+ * How many waiting rows the status bar draws before it stops growing.
+ *
+ * D7 puts the status bar above the document **because it is O(1) in height**,
+ * and that is the whole load-bearing reason for the order: a bar that grew with
+ * the workspace would push the document off the first screen, which is the one
+ * thing the layout exists to prevent. `waiting` has no natural bound — every
+ * blocked wave in every cove lands in it — so without a cap that property is
+ * simply false, and a review found it false with 100 blocked waves.
+ *
+ * The overflow is not dropped. It sits behind one inert-until-clicked control,
+ * so the *loaded* page is bounded while every waiting wave stays reachable:
+ * these rows are not repeated in the panel (RUNNING and RECENT both exclude
+ * anything already counted as waiting), so hiding them outright would make
+ * them unreachable from this page.
+ */
+const WAITING_ROW_LIMIT = 5;
+
 function addDays(day: Date, count: number): Date {
   const next = new Date(day);
   next.setDate(next.getDate() + count);
@@ -214,7 +232,16 @@ export function TodayPage({
     .slice(0, RECENT_LIMIT);
 
 
-  // A brand-new workspace: one hero line and one primary action, nothing else.
+  /*
+   * A brand-new workspace: one hero line, and *still the document*.
+   *
+   * `coves` is the user-visible list — #175 filters the system cove out of
+   * `GET /api/coves`, and the launchpad wave lives in the system cove. So
+   * "no coves and no waves" does NOT mean "no Today report": a workspace whose
+   * only content is the day's report lands exactly here, and returning early
+   * with just the hero made that report invisible and swallowed a failed
+   * resolve along with it.
+   */
   if (waves.length === 0 && coves.length === 0) {
     return (
       <div className={styles.page}>
@@ -224,6 +251,11 @@ export function TodayPage({
         />
         <div className={styles.emptyPage}>
           <p className={styles.hero}>Nothing here yet.</p>
+          <TodayDocument
+            launchpad={launchpad}
+            document={launchpadDocument}
+            error={launchpadError}
+          />
         </div>
       </div>
     );
@@ -242,7 +274,7 @@ export function TodayPage({
         <div className={styles.mainColumn}>
           {/* The status bar. An empty section renders nothing at all — no
               label, no dashed box. The absence is the message. */}
-          <Section title="Waiting on you" waves={waiting} render={renderWaveRow} />
+          <WaitingSection waves={waiting} render={renderWaveRow} />
 
           {/* …and the document immediately after it. */}
           <TodayDocument
@@ -295,6 +327,49 @@ export function TodayPage({
         </aside>
       </div>
     </div>
+  );
+}
+
+/**
+ * The status bar's waiting rows, bounded.
+ *
+ * Collapsed it draws at most `WAITING_ROW_LIMIT` rows plus one control, so its
+ * height does not depend on how much is waiting — which is what makes D7's
+ * "status bar first" ordering safe for the document below it. Expanding is an
+ * explicit act by a reader who has decided the list is what they came for.
+ *
+ * The control is a `<button>`, not a link: this surface emits no `<a href>`
+ * anywhere (INV-A11Y-061), and it navigates nowhere — it reveals rows that are
+ * already on this page.
+ */
+function WaitingSection({ waves, render }: {
+  waves: readonly Wave[];
+  render: WaveRowRenderer;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  if (waves.length === 0) return null;
+  const hidden = waves.length - WAITING_ROW_LIMIT;
+  const shown = expanded ? waves : waves.slice(0, WAITING_ROW_LIMIT);
+  return (
+    <section className={styles.section}>
+      <h2 className={styles.sectionLabel}>Waiting on you</h2>
+      <div className={styles.rows}>
+        {shown.map((wave) => (
+          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
+        ))}
+      </div>
+      {hidden > 0 && (
+        <button
+          type="button"
+          data-nc-action="tertiary"
+          className={styles.moreButton}
+          aria-expanded={expanded}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? 'Show fewer' : `+${hidden} more waiting`}
+        </button>
+      )}
+    </section>
   );
 }
 
@@ -388,24 +463,6 @@ function Clock({ now }: { now: Date }) {
     <span className={styles.clock}>
       {`${(hours + 11) % 12 + 1}:${String(now.getMinutes()).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`}
     </span>
-  );
-}
-
-function Section({ title, waves, render }: {
-  title: string;
-  waves: readonly Wave[];
-  render: WaveRowRenderer;
-}) {
-  if (waves.length === 0) return null;
-  return (
-    <section className={styles.section}>
-      <h2 className={styles.sectionLabel}>{title}</h2>
-      <div className={styles.rows}>
-        {waves.map((wave) => (
-          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
-        ))}
-      </div>
-    </section>
   );
 }
 

@@ -125,7 +125,13 @@ export const queryKeys = Object.freeze({
   waveTemplates: () => ['wave-templates'] as const,
   /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by wave:
      the kernel's partial unique index makes `purpose = 'launchpad'` a
-     singleton, and the id is what this query is fetching. */
+     singleton, and the id is what this query is fetching.
+
+     TODO(#1253 PR2): no event invalidates this key, and `wave.report_edited`
+     does not invalidate `['wave', id]` either — so once `POST
+     /api/today/summary` exists, a successful summary will change nothing on
+     screen until a reload. Both keys need adding to that policy in PR2. It is
+     inert in PR1: nothing here can change either value. */
   todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,

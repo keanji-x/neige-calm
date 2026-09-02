@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 // Invariants for the Today surface. Behavior lives in public.test.tsx.
 import { cleanup, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Cove } from '../../../../core/domain/cove.ts';
@@ -152,16 +153,31 @@ describe('INV-TODAYDOC-003 the empty-state predicate is the server field', () =>
     expect(screen.queryByText("the day's report")).toBeNull();
   });
 
-  it('offers no trigger button beside the empty state', () => {
-    // `POST /api/today/summary` does not exist until PR2. A stubbed, mocked or
-    // disabled button would be worse than its absence.
-    render(<TodayPage
+  it('offers no trigger button anywhere in the main column', () => {
+    /*
+     * `POST /api/today/summary` does not exist until PR2. A stubbed, mocked or
+     * disabled button would be worse than its absence.
+     *
+     * Asserted as "no button at all in the main column", not as "no button
+     * inside the empty-state paragraph" (that paragraph is a `<p>` with one
+     * text node, so querying it for a button is null whatever production does)
+     * and not as a label regex either — "Generate", "Run" or a Chinese label
+     * would walk straight past one. The workspace is seeded with no waves so
+     * the column holds only the document region and the terminal placeholder,
+     * neither of which has a control today.
+     */
+    const { container } = render(<TodayPage
       renderWaveRow={renderWaveRow} waves={[]} coves={[cove()]} nowMs={NOW}
       launchpad={null}
     />);
     const empty = screen.getByText(EMPTY_COPY);
-    expect(empty.querySelector('button')).toBeNull();
-    expect(screen.queryByRole('button', { name: /progress|summary|write/i })).toBeNull();
+    const mainColumn = empty.parentElement;
+    expect(mainColumn).not.toBeNull();
+    expect(mainColumn?.querySelectorAll('button').length).toBe(0);
+    // And the region really is the main column, not some stray wrapper: the
+    // terminal placeholder is its sibling.
+    expect(within(container).getByText('Terminal is not wired up yet.').closest('section')?.parentElement)
+      .toBe(mainColumn);
   });
 });
 
@@ -188,5 +204,90 @@ describe('#1253 D7 the status bar comes before the document', () => {
     const main = within(container).getByText('Waiting on you');
     const document_ = within(container).getByText("the day's report");
     expect(main.compareDocumentPosition(document_) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
+
+describe('#1253 D7 the status bar is O(1) in height', () => {
+  /*
+   * D7 puts the status bar above the document *because* its height does not
+   * depend on the workspace, and that is the whole justification for the
+   * order. `waiting` has no natural bound, so without a cap the justification
+   * is false — a review found it false at 100 blocked waves, with the report
+   * pushed off the first screen.
+   */
+  const manyWaiting = Array.from({ length: 100 }, (_, index) => wave({
+    id: `blocked-${index}`, title: `Blocked ${index}`, lifecycle: 'blocked',
+  }));
+
+  it('caps the waiting rows so the document cannot be pushed down', () => {
+    const { container } = render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={manyWaiting} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    const waitingLabel = within(container).getByText('Waiting on you');
+    const section = waitingLabel.closest('section');
+    expect(section?.querySelectorAll('[data-nc-role="row"]').length).toBe(5);
+    // The count that is not shown is stated rather than dropped.
+    expect(screen.getByRole('button', { name: '+95 more waiting' })).toBeTruthy();
+    // The header still reports the true total, so the cap hides no fact.
+    expect(screen.getByRole('banner').textContent).toContain('100waiting');
+  });
+
+  it('keeps every waiting wave reachable behind the control', async () => {
+    const { container } = render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={manyWaiting} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    /* Scoped to the status bar, because a waiting wave whose lifespan overlaps
+       the selected day also shows on the calendar agenda — so an unscoped
+       `queryByText` would be answered by the panel and prove nothing about the
+       cap. RUNNING and RECENT both exclude anything already counted as
+       waiting, so this control is the status bar's only route to the rest. */
+    const waiting = () => within(container).getByText('Waiting on you').closest('section');
+    const rows = () => [...(waiting()?.querySelectorAll('[data-nc-role="row"]') ?? [])]
+      .map((row) => row.textContent);
+    expect(rows()).not.toContain('Blocked 99');
+    await userEvent.click(screen.getByRole('button', { name: '+95 more waiting' }));
+    expect(rows()).toContain('Blocked 99');
+    expect(rows().length).toBe(100);
+    expect(screen.getByRole('button', { name: 'Show fewer' })).toBeTruthy();
+  });
+
+  it('draws no control when the waiting list already fits', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={manyWaiting.slice(0, 5)} coves={[cove()]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.queryByRole('button', { name: /more waiting/ })).toBeNull();
+  });
+});
+
+describe('#1253 the first-run page still owns a document', () => {
+  /*
+   * `coves` is the USER-visible list: #175 filters the system cove out of
+   * `GET /api/coves`, and the launchpad wave lives in the system cove. So
+   * "no waves and no coves" is a perfectly ordinary state for a workspace
+   * whose only content is the day's report — and the early return for it used
+   * to drop the document and the resolve failure alike.
+   */
+  it('renders the report on a workspace with no user coves', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[]} coves={[]} nowMs={NOW}
+      launchpad={{ wave_id: 'lp', report_has_noninitial_content: true }}
+      launchpadDocument={DOCUMENT}
+    />);
+    expect(screen.getByText('Nothing here yet.')).toBeTruthy();
+    expect(screen.getByText("the day's report")).toBeTruthy();
+  });
+
+  it('surfaces a failed resolve on a workspace with no user coves', () => {
+    render(<TodayPage
+      renderWaveRow={renderWaveRow} waves={[]} coves={[]} nowMs={NOW}
+      launchpadError={<p role="alert">Today&apos;s progress is unavailable: boom</p>}
+    />);
+    expect(screen.getByRole('alert').textContent).toContain('boom');
   });
 });

@@ -130,11 +130,14 @@ impl RepoRead for SqlxRepo {
 
     async fn wave_get_launchpad(&self) -> Result<Option<Wave>> {
         // Same predicate as `today_launchpad_ensure_tx`'s first SELECT, and
-        // single-valued by migration 0064's partial unique index. `LIMIT 1`
-        // is belt-and-braces so a database whose index was dropped by hand
-        // still answers deterministically rather than erroring.
+        // single-valued by migration 0064's partial unique index — which is
+        // what makes the answer well-defined, not the `LIMIT 1`. A bare
+        // `LIMIT 1` has no `ORDER BY`, so on a hand-broken database holding two
+        // launchpad rows sqlite may return either one; `ORDER BY id` is here so
+        // that even then the answer is at least stable across calls rather than
+        // flapping between two waves.
         let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
-            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE purpose = 'launchpad' LIMIT 1"
+            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE purpose = 'launchpad' ORDER BY id LIMIT 1"
         ))
         .fetch_optional(&self.pool)
         .await?;
