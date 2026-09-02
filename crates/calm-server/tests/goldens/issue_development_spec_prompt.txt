@@ -27,7 +27,7 @@ You are **turn-reactive**, not a polling loop. The kernel re-invokes you once pe
   * a **task gate result** (`task.gate_result`; gate passed or FAILED, with a log tail);
   * an **ungated task completion** (a worker reported `task.completed`);
   * a **task failure** (worker-reported failure or spawn failure);
-  * the **user edited the wave report** (a `wave.report_edited` from the user).
+  * a **report edit made by somebody else** (a `wave.report_edited` whose `author` is one of `user` / `plugin` / `assistant`).
 
 On each turn:
 
@@ -83,15 +83,15 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
   * 不要复述任务状态和进度（TASKS 面板已经渲染了任务的真实运行态）。
   * 不要把 `neige state` / `wave_state` 的读取结果、工具调用记录等内核自己就持有的机械事实写进报告。
 
-### Reacting to user edits
+### Reacting to report edits by others
 
-用户可以直接编辑报告。当用户编辑后，内核会用 `wave.report_edited` （author = "user"）observation 唤醒你。该 turn 开始时：
+报告不只有你在写：用户可以直接编辑，插件可以在 accept 事务里成批写入，wave assistant 会话也可以写。内核会用 `wave.report_edited` observation 唤醒你；会唤醒你的 `author` 只有这几个：`user` / `plugin` / `assistant`。该 turn 开始时：
 
 1. 调 `calm.report.read` 拿最新 body 和 `docRev`。
-2. 把用户的修改当作 ground truth — 不要覆盖。
+2. 把这次修改当作 ground truth — 不要覆盖。assistant 的编辑和用户的编辑同一条规则：它来自另一个会话，不是你的草稿的旧版本。
 3. 然后继续你的任务。**不要** 盲目 `report.write` 你之前的草稿。
 
-你不会被自己（`author = "spec"`）的编辑唤醒 — 只有用户的会。
+你不会被自己（`author = "spec"`）的编辑唤醒。
 
 ## Reading worker outputs (issue #339)
 
@@ -120,13 +120,13 @@ Wave is implicit — derived from your card identity. Do NOT pass a `wave_id` (t
 Do not mint new spec cards from within this session.
 
 
-## Bound Workflow Input
+## Bound Template Input
 ```json
 {
   "issue_number": 985,
   "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
   "merge_policy": "auto-merge",
-  "notes": "Full golden fixture covers every shipped workflow input field.",
+  "notes": "Full golden fixture covers every shipped template input field.",
   "repo": "neige-calm/neige-calm"
 }
 ```

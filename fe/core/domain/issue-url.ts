@@ -15,7 +15,7 @@
 //
 // Accepted (deliberately narrow, fail-closed):
 //   * `https://github.com/<owner>/<repo>/issues/<n>` — github.com only.
-//     Enterprise hosts are rejected: the shipped workflow drives `gh` against
+//     Enterprise hosts are rejected: the shipped template drives `gh` against
 //     github.com, so an enterprise URL would create a wave whose repo
 //     cross-check can never pass.
 //   * Scheme and host match case-insensitively (RFC 3986 makes both

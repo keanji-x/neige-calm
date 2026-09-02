@@ -131,9 +131,10 @@ pub async fn reconcile_supervisor_on_boot(state: &state::AppState) {
 /// errors pass through untouched on the first attempt.
 ///
 /// Composes with `begin_immediate_tx`'s internal bounded retry (7
-/// attempts, 10-250ms backoff, 5s busy_timeout per attempt): worst-case
-/// error surfacing at boot under sustained writer starvation is minutes —
-/// bounded and accepted (#930 review note).
+/// attempts, 10-250ms backoff,
+/// [`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`] busy timeout per attempt):
+/// worst-case error surfacing at boot under sustained writer starvation is
+/// minutes — bounded and accepted (#930 review note).
 async fn retry_on_sqlite_busy<T, E, F, Fut>(op: F) -> Result<T, E>
 where
     E: SqliteBusyClass + std::fmt::Display,
@@ -628,6 +629,7 @@ pub mod workspace_repoint;
 // #679 PR1 — `wave_fs_dto` moved wholesale to calm-types (pure TS DTOs).
 pub use calm_types::wave_fs_dto;
 pub mod report_backlinks;
+pub(crate) mod templates;
 pub mod wave_fs_view;
 pub mod wave_lifecycle;
 pub mod wave_report;
@@ -636,7 +638,6 @@ mod wave_report_edit_guard;
 mod wave_report_guard;
 pub mod wave_report_read;
 pub mod wave_vcs;
-pub(crate) mod workflow_templates;
 pub mod ws;
 
 pub async fn boot_harnesses(state: &state::AppState) -> error::Result<usize> {

@@ -7,11 +7,12 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
-    harness_items_delete_by_card_tx, session_bind_attribution_tx, session_delete_tx,
-    session_fail_if_active_runtime_tx, session_prepare_deferred_spec_tx,
-    session_projection_active_for_card_tx, session_restore_from_superseded_runtime_tx,
-    session_set_handle_state_tx, session_start_runtime_tx, session_supersede_and_start_tx,
+    HarnessTranscriptMeasure, append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx,
+    card_update_tx, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
+    session_bind_attribution_tx, session_delete_tx, session_fail_if_active_runtime_tx,
+    session_prepare_deferred_spec_tx, session_projection_active_for_card_tx,
+    session_restore_from_superseded_runtime_tx, session_set_handle_state_tx,
+    session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -30,7 +31,7 @@ use crate::model::{Card, CardPatch, CardRole, NewCard, new_id, now_ms};
 // this module into `crate::per_card_lock` so the `/spec/input` lazy-recovery
 // path can share it. Same semantics: guards self-clean their entry on drop.
 use crate::per_card_lock::{PerCardLockGuard, PerCardLocks, lock_card, new_per_card_locks};
-use crate::plugin_host::{PluginHost, manifest::WorkflowDescriptor};
+use crate::plugin_host::{PluginHost, manifest::TemplateDescriptor};
 use crate::routes::cards::card_scope;
 use crate::session_projection_repo::{
     AgentProvider, ThreadAttribution, WorkerSessionInit, WorkerSessionKind, WorkerSessionState,
@@ -138,24 +139,24 @@ impl SpecHarnessStartAdapter {
         }
     }
 
-    async fn bound_workflow(&self, wave_id: &str) -> Result<Option<BoundWorkflow>> {
+    async fn bound_template(&self, wave_id: &str) -> Result<Option<BoundTemplate>> {
         let wave = match self.repo.wave_get(wave_id).await {
             Ok(wave) => wave,
             Err(error) => {
                 tracing::error!(
-                    target: "spec_harness::workflow_binding",
+                    target: "spec_harness::template_binding",
                     wave_id,
                     error = %error,
-                    "workflow binding lookup failed; using vanilla spec prompt"
+                    "template binding lookup failed; using vanilla spec prompt"
                 );
                 return Ok(None);
             }
         };
         let Some(wave) = wave else {
             tracing::error!(
-                target: "spec_harness::workflow_binding",
+                target: "spec_harness::template_binding",
                 wave_id,
-                "bound workflow wave was not found while resolving descriptor; using vanilla spec prompt"
+                "bound template wave was not found while resolving descriptor; using vanilla spec prompt"
             );
             return Ok(None);
         };
@@ -167,13 +168,13 @@ impl SpecHarnessStartAdapter {
             if !running_plugin_ids.contains(&manifest.id) || !trusted_forge_plugin(&manifest.id) {
                 continue;
             }
-            if let Some(workflow) = manifest
-                .workflows
+            if let Some(template) = manifest
+                .templates
                 .into_iter()
-                .find(|workflow| workflow.id == template_id)
+                .find(|template| template.id == template_id)
             {
-                return Ok(Some(BoundWorkflow {
-                    descriptor: workflow,
+                return Ok(Some(BoundTemplate {
+                    descriptor: template,
                     input: wave.template_input.clone(),
                 }));
             }
@@ -182,20 +183,20 @@ impl SpecHarnessStartAdapter {
         // to the vanilla prompt — the persisted template_input is dropped
         // along with the descriptor rather than injected without context.
         tracing::error!(
-            target: "spec_harness::workflow_binding",
+            target: "spec_harness::template_binding",
             wave_id,
             template_id,
-            "bound workflow descriptor was not resolved from a running trusted forge plugin; using vanilla spec prompt"
+            "bound template descriptor was not resolved from a running trusted forge plugin; using vanilla spec prompt"
         );
         Ok(None)
     }
 }
 
-/// #891 — a resolved workflow binding: the descriptor from the running
+/// #891 — a resolved template binding: the descriptor from the running
 /// trusted plugin plus the wave row's persisted `template_input` (already
 /// schema-validated at create time).
-struct BoundWorkflow {
-    descriptor: WorkflowDescriptor,
+struct BoundTemplate {
+    descriptor: TemplateDescriptor,
     input: Option<serde_json::Value>,
 }
 
@@ -341,7 +342,7 @@ pub(crate) const ASSISTANT_HARNESS_PROFILE_MARKER: &str = "assistant";
 
 pub(crate) fn render_spec_developer_instructions(
     wave_id: &str,
-    workflow_descriptor: Option<&WorkflowDescriptor>,
+    template_descriptor: Option<&TemplateDescriptor>,
     template_input: Option<&serde_json::Value>,
 ) -> String {
     let mut instructions = crate::spec_card::render_system_prompt(
@@ -351,14 +352,14 @@ pub(crate) fn render_spec_developer_instructions(
     // #1110 S5 — the descriptor is an id handle only. Plan prose lives in
     // the forked report; the remaining injected contract is the wave's
     // validated `template_input`, gated on a resolved binding.
-    if workflow_descriptor.is_none() {
+    if template_descriptor.is_none() {
         return instructions;
     }
     // #891 — the wave's validated template_input, verbatim. Deliberately
     // NOT passed through `render_system_prompt`: user-controlled JSON must
     // not have literal `{wave_id}` substituted.
     if let Some(input) = template_input {
-        instructions.push_str("\n\n## Bound Workflow Input\n");
+        instructions.push_str("\n\n## Bound Template Input\n");
         instructions.push_str("```json\n");
         instructions
             .push_str(&serde_json::to_string_pretty(input).expect("template_input serializes"));
@@ -371,10 +372,10 @@ pub(crate) fn render_spec_developer_instructions(
 #[doc(hidden)]
 pub fn render_spec_developer_instructions_for_test(
     wave_id: &str,
-    workflow_descriptor: Option<&WorkflowDescriptor>,
+    template_descriptor: Option<&TemplateDescriptor>,
     template_input: Option<&serde_json::Value>,
 ) -> String {
-    render_spec_developer_instructions(wave_id, workflow_descriptor, template_input)
+    render_spec_developer_instructions(wave_id, template_descriptor, template_input)
 }
 
 #[async_trait]
@@ -856,7 +857,7 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                 HarnessProfile::PlainChat => None,
                 // The assistant gets its own prompt, not the spec one: the spec
                 // prompt is mostly lifecycle/plan/verdict instructions for
-                // tools the assistant is forbidden to call, and a workflow
+                // tools the assistant is forbidden to call, and a template
                 // binding drives the wave's plan, which is likewise not the
                 // assistant's business.
                 HarnessProfile::Assistant => Some(crate::spec_card::render_system_prompt(
@@ -864,11 +865,11 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     &wave_id,
                 )),
                 HarnessProfile::Spec => {
-                    let bound_workflow = self.bound_workflow(&wave_id).await?;
+                    let bound_template = self.bound_template(&wave_id).await?;
                     Some(render_spec_developer_instructions(
                         &wave_id,
-                        bound_workflow.as_ref().map(|bound| &bound.descriptor),
-                        bound_workflow
+                        bound_template.as_ref().map(|bound| &bound.descriptor),
+                        bound_template
                             .as_ref()
                             .and_then(|bound| bound.input.as_ref()),
                     ))
@@ -946,7 +947,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
-        let ((updated_card, old_runtime_id, old_runtime_status), _id) = write_with_event_typed(
+        // Destructured on the next statement rather than inline: the inline
+        // pattern no longer fits one line, and wrapping it reindents the whole
+        // transaction closure for no semantic reason.
+        let (tx_out, _id) = write_with_event_typed(
             ctx.repo.as_ref(),
             payload.actor,
             scope,
@@ -1022,7 +1026,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
                         mirror_session_mcp_token(tx, &runtime_id, hashed).await?;
                     }
+                    // #1252 S0-2 — the delete is a hard delete across the
+                    // card's whole history, so measure the transcript here,
+                    // inside the tx and strictly before the delete. After
+                    // this line the evidence is gone for good; the numbers
+                    // ride out on `Event::HarnessTranscriptCleared` below.
+                    let mut cleared_measure = HarnessTranscriptMeasure::default();
                     if reset_harness_items {
+                        cleared_measure = harness_items_measure_by_card_tx(tx, &card_id).await?;
                         harness_items_delete_by_card_tx(tx, &card_id).await?;
                     }
                     let card = card_update_tx(
@@ -1049,13 +1060,19 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     )
                     .await?;
                     Ok((
-                        (card.clone(), old_runtime_id, old_runtime_status),
+                        (
+                            card.clone(),
+                            old_runtime_id,
+                            old_runtime_status,
+                            cleared_measure,
+                        ),
                         Event::CardUpdated(card),
                     ))
                 })
             },
         )
         .await?;
+        let (updated_card, old_runtime_id, old_runtime_status, cleared_measure) = tx_out;
         drop(mint_lock_guard);
         card = updated_card;
         if let Some(old_runtime_id) = old_runtime_id {
@@ -1081,6 +1098,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         runtime_id: transcript_runtime_id,
                         card_id: transcript_card_id,
                         wave_id: transcript_wave_id,
+                        // Always `Some(..)` — the `Option` on the event exists
+                        // only so pre-#1252 rows still deserialize on replay.
+                        cleared_item_count: Some(cleared_measure.item_count),
+                        cleared_params_bytes: Some(cleared_measure.params_bytes),
+                        // Card age at reset, from the card row this tx just
+                        // wrote. Clamped at 0: a clock step backwards must
+                        // not report a negative age.
+                        card_age_ms_at_clear: Some((now_ms() - card.created_at).max(0)),
                     },
                 )
                 .await?;
@@ -1475,38 +1500,38 @@ mod tests {
     use crate::routes::theme::RequestTheme;
     use tokio::time::{Instant, sleep};
 
-    const WORKFLOW_ID: &str = "issue-development";
+    const TEMPLATE_ID: &str = "issue-development";
 
-    fn populated_workflow_descriptor() -> WorkflowDescriptor {
-        WorkflowDescriptor {
+    fn populated_template_descriptor() -> TemplateDescriptor {
+        TemplateDescriptor {
             id: "issue-development".into(),
         }
     }
 
     #[test]
-    fn spec_developer_instructions_do_not_inject_workflow_plan_prose() {
-        let workflow = populated_workflow_descriptor();
-        let out = render_spec_developer_instructions("wave-abc", Some(&workflow), None);
+    fn spec_developer_instructions_do_not_inject_template_plan_prose() {
+        let template = populated_template_descriptor();
+        let out = render_spec_developer_instructions("wave-abc", Some(&template), None);
 
         assert!(
-            !out.contains("## Bound Workflow Instructions"),
+            !out.contains("## Bound Template Instructions"),
             "S3 must not inject spec_instructions"
         );
         assert!(
-            !out.contains("## Bound Workflow Plan Template"),
+            !out.contains("## Bound Template Plan Template"),
             "S3 must not inject plan_template"
         );
         assert!(
-            !out.contains("## Bound Workflow Gates"),
+            !out.contains("## Bound Template Gates"),
             "S3 must not inject gates"
         );
         assert!(
-            !out.contains("Follow workflow instructions for wave"),
+            !out.contains("Follow template instructions for wave"),
             "descriptor prose must not leak into the spec prompt"
         );
         assert!(!out.contains(r#""key": "review-a""#));
         assert!(!out.contains(r#""cmd": "cargo fmt --all --check""#));
-        assert!(!out.contains("## Bound Workflow Input"));
+        assert!(!out.contains("## Bound Template Input"));
         assert_eq!(
             out,
             crate::spec_card::render_system_prompt(
@@ -1517,7 +1542,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_developer_instructions_without_workflow_match_static_template() {
+    fn spec_developer_instructions_without_template_match_static_template() {
         let expected = crate::spec_card::render_system_prompt(
             crate::spec_card::SeededCardRole::Spec.prompt_template(),
             "wave-abc",
@@ -1539,7 +1564,7 @@ mod tests {
 
     #[test]
     fn spec_developer_instructions_append_template_input_when_present() {
-        let workflow = populated_workflow_descriptor();
+        let template = populated_template_descriptor();
         let input = json!({
             "issue_url": "https://github.com/o/r/issues/1",
             "repo": "o/r",
@@ -1547,33 +1572,33 @@ mod tests {
             "notes": "literal {wave_id} must survive"
         });
 
-        let out = render_spec_developer_instructions("wave-abc", Some(&workflow), Some(&input));
+        let out = render_spec_developer_instructions("wave-abc", Some(&template), Some(&input));
 
         assert!(
-            !out.contains("## Bound Workflow Instructions")
-                && !out.contains("## Bound Workflow Plan Template")
-                && !out.contains("## Bound Workflow Gates"),
+            !out.contains("## Bound Template Instructions")
+                && !out.contains("## Bound Template Plan Template")
+                && !out.contains("## Bound Template Gates"),
             "input injection must not revive the retired plan-prose sections"
         );
         let input_at = out
-            .find("## Bound Workflow Input")
-            .expect("workflow input section");
+            .find("## Bound Template Input")
+            .expect("template input section");
         let rendered_input = out[input_at..]
-            .strip_prefix("## Bound Workflow Input\n```json\n")
+            .strip_prefix("## Bound Template Input\n```json\n")
             .and_then(|section| section.strip_suffix("\n```"))
-            .expect("workflow input section must be a trailing JSON fence");
+            .expect("template input section must be a trailing JSON fence");
         let rendered_input: Value =
-            serde_json::from_str(rendered_input).expect("workflow input must be valid JSON");
+            serde_json::from_str(rendered_input).expect("template input must be valid JSON");
         assert_eq!(
             rendered_input, input,
-            "workflow input must round-trip in full"
+            "template input must round-trip in full"
         );
         // User JSON is injected verbatim — no `{wave_id}` template substitution.
         assert!(out.contains("literal {wave_id} must survive"));
 
         // input = None renders no section at all.
-        let without = render_spec_developer_instructions("wave-abc", Some(&workflow), None);
-        assert!(!without.contains("## Bound Workflow Input"));
+        let without = render_spec_developer_instructions("wave-abc", Some(&template), None);
+        assert!(!without.contains("## Bound Template Input"));
     }
 
     /// #1189 review F3 — the boot-recovery selector's SQL literals have no
@@ -1676,7 +1701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bound_workflow_descriptor_filters_running_trusted_workflow_binding() {
+    async fn bound_template_descriptor_filters_running_trusted_template_binding() {
         let trusted_plugin_id = configured_trusted_plugin_id();
         let untrusted_plugin_id = untrusted_plugin_id(&trusted_plugin_id);
         let repo = Arc::new(
@@ -1686,11 +1711,11 @@ mod tests {
         );
         let bound_input = json!({ "issue_url": "https://github.com/o/r/issues/1" });
         let bound_wave =
-            make_wave(repo.as_ref(), Some(WORKFLOW_ID), Some(bound_input.clone())).await;
+            make_wave(repo.as_ref(), Some(TEMPLATE_ID), Some(bound_input.clone())).await;
         let unbound_wave = make_wave(repo.as_ref(), None, None).await;
 
         let (trusted_running_host, trusted_running_tmp) =
-            plugin_host_with_workflow(repo.clone(), &trusted_plugin_id, true).await;
+            plugin_host_with_template(repo.clone(), &trusted_plugin_id, true).await;
         trusted_running_host
             .spawn(&trusted_plugin_id)
             .await
@@ -1698,27 +1723,27 @@ mod tests {
         wait_for_running(&trusted_running_host, &trusted_plugin_id).await;
         let trusted_running_adapter = adapter_for(repo.clone(), trusted_running_host.clone());
         let bound = trusted_running_adapter
-            .bound_workflow(bound_wave.id.as_str())
+            .bound_template(bound_wave.id.as_str())
             .await
             .expect("resolve trusted running descriptor")
-            .expect("bound workflow");
-        assert_eq!(bound.descriptor.id, WORKFLOW_ID);
+            .expect("bound template");
+        assert_eq!(bound.descriptor.id, TEMPLATE_ID);
         // The wave row's persisted template_input rides along with the descriptor.
         assert_eq!(bound.input.as_ref(), Some(&bound_input));
 
         let (trusted_stopped_host, _trusted_stopped_tmp) =
-            plugin_host_with_workflow(repo.clone(), &trusted_plugin_id, false).await;
+            plugin_host_with_template(repo.clone(), &trusted_plugin_id, false).await;
         let trusted_stopped_adapter = adapter_for(repo.clone(), trusted_stopped_host);
         assert!(
             trusted_stopped_adapter
-                .bound_workflow(bound_wave.id.as_str())
+                .bound_template(bound_wave.id.as_str())
                 .await
                 .expect("trusted stopped lookup")
                 .is_none()
         );
 
         let (untrusted_running_host, untrusted_running_tmp) =
-            plugin_host_with_workflow(repo.clone(), &untrusted_plugin_id, true).await;
+            plugin_host_with_template(repo.clone(), &untrusted_plugin_id, true).await;
         untrusted_running_host
             .spawn(&untrusted_plugin_id)
             .await
@@ -1727,7 +1752,7 @@ mod tests {
         let untrusted_running_adapter = adapter_for(repo.clone(), untrusted_running_host.clone());
         assert!(
             untrusted_running_adapter
-                .bound_workflow(bound_wave.id.as_str())
+                .bound_template(bound_wave.id.as_str())
                 .await
                 .expect("untrusted running lookup")
                 .is_none()
@@ -1735,7 +1760,7 @@ mod tests {
 
         assert!(
             trusted_running_adapter
-                .bound_workflow(unbound_wave.id.as_str())
+                .bound_template(unbound_wave.id.as_str())
                 .await
                 .expect("unbound lookup")
                 .is_none()
@@ -1767,11 +1792,11 @@ mod tests {
     }
 
     fn untrusted_plugin_id(trusted_plugin_id: &str) -> String {
-        let mut candidate = "dev.neige.untrusted-workflow-test".to_string();
+        let mut candidate = "dev.neige.untrusted-template-test".to_string();
         let mut suffix = 0;
         while candidate == trusted_plugin_id || trusted_forge_plugin(&candidate) {
             suffix += 1;
-            candidate = format!("dev.neige.untrusted-workflow-test-{suffix}");
+            candidate = format!("dev.neige.untrusted-template-test-{suffix}");
         }
         candidate
     }
@@ -1792,7 +1817,7 @@ mod tests {
         repo.wave_create(NewWave {
             template_input,
             cove_id: cove.id,
-            title: "workflow resolver".into(),
+            title: "template resolver".into(),
             sort: None,
             cwd: String::new(),
             template_id: template_id.map(str::to_string),
@@ -1804,7 +1829,7 @@ mod tests {
         .expect("create wave")
     }
 
-    async fn plugin_host_with_workflow(
+    async fn plugin_host_with_template(
         repo: Arc<SqlxRepo>,
         plugin_id: &str,
         seed_plugin_row: bool,
@@ -1820,14 +1845,14 @@ mod tests {
             .expect("symlink echo stub");
 
         let manifest_json = json!({
-            "manifest_version": 1,
+            "manifest_version": 2,
             "id": plugin_id,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",
-            "display_name": "Workflow Resolver Stub",
+            "display_name": "Template Resolver Stub",
             "entrypoint": { "command": "bin/stub" },
-            "workflows": [
-                { "id": WORKFLOW_ID }
+            "templates": [
+                { "id": TEMPLATE_ID }
             ],
             "permissions": {}
         });

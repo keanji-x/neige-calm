@@ -1152,7 +1152,7 @@ pub fn manifest_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugins/git-forge/manifest.json")
 }
 
-/// Load the shipped git-forge manifest (#1110 S5: `workflows[]` is id-only).
+/// Load the shipped git-forge manifest (#1110 S5: `templates[]` is id-only).
 pub fn read_manifest() -> Manifest {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
     Manifest::parse(&raw).expect("git-forge manifest parses")

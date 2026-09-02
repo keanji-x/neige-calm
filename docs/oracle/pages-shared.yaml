@@ -1358,7 +1358,7 @@
     "threads declined command execution status without an exit code" / "…declined MCP tool status without
     an error" —— 被拒绝的命令没有退出码,只看退出码会把它显示成正常完成。
   source: web/src/pages/SpecConversation.tsx:116-118,162-163,225
-  authoritative_test: web/src/pages/SpecConversation.test.tsx:846,899 + web/src/pages/specChatItems.test.ts:214,270
+  authoritative_test: web/src/pages/SpecConversation.test.tsx:846,899 + web/src/pages/specChatItems.test.ts:224,280
   owner_slice: features/spec/conversation
   intentional_omission: false
   runtime_layer: features
@@ -1763,8 +1763,8 @@
   why: >
     "returns null for non-completed rows" / "falls back for unknown completed item types" —— 丢弃会让
     转录出现无法解释的空洞;解析失败仍要留一条分隔线。
-  source: web/src/pages/specChatItems.ts:311-349
-  authoritative_test: web/src/pages/specChatItems.test.ts:178,395
+  source: web/src/pages/specChatItems.ts:317-355
+  authoritative_test: web/src/pages/specChatItems.test.ts:188,405
   owner_slice: features/spec/chat-items
   intentional_omission: false
   runtime_layer: features
@@ -1781,7 +1781,7 @@
   why: >
     源码注释:"Batched turns can append system observations after the user text; v1 intentionally keeps
     everything after the first marker as the bubble." diff 块是内核注入的上下文,不是用户说的话。
-  source: web/src/pages/specChatItems.ts:79-88,144-198
+  source: web/src/pages/specChatItems.ts:79-94,150-204
   authoritative_test: web/src/pages/specChatItems.test.ts:55,79
   owner_slice: features/spec/chat-items
   intentional_omission: true
@@ -1794,13 +1794,16 @@
   kind: invariant
   family: spec-chat-items
   statement: >
-    没有 "User says:" 标记的用户消息,若以 SYSTEM_LABELS 四个前缀之一开头(worker 完成/报告被编辑/
-    任务完成/任务失败),必须归为 system 条目并带对应短标签;否则归为 user 且 clamp=true。
+    没有 "User says:" 标记的用户消息,若以 SYSTEM_LABELS 表中任一前缀开头,必须归为 system 条目并带该
+    前缀映射的短标签;否则归为 user 且 clamp=true。前缀条目数不设上限(同一标签可有多条句式前缀:
+    "报告被编辑" 就同时收 "The user edited the wave report" 与带作者的 "The wave report was edited"),
+    但标签集合恒为四类:worker 完成/报告被编辑/任务完成/任务失败。
   why: >
     这四类是内核代用户注入的系统提示,显示成"你说的话"会误导;剩下的无标记文本(如 wave-goal)是长文,
-    默认折叠("renders wave-goal fallback as a clamped user bubble")。
-  source: web/src/pages/specChatItems.ts:83-88,200-222
-  authoritative_test: web/src/pages/specChatItems.test.ts:113
+    默认折叠("renders wave-goal fallback as a clamped user bubble")。内核对同一类观察可能换句式
+    (#1252 给 report_edited 加了 author),所以约束落在标签集合上,而不是前缀条数。
+  source: web/src/pages/specChatItems.ts:83-95,206-228
+  authoritative_test: web/src/pages/specChatItems.test.ts:123
   owner_slice: features/spec/chat-items
   intentional_omission: false
   runtime_layer: features
@@ -1817,8 +1820,8 @@
   why: >
     "drops empty completed known message rows" / "drops empty reasoning rows" —— 空气泡是噪声;
     而空的 fileChange 仍是"发生过一次写操作"的事实。
-  source: web/src/pages/specChatItems.ts:162-176,258-271,273-298
-  authoritative_test: web/src/pages/specChatItems.test.ts:152,333,352
+  source: web/src/pages/specChatItems.ts:168-182,264-277,279-304
+  authoritative_test: web/src/pages/specChatItems.test.ts:162,343,362
   owner_slice: features/spec/chat-items
   intentional_omission: true
   runtime_layer: features
@@ -1833,7 +1836,7 @@
     条目时间戳优先取 params.completedAtMs(有限数字),否则回落到 row.created_at_ms。
   why: >
     created_at_ms 是入库时间,completedAtMs 才是事件真实完成时间;两者在长 turn 里差距明显。
-  source: web/src/pages/specChatItems.ts:100-105
+  source: web/src/pages/specChatItems.ts:106-111
   authoritative_test: NONE
   owner_slice: features/spec/chat-items
   intentional_omission: false
@@ -1850,8 +1853,8 @@
     非字符串段落取其 `.text` 字段,取不到则贡献空串。
   why: >
     "joins multi-part user content before parsing" —— 只取第一段会把被切分的用户输入截断。
-  source: web/src/pages/specChatItems.ts:130-160
-  authoritative_test: web/src/pages/specChatItems.test.ts:415
+  source: web/src/pages/specChatItems.ts:136-166
+  authoritative_test: web/src/pages/specChatItems.test.ts:425
   owner_slice: features/spec/chat-items
   intentional_omission: false
   runtime_layer: features
@@ -1867,8 +1870,8 @@
     非字符串值统一 JSON.stringify(缩进 2),stringify 失败回落 String()。
   why: >
     "parses errored MCP tool calls" —— 出错时 result 通常为空,只看 result 会显示成"成功但无输出"。
-  source: web/src/pages/specChatItems.ts:120-128,241-256
-  authoritative_test: web/src/pages/specChatItems.test.ts:238
+  source: web/src/pages/specChatItems.ts:126-134,247-262
+  authoritative_test: web/src/pages/specChatItems.test.ts:248
   owner_slice: features/spec/chat-items
   intentional_omission: false
   runtime_layer: features
@@ -1885,8 +1888,8 @@
   why: >
     "parses multi-file changes" + "renders file changes with status warnings and empty fallbacks" ——
     wire 形状是 `kind: { type }` 而不是扁平字符串,写错会全列显示 "change"。
-  source: web/src/pages/specChatItems.ts:273-298
-  authoritative_test: web/src/pages/specChatItems.test.ts:296
+  source: web/src/pages/specChatItems.ts:279-304
+  authoritative_test: web/src/pages/specChatItems.test.ts:306
   owner_slice: features/spec/chat-items
   intentional_omission: false
   runtime_layer: features
@@ -3539,7 +3542,8 @@
   kind: invariant
   family: new-task-form
   statement: >
-    issue-dev 变体硬编码 template_id = 'issue-development';v1 刻意没有 `GET /api/workflows` 发现端点。
+    issue-dev 变体硬编码 template_id = 'issue-development';legacy NewTaskForm 刻意不消费
+    `GET /api/wave-templates`(该端点存在,由 fe/ 的 new-wave 对话框消费)。
   why: >
     源码注释(#891 design §6 F5):"If the git-forge plugin isn't running, the create POST 400s with a
     readable message that the normal submit-error path surfaces."

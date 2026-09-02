@@ -12,7 +12,7 @@
 //! The e2 story:
 //!
 //! The in-process analog (`git_forge_merge_crash_recovers_once_via_probe`,
-//! forge_workflow_e2e.rs) already proves the recovery *code path*; this test's
+//! forge_template_e2e.rs) already proves the recovery *code path*; this test's
 //! sole value-add is **real process death + real binary reboot**:
 //!
 //!   boot#1 the shipped `calm-server` binary (fixtures build, so the
@@ -615,7 +615,7 @@ struct Seeded {
     lease_abs: PathBuf,
 }
 
-/// Mirror of forge_workflow_e2e's `boot_fixture`/`create_worker_caller`
+/// Mirror of forge_template_e2e's `boot_fixture`/`create_worker_caller`
 /// seeding, against the durable file DB: cove + wave (cwd = git clone of the
 /// bare origin), Worker card keeping its `raw_token`, runtime + thread
 /// binding, and a `held` workspace lease with **`boot_id` NULL** (the boot

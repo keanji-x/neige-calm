@@ -354,7 +354,7 @@ N17 那条「同时钉住无害前提」的测试
 
 守卫 4 在**行**这一层有对应的一半：`DELETE /api/waves/{id}` 对 system cove 的 wave 返回 403（`DELETE /api/coves/{id}` 本来就有）。此前这条路不对称——删掉 system cove 的 wave 行、返回 204，而目录（正确地）留着。**那个组合才是真正的泄漏**：回收要靠 wave 行来命名目录，行一没目录就永远不可达，于是每一轮「删 launchpad + `ensure` 重铸」都多攒一个孤儿仓库。同一条不变量，两层都要有。
 
-**403 的口径是整个 system cove，不是只有 launchpad——刻意的**（2026-09-01 裁决）。system cove 里还有 `ensure_workflow_templates` seed 的 3 个 workflow template wave，它们从此经 API 也不可删。接受：它们同样是内核 seed、boot 会重建，删除从来不是有意义的用户操作；而另一条路（给 `purpose = launchpad` 开特例）会让「system cove 是内核所有」这条不变量带上例外，**例外正是这条设计线上反复出事的形状**。一条宽而无聊的规则比三行 seed 数据的可删性值钱。
+**403 的口径是整个 system cove，不是只有 launchpad——刻意的**（2026-09-01 裁决）。system cove 里还有 `ensure_templates` seed 的 3 个 template wave，它们从此经 API 也不可删。接受：它们同样是内核 seed、boot 会重建，删除从来不是有意义的用户操作；而另一条路（给 `purpose = launchpad` 开特例）会让「system cove 是内核所有」这条不变量带上例外，**例外正是这条设计线上反复出事的形状**。一条宽而无聊的规则比三行 seed 数据的可删性值钱。
 
 **任何一条判不出来（读不到、解析失败、`canonicalize` 失败、cove 行读不到）都算不满足。** 没有「老行没有标记就放行」这类兜底：按§前提二，那种行不存在，兜底只会是个洞。
 

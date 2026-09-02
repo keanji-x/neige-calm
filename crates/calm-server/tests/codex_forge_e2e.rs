@@ -213,7 +213,7 @@ async fn real_codex_worker_opens_pr_after_committing_on_leased_worktree() {
 }
 
 #[tokio::test]
-async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
+async fn real_spec_agent_autonomously_plans_from_bound_template() {
     let Some(codex_bin) = resolve_codex_bin() else {
         skip!("no codex bin");
     };
@@ -224,7 +224,7 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
         .await;
 
     let goal =
-        "Plan the smallest issue-development workflow for adding one marker file.".to_string();
+        "Plan the smallest issue-development template for adding one marker file.".to_string();
     let fx = match boot_forge_e2e_fixture(
         FixtureSpec {
             goal: Some(goal.clone()),
@@ -257,9 +257,9 @@ async fn real_spec_agent_autonomously_plans_from_bound_workflow() {
             .is_some_and(|keys| !keys.is_empty()),
         "plan.updated changed_keys must be non-empty: {plan}",
     );
-    // These preconditions prove `bound_workflow_descriptor` resolves the
-    // trusted bound workflow instead of falling back to the vanilla spec prompt.
-    assert_bound_issue_development_workflow_preconditions(&fx).await;
+    // These preconditions prove `bound_template_descriptor` resolves the
+    // trusted bound template instead of falling back to the vanilla spec prompt.
+    assert_bound_issue_development_template_preconditions(&fx).await;
 
     // Superset-tolerant (design §1/§2): assert the kernel-deterministic
     // Draft->Planning companion is present exactly once; the real spec may emit
@@ -308,7 +308,7 @@ async fn real_spec_agent_autonomously_emits_design_review_round_from_descriptor(
         .lock()
         .await;
 
-    let goal = "Plan the smallest issue-development workflow for adding one marker file, \
+    let goal = "Plan the smallest issue-development template for adding one marker file, \
                 then drive design-review convergence."
         .to_string();
     let fx = match boot_forge_e2e_fixture(
@@ -384,7 +384,7 @@ async fn real_spec_gives_up_at_review_cap_from_descriptor() {
     // goal fixes coverage on this branch; branch choice is descriptor-legal
     // either way and the protocol mechanics stay autonomous.
     let goal = format!(
-        "Plan the smallest issue-development workflow for adding one marker file, \
+        "Plan the smallest issue-development template for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
                 cap, give up and fail the wave; do not request ratification. For every \
                 calm.review.round you record for the design phase of this wave, set \
@@ -538,7 +538,7 @@ async fn real_spec_requests_ratification_at_cap_and_resumes_on_grant() {
     // goal fixes coverage on this branch; branch choice is descriptor-legal
     // either way and the protocol mechanics stay autonomous.
     let goal = format!(
-        "Plan the smallest issue-development workflow for adding one marker file, \
+        "Plan the smallest issue-development template for adding one marker file, \
                 then drive design review. If design review cannot converge at the review \
                 cap, ask for human ratification instead of giving up; do not fail the wave. \
                 For every calm.review.round you record for the design phase of this wave, \
@@ -1788,10 +1788,10 @@ async fn real_spec_extends_cap_after_grant_converges_and_merges() {
 /// steering of the ASK-HUMAN branch (R7b precedent) + the restated merge
 /// trigger (d2 merge-test precedent, seat caveat carried over). The `+2`
 /// cap-extension rule itself is deliberately NOT restated: obeying it
-/// post-grant must come from the bound workflow descriptor.
+/// post-grant must come from the bound template descriptor.
 fn extension_merge_goal(repo_gitdir: &str) -> String {
     format!(
-        "Drive the tail of the issue-development workflow. Environment facts: the `repo` \
+        "Drive the tail of the issue-development template. Environment facts: the `repo` \
          argument for every gh.* MCP forge tool is exactly `{repo_gitdir}`. Implementation, \
          the pull request, and both PR review channels are already complete for this wave; \
          their results arrive as observations. If the impl review cannot converge at the \
@@ -2075,7 +2075,7 @@ async fn real_spec_drives_issue_to_close_capstone() {
     let overall_deadline = Instant::now() + capstone_budget();
     let st = move || capstone_stage_budget().min(remaining(overall_deadline));
 
-    // S1 — the real spec plans from the bound workflow.
+    // S1 — the real spec plans from the bound template.
     let (plan_actor, _plan) =
         wait_for_plan_updated(&fx, spec_planning_budget().min(remaining(overall_deadline))).await;
     assert!(
@@ -2375,7 +2375,7 @@ async fn latest_impl_round_before_merge(
 /// do not exist when this goal is written.
 fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String {
     format!(
-        "Drive the bound issue-development workflow END-TO-END for issue #{issue_number}: read \
+        "Drive the bound issue-development template END-TO-END for issue #{issue_number}: read \
          the issue, converge design review, implement, open a pull request, converge PR review, \
          merge, close the issue, and move the wave lifecycle to done.\n\
          \n\
@@ -2387,8 +2387,8 @@ fn capstone_goal(repo_gitdir: &str, issue_number: u64, base_sha: &str) -> String
          - The wave's source issue is #{issue_number}.\n\
          - Pull requests use base branch `main`; the base commit sha is `{base_sha}`.\n\
          \n\
-         Planning constraints (all within the bound workflow):\n\
-         - Attach the bound workflow gate (exactly its cmd) to every task you plan; do not use \
+         Planning constraints (all within the bound template):\n\
+         - Attach the bound template gate (exactly its cmd) to every task you plan; do not use \
          no_gate_reason.\n\
          - A task block whose depends_on names a task that does not exist yet is written but \
          receives an unknown_dependency diagnostic and is not projected, so create report task \
@@ -2824,20 +2824,20 @@ fn capstone_gate_script_is_hermetic_and_cargo_free() {
     );
 }
 
-/// #1110 S5 — shipped git-forge `workflows[]` is an id handle only. Gate
+/// #1110 S5 — shipped git-forge `templates[]` is an id handle only. Gate
 /// cmds live in report task blocks (S6 templates), not the descriptor.
 #[test]
-fn shipped_git_forge_workflows_are_id_only() {
+fn shipped_git_forge_templates_are_id_only() {
     let raw = std::fs::read_to_string(manifest_path()).expect("read git-forge manifest");
     let value: Value = serde_json::from_str(&raw).expect("manifest json");
     assert_eq!(
-        value["workflows"],
+        value["templates"],
         json!([{ "id": "issue-development" }]),
-        "S5 git-forge workflows[] must be id-only"
+        "S5 git-forge templates[] must be id-only"
     );
     let manifest = Manifest::parse(&raw).expect("production manifest parses");
-    assert_eq!(manifest.workflows.len(), 1);
-    assert_eq!(manifest.workflows[0].id, "issue-development");
+    assert_eq!(manifest.templates.len(), 1);
+    assert_eq!(manifest.templates[0].id, "issue-development");
 }
 
 /// gh shim `issue view --json body`: a seeded per-issue body file wins; absent
@@ -3680,7 +3680,7 @@ async fn assert_real_design_review_round(fx: &Fixture, rounds: &[(ActorId, Value
 
 fn merge_close_goal(repo_gitdir: &str, issue_number: u64) -> String {
     format!(
-        "Drive the tail of the issue-development workflow for issue #{issue_number}. \
+        "Drive the tail of the issue-development template for issue #{issue_number}. \
          Environment facts: the `repo` argument for every gh.* MCP forge tool is exactly \
          `{repo_gitdir}`; the wave's source issue is #{issue_number}. Implementation, the \
          pull request, and both PR review channels are already complete for this wave; \
@@ -3774,7 +3774,7 @@ async fn wait_for_wave_forge_event(
 /// be `ActorId::AiSpec(spec card)` with `EventScope::Wave` — role_gate rule
 /// 2.8 makes review.round spec-only, and the seeded AiSpec row stays
 /// actor-distinguishable from the real spec's AiSpecSession rows. Phase
-/// literal is "impl" (forge_workflow_e2e `impl_round` precedent).
+/// literal is "impl" (forge_template_e2e `impl_round` precedent).
 async fn seed_converged_impl_review_round(
     fx: &Fixture,
     slice_id: &str,

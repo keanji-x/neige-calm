@@ -21,7 +21,7 @@
 //!
 //! `PlanTaskInput` / `plan_template_task_block_payload` convert old template
 //! vocabulary into report `task` blocks. They no longer parse plugin
-//! manifests (#1110 S5 dropped `plan_template` from `WorkflowDescriptor`).
+//! manifests (#1110 S5 dropped `plan_template` from `TemplateDescriptor`).
 //!
 //! ## Scope construction
 //!

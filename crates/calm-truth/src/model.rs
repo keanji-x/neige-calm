@@ -112,9 +112,9 @@ pub struct NewWave {
     /// direct repo callers additive under `deny_unknown_fields`.
     #[serde(default)]
     pub plugin_scope: Option<String>,
-    /// Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
-    /// accepted when `template_id` names a running trusted workflow whose
-    /// owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
+    /// Issue #891 / #1110 S2 — JSON input for the bound template. Only
+    /// accepted when `template_id` names a template a running trusted plugin
+    /// binds to and whose Manifest declares an `input_schema`; the `POST /api/waves`
     /// route validates the value against that schema before any DB write. The
     /// kernel never interprets the blob — it is persisted verbatim and injected
     /// into the spec harness developer instructions at thread-mint time.

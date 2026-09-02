@@ -16,6 +16,13 @@ use calm_server::session_projection_repo::{
 use calm_server::shared_codex_appserver::SharedCodexAppServer;
 use serde_json::{Value, json};
 
+/// The thread id every harness in this file is seeded with. Notifications must
+/// carry it: `on_notification`'s prologue drops any frame whose `threadId` does
+/// not match the harness's current thread, and it does so silently — a mismatch
+/// surfaces only as a `wait_for_rows` timeout. Fixtures therefore do not hold a
+/// literal copy of it; the test substitutes this constant in.
+const SEED_THREAD_ID: &str = "thread-items-persist";
+
 async fn seed_harness(
     repo: Arc<SqlxRepo>,
     events: EventBus,
@@ -53,7 +60,7 @@ async fn seed_harness(
         .await
         .unwrap();
     let runtime_id = new_id();
-    let thread_id = "thread-items-persist".to_string();
+    let thread_id = SEED_THREAD_ID.to_string();
     let mut snapshot = HarnessSnapshot::initial(0, vec![]);
     snapshot.phase = HarnessPhaseTag::Idle;
     snapshot.last_thread_id = Some(thread_id.clone());
@@ -205,7 +212,7 @@ async fn item_notification_persists_row_and_emits_event() {
     daemon.emit_notification_for_test(Notification::Item {
         method: "item/completed".into(),
         params: json!({
-            "threadId": "thread-items-persist",
+            "threadId": SEED_THREAD_ID,
             "turn": { "id": "turn-items-1" },
             "item": {
                 "id": "item-agent-1",
@@ -219,7 +226,7 @@ async fn item_notification_persists_row_and_emits_event() {
     let row = &rows[0];
     assert_eq!(row.card_id.as_str(), card_id);
     assert_eq!(row.wave_id.as_str(), wave_id);
-    assert_eq!(row.thread_id, "thread-items-persist");
+    assert_eq!(row.thread_id, SEED_THREAD_ID);
     assert_eq!(row.turn_id.as_deref(), Some("turn-items-1"));
     assert_eq!(row.item_uuid.as_deref(), Some("item-agent-1"));
     assert_eq!(row.item_type.as_deref(), Some("agent_message"));
@@ -270,6 +277,149 @@ async fn item_notification_persists_row_and_emits_event() {
         .expect("HarnessItemAdded row must exist in events_since");
     assert_ne!(durable_item_event_id, 0);
     assert_eq!(durable_item_event_id, event_id);
+
+    harness.shutdown().await.unwrap();
+}
+
+/// The `turn/plan/updated` payload, hand-authored from codex upstream
+/// `rust-v0.151.0` (the version this box actually spawns) — see the
+/// `_provenance` block inside the file. It is deliberately not a capture:
+/// this commit is what makes a capture possible.
+const PLAN_FIXTURE: &str = include_str!("../fixtures/turn_plan_updated.json");
+
+#[tokio::test]
+async fn turn_plan_updated_persists_rows_without_events() {
+    let fixture: Value = serde_json::from_str(PLAN_FIXTURE).unwrap();
+    let mut params = fixture
+        .get("params")
+        .expect("fixture must carry the wire params under `params`")
+        .clone();
+    // The fixture transcribes the *schema*; its `threadId` is a placeholder and
+    // is substituted here rather than kept as a literal that silently has to
+    // equal `SEED_THREAD_ID`. A mismatch would be dropped by
+    // `on_notification`'s prologue and show up only as a `wait_for_rows`
+    // timeout, with nothing pointing at the thread id.
+    params["threadId"] = json!(SEED_THREAD_ID);
+
+    let repo = Arc::new(SqlxRepo::open("sqlite::memory:").await.unwrap());
+    let events = EventBus::new();
+    let mut rx = events.subscribe();
+    let (harness, daemon, card_id, wave_id) = seed_harness(repo.clone(), events).await;
+    wait_for_notification_receiver(&daemon).await;
+
+    daemon.emit_notification_for_test(Notification::Other {
+        method: "turn/plan/updated".into(),
+        params: params.clone(),
+    });
+
+    let rows = wait_for_rows(&repo, &card_id, 1).await;
+    let row = &rows[0];
+    assert_eq!(row.card_id.as_str(), card_id);
+    assert_eq!(row.wave_id.as_str(), wave_id);
+    assert_eq!(row.thread_id, SEED_THREAD_ID);
+    assert_eq!(row.method, "turn/plan/updated");
+    // `turnId` is top-level on a plan, not under `turn.id`.
+    assert_eq!(row.turn_id.as_deref(), Some("turn-plan-1"));
+    assert_eq!(row.item_uuid, None, "a plan is not an item and has no id");
+    assert_eq!(
+        row.item_type, None,
+        "item_type MUST stay null: a plan is not an item, so it has no item \
+         type, and writing one would state something untrue about the row"
+    );
+    // No field dropped, added or re-shaped on the way in. NOT a byte-level
+    // claim, and it cannot be one: the frame is a `serde_json::Value` before
+    // the kernel ever sees it and is re-serialized by `serde_json::to_string`
+    // on the way to the DB, so key order, whitespace and escape spellings are
+    // whatever serde produces. `Value`-level equality is the property that
+    // matters and the only one available.
+    assert_eq!(row.params, serde_json::to_string(&params).unwrap());
+    let stored: Value = serde_json::from_str(&row.params).unwrap();
+    assert_eq!(stored, params);
+    // ...and the content itself, pinned rather than compared to its own source:
+    // all three checklist entries survive, and the camelCase `inProgress`
+    // spelling is stored as sent (see the fixture's provenance block).
+    assert_eq!(
+        stored["plan"].as_array().map(Vec::len),
+        Some(3),
+        "every plan entry must be stored, unfiltered"
+    );
+    assert_eq!(stored["plan"][0]["status"], "completed");
+    assert_eq!(stored["plan"][1]["status"], "inProgress");
+    assert_eq!(stored["plan"][2]["status"], "pending");
+    assert_eq!(
+        stored["plan"][1]["step"],
+        "Add the column plus a backfill migration"
+    );
+    assert!(stored["explanation"].is_string());
+
+    // A second frame, with the snake_case `turn_id` spelling and no `turnId`.
+    // This pins *which* extractor the plan arm uses: `item_turn_id` accepts it,
+    // the otherwise-identical `other_turn_id` does not, so swapping them turns
+    // this assertion red instead of passing silently.
+    daemon.emit_notification_for_test(Notification::Other {
+        method: "turn/plan/updated".into(),
+        params: json!({
+            "threadId": SEED_THREAD_ID,
+            "turn_id": "turn-plan-2",
+            "explanation": null,
+            "plan": [ { "step": "second frame", "status": "pending" } ]
+        }),
+    });
+    let rows = wait_for_rows(&repo, &card_id, 2).await;
+    assert_eq!(
+        rows[1].turn_id.as_deref(),
+        Some("turn-plan-2"),
+        "the plan arm must read turn ids through `item_turn_id`, which accepts \
+         the snake_case `turn_id` spelling"
+    );
+    let plan_row_ids = [rows[0].id, rows[1].id];
+
+    // A plan row emits NO event, and the absence is the contract (#1255): no UI
+    // reads plan rows, so `harness.item.added` would only buy a 300-row refetch
+    // plus a wave-vcs commit per frame. The UI slice must revisit this.
+    //
+    // Fenced against a race rather than a sleep: a real item is sent last, and
+    // its `HarnessItemAdded` is logged after both plan rows were already
+    // persisted — so if a plan had emitted one, it would arrive first.
+    daemon.emit_notification_for_test(Notification::Item {
+        method: "item/completed".into(),
+        params: json!({
+            "threadId": SEED_THREAD_ID,
+            "turn": { "id": "turn-items-1" },
+            "item": { "id": "item-agent-1", "type": "agent_message", "text": "after the plan" }
+        }),
+    });
+    let rows = wait_for_rows(&repo, &card_id, 3).await;
+    let item_row = &rows[2];
+    let envelope = recv_item_event(&mut rx).await;
+    match envelope.event {
+        Event::HarnessItemAdded {
+            item_db_id, method, ..
+        } => {
+            assert_eq!(
+                method, "item/completed",
+                "the first HarnessItemAdded must be the real item's — a plan row must emit none"
+            );
+            assert_eq!(item_db_id, item_row.id);
+        }
+        other => panic!("expected HarnessItemAdded, got {other:?}"),
+    }
+
+    // And durably, not just on the bus: no event references either plan row.
+    let durable = repo.events_since(0, i64::MAX).await.unwrap();
+    let stray: Vec<i64> = durable
+        .iter()
+        .filter_map(|(_id, _version, _scope, event)| match event {
+            Event::HarnessItemAdded { item_db_id, .. } if plan_row_ids.contains(item_db_id) => {
+                Some(*item_db_id)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "plan rows must not be event-sourced; got HarnessItemAdded for rows {stray:?}"
+    );
 
     harness.shutdown().await.unwrap();
 }
@@ -332,7 +482,7 @@ async fn phase_transition_persists_row_and_emits_durable_event_id() {
     wait_for_notification_receiver(&daemon).await;
 
     daemon.emit_notification_for_test(Notification::TurnStarted {
-        thread_id: "thread-items-persist".into(),
+        thread_id: SEED_THREAD_ID.into(),
         turn: json!({ "id": "turn-phase-1" }),
     });
 
