@@ -5087,17 +5087,22 @@
   family: wave-rename
   statement: >
     Creating a wave must land the reader in its spec conversation with the caret in the composer:
-    the shell states the intent by wave id (`requestSpecOpen`), the wave route redeems it against
-    its own spec card, and the composer takes focus through `focusOnMount`. It is one-shot —
-    redeeming clears it.
+    the shell marks the navigation it makes (`go({ openSpec: true })`), the wave route redeems
+    that mark against its own spec card, and the composer takes focus through `focusOnMount`. The
+    mark belongs to that one history entry — redeeming disarms it, and no other route may read or
+    clear it.
   why: >
     The wave arrives with no name and nothing said in it, so a shut drawer is a blank page with no
-    visible way to begin; the reader's first sentence *is* the intent. The intent travels by wave
-    id because `POST /api/waves` answers with a Wave and the spec card's id only exists once the
-    detail has landed — widening the create response to carry it would tie the create contract to
-    what a spec card looks like, which #1189 is still moving. One-shot because a standing request
-    would force the conversation open on every later visit to that wave.
-  source: fe/web/src/app/shell/public.tsx:334-342; fe/web/src/app/router/public.tsx:1926-1935
+    visible way to begin; the reader's first sentence *is* the intent. It cannot be stated as a
+    card id — `POST /api/waves` answers with a Wave and the spec card's id only exists once the
+    detail has landed, and widening the create response to carry it would tie the create contract
+    to what a spec card looks like, which #1189 is still moving. It is carried by the navigation
+    rather than in a provider because a global slot has no owner: the create runs from the rail
+    with another wave still mounted, so that wave's route body can read and clear a request
+    addressed to a different one, while a body that clears only its own leaves the request
+    standing when the landing never happens (a failed detail read is enough) and springs the
+    drawer open on an unrelated visit later.
+  source: fe/web/src/app/router/navigation.ts:46-55,95-179; fe/web/src/app/router/public.tsx:1926-1932
   authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:137
   owner_slice: app/router
   intentional_omission: false

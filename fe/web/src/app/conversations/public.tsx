@@ -57,27 +57,14 @@ export type ConversationRegistry = Readonly<{
   requestedOpenFocusesComposer: boolean;
   requestOpen: (conversationId: string, options?: { focusComposer?: boolean }) => void;
   clearOpenRequest: () => void;
-  /**
-   * ── "Open the spec conversation of the wave I just created" ──────────────
-   *
-   * A wave id, not a conversation id, and that is the whole reason this exists
-   * separately from `requestOpen` (#1211 S2). `POST /api/waves` answers with a
-   * `Wave` and nothing else, so the shell that creates one cannot name the
-   * card to open: the spec card's id arrives a route later, with the wave
-   * detail. Widening the create response to carry it would tie the *create*
-   * contract to what a spec card looks like, which is exactly what #1189 is
-   * still moving.
-   *
-   * So the shell states the intent by wave, and the wave route redeems it
-   * against its own cards — it already computes which one is the spec card.
-   *
-   * One-shot: the route clears it as it redeems it. Left standing, a reader
-   * who closed the conversation and came back to the same wave would have it
-   * forced open again.
-   */
-  requestedSpecWaveId: string | null;
-  requestSpecOpen: (waveId: string) => void;
-  clearSpecOpenRequest: () => void;
+  /* There is deliberately no "open the spec conversation of wave W" slot here
+     (#1211 S2). It was one, and a global slot cannot own that intent: the wave
+     the reader is leaving is still mounted when a create states it, and every
+     wave route body can read and clear a slot addressed to a different one.
+     The intent now travels in the history entry the create navigates to —
+     `app/router/navigation.ts`, `useSpecOpenIntent` — and reaches this
+     registry only as the ordinary `requestOpen` the target route issues once
+     it knows its own spec card. */
 }>;
 
 const ConversationContext = createContext<ConversationRegistry | null>(null);
@@ -100,7 +87,6 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
   const [openRequest, setOpenRequest] = useState<
     { id: string; focusComposer: boolean } | null
   >(null);
-  const [requestedSpecWaveId, setRequestedSpecWaveId] = useState<string | null>(null);
   const remember = useCallback((conversation: Conversation, turns: readonly TranscriptEntry[]) => {
     setEntries((current) => equalEntry(current[conversation.id], conversation, turns)
       ? current
@@ -124,8 +110,6 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     [],
   );
   const clearOpenRequest = useCallback(() => setOpenRequest(null), []);
-  const requestSpecOpen = useCallback((waveId: string) => setRequestedSpecWaveId(waveId), []);
-  const clearSpecOpenRequest = useCallback(() => setRequestedSpecWaveId(null), []);
   const requestedOpenId = openRequest?.id ?? null;
   const requestedOpenFocusesComposer = openRequest?.focusComposer ?? false;
   const conversations = useMemo(() => Object.values(entries).map(({ conversation }) => conversation), [entries]);
@@ -134,11 +118,9 @@ export function ConversationProvider({ children }: { children: ReactNode }) {
     () => ({
       conversations, turnsOf, remember, updateExisting,
       requestedOpenId, requestedOpenFocusesComposer, requestOpen, clearOpenRequest,
-      requestedSpecWaveId, requestSpecOpen, clearSpecOpenRequest,
     }),
-    [clearOpenRequest, clearSpecOpenRequest, conversations, remember, requestOpen,
-      requestSpecOpen, requestedOpenFocusesComposer, requestedOpenId, requestedSpecWaveId,
-      turnsOf, updateExisting],
+    [clearOpenRequest, conversations, remember, requestOpen,
+      requestedOpenFocusesComposer, requestedOpenId, turnsOf, updateExisting],
   );
   return <ConversationContext.Provider value={value}>{children}</ConversationContext.Provider>;
 }

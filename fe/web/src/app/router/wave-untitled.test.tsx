@@ -8,9 +8,10 @@
 //
 //   1. **Creating lands in the spec conversation, with the caret in it.** The
 //      shell cannot name the card to open — `POST /api/waves` answers with a
-//      `Wave` — so it states the intent by wave id and `WaveRouteBody` redeems
-//      it against its own cards. That hand-off spans three modules, which is
-//      exactly why it is asserted here and not in any of them.
+//      `Wave` — so it marks the *navigation* it makes, and `WaveRouteBody`
+//      redeems that mark against its own cards. That hand-off spans three
+//      modules, which is exactly why it is asserted here and not in any of
+//      them.
 //   2. **Clearing the title is a request, not a cancel.** The wave header
 //      passes `emptyCommit="clear"` so the spec agent's `calm.wave.rename` can
 //      name the wave again; what proves it is the PATCH on the wire.
@@ -39,36 +40,70 @@ const WAVE = {
 /* A named wave, for the rename half: clearing a name that is already empty is
    the arithmetic no-op, so the PATCH case needs something to clear. */
 const NAMED_WAVE = { ...WAVE, title: 'Test wave' };
+/* The wave a *second* create answers with. It exists so the intent can be
+   stated while the reader is standing on some other wave — the rail's per-cove
+   `+` is rendered by `AppShell`, above the route outlet, so "read one wave and
+   start another" is an ordinary move and the wave being left is still
+   mounted. */
+const OTHER_WAVE = { ...WAVE, id: 'w2', sort: 2, created_at: 3, updated_at: 3 };
 const SPEC_CARD = {
   id: 'card-spec', wave_id: 'w1', kind: 'codex', title: 'Spec chat', sort: 1,
   payload: { spec_harness: true }, deletable: true, created_at: 1, updated_at: 2,
 };
+const OTHER_SPEC_CARD = { ...SPEC_CARD, id: 'card-spec-w2', wave_id: 'w2' };
 
 function ok(body: unknown): ApiTransportResponse {
   return { status: 200, statusText: 'OK', body };
 }
 
-type Options = { wave?: typeof WAVE; cards?: readonly unknown[] };
+type Options = {
+  wave?: typeof WAVE;
+  cards?: readonly unknown[];
+  /** What `POST /api/waves` answers with. Defaults to the wave already listed,
+   *  which is the single-wave shape most of these cases want. */
+  created?: typeof WAVE;
+  createdCards?: readonly unknown[];
+  /** Start with the created wave's detail failing, so the reader lands on the
+   *  error box and the route body never mounts. Flipped back through the
+   *  returned `gate`. */
+  createdDetailFails?: boolean;
+};
 
 function setup(options: Options = {}) {
   const wave = options.wave ?? WAVE;
   const cards = options.cards ?? [SPEC_CARD];
+  const created = options.created ?? wave;
+  const createdCards = options.createdCards ?? cards;
+  const gate = { createdDetailFails: options.createdDetailFails ?? false };
+  const details = new Map<string, { wave: typeof WAVE; cards: readonly unknown[] }>([
+    [wave.id, { wave, cards }],
+    [created.id, { wave: created, cards: createdCards }],
+  ]);
   const requests: ApiRequest[] = [];
   const values = new Map<string, string>();
   const transport: ApiTransportPort = {
     send(request) {
       requests.push(request);
       if (request.path === '/api/coves') return Promise.resolve(ok([COVE]));
-      if (request.path === '/api/coves/c1/waves') return Promise.resolve(ok([wave]));
+      if (request.path === '/api/coves/c1/waves') {
+        return Promise.resolve(ok(created.id === wave.id ? [wave] : [wave, created]));
+      }
       if (request.path === '/api/coves/c1/conversations') return Promise.resolve(ok([]));
       if (request.path === '/api/overlays?entity_kind=wave') return Promise.resolve(ok([]));
       if (request.path === '/api/wave-templates') return Promise.resolve(ok([]));
-      if (request.method === 'POST' && request.path === '/api/waves') return Promise.resolve(ok(wave));
-      if (request.method === 'PATCH' && request.path === '/api/waves/w1') {
-        return Promise.resolve(ok({ ...wave, ...(request.body as object) }));
+      if (request.method === 'POST' && request.path === '/api/waves') return Promise.resolve(ok(created));
+      const patched = request.method === 'PATCH' ? details.get(request.path.slice('/api/waves/'.length)) : undefined;
+      if (patched !== undefined) {
+        return Promise.resolve(ok({ ...patched.wave, ...(request.body as object) }));
       }
-      if (request.path === '/api/waves/w1') return Promise.resolve(ok({ wave, cards, overlays: [] }));
-      if (request.path === '/api/waves/w1/conversations') return Promise.resolve(ok([]));
+      if (request.path.endsWith('/conversations')) return Promise.resolve(ok([]));
+      const detail = details.get(request.path.slice('/api/waves/'.length));
+      if (detail !== undefined) {
+        if (detail.wave.id === created.id && created.id !== wave.id && gate.createdDetailFails) {
+          return Promise.resolve({ status: 500, statusText: 'Server Error', body: {} });
+        }
+        return Promise.resolve(ok({ wave: detail.wave, cards: detail.cards, overlays: [] }));
+      }
       if (request.path.endsWith('/spec/run')) {
         return Promise.resolve(ok({ card_id: SPEC_CARD.id, runtime_id: 'r', phase: 'idle' }));
       }
@@ -91,7 +126,17 @@ function setup(options: Options = {}) {
       </ThemeProvider>
     </QueryClientProvider>,
   );
-  return { requests, router };
+  return {
+    requests,
+    router,
+    gate,
+    /** Change what the next read of a wave's detail answers with. */
+    setCardsOf: (waveId: string, next: readonly unknown[]) => {
+      const detail = details.get(waveId);
+      if (detail !== undefined) details.set(waveId, { wave: detail.wave, cards: next });
+    },
+    client,
+  };
 }
 
 /* The composer's field. `combobox` and not `textbox`: the wave route passes
@@ -107,6 +152,18 @@ async function createAWave() {
   await userEvent.click(await screen.findByRole('button', { name: /^New wave$/ }));
   await screen.findByRole('dialog', { name: 'New wave' });
   await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
+}
+
+/** The same create, started from the rail — which is reachable from *every*
+ *  route, including a wave page. */
+async function createAWaveFromTheRail() {
+  await userEvent.click(await screen.findByRole('button', { name: 'New wave in Work' }));
+  await screen.findByRole('dialog', { name: 'New wave' });
+  await userEvent.click(await screen.findByRole('button', { name: 'Create wave' }));
+}
+
+async function goToWave(router: ReturnType<typeof setup>['router'], waveId: string) {
+  await act(async () => { await router.navigate({ to: '/wave/$waveId', params: { waveId } }); });
 }
 
 beforeEach(() => {
@@ -142,11 +199,66 @@ describe('creating a wave lands in its spec conversation', () => {
   });
 
   /*
+   * ── The same landing, started from a wave page ───────────────────────────
+   *
+   * The rail's per-cove `+` is rendered by `AppShell`, above the route outlet,
+   * so it is on screen on every route — "read one wave, start another" is an
+   * ordinary move, and it is the move a *global* intent slot cannot survive:
+   * the wave being left is still mounted when the intent is stated, and it
+   * gets a render before the route changes.
+   *
+   * Red when the intent can be seen, and therefore consumed or discarded, by
+   * any route body other than the one the navigation is going to.
+   */
+  it('opens the spec conversation of the new wave when the create started on another wave', async () => {
+    const { router } = setup({ created: OTHER_WAVE, createdCards: [OTHER_SPEC_CARD] });
+    await goToWave(router, 'w1');
+    await screen.findByRole('button', { name: 'Rename wave' });
+
+    await createAWaveFromTheRail();
+
+    await waitFor(() => { expect(router.state.location.pathname.endsWith('/wave/w2')).toBe(true); });
+    /* The drawer lives in `WaveRouteBody`, which is keyed by wave and unmounts
+       with the route — so a drawer open on this page is this wave's own. */
+    await screen.findByRole('complementary', { name: 'Spec chat' });
+    await waitFor(() => { expect(document.activeElement).toBe(messageField()); });
+  });
+
+  /*
+   * ── An intent that never landed must not lie in wait ─────────────────────
+   *
+   * The detail read fails, so `WaveRoute` returns the error box and the body
+   * that would redeem the intent never mounts. The reader gives up and walks
+   * back to the cove. Whatever is holding "open the spec conversation" has to
+   * have died with that navigation: coming back to the wave later is an
+   * ordinary visit, and an ordinary visit does not spring the drawer open and
+   * take the caret.
+   *
+   * Red when the intent outlives the navigation that stated it.
+   */
+  it('does not open on a later visit when the landing never reached the wave', async () => {
+    const { router, gate } = setup({
+      created: OTHER_WAVE, createdCards: [OTHER_SPEC_CARD], createdDetailFails: true,
+    });
+    await createAWave();
+    await screen.findByRole('button', { name: 'Retry' });
+
+    await act(async () => { await router.navigate({ to: '/cove/$coveId', params: { coveId: 'c1' } }); });
+    await screen.findByRole('button', { name: 'Rename cove' });
+
+    gate.createdDetailFails = false;
+    await goToWave(router, 'w2');
+    await screen.findByRole('button', { name: 'Rename wave' });
+    expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+  });
+
+  /*
    * And it is a one-shot. The intent is cleared as it is redeemed, so walking
    * back into the same wave later is an ordinary visit — a reader who closed
    * the conversation must not have it forced open again every time.
    *
-   * Red when `clearSpecOpenRequest()` is dropped from the redemption.
+   * Red when the mark is not consumed — left on the entry, or read from
+   * somewhere that outlives the navigation that wrote it.
    */
   it('does not re-open the conversation on a later visit to the same wave', async () => {
     const { router } = setup();

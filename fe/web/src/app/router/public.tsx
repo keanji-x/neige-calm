@@ -78,7 +78,7 @@ import { ConversationProvider, useConversationRegistry } from '../conversations/
 import {
   renderedMobilePanel,
   useGo, useGoSameWave, useRouteCardId, useRouteFrom, useRouteHash, useRoutePanel, useRouteParam,
-  useWavePanelNavigation, validateWaveSearch, type WaveSearch,
+  useSpecOpenIntent, useWavePanelNavigation, validateWaveSearch, type WaveSearch,
 } from './navigation.ts';
 import { readHostThemeRgb } from '../theme/host-rgb.ts';
 import { PendingRoute } from './pending-route.tsx';
@@ -1923,31 +1923,29 @@ function WaveRouteBody({ transport, unauthorized, wave, cove, cards, cardRuntime
   /*
    * ── Redeeming "open the spec conversation of the wave I just created" ────
    *
-   * The shell states that intent by **wave** id (`app/conversations`), because
-   * `POST /api/waves` answers with a `Wave` and the spec card's id only exists
-   * once the detail has landed — here. This is where the wave's spec card is
-   * already known, so this is where the intent becomes an ordinary
-   * `requestOpen`, and the panel's own consumer takes it from there.
+   * The intent rides on the history entry the create navigated to
+   * (`useSpecOpenIntent`), so `armed` is already "this wave, this visit": no
+   * other route body can see it, and there is no global slot for one of them
+   * to clear out from under another. What is left here is the half only this
+   * component knows — which card the intent names. `POST /api/waves` answers
+   * with a `Wave`, and the spec card's id exists only once the detail has
+   * landed, which is here.
    *
-   * One-shot, and cleared on both arms:
-   *
-   *  - a different wave means the reader navigated elsewhere before the intent
-   *    was redeemed, and it is stale. (`WaveRoute` renders this component only
-   *    for the wave in the URL, so "different" really is a different page.)
-   *  - this wave with no spec card means there is nothing to open, and keeping
-   *    the request would spring the drawer open on some later visit.
+   * `disarm()` before the open, unconditionally: a wave with no spec card has
+   * nothing to open, and an intent left armed on this entry would fire on the
+   * next visit to it (the Back button reaches one).
    *
    * `focusComposer` is what makes the landing complete: the wave is unnamed
    * and empty, and the reader's first sentence *is* the intent, so the caret
    * has to be where they can type it.
    */
+  const specOpenIntent = useSpecOpenIntent(wave.id);
   useEffect(() => {
-    const requested = registry.requestedSpecWaveId;
-    if (requested === null) return;
-    registry.clearSpecOpenRequest();
-    if (requested !== wave.id || specCard === undefined) return;
+    if (!specOpenIntent.armed) return;
+    specOpenIntent.disarm();
+    if (specCard === undefined) return;
     registry.requestOpen(specCard.id, { focusComposer: true });
-  }, [registry, specCard, wave.id]);
+  }, [registry, specCard, specOpenIntent]);
   /*
    * The wave's assistant conversations (#1189). Its own endpoint, its own list;
    * the spec card is deliberately not in it — the server's list predicate is

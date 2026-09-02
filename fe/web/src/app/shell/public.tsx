@@ -35,7 +35,6 @@ import { folderConflictMessage } from '../../../../core/domain/cove.ts';
 import { NewWaveForm, type NewWaveDraft } from '../../features/cove/new-wave/public.tsx';
 import { Dialog } from '../../ui/dialog/public.tsx';
 import { useState } from '../../ui/state/public.ts';
-import { useConversationRegistry } from '../conversations/public.tsx';
 import { createDirectoryLister } from '../providers/directory.ts';
 import {
   ApiError, folderConflictOf, useCoveMutations, useWaveMutations, useWaveTemplates, useWorkspace,
@@ -118,9 +117,6 @@ const NO_COVE_SELECTED: CoveSelection = Object.freeze({ coveId: null, motion: 'n
 
 export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, nowMs, userLabel }: AppShellProps) {
   const workspace = useWorkspace(transport, unauthorized);
-  /* Reachable from here because `ShellRoute` mounts `ConversationProvider`
-     above this component; the create callback is the only thing that uses it. */
-  const conversations = useConversationRegistry();
   const coveMutations = useCoveMutations(transport, unauthorized);
   const waveMutations = useWaveMutations(transport, unauthorized);
   const currentPath = useCurrentPath();
@@ -332,14 +328,14 @@ export function AppShell({ transport, unauthorized, onOpenSettings, onSignOut, n
       /*
        * The wave is created unnamed and with nothing said in it (#1211 S2), so
        * landing on a wave page with a shut drawer would be landing on a blank
-       * page with no visible way to begin. The intent is stated *by wave*
-       * because that is all this callback has: `POST /api/waves` answers with
-       * a `Wave`, and the spec card's id — what `requestOpen` needs — arrives
-       * with the wave detail one route later. `WaveRouteBody` redeems it and
-       * clears it; see `app/conversations`.
+       * page with no visible way to begin. `openSpec` is a property of *this
+       * move*: it travels in the state of the history entry this navigation
+       * creates, and the wave route redeems it there (`useSpecOpenIntent`).
+       * It is not a request left lying in a provider — this callback also runs
+       * from the rail, with some other wave still on screen, and a global slot
+       * is readable and clearable by that wave's route body too.
        */
-      conversations.requestSpecOpen(wave.id);
-      go({ name: 'wave', waveId: wave.id });
+      go({ name: 'wave', waveId: wave.id, openSpec: true });
     }).catch((error: unknown) => {
       const conflict = folderConflictOf(error);
       if (conflict !== null) {

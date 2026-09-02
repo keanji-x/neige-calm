@@ -1,7 +1,7 @@
 // Route targets and the single navigation exit.
 
 import { useNavigate, useRouter, useRouterState, type RouterHistory } from '@tanstack/react-router';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 
 /**
  * The mobile report's secondary panel, and the surface the reader reached the
@@ -22,10 +22,15 @@ export type WaveSource = 'pages' | 'cove';
  * open/close cycle grew the stack by one silent duplicate.
  */
 declare module '@tanstack/history' {
-  interface HistoryState { ncPanelPushed?: boolean }
+  interface HistoryState {
+    ncPanelPushed?: boolean;
+    /** See {@link useSpecOpenIntent}. */
+    ncOpenSpec?: boolean;
+  }
 }
 
 export const PANEL_PUSHED_STATE_KEY = 'ncPanelPushed';
+export const SPEC_OPEN_STATE_KEY = 'ncOpenSpec';
 
 export type NavTarget =
   | Readonly<{ name: 'today' }>
@@ -35,6 +40,8 @@ export type NavTarget =
    * `cardId` opens the card-grid overlay on that card (`?card=`).
    * `panel` opens the mobile report's secondary panel (`?panel=`), `from`
    * records the surface to return to (`?from=`).
+   * `openSpec` asks the wave being navigated *to* to open its spec
+   * conversation on arrival — see {@link useSpecOpenIntent}.
    */
   | Readonly<{
     name: 'wave';
@@ -43,6 +50,7 @@ export type NavTarget =
     cardId?: string;
     panel?: MobilePanel;
     from?: WaveSource;
+    openSpec?: boolean;
   }>
   | Readonly<{ name: 'settings' }>
   /**
@@ -98,8 +106,87 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
     const search: WaveSearch = target.name === 'wave'
       ? buildWaveSearch({ card: target.cardId, panel: target.panel, from: target.from })
       : {};
-    void navigate({ to: pathFor(target), hash, search, replace: options?.replace });
+    // The spec-open intent rides on the history entry this navigation creates,
+    // and nowhere else (#1211 S2) — see `useSpecOpenIntent`. Written only when
+    // asked for, so an ordinary move leaves `state` alone.
+    const state = target.name === 'wave' && target.openSpec === true
+      ? { [SPEC_OPEN_STATE_KEY]: true }
+      : undefined;
+    void navigate({
+      to: pathFor(target),
+      hash,
+      search,
+      replace: options?.replace,
+      ...(state === undefined ? {} : { state }),
+    });
   }, [navigate]);
+}
+
+/**
+ * "Open the spec conversation of the wave this navigation is going to."
+ *
+ * ── Why this is a property of the *navigation* and not a slot somewhere ─────
+ *
+ * The wave a create answers with has no name and nothing said in it, and the
+ * spec card's id does not exist yet — `POST /api/waves` answers with a `Wave`,
+ * and the card arrives a route later with the wave detail. So the shell cannot
+ * say "open card X"; it can only say "open the spec conversation of wave W",
+ * and something on the other side of the navigation has to redeem that.
+ *
+ * The first shape put it in a provider above the outlet, as one global
+ * `requestedSpecWaveId`, and the review found it broken from both ends at
+ * once. Whoever redeems it must also clear it, and no single component can own
+ * that: a route body that clears what it cannot redeem takes the intent away
+ * from the wave it was meant for (the rail's `+` is on screen on every route,
+ * so the wave being left is still mounted when the intent is stated), while a
+ * route body that only clears its own leaves a stale intent standing when the
+ * landing never happens — the detail read failing is enough — and it springs
+ * the drawer open on some unrelated visit later. Tightening either end loosens
+ * the other, because the slot has no owner.
+ *
+ * A history entry does have one. The intent is written into the state of the
+ * entry the navigation creates, so:
+ *
+ *  - only the route body rendering *that* location ever sees it — no other
+ *    body can redeem it, and none can clear it either;
+ *  - walking away is not a cleanup problem: the reader is on another entry and
+ *    the intent is simply not part of where they are;
+ *  - redemption `disarm()`s by replacing the entry without the marker, so
+ *    coming back to it — including with the Back button — is an ordinary
+ *    visit.
+ *
+ * `armed` is deliberately also gated on the location naming `waveId`: a caller
+ * asks about its own wave, and a marker on some other wave's entry is not
+ * theirs to read.
+ */
+export type SpecOpenIntent = Readonly<{ armed: boolean; disarm: () => void }>;
+
+export function hasSpecOpenMarker(state: unknown): boolean {
+  if (typeof state !== 'object' || state === null) return false;
+  return (state as Record<string, unknown>)[SPEC_OPEN_STATE_KEY] === true;
+}
+
+export function useSpecOpenIntent(waveId: string): SpecOpenIntent {
+  const navigate = useNavigate();
+  const location = useRouterState({ select: (state) => state.location });
+  const armed = hasSpecOpenMarker(location.state)
+    && routeParamFromPath(location.pathname, '/wave/') === waveId;
+  const disarm = useCallback(() => {
+    void navigate({
+      to: pathFor({ name: 'wave', waveId }),
+      // Everything else about this entry is kept: the disarm is not a
+      // navigation the reader asked for, and it must be invisible to them.
+      search: true,
+      hash: true,
+      replace: true,
+      state: (previous) => {
+        const next = { ...previous };
+        delete next[SPEC_OPEN_STATE_KEY];
+        return next;
+      },
+    });
+  }, [navigate, waveId]);
+  return useMemo(() => ({ armed, disarm }), [armed, disarm]);
 }
 
 /**

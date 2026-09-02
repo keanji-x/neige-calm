@@ -2,7 +2,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ConversationProvider } from '../conversations/public.tsx';
 import { AppShell } from './public.tsx';
 import { createUnauthorizedChannel } from '../../../../core/api/unauthorized.ts';
 import { NEUTRAL_ACTIVITY } from '../../../../core/domain/wave.ts';
@@ -65,15 +64,7 @@ describe('compact navigation interaction contracts', () => {
       addListener: vi.fn(), removeListener: vi.fn(), dispatchEvent: vi.fn(),
     })));
     const unauthorized = createUnauthorizedChannel({ enqueue: (task) => task() });
-    /* The provider the app mounts above this shell (`ShellRoute`). Real, not
-       stubbed: the create callback reads the registry to say "open the spec
-       conversation of the wave I just made" (#1211 S2), and a shell rendered
-       without it throws on first render. */
-    render(
-      <ConversationProvider>
-        <AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onSignOut={vi.fn()} />
-      </ConversationProvider>,
-    );
+    render(<AppShell transport={{} as never} unauthorized={unauthorized} onOpenSettings={vi.fn()} onSignOut={vi.fn()} />);
     const pages = screen.getByRole('button', { name: 'Pages' });
     expect(pages.getAttribute('aria-expanded')).toBe('false');
     fireEvent.click(pages);
