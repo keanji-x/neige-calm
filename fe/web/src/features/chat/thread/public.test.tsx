@@ -27,7 +27,8 @@ function turn(overrides: Partial<ConversationTurn> = {}): ConversationTurn {
 
 function activity(overrides: Partial<ConversationActivity> = {}): ConversationActivity {
   return {
-    id: 'a1', author: 'activity', verb: 'Ran', target: 'npm test', state: 'done', atMs: NOW,
+    id: 'a1', author: 'activity', verb: 'Ran', target: 'npm test', state: 'done',
+    durationMs: null, detail: null, atMs: NOW,
     ...overrides,
   };
 }
@@ -377,6 +378,58 @@ describe('ChatThread', () => {
     expect(screen.getByText('Failed')).toBeTruthy();
     expect(container.querySelector('[data-nc-state="failed"]')).toBeTruthy();
     expect(container.querySelector('[data-nc-activity]')).toBeNull();
+  });
+
+  /*
+   * ── The failed line says what failed ────────────────────────────────────
+   *
+   * `Failed` alone was the whole rendering of a failed shell run, and the
+   * reason had been on the wire the entire time. The word stays — the case
+   * above asserts it and the stylesheet gives failure the *text* role — and the
+   * reason joins it on its own row inside the same `<p>`, so `data-nc-state`
+   * does not move.
+   */
+  it('prints the reason on a failed line', () => {
+    const { container } = render(
+      <ChatThread
+        conversation={conversation()}
+        turns={[activity({ state: 'failed', detail: 'error: no test specified' })]}
+      />,
+    );
+    expect(screen.getByText('error: no test specified')).toBeTruthy();
+    expect(screen.getByText('Failed')).toBeTruthy();
+    expect(container.querySelector('[data-nc-state="failed"]')).toBeTruthy();
+  });
+
+  it('prints nothing but the line itself when the action succeeded', () => {
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[activity()]} />,
+    );
+    expect(container.textContent).toBe('Rannpm test');
+  });
+
+  /*
+   * A duration is printed only when it is one the reader felt. Both halves are
+   * asserted: the absence is the load-bearing one, because every completed row
+   * carries a `durationMs` and most of them are a 12ms report read.
+   */
+  it('times a long action and stays quiet about a fast one', () => {
+    const { container, rerender } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 4_320 })]} />,
+    );
+    expect(container.textContent).toContain('4.3s');
+
+    rerender(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 120 })]} />,
+    );
+    expect(container.textContent).toBe('Rannpm test');
+  });
+
+  it('reads a multi-minute action in minutes and padded seconds', () => {
+    const { container } = render(
+      <ChatThread conversation={conversation()} turns={[activity({ durationMs: 192_000 })]} />,
+    );
+    expect(container.textContent).toContain('3m 12s');
   });
 
   it('shows exactly one live mark after a completed activity while live', () => {

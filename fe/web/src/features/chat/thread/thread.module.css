@@ -1103,12 +1103,18 @@
   /*
    * ── What it did, between what it said ───────────────────────────────────
    *
-   * One line per action, and the line is the *whole* rendering: a verb, and at
-   * most the one noun that makes the verb specific. No output, no diff, no
-   * arguments, no duration — this exists so the transcript stops lying by
-   * omission ("it answered by silently editing the report"), not so the drawer
-   * becomes a log viewer. A 364px column has room for a conversation or for a
-   * trace, and the conversation is what is read.
+   * One line per action, and the line is nearly the *whole* rendering: a verb,
+   * and at most the one noun that makes the verb specific. No output, no diff,
+   * no arguments — this exists so the transcript stops lying by omission ("it
+   * answered by silently editing the report"), not so the drawer becomes a log
+   * viewer. A 364px column has room for a conversation or for a trace, and the
+   * conversation is what is read.
+   *
+   * Two things earn a place beyond the verb and its noun, and both are gated so
+   * they stay rare (`.activityDuration`, `.activityDetail` below). `flex-wrap`
+   * is here for the second of them: the reason a run failed gets its own row
+   * *inside this same box*, because `data-nc-state` lives on this element and a
+   * nested wrapper would move it.
    *
    * It sits at the caption rank — 11px, `--text-3`, sans — under a reply set in
    * 13px sans. That distance is the point: an action must be legible when
@@ -1121,6 +1127,7 @@
    */
   .activity {
     display: flex;
+    flex-wrap: wrap;
     align-items: baseline;
     gap: var(--space-2);
     min-inline-size: 0;
@@ -1153,6 +1160,42 @@
 
   .activityFailure {
     color: var(--error-text);
+  }
+
+  /* How long it took, and only when that was long enough to have been felt (the
+     view gates at 1s). It is a suffix, not a column: `tabular-nums` so a run of
+     them lines up when several in a row do clear the gate, and `--text-4` so it
+     sits *under* the verb it qualifies rather than beside it. */
+  .activityDuration {
+    color: var(--text-4);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /*
+   * The reason a run failed — the last line of what it printed, already clipped
+   * to one line in the domain. It takes the whole basis so it lands on its own
+   * row under the verb: it is the machine's own words about a failure, and
+   * squeezing it in beside `Failed` would leave room for about four of them.
+   *
+   * Mono and `--text-4`, the same register as `.activityTarget`, and for the
+   * same reason: this is quoted from somewhere else. It stays `--text-4` rather
+   * than inheriting `.activityFailed`'s red — the red already said *that* it
+   * failed; this says *what*, and two lines of alarm colour for one failure is
+   * the budget spent twice.
+   *
+   * `min-inline-size: 0` plus `overflow: hidden` is the pair that actually
+   * holds the 364px column: a flex item's automatic minimum size is its content,
+   * so without the first the ellipsis never applies and a long tail widens the
+   * drawer instead of being cut.
+   */
+  .activityDetail {
+    flex-basis: 100%;
+    min-inline-size: 0;
+    overflow: hidden;
+    font-family: var(--font-mono);
+    color: var(--text-4);
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* The same 6px accent dot and the same pulse a running wave takes. */

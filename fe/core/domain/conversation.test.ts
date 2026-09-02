@@ -353,7 +353,79 @@ describe('harnessItemToActivity', () => {
         },
       }),
     }));
-    expect(activity).toMatchObject({ verb: 'Ran', target: 'neige state', state: 'done' });
+    expect(activity).toMatchObject({
+      verb: 'Ran', target: 'neige state', state: 'done', durationMs: 120,
+    });
+  });
+
+  /*
+   * ── The two fields the wire always had ──────────────────────────────────
+   *
+   * `durationMs` and `aggregatedOutput` were never missing from `item/completed`
+   * — the capture above has both, and the kernel stores `params` unfiltered.
+   * This function was where they died. These cases pin the two halves of the
+   * rule that brought them back: the number survives on every completed row,
+   * and the text is shown **only** where it is the answer to a question the
+   * reader is actually asking.
+   */
+  const shellRun = (item: Record<string, unknown>): HarnessItem => row({
+    params: JSON.stringify({ completedAtMs: 1786763301566, item: { type: 'commandExecution', ...item } }),
+  });
+
+  it('says why a shell run failed, in its last line of output', () => {
+    expect(harnessItemToActivity(shellRun({
+      command: "/usr/bin/bash -lc 'npm test'",
+      aggregatedOutput: '> vitest run\n\nFAIL core/domain/conversation.test.ts\n\nTests  1 failed | 40 passed\n\n',
+      exitCode: 1, durationMs: 8_400, status: 'completed',
+    }))).toMatchObject({
+      state: 'failed', detail: 'Tests  1 failed | 40 passed', durationMs: 8_400,
+    });
+  });
+
+  /*
+   * The assertion that pins "failure-only". The successful row below carries a
+   * perfectly readable `aggregatedOutput`, and it is still dropped: in a real
+   * session there are three successful actions for every sentence, and a tail
+   * of stdout under each of them is the drawer turning into a log viewer.
+   */
+  it('drops the output of a run that succeeded, even though it is right there', () => {
+    expect(harnessItemToActivity(shellRun({
+      command: 'ls', aggregatedOutput: 'report.md\nnotes.md\n', exitCode: 0,
+      durationMs: 30, status: 'completed',
+    }))).toMatchObject({ state: 'done', detail: null, durationMs: 30 });
+  });
+
+  /* `aggregatedOutput` is the whole capture — kilobytes on a real build. The
+     field is typed as one short line, so the clip is the domain's job. */
+  it('clips a failure reason to one short line instead of a payload', () => {
+    const detail = harnessItemToActivity(shellRun({
+      command: 'build', aggregatedOutput: `ok\n${'x'.repeat(4_000)}`, exitCode: 2,
+      status: 'completed',
+    }))?.detail;
+    expect(detail).not.toBeNull();
+    expect(detail!.length).toBeLessThanOrEqual(64);
+    expect(detail!.endsWith('…')).toBe(true);
+  });
+
+  /* MCP tools have no stdout at all; their reason is the `error` member, and
+     both spellings of it are on our wire. */
+  it.each([
+    ['an object with a message', { message: 'wave is not attached' }],
+    ['a bare string', 'wave is not attached'],
+  ])('falls back to the mcp error when it is %s', (_label, error) => {
+    expect(harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({
+        item: { tool: REPORT_WRITE_TOOLS[0], error, status: 'failed', durationMs: 45, type: 'mcpToolCall' },
+      }),
+    }))).toMatchObject({ state: 'failed', detail: 'wave is not attached', durationMs: 45 });
+  });
+
+  it('has no duration on a row that has not finished', () => {
+    expect(harnessItemToActivity(row({
+      method: 'item/started',
+      params: JSON.stringify({ item: { command: 'ls', type: 'commandExecution' } }),
+    }))).toMatchObject({ state: 'running', durationMs: null, detail: null });
   });
 
   it('says the report was written, because that is the answer', () => {
@@ -551,7 +623,7 @@ describe('buildTranscript', () => {
 describe('mergeTranscript', () => {
   const thought = {
     id: 'thought', author: 'activity' as const, verb: 'Thought', target: null,
-    state: 'done' as const, atMs: 1,
+    state: 'done' as const, durationMs: null, detail: null, atMs: 1,
   };
   const echo: ConversationTurn = { id: 'echo', author: 'you', text: 'next', atMs: 2 };
 

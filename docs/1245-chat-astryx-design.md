@@ -28,7 +28,7 @@ astryx Chat 家族分两类：
 | 今天 | 改成 | 理由 |
 |---|---|---|
 | agent 回复 `<p>{turn.text}` 纯文本 | **`Markdown`**（内置 `CodeBlock`；**不传 `isStreaming`**，见 §2.5） | 今天 agent 的 markdown / 代码块**根本不渲染**，塌成一段纯文本。库自带 parser，零外部依赖。 |
-| `ActivityLine`（手写 `<p>`，verb + target + Failed） | **暂不换 `ChatToolCalls`** | 见 §2.3：换了会净亏。等 wire 长出工具明细再换。 |
+| `ActivityLine`（手写 `<p>`，verb + target + Failed + 耗时 + 失败明细） | **不换 `ChatToolCalls`** | 见 §2.3：换了会净亏。阻塞点在库里（失败态无可见文字、行级无钩子），不在 wire。 |
 | `.said` / `.reply` 两个 `<p>` | **暂不换 `ChatMessage`** | 见 §2.4。 |
 | 空态 `<div className={styles.empty}>` | 不动 | 库的 `emptyState` 属于 `ChatMessageList`／`ChatLayout`，按 §1 不进来。 |
 | `ExchangeRail` / 三处滚动机制 / composer | 不动 | §1。 |
@@ -61,13 +61,15 @@ astryx Chat 家族分两类：
 
 ### 2.3 `ChatToolCalls` 本轮不换 —— 量出来是净亏，不是偏好
 
-原计划把 `ActivityLine` 换成 `ChatToolCalls`。读完实现后撤回，理由三条，都是从 `node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx` 读出来的事实：
+原计划把 `ActivityLine` 换成 `ChatToolCalls`。读完实现后撤回。本节原本给了三条理由；**第一条是错的，下面就地更正**，结论改由剩下两条重新推出（复核于 `@astryxdesign/core` 0.1.3，`node_modules/@astryxdesign/core/src/Chat/ChatToolCalls.tsx`）。
 
-1. **它的全部增量字段，我们的 wire 一个都填不了。** `ChatToolCallItem` 相对我们多出 `duration`、`resultDetail`、`node`、`additions`/`deletions`。domain 的 `ConversationActivity` 只有 `{ verb, target, state, atMs }`——单个时间戳，没有配对的结束时间，凑不出真实耗时；结果明细、沙箱名、增删行数在 `/api/cards/{id}/harness/items` 上都不存在。换过去只能映射 `name`/`target`/`status` 三项，等于用一个更重的组件渲染同样的三个字段。
-2. **失败信号会从「一个词」退化成「一个图标」。** 今天失败行印出可见的 `Failed`（`.activityFailure`，CSS 注释称之为「这里唯一值得上颜色的状态」）。库版的 error 态是 `ChatToolCalls.tsx:375-390`：一个红色 `×` 图标，错误文本挂在 `title` 上，**没有可见文字、没有 `aria-label`**。这是可读性与无障碍的双向倒退。
-3. **每行的状态 locator 会整个消失。** `ChatToolCalls` 只在**根节点**打 `themeProps('chat-tool-calls')`，行级不带任何 `data-*`（`Chat.doc.mjs` 的 theming target 列表里 `astryx-chat-tool-calls` 也确实没有 visualProps）。我们今天的 `data-nc-state="failed"` 是行级的，且被 `public.test.tsx:309` 断言。换过去后行级状态只剩图标颜色，没有任何可断言的钩子。
+1. ~~**它的全部增量字段，我们的 wire 一个都填不了。**~~ **这条是错的，而且错在事实层，不是判断层。** 当时写的是「单个时间戳，没有配对的结束时间，凑不出真实耗时；结果明细在 `/api/cards/{id}/harness/items` 上不存在」。实测：`item/completed` 的 payload 一直带着 `durationMs`，shell 运行还带着 `aggregatedOutput`——本文档自己引用过的那条逐字抓包（`conversation.test.ts` 的 captured wire row）两样都有，内核也是原样存 `params`（`db/sqlite/out_of_domain.rs` 写入未经过滤）。**丢字段的是我们自己的 `harnessItemToActivity`**：它读了 `exitCode`/`status`/`error` 判失败，然后把这两个字段扔掉。#1255 S1 已经把它们接回 `ConversationActivity`（`durationMs` + 仅失败时的 `detail`），所以库的 `duration` 与 `resultDetail` 现在**有真值可填**。真正没有来源的只有三个：`node`（沙箱名）、`additions`/`deletions`（增删行数）——这三个 wire 上确实没有。
+2. **失败信号会从「一个词」退化成「一个图标」。** 今天失败行印出可见的 `Failed`（`.activityFailure`，CSS 注释称之为「这里唯一值得上颜色的状态」）。库版的 error 态是 `ChatToolCalls.tsx:380-399`：一个状态图标，错误文本只挂在 `title` 上（`:381`），**没有可见文字**；全文件 grep `aria-label` 零命中。这是可读性与无障碍的双向倒退。**仍然成立。**
+3. **每行的状态 locator 会整个消失。** `themeProps('chat-tool-calls')` 只出现在两处，都是根节点（`:521`、`:540`）；`CallRow` 的行 `<div>`（`:364-368`）只有 `role`/`tabIndex` 与 stylex 类，不带任何 `data-*`。我们今天的 `data-nc-state="failed"` 是行级的，且被 `public.test.tsx:379` 断言。换过去后行级状态只剩图标颜色，没有任何可断言的钩子。**仍然成立。**
 
-**换的条件**：等内核把工具调用的结束时间与结果明细放上 wire（`duration` + `resultDetail` 有真值可填）时再换，那时它的折叠与展开才有东西可展开。这条挂在 §3 的 S3。
+**在两条幸存理由上重新推出的结论：还是不换，而且不换的期限比原来长。** 第 1 条被更正后，「等 wire 长出字段」这个换的条件已经满足了，可它并没有把结论翻过来——因为第 2、3 条与 wire 无关，它们是库的渲染与 DOM 契约。更糟的是，S1 新填的两个字段恰好是这个组件在**失败行**上表现最差的两个：`duration` 只在 `status === 'complete'` 时才渲染（`:428-430`），失败行看不到耗时；`resultDetail` 藏在一次点击后面（`:448-454`，行变成 `role="button"`）。也就是说换过去之后，一个失败的 shell 运行会是：没有 `Failed` 字样、没有耗时、原因要点开才看得见。我们今天这一行是：红色的 `Failed`、耗时后缀、原因直接印在下一行。**换过去在这一行上是三项净亏。**
+
+**真正的换的条件，改挂在库上**：`ChatToolCalls` 的 error 态给出可见文字或 `aria-label`，且行级带上可断言的 `data-*`（或 `themeProps` 下沉到 `CallRow`）。这两条都在上游，不是我们能在本仓库里满足的。这条挂在 §3 的 S3。
 
 ### 2.4 `ChatMessage` 本轮不换
 
@@ -89,7 +91,7 @@ astryx Chat 家族分两类：
 
 - **S1｜回复渲染 Markdown**（本 PR）—— 唯一当期就能付清的一条：库替掉的是真机器（CommonMark parser + 代码高亮），不是一个 `<p>`。
 - **S2｜附件**：依赖内核。今天写口只有 `POST /api/cards/{id}/spec/input { text }`，`crates/` 里没有任何 chat 附件通路。落地形态已定：`ChatComposerDrawer` + `ChatComposerInput.onFiles`（粘贴／拖放）+ `Thumbnail`。
-- **S3｜活动行换 `ChatToolCalls`**：依赖内核把工具调用的结束时间与结果明细放上 wire（§2.3）。
+- **S3｜活动行换 `ChatToolCalls`**：~~依赖内核把工具调用的结束时间与结果明细放上 wire~~——这个前提来自 §2.3 已被更正的第 1 条，是假的：耗时与失败明细一直在 wire 上，#1255 S1 已把它们接进 `ConversationActivity` 并渲染出来（耗时 ≥1s 的后缀 + 失败行的原因）。**阻塞点在上游库**：`ChatToolCalls` 的 error 态没有可见文字也没有 `aria-label`，行级也没有可断言的钩子（§2.3 第 2、3 条）。在库补上这两样之前，这一条不排期；kernel 侧无事可做。
 - **S4｜message actions／编辑已发送消息／AI 弹出选项**：依赖内核 + 产品决策（编辑后重跑还是分叉？transcript 今天只有 `text`，带不了结构化选项集）。库侧也**没有**现成的「编辑态」组件，只有可以填内容的 `metadata` 插槽；换 `ChatMessage`（§2.4）与这一条同时做。
 
 **一句话总结采纳判据**：库能替掉*机器*的地方换（markdown 引擎、附件通路、可展开的工具明细），库只能替掉*一个带 class 的 `<p>`* 的地方不换。后者不是造轮子。

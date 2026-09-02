@@ -642,6 +642,18 @@ export type ConversationActivity = Readonly<{
   /** What it acted on, already trimmed to something readable. Never a payload. */
   target: string | null;
   state: ActivityState;
+  /**
+   * How long the action took, straight off `item/completed`'s own `durationMs`.
+   * `null` while it is still running, and `null` on the rows codex does not
+   * time. It is a measured number, not a difference of two timestamps: pairing
+   * `started` with `completed` would measure our poll, not the action.
+   */
+  durationMs: number | null;
+  /**
+   * Why it failed, in one clipped line. `null` on anything that did not fail —
+   * see `failureDetail` for why that asymmetry is the rule and not an omission.
+   */
+  detail: string | null;
   atMs: number;
 }>;
 
@@ -765,6 +777,53 @@ function activityShape(itemType: string, item: Record<string, unknown>): Activit
   }
 }
 
+/**
+ * ── The reason a failed line has, and a done line does not ──────────────────
+ *
+ * `item/completed` has carried `durationMs` and — for a shell run —
+ * `aggregatedOutput` from the beginning; the verbatim capture in
+ * `conversation.test.ts` has both. The kernel stores `params` unfiltered
+ * (`out_of_domain.rs` writes the payload as it arrived). It was *this* function
+ * that read `exitCode`/`status`/`error`, decided the line said `Failed`, and
+ * then threw away the only text that said what failed. A reader looking at a
+ * red line in the drawer had to leave the drawer to find out why.
+ *
+ * **Only on failure.** `aggregatedOutput` is the whole captured stdout+stderr —
+ * kilobytes on a normal build. On a line that succeeded, its tail is noise
+ * printed under every `Ran` in a 364px column, which is precisely the "drawer
+ * becomes a log viewer" that `.activity`'s own stylesheet note refuses. On a
+ * line that failed it is the one thing the reader wants, and it is usually the
+ * last line of it: that is where a shell puts the error and where a test runner
+ * puts the count.
+ *
+ * **Clipped here, not in the view.** This "domain" is already a presentation
+ * domain — `verb` is an English phrase and `target` is `clip()`ed right beside
+ * this — so the invariant "an activity field is one short line, never a
+ * payload" is a property of the type, provable in a domain test, rather than a
+ * discipline every renderer of that type has to remember.
+ */
+function failureDetail(payload: Record<string, unknown>): string | null {
+  // The tail first, because that is where the reason is. An all-blank capture
+  // has no tail to show and falls through rather than reporting emptiness.
+  const output = payload.aggregatedOutput;
+  if (typeof output === 'string') {
+    const lines = output.split('\n');
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      const line = clip(lines[index] ?? '');
+      if (line !== null) return line;
+    }
+  }
+  // MCP tools have no stdout. Their `error` is a string in some servers and
+  // `{ message }` in others; both spellings are on our own wire.
+  const error = payload.error;
+  if (typeof error === 'string') return clip(error);
+  if (typeof error === 'object' && error !== null
+    && typeof (error as { message?: unknown }).message === 'string') {
+    return clip((error as { message: string }).message);
+  }
+  return null;
+}
+
 export function harnessItemToActivity(item: HarnessItem): ConversationActivity | null {
   if (isAgentMessage(item.item_type) || isUserMessage(item.item_type)) return null;
   if (item.method !== 'item/started' && item.method !== 'item/completed') return null;
@@ -792,6 +851,9 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
     verb: done ? shape.done : shape.running,
     target: shape.target,
     state: failed ? 'failed' : (done ? 'done' : 'running'),
+    durationMs: typeof payload.durationMs === 'number' && Number.isFinite(payload.durationMs)
+      ? payload.durationMs : null,
+    detail: failed ? failureDetail(payload) : null,
     atMs: typeof envelope.completedAtMs === 'number' && Number.isFinite(envelope.completedAtMs)
       ? envelope.completedAtMs : item.created_at_ms,
   };

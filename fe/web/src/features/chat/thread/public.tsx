@@ -1631,6 +1631,26 @@ function Reply({ text }: { text: string }) {
 }
 
 /**
+ * A duration is only worth printing when it is a duration the reader felt.
+ *
+ * Every `item/completed` carries `durationMs`, and most of them are a
+ * `calm.report.read` that took 12ms. Printing those puts a number on nearly
+ * every line of the transcript and says nothing on any of them — the same
+ * budget argument the `.activity` stylesheet note makes about the line itself.
+ * A second is the floor because a second is roughly where "that took a while"
+ * starts being a thing the reader noticed happening.
+ */
+const ACTIVITY_DURATION_FLOOR_MS = 1_000;
+
+/** `4.3s` under a minute, `3m 12s` over it — the seconds zero-padded so the
+ *  two-part form does not read as `3m 2s` for a shorter interval than `3m 12s`. */
+function formatActivityDuration(durationMs: number): string {
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(1)}s`;
+  const seconds = Math.round(durationMs / 1_000);
+  return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+}
+
+/**
  * One action, one line.
  *
  * The dot is the same 6px accent pulse a running wave row wears, and it is here
@@ -1638,12 +1658,26 @@ function Reply({ text }: { text: string }) {
  * "this is happening right now". A running action is the honest place for it in
  * a transcript — before this existed, a four-minute turn spent entirely in
  * shell runs and a `report.write` looked from the drawer like nothing at all.
+ *
+ * `detail` is non-null only on a failed activity — that is the domain's rule
+ * and it is asserted there (`conversation.test.ts`), so this reads the field
+ * rather than re-deriving the condition from `state`.
+ *
+ * The failure reason is a second row *inside the same `<p>`* rather than a
+ * nested wrapper: `data-nc-state` is the shared attribute the rest of the app
+ * reads state off, and it belongs on the element that is the line. `.activity`
+ * wraps, and `.activityDetail` takes the full basis, so the reason lands under
+ * the verb without any of them changing which element carries the state.
  */
 function ActivityLine({ activity, live }: {
   activity: ConversationActivity;
   live: boolean;
 }) {
   const running = activity.state === 'running';
+  const duration = !running && activity.durationMs !== null
+    && activity.durationMs >= ACTIVITY_DURATION_FLOOR_MS
+    ? formatActivityDuration(activity.durationMs)
+    : null;
   return (
     <p
       className={`${styles.activity} ${activity.state === 'failed' ? styles.activityFailed : ''}`}
@@ -1652,7 +1686,11 @@ function ActivityLine({ activity, live }: {
       <span>{activity.verb}</span>
       {activity.target !== null && <span className={styles.activityTarget}>{activity.target}</span>}
       {activity.state === 'failed' && <span className={styles.activityFailure}>Failed</span>}
+      {duration !== null && <span className={styles.activityDuration}>{duration}</span>}
       {running && live && <span className={styles.live} aria-label="Working" />}
+      {activity.detail !== null && (
+        <span className={styles.activityDetail}>{activity.detail}</span>
+      )}
     </p>
   );
 }
