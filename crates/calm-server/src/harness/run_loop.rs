@@ -1044,6 +1044,14 @@ async fn on_notification(inner: &Arc<Inner>, notif: Notification) -> Result<()> 
             // (a) emitting `HarnessItemAdded` per plan update at the cost above,
             // and (b) letting plan rows ride the refresh that real item rows
             // already trigger.
+            //
+            // It will also need a way to *read* these rows: the transcript feed
+            // (`GET /api/cards/:id/harness/items`) now narrows to `item/*` in
+            // SQL, because its `limit` is the page budget of a reader that
+            // renders only those. Give plans a read path of their own; do not
+            // widen that query back to unfiltered
+            // (`RepoRead::harness_item_list_transcript_by_card` says the same
+            // where the filter lives).
         }
         Notification::Item { .. } | Notification::Other { .. } => {}
     }

@@ -938,6 +938,13 @@ export function harnessItemToActivity(item: HarnessItem): ConversationActivity |
 /**
  * The only notification methods the transcript knows how to render.
  *
+ * Second line of defence, not the first: as of #1255 the server narrows
+ * `GET /api/cards/:id/harness/items` to the same two methods, because the page
+ * `limit` this module sends (`HARNESS_ITEMS_PAGE_LIMIT`) has to be a budget of
+ * renderable rows — dropping rows here, after they were counted against the
+ * page, pushes real transcript rows behind "Load earlier". This gate stays for
+ * the case where a row reaches `buildTranscript` from somewhere else.
+ *
  * An allowlist rather than a skip-list of the one method that prompted it
  * (`turn/plan/updated`, codex's per-turn TODO checklist, which #1255 started
  * writing into `harness_items` so its real shape can be read out of production

@@ -688,12 +688,19 @@ describe('buildTranscript', () => {
      deliberately written over *arbitrary* unknown methods, because a rule that
      only names today's method is a rule that a future method walks past.
 
-     Note for anyone mutation-testing this: the `isTranscriptMethod` gate in
-     `buildTranscript` is a backstop, so deleting it does not turn this red —
-     both converters check the method themselves and must keep doing so (they
-     are exported and called directly elsewhere). What goes red here is a
-     converter being widened without anyone noticing, which is the failure this
-     is actually placed against. */
+     Note for anyone mutation-testing this — and this replaces an earlier note
+     here that claimed the opposite: NO mutation of either filter turns this
+     red, in either direction. `isTranscriptMethod` and the two converters
+     (`harnessItemToTurn`, `harnessItemToActivity`) are independent method
+     filters that currently agree, and `buildTranscript` runs them in series.
+     Delete the `isTranscriptMethod` gate and the converters still reject these
+     rows; widen a converter to accept `item/updated` and the gate rejects the
+     row before that converter is ever called. This test pins the *intent* of
+     the allowlist — an unknown method renders nothing — but it cannot tell
+     which filter did the work, and no test can while both filters stand. The
+     converters must keep their own checks (they are exported and called
+     directly, e.g. `harnessItemToTurn` from `web/src/app/router/public.tsx`),
+     so making one of them load-bearing here would mean weakening the other. */
   it('renders nothing for a method the transcript does not understand', () => {
     const unknownRow = (method: string, overrides: Partial<HarnessItem> = {}): HarnessItem => ({
       id: 2, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',

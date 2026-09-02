@@ -326,14 +326,18 @@ async fn turn_plan_updated_persists_rows_without_events() {
         "item_type MUST stay null: a plan is not an item, so it has no item \
          type, and writing one would state something untrue about the row"
     );
-    // Nothing filtered, reordered, or re-shaped on the way in...
+    // No field dropped, added or re-shaped on the way in. NOT a byte-level
+    // claim, and it cannot be one: the frame is a `serde_json::Value` before
+    // the kernel ever sees it and is re-serialized by `serde_json::to_string`
+    // on the way to the DB, so key order, whitespace and escape spellings are
+    // whatever serde produces. `Value`-level equality is the property that
+    // matters and the only one available.
     assert_eq!(row.params, serde_json::to_string(&params).unwrap());
     let stored: Value = serde_json::from_str(&row.params).unwrap();
     assert_eq!(stored, params);
     // ...and the content itself, pinned rather than compared to its own source:
     // all three checklist entries survive, and the camelCase `inProgress`
-    // spelling is stored verbatim (see the fixture's provenance block — the
-    // shipped binary's `in_progress` is the core type, not the wire form).
+    // spelling is stored as sent (see the fixture's provenance block).
     assert_eq!(
         stored["plan"].as_array().map(Vec::len),
         Some(3),
