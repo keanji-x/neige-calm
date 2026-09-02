@@ -1,9 +1,17 @@
 //! #1252 S1 step 1 — the write-origin vocabulary for wave-report writes.
 //!
-//! Today every caller of `wave_report::persist_report_with_shadow` hands it a
-//! hand-assembled quadruple: `(actor, author, auto_promote_draft,
-//! recorder_shadow)`. Four independent arguments, four chances to get one
-//! wrong, and no place where the whole set is stated per caller. This module
+//! Today `wave_report::persist_report_with_shadow` takes a hand-assembled
+//! quadruple — `(actor, author, auto_promote_draft, recorder_shadow)` — and six
+//! production sites assemble it, in two layers. Three call it directly and pass
+//! all four: `decision_sink::CardDecisionSink::commit_report_op`,
+//! `routes::wave_report_blocks::commit`, and
+//! `routes::wave_templates::update_wave_template`. Three go through the
+//! `wave_report::persist_report` wrapper and pass the first three, with the
+//! wrapper's hardcoded `recorder_shadow: None` supplied on their behalf:
+//! `routes::waves::update_wave_report`, `seed_template_wave`, and
+//! `restamp_template_report_if_placeholder`. Four independent arguments, four
+//! chances to get one wrong, and no place where the whole set is stated per
+//! caller. This module
 //! introduces the type that names *who is writing* ([`WriteOrigin`]) and the
 //! total function that turns it into the quadruple ([`policy_for`]).
 //!
@@ -32,10 +40,11 @@
 //! **deliberately derives no `EditAuthor`**. It used to (`User` with no
 //! `X-Calm-Actor` header, `Spec` otherwise), and handing that author to
 //! `routes::waves::fork_guard::guard_forked_blocks` made the guard a no-op for
-//! the browser fork — in that module's words, "the only case that mattered",
-//! because a browser fork sends no header. `fork_guard` locks the same rule
-//! from the other side: the author "is no longer threaded into the fork guard
-//! at all, so that gate cannot be reintroduced without re-plumbing it through
+//! the browser fork, because a browser fork sends no header. `fork_guard`
+//! states both halves of that in its own words: gating on
+//! `author != EditAuthor::User` "made it a no-op for the only case that
+//! mattered", and the author "is no longer threaded into the fork guard at all,
+//! so that gate cannot be reintroduced without re-plumbing it through
 //! `prepare_fork_report`".
 //!
 //! An `Option<EditAuthor>` would reopen exactly that hole, because "no author"
