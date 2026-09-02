@@ -25,6 +25,9 @@ fn expected_spec_toolset() -> Vec<&'static str> {
         "calm.report.write_markdown",
         "calm.review.round",
         "calm.task.verdict",
+        // #1211 S3 — the spec agent's naming write. Added as an entry, not by
+        // loosening the assertion: the exact set is the contract.
+        "calm.wave.rename",
     ]
 }
 

@@ -288,31 +288,24 @@ async fn post_api_waves_tolerates_broken_codex_bin_returns_201_inert_wave() {
     );
 }
 
-/// Issue #251 (closes) — the wave's title must be threaded into the
-/// spec card so the kernel can send the prompt via `turn/start` directly;
-/// PR8 + PR7c deleted the legacy auto-submit path.
+/// Issue #1211 (retires the #251 contract) — wave create must NOT stamp
+/// `payload.prompt` on the spec card, not even for a non-empty title.
 ///
-/// Two surfaces under test, both of which must carry the title:
+/// #251 threaded the wave title into `payload.prompt` so the shared daemon's
+/// `turn/start` would open the session with the title as the agent's first
+/// input, and its test asserted `prompt == title` verbatim. That contract
+/// rested entirely on "the title IS the wave's intent" — the single new-wave
+/// input box doubled as the title and as the statement of what to do.
+/// #1211 takes that premise apart: the title defaults to a placeholder and the
+/// spec agent names the wave (`calm.wave.rename`) once it has worked out from
+/// the conversation what the work actually is. With no intent in the title
+/// there is nothing to seed, so the `prompt` key must be absent.
 ///
-///   1. The spec card's `payload.prompt` field. This is the prompt sent to
-///      the shared daemon via `turn/start`; before the fix the field was
-///      absent, leaving the spec agent without the wave title.
-///
-///   2. The spec card's `payload.prompt` round-trips through the same
-///      `card_with_codex_create_tx` writer user-facing codex cards use;
-///      trim normalization is part of the writer so an empty /
-///      whitespace-only title still falls through to the no-prompt
-///      path (the route enforces non-empty title at parse time but
-///      defense-in-depth is cheap).
-///
-/// We do NOT assert on the codex `argv` directly here — the daemon
-/// hands `sh -c "codex …"` to `Command::spawn`, and the test harness
-/// would need to either ptrace the child or instrument `spawn_terminal_for`
-/// to capture it. The payload assertion is the contract that matters at
-/// this layer: it's the same shape `codex_hands_free.rs::auto_submit_*`
-/// tests use to lock down the auto-submit gate for worker cards.
+/// The child-wave path still passes a seed through
+/// `spec_harness_card_payload` — that seed is the task goal the parent spec
+/// declared, not a wave title, and it is deliberately untouched here.
 #[tokio::test]
-async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
+async fn post_api_waves_does_not_stamp_prompt_on_spec_card() {
     let boot = boot().await;
 
     let title = "draft the design doc for #251";
@@ -333,24 +326,21 @@ async fn post_api_waves_threads_title_into_spec_card_prompt_payload() {
         .find(|c| boot.card_role_cache.get(&c.id) == Some(calm_server::model::CardRole::Spec))
         .expect("exactly one Spec-role card per wave");
 
-    // The #251 contract: `payload.prompt` carries the wave's title
-    // (trimmed). The shared-daemon `turn/start` path keys on this exact
-    // field shape, so any drift here is the bug coming back.
-    let prompt = spec_card
-        .payload
-        .get("prompt")
-        .and_then(|v| v.as_str())
-        .unwrap_or_else(|| {
-            panic!(
-                "spec card payload.prompt must carry the wave title (issue #251); \
-                 payload = {}",
-                spec_card.payload
-            )
-        });
-    assert_eq!(
-        prompt, title,
-        "spec card payload.prompt must equal the wave title verbatim; got {prompt:?}",
+    assert!(
+        spec_card.payload.get("prompt").is_none_or(Value::is_null),
+        "a non-empty wave title must NOT stamp payload.prompt (#1211); \
+         payload = {}",
+        spec_card.payload,
     );
+    // The rest of the production payload shape is untouched by the retirement.
+    assert_eq!(spec_card.payload.get("spec_harness"), Some(&json!(true)));
+    assert_eq!(
+        spec_card.payload.get("codex_source"),
+        Some(&json!("shared"))
+    );
+    // The title itself still round-trips onto the wave row — #1211 retires the
+    // title→prompt seeding, not the title.
+    assert_eq!(wave.title, title);
 }
 
 /// Issue #251 — when a wave's title is whitespace-only the spec card

@@ -145,7 +145,16 @@ export type ThemeRgb = Readonly<{ fg: readonly [number, number, number]; bg: rea
 
 export type NewWaveBody = Readonly<{
   cove_id: string;
-  title: string;
+  /**
+   * Issue #1211 — optional. The title is no longer the wave's intent: omit it
+   * and the kernel stores the **empty string** — it has no default name of its
+   * own; `UNTITLED_WAVE_LABEL` below is this layer's display fallback for a
+   * blank title. What this field decides is only what THIS request stores;
+   * who names the wave afterwards is not its business — the spec agent via
+   * `calm.wave.rename` is the usual namer, but the user can name it first.
+   * Present values (including `""`) are accepted verbatim.
+   */
+  title?: string;
   /**
    * Issue #1131 — optional. The new FE omits it; the kernel then stores
    * `$HOME` and does not insert a `cove_folders` row. Present values

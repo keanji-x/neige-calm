@@ -70,7 +70,10 @@ You are **turn-reactive**, not a polling loop. The kernel re-invokes you \
 once per observation, pushed into your context as the input for a new \
 turn. Each turn begins with exactly one of:
 
-  * the **wave goal** (your first turn);
+  * a **user message** (on a wave the user opened, this is your first \
+    turn — the wave has no goal until the user states one);
+  * the **wave goal**, when a parent spec opened this wave for a declared \
+    task (your first turn on a child wave);
   * a **task gate result** (`task.gate_result`; gate passed or FAILED, \
     with a log tail);
   * an **ungated task completion** (a worker reported `task.completed`);
@@ -97,6 +100,21 @@ writes are transactional.
    revision as replace anchors. Do not mint duplicate tasks. Prose blocks are \
    NOT a plan to activate: maintain them per the document's own contract.
 2. Decide what to do next and act:
+   * **Name the track.** The title is a label for the work, not the user's \
+     instruction. If `neige state` shows this wave's title is still empty, \
+     then as soon as you have worked out from the conversation what this \
+     track is actually about, call `calm.wave.rename(title, message?)` once. \
+     If it already carries a title, someone has already named it — the user, \
+     or the parent spec that opened this wave — so leave it as it is and do \
+     not call the tool. Write a \
+     short noun phrase a human would recognise in a list, not a restatement \
+     of the user's first sentence. Naming is name-once: if the wave already \
+     has a title the call returns \
+     `{\"ok\": false, \"refused\": \"already_named\"}` and changes nothing — \
+     that is not an error, leave the name alone and move on. Template waves \
+     and the per-cove chat wave refuse the same way. \
+     Do not stall the work waiting to name it, and do not name it from a \
+     guess: if you do not yet know what the user wants, ask.
    * Maintain task declarations as report `task` blocks. Read the report with \
      `calm.report.read`; for create, pass its `docRev` as `if_doc_rev`, while \
      replace passes the target block's `rev` as `if_rev`. Use \
@@ -611,6 +629,63 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
         assert!(worker.contains("You are a worker agent under spec card on wave `wave-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    /// #1211 S3 — the prompt is not the guard and the guard is not the
+    /// prompt; both have to exist. `mcp_wave_rename` pins the guard. This
+    /// pins the instruction, because a `calm.wave.rename` no agent is ever
+    /// told about would leave every wave named `Untitled` with a green test
+    /// suite: S1 deleted the only other thing that ever named a wave.
+    ///
+    /// It also pins the name-once *expectation*, not just the tool name. An
+    /// agent told to rename but not told that a refusal is normal is an agent
+    /// that retries a refusal.
+    #[test]
+    fn spec_prompt_instructs_the_agent_to_name_the_wave() {
+        let p = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-naming");
+        assert!(
+            p.contains("calm.wave.rename"),
+            "spec prompt must name the naming tool"
+        );
+        // The instruction is CONDITIONAL on observed state, not a blanket
+        // "every wave is unnamed": child waves are born titled from their
+        // parent task's goal, and a create request may still carry a title,
+        // so an unconditional "rename it" instruction buys a guaranteed
+        // `already_named` refusal — a wasted write attempt on every such wave.
+        assert!(
+            p.contains("If `neige state` shows this wave's title is still empty"),
+            "spec prompt must condition naming on the observed empty title"
+        );
+        assert!(
+            p.contains("If it already carries a title") && p.contains("not call the tool"),
+            "spec prompt must tell the agent to skip the call on an already-titled wave"
+        );
+        assert!(
+            !p.contains("A wave is created unnamed") && !p.contains("nobody has named it yet"),
+            "spec prompt must not claim every wave starts unnamed"
+        );
+        assert!(
+            p.contains("Naming is name-once"),
+            "spec prompt must state the name-once rule"
+        );
+        assert!(
+            p.contains("already_named") && p.contains("that is not an error"),
+            "spec prompt must tell the agent a refusal is normal, not a retry signal"
+        );
+        // The instruction belongs to the per-turn action list, not to some
+        // decorative preamble: it has to sit inside step 2, where the agent
+        // decides what to do.
+        let step2 = p
+            .find("2. Decide what to do next and act:")
+            .expect("step 2 is present");
+        let step3 = p.find("3. **END YOUR TURN.**").expect("step 3 is present");
+        let naming = p
+            .find("calm.wave.rename")
+            .expect("naming instruction present");
+        assert!(
+            step2 < naming && naming < step3,
+            "the naming instruction must live inside step 2's action list"
+        );
     }
 
     #[test]
