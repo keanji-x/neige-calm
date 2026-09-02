@@ -267,6 +267,24 @@ type RowStatus =
 
 const IDLE: RowStatus = Object.freeze({ phase: 'idle' });
 
+function useRetiringNotice(
+  field: ProxyField,
+  row: RowStatus,
+  setStatus: (update: (current: Readonly<Record<ProxyField, RowStatus>>) => Readonly<Record<ProxyField, RowStatus>>) => void,
+  savedNoticeMs: number,
+): void {
+  const savedAt = row.phase === 'saved' ? row.at : null;
+  useEffect(() => {
+    if (savedAt === null) return;
+    const id = setTimeout(() => {
+      setStatus((current) => (current[field].phase === 'saved'
+        ? { ...current, [field]: IDLE }
+        : current));
+    }, savedNoticeMs);
+    return () => clearTimeout(id);
+  }, [field, savedAt, savedNoticeMs, setStatus]);
+}
+
 export function NetworkPane({
   settings, loadError, onSave, onRetryLoad, savedNoticeMs = SAVED_NOTICE_MS,
 }: NetworkPaneProps) {
@@ -281,9 +299,23 @@ export function NetworkPane({
   // what the reader is typing. A genuine server change does re-seed.
   const [seed, setSeed] = useState<Draft | null>(null);
   const [draft, setDraft] = useState<Draft>({ http: '', https: '' });
+  /**
+   * What this pane last *told* the server for each field, or `null` when it has
+   * told it nothing since the bag it is holding.
+   *
+   * The commit guard cannot compare against `base` alone: `base` only moves
+   * when the server's bag comes back, so between a commit and its echo the same
+   * value looked "changed" and was sent again — Enter followed by Tab wrote
+   * twice, and closing the dialog on an in-flight commit re-sent it. Cleared
+   * whenever a genuinely new bag arrives, at which point `base` is the truth
+   * again.
+   */
+  const sent = useRef<Record<ProxyField, string | null>>({ http: null, https: null });
+
   if (loaded && (seed === null || seed.http !== incoming.http || seed.https !== incoming.https)) {
     const previous = seed;
     setSeed(incoming);
+    sent.current = { http: null, https: null };
     setDraft((current) => ({
       http: previous === null || current.http === previous.http ? incoming.http : current.http,
       https: previous === null || current.https === previous.https ? incoming.https : current.https,
@@ -295,6 +327,7 @@ export function NetworkPane({
     { http: IDLE, https: IDLE },
   );
   const sequence = useRef<Record<ProxyField, number>>({ http: 0, https: 0 });
+  const referenceFor = (field: ProxyField) => sent.current[field] ?? base[field];
 
   /**
    * Commit on **blur and Enter, never per keystroke.**
@@ -310,8 +343,9 @@ export function NetworkPane({
    * A value equal to the last one the server gave us commits nothing: focusing
    * and leaving a field the reader never edited must not write.
    */
-  const commit = (field: ProxyField, value: string, previous: string) => {
-    if (value === previous) return;
+  const commit = (field: ProxyField, value: string) => {
+    if (value === referenceFor(field)) return;
+    sent.current[field] = value;
     const ticket = (sequence.current[field] += 1);
     const settle = (next: RowStatus) => {
       // A response for a superseded commit says nothing about the current one.
@@ -341,7 +375,9 @@ export function NetworkPane({
   useEffect(() => () => {
     const { draft: last, base: seeded, onSave: save } = pending.current;
     for (const field of PROXY_FIELDS) {
-      if (last[field] === seeded[field]) continue;
+      // The same guard the blur path uses: what was already sent is not resent
+      // just because the bag has not echoed it back yet.
+      if (last[field] === (sent.current[field] ?? seeded[field])) continue;
       const value = last[field];
       void Promise.resolve(save({ [PROXY_KEY_OF[field]]: value === '' ? null : value })).catch(() => {
         // Nothing is mounted to report to. The write still went out; the next
@@ -350,19 +386,15 @@ export function NetworkPane({
     }
   }, []);
 
-  /* The confirmation retires on its own, per row. */
-  useEffect(() => {
-    const saved = PROXY_FIELDS.filter((field) => status[field].phase === 'saved');
-    if (saved.length === 0) return;
-    const id = setTimeout(() => {
-      setStatus((current) => {
-        const next = { ...current };
-        for (const field of saved) if (next[field].phase === 'saved') next[field] = IDLE;
-        return next;
-      });
-    }, savedNoticeMs);
-    return () => clearTimeout(id);
-  }, [status, savedNoticeMs]);
+  /*
+   * Per row, and keyed on *that row's* saved timestamp.
+   *
+   * One effect over the whole `status` object restarted the single shared timer
+   * every time the other row changed, so HTTPS going busy could hold HTTP's
+   * tick on screen for far longer than the notice window.
+   */
+  useRetiringNotice('http', status.http, setStatus, savedNoticeMs);
+  useRetiringNotice('https', status.https, setStatus, savedNoticeMs);
 
   /**
    * The confirmation is the **tick and nothing else**.
@@ -401,9 +433,18 @@ export function NetworkPane({
             value={draft[field]}
             placeholder="http://127.0.0.1:10809"
             status={statusFor(field)}
-            onChange={(value) => setDraft({ ...draft, [field]: value })}
-            onBlur={() => commit(field, draft[field], base[field])}
-            onKeyDown={(event) => { if (event.key === 'Enter') commit(field, draft[field], base[field]); }}
+            onChange={(value) => {
+              setDraft({ ...draft, [field]: value });
+              /* Typing withdraws this row's verdict. Without it, a commit that
+                 lands while the reader is already typing the next value paints
+                 a tick — and announces "Saved." — beside a value that was
+                 never sent. */
+              setStatus((current) => (current[field].phase === 'idle' || current[field].phase === 'saving'
+                ? current
+                : { ...current, [field]: IDLE }));
+            }}
+            onBlur={() => commit(field, draft[field])}
+            onKeyDown={(event) => { if (event.key === 'Enter') commit(field, draft[field]); }}
             width={CONTROL_WIDTH}
             /* The field stays editable while its write is in flight: a proxy
                save is one request, and blocking the field would drop the next

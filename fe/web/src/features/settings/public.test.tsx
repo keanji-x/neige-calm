@@ -237,14 +237,69 @@ describe('Settings network commits, per row', () => {
     await act(async () => { flights[0]?.reject(new Error('stale failure')); await Promise.resolve(); });
 
     const httpRow = field.closest('li');
+    // Both halves: the stale failure is not shown, **and** the newer commit's
+    // own outcome is. Asserting only the absence would stay green if the row
+    // simply dropped every verdict.
     expect(httpRow?.textContent).not.toContain('stale failure');
+    expect(httpRow?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
+  });
+
+  it('commits a value the reader restores while the first write is still out', async () => {
+    const flights: Deferred[] = [];
+    const onSave = vi.fn(() => { const d = deferred(); flights.push(d); return d.promise; });
+    render(<NetworkPane {...props({ onSave, settings: { [HTTP_PROXY_KEY]: 'origin' } })} />);
+
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'changed');
+    await userEvent.tab();                        // commit "changed", still out
+    await userEvent.clear(field);
+    await userEvent.type(field, 'origin');
+    await userEvent.tab();                        // back to what the server holds
+    /*
+     * The second commit must go out. Comparing against the server's bag alone
+     * would call this a no-op — the value equals what the server last said —
+     * and the in-flight `changed` would land as the reader's final answer.
+     */
+    expect(onSave).toHaveBeenCalledTimes(2);
+    expect(onSave).toHaveBeenLastCalledWith({ [HTTP_PROXY_KEY]: 'origin' });
+    await act(async () => { flights[0]?.resolve(); flights[1]?.resolve(); await Promise.resolve(); });
+  });
+
+  it('withdraws a row verdict as soon as the reader edits it again', async () => {
+    const onSave = vi.fn(() => Promise.resolve());
+    render(<NetworkPane {...props({ onSave })} />);
+    const field = screen.getByLabelText('HTTP proxy');
+    await userEvent.type(field, 'http://a:1');
+    await act(async () => { await userEvent.tab(); });
+    expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('Saved.');
+
+    await userEvent.type(field, '2');
+    // A tick beside a value that was never sent is a lie about the value the
+    // reader is looking at.
+    expect(field.closest('li')?.querySelector('[role="status"]')?.textContent).toBe('');
   });
 
   it('commits an edit the reader leaves by closing the pane', async () => {
-    const onSave = vi.fn();
+    const onSave = vi.fn(() => Promise.resolve());
     const view = render(<NetworkPane {...props({ onSave })} />);
     await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://typed:9');
     view.unmount();     // Escape / backdrop close unmounts a focused input: no blur fires.
-    expect(onSave).toHaveBeenCalledWith({ [HTTP_PROXY_KEY]: 'http://typed:9' });
+    expect(onSave.mock.calls).toEqual([[{ [HTTP_PROXY_KEY]: 'http://typed:9' }]]);
+  });
+
+  it('does not write twice when the field blurs and the pane then closes', async () => {
+    const onSave = vi.fn(() => new Promise<void>(() => undefined));   // never settles
+    const view = render(<NetworkPane {...props({ onSave })} />);
+    await userEvent.type(screen.getByLabelText('HTTP proxy'), 'http://typed:9');
+    await userEvent.tab();          // the real sequence: blur commits…
+    view.unmount();                 // …and only then does the dialog go away.
+    /*
+     * The count is the assertion. `toHaveBeenCalledWith` accepts a duplicate
+     * happily, and the duplicate is the defect: the cleanup used to compare the
+     * draft against the server's bag, which the in-flight write has not
+     * reached yet, so it sent the identical patch a second time.
+     */
+    expect(onSave).toHaveBeenCalledTimes(1);
   });
 });

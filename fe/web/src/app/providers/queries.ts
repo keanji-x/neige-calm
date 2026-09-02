@@ -859,15 +859,29 @@ export function pluginsQueryOptions(transport: ApiTransportPort, unauthorized: U
     queryKey: queryKeys.plugins(),
     queryFn: (): Promise<PluginListItem[]> => runOperation(transport, pluginsOperation(), unauthorized),
     retry: false,
-    refetchInterval: (query: { state: { data?: PluginListItem[] } }) =>
-      (query.state.data ?? []).some((plugin) =>
+    /* Bounded on both ends: it only runs while a row is in motion, and it
+       gives up after `PLUGIN_POLL_LIMIT` refreshes. A spawn that has not
+       resolved in that window is not going to be resolved by asking again —
+       leaving the poll on would spin for as long as the pane stayed open. */
+    refetchInterval: (query: {
+      state: { data?: PluginListItem[]; dataUpdateCount: number; errorUpdateCount: number };
+    }) => {
+      /* Both counters: a failing refetch leaves the last good data in place —
+         still `spawning` — and never advances `dataUpdateCount`, so counting
+         successes alone let a broken endpoint be polled forever. */
+      if (query.state.dataUpdateCount + query.state.errorUpdateCount > PLUGIN_POLL_LIMIT) return false as const;
+      return (query.state.data ?? []).some((plugin) =>
         (PLUGIN_TRANSIENT_STATES as readonly string[]).includes(plugin.state))
         ? PLUGIN_POLL_MS
-        : false as const,
+        : false as const;
+    },
   };
 }
 
 const PLUGIN_POLL_MS = 1500;
+/* ~30s of asking. Past that the row keeps whatever the kernel last said, which
+   is the honest answer: something is wrong with that plugin, not with the poll. */
+const PLUGIN_POLL_LIMIT = 20;
 
 export type PluginMutations = Readonly<{
   /** The plugins a lifecycle write is in flight for. */
@@ -895,13 +909,17 @@ export type PluginMutations = Readonly<{
  */
 export function usePluginMutations(transport: ApiTransportPort, unauthorized: UnauthorizedChannel): PluginMutations {
   const client = useQueryClient();
-  const [pendingIds, setPendingIds] = useState<ReadonlySet<string>>(() => new Set());
+  /* A **count** per id, not membership: the switch stays usable while a write
+     is in flight, so one plugin can have two. With a set, the first response
+     cleared the marker while the second write was still out, and the row read
+     idle mid-flight. */
+  const [pending, setPending] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [errors, setErrors] = useState<ReadonlyMap<string, string>>(() => new Map());
   const write = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
       runOperation(transport, setPluginEnabledOperation(id, enabled), unauthorized),
     onMutate: ({ id }) => {
-      setPendingIds((current) => new Set(current).add(id));
+      setPending((current) => new Map(current).set(id, (current.get(id) ?? 0) + 1));
       setErrors((current) => {
         if (!current.has(id)) return current;
         const next = new Map(current);
@@ -914,16 +932,17 @@ export function usePluginMutations(transport: ApiTransportPort, unauthorized: Un
         .set(id, error instanceof Error ? error.message : 'Could not change this plugin.'));
     },
     onSettled: (_data, _error, { id }) => {
-      setPendingIds((current) => {
-        const next = new Set(current);
-        next.delete(id);
+      setPending((current) => {
+        const next = new Map(current);
+        const left = (current.get(id) ?? 1) - 1;
+        if (left <= 0) next.delete(id); else next.set(id, left);
         return next;
       });
       void client.invalidateQueries({ queryKey: queryKeys.plugins() });
     },
   });
   return {
-    pendingIds,
+    pendingIds: new Set(pending.keys()),
     errors,
     setEnabled: (id, enabled) => { write.mutate({ id, enabled }); },
   };
@@ -933,9 +952,22 @@ export function useSettingsMutation(transport: ApiTransportPort, unauthorized: U
   const client = useQueryClient();
   const save = useMutation({
     mutationFn: (patch: SettingsPatch) => runOperation(transport, putSettingsOperation(patch), unauthorized),
-    // PUT answers with the full bag, so writing it through avoids a refetch
-    // that would briefly render the pre-save values.
-    onSuccess: (bag) => { client.setQueryData(queryKeys.settings(), bag); },
+    /*
+     * Invalidate; do **not** write the response through.
+     *
+     * The PUT answers with the whole bag, which used to be written straight
+     * into the cache to avoid a refetch. That is only sound while writes cannot
+     * overlap, and Settings › Network commits per field: change a proxy, leave
+     * the field, change it again, leave again, and the first response can land
+     * last. Written through, its older bag becomes the cache — measured: the
+     * field reverted to the earlier value, under a green tick, while the server
+     * held the newer one, and every other reader of `['settings']` saw the
+     * stale bag until something refetched.
+     *
+     * A refetch cannot invert like that: it asks after the write settled, and
+     * the last answer is the server's own state.
+     */
+    onSettled: () => { void client.invalidateQueries({ queryKey: queryKeys.settings() }); },
   });
   return (patch) => save.mutateAsync(patch);
 }
