@@ -177,7 +177,7 @@ describe('WavePage task inventory', () => {
        carriers the colour is a shorthand for. */
     const dot = screen.getByRole('img', { name: 'Status: running' });
     expect(dot.getAttribute('title')).toBe('running');
-    expect(dot.dataset.ncTaskStatus).toBe('running');
+    expect(dot.dataset.ncStatus).toBe('running');
   });
 
   /*
@@ -194,7 +194,7 @@ describe('WavePage task inventory', () => {
    *    assertion and fail the reader;
    *  - the `title` carries the same string, which is what a sighted pointer
    *    gets;
-   *  - `data-nc-task-status` stays the bare status word, because it is what the
+   *  - `data-nc-status` stays the bare status word, because it is what the
    *    colour selector keys on: folding the reason into it would leave a failed
    *    row uncoloured.
    */
@@ -208,7 +208,7 @@ describe('WavePage task inventory', () => {
     const dot = screen.getByRole('img', { name: /^Status: failed/ });
     expect(dot.getAttribute('aria-label')).toBe('Status: failed — wave 9a4c is not a git repository');
     expect(dot.getAttribute('title')).toBe('failed — wave 9a4c is not a git repository');
-    expect(dot.dataset.ncTaskStatus).toBe('failed');
+    expect(dot.dataset.ncStatus).toBe('failed');
     /* And the row it sits in reads as one sentence, key first. */
     expect(screen.getByRole('button', {
       name: /^delta.?Status: failed — wave 9a4c is not a git repository$/,
