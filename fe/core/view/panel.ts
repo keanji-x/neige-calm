@@ -25,8 +25,23 @@ export type RowStatus = Readonly<{
   /** The bare status word — a structural obligation: the renderer writes it
    *  into the `data-nc-status` attribute, unchanged. */
   token: string;
-  /** The finished, readable string — a text obligation. The wording lives in
-   *  `core`, not in either renderer, so the two cannot word it differently. */
+  /**
+   * The finished, readable string — a text obligation.
+   *
+   * **The row's own visible wording lives in `core`**, not in either renderer,
+   * so the two cannot word the status differently. That claim is about the row
+   * text and stops there: an **accessible name** may be more than the row text,
+   * and today the desktop's is — the dot's `aria-label` is
+   * `Status: ${phrase}` (`public.tsx:730`) while its `title` is the bare phrase
+   * (`:731`). That `Status: ` prefix is **renderer chrome and is not in this
+   * field**, deliberately: it is a labelling decision about one platform's
+   * graphic, not wording about the run.
+   *
+   * Nothing here stops a renderer wording its chrome differently from the
+   * other, and `view-characterization.test.tsx` has been shown not to catch it
+   * (a mutation that moved the `Status: ` prefix *into* this field stayed
+   * green). Chrome consistency is S1b's painter contract, not this type's.
+   */
   phrase: string;
 }>;
 
@@ -57,8 +72,20 @@ export type RowModuleView = Readonly<{
 
 export type WavePageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
 
-/** Whether a renderer offers an action at all. `why` is the reason a platform
- *  deliberately omits it, and is required so an omission cannot be silent. */
+/**
+ * Whether a renderer offers an action at all. `why` is the reason it is
+ * omitted, and is required so an omission cannot be silent.
+ *
+ * **Support is not necessarily a platform constant.** The desktop's real
+ * condition for `delete-card` is `onDeleteCard !== undefined`
+ * (`public.tsx:514`) — a *host prop*, which can differ between two renders of
+ * the same platform, not a fact about the platform. Since `RowPainter.action`
+ * is a fixed table, expressing that means **rebuilding the painter per render**
+ * with the support bound to the prop. S1b's desktop painter must do exactly
+ * that: a painter that hard-codes `delete-card` as supported grows a delete
+ * button on a page whose host never passed a handler, which is a control that
+ * does not exist today.
+ */
 export type ActionSupport =
   | Readonly<{ supported: true }>
   | Readonly<{ supported: false; why: string }>;
@@ -82,13 +109,31 @@ export type RowPainter<T> = Readonly<{
 /**
  * Paint one module: the single traversal both renderers go through.
  *
- * **The empty state is exclusive, and that is this function's whole reason to
- * exist** (#1234 §5.20). `empty()` is called when the module has zero rows and
- * *only* then, and `row()` is called for every row and only when there is at
- * least one. Leaving that to each renderer is exactly how the two surfaces
- * drifted in the first place — one of them can print an empty line under a
- * populated list, or omit the empty text entirely, and nothing notices. Here it
- * is structural: there is one branch, and both renderers are on it.
+ * **The empty state is exclusive** (#1234 §5.20): `empty()` is called when the
+ * module has zero rows and *only* then, and `row()` is called for every row and
+ * only when there is at least one. Leaving that to each renderer is exactly how
+ * the two surfaces drifted in the first place — one of them can print an empty
+ * line under a populated list, or omit the empty text entirely, and nothing
+ * notices.
+ *
+ * **That exclusivity is structural only within this function, and this slice
+ * does not yet make anyone enter it.** Three gaps are open on purpose, and all
+ * three are S1b's `paintPanel` plus its projection check:
+ *
+ *  - Nothing forces a renderer to *call* this at all. Both surfaces still
+ *    compose their modules by hand; "both renderers are on the one branch" is a
+ *    goal, not a fact this file can enforce.
+ *  - `deriveWavePageView` returns a `rowModules` **sequence** and there is no
+ *    traversal over it here. A renderer can paint cards, skip tasks, or reorder
+ *    them, while `wave-page.ts` claims the order is part of the view model.
+ *    The obligation to walk the sequence has no carrier yet.
+ *  - `RowPainter.action` is required by the type and **never read** by this
+ *    function. It is a declaration today; the code that consults it — and so
+ *    makes an unsupported action's `why` mean anything — arrives with the
+ *    painters.
+ *
+ * Adding `paintPanel` here would be out of S1a's scope; this note is the
+ * accounting for what the docstring above does *not* buy yet.
  */
 export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T {
   const children: readonly T[] = module.rows.length === 0

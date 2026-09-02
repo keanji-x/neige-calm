@@ -87,8 +87,29 @@ function cardRow(card: CardWire): PanelRow {
  * question, and it is the discipline that lets the mobile surface inherit the
  * rule for free instead of re-wording state by hand.
  *
- * The row always reveals its block; the *kind* is the worker-card affordance
- * and exists only when there is a card to open (`:743-751`).
+ * The row always reveals its block; the *kind* is the worker-card affordance,
+ * and the desktop's condition for painting it as a **control** is two nested
+ * tests, not one (`:741-751`): the outer `task.kind !== null` decides whether
+ * the kind is drawn at all, and only inside it does `workerCardId === null`
+ * choose between a label `<span>` and a `<button>`. So a clickable worker card
+ * exists exactly when `task.kind !== null && workerCardId !== null`, and both
+ * halves are reproduced here.
+ *
+ * **The second half is not defending against an input that happens.** Upstream,
+ * `core/domain/report.ts:968-975` makes `kind === null` equivalent to
+ * `withdrawn` / `unreadable` / tombstoned, and `:1008-1009` + `:1047` give
+ * exactly those states an undefined verdict and therefore a null
+ * `workerCardId` — so `{ kind: null, workerCardId: 'x' }` is unreachable in
+ * production. The condition is here because this function's contract is to be
+ * a **faithful copy of the desktop's judgement**, not to be a filter that
+ * happens to agree with it on today's inputs. Dropping the `kind` test would
+ * make the derivation right by coincidence of an upstream invariant it does not
+ * state, and S1b's painters would inherit a rule the page does not have.
+ *
+ * `status.phrase` deliberately does **not** carry the `Status: ` prefix: that
+ * prefix exists only in the desktop's accessible name (`:730`), while `:731`
+ * puts the bare phrase in `title`. The prefix is renderer chrome (see
+ * `panel.ts`'s `RowStatus`), not wording the view model owns.
  */
 function taskRow(task: ReportTaskRow): PanelRow {
   const workerCardId = task.workerCardId;
@@ -96,7 +117,9 @@ function taskRow(task: ReportTaskRow): PanelRow {
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
   const actions: RowAction[] = [{ kind: 'reveal-block', blockId: task.blockId }];
-  if (workerCardId !== null) actions.push({ kind: 'open-card', cardId: workerCardId });
+  if (task.kind !== null && workerCardId !== null) {
+    actions.push({ kind: 'open-card', cardId: workerCardId });
+  }
   return {
     id: task.blockId,
     title: task.key,

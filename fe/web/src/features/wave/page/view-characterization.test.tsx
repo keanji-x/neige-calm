@@ -6,26 +6,62 @@
 // `kind` condition, the ownership badge, the `statusDetail` join), S1a would be
 // self-consistent and green and S1b would be the slice that exploded.
 //
-// **What this suite is, and is not.** It checks that every *observable text
-// field* the derivation produces is present in the text the desktop panel
-// actually renders. That is a coarse claim, on purpose: it catches a
-// misunderstood rule, not a misplaced one. Whether each field lands in **its
-// own** carrier — this row's title inside this row's element and not borrowed
-// from a neighbouring badge — is the faithful-projection property, and it is
-// `checkProjection`'s job in S1b, against markers this page does not carry yet.
-// Do not read a green run here as "the projection is verified".
+// **What this suite is, and is not.** It checks that every *observable* field
+// the derivation produces is present in what the desktop panel actually
+// renders. That is a coarse claim for the text fields, on purpose: it catches a
+// rule that was **understood wrongly**, not a field that was left out and not a
+// field that landed in the wrong carrier.
 //
-// The observable set is closed and is six fields: `module.title`,
-// `module.empty` (zero-row modules only), `row.title`, `row.kind` (when
-// non-null), `badge.text`, `status.phrase`. **Id-shaped fields are excluded and
-// must stay excluded**: `row.id` (a `card.id` / `task.blockId`) and every
-// action payload reach only React keys and callbacks (`public.tsx:516,638`), so
-// asserting them would fail against a correct page.
+//  - **A dropped field is not this suite's job.** The text assertions are
+//    occurrence *lower bounds*, and deleting a derived field only removes an
+//    obligation — the page still renders, and every remaining bound still
+//    holds. Fields being present at all is pinned by the unit tests in
+//    `core/view/*.test.ts`, whose §5.1 / §5.2 mutations have been run and go
+//    red there.
+//  - **A misplaced field is not this suite's job either.** Whether each field
+//    lands in **its own** carrier — this row's title inside this row's element
+//    and not borrowed from a neighbouring badge — is the faithful-projection
+//    property, and it is `checkProjection`'s job in S1b, against markers this
+//    page does not carry yet. Do not read a green run here as "the projection
+//    is verified".
 //
-// `status.phrase` is not text content on this surface: the desktop status dot
-// is an empty span that carries the phrase in `aria-label` and `title`
-// (`public.tsx:728-733`). "Observable text" here therefore means text content
-// plus those two attributes, joined by a separator no field can span.
+// **Covered.** Six text fields, counted against `textContent` only:
+// `module.title`, `module.empty` (zero-row modules only), `row.title`,
+// `row.kind` (when non-null), `badge.text`. Plus two fields of `row.status`,
+// which are **not** lower bounds but exact equalities against the carrier the
+// page already marks (`[data-nc-task-status]`, `public.tsx:725-733`):
+// `status.phrase` against that node's `title` (`:731` is the bare phrase) and
+// `status.token` against the `data-nc-task-status` attribute (`:729`). A row
+// whose derived `status` is null must have no such node.
+//
+// **Attributes are not "observable text" here.** An earlier version folded
+// every `aria-label` / `title` in the subtree into one blob and counted
+// occurrences in it; that let a derived field pass by being a substring of some
+// *renderer-authored* sentence. Two mutations were run against it and both
+// stayed green: `taskStatusPhrase` returning the bare `status` (the desktop's
+// `Status: running — step 2 of 3` still satisfied a lower bound of one), and
+// the derivation prefixing its own `phrase` with `Status: ` (which would make a
+// faithful painter write `Status: Status: running — step 2 of 3`). Counting the
+// text fields in `textContent` and pinning the status to its carrier exactly is
+// what closes both.
+//
+// **Excluded, and why each exclusion is somebody's job.**
+//
+//  - **Id-shaped fields — excluded and must stay excluded.** `row.id` (a
+//    `card.id` / `task.blockId`) and every action *payload* reach only React
+//    keys and callbacks (`public.tsx:516,638`), so asserting them would fail
+//    against a correct page.
+//  - **Action labels — excluded, and this is S1b's opening item.** The page
+//    writes four sentences that no `RowAction` carries: `Delete card ${…}`
+//    (`:536`), `Delete card` (`:537`), `Show ${task.key} in the report`
+//    (`:642`), `Open the worker card for ${task.key}` (`:747`). `RowAction` is
+//    a `kind` plus an id and has no label field, so **S1b's two painters will
+//    each re-invent all four** — which is precisely the failure mode
+//    `taskStatusPhrase` was in until this slice, one wording written twice and
+//    drifting. Naming an action is wording, and wording belongs in `core`.
+//  - **`badge.struck` — excluded, S1b's.** It is only a class difference
+//    (`taskWithdrawn` vs `taskNote`, `:663-665`); neither `textContent` nor any
+//    marker this page carries distinguishes them.
 
 import { describe, expect, it } from 'vitest';
 
@@ -89,32 +125,49 @@ function renderedRows(container: Element, key: RowModuleView['key']): readonly E
     : [...container.querySelectorAll('[data-nc-task-inventory] > li')];
 }
 
-const SEPARATOR = '\u0000';
-
-function observableText(root: Element): string {
-  const parts = [root.textContent ?? ''];
-  for (const element of [root, ...root.querySelectorAll('*')]) {
-    for (const attribute of ['aria-label', 'title']) {
-      const value = element.getAttribute(attribute);
-      if (value !== null) parts.push(value);
-    }
-  }
-  return parts.join(SEPARATOR);
+/** What a reader sees, and nothing a renderer says *about* it: `aria-label` and
+ *  `title` are the page's own chrome (`Status: `, `Delete card`, `Show ... in
+ *  the report`), and letting a derived field match inside one of those
+ *  sentences is how two real mutations stayed green. See the file head. */
+function visibleText(root: Element): string {
+  return root.textContent ?? '';
 }
 
 function occurrences(haystack: string, needle: string): number {
   return haystack.split(needle).length - 1;
 }
 
-/** The row's observable text fields, in no particular order — position is not
- *  what this suite claims. */
+/** The row's visible text fields, in no particular order — position is not what
+ *  this suite claims. `status` is not among them: it has no text content at all
+ *  on this surface, and is asserted exactly against its own carrier instead. */
 function rowFields(row: PanelRow): readonly string[] {
   return [
     row.title,
     ...(row.kind !== null ? [row.kind] : []),
     ...row.badges.map((badge) => badge.text),
-    ...(row.status !== null ? [row.status.phrase] : []),
   ];
+}
+
+/**
+ * The status, against the node the page already marks for it.
+ *
+ * Exact equality, not an occurrence bound: the phrase's carrier is `title`
+ * (`public.tsx:731`), which is the bare phrase, and the token's carrier is the
+ * `data-nc-task-status` attribute (`:729`). The dot's `aria-label` (`:730`) is
+ * `Status: ${phrase}` and is deliberately **not** asserted — that prefix is
+ * renderer chrome the view model does not own (`core/view/panel.ts`,
+ * `RowStatus.phrase`), and asserting the label would license moving the prefix
+ * into `core`, which is a mutation this suite has been shown to miss.
+ */
+function expectStatus(rowElement: Element, row: PanelRow, where: string): void {
+  const dot = rowElement.querySelector('[data-nc-task-status]');
+  if (row.status === null) {
+    expect(dot, `${where}: derived no status, so the page must paint no dot`).toBeNull();
+    return;
+  }
+  expect(dot, `${where}: status dot`).not.toBeNull();
+  expect(dot?.getAttribute('title'), `${where}: phrase`).toBe(row.status.phrase);
+  expect(dot?.getAttribute('data-nc-task-status'), `${where}: token`).toBe(row.status.token);
 }
 
 /**
@@ -138,7 +191,17 @@ describe('deriveWavePageView against the rendered desktop panel', () => {
   it('renders every derived module title, and every row field inside its own row', () => {
     const { container } = renderPage({ cards: CARDS, tasks: TASKS });
     const view = deriveWavePageView({ cards: CARDS, tasks: TASKS });
-    const whole = observableText(container);
+    const whole = visibleText(container);
+
+    /* The fixture invariant the untitled-card arm's discriminating power rests
+       on, asserted rather than assumed: `card-2` has no title, so its row
+       prints its kind exactly **once** and an unconditional `kind` would be
+       asking for a second occurrence that is not there. `deletable: false` is
+       the other half — a deletable card would add a `Delete card harness`
+       control, and while that label no longer enters the count (only
+       `textContent` does), the fixture should not depend on that to stay
+       discriminating. */
+    expect(CARDS[1]).toMatchObject({ title: null, deletable: false });
 
     for (const module of view.rowModules) {
       expect(whole).toContain(module.title);
@@ -151,7 +214,8 @@ describe('deriveWavePageView against the rendered desktop panel', () => {
       module.rows.forEach((row, index) => {
         const element = rendered[index];
         const fields = rowFields(row);
-        expectFieldsPresent(observableText(element), fields, `${module.key}[${index}]`);
+        expectFieldsPresent(visibleText(element), fields, `${module.key}[${index}]`);
+        expectStatus(element, row, `${module.key}[${index}]`);
         /* The coarse claim the slice's acceptance names: every field reaches
            the page at all. Kept alongside the scoped one so a regression that
            moves a field out of its row still reads differently from one that
@@ -164,7 +228,7 @@ describe('deriveWavePageView against the rendered desktop panel', () => {
   it('renders each module’s empty text when, and only when, the module has no rows', () => {
     const { container } = renderPage({ cards: [], tasks: [] });
     const view = deriveWavePageView({ cards: [], tasks: [] });
-    const whole = observableText(container);
+    const whole = visibleText(container);
 
     for (const module of view.rowModules) {
       expect(module.rows).toEqual([]);

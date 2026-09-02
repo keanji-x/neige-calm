@@ -112,8 +112,8 @@ describe('deriveWavePageView tasks', () => {
 
   it('adds the worker-card action only when a card is running the task', () => {
     const [without, with_] = tasksModule([
-      task({ blockId: 'b-a', workerCardId: null }),
-      task({ blockId: 'b-b', workerCardId: 'card-9' }),
+      task({ blockId: 'b-a', kind: 'codex', workerCardId: null }),
+      task({ blockId: 'b-b', kind: 'codex', workerCardId: 'card-9' }),
     ]).rows;
 
     expect(without.actions).toEqual([{ kind: 'reveal-block', blockId: 'b-a' }]);
@@ -121,6 +121,22 @@ describe('deriveWavePageView tasks', () => {
       { kind: 'reveal-block', blockId: 'b-b' },
       { kind: 'open-card', cardId: 'card-9' },
     ]);
+  });
+
+  /*
+   * The desktop's outer test, which the derivation must copy even though the
+   * upstream never produces this row: `report.ts` ties `kind === null` to
+   * withdrawn/unreadable/tombstoned and gives those states a null
+   * `workerCardId`, so this input is production-unreachable. It is asserted
+   * anyway because the rule being copied is the page's two-level condition
+   * (`public.tsx:741-751`), not the upstream's invariant — a derivation that
+   * only tested `workerCardId` would be right by coincidence and would hand
+   * S1b's painters an action the page never draws.
+   */
+  it('offers no worker card when the task declares no kind, whatever the card id says', () => {
+    const [row] = tasksModule([task({ blockId: 'b-k', kind: null, workerCardId: 'card-9' })]).rows;
+
+    expect(row.actions).toEqual([{ kind: 'reveal-block', blockId: 'b-k' }]);
   });
 
   it('strikes the declaration badge of a withdrawn task and no other', () => {
