@@ -23,11 +23,24 @@
 //    expected strings — since the page renders from here, rewording a sentence
 //    in both places at once is a change no gate objects to. That is deliberate:
 //    this file is the wording's home now.
-//  - **That the derived fields become the rendered projection** — each field in
-//    its own carrier, the exact set and order of a row's actions, module order —
-//    is `web/src/features/wave/page/desktop-projection.test.tsx` over the real
-//    page, with `desktop-entry.test.tsx` holding that the page goes through
-//    `paintDesktopPanel` at all.
+//  - **That the derived fields become the rendered projection** — but only the
+//    fields the checker actually reads, each in its own leaf carrier: a row's
+//    `title` and `kind`, a module's `title` and `empty` text, every badge's
+//    `id`, order and `text`, the status `token` and `phrase`, the exact set and
+//    order of a row's actions together with each one's `label` and `hint`, and
+//    module order — is `web/src/features/wave/page/desktop-projection.test.tsx`
+//    over the real page, with `desktop-entry.test.tsx` holding that the page
+//    goes through `paintDesktopPanel` at all. **Two limits on that sentence**,
+//    both restated in `tools/projection/public.ts`'s standing list. First,
+//    `RowBadge.struck` is *not* in the list above: it is a formal field of this
+//    derivation, but `checkBadges` never reads it, and its only desktop carrier
+//    sits outside the projection — the `taskWithdrawn` class assertion in
+//    `web/src/features/wave/page/public.test.tsx` ("strikes through a withdrawn
+//    declaration but not an ordinary one"), which is behaviour, not projection.
+//    Second, the projection is **not onto**: nothing requires the DOM to hold
+//    only what this derivation names, so a painter may add unmarked chrome and
+//    extra controls and stay green (`projection-contract.test.tsx` keeps that
+//    as a standing positive case).
 //  - **That the user can actually do the three things** — payload, callback,
 //    and the delete control's presence — is behaviour, asserted as behaviour in
 //    `web/src/features/wave/page/public.test.tsx`.

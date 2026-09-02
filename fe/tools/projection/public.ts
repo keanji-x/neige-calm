@@ -50,8 +50,9 @@
 //
 //  - **`mount` fidelity** and **the production painter factory** — the two trust
 //    boundaries named above; S1b-3/4's real page tests carry them.
-//  - **Handler binding — the expected *positive* binding has a desktop carrier;
-//    extra callbacks are not exhausted.** This framework checks none of it:
+//  - **Handler binding — the positive binding *and* the panel's own rival
+//    callback have a desktop carrier; the wider prop surface is not
+//    exhausted.** This framework checks none of it:
 //    whether a marked host runs anything, whether the payload (`cardId` /
 //    `blockId`) reaches the right callback, whether that callback is the one the
 //    row's action names. A painter that wires every action to the same handler
@@ -60,12 +61,16 @@
 //    that the callback it must reach was called with the right payload —
 //    `onOpenTask` with the block id, `onOpenCard` with the worker card's id,
 //    `onDeleteCard` with the row's wire id exactly once — plus that no delete is
-//    offered without `onDeleteCard` or on a kernel-owned card. **What that does
-//    not give is exclusivity.** Only the two worker-card cases pin a second
-//    callback as *not* called (`onOpenCard` / `onOpenTask` against each other);
-//    the delete case passes no `onOpenCard` and asserts nothing about it, so an
-//    action that fires the correct callback **and** a spurious extra one stays
-//    green. A fourth action, or a second surface, arrives with no cover at all.
+//    offered without `onDeleteCard` or on a kernel-owned card. **Exclusivity is
+//    covered for the three actions that exist, and for nothing else.** Each of
+//    them pins a second callback as *not* called: the two worker-card cases pin
+//    `onOpenCard` / `onOpenTask` against each other, and the delete case
+//    supplies `onOpenCard` and asserts it was never reached — so a delete that
+//    fires the correct callback **and** opens the card goes red. What remains
+//    unexhausted is the rest of the prop surface: no case enumerates *every*
+//    callback the page takes, so an action that additionally fires some third
+//    prop (`onRenameWave`, say) is still green. A fourth action, or a second
+//    surface, arrives with no cover at all.
 //  - **Interactivity of the host.** §6.3 declines this: a marker may sit on a
 //    `disabled` control, on an element with no role or tab stop, or on a plain
 //    `<span>`. Mobile rows require it — Astryx generates the interactive element
@@ -78,6 +83,22 @@
 //    goes **falsely red** against a non-null `label`. The painters must use
 //    `aria-label`; that constraint is not itself checked, it is imposed by this
 //    checker being the oracle.
+//  - **`RowBadge.struck` — a formal field with no carrier in this framework at
+//    all.** `checkBadges` reads a badge's id, its position in the sequence and
+//    its text, and nothing else: a painter that ignored `struck`, or inverted
+//    it, is green under every code above. Its desktop coverage lives *outside*
+//    the projection — `wave/page/public.test.tsx` asserts the `taskWithdrawn`
+//    class on a withdrawn declaration badge and its absence on an ordinary one.
+//    That is a behavioural class assertion over one painter's stylesheet, not a
+//    projection obligation, and no other surface has even that.
+//  - **The projection is not onto, by design.** Nothing here says the DOM holds
+//    *only* what the view model names. A painter may add unmarked chrome,
+//    wrappers, counters and extra controls freely and stay green — that is a
+//    standing positive case in `projection-contract.test.tsx` ("when the painter
+//    invents chrome of its own"), not an accident. Every code above counts
+//    marked nodes, so an extra affordance carrying no marker is invisible to
+//    all of them; whether the surface shows something it should not is a
+//    question for the behaviour suites.
 //  - **The semantic content of the view model.** That a badge's `text` or a
 //    status's `phrase` is the *right* string is `core/view`'s business. This
 //    checker only proves the DOM says what the view model says.
@@ -97,11 +118,15 @@
 //    value being discarded, and catches a bypass that carries markers. Its
 //    `replace` case additionally asserts that the fixture's own module titles
 //    and row text vanish with the painter's output, which catches a *hand-built,
-//    unmarked* second copy of the same modules rendered beside the real one. But
-//    that half is bound to **that fixture's strings**: a parallel unmarked tree
-//    printing different content, or one that only appears for inputs the fixture
-//    does not use, is outside every check we have. "All content in the desktop
-//    panel comes from the painter" is not proven anywhere.
+//    unmarked* second copy of the same **Cards/Tasks row-modules** rendered
+//    beside the real one. But that half is bound to **that fixture's strings**:
+//    a parallel unmarked tree printing different content, or one that only
+//    appears for inputs the fixture does not use, is outside every check we
+//    have. The unproven statement is therefore "**all Cards/Tasks row-module
+//    content comes from the painter**" — deliberately not "all content in the
+//    desktop panel", which is false as an obligation: the panel legitimately
+//    holds `Referenced by` and `Conversations`, composed by the page outside the
+//    painter.
 //  - **The characterization suite is no longer independent.**
 //    `wave/page/view-characterization.test.tsx` compared the derivation against
 //    a hand-written page; since S1b-3b the page renders *from* that derivation,

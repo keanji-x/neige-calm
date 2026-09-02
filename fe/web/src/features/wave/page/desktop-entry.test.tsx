@@ -23,8 +23,10 @@
 //   * importing a component from another file that carries markers of its own.
 //
 // So the scan's honest claim is narrow: **the page does not rewrite a marker
-// literal in place.** What this file adds is an oracle that does not mention a
-// marker name at all — it holds the *call*, so no spelling can go round it.
+// literal in place.** What this file adds is an oracle whose load-bearing
+// assertions do not depend on how a marker is spelled — it holds the *call*,
+// and it reads a tag and the fixture's own text, so no spelling can go round
+// those.
 //
 // **Two obligations, and the second is the one that bites.** "It was called" is
 // satisfied by a page that calls the painter and then throws the result away
@@ -40,13 +42,18 @@
 // contributes no markers and the hand-built copy carries none either — but it
 // cannot avoid printing `Cards` / `Build log` / `alpha-gate`.
 //
-// **The honest limit.** Even so, this file does not close "the page's content
-// can only come from the painter". The text assertions are bound to *this
+// **The honest limit.** Even so, this file does not close "all Cards/Tasks
+// row-module content comes from the painter" — which is the statement at stake,
+// not "all content in the desktop panel", since the panel legitimately holds
+// `Referenced by` and `Conversations` composed by the page itself. The text
+// assertions are bound to *this
 // fixture's* strings, so a bypass that renders different content, or content
-// only for inputs this fixture does not use, is outside them. And the module /
-// row counts in the last two cases name `MARKER.module` / `MARKER.row`
-// directly, so **only the tag half of this oracle is spelling-independent**;
-// the marker half inherits the same spelling-boundness the source scan has.
+// only for inputs this fixture does not use, is outside them. As for spelling:
+// the **call**, **tag** and **text** assertions here — the view equality, the
+// tag's presence in the subtree, and `PAINTED_TEXT` surviving in `wrap` and
+// vanishing in `replace` — name no marker and are spelling-independent. It is
+// the **marker-count** assertions that read `MARKER.module` / `MARKER.row`
+// directly, and those inherit the same spelling-boundness the source scan has.
 //
 // **Why a whole file for it.** `vi.mock` is module-wide, so arming this one in
 // `desktop-projection.test.tsx` would put a mock underneath that suite's
@@ -176,22 +183,26 @@ describe('the page paints its desktop panel through paintDesktopPanel', () => {
     }
   });
 
-  it('and draws no row module of its own beside it', () => {
+  it('and draws no Cards/Tasks row-module of its own beside it, for this fixture', () => {
     mode = 'replace';
     const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
     const root = desktopPanel(container);
 
     expect(root.querySelectorAll('[data-entry-oracle-tag]').length).toBe(1);
-    /* The page composed the panel card out of the painter's return value and
-       nothing else. `Referenced by` / `Conversations` are `PanelModule`s too
-       and are correctly unmarked (`ui/panel-card`'s channels are opt-in), so
-       zero is the right number here and not an accident of scoping. */
-    expect(root.querySelectorAll('[data-nc-module]').length, 'modules the page drew itself').toBe(0);
+    /* The page composed the **row-module** part of the panel card out of the
+       painter's return value and nothing else. The panel legitimately holds
+       more than that: `Referenced by` / `Conversations` are `PanelModule`s of
+       the page's own and are correctly unmarked (`ui/panel-card`'s channels are
+       opt-in), so zero *marked* modules is the right number here and not an
+       accident of scoping — and it is a claim about Cards/Tasks only. */
+    expect(root.querySelectorAll('[data-nc-module]').length, 'row modules the page drew itself').toBe(0);
     expect(root.querySelectorAll('[data-nc-row]').length, 'rows the page drew itself').toBe(0);
-    /* The markers are gone **and so is the content**. Without this second half
-       a page that renders the painter's return value and hand-builds an
-       unmarked duplicate panel beside it stays green: the duplicate carries no
-       `data-nc-*`, so both counts above are still zero. */
+    /* The markers are gone **and so is the content** — for this fixture's
+       strings. Without this second half a page that renders the painter's
+       return value and hand-builds an unmarked duplicate of the Cards/Tasks
+       modules beside it stays green: the duplicate carries no `data-nc-*`, so
+       both counts above are still zero. A duplicate printing *other* content
+       is still outside this case; see the honest limit in this file's head. */
     for (const text of PAINTED_TEXT) {
       expect(root.textContent, `no unmarked copy of ${text} survives`).not.toContain(text);
     }

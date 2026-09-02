@@ -20,12 +20,14 @@
 // and the painter built here is a second construction, not the page's. What
 // turns a green run into evidence is **`desktop-entry.test.tsx`**, which mocks
 // `paintDesktopPanel` and holds that the page calls it with the whole view and
-// renders the value it hands back. **Its load-bearing half — the tag it plants
-// in the painter's return value — names no marker**, so no spelling of one can
-// go round that; its other assertions do count `data-nc-module` /
-// `data-nc-row` and are as spelling-bound as the scan below. See that file's
-// head for the residue, and `tools/projection/public.ts`'s standing list for
-// what nothing covers.
+// renders the value it hands back. **Its load-bearing assertions name no
+// marker** — the call and view equality, the tag it plants in the painter's
+// return value, and the fixture text that must vanish when the painter's output
+// is replaced — so no spelling of a marker can go round those; only its
+// module- and row-*count* assertions read `data-nc-module` / `data-nc-row`, and
+// those are as spelling-bound as the scan below. See that file's head for the
+// residue, and `tools/projection/public.ts`'s standing list for what nothing
+// covers.
 //
 // The last describe below is a **second, narrower** guard, and its scope is
 // worth being exact about: the page's source may spell none of `MARKER`'s
