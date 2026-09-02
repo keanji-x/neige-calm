@@ -5,6 +5,8 @@
 
 pub mod auth;
 pub mod callbacks;
+pub mod child_process;
+pub mod cli_query;
 pub mod connector;
 pub mod error;
 pub mod events;
@@ -26,6 +28,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub use auth::{PluginToken, hash_token, verify_token};
+pub use cli_query::{CLI_QUERY_BRINGUP_BUDGET, CliQueryRuntime};
 pub use connector::{ConnectorClient, SecretsError, read_secrets};
 pub use error::{HostError, McpError, ProcessError};
 pub use http_mcp::{HttpCredential, HttpMcpClient};
@@ -707,21 +710,27 @@ pub const MAX_CONNECTOR_BRINGUP_BUDGET: Duration = Duration::from_millis(
 /// it separately they could drift apart, which is exactly the boot-vs-enable
 /// disagreement described on [`CONNECTOR_AUTOSPAWN_BUDGET`].
 ///
-/// A connector kind with no network bring-up (there is none in this slice —
-/// `cli-query` has no enable path yet) costs only the slack.
+/// A connector kind with no network bring-up costs only what its own bring-up
+/// can cost: `cli-query` (#1164 P3) resolves a path and probes `--version`, so
+/// it takes [`CLI_QUERY_BRINGUP_BUDGET`], a fixed constant that is deliberately
+/// NOT operator-configurable — `cli_query.timeout_ms` is the (long, uncapped)
+/// `tools/call` budget and borrowing it here would put boot latency back at the
+/// operator's unwitting discretion.
 ///
-/// Reads `bringup_timeout_ms`, **never** `request_timeout_ms`: the latter is
-/// the (uncapped) `tools/call` budget and has no business on the boot path.
-/// Because the former is capped at manifest parse time, the result is bounded
-/// by [`MAX_CONNECTOR_BRINGUP_BUDGET`] for every manifest that can load.
+/// For `mcp_http`, reads `bringup_timeout_ms`, **never** `request_timeout_ms`:
+/// the latter is the (uncapped) `tools/call` budget and has no business on the
+/// boot path. Because the former is capped at manifest parse time, the result is
+/// bounded by [`MAX_CONNECTOR_BRINGUP_BUDGET`] for every manifest that can load
+/// — and so is the `cli-query` arm, by being a constant well under it.
 pub fn connector_bringup_budget(manifest: &Manifest) -> Duration {
-    match manifest.mcp_http.as_ref() {
-        Some(block) => {
-            Duration::from_millis(block.bringup_timeout_ms()) * MCP_HTTP_ROUND_TRIPS
-                + CONNECTOR_BRINGUP_SLACK
-        }
-        None => CONNECTOR_BRINGUP_SLACK,
+    if let Some(block) = manifest.mcp_http.as_ref() {
+        return Duration::from_millis(block.bringup_timeout_ms()) * MCP_HTTP_ROUND_TRIPS
+            + CONNECTOR_BRINGUP_SLACK;
     }
+    if manifest.cli_query.is_some() {
+        return CLI_QUERY_BRINGUP_BUDGET;
+    }
+    CONNECTOR_BRINGUP_SLACK
 }
 
 /// Process-global monotonic tick behind [`ConnectorSpawnOrder`]. A single
@@ -1712,22 +1721,8 @@ impl PluginHost {
                     .await;
             }
             ConnectorKind::CliQuery => {
-                // Parse + install are in place (see `Manifest::validate`);
-                // resolving/pinning the binary and executing it is the next
-                // slice. Reported through the SAME channel as every other
-                // connector bring-up failure — `ConnectorUnavailable`, hence a
-                // 503 — rather than `BadState`, which `spawn_error_to_calm`
-                // has no arm for and would render as a kernel-fault 500 for a
-                // plain "not implemented yet".
                 return self
-                    .connector_unavailable(
-                        lifecycle,
-                        guard,
-                        format!(
-                            "cli-query connector `{id}` cannot be enabled yet: \
-                             the execution runtime is not implemented in this slice (#1164 P3)"
-                        ),
-                    )
+                    .spawn_cli_query(lifecycle, manifest, &install_path, guard, inherit)
                     .await;
             }
         }
@@ -2045,6 +2040,134 @@ impl PluginHost {
             target = %client.log_target(),
             tool_count,
             "mcp-http connector running"
+        );
+        Ok(())
+    }
+
+    /// Bring up a `kind: cli-query` connector (#1164 P3).
+    ///
+    /// Structurally the same spawn as [`Self::spawn_mcp_http`] — same ordering
+    /// invariants, same failure channel — with a local `fork/exec`-shaped
+    /// bring-up in place of the network one: resolve + pin the command, read
+    /// `secrets.json`, build the `env_clear()`ed child environment, and probe an
+    /// informational fingerprint. See [`cli_query`] for why this connector
+    /// deliberately bypasses forge-action entirely.
+    ///
+    /// No token, no supervised process, no router: each `tools/call` forks a
+    /// fresh short-lived child, so there is nothing to supervise between calls.
+    /// The materialize-before-publish order is §2.7(1) and is load-bearing for
+    /// the same reason it is on the HTTP path — `running_plugin_ids` gates both
+    /// tool discovery and the boot audit loop, and both then read
+    /// `manifest.exposes_tools`.
+    async fn spawn_cli_query(
+        self: &Arc<Self>,
+        lifecycle: &LifecycleGuard,
+        manifest: &Manifest,
+        install_path: &std::path::Path,
+        guard: AdmissionGuard,
+        inherit: Option<CrashWindow>,
+    ) -> Result<(), HostError> {
+        let id = lifecycle.id();
+        let block = manifest.cli_query.as_ref().ok_or_else(|| {
+            HostError::BadState(format!(
+                "plugin `{id}` is kind cli-query but has no cli_query block"
+            ))
+        })?;
+
+        // §2.7(1) — this spawn's ordering witness starts empty; see
+        // `spawn_mcp_http` for why a stale half is worse than none.
+        self.spawn_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(id);
+
+        self.emit_state_under(lifecycle, &PluginRuntimeStatus::Spawning)
+            .await;
+
+        // ONE outer wall-clock bound over the WHOLE bring-up. `AppState::new`
+        // awaits this path inline, and a `--version` that never returns (a
+        // binary that reads stdin, a wedged network mount) is a boot stall
+        // otherwise. `cli_query.timeout_ms` is deliberately NOT consulted: it is
+        // the `tools/call` budget and may be minutes long.
+        let budget = connector_bringup_budget(manifest);
+        let outcome =
+            tokio::time::timeout(budget, cli_query::bring_up(id, block, install_path)).await;
+
+        let runtime = match outcome {
+            Err(_elapsed) => {
+                return self
+                    .connector_unavailable(
+                        lifecycle,
+                        guard,
+                        format!(
+                            "cli-query connector bring-up timed out after {} ms \
+                             (command resolution plus the `--version` fingerprint probe)",
+                            budget.as_millis(),
+                        ),
+                    )
+                    .await;
+            }
+            Ok(Err(reason)) => {
+                return self.connector_unavailable(lifecycle, guard, reason).await;
+            }
+            Ok(Ok(rt)) => Arc::new(rt),
+        };
+
+        let tools = connector::materialize_cli_tools(id, block);
+        let tool_count = tools.len();
+
+        // ---- §2.7(1): materialization, then the live insert. -------------
+        // The ORDER of the next two blocks is the invariant; each stamps the
+        // process-global tick as its LAST action so the pair is a structural
+        // witness. Identical to `spawn_mcp_http`, deliberately.
+        if !self.registry.set_exposes_tools(lifecycle, tools) {
+            let reason = format!(
+                "plugin `{id}` left the registry while its connector was starting \
+                 (uninstalled or reloaded mid-spawn); abandoning spawn"
+            );
+            tracing::warn!(plugin_id = %id, "{reason}");
+            drop(guard);
+            self.emit_state_under(lifecycle, &PluginRuntimeStatus::Unavailable { reason })
+                .await;
+            return Err(HostError::NotFound(id.to_string()));
+        }
+        self.stamp_spawn_order(id, SpawnOrderStep::Materialized);
+
+        {
+            let mut table = self.lock_table();
+            let (crashes_in_window, window_started) = inherited_window(&table, id, inherit);
+            table.spawning.remove(id);
+            guard.disarm();
+            table.live.insert(
+                id.to_string(),
+                RunningPlugin {
+                    // No supervised child: the process exists only for the
+                    // duration of one `tools/call`.
+                    process: None,
+                    mcp: Some(ConnectorClient::Cli(Arc::clone(&runtime))),
+                    status: PluginRuntimeStatus::Running,
+                    stopping: false,
+                    crashes_in_window,
+                    window_started,
+                    run_epoch: self.next_run_epoch(),
+                    crash_attempt: 0,
+                    supervisor: None,
+                    router: None,
+                    subscriptions: Arc::new(Mutex::new(Vec::new())),
+                },
+            );
+            drop(table);
+            self.stamp_spawn_order(id, SpawnOrderStep::LiveInserted);
+        }
+
+        self.emit_state_under(lifecycle, &PluginRuntimeStatus::Running)
+            .await;
+        tracing::info!(
+            plugin_id = %id,
+            program = %runtime.program().display(),
+            fingerprint = %runtime.fingerprint(),
+            tool_count,
+            "cli-query connector running"
         );
         Ok(())
     }

@@ -38,6 +38,7 @@ import {
   ChatSendButton,
   type ChatComposerTrigger,
 } from '@astryxdesign/core/Chat';
+import { Markdown } from '@astryxdesign/core/Markdown';
 import { createStaticSource } from '@astryxdesign/core/Typeahead';
 
 import { drawerSeamAround } from '../../../ui/drawer/public.tsx';
@@ -501,15 +502,14 @@ export function ChatThread({ conversation, turns, pending = false }: ChatThreadP
               {opensAfterGap(turns, index) && index > 0 && (
                 <p className={styles.gap}>{clockTime(turn.atMs)}</p>
               )}
-              <p
-                className={turn.author === 'you' ? styles.said : styles.reply}
-                data-nc-turn={turn.author}
-              >
-                {turn.text}
-                {live && last && turn.author === 'agent' && (
-                  <span className={styles.live} aria-label="Working" />
-                )}
-              </p>
+              {turn.author === 'you' ? (
+                <p className={styles.said} data-nc-turn="you">{turn.text}</p>
+              ) : (
+                <div className={styles.reply} data-nc-turn="agent">
+                  <Reply text={turn.text} />
+                  {live && last && <span className={styles.live} aria-label="Working" />}
+                </div>
+              )}
             </div>
           );
         })}
@@ -1554,6 +1554,80 @@ function jumpToExchange(frame: HTMLElement | null, id: string): boolean {
   if (scroller === null) return false;
   scroller.scrollTop += marker.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
   return true;
+}
+
+/**
+ * ── The reply is markdown, and what that costs ────────────────────────────
+ *
+ * It used to be `{turn.text}` inside a `<p>` with `white-space: pre-wrap`, and
+ * that was a lie about what the agent writes: the thing on the other end of
+ * this drawer is the same one that writes the report, and it answers in
+ * headings, lists and fenced code. All of it arrived as one flat paragraph
+ * with the hashes and backticks still in it.
+ *
+ * **Why Astryx's `Markdown` and not a markdown library.** It is already a
+ * dependency, and it carries its own parser and its own `CodeBlock` (fences are
+ * rendered through it automatically — `Markdown.tsx:1147-1166`), so nothing new
+ * is installed for either.
+ *
+ * ── `isStreaming` is deliberately **not** passed, and the first draft of this
+ *    note was wrong about why it should be ─────────────────────────────────
+ *
+ * That draft called it "incremental parsing with a per-chunk fade" and argued
+ * it was load-bearing on a live turn. It is not incremental parsing. Read from
+ * the vendor: `isStreaming` routes the text through `useStreamingText`, which
+ * is a **character-by-character typewriter** — `CHARS_PER_TICK.natural = 10` at
+ * a rAF tick derived from `--duration-fast-min` (~13ms), i.e. it *withholds*
+ * text the component already has and reveals it at ~770 chars/s, snapping to
+ * the full string only when the flag goes false.
+ *
+ * Three reasons that is the wrong clock for this transcript, in the order they
+ * matter:
+ *
+ *  1. **We already have a clock, and it is the poll.** Text arrives from
+ *     `harness/items` in poll-sized jumps. A typewriter on top is a second,
+ *     slower clock in front of the first, so a 2000-character answer keeps
+ *     revealing for ~2.6 seconds *after* it has entirely arrived.
+ *  2. **It grows a box inside a scrollport that three mechanisms measure.**
+ *     The follow-the-newest effect reads `scrollHeight`, and the lit-dot rule
+ *     re-reads every marker's rect on scroll and on resize. A block that grows
+ *     every frame for seconds is a resize storm aimed at exactly the machinery
+ *     the rest of this file spends its length getting right.
+ *  3. **It splits the text into `<span>`s while it plays** (`wrapTextWithFade`),
+ *     so the reply is not one text node until the animation ends. Measured:
+ *     `wave-conversation.test.tsx`'s `[G5]` — an upstream case this file never
+ *     touches — fails on `findByText('it runs waves')` with Testing Library's
+ *     "the text is broken up by multiple elements" hint.
+ *
+ * The fade is a real feature for a consumer holding a token stream. We are not
+ * one, and pretending to be costs all three of the above to buy an animation
+ * our data cannot drive smoothly anyway.
+ *
+ * **The cost, stated rather than discovered later: whitespace is now
+ * CommonMark's, not the author's.** A single newline inside a paragraph is a
+ * soft break — it renders as a space (`Markdown/parser.ts:388-404`: a hard
+ * break needs two trailing spaces). Before this, `pre-wrap` printed every
+ * newline exactly where it was written. Prose typed with single returns and no
+ * blank line between them therefore reflows into one paragraph. That is the
+ * whitespace contract of the language we are now speaking, and the alternative
+ * — rewriting single newlines into hard breaks before handing the string over
+ * — cannot be done without knowing which of them are inside a fence, which is
+ * re-implementing the parser we just adopted in order to feed it.
+ *
+ * `core/domain/conversation.ts` still says the text is verbatim, and it still
+ * is: what changed is the renderer, not the transport.
+ *
+ * **Only the reply.** What *you* typed stays a plain `<p>`: `*` and `#` in
+ * something a person typed into a chat box are punctuation, not syntax, and a
+ * composer that silently reinterprets what you sent is worse than one that
+ * shows it back.
+ *
+ * `headingLevelStart={3}` because the page owns `<h1>` and its sections own
+ * `<h2>`; a reply's own `#` is a heading inside a drawer, not a second page
+ * title. Astryx clamps anything past `h6`.
+ */
+function Reply({ text }: { text: string }) {
+  return <Markdown density="compact" headingLevelStart={3}>{text}</Markdown>;
 }
 
 /**

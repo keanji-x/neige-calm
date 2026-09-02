@@ -32,17 +32,19 @@
 //! places. Adding a fourth spelling of "what this template is" to serve one
 //! label is how the drift starts. The three titles are self-describing.
 //!
-//! ## The vocabulary seam, on purpose (#1209)
+//! ## The vocabulary seam, closed (#1209)
 //!
-//! This endpoint says **template**. The write side — `POST /api/waves` — still
-//! says `workflow_id`, because on that field the name is accurate: it is the
-//! thing the plugin-binding path resolves. #1209 rules that the two concepts
-//! should merge into one (`template`, optionally bound to a plugin), and that
-//! the merge waits for a forcing function. Until then the seam stays visible
-//! and documented here rather than papered over with a `template_id` alias:
-//! two wire fields doing one job is worse than one recorded seam.
+//! One concept (template), one field (`workflow_id`). This endpoint lists it,
+//! `POST /api/waves` admits by it, and **the admission test is only "is it in
+//! the roster"** — there is no second path in. A plugin's manifest
+//! `workflows[]` array declares *which roster keys this plugin claims*; that is
+//! not a second spelling of the concept but a documented adapter boundary (see
+//! the field docs on `plugin_host::manifest::Manifest::workflows`).
 //!
-//! When the merge lands, the shape returned here does not change.
+//! (#1209 PR-2 renames the wire field to `template_id`. The seam is already
+//! gone as of PR-1; what is left is spelling.)
+//!
+//! The shape returned here did not change when the concepts merged.
 //!
 //! ## Editable templates (#1230)
 //!
@@ -58,58 +60,74 @@
 //!   #1230 touches this file.
 //! * **A template that has not been seeded yet** — the constants, unchanged.
 //!
-//! The read stays a read. `seeded_definition` looks the wave up and gives up if
-//! it is absent; it never calls `ensure_workflow_templates`. The lazy seed is a
-//! write, and a `GET` that mints three waves the first time somebody opens the
-//! New wave dialog is exactly the behaviour the original note above forbids.
+//! The read stays a read. `current_definition` looks the wave up and gives up
+//! if it is absent; it never calls `ensure_workflow_templates`. The lazy seed
+//! is a write, and a `GET` that mints three waves the first time somebody opens
+//! the New wave dialog is exactly the behaviour the note above forbids. A read
+//! *failure* on a seeded report is propagated, never swallowed into the
+//! constant fallback — answering with stale constants would turn an outage into
+//! the very drift this file exists to remove.
 //!
 //! ### The title lives in the report summary, not the wave row
 //!
 //! A seeded template is a wave, so it has a `waves.title` column *and* a report
 //! summary, both set to the constant title at seed time. The editor writes only
 //! the summary, and this endpoint reads only the summary. Keeping the wave row
-//! out of it means an edit is one write to one authority: the same
-//! `persist_report` call that carries the tasks. The system wave's own row title
-//! is then a seeded-once display detail of a wave no UI ever lists — the system
-//! cove is filtered out of `GET /api/coves` — and not a second place a title
-//! could disagree from.
+//! out of it means an edit is one write to one authority.
 //!
-//! ### What a save overwrites
+//! ### The write口 is a diff, and that is the whole safety argument
 //!
-//! `PUT /api/wave-templates/{id}` re-renders the whole report as
-//! `(constant intro + submitted tasks)`. A template report is *also* reachable
-//! through the ordinary wave report editor, so prose somebody typed there is
-//! **discarded by the next save from Settings**. That is a deliberate
-//! trade — Settings is the editing authority for a template's shape, and the
-//! alternative is a merge between two editors of the same document — but it is
-//! a trade, not an accident, and it is why the editor round-trips the fields it
-//! does not display (see `workflow_template_tasks_from_body`) instead of
-//! rebuilding tasks from the two fields it does.
+//! `PUT /api/wave-templates/{id}` takes `{title, edits:[{key,goal}],
+//! appends:[{key,goal}]}` — never task blocks. Two earlier shapes accepted
+//! blocks and both leaked, in ways that were fixed one at a time and kept
+//! reappearing:
+//!
+//! * omitting a block deleted it. A live task was refused by the guard, but a
+//!   **tombstone** was not (`guard_task_declarations`' removal check is gated on
+//!   `!is_tombstone(old)`), so omitting one silently reversed a #1179-governed
+//!   deletion and re-appending the key resurrected it;
+//! * privileged vocabulary went in verbatim. Measured, not argued:
+//!   `released_by_user: true` and `spawn: "sub-wave"` were both accepted and
+//!   persisted.
+//!
+//! Both are one root cause — the editor was a second author of task blocks on a
+//! document whose invariants assume one — and neither is fixable by adding
+//! checks, because the check list must anticipate every field the task
+//! vocabulary will ever grow. So the client states only `(key, goal)` and the
+//! server owns everything else. The request structs are
+//! `#[serde(deny_unknown_fields)]`: the guarantee is "there is nowhere to put
+//! these", so an attempt is **refused**, not sanitised.
+//!
+//! ### The save is a document edit, not a regeneration
+//!
+//! The rebuild walks the report's **blocks** and re-emits each one with its
+//! `<!-- neige:b_xxxx -->` marker. Both halves matter: rebuilding from the task
+//! fences alone silently dropped every other block (`WriteMarkdown` is
+//! documented as the op that *may* delete non-prose blocks, so nothing would
+//! have refused it), and omitting the markers made `align.rs` re-derive block
+//! identity from text similarity even though this handler knows exactly which
+//! stored block each payload came from. Handing it the answer removes a class
+//! of "the aligner guessed wrong" failures instead of betting on a threshold.
 //!
 //! ### The ceiling: append-only task lists
 //!
 //! A template report is an ordinary wave report, so `wave_report_edit_guard`'s
-//! task-declaration invariants (#1179) apply to it in full:
+//! task-declaration invariants (#1179) apply to it in full: a task block's
+//! `key` is immutable for the life of that block, and a live task may only
+//! leave a document as a tombstone that `prepare_fork_report` then copies into
+//! every wave forked afterwards.
 //!
-//! * a task block's `key` is **immutable** for the life of that block, and
-//! * a live task may only leave a document through the block-level delete path,
-//!   which `normalize_report_op` rewrites into an in-place tombstone for a
-//!   `User` author — and `prepare_fork_report` then *copies* tombstones into
-//!   every wave forked afterwards.
-//!
-//! So a save may change titles, goals, acceptance criteria, context and
-//! dependency edges, and it may **append** tasks. It may not rename a key and
-//! it may not remove a task: both come back as a 400 from the guard, which is
-//! the correct outcome — the alternative is a template whose deletions
-//! accumulate as tombstones in every future wave.
+//! So a save may reword tasks and **append** them. It may not rename a key and
+//! it may not remove a task. Editing a *retired* key is refused rather than
+//! silently dropped — the projection hides tombstones, so a 200 there would
+//! report success for a write that did not happen.
 //!
 //! Those invariants exist to protect a wave's live plan, and a template's tasks
 //! are never live (`ready: false`, never projected). Relaxing them *for
-//! templates only* is therefore arguable, but it is a change to #1179's guard
-//! and not something this endpoint may decide on its own. Until then the limit
-//! is real, pinned by
-//! `renaming_or_removing_a_template_task_is_refused_by_the_report_contract`,
-//! and the client must not offer rename/delete affordances that can only 400.
+//! templates only* is arguable, but it is a change to #1179's guard and not
+//! something this endpoint may decide. Until then the limit is real, pinned by
+//! `a_tombstone_survives_saves_and_its_key_stays_retired`, and the client must
+//! not offer rename/delete affordances that can only 400.
 
 use crate::error::{CalmError, ErrorBody, Result};
 use crate::event::EditAuthor;
@@ -120,7 +138,7 @@ use crate::routes::waves::{
 use crate::state::{AppState, RouteState};
 use crate::wave_report::{ReportDocOp, persist_report_with_shadow, resolve_report_for_wave};
 use crate::workflow_templates::{
-    AUTHOR_REAL_GATE, WORKFLOW_TEMPLATES, is_workflow_template_key, task_payload_key_and_goal,
+    AUTHOR_REAL_GATE, WORKFLOW_TEMPLATES, task_payload_key_and_goal, workflow_template,
     workflow_template_task_payloads, workflow_template_task_payloads_from_body,
 };
 use axum::{
@@ -259,9 +277,13 @@ async fn current_definition(s: &RouteState, key: &str) -> Result<Definition> {
     })
 }
 
+/// #1209 PR-1 made `workflow_template()` the single fallible roster lookup and
+/// deleted the second roster array it replaced. This goes through it rather
+/// than re-deriving membership, so there is exactly one answer to "is this a
+/// template" and the write口 cannot drift from the create path's admission.
 fn known_template(id: &str) -> Result<()> {
-    is_workflow_template_key(id)
-        .then_some(())
+    workflow_template(id)
+        .map(|_| ())
         .ok_or_else(|| CalmError::NotFound(format!("wave template `{id}`")))
 }
 

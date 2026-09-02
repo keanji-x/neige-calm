@@ -9,9 +9,27 @@ beforeEach(() => { vi.stubGlobal('requestAnimationFrame', (callback: FrameReques
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe('DirectoryField integration', () => {
+  /* The purpose phrase is now half of the accessible name, so a wrong default
+     is a wrong name and not a stale placeholder. Red when the default stops
+     following `mode`. */
+  it('names itself after what it picks when the call site gives no placeholder', () => {
+    render(<DirectoryField value="" onChange={vi.fn()} listDirectory={listDirectory} mode="file"/>);
+    expect(screen.getByRole('button', { name: 'Choose a file' })).toBeTruthy();
+    cleanup();
+    render(<DirectoryField value="" onChange={vi.fn()} listDirectory={listDirectory}/>);
+    expect(screen.getByRole('button', { name: 'Choose a directory' })).toBeTruthy();
+  });
+
+  /* A call site that passes an empty placeholder must not produce a control
+     named ": /work" — or, unset, one with no name at all. */
+  it('falls back to the default purpose when the placeholder is blank', () => {
+    render(<DirectoryField value="/work" onChange={vi.fn()} listDirectory={listDirectory} placeholder=""/>);
+    expect(screen.getByRole('button', { name: 'work' })).toBeTruthy();
+  });
+
   it('uses the owning Dialog child-view path without nesting a dialog', async () => {
     render(<Dialog open title="Settings" onClose={vi.fn()}><DirectoryField value="/work" onChange={vi.fn()} listDirectory={listDirectory}/></Dialog>);
-    fireEvent.click(screen.getByRole('button', { name: '/workBrowse…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'work' }));
     expect(await screen.findByRole('dialog', { name: 'Choose a directory' })).toBeTruthy();
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
@@ -20,7 +38,7 @@ describe('DirectoryField integration', () => {
 
   it('falls back to an inline browser outside Dialog', async () => {
     render(<DirectoryField value="/work" onChange={vi.fn()} listDirectory={listDirectory}/>);
-    fireEvent.click(screen.getByRole('button', { name: '/workBrowse…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'work' }));
     expect(await screen.findByRole('combobox')).toBeTruthy();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -34,9 +52,9 @@ describe('DirectoryField integration', () => {
       return <DirectoryField value={value} onChange={setValue} listDirectory={browse} mode="file"/>;
     }
     render(<Harness/>);
-    fireEvent.click(screen.getByRole('button', { name: '/a/bBrowse…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'b' }));
     fireEvent.click(await screen.findByRole('option', { name: 'c.txt' }));
-    fireEvent.click(screen.getByRole('button', { name: '/a/b/c.txtBrowse…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'c.txt' }));
     expect(await screen.findByRole('option', { name: 'c.txt' })).toBeTruthy();
     expect(browse).toHaveBeenLastCalledWith('/a/b');
   });

@@ -25,6 +25,16 @@ const LISTING: DirectoryListing = {
  */
 const TASK_LABEL = 'What this wave should do';
 
+/* The folder chip's copy, restated here for the same reason `TASK_LABEL` is:
+   it is user-facing text, and a test that imported it from the component could
+   not fail when the component silently changed it. */
+const FOLDER_PLACEHOLDER = 'Choose a folder';
+
+/* The template chip, matched on either of the two things it can say: it asks
+   while nothing is chosen and names the choice after. Never on the whole
+   string — the rest of the name is what the assertions vary. */
+const TEMPLATE_CHIP = /^Choose a template$|^Template: /;
+
 /** The bound template, shaped as the read endpoint returns it. */
 const ISSUE_DEV: WaveTemplate = {
   id: 'issue-development',
@@ -81,8 +91,21 @@ function renderForm(overrides: Partial<Parameters<typeof NewWaveForm>[0]> = {}) 
  * inline; that it pushes into the *surrounding* dialog instead is the shell's
  * test, because only there is there a dialog to push into.
  */
+/**
+ * The folder chip while nothing is chosen.
+ *
+ * Named, not labelled: the chip carries its own `aria-label` rather than
+ * sitting in a labelled field, and unset that label is the same sentence its
+ * text shows. Once a folder is chosen the two part company — the text is the
+ * basename, the name is the whole path — which is why this helper is only
+ * good for the unset state.
+ */
+function folderChip(): HTMLButtonElement {
+  return screen.getByRole('button', { name: FOLDER_PLACEHOLDER });
+}
+
 async function pickTheListedFolder(): Promise<void> {
-  await userEvent.click(screen.getByLabelText('Folder'));
+  await userEvent.click(folderChip());
   // The browser loads on mount and mirrors the listing into its path input;
   // `Select this directory` only enables once the two agree.
   await screen.findByDisplayValue('/srv/app/');
@@ -104,7 +127,7 @@ async function fillTitle(value = 'Ship the thing') {
  * is the current choice, which is exactly what the assertions vary.
  */
 function templateTrigger(): HTMLButtonElement {
-  return screen.getByRole('button', { name: /^Start from/ });
+  return screen.getByRole('button', { name: TEMPLATE_CHIP });
 }
 
 /**
@@ -176,7 +199,14 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     await fillTitle();
     // Present, and empty: the placeholder is what an unset folder shows, and an
     // unset folder is the managed default.
-    expect(screen.getByLabelText('Folder').textContent).toContain('Neige picks one for this wave');
+    /* Unset, the chip asks — the same sentence shape as the template chip
+       beside it, and no row, paragraph or label around either. What it does
+       *not* hold is a path, which is the only thing that could be a value. */
+    expect(folderChip().textContent).toBe(FOLDER_PLACEHOLDER);
+    expect(folderChip().getAttribute('title')).toBe(FOLDER_PLACEHOLDER);
+    // And the dialog explains nothing under the row: two chips that say what
+    // they do is the whole of it.
+    expect(screen.queryByText(/workspace/i)).toBeNull();
     // Empty means nothing was read: the picker only reaches its port on open.
     expect(props.listDirectory).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Cove')).toBeNull();
@@ -194,7 +224,7 @@ describe('NewWaveForm asks for a task and what the wave starts from', () => {
     await openTemplates();
     expect(templateTrigger().getAttribute('aria-expanded')).toBe('true');
     expect(screen.getAllByRole('menuitem').map((item) => item.textContent))
-      .toEqual(['BlankSelected', 'Issue development', 'Small change', 'Investigation']);
+      .toEqual(['No templateSelected', 'Issue development', 'Small change', 'Investigation']);
   });
 
   /*
@@ -239,7 +269,7 @@ describe('Start from — Blank is the default and stays free', () => {
        no checked radio left to read it off. Its accessible name is the field
        label plus the current choice, which is also why a `<label htmlFor>`
        cannot be used here: it would replace the choice with the label. */
-    expect(screen.getByRole('button', { name: 'Start from Blank' })).toBe(templateTrigger());
+    expect(screen.getByRole('button', { name: 'Choose a template' })).toBe(templateTrigger());
     await fillTitle();
     await userEvent.click(submitButton());
     const [draft] = onSubmit.mock.calls[0] as [Record<string, unknown>];
@@ -257,7 +287,7 @@ describe('Start from — Blank is the default and stays free', () => {
    */
   it('still creates a blank wave when the template read gave nothing', async () => {
     const { props } = renderForm({ templates: [], templatesError: 'Could not load templates.' });
-    expect(screen.getByRole('button', { name: 'Start from Blank' })).toBe(templateTrigger());
+    expect(screen.getByRole('button', { name: 'Choose a template' })).toBe(templateTrigger());
     await openTemplates();
     expect(screen.getAllByRole('menuitem')).toHaveLength(1);
     await userEvent.keyboard('{Escape}');
@@ -281,7 +311,7 @@ describe('Start from — an unbound template is id-only', () => {
     await fillTitle();
     await chooseTemplate('Small change');
     // The collapsed trigger carries the choice out of the closed menu.
-    expect(screen.getByRole('button', { name: 'Start from Small change' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Template: Small change' })).toBeTruthy();
     // No fields expand: the read said this template has no input schema.
     expect(screen.queryByLabelText('Issue URL')).toBeNull();
     expect(screen.queryByRole('checkbox')).toBeNull();
@@ -441,7 +471,7 @@ describe('Start from — each template says which tasks it pre-sets', () => {
         for (const task of other.tasks) expect(card?.textContent).not.toContain(task.goal);
       }
     }
-    expect(within(menu).getByRole('menuitem', { name: /^Blank/ }).getAttribute('aria-describedby'))
+    expect(within(menu).getByRole('menuitem', { name: /^No template/ }).getAttribute('aria-describedby'))
       .toBeNull();
   });
 
@@ -492,7 +522,7 @@ describe('Start from — each template says which tasks it pre-sets', () => {
     }
     expect(order).toEqual([
       templateTrigger(),
-      screen.getByLabelText('Folder'),
+      folderChip(),
       screen.getByRole('button', { name: 'Cancel' }),
       submitButton(),
     ]);
@@ -518,7 +548,7 @@ describe('Start from — each template says which tasks it pre-sets', () => {
       await new Promise((resolve) => { requestAnimationFrame(() => resolve(null)); });
     });
     // First stop inside the menu is Blank, which has no card.
-    expect(document.activeElement?.textContent).toContain('Blank');
+    expect(document.activeElement?.textContent).toContain('No template');
     expect(screen.queryByRole('dialog')).toBeNull();
 
     await userEvent.keyboard('{ArrowDown}{ArrowDown}{ArrowDown}');
@@ -609,7 +639,7 @@ describe('The folder is optional, and its absence is the managed default', () =>
    */
   it('reads the directory through the injected port', async () => {
     const { props } = renderForm();
-    await userEvent.click(screen.getByLabelText('Folder'));
+    await userEvent.click(folderChip());
     await screen.findByDisplayValue('/srv/app/');
     expect(props.listDirectory).toHaveBeenCalled();
   });

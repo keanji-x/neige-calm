@@ -77,9 +77,7 @@ use crate::wave_report::{
 };
 use crate::wave_report_doc::ReportDoc;
 use crate::wave_report_read::load_report_read_snapshot;
-use crate::workflow_templates::{
-    WORKFLOW_TEMPLATES, is_workflow_template_key, workflow_template_report,
-};
+use crate::workflow_templates::{WORKFLOW_TEMPLATES, workflow_template, workflow_template_report};
 use crate::workspace_recycle;
 use crate::workspace_repoint::{PristineVerdict, workspace_pristine};
 use axum::{
@@ -756,62 +754,46 @@ pub(crate) async fn create_wave(
     //    every cross-cove correctness check so the inner writer
     //    (`wave_create_tx`) stays a pure mechanical row insert. Order:
     //    omitted-cwd default → absolute-path shape → normalize →
-    //    existing-claim resolution → optional folder attach. All
-    //    branches that surface a 4xx short-circuit before any DB write.
-    let bound_plugin = match p.workflow_id.as_deref() {
-        Some(workflow_id) => {
-            let unknown_workflow = || {
-                CalmError::BadRequest(format!(
-                    "wave create: `workflow_id` must reference a registered trusted workflow; got `{workflow_id}`"
-                ))
-            };
-            // Whitespace-only ids short-circuit before the registry lookup
-            // (pre-#891 local-guard shape) and share the unknown-id 400.
-            if workflow_id.trim().is_empty() {
-                return Err(unknown_workflow());
-            }
-            match resolve_trusted_workflow(&s, workflow_id).await {
-                Some(plugin) => Some(plugin),
-                // #1110 S6 — seeded template keys are valid without a plugin
-                // workflow id (`small-change` / `investigation`). A trusted
-                // plugin that declares the same id (git-forge
-                // `issue-development`) still stamps `plugin_scope`.
-                None if is_workflow_template_key(workflow_id) => None,
-                None => return Err(unknown_workflow()),
-            }
-        }
+    //    existing-claim resolution → optional folder attach.
+    //
+    //    #1209 — what "short-circuits before any DB write" actually covers.
+    //    Every 4xx this handler can decide *before opening the transaction*
+    //    (cwd shape, attached-workspace validation, cove 404, unknown
+    //    template, the `workflow_input` binding matrix) lands before any DB
+    //    write. The ones decided later do not: the in-transaction 400s for an
+    //    explicit `fork_report_from` (source missing / cross-cove), the
+    //    folder-claim 409 and in-transaction 500s all happen after template
+    //    seeding, and seeding commits separately so it does not roll back.
+    //    Nor does a post-commit failure: `materialize_workspace` runs after
+    //    the transaction commits and returns non-2xx with the wave already
+    //    persisted (pinned by `materialize_failure_fails_the_create`).
+    //    "non-201 ⇒ no side effect" is therefore not a property of this
+    //    handler and never was.
+
+    // #1209 — one lookup. The template is the concept; a plugin binding is an
+    // attribute of it, not a second way in. Roster membership is the whole
+    // admission test: whether some plugin claims the id, and whether that
+    // plugin is running and trusted, cannot change the answer.
+    let admission = match p.workflow_id.as_deref() {
+        Some(workflow_id) => Some(admit_template(&s, workflow_id).await.ok_or_else(|| {
+            CalmError::BadRequest(format!(
+                "wave create: `workflow_id` must reference a known wave template; got `{workflow_id}`"
+            ))
+        })?),
         None => None,
     };
+    // The binding is read off the admitted template; the route no longer digs
+    // through the registry a second time.
+    let bound_plugin = admission.as_ref().and_then(|a| a.binding.as_ref());
     // #891 / #1110 S2 — `workflow_input` is only accepted against a bound
     // workflow whose owning plugin Manifest declares an `input_schema`;
     // validated here, before any DB write, so the inner writer persists
     // the blob verbatim. Still requires `workflow_id` this slice
     // (S5 deletes the workflow entity).
-    validate_workflow_input_binding(bound_plugin.as_ref(), p.workflow_input.as_ref())?;
+    validate_workflow_input_binding(bound_plugin, p.workflow_input.as_ref())?;
     // #1110 S4 — copy the owning plugin id into `plugin_scope` in the same
     // insert. Unbound create leaves it None. Not a request field.
-    p.plugin_scope = bound_plugin.as_ref().map(|manifest| manifest.id.clone());
-
-    // #1110 S6 — matching `workflow_id` seeds the three template waves in
-    // the system cove (idempotent) and, when the caller omitted
-    // `fork_report_from`, forks that template's report. An explicit
-    // `fork_report_from` always wins.
-    if let Some(workflow_id) = p.workflow_id.as_deref()
-        && is_workflow_template_key(workflow_id)
-    {
-        let template_key = workflow_id.to_string();
-        ensure_workflow_templates(&s).await?;
-        if fork_report_from.is_none() {
-            let template_id = lookup_workflow_template_wave(&s, &template_key)
-                .await?
-                .ok_or_else(|| {
-                    CalmError::Internal(format!(
-                        "wave create: seeded template `{template_key}` is missing after ensure"
-                    ))
-                })?;
-            fork_report_from = Some(template_id);
-        }
-    }
+    p.plugin_scope = bound_plugin.map(|manifest| manifest.id.clone());
 
     // Issue #1131 — omitted / null cwd is a new branch *before* the
     // user-cove claim scan (same spirit as the system-cove exemption
@@ -896,6 +878,32 @@ pub(crate) async fn create_wave(
         }
     };
 
+    // #1110 S6 — a template id seeds the three template waves in the system
+    // cove (idempotent) and, when the caller omitted `fork_report_from`, forks
+    // that template's report. An explicit `fork_report_from` always wins.
+    //
+    // #1209 — deliberately *after* the cwd shape check, the attached-workspace
+    // check and the cove 404, so none of those 4xx leave a freshly minted
+    // system cove and three template waves behind. It used to run first, which
+    // contradicted this handler's own "4xx short-circuits before any DB write"
+    // comment. Everything below this point is either in the transaction or
+    // after it, so this is as late as the seed can go.
+    if let Some(admission) = &admission {
+        ensure_workflow_templates(&s).await?;
+        if fork_report_from.is_none() {
+            fork_report_from = Some(
+                lookup_workflow_template_wave(&s, admission.key)
+                    .await?
+                    .ok_or_else(|| {
+                        CalmError::Internal(format!(
+                            "wave create: seeded template `{}` is missing after ensure",
+                            admission.key
+                        ))
+                    })?,
+            );
+        }
+    }
+
     let workspace_root = s.workspace_root.clone();
     let created = create_wave_with_spec_harness(
         s,
@@ -927,6 +935,39 @@ pub(crate) async fn create_wave(
         },
         ok => ok,
     }
+}
+
+/// #1209 — the single answer to "may this id create a wave", plus the optional
+/// plugin binding that comes with it.
+///
+/// The word *admission* is the point: this answers **admission**, not "what
+/// does the template look like right now". The authority for the latter is the
+/// seeded template report, not this struct — which is why there is no `title`
+/// here.
+pub(crate) struct TemplateAdmission {
+    /// The roster's own `&'static` key, not the caller's string. Downstream
+    /// seeding and lookup use this, so a future case-folding or aliasing
+    /// admission rule cannot leak an unnormalized key into the DB.
+    pub key: &'static str,
+    /// The owning plugin, when a running trusted one claims this id. `None` is
+    /// an ordinary template, not a rejection.
+    pub binding: Option<Manifest>,
+}
+
+/// Admit a caller-supplied `workflow_id`.
+///
+/// Roster membership is the only admission test; the binding is resolved
+/// afterwards purely to be carried along. There is deliberately no fallback
+/// arm here: a running trusted plugin declaring an id the roster does not have
+/// gets `None`, i.e. a 400. That is the whole of #1209 — see §5 of
+/// `docs/architecture/1209-template-workflow-unify.md` for why the alternative
+/// (admitting it as a report-less pseudo-template) was rejected.
+pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateAdmission> {
+    let template = workflow_template(id)?;
+    Some(TemplateAdmission {
+        key: template.key,
+        binding: resolve_trusted_workflow(s, id).await,
+    })
 }
 
 /// Resolve `workflow_id` to the owning plugin Manifest iff a running

@@ -2920,6 +2920,118 @@ describe('the exchange rail, as the engine lays it out', () => {
   });
 });
 
+/*
+ * ── The reply keeps the report's voice after the words became markdown ─────
+ *
+ * `.reply` used to set `font-family` on the one element that held the text, so
+ * the family and the words were the same box. They are not any more: Astryx's
+ * `Markdown` emits its own blocks, and those take their family, size and
+ * leading from *its* variables (`--font-family-body`, `--text-body-size`,
+ * `--text-body-leading`), which `styles/astryx-theme.css` maps app-wide to our
+ * **sans** at the interface rank. `.reply` overrides the three for its subtree.
+ *
+ * That override is invisible to every other tier: jsdom computes no styles, and
+ * reading the declaration out of the stylesheet would only prove it was
+ * written — the failure this guards is that it stops *connecting*, which is
+ * what an upstream rename of any of the three variable names would do, silently
+ * and with every existing assertion still green.
+ *
+ * Compared against probes carrying the page's own tokens rather than against a
+ * font-name string, for the same reason the composer's popover case does it:
+ * what is pinned is that the hook connects, not how a family is spelled.
+ */
+describe('the reply’s type, through Astryx’s markdown', () => {
+  const MARKDOWN_REPLY: ConversationTurn[] = [
+    { id: 'you-0', author: 'you', text: 'Ask', atMs: 0 },
+    {
+      id: 'agent-0',
+      author: 'agent',
+      text: '## A heading\n\nAn answer that runs long enough to wrap.',
+      atMs: 1,
+    },
+  ];
+
+  /**
+   * The block Astryx actually painted the words into — **and never `.reply`
+   * itself**, which is only the box around it.
+   *
+   * There was a `?? reply` fallback here and it made the whole case vacuous:
+   * with it, the pre-markdown implementation — `<p className={styles.reply}>` —
+   * passes every assertion below, because `.reply` carries the plain
+   * `font-family`/`font-size` declarations that are still in the rule for the
+   * container's own text nodes. What is under test is that the *variables*
+   * reach Astryx's block, so the block has to be found or the case has to fail.
+   */
+  /* Two functions rather than one taking a selector: `architecture/
+     no-class-dom-query` requires every runtime query to be a static string, and
+     a test file is not exempt from a rule whose point is that a selector built
+     at runtime fails closed. */
+  function paintedParagraph(): HTMLElement {
+    const found = replies()[0].querySelector<HTMLElement>('[role="paragraph"], p');
+    expect(found, 'no paragraph inside the reply — markdown did not render').not.toBeNull();
+    return found!;
+  }
+
+  function paintedHeading(): HTMLElement {
+    const found = replies()[0].querySelector<HTMLElement>('h4');
+    expect(found, 'no h4 inside the reply — markdown did not render the heading').not.toBeNull();
+    return found!;
+  }
+
+  function probe(styles: Partial<CSSStyleDeclaration>): {
+    fontFamily: string; fontSize: string; lineHeight: string;
+  } {
+    const element = document.createElement('div');
+    Object.assign(element.style, styles);
+    document.body.append(element);
+    const computed = getComputedStyle(element);
+    /* Read every property before the element leaves the document. */
+    const snapshot = {
+      fontFamily: computed.fontFamily,
+      fontSize: computed.fontSize,
+      lineHeight: computed.lineHeight,
+    };
+    element.remove();
+    return snapshot;
+  }
+
+  it('paints the reply in the report’s serif at the drawer’s step, not Astryx’s body sans', () => {
+    render(<RailPane turns={MARKDOWN_REPLY} />);
+    const painted = getComputedStyle(paintedParagraph());
+
+    /* All three overridden variables, because all three are separately
+       droppable: an earlier version of this case read family and size only, and
+       deleting `--text-body-leading` left it green. */
+    const wanted = probe({
+      fontFamily: 'var(--font-serif)',
+      fontSize: 'var(--text-md)',
+      lineHeight: 'var(--leading-loose)',
+    });
+    expect(painted.fontFamily).toBe(wanted.fontFamily);
+    expect(painted.fontSize).toBe(wanted.fontSize);
+    expect(painted.lineHeight).toBe(wanted.lineHeight);
+
+    /* And the sans the app-wide bridge would otherwise have handed it is a
+       different answer, so the line above cannot pass by falling through. */
+    expect(painted.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-sans)' }).fontFamily);
+  });
+
+  /*
+   * Headings take a *different* Astryx variable (`--font-family-heading`), which
+   * the app-wide bridge maps to `--font-display` — the sans. `base.css` sets
+   * `.calm-prose h1/h2/h3` in `--font-serif`, so a reply whose `##` came out
+   * sans is the split voice `.reply` exists to close, one element deeper. This
+   * is its own case because the body override cannot fail it and did not.
+   */
+  it('paints the reply’s own headings in the same serif, not the display sans', () => {
+    render(<RailPane turns={MARKDOWN_REPLY} />);
+    const heading = getComputedStyle(paintedHeading());
+
+    expect(heading.fontFamily).toBe(probe({ fontFamily: 'var(--font-serif)' }).fontFamily);
+    expect(heading.fontFamily).not.toBe(probe({ fontFamily: 'var(--font-display)' }).fontFamily);
+  });
+});
+
 /**
  * WCAG 2.x relative luminance from whatever `getComputedStyle` hands back.
  *

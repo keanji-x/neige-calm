@@ -59,17 +59,48 @@ const REATTACH_POLL: Duration = Duration::from_secs(2);
 const PROBE_TIMEOUT: Duration = Duration::from_secs(60);
 static NEXT_FORGE_ARTIFACT_TMP: AtomicU64 = AtomicU64::new(1);
 const FORGE_BASE_ENV_KEYS: &[&str] = &["PATH", "HOME", "LANG", "LC_ALL", "TERM"];
-const FORGE_PASSTHROUGH_ENV_KEYS: &[&str] = &[
+/// The forge passthrough keys that ARE the operator's git/forge **identity**:
+/// hold one and you can act as the operator against the forge.
+///
+/// `pub` because it is also the denylist for `cli_query.env_allow` (#1164 P3):
+/// a query connector is authored in a manifest and callable by any agent that
+/// can see its tools, so it must never be able to name its way into this set.
+/// One constant, two readers — a copy in `plugin_host` would drift the moment
+/// this list grows.
+///
+/// #1164 P3 r2 G4 — the split from [`FORGE_NONCREDENTIAL_ENV_KEYS`] is
+/// load-bearing, not cosmetic. Denylisting the whole passthrough set made
+/// `"env_allow": ["no_proxy"]` — an ordinary need for a query CLI behind a
+/// proxy — a hard install failure whose reason claimed it was a credential;
+/// and because `registry::load_from_dir` re-parses on boot, a key added to the
+/// combined list would retroactively invalidate already-installed manifests.
+/// Only genuine credentials belong in a set with those consequences.
+pub const FORGE_CREDENTIAL_ENV_KEYS: &[&str] = &[
     "GH_TOKEN",
     "GITHUB_TOKEN",
-    "GH_HOST",
     "GH_ENTERPRISE_TOKEN",
     "GITHUB_ENTERPRISE_TOKEN",
     "SSH_AUTH_SOCK",
     "GIT_SSH_COMMAND",
-    "NO_PROXY",
-    "no_proxy",
 ];
+
+/// Forge passthrough keys that are **not** credentials: which host to talk to
+/// and which hosts to bypass the proxy for. A forge action needs them to reach
+/// the right endpoint; holding one grants nothing.
+pub const FORGE_NONCREDENTIAL_ENV_KEYS: &[&str] = &["GH_HOST", "NO_PROXY", "no_proxy"];
+
+/// Everything a forge action forwards from the service environment: the
+/// credential set plus the non-credential set, in that order.
+///
+/// Composed rather than re-typed, so there is exactly one place each key
+/// lives — see [`forge_env_key_buckets_are_a_partition`] for the test that
+/// keeps the two buckets disjoint.
+pub fn forge_passthrough_env_keys() -> impl Iterator<Item = &'static str> {
+    FORGE_CREDENTIAL_ENV_KEYS
+        .iter()
+        .chain(FORGE_NONCREDENTIAL_ENV_KEYS.iter())
+        .copied()
+}
 
 const FORGE_ACTION_PHASES: &[PhaseTag] = &[
     PhaseTag::Pending,
@@ -325,9 +356,8 @@ fn forge_passthrough_env_from<F>(mut lookup: F) -> Vec<(&'static str, std::ffi::
 where
     F: FnMut(&str) -> Option<std::ffi::OsString>,
 {
-    FORGE_PASSTHROUGH_ENV_KEYS
-        .iter()
-        .filter_map(|&key| lookup(key).map(|value| (key, value)))
+    forge_passthrough_env_keys()
+        .filter_map(|key| lookup(key).map(|value| (key, value)))
         .collect()
 }
 

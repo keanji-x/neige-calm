@@ -1,0 +1,126 @@
+/* The directory browser's visual layer (#1228). Everything a control already
+   owns — the field, the buttons, their states — is astryx's and is deliberately
+   absent here. What is left is the surface those controls sit on: the header's
+   two columns, the scrolling option list, and the rows, which are local markup
+   because a `role="listbox"` driven by `aria-activedescendant` is the one shape
+   astryx has no component for. */
+@layer ui {
+  .browser {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  /* `auto 1fr`: the parent button keeps its square, the path takes the rest. */
+  .head {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: var(--space-3);
+    align-items: center;
+  }
+
+  /* `className` lands on astryx's input wrapper, so the input itself is a
+     descendant. The `ui` layer sorts after `astryx` in entry.css, which is why
+     one declaration wins over the component's own `--font-family-body` without
+     a specificity fight. Mono is not decoration here: a path is read by its
+     separators, and a proportional font puts every `/` at a different offset
+     down a list of them. */
+  .path input {
+    font-family: var(--font-mono);
+    font-size: var(--text-md);
+  }
+
+  /* The list is a bounded window, not a growing column: the dialog it lives in
+     already scrolls, and a listing of several hundred entries would push the
+     actions off the bottom of the panel. The ceiling is in `rem` rather than a
+     box token because it is a count of rows — about nine — not a control size. */
+  .list {
+    display: flex;
+    flex-direction: column;
+    max-block-size: 19rem;
+    margin: 0;
+    padding: var(--space-1);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    list-style: none;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius-md);
+    background: var(--surface-card);
+  }
+
+  .entry {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    inline-size: 100%;
+    min-block-size: var(--row-h-sm);
+    padding-inline: var(--space-3);
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text);
+    font-family: inherit;
+    font-size: var(--text-base);
+    line-height: var(--leading-none);
+    text-align: start;
+    cursor: pointer;
+  }
+
+  /* Hover and keyboard highlight are the same mark on purpose: the pointer and
+     the arrow keys move the same `activeIndex`, so showing them differently
+     would claim two selections where the component only has one. */
+  .entry:hover,
+  .entry[aria-selected='true'] {
+    background: var(--overlay-hover);
+  }
+
+  .entry:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  /* Directory mode still lists files — they are context for where you are, not
+     choices — so they are dimmed and lose the pointer rather than being hidden.
+     `aria-disabled`, not `disabled`: the row stays in the accessibility tree so
+     a screen-reader user hears the same directory contents a sighted one sees. */
+  .entry[aria-disabled='true'] {
+    color: var(--text-3);
+    cursor: default;
+  }
+
+  .entry[aria-disabled='true']:hover {
+    background: transparent;
+  }
+
+  .entryIcon {
+    display: inline-flex;
+    flex: none;
+    color: var(--text-3);
+  }
+
+  .entryName {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Both non-row states read as one quiet line at the same left edge as a row,
+     so the list does not change shape when it has nothing to show. */
+  .placeholder,
+  .status {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-block-size: var(--row-h-sm);
+    margin: 0;
+    padding-inline: var(--space-3);
+    color: var(--text-3);
+    font-size: var(--text-base);
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-4);
+  }
+}

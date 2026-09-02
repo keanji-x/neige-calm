@@ -4,6 +4,8 @@ mod support;
 mod mcp_assistant_report_channel;
 #[path = "cases/mcp_plugin_tools.rs"]
 mod mcp_plugin_tools;
+#[path = "cases/mcp_report_concurrent_sessions.rs"]
+mod mcp_report_concurrent_sessions;
 #[path = "cases/mcp_report_links.rs"]
 mod mcp_report_links;
 #[path = "cases/mcp_wave_file.rs"]
