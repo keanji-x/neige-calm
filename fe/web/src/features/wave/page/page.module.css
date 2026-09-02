@@ -1057,45 +1057,6 @@
       gap: var(--space-2);
     }
 
-    .mobileCardFacts {
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      border-radius: var(--radius-md);
-      background: var(--surface-card);
-    }
-
-    .mobileCardFacts > div {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: var(--space-6);
-      min-block-size: calc(var(--rail-w-collapsed) + var(--space-4));
-      align-items: center;
-      padding-inline: var(--space-7);
-    }
-
-    .mobileCardFacts > div + div {
-      border-block-start: 1px solid var(--hairline);
-    }
-
-    .mobileCardFacts dt,
-    .mobileCardFacts dd {
-      min-inline-size: 0;
-      overflow: hidden;
-      font-size: var(--text-xs);
-      line-height: var(--leading-tight);
-      white-space: nowrap;
-      text-overflow: ellipsis;
-    }
-
-    .mobileCardFacts dt {
-      color: var(--text-3);
-    }
-
-    .mobileCardFacts dd {
-      color: var(--text);
-    }
-
     .mobileConversationList {
       min-inline-size: 0;
     }

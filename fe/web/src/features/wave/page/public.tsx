@@ -35,8 +35,10 @@ import { OperationFeedback, useDeleteConfirm } from '../../../ui/operation-feedb
 import { PanelCard, PanelModule } from '../../../ui/panel-card/public.tsx';
 import { useState } from '../../../ui/state/public.ts';
 import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
+import type { RowModuleView, WavePageView } from '../../../../../core/view/panel.ts';
 import { WaveLifecycleBadge } from '../lifecycle-badge/public.tsx';
 import { makeDesktopPainter, paintDesktopPanel } from './desktop-painter.tsx';
+import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import styles from './page.module.css';
 
 export type WavePageProps = Readonly<{
@@ -112,6 +114,23 @@ function headerLifecycle(lifecycle: WaveLifecycle): WaveLifecycle | null {
 
 type MobilePanelKind = 'outline' | 'cards' | 'tasks' | 'conversations';
 
+/**
+ * The view model's module under `key`.
+ *
+ * A lookup by key rather than by index: `deriveWavePageView` derives both row
+ * modules, and reading one out by position would bind this page to the
+ * derivation's *order* — a fact it has no business knowing, and the same
+ * re-derivation `desktop-painter.tsx` avoided by carrying `parts.key` through
+ * its leaves. Missing is an error rather than an empty page, because a mobile
+ * page silently rendering nothing is precisely how a surface goes missing
+ * without anything noticing.
+ */
+function rowModule(view: WavePageView, key: RowModuleView['key']): RowModuleView {
+  const found = view.rowModules.find((module) => module.key === key);
+  if (found === undefined) throw new Error(`the wave page view has no ${key} module`);
+  return found;
+}
+
 export function WavePage({
   wave, cards, tasks, outlineItems = [], report, backlinks, conversationList, conversationAction,
   onStartConversation,
@@ -124,9 +143,10 @@ export function WavePage({
   const boardOpen = onCloseBoard !== undefined;
   const mobilePanelOpen = panel !== null;
   const mobilePanelKind: MobilePanelKind = panel ?? 'cards';
-  const [mobileCardId, setMobileCardId] = useState<string | null>(null);
+  /** The drill-down page's entrance animation — a *panel* fact, not a card one:
+   *  all four mobile pages take it, and `openMobilePanel` sets it. (The card
+   *  detail page it was named after is gone; the motion is not.) */
   const [mobileCardMotion, setMobileCardMotion] = useState<'none' | 'forward' | 'back'>('none');
-  const mobileCard = mobileCardId === null ? undefined : cards.find((card) => card.id === mobileCardId);
   const lifecycle = headerLifecycle(wave.lifecycle);
   /*
    * ── The desktop panel goes through `core/view` (#1234 S1b-3b) ────────────
@@ -154,6 +174,11 @@ export function WavePage({
    *
    * The page's other markers (`data-nc-wave-page`, `data-nc-role`,
    * `data-nc-panel`, the two inventory markers, …) are this page's own and stay.
+   *
+   * **Since S1b-4a the mobile Cards page is a second renderer of the same
+   * derivation** (`paintMobileModule`), with `mobile-entry.test.tsx` holding
+   * that call the way `desktop-entry.test.tsx` holds the desktop's. The mobile
+   * Tasks page is still hand-composed below; that is S1b-4b.
    */
   const panelView = deriveWavePageView({ cards, tasks });
   const desktopPainter = makeDesktopPainter({ onOpenCard, onOpenTask, onDeleteCard, cardsAction });
@@ -162,14 +187,13 @@ export function WavePage({
   const previousPanel = useRef<MobilePanelKind | null>(null);
 
   /*
-   * Opening the card grid cannot leave a card detail behind it. The *panel*
-   * needs no closing here: `?card=` and `?panel=` are mutually exclusive by
-   * construction, and `app/router` gives the card precedence when both somehow
-   * appear (§0.1).
+   * Opening the card grid leaves no drill-down animation queued behind it. The
+   * *panel* needs no closing here: `?card=` and `?panel=` are mutually
+   * exclusive by construction, and `app/router` gives the card precedence when
+   * both somehow appear (§0.1).
    */
   useEffect(() => {
     if (!boardOpen) return;
-    setMobileCardId(null);
     setMobileCardMotion('none');
   }, [boardOpen]);
 
@@ -177,19 +201,14 @@ export function WavePage({
     if (!mobilePanelOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape' || event.defaultPrevented) return;
-      if (mobileCardId !== null) {
-        setMobileCardMotion('back');
-        setMobileCardId(null);
-      } else {
-        // Through the URL, not a local flag: Escape and the hardware Back
-        // button must end in the same place (#1191 §2.4).
-        setMobileCardMotion('none');
-        onClosePanel?.();
-      }
+      // Through the URL, not a local flag: Escape and the hardware Back
+      // button must end in the same place (#1191 §2.4).
+      setMobileCardMotion('none');
+      onClosePanel?.();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [mobileCardId, mobilePanelOpen, onClosePanel]);
+  }, [mobilePanelOpen, onClosePanel]);
 
   /*
    * ── The focus contract (#1191 §2.5) ─────────────────────────────────────
@@ -214,21 +233,25 @@ export function WavePage({
     mobileActionsRef.current?.querySelector('button')?.focus({ preventScroll: true });
   }, [panel]);
 
-  /** Every entry into a panel: the card detail is a page *inside* it, never a leftover. */
+  /** Every entry into a panel: the page slides in from the trailing edge. */
   const openMobilePanel = (kind: MobilePanelKind) => {
     setMobileCardMotion('forward');
-    setMobileCardId(null);
     onOpenPanel?.(kind);
   };
   /** Leaving the panel by a navigation that clears `?panel=` on its own (§1.4). */
   const leaveMobilePanel = () => {
     setMobileCardMotion('none');
-    setMobileCardId(null);
   };
   const closeMobilePanel = () => {
     leaveMobilePanel();
     onClosePanel?.();
   };
+
+  /* Rebuilt per render, like the desktop's: the page chrome it closes over —
+     where Back goes, how the page animates in — is a fact about this render. */
+  const mobilePainter = makeMobilePainter({
+    onOpenTask, backLabel: 'Report', onBack: closeMobilePanel, motion: mobileCardMotion,
+  });
 
   const mobileActions = !boardOpen ? (
     <span className={styles.mobilePanelButton} ref={mobileActionsRef}>
@@ -402,24 +425,17 @@ export function WavePage({
              lands when the panel opens (§2.5), never a Tab stop of its own. */
           tabIndex={mobilePanelOpen ? -1 : undefined}
         >
-          <div className={styles.mobileListSurface} aria-hidden={mobilePanelOpen ? undefined : true} inert={!mobilePanelOpen}>
-            {mobilePanelOpen && (mobileCard !== undefined ? (
-              <MobileListPage
-                title={mobileCard.title ?? mobileCard.kind}
-                backLabel="Cards"
-                motion={mobileCardMotion}
-                onBack={() => {
-                  setMobileCardMotion('back');
-                  setMobileCardId(null);
-                }}
-              >
-                <dl className={styles.mobileCardFacts}>
-                  <div><dt>Kind</dt><dd>{mobileCard.kind}</dd></div>
-                  <div><dt>Ownership</dt><dd>{mobileCard.deletable ? 'User card' : 'Kernel-owned'}</dd></div>
-                  <div><dt>Card ID</dt><dd>{mobileCard.id}</dd></div>
-                </dl>
-              </MobileListPage>
-            ) : mobilePanelKind === 'outline' ? (
+          <div
+            className={styles.mobileListSurface}
+            /* The projection's root on this surface, and the mirror of
+               `data-nc-desktop-panel` below: the two surfaces are siblings and
+               are in the DOM at the same time, so a whole-page scan would read
+               them as one tree now that both carry markers. */
+            data-nc-mobile-panel=""
+            aria-hidden={mobilePanelOpen ? undefined : true}
+            inert={!mobilePanelOpen}
+          >
+            {mobilePanelOpen && (mobilePanelKind === 'outline' ? (
               <MobileListPage
                 title="Outline"
                 backLabel="Report"
@@ -454,30 +470,24 @@ export function WavePage({
                 </MobileList>
               </MobileListPage>
             ) : mobilePanelKind === 'cards' ? (
-              <MobileListPage
-                title="Cards"
-                backLabel="Report"
-                motion={mobileCardMotion}
-                onBack={closeMobilePanel}
-              >
-                <MobileList>
-                  {cards.map((card) => {
-                    const label = card.title ?? card.kind;
-                    return (
-                      <MobileListItem
-                        key={card.id}
-                        title={label}
-                        meta={card.kind}
-                        onSelect={() => {
-                          setMobileCardMotion('forward');
-                          setMobileCardId(card.id);
-                        }}
-                      />
-                    );
-                  })}
-                  {cards.length === 0 && <MobileListEmpty>No cards yet.</MobileListEmpty>}
-                </MobileList>
-              </MobileListPage>
+              /*
+                ── The mobile Cards page goes through `core/view` (#1234 S1b-4a) ──
+                *
+                * One derivation, one painter, one module. What this branch used
+                * to do — walk `cards` itself and spell each row inline — is the
+                * half of the drift the desktop's own slice could not reach: an
+                * untitled card printed its kind twice here and nowhere else,
+                * `kernel-owned` was missing, and the row opened a detail page
+                * the desktop has no counterpart for.
+                *
+                * **One module, not the panel**: mobile drills into a module at
+                * a time, so this is `paintModule` (Δ2), and the module sequence
+                * lives in the navigation menu above.
+                *
+                * The three card affordances are gone by decision, not by
+                * omission — see `mobile-painter.tsx`'s capability table.
+              */
+              paintMobileModule(mobilePainter, rowModule(panelView, 'cards'))
             ) : mobilePanelKind === 'tasks' ? (
               <MobileListPage
                 title="Tasks"
