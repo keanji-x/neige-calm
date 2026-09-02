@@ -341,3 +341,108 @@ async fn unbound_templates_carry_no_input_schema() {
         );
     }
 }
+
+/// #1300 S1 — the template **write** endpoint is gone, and this is the
+/// assertion that says so.
+///
+/// `PUT /api/wave-templates/{id}` and the Settings › Templates editor existed
+/// between #1230 and #1300. They were built on the seeded template wave, which
+/// #1300 removes because it is the last production path on which the kernel
+/// writes a report as `EditAuthor::User`.
+///
+/// ## Why a deleted route needs a test at all
+///
+/// Deleting a handler and deleting nothing else both look like "the editor is
+/// gone" in a diff. The difference is observable only from outside: a route
+/// that is still registered but reaches dead code, a router that falls through
+/// to some catch-all, or a re-added handler in a later change all pass a
+/// review that only reads the deletion. So this asserts the two things a
+/// caller can see, and both halves matter:
+///
+///  * the method is **not routed** — `405` (the path exists for `GET`) or
+///    `404`, never a 2xx and never a 5xx from a handler that ran;
+///  * **nothing was written**. A rejection that still committed something on
+///    its way to the rejection would satisfy the status check alone.
+///
+/// The body is a well-formed `WaveTemplateUpdate` as the deleted endpoint
+/// accepted it, so this fails if the route comes back *and works*, not merely
+/// if the wire shape drifts.
+#[tokio::test]
+async fn put_is_not_routed_and_writes_nothing() {
+    let boot = boot(false).await;
+    let before = db_digest(&boot.repo).await;
+
+    let resp = boot
+        .app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/wave-templates/{SMALL_CHANGE}"))
+                .header("X-Calm-Actor", "user")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "title": "Renamed by a caller that should not exist",
+                        "edits": [ { "key": "inspect", "goal": "rewritten" } ],
+                        "appends": []
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    assert!(
+        status == StatusCode::METHOD_NOT_ALLOWED || status == StatusCode::NOT_FOUND,
+        "PUT /api/wave-templates/{{id}} must not be routed; got {status}"
+    );
+
+    assert_eq!(
+        db_digest(&boot.repo).await,
+        before,
+        "a PUT that is not routed must not have written anything"
+    );
+}
+
+/// Whole-database content digest: every table, every row, in a stable order.
+///
+/// Deliberately not "count the waves" — a write the removal was supposed to
+/// prevent could land in `cards`, `overlays` or `events` and leave the wave
+/// count alone. Comparing the whole database is the only shape that does not
+/// require guessing which table a resurrected handler would touch.
+async fn db_digest(repo: &Arc<dyn Repo>) -> Vec<(String, String)> {
+    let pool = repo.sqlite_pool().expect("sqlite pool");
+    let tables: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM sqlite_master \
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name <> '_sqlx_migrations' \
+         ORDER BY name",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("table list");
+    assert!(!tables.is_empty(), "digest found no tables to compare");
+    let mut digest = Vec::with_capacity(tables.len());
+    for table in tables {
+        let columns: Vec<String> =
+            sqlx::query_scalar(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("columns of {table}: {error}"));
+        let row_text = columns
+            .iter()
+            .map(|column| format!("quote(\"{column}\")"))
+            .collect::<Vec<_>>()
+            .join(" || '|' || ");
+        let rows: String = sqlx::query_scalar(&format!(
+            "SELECT coalesce(group_concat(row_text, char(10)), '') FROM \
+             (SELECT {row_text} AS row_text FROM \"{table}\" ORDER BY 1)"
+        ))
+        .fetch_one(&pool)
+        .await
+        .unwrap_or_else(|error| panic!("digest of {table}: {error}"));
+        digest.push((table, rows));
+    }
+    digest
+}

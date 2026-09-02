@@ -860,18 +860,6 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: renderNothing,
   });
 
-  const templateListRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/settings/templates',
-    component: renderNothing,
-  });
-
-  const templateEditorRoute = createRoute({
-    getParentRoute: () => rootRoute,
-    path: '/settings/templates/$templateId',
-    component: renderNothing,
-  });
-
   const pluginsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings/plugins',
@@ -891,7 +879,7 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
   });
 
   return rootRoute.addChildren([
-    indexRoute, coveRoute, waveRoute, settingsRoute, templateListRoute, templateEditorRoute,
+    indexRoute, coveRoute, waveRoute, settingsRoute,
     pluginsRoute, appearanceRoute, aboutRoute,
   ]);
 }

@@ -77,7 +77,7 @@ describe('INV-A11Y-061 navigation shape', () => {
     );
     const nav = screen.getByRole('navigation', { name: 'Settings sections' });
     expect([...nav.querySelectorAll('button')].map((node) => node.textContent))
-      .toEqual(['Network', 'Appearance', 'Templates', 'Plugins', 'About']);
+      .toEqual(['Network', 'Appearance', 'Plugins', 'About']);
     expect(screen.getByRole('button', { name: 'Network' }).getAttribute('aria-current')).toBe('page');
     expect(screen.getByRole('button', { name: 'Plugins' }).getAttribute('aria-current')).toBeNull();
 

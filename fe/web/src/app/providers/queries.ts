@@ -35,11 +35,10 @@ import {
 } from '../../../../core/domain/today.ts';
 import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
-  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, putWaveTemplateOperation, toWave,
+  deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, toWave,
   updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
   type CardWire, type NewCardBody, type NewCodexCardBody, type NewTerminalCardBody, type NewWaveBody,
   type OverlayWire, type Wave, type WaveDetailWire, type WavePatchBody, type WaveTemplate,
-  type WaveTemplateGoalEdit,
 } from '../../../../core/domain/wave.ts';
 import {
   HARNESS_ITEMS_PAGE_LIMIT, harnessItemsOperation, interruptSpecOperation, sendSpecInputOperation,
@@ -839,32 +838,6 @@ export function useWaveMutations(transport: ApiTransportPort, unauthorized: Unau
  * single read for both the New wave picker and the Settings editor. One
  * authority, one invalidation.
  */
-export function useWaveTemplateMutation(
-  transport: ApiTransportPort,
-  unauthorized: UnauthorizedChannel,
-): (save: {
-  id: string;
-  title: string;
-  edits: readonly WaveTemplateGoalEdit[];
-  appends: readonly WaveTemplateGoalEdit[];
-}) => Promise<WaveTemplate> {
-  const client = useQueryClient();
-  const mutation = useMutation({
-    mutationFn: (save: {
-      id: string;
-      title: string;
-      edits: readonly WaveTemplateGoalEdit[];
-      appends: readonly WaveTemplateGoalEdit[];
-    }) => runOperation(
-      transport,
-      putWaveTemplateOperation(save.id, { title: save.title, edits: save.edits, appends: save.appends }),
-      unauthorized,
-    ),
-    onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.waveTemplates() }); },
-  });
-  return (save) => mutation.mutateAsync(save);
-}
-
 /**
  * Settings › Plugins — the installed list.
  *
