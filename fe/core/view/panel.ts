@@ -1,4 +1,4 @@
-// The panel view vocabulary, and the one traversal every panel renderer runs.
+// The panel view vocabulary, and the traversal panel renderers will run.
 //
 // #1234 — the wave page's panel exists twice in the DOM (a desktop panel card
 // and a mobile drill-down list), and the two are hand-copied: the same fact is
@@ -8,7 +8,9 @@
 // model, and renderers that are faithful projections of it.
 //
 // This module holds the vocabulary of that view model plus `paintModule`, the
-// only traversal. Everything here is data and pure functions; `core` may not
+// traversal S1b's renderers are meant to share. Nothing calls it yet outside
+// `panel.test.ts`; see its docstring for what that does and does not buy.
+// Everything here is data and pure functions; `core` may not
 // import React or touch the DOM (`fe/core/AGENTS.md`), so a renderer supplies
 // its own leaf constructors through `RowPainter<T>`.
 //
@@ -23,24 +25,30 @@ export type RowBadge = Readonly<{ id: string; text: string; struck: boolean }>;
 
 export type RowStatus = Readonly<{
   /** The bare status word — a structural obligation: the renderer writes it
-   *  into the `data-nc-status` attribute, unchanged. */
+   *  into the row's status marker attribute, unchanged. The attribute is
+   *  deliberately not named here: it is `data-nc-task-status` today, and S1b
+   *  renames it to `data-nc-status` when the panel is rewritten. */
   token: string;
   /**
-   * The finished, readable string — a text obligation.
+   * The finished, readable string — a text obligation: the canonical phrase
+   * **both surfaces are to consume**, so that neither has to word the status
+   * for itself. Offering one canonical phrase is all a type can do; that each
+   * renderer actually uses it, rather than wording its own, is enforced by
+   * S1b's projection check, not here.
    *
-   * **The row's own visible wording lives in `core`**, not in either renderer,
-   * so the two cannot word the status differently. That claim is about the row
-   * text and stops there: an **accessible name** may be more than the row text,
-   * and today the desktop's is — the dot's `aria-label` is
-   * `Status: ${phrase}` (`public.tsx:730`) while its `title` is the bare phrase
-   * (`:731`). That `Status: ` prefix is **renderer chrome and is not in this
-   * field**, deliberately: it is a labelling decision about one platform's
-   * graphic, not wording about the run.
+   * The claim is about the row text and stops there: an **accessible name** may
+   * be more than the row text, and today the desktop's is — the dot's
+   * `aria-label` is `Status: ${phrase}` (`public.tsx:730`) while its `title` is
+   * the bare phrase (`:731`). That `Status: ` prefix is **renderer chrome and
+   * is not in this field**, deliberately: it is a labelling decision about one
+   * platform's graphic, not wording about the run.
    *
    * Nothing here stops a renderer wording its chrome differently from the
-   * other, and `view-characterization.test.tsx` has been shown not to catch it
-   * (a mutation that moved the `Status: ` prefix *into* this field stayed
-   * green). Chrome consistency is S1b's painter contract, not this type's.
+   * other. In the version of `view-characterization.test.tsx` *before* this
+   * slice's fix, that gap was wider still: a mutation that moved the `Status: `
+   * prefix *into* this field stayed green there. The suite's current exact
+   * assertion on the dot's `title` does catch that particular mutation; chrome
+   * consistency in general is still S1b's painter contract, not this type's.
    */
   phrase: string;
 }>;
@@ -74,7 +82,15 @@ export type WavePageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
 
 /**
  * Whether a renderer offers an action at all. `why` is the reason it is
- * omitted, and is required so an omission cannot be silent.
+ * omitted, and is required so that an **explicitly declared** unsupported
+ * action must state why.
+ *
+ * That is the whole of today's guarantee, and it is narrower than "an omission
+ * cannot be silent". This type constrains only what a painter *writes in its
+ * `action` table*; nothing reads that table yet (`paintModule` does not — see
+ * its docstring), so a renderer can still just not paint an action and no `why`
+ * is ever demanded of it. Omission-is-not-silent becomes true when S1b's
+ * `paintPanel` consults the table.
  *
  * **Support is not necessarily a platform constant.** The desktop's real
  * condition for `delete-card` is `onDeleteCard !== undefined`
@@ -107,7 +123,9 @@ export type RowPainter<T> = Readonly<{
 }>;
 
 /**
- * Paint one module: the single traversal both renderers go through.
+ * Paint one module: the traversal both of S1b's renderers are to go through,
+ * and which will then be their single shared one. Today it has no renderer
+ * caller at all (see the three open gaps below).
  *
  * **The empty state is exclusive** (#1234 §5.20): `empty()` is called when the
  * module has zero rows and *only* then, and `row()` is called for every row and

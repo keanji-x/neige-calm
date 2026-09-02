@@ -25,11 +25,13 @@
 //    page does not carry yet. Do not read a green run here as "the projection
 //    is verified".
 //
-// **Covered.** Six text fields, counted against `textContent` only:
+// **Covered.** Five text fields, counted against `textContent` only:
 // `module.title`, `module.empty` (zero-row modules only), `row.title`,
-// `row.kind` (when non-null), `badge.text`. Plus two fields of `row.status`,
-// which are **not** lower bounds but exact equalities against the carrier the
-// page already marks (`[data-nc-task-status]`, `public.tsx:725-733`):
+// `row.kind` (when non-null), `badge.text`.
+//
+// Separately, two fields of `row.status`. These are **not** lower bounds but
+// exact equalities against the carrier the page already marks
+// (`[data-nc-task-status]`, `public.tsx:725-733`):
 // `status.phrase` against that node's `title` (`:731` is the bare phrase) and
 // `status.token` against the `data-nc-task-status` attribute (`:729`). A row
 // whose derived `status` is null must have no such node.
@@ -62,6 +64,18 @@
 //  - **`badge.struck` — excluded, S1b's.** It is only a class difference
 //    (`taskWithdrawn` vs `taskNote`, `:663-665`); neither `textContent` nor any
 //    marker this page carries distinguishes them.
+//  - **The set and order of a row's actions — excluded, S1b's.** `rowFields`
+//    does not read `row.actions` at all, so reordering a row's actions — or
+//    adding and dropping one — leaves this suite green. That `actions` is a
+//    checked sequence (`core/view/panel.ts`, `PanelRow.actions`) is a claim
+//    only S1b's `checkProjection` carries, against the action markers this page
+//    does not have.
+//  - **The DOM order of the modules — excluded, S1b's.** Each module is located
+//    by its own static selector (`renderedRows`) and asserted independently, so
+//    swapping the order of `view.rowModules` — or of the two module elements on
+//    the page — is invisible here. "Cards before Tasks is part of the view
+//    model" (`core/view/wave-page.ts`, `deriveWavePageView`) is likewise
+//    S1b's `checkProjection` to hold, once `paintPanel` walks the sequence.
 
 import { describe, expect, it } from 'vitest';
 

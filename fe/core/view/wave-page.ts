@@ -20,8 +20,10 @@ import type { PanelRow, RowAction, RowBadge, RowModuleView, WavePageView } from 
  * What the status dot says, in words: the status, then the kernel's reason for
  * it when there is one (#1149 / #1147).
  *
- * The status word comes **first and always**, because this string is the dot's
- * whole accessible name — the colour carries nothing on its own, and a reader
+ * The status word comes **first and always**, because this string is the
+ * run-state phrase inside the dot's accessible name — the desktop's label is
+ * `Status: ${phrase}` (`public.tsx:730`), and this function produces only the
+ * `${phrase}` half. The colour carries nothing on its own, and a reader
  * who lands here must get `failed` before any prose about it. The reason is
  * appended, never substituted: `failed — wave … is not a git repository` is
  * strictly more than `failed`, whereas a name that printed the reason alone
