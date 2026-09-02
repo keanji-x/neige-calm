@@ -43,7 +43,8 @@
 //! 3. **the consequence of `auto_promote_draft`** — not the argument, the
 //!    effect: whether a wave sitting in `Draft` is walked to `Planning` by
 //!    the write, and what lifecycle event that produces.
-//! 4. **the recorder probe** — whether the write consults the recorder gate.
+//! 4. **the recorder probe** — whether the write consults the recorder gate
+//!    on its `ReportWrite` leg; the section below bounds that claim.
 //!
 //! ## What the recorder coverage here can and cannot claim
 //!
@@ -57,62 +58,149 @@
 //!
 //! What *is* asserted, deterministically and from the production boundary:
 //!
-//! * the MCP path consults the gate, and a denial takes the whole
-//!   transaction down with it — no `wave.report_edited`, no `card.updated`,
-//!   `doc_rev` still 0. Two tests, deliberately different: in
+//! * the MCP path consults the gate **on its `ReportWrite` leg, for the
+//!   `CardRole::Spec` writes these two tests drive** (the role qualifier is
+//!   load-bearing — see gap 3), and a denial takes the whole transaction
+//!   down with it — no
+//!   `wave.report_edited`, no `card.updated`, `doc_rev` still 0. Two tests,
+//!   deliberately different: in
 //!   `mcp_report_write_consults_the_recorder_gate_before_it_commits` the
 //!   probe is *not* the only objection (see its doc comment), while
 //!   `mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objection`
-//!   is shaped so that it is — delete the probe and that write succeeds;
-//! * neither REST path consults it — both succeed on a wave with no agent
-//!   session at all, which is exactly the situation the gate refuses on the
-//!   MCP side (`rest_report_writes_do_not_consult_the_recorder_gate`). The
-//!   two legs are separately covered, so pointing just one of them at a
-//!   gate is caught.
+//!   is shaped so that it is — delete the probe and that write succeeds. The
+//!   claim stops at that leg. The *other* one — the `WaveLifecycle` probe
+//!   that fires only when an explicitly requested lifecycle transition
+//!   applies (`wave_report.rs:747`) — is reached by no call in this file:
+//!   `calm.report.write` takes an optional `lifecycle` argument and none of
+//!   the calls below passes it, and `calm.report.blocks.upsert` has no such
+//!   argument at all. Its verdict is not observed elsewhere either, and that
+//!   is an execution result rather than a caller audit: deleting the block
+//!   outright leaves the whole `calm-server` package green (gap 2, item 4).
+//!   The suites that do exercise that leg — `mcp_wave_report.rs`'s
+//!   `write_lifecycle_legal_…` and `edit_lifecycle_legal_…` — run it against
+//!   an allowing gate, which is why they cannot notice;
+//! * the decision *kind* is pinned, on the refusal path:
+//!   `mcp_report_write_consults_the_recorder_gate_before_it_commits`
+//!   asserts the refusal message contains `recorder gate denied
+//!   report_write`, which is the wire form of
+//!   `RecorderShadowDecisionKind::ReportWrite`. And under the
+//!   probe-removal mutation that test goes red on exactly that assertion,
+//!   while the sole-objection test's write starts *succeeding* — so at
+//!   least one `ReportWrite` consultation is pinned too, for a Spec write.
+//!   The exact number is not (gap 2), and neither is any other role's
+//!   (gap 3);
+//! * neither REST path is refused by the gate that refuses the MCP side —
+//!   both writes commit on a wave with no `worker_sessions` row at all,
+//!   which is exactly the shape `decide_recorder` denies
+//!   (`rest_report_writes_do_not_consult_the_recorder_gate`). Read that as
+//!   the gate's *verdict* not reaching the write, not as "the `Option` is
+//!   `None`": a probe that allowed unconditionally would be invisible here,
+//!   which is what that test's own doc comment says. The two legs are
+//!   separately covered, so pointing just one of them at a denying gate is
+//!   caught.
 //!
 //! ### Registered gaps: what this suite stays green through
 //!
 //! This file's only job is to be the control group for the S1 step-2
 //! refactor. A gap that is not written down here will be read as covered,
-//! so both of these are listed on purpose, and each was confirmed by
-//! running the change and watching all eight tests pass.
+//! so all four of these are listed on purpose, and every mutation named
+//! below was confirmed by applying it and watching all eight tests pass.
 //!
-//! **Gap 1 — where the probe sits inside the transaction is not pinned, and
-//! is not observable from this boundary at all.** A denial rolls the
-//! transaction back, so "refused before the rows were written" and "rows
-//! written, then refused, then rolled back" leave byte-identical
-//! observations behind; `doc_rev == 0` cannot tell them apart. Confirmed:
-//! moving the `ReportWrite` `probe.record` call to after
-//! `card_update_with_crdt_tx` — still inside the transaction — leaves every
-//! test here green, as does moving it above the auto-promotion branch. The
-//! claim these tests do carry is the one their names make: the refusal
-//! happens **before commit**, and nothing is left behind. The relative
-//! order of auto-promotion, the `WaveLifecycle` probe and the `ReportWrite`
-//! probe is likewise out of reach from here: a denial rolls the whole
-//! transaction back, and an allow leaves no trace of the probe in the
-//! database at all.
+//! **Gap 1 — where the probe sits inside the transaction is not pinned by
+//! these eight tests.** Final database state cannot separate the
+//! placements: a denial rolls the transaction back, so "refused before the
+//! rows were written" and "rows written, then refused, then rolled back"
+//! leave byte-identical observations behind, and `doc_rev == 0` cannot tell
+//! them apart. Confirmed: moving the `ReportWrite` `probe.record` call to
+//! after `card_update_with_crdt_tx` — still inside the transaction — leaves
+//! every test here green, as does moving it above the auto-promotion
+//! branch. The claim these tests do carry is the one their names make: the
+//! refusal happens **before commit**, and nothing is left behind.
 //!
-//! **Gap 2 — probe count and decision kind are not asserted.** Production
-//! calls `record` once per write with
+//! This boundary is not blind to placement, though, and closing that would
+//! need no new seam — only **error precedence**. Observed, not argued: give
+//! `mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objection`'s
+//! foreign-wave session a stale `if_doc_rev` and today's code answers with
+//! the recorder refusal (`-32403`, "recorder gate denied report_write"),
+//! because the probe at `wave_report.rs:758` runs before
+//! `apply_persisted_report_op`; move the probe below that call and the same
+//! request answers `-32001` "document revision conflict" instead. No
+//! assertion here reads that ordering, so the placement is unpinned — but
+//! unpinned by choice, not by impossibility. What the database alone really
+//! cannot show is the relative order of the auto-promotion branch, the
+//! `WaveLifecycle` probe and the `ReportWrite` probe on the *allow* path:
+//! an allow leaves no trace of the probe behind.
+//!
+//! **Gap 2 — the exact probe count, and the `WaveLifecycle` leg.**
+//! Production calls `record` once per write with
 //! `RecorderShadowDecisionKind::ReportWrite`, plus once with
 //! `WaveLifecycle` when an explicitly requested lifecycle transition fires;
-//! the auto-promotion branch is not probed at all. Three specific changes
-//! therefore keep this suite green:
+//! the auto-promotion branch is not probed at all. Note what the bullets
+//! above already pin, so that step 2 does not go rebuild it: at least one
+//! `ReportWrite` consultation on the MCP path, and that decision kind on
+//! the refusal path. What is unpinned is the *number*, and the
+//! `WaveLifecycle` leg entirely. Each of the following changes was applied
+//! and keeps this suite green — the list is what has been *observed*, not a
+//! claim that nothing else slips through:
 //!
 //! 1. adding a `WaveLifecycle` `record` call to the auto-promotion branch;
 //! 2. moving the `ReportWrite` `record` call to before the auto-promotion
 //!    branch (a special case of gap 1);
-//! 3. turning the single `ReportWrite` `record` call into several.
+//! 3. turning the single `ReportWrite` `record` call into several;
+//! 4. **deleting the `WaveLifecycle` `record` block outright**
+//!    (`wave_report.rs:747`–`751`). This one is categorically worse than
+//!    1–3: those reorder or repeat a gate consultation, this removes one.
+//!    Confirmed by running it — the eight tests here stay green, and so does
+//!    the whole `calm-server` package under
+//!    `--features calm-server/codex-e2e`. What was observed is that run, not
+//!    an audit of callers: nothing in the package went red when the leg was
+//!    removed.
 //!
-//! Closing that needs a counting double on the production assembly path,
-//! and there is no seam for one: `RecorderShadowProbe` is `pub(crate)` and
+//! Closing the *count* half of gap 2 needs a counting double on the
+//! production assembly path, and there is no seam for one:
+//! `RecorderShadowProbe` is `pub(crate)` and
 //! `CardDecisionSink::commit_report_op` constructs its probe inline, so no
 //! out-of-crate test can inject anything. Adding that seam is a separate
 //! decision and is deliberately not taken here. Until it is, this file is a
-//! control group for *whether* the gate is consulted and what a denial
-//! does — and for nothing about how many times it is consulted, with which
-//! decision kind, or in what order relative to the other in-transaction
-//! steps.
+//! control group for *whether* the `ReportWrite` leg consults the gate on
+//! the paths it drives, for the kind named in the refusal, and for what a
+//! denial does — and for nothing about how many times the probe is called,
+//! where in the transaction it sits, whether the `WaveLifecycle` leg is
+//! consulted at all, or whether some *other* caller still reaches the probe
+//! (gap 3).
+//!
+//! **Gap 3 — the probe can be dropped conditionally, per role or per entry
+//! point, and nothing here notices.** This is its own class: not position,
+//! not count, not decision kind, but *which callers are still gated*.
+//! Confirmed by running it — making `CardDecisionSink::commit_report_op`
+//! pass `recorder_shadow: None` when `identity.role` is
+//! `CardRole::Assistant`, while keeping the probe for `Spec`, leaves all
+//! eight tests here green and the whole `calm-server` package green under
+//! `--features calm-server/codex-e2e`. The reason it hides: both refusal
+//! tests act as a Spec, and the two assistant writes (Codex and Claude)
+//! only read persisted results back, which look the same whether or not an
+//! allowing gate was consulted. Register it loudly because it is the shape
+//! S1 step 2 is most likely to introduce by accident: threading a
+//! write-origin type means rewriting exactly this funnel, which already
+//! forks on `identity.role`, and a fork that quietly stops passing the
+//! probe for one arm is invisible to this control group.
+//!
+//! **Gap 4 — the funnel's role table is invisible from this boundary.**
+//! `decision_sink::report_op_attribution` maps `CardRole` to
+//! `(EditAuthor, auto_promote)` and refuses `Worker` / `ReportCard`
+//! outright; every call in this file arrives as `Spec` or `Assistant`, so
+//! replacing that refusal arm with `(EditAuthor::Spec, true)` leaves all
+//! eight tests here green — confirmed by running it, and by watching which
+//! test does go red under it. S1 step 2 replaces exactly that function, and
+//! the assertion that actually pins the refusal lives in another file and
+//! another *target*:
+//! `decision_sink::tests::report_op_attribution_refuses_worker_and_report_cards`
+//! in `crates/calm-server/src/decision_sink.rs` — the crate's `--lib`
+//! target, which a gate scoped to one integration binary
+//! (`--test mcp_integration_suite`) never builds. Naming it here is the
+//! point: a refactor that moves function and unit test together, or a gate
+//! run that skips the `--lib` target, would weaken that arm with nothing in
+//! this control group going red.
 
 #![cfg(unix)]
 
@@ -428,7 +516,8 @@ async fn mcp_report_write_consults_the_recorder_gate_before_it_commits() {
 /// #770 session-authority resolution
 /// (`decision_gate::enforce_role_resolving_session`) resolves a session
 /// actor on — but its card lives on the *other* wave, and `decide_recorder`
-/// additionally requires `card.wave_id == wave` (`decision_gate.rs:324`).
+/// additionally requires `card.wave_id == wave`
+/// (`crates/calm-truth/src/decision_gate.rs:324`).
 async fn seed_foreign_wave_spec_session(boot: &Boot, session_id: &str) {
     let wave = boot
         .repo
@@ -557,9 +646,20 @@ async fn mcp_report_write_is_refused_when_the_recorder_gate_is_the_only_objectio
 ///
 /// The card is minted with `kind: "codex"` on purpose: production mints an
 /// assistant conversation card that way for both providers
-/// (`spec_harness_start_adapter.rs:607`) — the provider lives on the
-/// `worker_sessions` row, which is seeded as Claude here, and on the
-/// identity.
+/// (`crates/calm-server/src/operation/spec_harness_start_adapter.rs:607`),
+/// so the card's `kind` is not where the provider is recorded. What selects
+/// the actor variant is `ToolCallIdentity::provider`, and *this test sets
+/// that field by hand*; the `worker_sessions` row is seeded as Claude to
+/// match, but it is the identity field, not the column, that
+/// `to_actor_id` reads — verified by seeding the row as `Codex` and
+/// watching this test stay green.
+/// Production derives the identity's provider from that column
+/// (`worker_sessions.provider` →
+/// `calm_truth::session_projection_row::agent_provider_from_session_provider`
+/// → `crates/calm-server/src/mcp_server/transport.rs:1615-1618`, which falls
+/// back to `AgentProvider::Codex` when the column yields none), but
+/// `call_tool` bypasses the transport entirely (see the module header), so
+/// that derivation is outside this suite's frame.
 #[tokio::test]
 async fn mcp_claude_assistant_block_write_is_actored_to_the_claude_session() {
     let boot = boot().await;

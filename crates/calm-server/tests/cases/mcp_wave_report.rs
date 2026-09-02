@@ -177,10 +177,19 @@ async fn seed_non_root_session(
 }
 
 /// [`seed_non_root_session`] with the `worker_sessions.provider` column
-/// spelled out. #1252 needs a Claude-provider row: the actor a Claude
-/// assistant's MCP write lands under is decided by
-/// `registry::provider_session_actor`, and a fixture that only ever seeds
-/// `Codex` rows cannot tell the two arms apart.
+/// spelled out. #1252 seeds a Claude row so a Claude case's fixture rows
+/// match the identity it acts under — but be clear about what that buys:
+/// the column is **not** what picks the actor arm.
+/// `registry::provider_session_actor` reads `ToolCallIdentity::provider`,
+/// which `call_tool` callers set by hand. Verified rather than assumed:
+/// seeding this row as `Codex` while leaving the identity `Claude` still
+/// leaves
+/// `report_write_characterization::mcp_claude_assistant_block_write_is_actored_to_the_claude_session`
+/// green, because the session-authority resolution looks the row up by
+/// session id and never compares its provider. In production the column
+/// does reach the identity, but only through the transport
+/// (`crates/calm-server/src/mcp_server/transport.rs:1615-1618`), which
+/// `call_tool` bypasses — so no test on this path covers that hop.
 pub(crate) async fn seed_non_root_session_with_provider(
     repo: &dyn RepoEventWrite,
     wave_id: &WaveId,
