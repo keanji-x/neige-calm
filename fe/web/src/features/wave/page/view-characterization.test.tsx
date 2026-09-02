@@ -54,7 +54,11 @@
 // text fields in `textContent` and pinning the status to its carrier exactly is
 // what closes both.
 //
-// **Excluded, and why each exclusion is somebody's job.**
+// **The principal projectable gaps, and why each is somebody's job.** Read this
+// as the main gaps, **not** as an exhaustive list of everything a green run
+// fails to say — the two paragraphs above name two more (a dropped field only
+// removes an obligation; a field landing in the wrong carrier is unseen), and
+// there are smaller ones called out inline below.
 //
 //  - **Id-shaped fields — excluded and must stay excluded.** `row.id` (a
 //    `card.id` / `task.blockId`) and every action *payload* reach only React
@@ -95,12 +99,18 @@
 //  - **`badge.struck` — excluded, S1b's.** It is only a class difference
 //    (`taskWithdrawn` vs `taskNote`, `:663-665`); neither `textContent` nor any
 //    marker this page carries distinguishes them.
-//  - **The set and order of a row's actions — excluded, S1b's.** `rowFields`
-//    does not read `row.actions` at all, so reordering a row's actions — or
-//    adding and dropping one — leaves this suite green. That `actions` is a
-//    checked sequence (`core/view/panel.ts`, `PanelRow.actions`) is a claim
-//    only S1b's `checkProjection` carries, against the action markers this page
-//    does not have.
+//  - **The exact set and order of a row's actions — excluded, S1b's.** There is
+//    no exact-set or order guarantee here: `expectActionWording` iterates
+//    `row.actions` and checks membership per action, which pins nothing about
+//    the sequence as a whole. Note what that iteration *does* catch, so the gap
+//    is not read as wider than it is — adding an action whose `label` or `hint`
+//    is a sentence the page does not carry goes **red**. The mutations that
+//    survive are the four where no new obligation appears: reordering a row's
+//    actions, deleting an action, adding one with `label` and `hint` both null,
+//    and adding one that reuses wording the row's subtree already renders. That
+//    `actions` is a checked sequence (`core/view/panel.ts`, `PanelRow.actions`)
+//    is a claim only S1b's `checkProjection` carries, against the action markers
+//    this page does not have.
 //  - **The DOM order of the modules — excluded, S1b's.** Each module is located
 //    by its own static selector (`renderedRows`) and asserted independently, so
 //    swapping the order of `view.rowModules` — or of the two module elements on
@@ -234,7 +244,12 @@ function occurrences(haystack: string, needle: string): number {
 
 /** The row's visible text fields, in no particular order — position is not what
  *  this suite claims. `status` is not among them: it has no text content at all
- *  on this surface, and is asserted exactly against its own carrier instead. */
+ *  on this surface, and is asserted exactly against its own carrier instead.
+ *
+ *  Of a badge this reads `text` only — a further gap the file head's list does
+ *  not enumerate: `badge.id` is never asserted here, and since these are
+ *  occurrence lower bounds there is no claim about the row's **exact** set of
+ *  badges either. Both are S1b's `checkProjection`. */
 function rowFields(row: PanelRow): readonly string[] {
   return [
     row.title,

@@ -178,8 +178,10 @@ describe('paintModule action filtering', () => {
 /*
  * `paintPanel` is the **desktop's** traversal: the desktop panel card lays
  * both modules out in one tree. Mobile drills into one module at a time and
- * calls `paintModule` per page, so the module sequence there is a navigation
- * structure, not a DOM sequence.
+ * will call `paintModule` per page when S1b-4 wires it, so the module sequence
+ * there is a navigation structure, not a DOM sequence. Today the mobile surface
+ * calls neither: outside this suite, `paintModule`'s only caller is
+ * `paintPanel`, and no production renderer calls either one.
  *
  * Nothing forces the desktop component to call this — that gap is review's
  * (§6.10), not this suite's.

@@ -14,12 +14,15 @@
 //    unmodified page. For those, this file is not allowed to be self-consistent
 //    and wrong.
 //  - **The action wording added in S1b-1** — `RowAction.label` / `.hint`, the
-//    four sentences below — is **not** in that suite. It reads `textContent`
-//    only, and these live in `aria-label` / `title`. Today their oracle is
-//    `wave-page.test.ts`'s expected strings plus a human comparing them with the
-//    cited `public.tsx` lines; the machine-checked carrier arrives with S1b-2's
-//    `checkProjection` over S1b-3's markers. Until then, a wording that drifts
-//    from the page here is caught by review, not by a gate.
+//    four sentences below — is held by that same suite, but by a weaker check
+//    than the text fields get. `expectActionWording` requires each non-null
+//    sentence to be **equal to one of the attribute values inside that row's own
+//    subtree** (`hint` against `title`, `label` against `aria-label`), so a
+//    wording that drifts from `public.tsx` goes red on a gate, not only in
+//    review. What that check does **not** say: which element carries which
+//    sentence, that a null wording stays null, and that the row carries no extra
+//    action. Those three arrive with S1b-2's `checkProjection` over S1b-3's
+//    markers.
 //
 // **Signature note.** The design writes `deriveWavePageView(wave, cards, tasks)`
 // because a later slice adds the report outline, which needs the wave. Neither
