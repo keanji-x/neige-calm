@@ -84,7 +84,7 @@ services:
       # we provide a known dev default below (`owner` / `dev`) so the
       # login page still works without anyone having to write a `.env`
       # first. Override either via .env. To bypass LoginPage entirely
-      # (single-user loopback workflows), set `CALM_DEV_AUTOLOGIN=true` in
+      # (single-user loopback setups), set `CALM_DEV_AUTOLOGIN=true` in
       # .env — see .env.example for the warning about network-reachable
       # instances.
       CALM_DEV_AUTOLOGIN: ${CALM_DEV_AUTOLOGIN:-false}

@@ -35,10 +35,10 @@ const SECRET_NAME: &str = "plugin.dev.echo_secret";
 const COLLIDING_PLUGIN_ID: &str = "dev";
 const COLLIDING_TOOL_NAME: &str = "echo.do.thing";
 const COLLIDING_EXPOSED_NAME: &str = "plugin.dev_echo.do.thing";
-// #891 slice ④ fixtures — a trusted plugin owning a workflow, plus a wave
-// bound to that workflow. NOT the shipped git-forge manifest: the id merely
+// #891 slice ④ fixtures — a trusted plugin owning a template, plus a wave
+// bound to that template. NOT the shipped git-forge manifest: the id merely
 // reuses the default trusted id so no env mutation is needed.
-const WORKFLOW_ID: &str = "tool-visibility-flow";
+const TEMPLATE_ID: &str = "tool-visibility-flow";
 const TRUSTED_TOOL_NAME: &str = "wf.tool";
 /// Shared-daemon token so the error-shape matrix below can drive a
 /// DaemonTrust connection (the only mode where "missing threadId" is an
@@ -53,11 +53,11 @@ struct Fixture {
     thread_id: String,
     /// Plugin id from `NEIGE_TRUSTED_FORGE_PLUGINS` (default
     /// `dev.neige.git-forge`) — the running trusted stub that owns
-    /// [`WORKFLOW_ID`].
+    /// [`TEMPLATE_ID`].
     trusted_plugin_id: String,
     /// `plugin.<trusted_plugin_id>_wf.tool`.
     trusted_exposed_name: String,
-    /// Worker card token/thread minted in the workflow-bound wave.
+    /// Worker card token/thread minted in the template-bound wave.
     bound_raw_token: String,
     bound_thread_id: String,
     /// #1189 — Assistant card token/thread minted in the UNBOUND wave, so
@@ -108,7 +108,7 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
     );
     // #891 slice ④ regression pin — an UNBOUND wave keeps the historical
     // union of every running plugin's tools, including the trusted
-    // workflow-owning plugin.
+    // template-owning plugin.
     assert!(
         names.iter().any(|name| name == &fx.trusted_exposed_name),
         "unbound wave must see the union incl. the trusted plugin tool: {names:?}"
@@ -124,7 +124,7 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
     );
     assert!(
         running_ids.contains(&fx.trusted_plugin_id),
-        "fixture must have the trusted workflow plugin running: {running_ids:?}"
+        "fixture must have the trusted template plugin running: {running_ids:?}"
     );
 
     send_frame(
@@ -213,7 +213,7 @@ async fn worker_mcp_discovers_and_routes_colliding_dotted_plugin_tools() {
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
         .await
-        .expect("stop trusted workflow plugin");
+        .expect("stop trusted template plugin");
 }
 
 /// #1189 review round 2 (G4) — the assistant's tool verdict must also hold
@@ -294,14 +294,14 @@ async fn assistant_token_cannot_call_a_plugin_tool() {
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
         .await
-        .expect("stop trusted workflow plugin");
+        .expect("stop trusted template plugin");
 }
 
-/// #891 slice ④ — a wave bound to a workflow sees ONLY the owning plugin's
+/// #891 slice ④ — a wave bound to a template sees ONLY the owning plugin's
 /// tools (plus kernel `calm.*`) on discovery, and dispatch to another
 /// plugin's tool is refused with the same `-32601` an unknown tool gets.
 #[tokio::test]
-async fn bound_wave_scopes_plugin_tools_to_workflow_owner() {
+async fn bound_wave_scopes_plugin_tools_to_template_owner() {
     let fx = boot_fixture().await;
     let (mut rd, mut wr) = connect(&fx.socket_path).await;
     handshake(&mut rd, &mut wr, &fx.bound_raw_token).await;
@@ -402,7 +402,7 @@ async fn bound_wave_scopes_plugin_tools_to_workflow_owner() {
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
         .await
-        .expect("stop trusted workflow plugin");
+        .expect("stop trusted template plugin");
     send_frame(&mut wr, tools_list_frame(6, &fx.bound_thread_id)).await;
     let list_after_stop = recv_frame(&mut rd).await;
     assert!(
@@ -466,7 +466,7 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
     // the "exists but cross-plugin / out of scope" probe.
     let names = [EXPOSED_NAME, unknown_plugin_tool, unknown_bare_tool];
 
-    // Column 1 — valid threadId (workflow-bound wave): every rejection is
+    // Column 1 — valid threadId (template-bound wave): every rejection is
     // the one shared -32601 construction; the only difference is the
     // caller's own requested name echoed back.
     for (idx, name) in names.iter().enumerate() {
@@ -559,7 +559,7 @@ async fn plugin_tool_error_objects_are_uniform_across_tool_existence() {
     fx.plugin_host
         .stop(&fx.trusted_plugin_id)
         .await
-        .expect("stop trusted workflow plugin");
+        .expect("stop trusted template plugin");
 }
 
 /// `tools/call` that must fail: returns the complete `error` object.
@@ -675,7 +675,7 @@ async fn boot_fixture() -> Fixture {
             title: "mcp-plugin-tools-bound".into(),
             sort: None,
             cwd: String::new(),
-            template_id: Some(WORKFLOW_ID.into()),
+            template_id: Some(TEMPLATE_ID.into()),
             plugin_scope: Some(trusted_plugin_id.clone()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -728,7 +728,7 @@ async fn boot_fixture() -> Fixture {
     plugin_host
         .spawn(&trusted_plugin_id)
         .await
-        .expect("spawn trusted workflow plugin");
+        .expect("spawn trusted template plugin");
     wait_for_running(&plugin_host, &trusted_plugin_id).await;
 
     let plugin_host_cell = Arc::new(OnceCell::new());
@@ -898,7 +898,7 @@ async fn boot_plugin_host(
     let registry_builder =
         registry_builder.with(colliding_manifest, Some(colliding_install_dir.clone()));
 
-    // #891 slice ④ — trusted stub plugin owning WORKFLOW_ID and exposing one
+    // #891 slice ④ — trusted stub plugin owning TEMPLATE_ID and exposing one
     // tool, so bound-wave scoping has an "owning plugin" to resolve.
     let trusted_install_dir = plugins_dir.join(trusted_plugin_id);
     let trusted_bin_dir = trusted_install_dir.join("bin");
@@ -910,7 +910,7 @@ async fn boot_plugin_host(
         "id": trusted_plugin_id,
         "version": "0.1.0",
         "min_kernel_version": "0.0.1",
-        "display_name": "Trusted workflow owner",
+        "display_name": "Trusted template owner",
         "entrypoint": {
             "command": "bin/stub",
             "env": {
@@ -919,10 +919,10 @@ async fn boot_plugin_host(
             }
         },
         "exposes_tools": [
-            { "name": TRUSTED_TOOL_NAME, "description": "workflow-scoped tool" }
+            { "name": TRUSTED_TOOL_NAME, "description": "template-scoped tool" }
         ],
-        "workflows": [
-            { "id": WORKFLOW_ID }
+        "templates": [
+            { "id": TEMPLATE_ID }
         ],
         "permissions": {}
     });

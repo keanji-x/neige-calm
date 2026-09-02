@@ -54,11 +54,11 @@ fn fork_rule_one_exemption_has_one_structural_entry() {
     );
 }
 
-/// INV-1110-005 (partial, S5): `WorkflowDescriptor` is an id handle. Do not
+/// INV-1110-005 (partial, S5): `TemplateDescriptor` is an id handle. Do not
 /// grow a public descriptor body (plan_template / gates / spec_instructions /
-/// card_kinds / leftover input_schema) or add sibling public workflow types.
+/// card_kinds / leftover input_schema) or add sibling public template types.
 #[test]
-fn workflow_descriptor_surface_is_id_only() {
+fn template_descriptor_surface_is_id_only() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/plugin_host/manifest.rs");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
@@ -66,13 +66,13 @@ fn workflow_descriptor_surface_is_id_only() {
         .unwrap_or_else(|error| panic!("parse {}: {error}", path.display()));
 
     let descriptor = syntax.items.iter().find_map(|item| match item {
-        Item::Struct(item_struct) if item_struct.ident == "WorkflowDescriptor" => Some(item_struct),
+        Item::Struct(item_struct) if item_struct.ident == "TemplateDescriptor" => Some(item_struct),
         _ => None,
     });
-    let descriptor = descriptor.expect("WorkflowDescriptor vanished from the manifest parser");
+    let descriptor = descriptor.expect("TemplateDescriptor vanished from the manifest parser");
     assert!(
         matches!(descriptor.vis, Visibility::Public(_)),
-        "WorkflowDescriptor must stay pub so wave-create can resolve plugin_scope"
+        "TemplateDescriptor must stay pub so wave-create can resolve plugin_scope"
     );
 
     let mut expected_entries = BTreeSet::new();
@@ -82,16 +82,16 @@ fn workflow_descriptor_surface_is_id_only() {
         let name = field
             .ident
             .as_ref()
-            .expect("WorkflowDescriptor must be a named struct")
+            .expect("TemplateDescriptor must be a named struct")
             .to_string();
         fields.insert(name);
     }
     assert_eq!(
         fields, expected_entries,
-        "WorkflowDescriptor must stay {{ id }} (#1110 S5)"
+        "TemplateDescriptor must stay {{ id }} (#1110 S5)"
     );
 
-    let mut public_workflow_types = BTreeSet::new();
+    let mut public_template_types = BTreeSet::new();
     for item in &syntax.items {
         let (ident, vis) = match item {
             Item::Struct(item_struct) => (&item_struct.ident, &item_struct.vis),
@@ -103,16 +103,16 @@ fn workflow_descriptor_surface_is_id_only() {
             continue;
         }
         let name = ident.to_string();
-        if name == "WorkflowDescriptor" {
+        if name == "TemplateDescriptor" {
             continue;
         }
-        if name.contains("Workflow") || name.ends_with("Descriptor") {
-            public_workflow_types.insert(name);
+        if name.contains("Template") || name.ends_with("Descriptor") {
+            public_template_types.insert(name);
         }
     }
     assert!(
-        public_workflow_types.is_empty(),
-        "new public workflow-descriptor types must not appear: {public_workflow_types:?}"
+        public_template_types.is_empty(),
+        "new public template-descriptor types must not appear: {public_template_types:?}"
     );
 }
 

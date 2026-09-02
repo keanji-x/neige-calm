@@ -206,17 +206,17 @@ struct RunningPlugin {
 /// Everything `PluginHost` knows about plugin runtime state, guarded by ONE
 /// mutex so admission decisions are atomic.
 ///
-/// #891 review fix (spawn TOCTOU): the workflow-uniqueness check and the
+/// #891 review fix (spawn TOCTOU): the template-uniqueness check and the
 /// "already running" check used to read a Running-only snapshot with no lock
 /// held across the spawn, while the `live` insert happened only after process
 /// exec + MCP handshake. Two concurrent spawns of trusted plugins declaring
-/// the same workflow id could both pass, yielding duplicate running owners
+/// the same template id could both pass, yielding duplicate running owners
 /// and a nondeterministic `plugin_scope_for_wave` winner. Concurrent callers
 /// are real: HTTP enable/reload routes plus the crash-supervisor respawn.
 ///
 /// `spawning` is the admission set: an id is inserted here — under the same
 /// lock where the conflict check reads state — the moment its spawn is
-/// admitted, and counts as a workflow-id holder for every later admission
+/// admitted, and counts as a template-id holder for every later admission
 /// until it is either swapped for a `live` entry (success, same lock) or
 /// released (any failure between admission and the swap). The existing
 /// [`PluginRuntimeStatus::Spawning`] state is reused to report reserved ids
@@ -245,7 +245,7 @@ struct ProcessTable {
 ///   aborted/dropped mid-`.await`, and panic unwinds all run `Drop`, which
 ///   synchronously re-locks the table and removes the reservation. Without
 ///   this, a cancelled spawn would leave the id `Spawning` forever: same-id
-///   spawns would get `AlreadyRunning` and the reserved workflow ids would
+///   spawns would get `AlreadyRunning` and the reserved template ids would
 ///   squat indefinitely.
 ///
 /// Deadlock safety: `Drop` only locks when still armed, and the only place a
@@ -284,11 +284,11 @@ impl Drop for AdmissionGuard {
 }
 
 impl ProcessTable {
-    /// Ids that hold their manifests' workflow ids for admission purposes:
+    /// Ids that hold their manifests' template ids for admission purposes:
     /// live plugins that are actually `Running`, plus admission-reserved
     /// (`Spawning`) ids. Crashed/stopping entries do not squat on ids —
     /// same policy as [`PluginHost::running_plugin_ids`].
-    fn workflow_holder_ids(&self) -> BTreeSet<String> {
+    fn template_holder_ids(&self) -> BTreeSet<String> {
         let mut ids: BTreeSet<String> = self
             .live
             .iter()
@@ -1620,16 +1620,16 @@ impl PluginHost {
 
         // #891 slice ④ (+ review fix) — atomic admission. Under ONE lock on
         // the process table we (a) refuse a spawn that's already running or
-        // already admitted, (b) run the registration-time workflow-id
+        // already admitted, (b) run the registration-time template-id
         // uniqueness check against running ∧ admitted holders, and (c) on
         // success reserve the id in the admission set. This closes the
         // check-to-insert TOCTOU: a concurrent spawn (HTTP enable/reload,
         // crash-supervisor respawn) observes either our reservation or our
         // live entry, never the in-between. Uniqueness is enforced over the
-        // same "running ∧ trusted" set every workflow resolver filters on
-        // (`resolve_trusted_workflow`, `bound_workflow`, the MCP per-wave
+        // same "running ∧ trusted" set every template resolver filters on
+        // (`resolve_template_binding`, `bound_template`, the MCP per-wave
         // tool scope) — plus admission reservations — so a stopped plugin
-        // never squats on a workflow id but a mid-spawn one already holds it.
+        // never squats on a template id but a mid-spawn one already holds it.
         // Ordered before the token mint so a refusal — like the min-kernel
         // check above — has zero side effects on plugin state; the autospawn
         // loop's per-plugin tolerance logs and moves on.
@@ -1648,10 +1648,10 @@ impl PluginHost {
                 // its handle, so we treat that as "go ahead".
                 return Err(HostError::AlreadyRunning(id.to_string()));
             }
-            match find_workflow_conflict(
+            match find_template_conflict(
                 &manifest,
                 self.registry.list(),
-                &table.workflow_holder_ids(),
+                &table.template_holder_ids(),
                 &trusted_forge_plugin,
             ) {
                 Some(conflict) => Err(conflict),
@@ -1672,7 +1672,7 @@ impl PluginHost {
                 tracing::warn!(
                     plugin_id = %id,
                     error = %conflict,
-                    "refusing to spawn plugin with a conflicting workflow id"
+                    "refusing to spawn plugin with a conflicting template id"
                 );
                 // #891 review fix (design §4.4 "该插件进 Failed"): surface the
                 // refusal as a failed `PluginState` event so operators see WHY
@@ -3166,26 +3166,26 @@ fn inherited_window(
     }
 }
 
-/// #891 slice ④ — pure core of the registration-time workflow-id uniqueness
-/// check `PluginHost::spawn` runs. Returns the [`HostError::WorkflowConflict`]
-/// for the first workflow id of `manifest` that another **holding trusted**
+/// #891 slice ④ — pure core of the registration-time template-id uniqueness
+/// check `PluginHost::spawn` runs. Returns the [`HostError::TemplateConflict`]
+/// for the first template id of `manifest` that another **holding trusted**
 /// candidate manifest already declares; `None` when the spawn may proceed.
 ///
 /// Rules (design §4.4):
 /// * only fires when the spawning plugin itself is trusted — untrusted
-///   plugins never enter the workflow resolution set, so their (unreachable)
+///   plugins never enter the template resolution set, so their (unreachable)
 ///   duplicate ids are tolerated;
 /// * only holding ∧ trusted candidates count — `holder_ids` is the caller's
 ///   atomic snapshot of running plugins PLUS admission-reserved (`Spawning`)
-///   ids ([`ProcessTable::workflow_holder_ids`]), so a stopped plugin does
-///   not squat on its workflow ids but a concurrent mid-spawn one already
+///   ids ([`ProcessTable::template_holder_ids`]), so a stopped plugin does
+///   not squat on its template ids but a concurrent mid-spawn one already
 ///   holds them (#891 review fix — anti-TOCTOU);
 /// * the spawning plugin's own registry entry is skipped (respawn path).
 ///
 /// The trust predicate is injected because the trusted set is
 /// env-configured (`NEIGE_TRUSTED_FORGE_PLUGINS`), which keeps this core
 /// unit-testable without mutating process env.
-fn find_workflow_conflict(
+fn find_template_conflict(
     manifest: &Manifest,
     candidates: impl IntoIterator<Item = Manifest>,
     holder_ids: &BTreeSet<String>,
@@ -3198,11 +3198,11 @@ fn find_workflow_conflict(
         if other.id == manifest.id || !holder_ids.contains(&other.id) || !is_trusted(&other.id) {
             continue;
         }
-        for workflow in &manifest.workflows {
-            if other.workflows.iter().any(|held| held.id == workflow.id) {
-                return Some(HostError::WorkflowConflict {
+        for template in &manifest.templates {
+            if other.templates.iter().any(|held| held.id == template.id) {
+                return Some(HostError::TemplateConflict {
                     plugin_id: manifest.id.clone(),
-                    workflow_id: workflow.id.clone(),
+                    template_id: template.id.clone(),
                     held_by: other.id.clone(),
                 });
             }
@@ -3303,19 +3303,19 @@ fn spawn_methodnotfound_drainer(
 }
 
 #[cfg(test)]
-mod workflow_conflict_tests {
+mod template_conflict_tests {
     use super::*;
 
-    fn manifest_with_workflow(id: &str, workflow_id: &str) -> Manifest {
+    fn manifest_with_template(id: &str, template_id: &str) -> Manifest {
         let json = serde_json::json!({
             "manifest_version": 1,
             "id": id,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",
-            "display_name": "Workflow Conflict Stub",
+            "display_name": "Template Conflict Stub",
             "entrypoint": { "command": "bin/stub" },
-            "workflows": [
-                { "id": workflow_id }
+            "templates": [
+                { "id": template_id }
             ],
             "permissions": {}
         });
@@ -3327,48 +3327,48 @@ mod workflow_conflict_tests {
     }
 
     #[test]
-    fn duplicate_workflow_on_running_trusted_plugin_conflicts() {
-        let incoming = manifest_with_workflow("dev.second", "issue-development");
-        let holder = manifest_with_workflow("dev.first", "issue-development");
+    fn duplicate_template_on_running_trusted_plugin_conflicts() {
+        let incoming = manifest_with_template("dev.second", "issue-development");
+        let holder = manifest_with_template("dev.first", "issue-development");
         let trusted = |_: &str| true;
         let conflict =
-            find_workflow_conflict(&incoming, [holder], &running(&["dev.first"]), &trusted)
-                .expect("duplicate workflow id must conflict");
+            find_template_conflict(&incoming, [holder], &running(&["dev.first"]), &trusted)
+                .expect("duplicate template id must conflict");
         match conflict {
-            HostError::WorkflowConflict {
+            HostError::TemplateConflict {
                 plugin_id,
-                workflow_id,
+                template_id,
                 held_by,
             } => {
                 assert_eq!(plugin_id, "dev.second");
-                assert_eq!(workflow_id, "issue-development");
+                assert_eq!(template_id, "issue-development");
                 assert_eq!(held_by, "dev.first");
             }
-            other => panic!("expected WorkflowConflict, got {other:?}"),
+            other => panic!("expected TemplateConflict, got {other:?}"),
         }
     }
 
     #[test]
-    fn stopped_holder_does_not_squat_on_workflow_id() {
-        let incoming = manifest_with_workflow("dev.second", "issue-development");
-        let holder = manifest_with_workflow("dev.first", "issue-development");
+    fn stopped_holder_does_not_squat_on_template_id() {
+        let incoming = manifest_with_template("dev.second", "issue-development");
+        let holder = manifest_with_template("dev.first", "issue-development");
         let trusted = |_: &str| true;
         assert!(
-            find_workflow_conflict(&incoming, [holder], &running(&[]), &trusted).is_none(),
-            "a stopped plugin must not hold the workflow id"
+            find_template_conflict(&incoming, [holder], &running(&[]), &trusted).is_none(),
+            "a stopped plugin must not hold the template id"
         );
     }
 
     #[test]
     fn untrusted_duplicates_are_tolerated() {
-        let incoming = manifest_with_workflow("dev.second", "issue-development");
-        let holder = manifest_with_workflow("dev.first", "issue-development");
+        let incoming = manifest_with_template("dev.second", "issue-development");
+        let holder = manifest_with_template("dev.first", "issue-development");
         let running_ids = running(&["dev.first"]);
 
         // Untrusted spawner: never enters the resolution set — no conflict.
         let only_first_trusted = |id: &str| id == "dev.first";
         assert!(
-            find_workflow_conflict(
+            find_template_conflict(
                 &incoming,
                 [holder.clone()],
                 &running_ids,
@@ -3377,30 +3377,30 @@ mod workflow_conflict_tests {
             .is_none()
         );
 
-        // Untrusted holder: its workflows are unresolvable — no conflict.
+        // Untrusted holder: its templates are unresolvable — no conflict.
         let only_second_trusted = |id: &str| id == "dev.second";
         assert!(
-            find_workflow_conflict(&incoming, [holder], &running_ids, &only_second_trusted)
+            find_template_conflict(&incoming, [holder], &running_ids, &only_second_trusted)
                 .is_none()
         );
     }
 
     #[test]
     fn respawn_skips_own_registry_entry_and_distinct_ids_pass() {
-        let incoming = manifest_with_workflow("dev.first", "issue-development");
-        let own_entry = manifest_with_workflow("dev.first", "issue-development");
+        let incoming = manifest_with_template("dev.first", "issue-development");
+        let own_entry = manifest_with_template("dev.first", "issue-development");
         let trusted = |_: &str| true;
         assert!(
-            find_workflow_conflict(&incoming, [own_entry], &running(&["dev.first"]), &trusted)
+            find_template_conflict(&incoming, [own_entry], &running(&["dev.first"]), &trusted)
                 .is_none(),
             "respawn must not conflict with the plugin's own registry entry"
         );
 
-        let other = manifest_with_workflow("dev.other", "different-workflow");
+        let other = manifest_with_template("dev.other", "different-template");
         assert!(
-            find_workflow_conflict(&incoming, [other], &running(&["dev.other"]), &trusted)
+            find_template_conflict(&incoming, [other], &running(&["dev.other"]), &trusted)
                 .is_none(),
-            "distinct workflow ids must not conflict"
+            "distinct template ids must not conflict"
         );
     }
 }

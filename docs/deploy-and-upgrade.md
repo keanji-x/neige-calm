@@ -434,16 +434,36 @@ systemctl --user start neige-app
 curl -s http://127.0.0.1:8080/api/version
 ```
 
-### 8.2 Plugin compatibility (#1209)
+### 8.2 Plugin compatibility (#1209, #1268)
 
-From #1209 onward, the ids a trusted plugin declares in its manifest's
-`workflows[].id` **must** be keys in the kernel's wave-template roster —
-today `issue-development`, `small-change`, `investigation`.
+From #1209 onward, the ids a trusted plugin declares in its manifest
+**must** be keys in the kernel's wave-template roster — today
+`issue-development`, `small-change`, `investigation`.
 
-The manifest **schema is unchanged**: `workflows[].id` is still parsed
-exactly as before, so no manifest fails to load. What changed is the
-*acceptance* semantics: declaring an id outside the roster no longer lets
-`POST /api/waves` create a wave bound to it. That request now returns
+**#1268 renamed the array itself: `workflows[]` is now `templates[]`.**
+The entries are unchanged (`{ "id": "<kernel template id>" }`); only the
+containing key moved. This *is* a plugin-manifest schema break — #1209
+deliberately avoided one, and #1268 took it only after confirming there are
+no third-party plugins to break (the sole manifest declaring the array is
+the in-repo `plugins/git-forge/manifest.json`, updated in the same commit).
+
+A manifest still spelling the array `workflows` is **rejected at parse
+time**, naming the new key:
+
+```
+manifest validation failed at `workflows`: renamed to `templates` in #1268;
+rename the key (its entries are unchanged: { "id": "<kernel template id>" })
+```
+
+That refusal is deliberate. `Manifest` tolerates unknown top-level keys, so
+the default behaviour would have been *silent*: the plugin would parse, declare
+no binding at all, and the only symptom would be `issue-development` losing its
+`input_schema` — every later `template_input` create failing with a 400 that
+points nowhere near the cause.
+
+What #1209 changed, and #1268 did not, is the *acceptance* semantics:
+declaring an id outside the roster does not let `POST /api/waves` create a
+wave bound to it. That request returns
 
 ```
 400  wave create: `template_id` must reference a known wave template; got `<id>`
@@ -460,7 +480,10 @@ success. Browser bundles are covered by the `minWebCompatVersion`
 floor and will show the refresh curtain instead of issuing such a request.
 
 **Scan your installed plugins before upgrading.** Run this in the plugin
-install root; any output names a plugin this release will break:
+install root; any output names a plugin this release will break. It reports
+both failure modes: a manifest still carrying the retired `workflows` key
+(refused at parse time), and a declared id outside the roster (parses, but
+cannot be bound):
 
 ```sh
 for m in <plugins_dir>/*/manifest.json; do
@@ -469,8 +492,11 @@ for m in <plugins_dir>/*/manifest.json; do
                                # registry, and an unmatched glob would otherwise
                                # hand jq a literal path and error out
   jq -r --argjson roster '["issue-development","small-change","investigation"]' \
-    '(.workflows // [])[].id | select(. as $i | $roster | index($i) | not)
-     | "\(input_filename): \(.)"' "$m"
+    'if has("workflows") then
+       "\(input_filename): retired `workflows` key — rename it to `templates`"
+     else empty end,
+     ((.templates // [])[].id | select(. as $i | $roster | index($i) | not)
+      | "\(input_filename): \(.)")' "$m"
 done
 ```
 

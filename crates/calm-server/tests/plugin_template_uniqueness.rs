@@ -1,11 +1,11 @@
-//! #891 slice ④ — registration-time workflow-id uniqueness at
+//! #891 slice ④ — registration-time template-id uniqueness at
 //! `PluginHost::spawn`.
 //!
-//! Two trusted plugins declaring the same workflow id must not run at the
-//! same time: the second spawn is refused with `HostError::WorkflowConflict`
+//! Two trusted plugins declaring the same template id must not run at the
+//! same time: the second spawn is refused with `HostError::TemplateConflict`
 //! (per-plugin failure — the autospawn loop logs and continues). The
 //! uniqueness set is "running ∧ trusted": an untrusted duplicate is not
-//! blocked (it never enters workflow resolution), and a STOPPED trusted
+//! blocked (it never enters template resolution), and a STOPPED trusted
 //! holder does not squat on the id.
 //!
 //! The trusted set is env-configured (`NEIGE_TRUSTED_FORGE_PLUGINS`), so this
@@ -40,10 +40,10 @@ const TRUSTED_A: &str = "dev.trusted-a";
 const TRUSTED_B: &str = "dev.trusted-b";
 const UNTRUSTED_C: &str = "dev.untrusted-c";
 const TRUSTED_D: &str = "dev.trusted-d";
-const SHARED_WORKFLOW_ID: &str = "shared-workflow";
+const SHARED_TEMPLATE_ID: &str = "shared-template";
 
 #[tokio::test]
-async fn duplicate_workflow_id_is_rejected_at_spawn_for_trusted_plugins_only() {
+async fn duplicate_template_id_is_rejected_at_spawn_for_trusted_plugins_only() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -65,7 +65,7 @@ async fn duplicate_workflow_id_is_rejected_at_spawn_for_trusted_plugins_only() {
     host.spawn(TRUSTED_A).await.expect("spawn first trusted");
     wait_for_running(&host, TRUSTED_A).await;
 
-    // Second trusted plugin, same workflow id → refused before any spawn.
+    // Second trusted plugin, same template id → refused before any spawn.
     // Subscribe first: the refusal must surface a failed `PluginState`
     // event (#891 review fix, design §4.4 "该插件进 Failed") so the plugin
     // doesn't silently look stopped.
@@ -73,18 +73,18 @@ async fn duplicate_workflow_id_is_rejected_at_spawn_for_trusted_plugins_only() {
     let err = host
         .spawn(TRUSTED_B)
         .await
-        .expect_err("duplicate trusted workflow id must be refused");
+        .expect_err("duplicate trusted template id must be refused");
     match &err {
-        HostError::WorkflowConflict {
+        HostError::TemplateConflict {
             plugin_id,
-            workflow_id,
+            template_id,
             held_by,
         } => {
             assert_eq!(plugin_id, TRUSTED_B);
-            assert_eq!(workflow_id, SHARED_WORKFLOW_ID);
+            assert_eq!(template_id, SHARED_TEMPLATE_ID);
             assert_eq!(held_by, TRUSTED_A);
         }
-        other => panic!("expected WorkflowConflict, got {other:?}"),
+        other => panic!("expected TemplateConflict, got {other:?}"),
     }
     assert!(
         host.status(TRUSTED_B).await.is_none(),
@@ -105,28 +105,28 @@ async fn duplicate_workflow_id_is_rejected_at_spawn_for_trusted_plugins_only() {
         }
     })
     .await
-    .expect("workflow-conflict refusal must emit a PluginState event");
+    .expect("template-conflict refusal must emit a PluginState event");
     assert_eq!(
         crashed.0, "crashed",
         "refusal must surface as a failed state"
     );
     assert!(
-        crashed.1.unwrap_or_default().contains(SHARED_WORKFLOW_ID),
-        "failed-state event should carry the conflicting workflow id"
+        crashed.1.unwrap_or_default().contains(SHARED_TEMPLATE_ID),
+        "failed-state event should carry the conflicting template id"
     );
 
-    // Untrusted duplicate is NOT blocked: it never enters the workflow
+    // Untrusted duplicate is NOT blocked: it never enters the template
     // resolution set, so its duplicate id is unreachable anyway.
     host.spawn(UNTRUSTED_C)
         .await
         .expect("untrusted duplicate spawns");
     wait_for_running(&host, UNTRUSTED_C).await;
 
-    // A stopped trusted holder does not squat on the workflow id.
+    // A stopped trusted holder does not squat on the template id.
     host.stop(TRUSTED_A).await.expect("stop first trusted");
     host.spawn(TRUSTED_B)
         .await
-        .expect("workflow id is free once the holder stopped");
+        .expect("template id is free once the holder stopped");
     wait_for_running(&host, TRUSTED_B).await;
 
     host.stop(TRUSTED_B).await.expect("stop second trusted");
@@ -134,16 +134,16 @@ async fn duplicate_workflow_id_is_rejected_at_spawn_for_trusted_plugins_only() {
 }
 
 /// #891 review fix (spawn TOCTOU) — two barrier-synchronized concurrent
-/// spawns of trusted plugins declaring the same workflow id must admit
+/// spawns of trusted plugins declaring the same template id must admit
 /// exactly one. Pre-fix, both passed the (unlocked, Running-only) conflict
 /// check before either inserted its processes-map entry, yielding duplicate
 /// running owners and a nondeterministic `plugin_scope_for_wave` winner.
 /// Also proves the loser's admission reservation is released: a third
-/// same-workflow spawn conflicts against the REAL winner (a leaked
+/// same-template spawn conflicts against the REAL winner (a leaked
 /// reservation would name the loser), and once the winner stops, the loser
 /// spawns cleanly.
 #[tokio::test]
-async fn concurrent_duplicate_workflow_spawns_admit_exactly_one() {
+async fn concurrent_duplicate_template_spawns_admit_exactly_one() {
     let _env_lock = FORGE_ENV_LOCK
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -194,19 +194,19 @@ async fn concurrent_duplicate_workflow_spawns_admit_exactly_one() {
     let winner = winner.expect("exactly one concurrent spawn must win");
     let (loser, loser_err) = loser.expect("exactly one concurrent spawn must lose");
     match &loser_err {
-        HostError::WorkflowConflict {
+        HostError::TemplateConflict {
             plugin_id,
-            workflow_id,
+            template_id,
             held_by,
         } => {
             assert_eq!(plugin_id, loser);
-            assert_eq!(workflow_id, SHARED_WORKFLOW_ID);
+            assert_eq!(template_id, SHARED_TEMPLATE_ID);
             assert_eq!(
                 held_by, winner,
                 "the conflict must be held by the actual winner"
             );
         }
-        other => panic!("expected WorkflowConflict for the loser, got {other:?}"),
+        other => panic!("expected TemplateConflict for the loser, got {other:?}"),
     }
     wait_for_running(&host, winner).await;
     assert!(
@@ -214,29 +214,29 @@ async fn concurrent_duplicate_workflow_spawns_admit_exactly_one() {
         "loser must leave neither a runtime entry nor a leaked reservation"
     );
 
-    // Third trusted plugin, same workflow id → still refused, and the holder
+    // Third trusted plugin, same template id → still refused, and the holder
     // must be the real winner. A leaked loser reservation would surface as
     // `held_by == loser` here.
     let err = host
         .spawn(TRUSTED_D)
         .await
-        .expect_err("third same-workflow spawn must conflict against the winner");
+        .expect_err("third same-template spawn must conflict against the winner");
     match &err {
-        HostError::WorkflowConflict { held_by, .. } => {
+        HostError::TemplateConflict { held_by, .. } => {
             assert_eq!(
                 held_by, winner,
                 "third spawn must conflict with the real winner, not a leaked reservation"
             );
         }
-        other => panic!("expected WorkflowConflict for the third spawn, got {other:?}"),
+        other => panic!("expected TemplateConflict for the third spawn, got {other:?}"),
     }
 
-    // Once the winner stops, the workflow id is free: the loser now spawns —
+    // Once the winner stops, the template id is free: the loser now spawns —
     // proving its failed admission left no residue.
     host.stop(winner).await.expect("stop winner");
     host.spawn(loser)
         .await
-        .expect("loser spawns once the workflow id is free");
+        .expect("loser spawns once the template id is free");
     wait_for_running(&host, loser).await;
     host.stop(loser).await.expect("stop loser");
 }
@@ -246,8 +246,8 @@ async fn concurrent_duplicate_workflow_spawns_admit_exactly_one() {
 /// handshake against an entrypoint that never answers `initialize`) must
 /// release its `Spawning` reservation via the RAII guard's `Drop`; otherwise
 /// the id squats as `Spawning` forever (same-id spawns get `AlreadyRunning`,
-/// the workflow id stays held). Asserts all three recoveries: no status
-/// squat, same-workflow spawn by ANOTHER plugin succeeds, and a same-id
+/// the template id stays held). Asserts all three recoveries: no status
+/// squat, same-template spawn by ANOTHER plugin succeeds, and a same-id
 /// respawn succeeds once the entrypoint is fixed.
 #[tokio::test]
 async fn aborted_spawn_releases_admission_reservation() {
@@ -307,11 +307,11 @@ async fn aborted_spawn_releases_admission_reservation() {
         "aborted spawn must not leave a Spawning reservation behind"
     );
 
-    // The workflow id is free again: another trusted plugin declaring the
+    // The template id is free again: another trusted plugin declaring the
     // same id spawns.
     host.spawn(TRUSTED_B)
         .await
-        .expect("workflow id must be free after the aborted spawn");
+        .expect("template id must be free after the aborted spawn");
     wait_for_running(&host, TRUSTED_B).await;
     host.stop(TRUSTED_B).await.expect("stop second trusted");
 
@@ -345,10 +345,10 @@ async fn boot_host(repo: &Arc<SqlxRepo>, root: &Path, events: EventBus) -> Arc<P
             "id": plugin_id,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",
-            "display_name": "Workflow Uniqueness Stub",
+            "display_name": "Template Uniqueness Stub",
             "entrypoint": { "command": "bin/stub" },
-            "workflows": [
-                { "id": SHARED_WORKFLOW_ID }
+            "templates": [
+                { "id": SHARED_TEMPLATE_ID }
             ],
             "permissions": {}
         });

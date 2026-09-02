@@ -161,7 +161,7 @@ r2 说「新增入口忘了取锁在类型上写不出来」。**这是假的**�
 **因此把两种写在类型上分开**：
 
 - **建表期**：消费型构造 `PluginRegistry::from_manifests(…)` / builder，`build()` 之后不可再写。覆盖那 24 处以及 lib 内 `#[cfg(test)]` 的 9 处。
-- **运行期**：唯一入口是 host 上收 `&LifecycleGuard` 的 `registry_insert` / `registry_remove` / `set_exposes_tools`。供 host 自身（`:1368`）、搬迁后的三个复合操作，以及 host 之后写入的测试（`forge_workflow_e2e.rs:350/380/405`、`connector_host.rs:1988`——`try_lock_lifecycle` 是 `pub`，见 R7）使用。
+- **运行期**：唯一入口是 host 上收 `&LifecycleGuard` 的 `registry_insert` / `registry_remove` / `set_exposes_tools`。供 host 自身（`:1368`）、搬迁后的三个复合操作，以及 host 之后写入的测试（`forge_template_e2e.rs:350/380/405`、`connector_host.rs:1988`——`try_lock_lifecycle` 是 `pub`，见 R7）使用。
 
 `load_from_dir`（`registry.rs:92-155`）**不走 `insert`**，直写 `inner`，不受影响。
 
@@ -193,7 +193,7 @@ r2 说「新增入口忘了取锁在类型上写不出来」。**这是假的**�
 
 **取消的语义**：`autospawn_one_connector` 的 `timeout_at`（`:908-912`）丢弃整个 future，guard 与 `AdmissionGuard` 一起 drop，不产生第三态。但「不存在第三种状态」的范围限定在**锁与 admission 保留**，不是世界：丢弃点若落在 `set_exposes_tools`（`:1368`）之后、live 插入（`:1394`）之前，registry 里会留下一份已物化的 tools 而无 live 条目。既存，登记在案。
 
-`ProcessTable.spawning` **保留**：它服务的是**跨 id** 的 workflow-id 唯一性（`workflow_holder_ids`，`:246`），per-id 锁按定义做不到。职责正交。
+`ProcessTable.spawning` **保留**：它服务的是**跨 id** 的 template-id 唯一性（`template_holder_ids`，`:246`），per-id 锁按定义做不到。职责正交。
 
 ### 2.5 两种获取语义
 

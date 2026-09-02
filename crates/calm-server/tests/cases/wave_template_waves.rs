@@ -1,4 +1,4 @@
-//! #1110 S6 — seed workflow template waves; auto-fork on create.
+//! #1110 S6 — seed template waves; auto-fork on create.
 //!
 //! Matching `template_id` lazily seeds three system-cove template waves
 //! (overlay `template_key`) and forks that report when `fork_report_from`
@@ -52,7 +52,7 @@ async fn boot() -> Boot {
     );
     let cove = repo
         .cove_create(NewCove {
-            name: "workflow-template-test".into(),
+            name: "template-template-test".into(),
             color: "#000".into(),
             sort: None,
         })
@@ -647,8 +647,8 @@ async fn unknown_template_id_still_400s() {
         "/api/waves",
         create_body(
             &boot.cove_id,
-            "unknown-workflow",
-            json!({ "template_id": "missing-workflow" }),
+            "unknown-template",
+            json!({ "template_id": "missing-template" }),
         ),
     )
     .await;
@@ -656,15 +656,15 @@ async fn unknown_template_id_still_400s() {
     // #1209 — three legs, because the interesting regression is not "some 400
     // happened" but "the 400 was decided by the roster". Leg 2 is the one that
     // catches restoring the registry wording (and with it the registry as the
-    // admission authority); a `.contains("missing-workflow")`-only assertion
+    // admission authority); a `.contains("missing-template")`-only assertion
     // was green both before and after that change.
     let error = body["error"].as_str().unwrap_or("");
     assert!(error.contains("known wave template"), "body={body}");
     assert!(
-        !error.contains("registered trusted workflow"),
+        !error.contains("registered trusted template"),
         "body={body}"
     );
-    assert!(error.contains("missing-workflow"), "body={body}");
+    assert!(error.contains("missing-template"), "body={body}");
 }
 
 /// #1209 test #8's fixture — a **running, trusted** plugin whose manifest
@@ -693,7 +693,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     );
     let cove = repo
         .cove_create(NewCove {
-            name: "workflow-template-plugin-test".into(),
+            name: "template-template-plugin-test".into(),
             color: "#000".into(),
             sort: None,
         })
@@ -727,7 +727,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     )
     .expect("symlink stub plugin");
 
-    let workflows: Vec<Value> = declared_template_ids
+    let templates: Vec<Value> = declared_template_ids
         .iter()
         .map(|id| json!({ "id": id }))
         .collect();
@@ -737,10 +737,10 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
             "id": plugin_id,
             "version": "0.1.0",
             "min_kernel_version": "0.0.1",
-            "display_name": "Trusted workflow owner",
+            "display_name": "Trusted template owner",
             "entrypoint": { "command": "bin/stub" },
             // No `input_schema`: see this function's doc comment, point 1.
-            "workflows": workflows,
+            "templates": templates,
             "permissions": {}
         })
         .to_string(),
@@ -812,7 +812,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
 
 /// #1209 test #8 — **the test the whole slice rests on.**
 ///
-/// A running, trusted plugin declares a workflow id that is not in the kernel's
+/// A running, trusted plugin declares a template id that is not in the kernel's
 /// template roster. Before #1209 that made the id creatable (201, with
 /// `plugin_scope` stamped and nothing to fork); the create path asked the
 /// plugin registry first and only consulted the roster as a fallback. #1209
@@ -821,7 +821,7 @@ async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
 /// cannot change that answer.
 ///
 /// The mutation this must catch is restoring the fallback (an
-/// `.or_else(|| resolve_trusted_workflow(..))` inside `admit_template`, in any
+/// `.or_else(|| resolve_template_binding(..))` inside `admit_template`, in any
 /// spelling). It then goes red on the **status code**, not on wording.
 /// Restoring only the old wording turns leg 2 of the error assertion red.
 #[tokio::test]
@@ -874,7 +874,7 @@ async fn plugin_declared_non_template_id_is_rejected() {
          not declare an input_schema; body={body}"
     );
     assert!(
-        !error.contains("registered trusted workflow"),
+        !error.contains("registered trusted template"),
         "body={body}"
     );
     assert!(error.contains(NOT_A_TEMPLATE), "body={body}");
@@ -891,7 +891,7 @@ async fn plugin_declared_non_template_id_is_rejected() {
 /// #1209 test #9 — the picker's list and create's accept set are one set.
 ///
 /// **Premise, and it is load-bearing:** `boot()` starts no plugins. With no
-/// running trusted plugin, `resolve_trusted_workflow` is `None` for every id,
+/// running trusted plugin, `resolve_template_binding` is `None` for every id,
 /// so `validate_template_input_binding(None, None)` short-circuits `Ok(())` and
 /// `issue-development` never reaches the required-input arm. That is what makes
 /// `== 201` correct for *every* listed id. If this harness ever grows a plugin
@@ -906,7 +906,7 @@ async fn plugin_declared_non_template_id_is_rejected() {
 /// The forward direction is universally quantified over the listed ids. The
 /// reverse ("create accepts nothing the list omits") is sampled here and
 /// carried structurally by there being a single fallible roster lookup
-/// (`workflow_template`), plus test #8 for the one concrete shape that
+/// (`template_by_key`), plus test #8 for the one concrete shape that
 /// historically reintroduced a second path. It is not a set-equality gate and
 /// is not claimed to be one.
 #[tokio::test]
@@ -979,7 +979,7 @@ async fn create_accepts_exactly_the_listed_templates() {
 /// wave-template read route on this branch — `GET /api/wave-templates/{id}`
 /// arrives with #1230 and this case must grow a leg for it at the merge.
 ///
-/// Mutations that must turn this red: calling `ensure_workflow_templates` (or
+/// Mutations that must turn this red: calling `ensure_templates` (or
 /// `ensure_system_cove`) from the GET; rewriting a seeded template's report
 /// summary in the GET; minting a wave with no overlay; writing only when
 /// already seeded; appending a single `log_pure_event` pure event. The last
@@ -1040,7 +1040,7 @@ async fn listing_wave_templates_does_not_materialize_seed_state() {
 /// The mutation this catches is the guard coming back as a *skip* —
 /// `if id.trim().is_empty() { /* treat as no template chosen */ }`, yielding
 /// 201, a null `plugin_scope` and no fork. `unknown_template_id_still_400s`
-/// sends `missing-workflow` and stays green through that change; this one does
+/// sends `missing-template` and stays green through that change; this one does
 /// not. The request deliberately carries a valid `cove_id`, no `cwd` and no
 /// `template_input`, so no other validation can supply the 400.
 #[tokio::test]
@@ -1052,7 +1052,7 @@ async fn blank_template_id_is_rejected() {
         "/api/waves",
         json!({
             "cove_id": boot.cove_id,
-            "title": "blank workflow id",
+            "title": "blank template id",
             "theme": theme(),
             "template_id": "   ",
         }),
@@ -1874,7 +1874,7 @@ async fn template_blocks(boot: &Boot, key: &str) -> Vec<Value> {
 }
 
 /// Round-4 self-check: the write endpoint and the create path must agree on which ids
-/// are templates. #1209 PR-1 made `workflow_template()` the single roster
+/// are templates. #1209 PR-1 made `template_by_key()` the single roster
 /// lookup; this asserts the two callers actually land on the same answer rather
 /// than each keeping a private judgement.
 #[tokio::test]

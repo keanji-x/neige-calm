@@ -13,7 +13,7 @@ async fn wave_create_round_trips_template_input() {
     let cove = cove_create_tx(
         &mut tx,
         NewCove {
-            name: "workflow input round trip".into(),
+            name: "template input round trip".into(),
             color: "#202020".into(),
             sort: None,
         },

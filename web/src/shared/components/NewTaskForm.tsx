@@ -115,8 +115,8 @@ export interface NewTaskFormProps {
   variant?: 'task' | 'issue-dev';
 }
 
-/** #891 (design §6 F5) — v1 has no `GET /api/workflows` discovery
- *  endpoint, so the issue-dev variant hardcodes the shipped workflow id.
+/** #891 (design §6 F5) — v1 has no template-discovery
+ *  endpoint, so the issue-dev variant hardcodes the shipped template id.
  *  If the git-forge plugin isn't running, the create POST 400s with a
  *  readable message that the normal submit-error path surfaces. */
 const ISSUE_DEV_TEMPLATE_ID = 'issue-development';
@@ -753,7 +753,7 @@ export function NewTaskForm({
             value takes over). Local JSON.parse gates submit; the
             schema-level validation stays server-side and a 400 lands in
             the normal error alert below. This is the generic seam:
-            future workflows get raw mode first, a thin form later. */}
+            future templates get raw mode first, a thin form later. */}
         {isIssueDev && (
           <details className="new-task-form-rawjson">
             {/* The override state is surfaced on the always-visible

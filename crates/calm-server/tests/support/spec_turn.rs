@@ -116,17 +116,17 @@ pub async fn wait_for_plan_updated(fx: &Fixture, budget: Duration) -> (ActorId, 
     }
 }
 
-pub async fn assert_bound_issue_development_workflow_preconditions(fx: &Fixture) {
-    let bound_workflow: Option<String> =
+pub async fn assert_bound_issue_development_template_preconditions(fx: &Fixture) {
+    let bound_template: Option<String> =
         sqlx::query_scalar("SELECT template_id FROM waves WHERE id = ?1")
             .bind(fx.wave_id.as_str())
             .fetch_one(fx.repo.pool())
             .await
             .expect("select bound wave template_id");
     assert_eq!(
-        bound_workflow.as_deref(),
+        bound_template.as_deref(),
         Some("issue-development"),
-        "wave must be bound to issue-development workflow",
+        "wave must be bound to issue-development template",
     );
 }
 

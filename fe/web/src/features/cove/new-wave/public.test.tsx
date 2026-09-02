@@ -45,7 +45,7 @@ const ISSUE_DEV: WaveTemplate = {
     required: ['issue_url', 'repo', 'issue_number'],
   },
   tasks: [
-    { key: 'inspect-issue', goal: 'Read the bound workflow input and view the source issue.' },
+    { key: 'inspect-issue', goal: 'Read the bound template input and view the source issue.' },
     { key: 'review-design-a', goal: 'Review the proposed design for correctness.' },
     { key: 'open-pr', goal: 'Open a pull request and check its diff.' },
     { key: 'merge', goal: 'Merge the pull request and close the issue.' },

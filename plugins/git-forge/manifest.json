@@ -299,7 +299,7 @@
     "required": ["issue_url", "repo", "issue_number"],
     "additionalProperties": false
   },
-  "workflows": [
+  "templates": [
     {
       "id": "issue-development"
     }

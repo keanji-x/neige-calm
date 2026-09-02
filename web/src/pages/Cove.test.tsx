@@ -484,7 +484,7 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
   }
 
   /** The labeled Workflow <select> hosted above NewTaskForm. */
-  function workflowSelect(dialog: HTMLElement) {
+  function templateSelect(dialog: HTMLElement) {
     return within(dialog).getByRole('combobox', {
       name: 'Workflow',
     }) as HTMLSelectElement;
@@ -492,10 +492,10 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
 
   it('opens on the plain "None" workflow with the select visible, and no visible title row', async () => {
     const { dialog } = await openNewWaveDialog();
-    const select = workflowSelect(dialog);
+    const select = templateSelect(dialog);
     expect(select.value).toBe('task');
-    // Both workflows are offered as options (extensibility seam:
-    // future workflows land here as new options). Rich option content
+    // Both templates are offered as options (extensibility seam:
+    // future templates land here as new options). Rich option content
     // folds the muted description into the accessible name.
     expect(
       within(select).getByRole('option', { name: /^None/ }),
@@ -515,12 +515,12 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
 
   it('selecting Issue dev shows the issue-dev form; selecting None restores the plain form', async () => {
     const { user, dialog } = await openNewWaveDialog();
-    await user.selectOptions(workflowSelect(dialog), 'issue-dev');
+    await user.selectOptions(templateSelect(dialog), 'issue-dev');
     expect(within(dialog).getByLabelText(/github issue url/i)).toBeInTheDocument();
     expect(
       within(dialog).getByRole('checkbox', { name: /auto-merge/i }),
     ).toBeInTheDocument();
-    await user.selectOptions(workflowSelect(dialog), 'task');
+    await user.selectOptions(templateSelect(dialog), 'task');
     expect(within(dialog).queryByLabelText(/github issue url/i)).toBeNull();
     expect(
       within(dialog).getByRole('form', { name: /new task/i }),
@@ -540,13 +540,13 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     // first required field (the issue URL input) must receive focus —
     // Dialog's open-time pass doesn't re-run, so this pins the
     // variant-change effect.
-    await user.selectOptions(workflowSelect(dialog), 'issue-dev');
+    await user.selectOptions(templateSelect(dialog), 'issue-dev');
     await waitFor(() => {
       expect(document.activeElement).toBe(
         within(dialog).getByLabelText(/github issue url/i),
       );
     });
-    await user.selectOptions(workflowSelect(dialog), 'task');
+    await user.selectOptions(templateSelect(dialog), 'task');
     await waitFor(() => {
       expect(document.activeElement).toBe(
         within(dialog).getByLabelText(/task description/i),
@@ -556,7 +556,7 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
 
   it('a manual title edit latches against re-prefill; switching variant (remount) un-latches', async () => {
     const { user, dialog } = await openNewWaveDialog();
-    await user.selectOptions(workflowSelect(dialog), 'issue-dev');
+    await user.selectOptions(templateSelect(dialog), 'issue-dev');
     const title = () =>
       within(dialog).getByLabelText(/task description/i) as HTMLTextAreaElement;
     const urlInput = within(dialog).getByLabelText(/github issue url/i);
@@ -572,8 +572,8 @@ describe('CovePage NewWaveDialog variant switch (#891)', () => {
     // Switching variant remounts NewTaskForm (key={variant}) — all
     // per-variant state resets, including the latch: prefill follows
     // the URL again in the fresh mount.
-    await user.selectOptions(workflowSelect(dialog), 'task');
-    await user.selectOptions(workflowSelect(dialog), 'issue-dev');
+    await user.selectOptions(templateSelect(dialog), 'task');
+    await user.selectOptions(templateSelect(dialog), 'issue-dev');
     expect(title().value).toBe('');
     await user.type(
       within(dialog).getByLabelText(/github issue url/i),

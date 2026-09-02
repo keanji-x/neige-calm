@@ -1,4 +1,4 @@
-//! #1110 S6 — kernel-seeded workflow template reports.
+//! #1110 S6 — kernel-seeded template reports.
 //!
 //! Three system-cove template waves hold the former git-forge plan as
 //! report `task` blocks. `POST /api/waves` with a matching `template_id`
@@ -8,30 +8,30 @@
 use crate::mcp_server::tools::plan::{PlanTaskInput, plan_template_task_block_payload};
 use crate::wave_report::WaveReportPayload;
 use calm_types::report_blocks::{KIND_TASK, parse_fence, render_fence, split_body};
-use calm_types::wave_report::report_contract_prefix_for_workflow_template;
+use calm_types::wave_report::report_contract_prefix_for_template;
 use serde_json::{Value, json};
 
 pub const ISSUE_DEVELOPMENT: &str = "issue-development";
 pub const SMALL_CHANGE: &str = "small-change";
 pub const INVESTIGATION: &str = "investigation";
 
-pub struct WorkflowTemplate {
+pub struct Template {
     pub key: &'static str,
     pub title: &'static str,
 }
 
-/// The template roster. `static`, not `const`, so [`workflow_template`] can
+/// The template roster. `static`, not `const`, so [`template_by_key`] can
 /// hand out `&'static` borrows into it instead of into a per-use temporary.
-pub static WORKFLOW_TEMPLATES: [WorkflowTemplate; 3] = [
-    WorkflowTemplate {
+pub static TEMPLATES: [Template; 3] = [
+    Template {
         key: ISSUE_DEVELOPMENT,
         title: "Issue development",
     },
-    WorkflowTemplate {
+    Template {
         key: SMALL_CHANGE,
         title: "Small change",
     },
-    WorkflowTemplate {
+    Template {
         key: INVESTIGATION,
         title: "Investigation",
     },
@@ -40,24 +40,22 @@ pub static WORKFLOW_TEMPLATES: [WorkflowTemplate; 3] = [
 /// #1209 — the roster's single fallible lookup: "is this id a template, and
 /// if so which one". `POST /api/waves` admits an id iff this returns `Some`.
 ///
-/// It derives from [`WORKFLOW_TEMPLATES`] rather than from a second array of
+/// It derives from [`TEMPLATES`] rather than from a second array of
 /// keys, so "the list the picker shows" and "the set create accepts" cannot
-/// drift: there is nothing to keep in sync. The `WORKFLOW_TEMPLATE_KEYS`
-/// constant and the `is_workflow_template_key` predicate that used to walk it
-/// were exactly that second roster and are gone with this slice.
+/// drift: there is nothing to keep in sync. The second roster that used to
+/// exist — a key-array constant plus the predicate that walked it — was
+/// exactly that duplication and is gone with this slice.
 ///
 /// This is not the *only* place the roster is read — `list_wave_templates`
-/// iterates `WORKFLOW_TEMPLATES` directly, and so does the seeding loop. It is
+/// iterates `TEMPLATES` directly, and so does the seeding loop. It is
 /// the only place that answers "is this arbitrary caller-supplied string one of
 /// them", which is the question `:779`'s deleted special case used to answer
 /// twice.
-pub fn workflow_template(key: &str) -> Option<&'static WorkflowTemplate> {
-    WORKFLOW_TEMPLATES
-        .iter()
-        .find(|template| template.key == key)
+pub fn template_by_key(key: &str) -> Option<&'static Template> {
+    TEMPLATES.iter().find(|template| template.key == key)
 }
 
-pub fn workflow_template_report(key: &str) -> Option<WaveReportPayload> {
+pub fn template_report(key: &str) -> Option<WaveReportPayload> {
     match key {
         ISSUE_DEVELOPMENT => Some(issue_development_report()),
         SMALL_CHANGE => Some(small_change_report()),
@@ -70,15 +68,15 @@ pub fn workflow_template_report(key: &str) -> Option<WaveReportPayload> {
 ///
 /// #1209 had `GET /api/wave-templates` read the picker's task list through this
 /// function. #1230 moved the production read onto
-/// [`workflow_template_task_payloads`], which returns whole task-block payloads
+/// [`template_task_payloads`], which returns whole task-block payloads
 /// rather than a struct that models only some of the vocabulary — see
-/// [`workflow_template_task_payloads_from_body`] for why that distinction is
+/// [`template_task_payloads_from_body`] for why that distinction is
 /// load-bearing. What is left here is the authored source the tests compare
 /// against, so `the_picker_projection_matches_the_constant_task_list` is
 /// checking the payload path against a hand-written list and not against
 /// itself.
 #[cfg(test)]
-pub fn workflow_template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
+pub fn template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
     match key {
         ISSUE_DEVELOPMENT => Some(issue_development_tasks()),
         SMALL_CHANGE => Some(small_change_tasks()),
@@ -119,7 +117,7 @@ pub fn workflow_template_tasks(key: &str) -> Option<Vec<PlanTaskInput>> {
 /// well-formed `task` fence — prose, another kind, unparseable JSON — is
 /// skipped. That is leniency about *shape*, which the parser has already
 /// decided, not about vocabulary.
-pub fn workflow_template_task_payloads_from_body(body: &str) -> Vec<Value> {
+pub fn template_task_payloads_from_body(body: &str) -> Vec<Value> {
     split_body(body)
         .iter()
         .filter_map(|slice| parse_fence(&slice.raw))
@@ -135,7 +133,7 @@ pub fn workflow_template_task_payloads_from_body(body: &str) -> Vec<Value> {
 /// the New wave picker. Tombstones are *not* tasks the picker should advertise,
 /// but they must still survive the write side untouched — which is why the
 /// filtering happens here, at the projection, and never in
-/// [`workflow_template_task_payloads_from_body`].
+/// [`template_task_payloads_from_body`].
 pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
     if payload
         .get("tombstone")
@@ -151,9 +149,9 @@ pub fn task_payload_key_and_goal(payload: &Value) -> Option<(String, String)> {
 /// The task payloads a template's built-in constants render to, for the
 /// not-yet-seeded case. Same shape the body would yield, so the read side has
 /// one type on both branches.
-pub fn workflow_template_task_payloads(key: &str) -> Option<Vec<Value>> {
-    let body = workflow_template_report(key)?.body;
-    Some(workflow_template_task_payloads_from_body(&body))
+pub fn template_task_payloads(key: &str) -> Option<Vec<Value>> {
+    let body = template_report(key)?.body;
+    Some(template_task_payloads_from_body(&body))
 }
 
 /// Placeholder so `require_task_gates` does not treat these as scheduled
@@ -189,7 +187,7 @@ fn report_from_tasks(summary: &str, intro: &str, tasks: &[PlanTaskInput]) -> Wav
     // without this prefix they ship with no maintenance contract at all: no
     // section list, no word budget, no current-snapshot rule. The prefix is
     // already closed; never concatenate an unclosed fragment here.
-    let mut body = report_contract_prefix_for_workflow_template().to_string();
+    let mut body = report_contract_prefix_for_template().to_string();
     body.push_str(intro.trim_end());
     body.push_str("\n\n");
     for task in tasks {
@@ -217,7 +215,7 @@ fn issue_development_tasks() -> Vec<PlanTaskInput> {
     vec![
         task(
             "inspect-issue",
-            "Read the bound workflow input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the wave cwd.",
+            "Read the bound template input, view the source issue via gh.issue.view, and cross-check input.repo against the git remote of the wave cwd.",
             "The issue requirements and constraints are captured for the wave AND the wave cwd's origin remote matches input.repo (mismatch is reported, not proceeded past).",
             &[],
             Some(json!({ "tools": ["gh.issue.view"] })),
@@ -374,7 +372,7 @@ fn investigation_tasks() -> Vec<PlanTaskInput> {
 }
 
 /// Pre-S5 git-forge `spec_instructions`, adapted off the deleted prompt
-/// sections (`## Bound Workflow Input` / `## Bound Workflow Gates`).
+/// sections (`## Bound Template Input` / `## Bound Template Gates`).
 const ISSUE_DEVELOPMENT_INTRO: &str = "\
 # Plan
 
@@ -419,7 +417,7 @@ extended window also exhausts without convergence, GIVE-UP or ASK-HUMAN again.
 
 Record root_cause each round; repeated facets should drive a class fix.
 
-Workflow input: the wave's bound `template_input` JSON is the task's \
+Template input: the wave's bound `template_input` JSON is the task's \
 source of truth, not the wave title.
 
 Ingest (inspect-issue): derive the wave goal from gh.issue.view on \
@@ -473,9 +471,9 @@ mod tests {
     /// report's blocks and not about this module's constants.
     #[test]
     fn parsing_a_task_fence_and_rendering_it_back_is_an_identity() {
-        for key in WORKFLOW_TEMPLATES.iter().map(|template| template.key) {
-            let body = workflow_template_report(key).expect("known key").body;
-            let payloads = workflow_template_task_payloads_from_body(&body);
+        for key in TEMPLATES.iter().map(|template| template.key) {
+            let body = template_report(key).expect("known key").body;
+            let payloads = template_task_payloads_from_body(&body);
             assert!(!payloads.is_empty(), "{key}: no task payloads parsed");
             for payload in &payloads {
                 let fence = render_fence(KIND_TASK, payload);
@@ -490,18 +488,17 @@ mod tests {
     /// The picker projection still sees exactly the constants' keys and goals.
     #[test]
     fn the_picker_projection_matches_the_constant_task_list() {
-        for key in WORKFLOW_TEMPLATES.iter().map(|template| template.key) {
-            let expected: Vec<(String, String)> = workflow_template_tasks(key)
+        for key in TEMPLATES.iter().map(|template| template.key) {
+            let expected: Vec<(String, String)> = template_tasks(key)
                 .expect("known key")
                 .into_iter()
                 .map(|task| (task.key, task.goal))
                 .collect();
-            let projected: Vec<(String, String)> = workflow_template_task_payloads_from_body(
-                &workflow_template_report(key).unwrap().body,
-            )
-            .iter()
-            .filter_map(task_payload_key_and_goal)
-            .collect();
+            let projected: Vec<(String, String)> =
+                template_task_payloads_from_body(&template_report(key).unwrap().body)
+                    .iter()
+                    .filter_map(task_payload_key_and_goal)
+                    .collect();
             assert_eq!(projected, expected, "{key}");
         }
     }
@@ -511,17 +508,12 @@ mod tests {
     /// function's doc, exercised rather than asserted.
     #[test]
     fn body_prose_and_foreign_fences_are_skipped_not_parsed() {
-        let mut body = workflow_template_report(SMALL_CHANGE)
-            .expect("known key")
-            .body;
-        let before = workflow_template_task_payloads_from_body(&body).len();
+        let mut body = template_report(SMALL_CHANGE).expect("known key").body;
+        let before = template_task_payloads_from_body(&body).len();
         body.push_str("\n## Notes\n\nSomething the user typed.\n\n");
         body.push_str("```neige-block table\n{\n  \"rows\": []\n}\n```\n");
         body.push_str("```neige-block task\nnot json\n```\n");
-        assert_eq!(
-            workflow_template_task_payloads_from_body(&body).len(),
-            before
-        );
+        assert_eq!(template_task_payloads_from_body(&body).len(), before);
     }
 
     #[test]
@@ -581,10 +573,10 @@ mod tests {
     /// `WaveReportPayload::initial()`, so the maintenance contract has to be
     /// concatenated onto their bodies explicitly. Without it they ship with no
     /// section list, no word budget and no current-snapshot rule: #1146's
-    /// guardrails would vanish on exactly the first-party workflows.
+    /// guardrails would vanish on exactly the first-party templates.
     #[test]
     fn every_builtin_template_carries_the_maintenance_contract() {
-        let prefix = report_contract_prefix_for_workflow_template();
+        let prefix = report_contract_prefix_for_template();
         for (name, report) in [
             ("issue-development", issue_development_report()),
             ("small-change", small_change_report()),
@@ -656,20 +648,20 @@ mod tests {
 
     #[test]
     fn known_keys_round_trip() {
-        for template in &WORKFLOW_TEMPLATES {
+        for template in &TEMPLATES {
             let key = template.key;
-            assert!(workflow_template(key).is_some());
-            assert_eq!(workflow_template(key).map(|found| found.key), Some(key));
-            assert!(workflow_template_report(key).is_some());
-            assert!(workflow_template_tasks(key).is_some());
+            assert!(template_by_key(key).is_some());
+            assert_eq!(template_by_key(key).map(|found| found.key), Some(key));
+            assert!(template_report(key).is_some());
+            assert!(template_tasks(key).is_some());
         }
-        assert!(workflow_template("missing-workflow").is_none());
-        assert!(workflow_template_report("missing-workflow").is_none());
-        assert!(workflow_template_tasks("missing-workflow").is_none());
+        assert!(template_by_key("missing-template").is_none());
+        assert!(template_report("missing-template").is_none());
+        assert!(template_tasks("missing-template").is_none());
     }
 
     /// #1209 — the picker's tooltip lists a template's pre-set tasks, and it
-    /// reads them from `workflow_template_tasks`. That is only honest while the
+    /// reads them from `template_tasks`. That is only honest while the
     /// list is the *same* slice the report renders: a task added to the report
     /// but not to the list (or a list entry that seeds nothing) would make the
     /// tooltip promise something the forked report does not contain.
@@ -703,10 +695,10 @@ mod tests {
     /// `small-change` alone.
     #[test]
     fn listed_tasks_are_exactly_the_report_task_blocks() {
-        for template in &WORKFLOW_TEMPLATES {
+        for template in &TEMPLATES {
             let key = template.key;
-            let tasks = workflow_template_tasks(key).expect("known key");
-            let body = workflow_template_report(key).expect("known key").body;
+            let tasks = template_tasks(key).expect("known key");
+            let body = template_report(key).expect("known key").body;
             assert!(!tasks.is_empty(), "{key} lists no tasks");
 
             // The report's own reader, not a string scan: `split_body` cuts the
@@ -769,9 +761,7 @@ mod repro_1239 {
     /// whole-document rewrite.
     #[test]
     fn a_wellformed_task_fence_with_task_block_vocabulary_is_silently_dropped() {
-        let mut body = workflow_template_report(SMALL_CHANGE)
-            .expect("known key")
-            .body;
+        let mut body = template_report(SMALL_CHANGE).expect("known key").body;
         body.push_str(&render_fence(
             KIND_TASK,
             &json!({
@@ -783,7 +773,7 @@ mod repro_1239 {
                 "declared_by": "user",
             }),
         ));
-        let parsed = workflow_template_task_payloads_from_body(&body);
+        let parsed = template_task_payloads_from_body(&body);
         let keys: Vec<&str> = parsed
             .iter()
             .filter_map(|p| p.get("key").and_then(Value::as_str))
@@ -799,9 +789,7 @@ mod repro_1239 {
     /// nothing stops the rewrite from erasing it.
     #[test]
     fn a_task_tombstone_is_not_erased_by_the_read() {
-        let mut body = workflow_template_report(INVESTIGATION)
-            .expect("known key")
-            .body;
+        let mut body = template_report(INVESTIGATION).expect("known key").body;
         body.push_str(&render_fence(
             KIND_TASK,
             &json!({
@@ -811,7 +799,7 @@ mod repro_1239 {
                 "tombstoned_by": "user",
             }),
         ));
-        let parsed = workflow_template_task_payloads_from_body(&body);
+        let parsed = template_task_payloads_from_body(&body);
         let keys: Vec<&str> = parsed
             .iter()
             .filter_map(|p| p.get("key").and_then(Value::as_str))

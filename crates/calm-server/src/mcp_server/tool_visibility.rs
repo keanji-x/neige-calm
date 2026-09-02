@@ -15,7 +15,7 @@
 //! harness's descriptor-unresolved degradation (vanilla prompt): the tools
 //! are withdrawn together with the plugin context rather than silently
 //! widened back to the union. The gate reads `waves.plugin_scope` only —
-//! it does not look up `workflows[]` by `template_id`.
+//! it does not look up `templates[]` by `template_id`.
 
 use std::sync::Arc;
 
@@ -53,12 +53,12 @@ impl WavePluginScope {
 /// * Wave row has `plugin_scope = None` (unbound) → [`WavePluginScope::All`].
 /// * Wave has `plugin_scope = Some(id)` → [`WavePluginScope::Only`] if that
 ///   plugin is running ∧ trusted; [`WavePluginScope::None`] when it is not
-///   (same fail-closed as today's "bound workflow has no running owner").
+///   (same fail-closed as today's "bound template has no running owner").
 /// * Wave lookup failure / missing wave row → [`WavePluginScope::None`]:
 ///   bound-ness cannot be proven, so fail closed rather than widen to the
 ///   union.
 ///
-/// Does not consult `wave.template_id` or `manifest.workflows[]`.
+/// Does not consult `wave.template_id` or `manifest.templates[]`.
 pub(crate) async fn plugin_scope_for_wave(
     ctx: &Arc<AppContext>,
     wave_id: Option<&str>,
@@ -147,7 +147,7 @@ mod tests {
     use std::time::Duration;
     use tokio::time::{Instant, sleep};
 
-    const WORKFLOW_ID: &str = "tool-visibility-flow";
+    const TEMPLATE_ID: &str = "tool-visibility-flow";
 
     #[test]
     fn scope_allows_matrix() {
@@ -169,7 +169,7 @@ mod tests {
         let unbound_wave = make_wave(repo.as_ref(), None).await;
 
         // Trusted plugin RUNNING → Only.
-        let (host, _tmp) = plugin_host_with_workflow(repo.clone(), &trusted_plugin_id).await;
+        let (host, _tmp) = plugin_host_with_template(repo.clone(), &trusted_plugin_id).await;
         host.spawn(&trusted_plugin_id)
             .await
             .expect("spawn trusted plugin");
@@ -199,22 +199,22 @@ mod tests {
 
         // #1110 S4 flatten pin: template_id alone is not the gate even
         // when the matching plugin is running.
-        let leftover_workflow = repo
+        let leftover_template = repo
             .wave_create(crate::model::NewWave {
                 template_input: None,
                 cove_id: unbound_wave.cove_id.clone(),
-                title: "workflow-id leftover".into(),
+                title: "template-id leftover".into(),
                 sort: None,
                 cwd: String::new(),
-                template_id: Some(WORKFLOW_ID.into()),
+                template_id: Some(TEMPLATE_ID.into()),
                 plugin_scope: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })
             .await
-            .expect("create leftover-workflow wave");
+            .expect("create leftover-template wave");
         assert_eq!(
-            plugin_scope_for_wave(&ctx, Some(leftover_workflow.id.as_str())).await,
+            plugin_scope_for_wave(&ctx, Some(leftover_template.id.as_str())).await,
             WavePluginScope::All
         );
 
@@ -244,7 +244,7 @@ mod tests {
         );
         let bound_wave = make_wave(repo.as_ref(), Some(untrusted_plugin_id.as_str())).await;
 
-        let (host, _tmp) = plugin_host_with_workflow(repo.clone(), &untrusted_plugin_id).await;
+        let (host, _tmp) = plugin_host_with_template(repo.clone(), &untrusted_plugin_id).await;
         host.spawn(&untrusted_plugin_id)
             .await
             .expect("spawn untrusted plugin");
@@ -351,7 +351,7 @@ mod tests {
         .expect("create wave")
     }
 
-    async fn plugin_host_with_workflow(
+    async fn plugin_host_with_template(
         repo: Arc<SqlxRepo>,
         plugin_id: &str,
     ) -> (Arc<PluginHost>, tempfile::TempDir) {
@@ -372,8 +372,8 @@ mod tests {
             "min_kernel_version": "0.0.1",
             "display_name": "Tool Visibility Stub",
             "entrypoint": { "command": "bin/stub" },
-            "workflows": [
-                { "id": WORKFLOW_ID }
+            "templates": [
+                { "id": TEMPLATE_ID }
             ],
             "permissions": {}
         });

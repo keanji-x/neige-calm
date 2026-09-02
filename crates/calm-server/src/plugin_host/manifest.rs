@@ -84,7 +84,7 @@ pub struct Manifest {
     pub exposes_tools: Vec<ExposedTool>,
 
     /// Wave `template_input` contract (#891 / #1110 S2). One plugin, one
-    /// input shape — sibling of `exposes_tools`, not of a workflow
+    /// input shape — sibling of `exposes_tools`, not of a template
     /// descriptor. Same JSON-Schema subset as `plugin_host::template_input`.
     /// Absent: the plugin does not accept `template_input`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,7 +100,7 @@ pub struct Manifest {
     /// **#1209 narrowed this capability, and this is the contract, not a
     /// note.** Declaring an id is *claiming an existing template*, never
     /// *creating* one. The ids the kernel knows are the wave-template roster
-    /// (`crate::workflow_templates::WORKFLOW_TEMPLATES`: today
+    /// (`crate::templates::TEMPLATES`: today
     /// `issue-development`, `small-change`, `investigation`), and
     /// `POST /api/waves` admits an id **iff it is in that roster** — plugin
     /// declarations do not widen the set. An id outside the roster is
@@ -117,7 +117,7 @@ pub struct Manifest {
     /// piece of work — see `docs/architecture/1209-template-workflow-unify.md`
     /// §5, option C.
     #[serde(default)]
-    pub workflows: Vec<WorkflowDescriptor>,
+    pub templates: Vec<TemplateDescriptor>,
 
     /// Missing block treated as the most-restrictive permission set.
     #[serde(default)]
@@ -546,13 +546,13 @@ pub struct ExposedTool {
     pub annotations: Option<Value>,
 }
 
-/// Wave-create handle that names a plugin-owned workflow id.
+/// Wave-create handle that names a plugin-owned template id.
 ///
 /// #1110 S5 shrunk this to `{ id }`. Plan prose, gates, spec instructions,
 /// and card kinds left the parser; `input_schema` lives on [`Manifest`].
 /// Extra JSON keys are ignored (same forwards-compat as [`Manifest`]).
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct WorkflowDescriptor {
+pub struct TemplateDescriptor {
     pub id: String,
 }
 
@@ -656,8 +656,39 @@ impl Manifest {
             return Err(ManifestError::invalid("<root>", "manifest is empty"));
         }
         let m: Manifest = serde_json::from_str(s)?;
+        m.reject_retired_workflows_key(s)?;
         m.validate()?;
         Ok(m)
+    }
+
+    /// #1268 — refuse a manifest that still spells [`Self::templates`] the old
+    /// way (`workflows`).
+    ///
+    /// `Manifest` deliberately tolerates unknown top-level keys, so without
+    /// this the rename would be a **silent** contract break: an old manifest
+    /// would parse, declare zero bindings, and `issue-development` would
+    /// quietly lose its `input_schema` — every `POST /api/waves` carrying
+    /// `template_input` would then 400 with nothing pointing at the cause.
+    /// Naming the new key in the error costs one extra `Value` parse of a file
+    /// that is at most a few KB and is read once per install/reload.
+    ///
+    /// This runs on the *raw text*, not on the deserialized struct, precisely
+    /// because the struct is where the evidence has already been discarded.
+    fn reject_retired_workflows_key(&self, s: &str) -> Result<(), ManifestError> {
+        let Ok(Value::Object(raw)) = serde_json::from_str::<Value>(s) else {
+            // Not an object, or not valid JSON — `serde_json::from_str::<Manifest>`
+            // above already succeeded, so this branch is unreachable in practice;
+            // there is nothing to check either way.
+            return Ok(());
+        };
+        if raw.contains_key("workflows") {
+            return Err(ManifestError::invalid(
+                "workflows",
+                "renamed to `templates` in #1268; rename the key (its entries are \
+                 unchanged: `{ \"id\": \"<kernel template id>\" }`)",
+            ));
+        }
+        Ok(())
     }
 
     /// Validate an already-deserialized manifest. Exposed publicly so callers
@@ -741,15 +772,15 @@ impl Manifest {
         }
 
         // #1110 S2 — wave `template_input` lives on the Manifest, not a
-        // workflow descriptor. Error paths are `input_schema…` (no
-        // `workflows[i].` prefix).
+        // template descriptor. Error paths are `input_schema…` (no
+        // `templates[i].` prefix).
         if let Some(schema) = self.input_schema.as_ref() {
             crate::plugin_host::template_input::validate_input_schema(schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
         }
 
-        for (i, workflow) in self.workflows.iter().enumerate() {
-            workflow.validate(i)?;
+        for (i, template) in self.templates.iter().enumerate() {
+            template.validate(i)?;
         }
 
         self.permissions.validate()?;
@@ -808,7 +839,7 @@ impl Manifest {
     /// #1164 §3 — **parse-time** refusal of every `app`-only surface on a
     /// connector manifest.
     ///
-    /// §3 lists "渲染 `ui://` 或绑 `workflows[]`（parse 期拒绝）" as a channel
+    /// §3 lists "渲染 `ui://` 或绑 `templates[]`（parse 期拒绝）" as a channel
     /// that *does not exist* for connectors, and §4's interception table is
     /// only sound if the manifest can never declare one. Enforcing it here —
     /// rather than by hoping no downstream reader ever looks — is what makes
@@ -840,16 +871,16 @@ impl Manifest {
                 only_app("cannot serve a `ui://` resource, so a view could never render"),
             ));
         }
-        if !self.workflows.is_empty() {
+        if !self.templates.is_empty() {
             return Err(ManifestError::invalid(
-                "workflows",
-                only_app("cannot own a wave workflow"),
+                "templates",
+                only_app("cannot own a wave template"),
             ));
         }
         if self.input_schema.is_some() {
             return Err(ManifestError::invalid(
                 "input_schema",
-                only_app("declares no workflow, so there is no `template_input` to shape"),
+                only_app("declares no template, so there is no `template_input` to shape"),
             ));
         }
         if !self.permissions.grants_nothing() {
@@ -1257,11 +1288,11 @@ impl View {
     }
 }
 
-impl WorkflowDescriptor {
+impl TemplateDescriptor {
     fn validate(&self, idx: usize) -> Result<(), ManifestError> {
         if !key_is_valid(&self.id) {
             return Err(ManifestError::invalid(
-                format!("workflows[{idx}].id"),
+                format!("templates[{idx}].id"),
                 "must match ^[a-z0-9][a-z0-9._-]{0,63}$",
             ));
         }
@@ -1497,15 +1528,15 @@ mod tests {
         assert!(m.permissions.overlays_write.is_empty());
     }
 
-    fn workflow_manifest_value() -> Value {
+    fn template_manifest_value() -> Value {
         json!({
             "manifest_version": 1,
-            "id": "dev.neige.workflow-test",
+            "id": "dev.neige.template-test",
             "version": "1.0.0",
             "min_kernel_version": "0.0.1",
-            "display_name": "Workflow Test",
-            "entrypoint": { "command": "bin/workflow-test" },
-            "workflows": [
+            "display_name": "Template Test",
+            "entrypoint": { "command": "bin/template-test" },
+            "templates": [
                 { "id": "issue-development" }
             ],
             "permissions": {}
@@ -1517,38 +1548,82 @@ mod tests {
     }
 
     #[test]
-    fn parses_workflow_descriptor() {
-        let m = parse_manifest_value(workflow_manifest_value()).expect("workflow manifest");
-        assert_eq!(m.workflows.len(), 1);
-        assert_eq!(m.workflows[0].id, "issue-development");
+    fn parses_template_descriptor() {
+        let m = parse_manifest_value(template_manifest_value()).expect("template manifest");
+        assert_eq!(m.templates.len(), 1);
+        assert_eq!(m.templates[0].id, "issue-development");
+    }
+
+    /// #1268 — the rename's one silent failure mode, made loud.
+    ///
+    /// `Manifest` tolerates unknown top-level keys (see
+    /// `extra_template_descriptor_fields_are_ignored` for the *descriptor*
+    /// half of the same forwards-compat rule), so a manifest still spelling
+    /// the array `workflows` would otherwise parse into
+    /// `templates: []` — the plugin would declare no binding at all, and the
+    /// only symptom would be `issue-development` losing its `input_schema`
+    /// and every `template_input` create 400-ing far from the cause.
+    ///
+    /// Both halves are asserted: the old key is refused **and** the error
+    /// names the new one, because "invalid manifest" alone would not tell the
+    /// author what to type. Deleting `reject_retired_workflows_key` turns the
+    /// first assertion red; weakening its message turns the second red.
+    #[test]
+    fn a_manifest_still_spelling_the_array_workflows_is_refused_by_name() {
+        let mut v = template_manifest_value();
+        let entries = v["templates"].take();
+        v.as_object_mut()
+            .expect("manifest fixture is an object")
+            .remove("templates");
+        v["workflows"] = entries;
+
+        let err = parse_manifest_value(v).expect_err("the retired key must not parse silently");
+        let ManifestError::Invalid { field, reason } = &err else {
+            panic!("expected a field-level Invalid, got {err:?}");
+        };
+        assert_eq!(field, "workflows");
+        assert!(
+            reason.contains("templates"),
+            "the refusal must name the new key, got {reason:?}"
+        );
+    }
+
+    /// The other direction: nothing about the check makes an ordinary unknown
+    /// top-level key fatal. Only the one retired spelling is.
+    #[test]
+    fn an_unrelated_unknown_top_level_key_still_parses() {
+        let mut v = template_manifest_value();
+        v["some_future_field"] = json!({ "anything": true });
+        let m = parse_manifest_value(v).expect("unknown top-level keys stay forwards-compatible");
+        assert_eq!(m.templates[0].id, "issue-development");
     }
 
     #[test]
-    fn extra_workflow_descriptor_fields_are_ignored() {
-        let mut v = workflow_manifest_value();
-        v["workflows"][0]["plan_template"] = json!([]);
-        v["workflows"][0]["gates"] = json!([]);
-        v["workflows"][0]["spec_instructions"] = json!("leftover");
-        v["workflows"][0]["card_kinds"] = json!(["terminal"]);
-        v["workflows"][0]["input_schema"] = json!({"type": "object"});
+    fn extra_template_descriptor_fields_are_ignored() {
+        let mut v = template_manifest_value();
+        v["templates"][0]["plan_template"] = json!([]);
+        v["templates"][0]["gates"] = json!([]);
+        v["templates"][0]["spec_instructions"] = json!("leftover");
+        v["templates"][0]["card_kinds"] = json!(["terminal"]);
+        v["templates"][0]["input_schema"] = json!({"type": "object"});
         let m = parse_manifest_value(v).expect("S5 ignores retired descriptor fields");
-        assert_eq!(m.workflows[0].id, "issue-development");
+        assert_eq!(m.templates[0].id, "issue-development");
     }
 
     #[test]
     fn parses_shipped_issue_development_descriptor() {
         let m = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
-        let workflow = m
-            .workflows
+        let template = m
+            .templates
             .iter()
-            .find(|workflow| workflow.id == "issue-development")
-            .expect("issue-development workflow");
-        assert_eq!(m.workflows.len(), 1);
-        assert_eq!(workflow.id, "issue-development");
+            .find(|template| template.id == "issue-development")
+            .expect("issue-development template");
+        assert_eq!(m.templates.len(), 1);
+        assert_eq!(template.id, "issue-development");
 
         // #1110 S2 — the shipped plugin's input contract lives on the
-        // Manifest, not the workflow descriptor. Parsing via
+        // Manifest, not the template descriptor. Parsing via
         // `Manifest::parse` already ran `validate()`, so reaching here
         // proves the schema passes the subset validator.
         let schema = m
@@ -1594,13 +1669,13 @@ mod tests {
             descriptor.input_schema
         );
 
-        let workflow = WorkflowDescriptor {
+        let template = TemplateDescriptor {
             id: "issue-development".into(),
         };
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-give-up",
-                Some(&workflow),
+                Some(&template),
                 None,
             );
         crate::spec_card::validate_spec_prompt_contract(&rendered)
@@ -1615,11 +1690,11 @@ mod tests {
     fn shipped_issue_development_rendered_prompt_matches_full_golden() {
         let manifest = Manifest::parse(include_str!("../../../../plugins/git-forge/manifest.json"))
             .expect("shipped git-forge manifest");
-        let workflow = manifest
-            .workflows
+        let template = manifest
+            .templates
             .iter()
-            .find(|workflow| workflow.id == "issue-development")
-            .expect("issue-development workflow");
+            .find(|template| template.id == "issue-development")
+            .expect("issue-development template");
 
         // The fixed fixture id is the explicit normalization rule for the
         // per-wave substitution performed by the production renderer.
@@ -1631,7 +1706,7 @@ mod tests {
             "repo": "neige-calm/neige-calm",
             "issue_number": 985,
             "merge_policy": "auto-merge",
-            "notes": "Full golden fixture covers every shipped workflow input field."
+            "notes": "Full golden fixture covers every shipped template input field."
         });
         crate::plugin_host::template_input::validate_template_input(
             manifest
@@ -1644,7 +1719,7 @@ mod tests {
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-golden-985",
-                Some(workflow),
+                Some(template),
                 Some(&template_input),
             );
 
@@ -1667,14 +1742,14 @@ mod tests {
     }
 
     #[test]
-    fn workflow_descriptor_rejects_invalid_shapes() {
+    fn template_descriptor_rejects_invalid_shapes() {
         let cases: Vec<(&str, Value, &str)> = vec![
-            ("empty id", json!(""), "workflows[0].id"),
-            ("bad id", json!("Bad Id"), "workflows[0].id"),
+            ("empty id", json!(""), "templates[0].id"),
+            ("bad id", json!("Bad Id"), "templates[0].id"),
         ];
         for (label, id, field) in cases {
-            let mut v = workflow_manifest_value();
-            v["workflows"][0]["id"] = id;
+            let mut v = template_manifest_value();
+            v["templates"][0]["id"] = id;
             let err = parse_manifest_value(v).expect_err(label);
             assert!(
                 matches!(err, ManifestError::Invalid { field: ref actual, .. } if actual == field),
@@ -1701,10 +1776,10 @@ mod tests {
 
     #[test]
     fn manifest_accepts_subset_input_schema_and_defaults_to_none() {
-        let manifest = parse_manifest_value(workflow_manifest_value()).expect("valid manifest");
+        let manifest = parse_manifest_value(template_manifest_value()).expect("valid manifest");
         assert!(manifest.input_schema.is_none());
 
-        let mut v = workflow_manifest_value();
+        let mut v = template_manifest_value();
         v["input_schema"] = subset_input_schema();
         let manifest = parse_manifest_value(v).expect("subset input_schema accepted");
         assert!(manifest.input_schema.is_some());
@@ -1761,7 +1836,7 @@ mod tests {
             ),
         ];
         for (label, schema, expected_field) in cases {
-            let mut v = workflow_manifest_value();
+            let mut v = template_manifest_value();
             v["input_schema"] = schema;
             let err = parse_manifest_value(v).expect_err(label);
             assert!(
@@ -2363,7 +2438,7 @@ mod connector_kind_tests {
                 "views",
                 json!([{ "view_id": "main", "title": "Main", "scope": "card" }]),
             ),
-            ("workflows", json!([{ "id": "wf.build" }])),
+            ("templates", json!([{ "id": "wf.build" }])),
             (
                 "input_schema",
                 json!({ "type": "object", "properties": {}, "additionalProperties": false }),
@@ -2429,7 +2504,7 @@ mod connector_kind_tests {
         Manifest::parse(&base(json!({
             "entrypoint": { "command": "bin/run" },
             "views": [{ "view_id": "main", "title": "Main", "scope": "card" }],
-            "workflows": [{ "id": "wf.build" }],
+            "templates": [{ "id": "wf.build" }],
             "input_schema": { "type": "object", "properties": {}, "additionalProperties": false },
             "permissions": { "cards_create": true, "kv_quota_bytes": 4096 },
         })))
