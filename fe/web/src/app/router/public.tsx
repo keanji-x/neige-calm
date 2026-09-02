@@ -64,8 +64,9 @@ import { PanelAction } from '../../ui/panel-card/public.tsx';
 import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions,
-  prefetchCoveList, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  useSpecMutations, useWaveConversationMutations, useWaveMutations, useWorkspace,
+  prefetchCoveList, specRunQueryOptions, todayLaunchpadQueryOptions,
+  useCoveConversationMutations, useCoveMutations, useSpecMutations,
+  useWaveConversationMutations, useWaveMutations, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
@@ -1648,6 +1649,84 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
   const chat = useConversationPanel(transport, unauthorized, {
     kind: 'elsewhere', intent: { kind: 'all' },
   });
+  /*
+   * #1253 §5.1 — the launchpad resolve, and it is a READ.
+   *
+   * `POST /api/today/launchpad/ensure` is deliberately not called from here,
+   * and that is INV-TODAYDOC-001, not a nicety: `ensure` materializes a
+   * workspace and then submits a `spec-harness-start` operation and waits on
+   * it, so putting it on the page-load path would make Today fail hard
+   * whenever codex is down — worse than the Today this replaces, which needed
+   * nothing to render. `ensure` belongs to an explicit action; PR1 has none.
+   *
+   * "Nothing yet" arrives as `null` in the body and becomes the empty state.
+   * Every failure — including a 404, which no longer means anything special
+   * here — arrives as an error and is rendered as one (INV-TODAYDOC-002).
+   */
+  const launchpadQuery = useQuery(todayLaunchpadQueryOptions(transport, unauthorized));
+  const launchpad = launchpadQuery.data;
+  const launchpadWaveId = launchpad?.wave_id ?? '';
+  /* The document itself comes from the ordinary wave detail — the resolve
+     carries no `report_card_id` because `readWaveReport` locates the card by
+     `kind === 'wave-report'` and that field would have no consumer (§5.1).
+
+     Gated on the server's own answer, not merely on having a wave id: when
+     `report_has_noninitial_content` is false there is nothing to draw, so the
+     page load stays at one request. It also keeps the states below honest —
+     every one of them is then about a document the reader is actually owed. */
+  const launchpadHasContent = launchpad?.report_has_noninitial_content === true;
+  const launchpadDetailQuery = useQuery({
+    ...waveDetailQueryOptions(transport, launchpadWaveId, unauthorized),
+    enabled: launchpadWaveId !== '' && launchpadHasContent,
+  });
+  const launchpadReport = useMemo(
+    () => readWaveReport(launchpadDetailQuery.data?.cards ?? []),
+    [launchpadDetailQuery.data],
+  );
+  /*
+   * Three states, three answers — and they must not be collapsed.
+   *
+   * `readWaveReport(...) === null` is true in all three: while the detail is
+   * in flight (which is EVERY page load, because this query cannot start until
+   * the resolve has answered), when the detail read fails, and when the
+   * payload genuinely will not decode. Handing all three to `ReportDocument`'s
+   * `empty` told a reader whose server was unreachable that their build was
+   * too old, with no retry — the same silent-degradation INV-TODAYDOC-002
+   * forbids, just with a worse lie in place of the empty state.
+   */
+  const launchpadDocument = launchpadDetailQuery.isError
+    ? (
+      <ErrorBox
+        message={`Today's progress is unavailable: ${launchpadDetailQuery.error.message}`}
+        onRetry={() => { void launchpadDetailQuery.refetch(); }}
+      />
+    )
+    : launchpadDetailQuery.data === undefined
+      // In flight. Nothing, not a placeholder: this frame is one round trip
+      // long on a healthy server, and a skeleton that flashes on every load is
+      // more motion than information.
+      ? null
+      : (
+        <ReportDocument
+          report={launchpadReport}
+          /* The detail has arrived and the server says the report has content,
+             so the in-flight and read-failed states are both behind us. What
+             remains is "this build could not make a report out of what
+             arrived" — almost always an undecodable payload, but also a 200
+             carrying no `kind === 'wave-report'` card at all. That second
+             shape is effectively unreachable (the card is `deletable: false`)
+             and its wording would be slightly off if it happened; it is not
+             worth a third branch, but it is worth not claiming a universal the
+             code does not enforce. */
+          empty={<ReportEmpty
+            lead="Today's report could not be read."
+            hints={[
+              'The server says it has been written, so this is a decoding problem, not an empty day.',
+              'The report\'s payload is probably newer than this build.',
+            ]}
+          />}
+        />
+      );
   const workspaceError = workspace.covesError
     ?? workspace.waveErrorsByCove.values().next().value ?? null;
   if (workspace.covesLoading
@@ -1688,6 +1767,18 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       )}
       conversationList={chat.list}
         conversationAction={chat.action}
+      /* Undefined while the resolve is in flight, `null` when the server says
+         there is no launchpad yet. The page
+         decides the empty state from `report_has_noninitial_content` and from
+         nothing else — see INV-TODAYDOC-003 on `TodayPageProps.launchpad`. */
+      launchpad={launchpadQuery.isError ? undefined : launchpad}
+      launchpadDocument={launchpadDocument}
+      launchpadError={launchpadQuery.isError
+        ? <ErrorBox
+          message={`Today's progress is unavailable: ${launchpadQuery.error.message}`}
+          onRetry={() => { void launchpadQuery.refetch(); }}
+        />
+        : undefined}
     />
     <ConfirmDialog
       open={deletion.open}

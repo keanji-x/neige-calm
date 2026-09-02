@@ -8,6 +8,13 @@
 // clock, which used to be 36px, is ambient information and now sits at the
 // header's right edge at --text-base: a page whose job is "what needs me" cannot
 // have a clock as its main emphasis.
+//
+// #1253 D2/D7 — the main column is now **the status bar, then the document**.
+// The status bar is `N waiting · N running` in the header plus the compact
+// waiting rows; it is O(1) in height, so it cannot grow and push the document
+// off the first screen. "The document is the protagonist" is expressed by area
+// and visual weight, not by type size (§8.1). Running and Recent moved into the
+// panel: they are ambience, and the reading column belongs to the document.
 
 import { Calendar as AstryxCalendar, type ISODateString } from '@astryxdesign/core/Calendar';
 import { useEffect, useMemo, useRef, type ReactNode } from 'react';
@@ -16,6 +23,7 @@ import {
   activeWavesOn, isRunning, needsUserAttention, visibleWaves, type Wave,
 } from '../../../../core/domain/wave.ts';
 import { coveOf, type Cove } from '../../../../core/domain/cove.ts';
+import type { TodayLaunchpadWire } from '../../../../core/domain/today.ts';
 import { PageHeader, PageTitle } from '../../ui/page-header/public.tsx';
 import { Icon } from '../../ui/icon/public.tsx';
 import { MobileHeader } from '../../ui/mobile-header/public.tsx';
@@ -53,9 +61,49 @@ export type WaveRowRenderer = (
   options: Readonly<{ variant: 'compact' | 'panel'; hourLabel?: string; coveName?: string }>,
 ) => ReactNode;
 
+/**
+ * The copy for "the day has no document yet".
+ *
+ * There is no trigger button beside it. `POST /api/today/summary` does not
+ * exist until #1253 PR2, and a button that cannot do anything — stubbed,
+ * mocked or disabled — is worse than its absence.
+ */
+const NO_PROGRESS_YET = 'Nothing written today yet.';
+
 export type TodayPageProps = Readonly<{
   waves: readonly Wave[];
   coves: readonly Cove[];
+  /**
+   * The launchpad resolve (`GET /api/today/launchpad`), §5.1.
+   *
+   * `undefined` while the read is in flight, `null` when the server answered
+   * "there is no launchpad yet" — a 200 with a null body, which is an empty
+   * state and not a failure.
+   *
+   * **`report_has_noninitial_content` is the empty-state predicate, and it is
+   * the server's** (INV-TODAYDOC-003). Nothing on this page may re-derive it
+   * from the document: the kernel's freshly-minted report is a well-formed
+   * document carrying the maintenance-contract comment and four empty H1s, so
+   * `readWaveReport` returns non-null for it and a null-check here would
+   * render four empty headings where the empty state belongs. Matching on the
+   * body text would be worse — it is mirror code for a body the kernel owns.
+   */
+  launchpad?: TodayLaunchpadWire | null;
+  /**
+   * The launchpad's report, already rendered. Injected rather than imported
+   * for the same reason `renderWaveRow` is: `ReportDocument` is
+   * `features/report` and a feature domain may not import a sibling.
+   */
+  launchpadDocument?: ReactNode;
+  /**
+   * A failure of the resolve, already rendered as an error.
+   *
+   * INV-TODAYDOC-002 — when this is present the document region shows it and
+   * **not** the empty state. A 5xx quietly turning into "nothing written
+   * today" would tell the reader their day was empty when in fact the server
+   * could not be reached.
+   */
+  launchpadError?: ReactNode;
   /** Navigation lives inside the injected row; Today itself opens nothing. */
   renderWaveRow: WaveRowRenderer;
   /** See INV-TODAY-002. Production passes nothing; there is no scheduler yet. */
@@ -88,6 +136,24 @@ const UNKNOWN_COVE = 'Unknown cove';
 /** It answers "what happened while I was away", not "browse the archive". */
 const RECENT_LIMIT = 12;
 
+/**
+ * How many waiting rows the status bar draws before it stops growing.
+ *
+ * D7 puts the status bar above the document **because it is O(1) in height**,
+ * and that is the whole load-bearing reason for the order: a bar that grew with
+ * the workspace would push the document off the first screen, which is the one
+ * thing the layout exists to prevent. `waiting` has no natural bound — every
+ * blocked wave in every cove lands in it — so without a cap that property is
+ * simply false, and a review found it false with 100 blocked waves.
+ *
+ * The overflow is not dropped. It sits behind one inert-until-clicked control,
+ * so the *loaded* page is bounded while every waiting wave stays reachable:
+ * these rows are not repeated in the panel (RUNNING and RECENT both exclude
+ * anything already counted as waiting), so hiding them outright would make
+ * them unreachable from this page.
+ */
+const WAITING_ROW_LIMIT = 5;
+
 function addDays(day: Date, count: number): Date {
   const next = new Date(day);
   next.setDate(next.getDate() + count);
@@ -119,7 +185,7 @@ function isoDate(day: Date): ISODateString {
 
 export function TodayPage({
   waves, coves, renderWaveRow, scheduledEvents = [], conversationList, conversationAction,
-  nowMs,
+  launchpad, launchpadDocument, launchpadError, nowMs,
 }: TodayPageProps) {
   const [now, setNow] = useState<Date>(() => (nowMs === undefined ? new Date() : new Date(nowMs)));
   const compact = useCompactViewport();
@@ -166,7 +232,16 @@ export function TodayPage({
     .slice(0, RECENT_LIMIT);
 
 
-  // A brand-new workspace: one hero line and one primary action, nothing else.
+  /*
+   * A brand-new workspace: one hero line, and *still the document*.
+   *
+   * `coves` is the user-visible list — #175 filters the system cove out of
+   * `GET /api/coves`, and the launchpad wave lives in the system cove. So
+   * "no coves and no waves" does NOT mean "no Today report": a workspace whose
+   * only content is the day's report lands exactly here, and returning early
+   * with just the hero made that report invisible and swallowed a failed
+   * resolve along with it.
+   */
   if (waves.length === 0 && coves.length === 0) {
     return (
       <div className={styles.page}>
@@ -176,6 +251,11 @@ export function TodayPage({
         />
         <div className={styles.emptyPage}>
           <p className={styles.hero}>Nothing here yet.</p>
+          <TodayDocument
+            launchpad={launchpad}
+            document={launchpadDocument}
+            error={launchpadError}
+          />
         </div>
       </div>
     );
@@ -192,16 +272,20 @@ export function TodayPage({
             the unwired terminal keeps its route anchor without reserving a
             full terminal-height track. */}
         <div className={styles.mainColumn}>
-          {/* An empty section renders nothing at all — no label, no dashed box.
-              The absence is the message. */}
-          <Section title="Waiting on you" waves={waiting} render={renderWaveRow} />
-          <Section title="Running" waves={running} render={renderWaveRow} />
+          {/* The status bar. An empty section renders nothing at all — no
+              label, no dashed box. The absence is the message. */}
+          <WaitingSection waves={waiting} render={renderWaveRow} />
+
+          {/* …and the document immediately after it. */}
+          <TodayDocument
+            launchpad={launchpad}
+            document={launchpadDocument}
+            error={launchpadError}
+          />
 
           <section className={styles.terminalSlot} aria-label="Today terminal">
             <p className={styles.slotNote}>Terminal is not wired up yet.</p>
           </section>
-
-          <Section title="Recent" waves={recent} render={renderWaveRow} />
         </div>
 
         {/*
@@ -232,11 +316,117 @@ export function TodayPage({
                 nowMs={now.getTime()}
               />
             </PanelModule>
+            {/* Ambience, moved out of the reading column (#1253 D7). Both
+                modules follow §6.1's rule that a section with zero rows is not
+                rendered, which is what `Section` already does in the main
+                column — an empty RUNNING module would read as a gap. */}
+            <PanelRows title="Running" waves={running} render={renderWaveRow} />
+            <PanelRows title="Recent" waves={recent} render={renderWaveRow} />
             <PanelModule title="Conversations" action={conversationAction}>{conversationList}</PanelModule>
           </PanelCard>
         </aside>
       </div>
     </div>
+  );
+}
+
+/**
+ * The status bar's waiting rows, bounded.
+ *
+ * Collapsed it draws at most `WAITING_ROW_LIMIT` rows plus one control, so its
+ * height does not depend on how much is waiting — which is what makes D7's
+ * "status bar first" ordering safe for the document below it. Expanding is an
+ * explicit act by a reader who has decided the list is what they came for.
+ *
+ * The control is a `<button>`, not a link: this surface emits no `<a href>`
+ * anywhere (INV-A11Y-061), and it navigates nowhere — it reveals rows that are
+ * already on this page.
+ */
+function WaitingSection({ waves, render }: {
+  waves: readonly Wave[];
+  render: WaveRowRenderer;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const rowsId = 'today-waiting-rows';
+  if (waves.length === 0) return null;
+  const hidden = waves.length - WAITING_ROW_LIMIT;
+  const shown = expanded ? waves : waves.slice(0, WAITING_ROW_LIMIT);
+  return (
+    <section className={styles.section}>
+      <h2 className={styles.sectionLabel}>Waiting on you</h2>
+      {/* `aria-controls` names what `aria-expanded` is talking about: without
+          it the control announces a state with no referent, and a screen
+          reader cannot jump to what just appeared. Today renders one of these
+          per page, so a constant id is not a collision risk. */}
+      <div className={styles.rows} id={rowsId}>
+        {shown.map((wave) => (
+          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
+        ))}
+      </div>
+      {hidden > 0 && (
+        <button
+          type="button"
+          data-nc-action="tertiary"
+          className={styles.moreButton}
+          aria-expanded={expanded}
+          aria-controls={rowsId}
+          onClick={() => setExpanded(!expanded)}
+        >
+          {expanded ? 'Show fewer' : `+${hidden} more waiting`}
+        </button>
+      )}
+    </section>
+  );
+}
+
+/**
+ * The document region: the day's report, or the reason there is none.
+ *
+ * The order of the three branches is the invariant (§5.2). An error must not
+ * fall through into the empty state (INV-TODAYDOC-002), and the empty state is
+ * decided by the server's `report_has_noninitial_content` and by nothing else
+ * on this page (INV-TODAYDOC-003) — no null-check of the document, no reading
+ * of its text.
+ */
+function TodayDocument({ launchpad, document, error }: {
+  launchpad?: TodayLaunchpadWire | null;
+  document?: ReactNode;
+  error?: ReactNode;
+}) {
+  if (error !== undefined && error !== null) return <>{error}</>;
+  // The read is still in flight. Not the empty state: "we do not know yet" and
+  // "there is nothing" are different answers, and flashing the second one
+  // while the first is true is how a page teaches people to distrust it.
+  if (launchpad === undefined) return null;
+  if (launchpad === null || !launchpad.report_has_noninitial_content) {
+    return <p className={styles.inlineEmpty}>{NO_PROGRESS_YET}</p>;
+  }
+  return <>{document}</>;
+}
+
+/**
+ * A wave list as a panel module, rendered only when it has rows.
+ *
+ * `variant: 'compact'` — the same rows these two lists have always been, moved
+ * from the main column into the panel and nothing else. The `panel` variant is
+ * the *agenda's*, and it is what `app/router` keys the row's delete affordance
+ * off; handing it to Running and Recent would put a second Delete button on
+ * every wave that is also on today's agenda, in the same card.
+ */
+function PanelRows({ title, waves, render }: {
+  title: string;
+  waves: readonly Wave[];
+  render: WaveRowRenderer;
+}) {
+  if (waves.length === 0) return null;
+  return (
+    <PanelModule title={title}>
+      <div className={styles.rows}>
+        {waves.map((wave) => (
+          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
+        ))}
+      </div>
+    </PanelModule>
   );
 }
 
@@ -279,24 +469,6 @@ function Clock({ now }: { now: Date }) {
     <span className={styles.clock}>
       {`${(hours + 11) % 12 + 1}:${String(now.getMinutes()).padStart(2, '0')} ${hours >= 12 ? 'PM' : 'AM'}`}
     </span>
-  );
-}
-
-function Section({ title, waves, render }: {
-  title: string;
-  waves: readonly Wave[];
-  render: WaveRowRenderer;
-}) {
-  if (waves.length === 0) return null;
-  return (
-    <section className={styles.section}>
-      <h2 className={styles.sectionLabel}>{title}</h2>
-      <div className={styles.rows}>
-        {waves.map((wave) => (
-          <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
-        ))}
-      </div>
-    </section>
   );
 }
 

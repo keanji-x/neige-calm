@@ -7,8 +7,10 @@ import { useCallback, useMemo } from 'react';
  * The mobile report's secondary panel, and the surface the reader reached the
  * report from. Both ride in the URL (#1191 §1) because they are navigation
  * *destinations*: a panel has to survive a reload, be shareable, and answer the
- * hardware Back button. Transient overlays (the Pages/Coves sheets, the mobile
- * card detail) deliberately stay in component state — see §0.1/§0.2.
+ * hardware Back button. Transient overlays (the Pages/Coves sheets) deliberately
+ * stay in component state — see §0.1/§0.2. (The mobile card detail page was the
+ * other example here and is gone: #1234 S1b-4a removed it, because opening a
+ * card is not offered on this viewport at all.)
  */
 export type MobilePanel = 'outline' | 'cards' | 'tasks' | 'conversations';
 export type WaveSource = 'pages' | 'cove';

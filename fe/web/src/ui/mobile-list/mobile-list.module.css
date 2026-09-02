@@ -77,9 +77,16 @@
     background: transparent;
   }
 
-  .item:hover,
-  .item:focus-visible {
+  /* #1234 — hover is an affordance, so it belongs to rows that do something.
+     A row with no `onSelect` renders no invisible button at all, and lighting
+     it up under the pointer promised a landing that does not exist. */
+  .item:not(.itemStatic):hover,
+  .item:not(.itemStatic):focus-visible {
     background: var(--overlay-hover);
+  }
+
+  .itemStatic {
+    cursor: default;
   }
 
   .itemNested {

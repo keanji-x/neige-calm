@@ -31,6 +31,9 @@ import {
   putSettingsOperation, settingsOperation, type SettingsBag, type SettingsPatch,
 } from '../../../../core/domain/settings.ts';
 import {
+  todayLaunchpadOperation, type TodayLaunchpadWire,
+} from '../../../../core/domain/today.ts';
+import {
   createCardOperation, createCodexCardOperation, createTerminalCardOperation, createWaveOperation,
   deleteCardOperation, deleteWaveOperation, overlaysByKindOperation, putWaveTemplateOperation, toWave,
   updateWaveOperation, waveActivityFrom, waveDetailOperation, waveTemplatesOperation, wavesInCoveOperation,
@@ -127,6 +130,16 @@ export const queryKeys = Object.freeze({
      can move under them is a plugin starting or stopping, which changes an
      `input_schema` the dialog reads when it opens. */
   waveTemplates: () => ['wave-templates'] as const,
+  /* #1253 §5.1 — the Today launchpad resolve. One entry, not keyed by wave:
+     the kernel's partial unique index makes `purpose = 'launchpad'` a
+     singleton, and the id is what this query is fetching.
+
+     TODO(#1253 PR2): no event invalidates this key, and `wave.report_edited`
+     does not invalidate `['wave', id]` either — so once `POST
+     /api/today/summary` exists, a successful summary will change nothing on
+     screen until a reload. Both keys need adding to that policy in PR2. It is
+     inert in PR1: nothing here can change either value. */
+  todayLaunchpad: () => ['today-launchpad'] as const,
   harnessItems: (cardId: string) => ['harness-items', cardId] as const,
   specRun: (cardId: string) => ['spec-run', cardId] as const,
   /* The event bridge can only invalidate the `['cove-conversations']` prefix —
@@ -505,6 +518,27 @@ export function taskVerdictsRefetchInterval(blocks: readonly ReportBlock[] | nul
     return errorUpdateCount > 0 && errorUpdateCount <= TASK_VERDICT_RECOVERY_ATTEMPTS
       ? TASK_VERDICT_RECOVERY_POLL_MS
       : false;
+  };
+}
+
+/**
+ * #1253 §5.1 — the Today page load's resolve. A pure read: it never
+ * bootstraps, so the first paint of Today does not depend on codex being up.
+ *
+ * **`null` is data; any failure is an error** (INV-TODAYDOC-002). "There is no
+ * launchpad yet" arrives as a 200 with a null body and becomes the empty
+ * state; a 500, a timeout or a schema mismatch reaches the reader as an error
+ * box. There is no status-code special case left to get wrong — this used to
+ * convert a 404 into `null` here, and the endpoint now says `null` itself.
+ * Folding the two together — treating any failure as "nothing yet" — would
+ * make an unreachable server look exactly like a fresh workspace, which is the
+ * silent degradation this invariant exists to forbid.
+ */
+export function todayLaunchpadQueryOptions(transport: ApiTransportPort, unauthorized: UnauthorizedChannel) {
+  return {
+    queryKey: queryKeys.todayLaunchpad(),
+    queryFn: (): Promise<TodayLaunchpadWire | null> =>
+      runOperation(transport, todayLaunchpadOperation(), unauthorized),
   };
 }
 
