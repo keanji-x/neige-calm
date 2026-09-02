@@ -1,5 +1,5 @@
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
-import type { ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 
 import { MobileHeader } from '../mobile-header/public.tsx';
 import styles from './mobile-list.module.css';
@@ -102,7 +102,7 @@ export function MobileListEmpty({ children, fieldMarker }: Readonly<{
 
 export function MobileListItem({
   title, meta, startContent, ariaLabel, nested = false, titleVariant = 'interface', onSelect,
-  hint, rowMarker, rowActionMarker, titleFieldMarker,
+  hint, accessibleDescription, rowMarker, rowActionMarker, titleFieldMarker,
 }: Readonly<{
   title: string;
   meta?: ReactNode;
@@ -132,6 +132,34 @@ export function MobileListItem({
    * hint leaves no attribute behind.
    */
   hint?: string;
+  /**
+   * #1234 S1b-4b — the row's **accessible description**: text a screen-reader
+   * user gets on top of the row's name, never instead of it.
+   *
+   * **Why a description and not a longer name.** A Task row shows its status in
+   * the meta lane, which Astryx renders in `endContent` — a *sibling* of the
+   * invisible button, not a child of it. So the button's accessible name is the
+   * task key alone and `failed — not a git repository` is not in it anywhere,
+   * while the desktop's reveal button (which encloses its status dot) names the
+   * whole reason. That is missing information, not a naming style, and
+   * `aria-describedby` closes it without touching the visible name.
+   *
+   * **The attribute is set imperatively, and that is not a shortcut.** Astryx's
+   * `Item` spreads rest props onto the root `<li>` only — its `BaseProps` accepts
+   * `aria-*`, but every one of them lands on the container. The invisible
+   * `<button>` it generates takes no props from the outside at all, and an
+   * `aria-describedby` on the `<li>` never reaches the focused control. So the
+   * text carrier is rendered declaratively (a clipped span in `endContent`, id
+   * from `useId` — no random source, because production is plain-http LAN where
+   * `crypto.randomUUID` does not exist) and the reference is attached to
+   * whichever control Astryx actually generated, falling back to the `<li>` for
+   * a row that is not interactive. `public.test.tsx` asserts the attribute is on
+   * the **button** rather than the `<li>`, so the day Astryx moves that control
+   * this goes red instead of going quiet.
+   *
+   * Absent unless passed: neither the span nor the attribute exists otherwise.
+   */
+  accessibleDescription?: string;
   /** #1234 — the value of `data-nc-row` on the root `<li>`. */
   rowMarker?: string;
   /**
@@ -157,8 +185,31 @@ export function MobileListItem({
      attribute travels as a spread rather than a named JSX prop; it still lands
      on the root `<li>` through `ListItem`'s rest props. */
   const hintAttribute: Readonly<Record<string, string>> = hint === undefined ? {} : { title: hint };
+
+  const rootRef = useRef<HTMLLIElement | null>(null);
+  const descriptionId = `${useId()}mobile-row-description`;
+  const interactive = onSelect !== undefined;
+  useEffect(() => {
+    if (accessibleDescription === undefined) return undefined;
+    const root = rootRef.current;
+    if (root === null) return undefined;
+    /* The control Astryx generated for an interactive row — the element that
+       takes focus, and therefore the only one an `aria-describedby` reaches a
+       reader through. A non-interactive row has none, and the container is the
+       honest fallback rather than a silently dropped description. */
+    const host = root.querySelector(':scope > button, :scope > a') ?? root;
+    host.setAttribute('aria-describedby', descriptionId);
+    return () => { host.removeAttribute('aria-describedby'); };
+  }, [accessibleDescription, descriptionId, interactive]);
+
+  const metaSlot = meta === undefined ? null : <span className={styles.meta}>{meta}</span>;
+  const descriptionSlot = accessibleDescription === undefined
+    ? null
+    : <span className={styles.srOnly} id={descriptionId}>{accessibleDescription}</span>;
+
   return (
     <AstryxListItem
+      ref={rootRef}
       className={`${styles.item} ${onSelect === undefined ? styles.itemStatic : ''}` +
         `${nested ? ` ${styles.itemNested}` : ''}`}
       label={(
@@ -172,7 +223,9 @@ export function MobileListItem({
       startContent={startContent}
       {...(onSelect === undefined ? {} : { onClick: () => onSelect() })}
       aria-label={ariaLabel ?? (metaLabel === null ? undefined : `${title}, ${metaLabel}`)}
-      endContent={meta === undefined ? undefined : <span className={styles.meta}>{meta}</span>}
+      endContent={metaSlot === null && descriptionSlot === null
+        ? undefined
+        : <>{metaSlot}{descriptionSlot}</>}
       {...(rowMarker === undefined ? {} : { 'data-nc-row': rowMarker })}
       {...(rowActionMarker === undefined ? {} : { 'data-nc-row-action': rowActionMarker })}
       {...hintAttribute}

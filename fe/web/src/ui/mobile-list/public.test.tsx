@@ -158,6 +158,70 @@ describe('MobileListItem accessible name', () => {
   });
 });
 
+/*
+ * #1234 S1b-4b — the accessible-description channel.
+ *
+ * **The element it lands on is the whole point.** Astryx's `Item` spreads rest
+ * props onto the root `<li>` and gives the invisible `<button>` nothing from
+ * outside, so `aria-describedby={id}` written as an ordinary prop would sit on
+ * the container and never reach the control a reader focuses. These cases
+ * therefore read the attribute off the **button**, and assert it is *not* on the
+ * `<li>`: an implementation that took the easy route passes an "it is somewhere"
+ * check and delivers nothing.
+ */
+describe('MobileListItem accessible description', () => {
+  /** The description a reader would actually get: follow the reference from the
+   *  focused control to the node it names. */
+  const describedText = (host: Element | null | undefined): string | null => {
+    const id = host?.getAttribute('aria-describedby') ?? null;
+    if (id === null) return null;
+    return host!.ownerDocument.getElementById(id)?.textContent ?? null;
+  };
+
+  it('describes the generated control, not the li', () => {
+    const { container } = render(row({
+      onSelect: vi.fn(),
+      meta: <span>failed</span>,
+      accessibleDescription: 'failed — not a git repository',
+    }));
+    const button = container.querySelector('button');
+    expect(describedText(button)).toBe('failed — not a git repository');
+    expect(container.querySelector('li')?.hasAttribute('aria-describedby')).toBe(false);
+  });
+
+  /* The name is untouched — the description is *on top of* it, which is the
+     whole reason this is not an `aria-label`. */
+  it('leaves the row’s visible name as the accessible name', () => {
+    const { container } = render(row({
+      onSelect: vi.fn(),
+      accessibleDescription: 'failed — not a git repository',
+    }));
+    expect(container.querySelector('button')?.hasAttribute('aria-label')).toBe(false);
+    expect(container.querySelector('button')?.textContent).toBe('Build log');
+  });
+
+  it('emits neither the attribute nor a carrier when the prop is omitted', () => {
+    const { container } = render(row({ onSelect: vi.fn(), meta: <span>failed</span> }));
+    expect(container.querySelector('[aria-describedby]')).toBeNull();
+    expect(container.querySelector('button')?.hasAttribute('aria-describedby')).toBe(false);
+    /* And no carrier was left behind either — an empty description node is one
+       a screen reader still walks into. The carrier is the only node in this
+       row that has an `id`, so its absence is observable without naming a
+       class. */
+    expect(container.querySelector('li [id]')).toBeNull();
+  });
+
+  /* A row with no `onSelect` generates no control at all, so the container is
+     the only host there is. Asserted rather than left to chance: silently
+     dropping the description on a non-interactive row would be a hole the
+     positive case above cannot see. */
+  it('falls back to the li when the row generates no control', () => {
+    const { container } = render(row({ accessibleDescription: 'failed — not a git repository' }));
+    expect(container.querySelector('button')).toBeNull();
+    expect(describedText(container.querySelector('li'))).toBe('failed — not a git repository');
+  });
+});
+
 describe('MobileListItem markers', () => {
   it('puts the row marker on the root li', () => {
     const { container } = render(row({ rowMarker: 'card-1' }));

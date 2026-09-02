@@ -349,6 +349,37 @@ describe('what the painted Tasks module puts on screen', () => {
       .toBe('failed — wave /tmp/alpha is not a git repository');
   });
 
+  /*
+   * And the same phrase reaches the **control**, which the two carriers above do
+   * not manage on their own: `data-nc-status` and `title` sit on a span in the
+   * meta lane, and Astryx lays that lane out as a *sibling* of the invisible
+   * button — so a reader on the button hears `beta-gate` and no reason at all.
+   * The desktop's reveal button encloses its dot and therefore names the whole
+   * phrase; this is that information, delivered as a description so the visible
+   * key stays the name.
+   */
+  it('describes the row’s control with the whole status phrase', () => {
+    const container = paint(tasksModule);
+    const row = container.querySelector('[data-nc-row="block-2"]');
+    const control = row?.querySelector('button');
+    expect(control, 'the Task row must generate a control to describe').not.toBeNull();
+    expect(control?.textContent).toBe('beta-gate');
+    const described = control?.getAttribute('aria-describedby') ?? null;
+    expect(described).not.toBeNull();
+    /* Looked up by id the way a user agent resolves the reference, rather than
+       by selector: `useId` spells ids with characters a CSS selector would have
+       to escape. */
+    expect(container.ownerDocument.getElementById(described!)?.textContent)
+      .toBe('failed — wave /tmp/alpha is not a git repository');
+  });
+
+  /* A row the kernel said nothing about is described by nothing: an empty
+     description node is one a screen reader still walks into. */
+  it('and describes a row with no status with nothing at all', () => {
+    const container = paint({ ...tasksModule, rows: [ready] });
+    expect(container.querySelector('[aria-describedby]')).toBeNull();
+  });
+
   /* The kind is printed; what is not offered is the *action* on it (§3.6). The
      dispatched fixture's `open-card` was filtered away by the capability table,
      so the row carries exactly one action marker. */

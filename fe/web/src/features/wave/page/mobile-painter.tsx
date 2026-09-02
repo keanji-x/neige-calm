@@ -126,6 +126,18 @@ function taskBadge(badge: RowBadge): ReactNode {
  * wording follows). A dot in a drill-down list would also be a colour with no
  * legend on the one surface that has no hover.
  *
+ * **The token on screen is not the whole story a reader is owed.** This element
+ * is `endContent`, which Astryx lays out as a **sibling** of the invisible button
+ * — so the row's accessible name is the task key and the kernel's reason is
+ * nowhere in it, while the desktop's reveal button *encloses* its status dot and
+ * therefore names `Status: failed — wave … is not a git repository` in full.
+ * That asymmetry is missing information, not a wording choice, so `taskRow`
+ * hands the same `phrase` to `MobileListItem`'s `accessibleDescription` channel:
+ * the name stays the visible key, and the reason arrives as the control's
+ * description. It is emitted whenever there is a status — including when
+ * `phrase === token`, where it is the *only* way the status reaches a reader who
+ * is on the button, since the visible word is outside it.
+ *
  * `RowStatus.phrase` is not this file's to word — `core/view/wave-page.ts` owns
  * it, and that is the whole reason the mobile surface stopped re-wording state.
  */
@@ -211,6 +223,7 @@ function taskRow(row: PanelRow, deps: MobilePainterDeps): ReactNode {
       title={row.title}
       rowMarker={row.id}
       titleFieldMarker={FIELD.title}
+      {...(row.status === null ? {} : { accessibleDescription: row.status.phrase })}
       {...(action === null ? {} : {
         rowActionMarker: 'reveal-block' satisfies RowAction['kind'],
         onSelect: () => deps.onOpenTask?.(action.blockId),

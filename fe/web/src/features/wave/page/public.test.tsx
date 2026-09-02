@@ -219,6 +219,35 @@ describe('WavePage task inventory', () => {
     expect(screen.getByRole('img', { name: 'Status: running' }).getAttribute('title')).toBe('running');
   });
 
+  /*
+   * **The same reason, on the phone**, and written beside the desktop assertion
+   * on purpose — the two are each other's control.
+   *
+   * The desktop's reveal button *encloses* the dot, so the kernel's reason is
+   * part of the button's accessible **name** (the regex above). Astryx lays the
+   * mobile row's meta lane out as a sibling of its invisible button, so the same
+   * shape there would leave the focused control named `delta` and nothing more:
+   * `failed — wave 9a4c is not a git repository` would be on screen and
+   * unreachable. It arrives as the control's accessible **description** instead,
+   * which adds the reason without overwriting the visible key.
+   */
+  it('gives the mobile Task row the same reason, as its control’s description', () => {
+    const { container } = renderPage({
+      tasks: [running('delta', 'failed', 'card-4', 'codex', 'wave 9a4c is not a git repository')],
+      panel: 'tasks',
+    });
+    const row = container.querySelector('[data-nc-mobile-panel] [data-nc-row="b-delta"]');
+    expect(row, 'the mobile task row must be on the page').not.toBeNull();
+    const control = within(row as HTMLElement).getByRole('button');
+    /* The name is the visible key, unchanged — this is a description, not a
+       second label. */
+    expect(control.textContent).toBe('delta');
+    const described = control.getAttribute('aria-describedby');
+    expect(described, 'the mobile reveal control must carry a description').not.toBeNull();
+    expect(document.getElementById(described!)?.textContent)
+      .toBe('failed — wave 9a4c is not a git repository');
+  });
+
   /* A row with no run has no dot at all: `Not ready` is a fact about the
      declaration, not a status, and giving it a coloured dot would state that
      something has been dispatched. */
