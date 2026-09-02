@@ -5,12 +5,14 @@ import { MobileHeader } from '../mobile-header/public.tsx';
 import styles from './mobile-list.module.css';
 
 /*
- * #1234 S1b-4a — five projection marker channels, and one tooltip channel.
+ * #1234 S1b-4a / S1b-4b — six projection marker channels, and one tooltip
+ * channel.
  *
  * The mobile painter has to put the panel's projection markers on elements this
  * primitive owns: the drill-down page's container, its heading (by way of
  * `MobileHeader`), a row's `<li>`, the **visible title span inside that `<li>`**,
- * and the empty line's text carrier. A single rest-prop spread on the outermost
+ * the empty line's text carrier, and — since S1b-4b's Task row — the row's own
+ * action host, which is that same `<li>`. A single rest-prop spread on the outermost
  * element reaches none of the inner ones — and `MobileListPage` alone needs two
  * different targets — so each channel is its own named, **opt-in** prop. This is
  * the same shape `ui/panel-card` took for the desktop (S1b-3b), for the same
@@ -100,7 +102,7 @@ export function MobileListEmpty({ children, fieldMarker }: Readonly<{
 
 export function MobileListItem({
   title, meta, startContent, ariaLabel, nested = false, titleVariant = 'interface', onSelect,
-  hint, rowMarker, titleFieldMarker,
+  hint, rowMarker, rowActionMarker, titleFieldMarker,
 }: Readonly<{
   title: string;
   meta?: ReactNode;
@@ -132,6 +134,18 @@ export function MobileListItem({
   hint?: string;
   /** #1234 — the value of `data-nc-row` on the root `<li>`. */
   rowMarker?: string;
+  /**
+   * #1234 — the value of `data-nc-row-action` on the root `<li>`.
+   *
+   * **A sixth channel, and it shares an element with `rowMarker` on purpose.**
+   * On this surface the whole row is the tappable control (§3.5), so the `<li>`
+   * is both the row carrier and the action host. That is legal precisely
+   * because `data-nc-row-action` is a *host annotation* rather than a content
+   * marker: `tools/projection/public.ts`'s `CONTENT_MARKERS` omits it, and its
+   * `owned()` counts the container itself so the co-hosted shape reads as one
+   * row with one action rather than a row with none.
+   */
+  rowActionMarker?: string;
   /** #1234 — the value of `data-nc-field` on the **visible title span**, which
    *  lives inside this primitive. It cannot go on the `<li>`: that already
    *  carries `data-nc-row`, and one element may carry at most one content
@@ -160,6 +174,7 @@ export function MobileListItem({
       aria-label={ariaLabel ?? (metaLabel === null ? undefined : `${title}, ${metaLabel}`)}
       endContent={meta === undefined ? undefined : <span className={styles.meta}>{meta}</span>}
       {...(rowMarker === undefined ? {} : { 'data-nc-row': rowMarker })}
+      {...(rowActionMarker === undefined ? {} : { 'data-nc-row-action': rowActionMarker })}
       {...hintAttribute}
     />
   );

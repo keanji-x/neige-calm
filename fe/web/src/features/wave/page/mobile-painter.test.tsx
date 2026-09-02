@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 //
-// #1234 S1b-4a — the mobile painter, against `checkProjection`'s synthetic
-// mount.
+// #1234 S1b-4a / S1b-4b — the mobile painter, against `checkProjection`'s
+// synthetic mount.
 //
 // **This file checks the painter, not the page.** It paints with the painter it
 // checks, which is the one thing `checkProjection` guarantees and
@@ -58,6 +58,70 @@ const cardsModule: RowModuleView = {
   key: 'cards', title: 'Cards', empty: 'No cards yet.', rows: [titled, untitled],
 };
 const emptyCards: RowModuleView = { ...cardsModule, rows: [] };
+
+/* ── Task rows (S1b-4b) ─────────────────────────────────────────────────────
+ *
+ * Shapes written the way `core/view/wave-page.ts` derives them, so the fixture
+ * cannot offer a combination the derivation never produces: `declaration` is
+ * null once there is a `status`, and `open-card` exists only when
+ * `kind !== null && workerCardId !== null`. `mobile-projection.test.tsx` runs
+ * the real derivation over real task rows; this file is the painter in
+ * isolation, so it spells the view model out.
+ */
+
+/** Ready and undispatched: no declaration word, no run — the row `ready` used
+ *  to print `Ready` for on this surface and nowhere else (D8). */
+const ready: PanelRow = {
+  id: 'block-1',
+  title: 'alpha-impl',
+  kind: 'codex',
+  badges: [],
+  status: null,
+  actions: [{ kind: 'reveal-block', blockId: 'block-1', label: null, hint: 'Show alpha-impl in the report' }],
+};
+
+/** Dispatched, with a reason: a status supersedes the readiness word, and the
+ *  worker card offers an `open-card` this surface refuses. */
+const dispatched: PanelRow = {
+  id: 'block-2',
+  title: 'beta-gate',
+  kind: 'terminal',
+  badges: [],
+  status: { token: 'failed', phrase: 'failed — wave /tmp/alpha is not a git repository' },
+  actions: [
+    { kind: 'reveal-block', blockId: 'block-2', label: null, hint: 'Show beta-gate in the report' },
+    { kind: 'open-card', cardId: 'card-9', label: null, hint: 'Open the worker card for beta-gate' },
+  ],
+};
+
+/** Withdrawn: the struck declaration, and no kind — `deriveReportTasks` makes
+ *  `kind` and `workerCardId` null together for exactly these rows. */
+const withdrawn: PanelRow = {
+  id: 'block-3',
+  title: 'gamma-spec',
+  kind: null,
+  badges: [{ id: 'declaration', text: 'Withdrawn', struck: true }],
+  status: null,
+  actions: [{ kind: 'reveal-block', blockId: 'block-3', label: null, hint: 'Show gamma-spec in the report' }],
+};
+
+/** Unreadable: an ordinary, unstruck declaration beside the withdrawn one. */
+const unreadable: PanelRow = {
+  id: 'block-4',
+  title: 'delta-doc',
+  kind: null,
+  badges: [{ id: 'declaration', text: 'Unreadable', struck: false }],
+  status: null,
+  actions: [{ kind: 'reveal-block', blockId: 'block-4', label: null, hint: 'Show delta-doc in the report' }],
+};
+
+const tasksModule: RowModuleView = {
+  key: 'tasks',
+  title: 'Tasks',
+  empty: 'No tasks declared yet.',
+  rows: [ready, dispatched, withdrawn, unreadable],
+};
+const emptyTasks: RowModuleView = { ...tasksModule, rows: [] };
 
 const painter = () => makeMobilePainter({ backLabel: 'Report', onBack: vi.fn() });
 
@@ -123,10 +187,104 @@ describe('what the painted Cards module puts on screen', () => {
     expect(container.textContent).toContain('kernel-owned');
   });
 
-  /* A Task row's composition is not this file's yet, and painting a Cards row
-     for it would put the fault far from its cause. */
-  it('refuses a Tasks module rather than guessing at its rows', () => {
-    expect(() => paint({ ...cardsModule, key: 'tasks', title: 'Tasks' }))
-      .toThrow(/tasks row/);
+});
+
+describe('the mobile painter is a faithful projection of a Tasks module', () => {
+  it('across ready, dispatched, withdrawn and unreadable rows', () => {
+    expect(checkProjection(painter(), [tasksModule], mount)).toEqual([]);
+  });
+
+  it('with zero rows', () => {
+    expect(checkProjection(painter(), [emptyTasks], mount)).toEqual([]);
+  });
+});
+
+describe('what the painted Tasks module puts on screen', () => {
+  const paint = (module: RowModuleView) =>
+    render(<>{paintMobileModule(painter(), module)}</>).container;
+
+  /*
+   * **`struck` has no carrier in the projection at all** — `checkBadges` reads a
+   * badge's id, order and text and nothing else, so a painter that ignored or
+   * inverted `struck` is green under every violation code. This is its only
+   * carrier on this surface, and it is the same shape the desktop's lives in
+   * (`public.test.tsx`'s `taskWithdrawn` assertion): both directions, because a
+   * class applied unconditionally would satisfy the positive half alone.
+   */
+  it('strikes through a withdrawn declaration but not an ordinary one', () => {
+    const container = paint(tasksModule);
+    const struck = Array.from(container.querySelectorAll('[data-nc-badge="declaration"]'));
+    expect(struck.map((element) => element.textContent)).toEqual(['Withdrawn', 'Unreadable']);
+    expect(struck[0].className).toContain('mobileRowStruck');
+    expect(struck[1].className).not.toContain('mobileRowStruck');
+  });
+
+  /* The row root is the action host, and the two markers share it. This is the
+     first production shape to take `owned()`'s self-inclusion path (S1b-2), so
+     it is asserted rather than left implied by the green run above. */
+  it('hosts reveal-block on the row root, beside the row marker', () => {
+    const container = paint(tasksModule);
+    const rows = Array.from(container.querySelectorAll('[data-nc-row]'));
+    expect(rows.length).toBe(tasksModule.rows.length);
+    for (const row of rows) {
+      expect(row.getAttribute('data-nc-row-action')).toBe('reveal-block');
+    }
+  });
+
+  /* Two channels, both exact: the hint is the pointer text on the row root, and
+     `label` is null so no accessible name may be fabricated over the visible
+     one (WCAG 2.5.3). */
+  it('puts the action hint on the row root and emits no aria-label', () => {
+    const container = paint(tasksModule);
+    const row = container.querySelector('[data-nc-row="block-1"]');
+    expect(row?.getAttribute('title')).toBe('Show alpha-impl in the report');
+    expect(row?.hasAttribute('aria-label')).toBe(false);
+  });
+
+  /* D8, from the other side: the words this surface used to write for itself.
+     `Ready` is gone because `ready` carries no declaration at all, and the
+     dispatched row prints its status instead of `Not ready`. */
+  it('prints the derivation’s words and none of its own', () => {
+    const text = paint(tasksModule).textContent ?? '';
+    expect(text).not.toContain('Ready');
+    expect(text).not.toContain('Not ready');
+    expect(text).toContain('failed');
+    expect(text).toContain('Withdrawn');
+    expect(text).toContain('Unreadable');
+  });
+
+  /* The status carriers the projection reads, spelled out: the attribute holds
+     the bare token (the stylesheet keys colour off it) and `title` the phrase,
+     which is strictly more — the kernel's reason is appended, never
+     substituted. */
+  it('writes the bare token into the marker and the whole phrase into the title', () => {
+    const container = paint(tasksModule);
+    const status = container.querySelector('[data-nc-status]');
+    expect(status?.getAttribute('data-nc-status')).toBe('failed');
+    expect(status?.getAttribute('title'))
+      .toBe('failed — wave /tmp/alpha is not a git repository');
+  });
+
+  /* The kind is printed; what is not offered is the *action* on it (§3.6). The
+     dispatched fixture's `open-card` was filtered away by the capability table,
+     so the row carries exactly one action marker. */
+  it('prints a worker task’s kind while offering no card action for it', () => {
+    const container = paint(tasksModule);
+    const row = container.querySelector('[data-nc-row="block-2"]');
+    expect(row?.textContent).toContain('terminal');
+    expect(row?.querySelectorAll('[data-nc-row-action]').length).toBe(0);
+    expect(row?.getAttribute('data-nc-row-action')).toBe('reveal-block');
+  });
+
+  it('reveals the block the row names when the row is tapped', () => {
+    const onOpenTask = vi.fn();
+    const container = render(<>{paintMobileModule(
+      makeMobilePainter({ onOpenTask, backLabel: 'Report', onBack: vi.fn() }),
+      tasksModule,
+    )}</>).container;
+    const button = container.querySelector('[data-nc-row="block-3"] button')
+      ?? container.querySelector('[data-nc-row="block-3"]');
+    (button as HTMLElement).click();
+    expect(onOpenTask).toHaveBeenCalledWith('block-3');
   });
 });
