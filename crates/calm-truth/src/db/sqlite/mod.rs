@@ -34,6 +34,9 @@ use crate::wave_cove_cache::WaveCoveCache;
 use crate::wave_vcs;
 use calm_types::model::CoveFolder;
 
+/// Per-connection SQLite busy-handler budget installed by [`SqlxRepo::open`].
+pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+
 // ---------------------------------------------------------------------------
 // Sub-trait impls — thin pool-wrapping wrappers around the `_tx` helpers,
 // plus the read-side methods that don't need transaction composition.
@@ -231,7 +234,9 @@ impl SqlxRepo {
             .after_connect(|conn, _meta| {
                 Box::pin(async move {
                     conn.execute("PRAGMA foreign_keys = ON;").await?;
-                    conn.execute("PRAGMA busy_timeout = 5000;").await?;
+                    let busy_timeout_pragma =
+                        format!("PRAGMA busy_timeout = {SQLITE_BUSY_TIMEOUT_MS};");
+                    conn.execute(busy_timeout_pragma.as_str()).await?;
                     conn.execute("PRAGMA journal_mode = WAL;").await?;
                     Ok(())
                 })

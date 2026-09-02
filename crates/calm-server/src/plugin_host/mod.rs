@@ -354,9 +354,16 @@ struct CrashWindow {
 /// The plugin-row read that starts boot autospawn, isolated from the
 /// ~100-method [`RouteRepo`] behind a port narrow enough to wedge in a test.
 ///
-/// Production delegates straight to the host repo. The port exists because a
-/// fake implementing all of `RouteRepo` would require hundreds of irrelevant
-/// forwarding methods, while SQLite cannot express a read that never returns.
+/// Production delegates straight to the host repo, whose sqlx-sqlite carrier
+/// waits through an async channel and therefore keeps yielding to Tokio. The
+/// port exists because a fake implementing all of `RouteRepo` would require
+/// hundreds of irrelevant forwarding methods, while SQLite cannot express a
+/// read that never returns.
+///
+/// Implementors must preserve that cooperative behavior: the surrounding
+/// timeout can preempt only at await points. An implementation that blocks the
+/// executor thread (for example through `block_in_place` or synchronous FFI) is
+/// not protected by the boot fence and can still hang boot.
 #[async_trait]
 pub trait PluginListDb: Send + Sync {
     async fn plugins_list_all(&self) -> Result<Vec<Plugin>, crate::error::CalmError>;
@@ -627,17 +634,24 @@ const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
 
 /// #1238 — wall-clock fence on boot autospawn's initial plugin enumeration.
 ///
-/// This is one local database list read, not child-process initialization or
-/// network connector bring-up, so its allowance should be materially smaller
-/// than [`APP_AUTOSPAWN_WALL`] and [`CONNECTOR_AUTOSPAWN_BUDGET`]. It still
-/// leaves ample headroom over a healthy indexed SQLite read and ordinary boot
-/// scheduling jitter. A timeout skips all plugin spawning and lets boot
-/// continue; waiting indefinitely would keep the HTTP listener from binding.
+/// Its 15 s composition covers calm-truth's own bounded SQLite busy-handler
+/// retry ([`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`]), pool acquisition
+/// and fresh-connection `after_connect` pragmas, plus scheduling margin. It must
+/// be strictly greater than the busy timeout: equal timers race when a healthy
+/// store is temporarily held by a writer, and the outer fence can misclassify
+/// that bounded wait as a hang. That would silently skip every plugin because
+/// [`PluginHost::autospawn_enabled`] is called only once and has no retry.
+///
+/// The wall remains well below [`APP_AUTOSPAWN_WALL`]: enumeration performs
+/// only bounded local database setup and one list read, while an app iteration
+/// includes process spawn, initialization, and persisted lifecycle events. A
+/// timeout skips all plugin spawning and lets boot continue; waiting
+/// indefinitely would keep the HTTP listener from binding.
 ///
 /// `pub` and pinned by `the_app_autospawn_wall_is_the_documented_one`: the
 /// behavioral test overrides it through [`PluginHost::with_plugin_list_wall`]
 /// so it can prove the fence without waiting out the production allowance.
-pub const PLUGIN_LIST_WALL: Duration = Duration::from_secs(5);
+pub const PLUGIN_LIST_WALL: Duration = Duration::from_secs(15);
 
 /// #1196 S1 review P1-6 — wall-clock fence on ONE `app` plugin's boot autospawn
 /// iteration, the local-child mirror of the connector phase fence.
@@ -940,7 +954,10 @@ impl PluginHost {
     ///
     /// Production never calls this. It lets the boot-bound acceptance test
     /// supply a repo read that genuinely never returns without implementing
-    /// the rest of [`RouteRepo`].
+    /// the rest of [`RouteRepo`]. This port overrides enumeration only; all
+    /// subsequent reads and writes still use `self.repo`. A fixture that returns
+    /// a plugin row absent from that repo therefore creates a split state that
+    /// production cannot reach; no current test does that.
     #[must_use]
     pub fn with_plugin_list_db(mut self, db: Arc<dyn PluginListDb>) -> Self {
         self.plugin_list_db = db;
@@ -953,6 +970,11 @@ impl PluginHost {
     /// returns. Waiting out the production allowance would make that gate too
     /// slow, so the integration fixture uses a short wall against the real
     /// [`Self::autospawn_enabled_within`] path.
+    ///
+    /// Residual: this builder is public and unconditional, so a production
+    /// caller could lengthen the effective boot wall. The constant-pin test
+    /// verifies [`PLUGIN_LIST_WALL`], not a host's overridden field; production
+    /// currently does not call this builder.
     #[must_use]
     pub fn with_plugin_list_wall(mut self, wall: Duration) -> Self {
         self.plugin_list_wall = wall;
@@ -1321,7 +1343,7 @@ impl PluginHost {
                 tracing::warn!(
                     error = %e,
                     reason = "plugin enumeration failed",
-                    "plugin autospawn skipped: unable to enumerate plugins"
+                    "plugin autospawn skipped: plugin enumeration failed"
                 );
                 return;
             }
@@ -1336,7 +1358,7 @@ impl PluginHost {
                 tracing::warn!(
                     wall_ms = self.plugin_list_wall.as_millis(),
                     reason = "plugin enumeration timed out",
-                    "plugin autospawn skipped: unable to enumerate plugins"
+                    "plugin autospawn skipped: plugin enumeration timed out"
                 );
                 return;
             }
