@@ -232,7 +232,7 @@ async fn seeded_workflow_template_waves_are_materialized() {
         json!({
             "cove_id": b.cove_id,
             "title": "from template",
-            "workflow_id": "small-change",
+            "template_id": "small-change",
             "theme": theme(),
         }),
     )

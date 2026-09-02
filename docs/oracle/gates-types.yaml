@@ -1421,11 +1421,42 @@
   why: >
     已知的成对默认值：cove.kind → 'user'（#175）、wave.lifecycle → 'draft'（#145，与
     migration 0012 的 DB DEFAULT 一致）、wave.cwd → ''（#250 PR2）、
-    wave.workflow_id / purpose / terminal_at → null、wave.workflow_input → null（#891）、
+    wave.template_id / purpose / terminal_at → null、wave.template_input → null（#891）、
     pinned_at → null。理由一致："不要为了加一个字段就逼所有录制会话重写 fixture"。
     每条默认值都有配对的测试断言旧 payload 解析后拿到那个默认值。
-  source: web/src/api/schemas.ts:19-118
+  source: web/src/api/schemas.ts:19-136
   authoritative_test: web/src/api/schemas.test.ts:45-64,146-149,697-713
+  owner_slice: core/schemas/wire-types
+  intentional_omission: false
+  runtime_layer: core
+  verification_owner: unit
+  test_tier: jsdom
+  migration: pending
+
+- id: GATE-WIRE-009
+  kind: gate
+  family: wire-compat
+  statement: >
+    被**改名**的 wire 字段必须留一条**只读、单向**的反序列化兼容读：Rust 侧在被改名的
+    字段上加 serde alias 且**保留** serde default；zod 侧三个读取器**各自**持有一份
+    `normalizeLegacyTemplateKeys`，读入时把旧键搬到新键再交给 schema。
+    写口（`CreateWaveRequest`）**不许**带别名——旧拼写在那里必须被 serde 层直接拒掉。
+  why: >
+    GATE-WIRE-007 只覆盖「后加字段」，改名是它没覆盖的一种情况，而改名的失败方向更隐蔽：
+    旧 event-log 行里写的是旧键，新代码找不到新键 ⇒ serde default 静默给出 None，
+    replay 出来的 wave 丢掉模板归属且**一个错都不报**（#1209 §3.4）。反方向（为了防这个
+    而删掉 default）更糟：反序列化直接失败，而 `events_since` 的 Err 分支会**跳过整行**。
+    zod 侧同理，且第三个读取器 web/src/wave-fs-viewers/schemas.ts 读的是磁盘上已经写死的
+    旧快照文件，它的 .default(null) 让机械改名变成 fail-open。
+    三个读取器不共用 helper 是刻意的：共用会让「只漏改第三个读取器」这个真实回归方向变绿。
+    写口那侧必须硬失败（deny_unknown_fields ⇒ axum 的 422 extractor rejection，
+    #1209 §3.5 预测的是 400，实测是 422，判据不变）：请求是有活人在另一端的活契约，拒绝可观测可修；
+    事件日志是不可变历史，拒绝它等于弄坏 replay（#1209 §3.5）。
+  source: crates/calm-types/src/model.rs:358-397 ; fe/core/api/schemas.ts:90-113 ;
+    web/src/api/schemas.ts:120-143 ; web/src/wave-fs-viewers/schemas.ts:163-186
+  authoritative_test: crates/calm-server/tests/cases/event_serde_goldens.rs:219-258 ;
+    fe/core/api/schemas.contract.test.ts:939-988 ; web/src/api/schemas.test.ts:933-980 ;
+    web/src/wave-fs-viewers/schemas.test.ts:106-159
   owner_slice: core/schemas/wire-types
   intentional_omission: false
   runtime_layer: core

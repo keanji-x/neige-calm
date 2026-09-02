@@ -425,9 +425,9 @@ async fn patch_lifecycle_rejects_chat_but_allows_ordinary_wave() {
             title: "ordinary".into(),
             sort: None,
             cwd: "/workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         })

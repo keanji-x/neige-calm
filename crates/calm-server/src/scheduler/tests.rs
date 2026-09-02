@@ -477,12 +477,12 @@ async fn sweep_running_claude_past_liveness_deadline_fails_and_releases_lease_ro
         .expect("create cove");
     let wave = repo
         .wave_create(crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "claude-timeout".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -640,12 +640,12 @@ async fn running_timeout_race_lost_does_not_teardown_or_release_lease() {
         .expect("create cove");
     let wave = repo
         .wave_create(crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "timeout-race".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),

@@ -31,10 +31,10 @@ describe('WaveInfoViewer', () => {
           lifecycle: 'working',
           cwd: '/repo/neige-calm',
           workspace: { kind: 'attached', path: '/repo/neige-calm', frozen_at: 1000 },
-          workflow_id: null,
+          template_id: null,
           plugin_scope: null,
           purpose: null,
-          workflow_input: null,
+          template_input: null,
           sort: 7,
           archived_at: new Date('2026-06-10T10:00:00Z').getTime(),
           pinned_at: new Date('2026-06-10T11:55:00Z').getTime(),
@@ -71,10 +71,10 @@ describe('WaveInfoViewer', () => {
           lifecycle: 'draft',
           cwd: '',
           workspace: { kind: 'attached', path: '', frozen_at: null },
-          workflow_id: null,
+          template_id: null,
           plugin_scope: null,
           purpose: null,
-          workflow_input: null,
+          template_input: null,
           sort: 0,
           archived_at: null,
           pinned_at: null,
@@ -99,7 +99,7 @@ describe('WaveInfoViewer', () => {
       cove_id: 'cove_untitled',
       lifecycle: 'working',
       cwd: '/repo/neige-calm',
-      workflow_id: null,
+      template_id: null,
       plugin_scope: null,
       sort: 0,
       archived_at: null,
@@ -119,7 +119,7 @@ describe('WaveInfoViewer', () => {
     expect(screen.queryByTestId('code-pane')).not.toBeInTheDocument();
   });
 
-  it('defaults missing workflow_id on legacy wave.json snapshots', () => {
+  it('defaults missing template_id on legacy wave.json snapshots', () => {
     const raw = JSON.stringify({
       title: 'Legacy wave',
       id: 'wave_legacy',

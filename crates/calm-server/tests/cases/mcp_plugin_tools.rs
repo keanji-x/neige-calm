@@ -654,12 +654,12 @@ async fn boot_fixture() -> Fixture {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-plugin-tools".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -670,12 +670,12 @@ async fn boot_fixture() -> Fixture {
     // Direct repo create (route validation is out of scope here).
     let bound_wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-plugin-tools-bound".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: Some(WORKFLOW_ID.into()),
+            template_id: Some(WORKFLOW_ID.into()),
             plugin_scope: Some(trusted_plugin_id.clone()),
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

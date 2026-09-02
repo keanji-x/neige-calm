@@ -11,10 +11,10 @@
       "pinned_at": 222,
       "lifecycle": "working",
       "cwd": "/tmp/golden-wave",
-      "workflow_id": null,
+      "template_id": null,
       "plugin_scope": null,
       "purpose": null,
-      "workflow_input": null,
+      "template_input": null,
       "terminal_at": 333,
       "workspace": {
         "kind": "managed",
