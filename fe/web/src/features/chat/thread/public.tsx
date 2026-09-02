@@ -1829,6 +1829,19 @@ export function ChatComposer({
    * this composer only while a conversation is open, so it mounts exactly when
    * the drawer opens on a row.
    *
+   * **The precondition that comes with it, spelled out because it is a real
+   * edge of this interface.** The flag has effect only for the mount it arrives
+   * on, and this component has no `key` on the router's path — it is reused
+   * across conversations. So a caller that raises the flag a second time while
+   * the same composer is still mounted gets nothing: the caret stays where it
+   * is. **One mount per intent is the caller's job.** The one production caller
+   * satisfies it by construction — the intent is stated by a create, so the
+   * wave (and therefore the drawer and this composer) is always new — which is
+   * why this is documented rather than defended in code; a component that
+   * watched the prop would be the second focus policy the note above rejects.
+   * Pinned by "ignores the flag being raised again on a composer that is
+   * already mounted" in `thread.browser.test.tsx`.
+   *
    * **Where it is proved.** In `thread.browser.test.tsx`, for the reason the
    * restore below gives: whether Astryx's editable answers
    * `[contenteditable="true"]` in the commit this mounts in is a fact about a
