@@ -947,131 +947,132 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
-        let ((updated_card, old_runtime_id, old_runtime_status, cleared_measure), _id) =
-            write_with_event_typed(
-                ctx.repo.as_ref(),
-                payload.actor,
-                scope,
-                None,
-                &ctx.events,
-                &write,
-                move |tx| {
-                    Box::pin(async move {
-                        let mut checkpoint_output = output_clone;
-                        let mut old_runtime_id = None;
-                        let mut old_runtime_status = None;
-                        if let Some(hashed) = new_mcp_token_hash.as_ref() {
-                            persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
+        // Destructured on the next statement rather than inline: the inline
+        // pattern no longer fits one line, and wrapping it reindents the whole
+        // transaction closure for no semantic reason.
+        let (tx_out, _id) = write_with_event_typed(
+            ctx.repo.as_ref(),
+            payload.actor,
+            scope,
+            None,
+            &ctx.events,
+            &write,
+            move |tx| {
+                Box::pin(async move {
+                    let mut checkpoint_output = output_clone;
+                    let mut old_runtime_id = None;
+                    let mut old_runtime_status = None;
+                    if let Some(hashed) = new_mcp_token_hash.as_ref() {
+                        persist_card_mcp_token_hash(tx, &card_id, hashed).await?;
+                    }
+                    if runtime_deferred {
+                        let runtime_init = WorkerSessionInit {
+                            id: runtime_id.clone(),
+                            card_id: card_id.clone(),
+                            kind: session_kind,
+                            agent_provider: Some(AgentProvider::Codex),
+                            status: WorkerSessionState::Starting,
+                            terminal_run_id: None,
+                            thread_id: Some(thread_for_tx.clone()),
+                            session_id: None,
+                            active_turn_id: None,
+                            handle_state_json: Some(serde_json::to_value(&snapshot)?),
+                            spawn_op_id: None,
+                            now_ms: now_ms(),
+                        };
+                        if let Some(existing) =
+                            session_projection_active_for_card_tx(tx, &card_id).await?
+                        {
+                            let existing_id = existing.id.clone();
+                            let existing_status = existing.status;
+                            if existing_id != runtime_id {
+                                old_runtime_id = Some(existing_id.clone());
+                                old_runtime_status = Some(existing_status);
+                                checkpoint_output.set_output_data(
+                                    "old_runtime_id",
+                                    json!(existing_id),
+                                    "spec harness",
+                                )?;
+                                checkpoint_output.set_output_data(
+                                    "old_runtime_status",
+                                    serde_json::to_value(existing_status)?,
+                                    "spec harness",
+                                )?;
+                            }
+                            session_supersede_and_start_tx(tx, &existing.id, runtime_init).await?;
+                        } else {
+                            session_start_runtime_tx(tx, runtime_init).await?;
                         }
-                        if runtime_deferred {
-                            let runtime_init = WorkerSessionInit {
-                                id: runtime_id.clone(),
-                                card_id: card_id.clone(),
-                                kind: session_kind,
-                                agent_provider: Some(AgentProvider::Codex),
-                                status: WorkerSessionState::Starting,
-                                terminal_run_id: None,
+                    } else {
+                        session_bind_attribution_tx(
+                            tx,
+                            &runtime_id,
+                            ThreadAttribution {
+                                runtime_id: runtime_id.clone(),
+                                provider: AgentProvider::Codex,
                                 thread_id: Some(thread_for_tx.clone()),
                                 session_id: None,
                                 active_turn_id: None,
-                                handle_state_json: Some(serde_json::to_value(&snapshot)?),
-                                spawn_op_id: None,
-                                now_ms: now_ms(),
-                            };
-                            if let Some(existing) =
-                                session_projection_active_for_card_tx(tx, &card_id).await?
-                            {
-                                let existing_id = existing.id.clone();
-                                let existing_status = existing.status;
-                                if existing_id != runtime_id {
-                                    old_runtime_id = Some(existing_id.clone());
-                                    old_runtime_status = Some(existing_status);
-                                    checkpoint_output.set_output_data(
-                                        "old_runtime_id",
-                                        json!(existing_id),
-                                        "spec harness",
-                                    )?;
-                                    checkpoint_output.set_output_data(
-                                        "old_runtime_status",
-                                        serde_json::to_value(existing_status)?,
-                                        "spec harness",
-                                    )?;
-                                }
-                                session_supersede_and_start_tx(tx, &existing.id, runtime_init)
-                                    .await?;
-                            } else {
-                                session_start_runtime_tx(tx, runtime_init).await?;
-                            }
-                        } else {
-                            session_bind_attribution_tx(
-                                tx,
-                                &runtime_id,
-                                ThreadAttribution {
-                                    runtime_id: runtime_id.clone(),
-                                    provider: AgentProvider::Codex,
-                                    thread_id: Some(thread_for_tx.clone()),
-                                    session_id: None,
-                                    active_turn_id: None,
-                                },
-                            )
-                            .await?;
-                            session_set_handle_state_tx(
-                                tx,
-                                &runtime_id,
-                                Some(serde_json::to_value(&snapshot)?),
-                            )
-                            .await?;
-                        }
-                        if let Some(hashed) = new_mcp_token_hash.as_ref() {
-                            mirror_session_mcp_token(tx, &runtime_id, hashed).await?;
-                        }
-                        // #1252 S0-2 — the delete is a hard delete across the
-                        // card's whole history, so measure the transcript here,
-                        // inside the tx and strictly before the delete. After
-                        // this line the evidence is gone for good; the numbers
-                        // ride out on `Event::HarnessTranscriptCleared` below.
-                        let mut cleared_measure = HarnessTranscriptMeasure::default();
-                        if reset_harness_items {
-                            cleared_measure =
-                                harness_items_measure_by_card_tx(tx, &card_id).await?;
-                            harness_items_delete_by_card_tx(tx, &card_id).await?;
-                        }
-                        let card = card_update_tx(
-                            tx,
-                            &card_id,
-                            CardPatch {
-                                title: None,
-                                kind: None,
-                                sort: None,
-                                payload: Some(card_payload),
-                                deletable: None,
                             },
                         )
                         .await?;
-                        checkpoint_output.result = serde_json::to_value(&card)?;
-                        checkpoint_output.target_id = Some(card.id.to_string());
-                        checkpoint_app_server_interact_tx(
+                        session_set_handle_state_tx(
                             tx,
-                            &op_clone,
-                            AppServerInteractKind::MintAndAwait {
-                                thread_id: Some(thread_for_tx),
-                            },
-                            &checkpoint_output,
+                            &runtime_id,
+                            Some(serde_json::to_value(&snapshot)?),
                         )
                         .await?;
-                        Ok((
-                            (
-                                card.clone(),
-                                old_runtime_id,
-                                old_runtime_status,
-                                cleared_measure,
-                            ),
-                            Event::CardUpdated(card),
-                        ))
-                    })
-                },
-            )
-            .await?;
+                    }
+                    if let Some(hashed) = new_mcp_token_hash.as_ref() {
+                        mirror_session_mcp_token(tx, &runtime_id, hashed).await?;
+                    }
+                    // #1252 S0-2 — the delete is a hard delete across the
+                    // card's whole history, so measure the transcript here,
+                    // inside the tx and strictly before the delete. After
+                    // this line the evidence is gone for good; the numbers
+                    // ride out on `Event::HarnessTranscriptCleared` below.
+                    let mut cleared_measure = HarnessTranscriptMeasure::default();
+                    if reset_harness_items {
+                        cleared_measure = harness_items_measure_by_card_tx(tx, &card_id).await?;
+                        harness_items_delete_by_card_tx(tx, &card_id).await?;
+                    }
+                    let card = card_update_tx(
+                        tx,
+                        &card_id,
+                        CardPatch {
+                            title: None,
+                            kind: None,
+                            sort: None,
+                            payload: Some(card_payload),
+                            deletable: None,
+                        },
+                    )
+                    .await?;
+                    checkpoint_output.result = serde_json::to_value(&card)?;
+                    checkpoint_output.target_id = Some(card.id.to_string());
+                    checkpoint_app_server_interact_tx(
+                        tx,
+                        &op_clone,
+                        AppServerInteractKind::MintAndAwait {
+                            thread_id: Some(thread_for_tx),
+                        },
+                        &checkpoint_output,
+                    )
+                    .await?;
+                    Ok((
+                        (
+                            card.clone(),
+                            old_runtime_id,
+                            old_runtime_status,
+                            cleared_measure,
+                        ),
+                        Event::CardUpdated(card),
+                    ))
+                })
+            },
+        )
+        .await?;
+        let (updated_card, old_runtime_id, old_runtime_status, cleared_measure) = tx_out;
         drop(mint_lock_guard);
         card = updated_card;
         if let Some(old_runtime_id) = old_runtime_id {
