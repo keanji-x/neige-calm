@@ -4898,7 +4898,7 @@
     The kernel keys its managed-workspace branch on the *absence* of cwd (`routes/waves.rs`
     `cwd_omitted`): a control defaulting to $HOME or to "" would silently move every wave onto the
     attached branch, where the kernel neither creates nor reclaims the directory.
-  source: fe/web/src/features/cove/new-wave/public.tsx:169-186,348-350; fe/web/src/app/shell/public.tsx:314-329
+  source: fe/web/src/features/cove/new-wave/public.tsx:170-187,349-351; fe/web/src/app/shell/public.tsx:314-329
   authoritative_test: fe/web/src/app/shell/public.test.tsx:200
   owner_slice: features/wave/create
   intentional_omission: false
@@ -4939,7 +4939,7 @@
     Same contract E2E-CAP-WAVECREATE-014 pinned for the legacy form: the accessible-name swap on
     the *outer* dialog is what `useDialogView()` guarantees, and a nested second dialog would
     break the focus trap the outer one owns.
-  source: fe/web/src/features/cove/new-wave/public.tsx:443-456
+  source: fe/web/src/features/cove/new-wave/public.tsx:444-457
   authoritative_test: fe/web/src/app/shell/public.test.tsx:236
   owner_slice: ui/directory-browser
   intentional_omission: false
@@ -5008,7 +5008,7 @@
     `already_named`, which would leave S3 dead code. Absence rather than the empty string because
     the two reach the same stored value but say different things about who decided the name, and
     the point of the slice is that this client did not.
-  source: fe/web/src/features/cove/new-wave/public.tsx:169-186,328,342-348
+  source: fe/web/src/features/cove/new-wave/public.tsx:170-187,329,343-349
   authoritative_test: fe/web/src/features/cove/new-wave/public.test.tsx:177
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5028,7 +5028,7 @@
     the dialog away; the fix was an `initialFocusRef` aimed at the task input. Deleting that input
     without re-aiming the ref restores the same defect by omission, which is why the prop is
     required and why it was renamed rather than dropped.
-  source: fe/web/src/features/cove/new-wave/public.tsx:213-227,405-410
+  source: fe/web/src/features/cove/new-wave/public.tsx:214-228,406-411
   authoritative_test: fe/web/src/app/shell/public.test.tsx:161
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5112,8 +5112,8 @@
     failed landing complete the create the reader asked for, and what makes Back to that same
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
-  source: fe/web/src/app/shell/public.tsx:338; fe/web/src/app/router/navigation.ts:53,98-110,180-206;
-    fe/web/src/app/router/public.tsx:1510,1926-1932; fe/web/src/features/chat/thread/public.tsx:1801
+  source: fe/web/src/app/shell/public.tsx:338; fe/web/src/app/router/navigation.ts:53,109-121,191-217;
+    fe/web/src/app/router/public.tsx:1526,1942-1948; fe/web/src/features/chat/thread/public.tsx:1869
   # One line per clause of the statement, because no single case covers it: 194 the landing and the
   # caret, 250 that a fresh navigation carries no mark, 287 that returning by Back to the entry whose
   # landing failed arms it again, 316 that redeeming is one-shot, 344 that the mark is struck off even
