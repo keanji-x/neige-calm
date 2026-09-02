@@ -90,12 +90,32 @@ pub struct Manifest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
 
-    /// Trusted forge plugins may declare workflow ids. Wave create binds
-    /// `workflow_id` to one of these so the kernel can copy the owning
-    /// plugin into `plugin_scope` and validate `workflow_input` against
+    /// Trusted forge plugins may claim **kernel wave-template ids**. Wave
+    /// create binds `workflow_id` to one of these so the kernel can copy the
+    /// owning plugin into `plugin_scope` and validate `workflow_input` against
     /// this Manifest's `input_schema` (#1110 S2/S5). Untrusted plugins'
     /// ids are ignored by the binding layer; the parser still checks id
     /// shape so broken entries fail close to the authoring point.
+    ///
+    /// **#1209 narrowed this capability, and this is the contract, not a
+    /// note.** Declaring an id is *claiming an existing template*, never
+    /// *creating* one. The ids the kernel knows are the wave-template roster
+    /// (`crate::workflow_templates::WORKFLOW_TEMPLATES`: today
+    /// `issue-development`, `small-change`, `investigation`), and
+    /// `POST /api/waves` admits an id **iff it is in that roster** — plugin
+    /// declarations do not widen the set. An id outside the roster is
+    /// therefore inert: it is parsed, it is not rejected here, and it can
+    /// never be bound **through `POST /api/waves`** — the only production
+    /// writer of `waves.workflow_id` — because that create is a 400. The
+    /// repo-layer `wave_create` takes `workflow_id` / `plugin_scope`
+    /// verbatim and enforces nothing; its non-route callers are all test
+    /// fixtures passing `None` today, and a future in-process writer that
+    /// wanted this guarantee would have to call the admission itself. Before
+    /// #1209 a running trusted plugin *could* make an arbitrary id creatable;
+    /// that is the capability this field no longer has. Plugin-contributed
+    /// templates (which would need a title, tasks and a report) are a separate
+    /// piece of work — see `docs/architecture/1209-template-workflow-unify.md`
+    /// §5, option C.
     #[serde(default)]
     pub workflows: Vec<WorkflowDescriptor>,
 
