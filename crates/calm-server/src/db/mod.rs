@@ -68,6 +68,13 @@ pub trait ServerRepoReadExt {
         limit: i64,
         descending: bool,
     ) -> Result<Vec<HarnessItem>>;
+    async fn harness_item_list_transcript_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<HarnessItem>>;
     async fn overlays_for(&self, entity_kind: &str, entity_id: &str) -> Result<Vec<Overlay>>;
     async fn overlays_by_kind(&self, entity_kind: &str) -> Result<Vec<Overlay>>;
     async fn terminal_get(&self, id: &str) -> Result<Option<Terminal>>;
@@ -246,6 +253,19 @@ where
         descending: bool,
     ) -> Result<Vec<HarnessItem>> {
         calm_truth::db::RepoRead::harness_item_list_by_card(
+            self, card_id, after_id, limit, descending,
+        )
+        .await
+        .map_err(Into::into)
+    }
+    async fn harness_item_list_transcript_by_card(
+        &self,
+        card_id: &str,
+        after_id: i64,
+        limit: i64,
+        descending: bool,
+    ) -> Result<Vec<HarnessItem>> {
+        calm_truth::db::RepoRead::harness_item_list_transcript_by_card(
             self, card_id, after_id, limit, descending,
         )
         .await

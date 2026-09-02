@@ -287,9 +287,16 @@ pub(crate) async fn get_harness_items(
     let after_id = q.after_id.unwrap_or(0).max(0);
     let limit = q.limit.unwrap_or(100).clamp(0, 500);
     let descending = q.direction == HarnessItemsDirection::Desc;
+    // The transcript-only read, not the raw one (#1255). `limit` is the
+    // frontend's page budget (300 rows), and it must be spent entirely on rows
+    // the transcript renders: `harness_items` also holds captured
+    // `turn/plan/updated` frames, and every one of those returned here would
+    // displace a real transcript row behind "Load earlier". The narrowing is in
+    // the SQL — see `RepoRead::harness_item_list_transcript_by_card`, including
+    // the note for the UI slice that will want to read plan rows.
     let items = s
         .repo
-        .harness_item_list_by_card(card.id.as_str(), after_id, limit, descending)
+        .harness_item_list_transcript_by_card(card.id.as_str(), after_id, limit, descending)
         .await?;
     Ok(Json(items))
 }

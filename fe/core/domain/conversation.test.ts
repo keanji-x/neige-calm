@@ -681,6 +681,59 @@ describe('buildTranscript', () => {
     ])).toEqual([]);
   });
 
+  /* The contract, not the mechanism: the transcript renders `item/started` and
+     `item/completed` and nothing else. `turn/plan/updated` (#1255) is the row
+     that made this worth stating — the kernel now writes codex's per-turn TODO
+     checklist into the same table the frontend polls — but the assertion is
+     deliberately written over *arbitrary* unknown methods, because a rule that
+     only names today's method is a rule that a future method walks past.
+
+     Note for anyone mutation-testing this — and this replaces an earlier note
+     here that claimed the opposite: NO mutation of either filter turns this
+     red, in either direction. `isTranscriptMethod` and the two converters
+     (`harnessItemToTurn`, `harnessItemToActivity`) are independent method
+     filters that currently agree, and `buildTranscript` runs them in series.
+     Delete the `isTranscriptMethod` gate and the converters still reject these
+     rows; widen a converter to accept `item/updated` and the gate rejects the
+     row before that converter is ever called. This test pins the *intent* of
+     the allowlist — an unknown method renders nothing — but it cannot tell
+     which filter did the work, and no test can while both filters stand. The
+     converters must keep their own checks (they are exported and called
+     directly, e.g. `harnessItemToTurn` from `web/src/app/router/public.tsx`),
+     so making one of them load-bearing here would mean weakening the other. */
+  it('renders nothing for a method the transcript does not understand', () => {
+    const unknownRow = (method: string, overrides: Partial<HarnessItem> = {}): HarnessItem => ({
+      id: 2, runtime_id: 'r', card_id: 'c', wave_id: 'w', thread_id: 't', turn_id: 'turn',
+      item_uuid: null, item_type: null, method,
+      params: JSON.stringify({
+        threadId: 't', turnId: 'turn-plan-1', explanation: null,
+        plan: [{ step: 'audit', status: 'inProgress' }, { step: 'ship', status: 'pending' }],
+      }),
+      created_at_ms: 1002, ...overrides,
+    });
+
+    for (const method of ['turn/plan/updated', 'thread/realtime/sdp', 'item/updated']) {
+      // The row as the kernel writes a plan: null item_uuid, null item_type.
+      expect(buildTranscript([unknownRow(method)])).toEqual([]);
+
+      // And with everything an `item/*` row would need to render — a known
+      // `item_type` and a well-formed `{ completedAtMs, item }` envelope — so
+      // that the *method* is provably the only reason nothing comes out.
+      expect(buildTranscript([unknownRow(method, {
+        item_type: 'commandExecution',
+        params: JSON.stringify({ completedAtMs: 1002, item: { command: 'ls' } }),
+      })])).toEqual([]);
+    }
+
+    // It also does not disturb the lines around it.
+    expect(buildTranscript([
+      row(1, 'userMessage', 'item/completed', { content: [{ text: 'go' }] }),
+      unknownRow('turn/plan/updated'),
+      row(3, 'agentMessage', 'item/completed', { text: 'done' }, 'u3'),
+    ]).map((entry) => (entry.author === 'activity' ? entry.verb : entry.text)))
+      .toEqual(['go', 'done']);
+  });
+
   it('does not render empty completed messages as activities', () => {
     expect(buildTranscript([
       row(1, 'agentMessage', 'item/completed', { text: '' }),
