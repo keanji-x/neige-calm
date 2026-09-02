@@ -63,14 +63,33 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
  * the painter's action table (S1b's `ActionSupport`), not in the view model.
  * So the derived row carries `delete-card` whenever the card is deletable, and
  * a host with no callback is a painter that reports the action unsupported.
+ *
+ * **The action wording is the page's, copied per row** (`RowAction`'s
+ * docstring): the row body is the open affordance and carries a visible name,
+ * so it needs neither an `aria-label` (that would override the visible text,
+ * WCAG 2.5.3) nor a `title` — `:517` gives it neither. The × is an icon-only
+ * control, so it takes the accessible name `Delete card ${name}` (`:536`) and
+ * the bare pointer hint `Delete card`. `name` is `row.title` itself, not a
+ * second `title ?? card.kind`: a re-computation is one more copy that can
+ * drift from the name actually printed.
  */
 function cardRow(card: CardWire): PanelRow {
   const title = card.title;
-  const actions: RowAction[] = [{ kind: 'open-card', cardId: card.id }];
-  if (card.deletable) actions.push({ kind: 'delete-card', cardId: card.id });
+  const name = title ?? card.kind;
+  const actions: RowAction[] = [
+    { kind: 'open-card', cardId: card.id, label: null, hint: null },
+  ];
+  if (card.deletable) {
+    actions.push({
+      kind: 'delete-card',
+      cardId: card.id,
+      label: `Delete card ${name}`,
+      hint: 'Delete card',
+    });
+  }
   return {
     id: card.id,
-    title: title ?? card.kind,
+    title: name,
     kind: title !== null ? card.kind : null,
     badges: card.deletable ? [] : [{ id: 'kernel-owned', text: 'kernel-owned', struck: false }],
     /* A card row reports no run. */
@@ -112,15 +131,33 @@ function cardRow(card: CardWire): PanelRow {
  * prefix exists only in the desktop's accessible name (`:730`), while `:731`
  * puts the bare phrase in `title`. The prefix is renderer chrome (see
  * `panel.ts`'s `RowStatus`), not wording the view model owns.
+ *
+ * **Both controls here have visible text and so take no `aria-label`**: the
+ * reveal button wraps the task key (`:642`) and the kind button shows the kind
+ * (`:747`). Each gets only a pointer `title` naming where it goes —
+ * `Show ${key} in the report` and `Open the worker card for ${key}`. Note that
+ * this second sentence is `open-card`'s wording *on a Task row only*; the
+ * Cards row's `open-card` has no wording at all, which is why `RowAction`
+ * carries its sentences per row rather than per `kind`.
  */
 function taskRow(task: ReportTaskRow): PanelRow {
   const workerCardId = task.workerCardId;
   const badges: RowBadge[] = task.declaration !== null
     ? [{ id: 'declaration', text: task.declaration, struck: task.state === 'withdrawn' }]
     : [];
-  const actions: RowAction[] = [{ kind: 'reveal-block', blockId: task.blockId }];
+  const actions: RowAction[] = [{
+    kind: 'reveal-block',
+    blockId: task.blockId,
+    label: null,
+    hint: `Show ${task.key} in the report`,
+  }];
   if (task.kind !== null && workerCardId !== null) {
-    actions.push({ kind: 'open-card', cardId: workerCardId });
+    actions.push({
+      kind: 'open-card',
+      cardId: workerCardId,
+      label: null,
+      hint: `Open the worker card for ${task.key}`,
+    });
   }
   return {
     id: task.blockId,
