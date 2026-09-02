@@ -57,10 +57,12 @@ export type RowStatus = Readonly<{
 /**
  * One control a row offers, **carrying its own wording**.
  *
- * The four sentences the desktop panel writes today live only in
- * `public.tsx`; without them here, each of S1b's two painters re-invents
+ * The four sentences the desktop panel writes previously lived only in
+ * `public.tsx`; without them here, each of S1b's two painters would re-invent
  * them — the same failure mode as `taskStatusPhrase`, which was written once
- * per surface until #1234 moved it down.
+ * per surface until #1234 moved it down. This slice moves them down: they are
+ * this type's fields, produced by `wave-page.ts`. `public.tsx` still spells its
+ * own copies until S1b-3 rewrites the desktop panel.
  *
  * **The wording is not a function of `kind`.** `open-card` reads
  * `Open the worker card for ${task.key}` on a Task row (`public.tsx:747`) and
@@ -115,12 +117,17 @@ export type WavePageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
  *
  * **`paintModule` now reads this table**: it filters a row's actions by it
  * before calling `row()`, so the table decides what a painter is even handed.
- * At the marker level that makes an omission non-silent — a painter that
- * declares an action unsupported and paints it anyway paints one
- * `[data-nc-action]` too many, and one that declares it supported and skips it
- * paints one too few. **Painting or dropping a `[data-nc-action]` is what goes
- * red**; "painting an unsupported *control*" is not the claim, because a
- * painter may draw an extra control with no marker at all.
+ * **That, and only that, is what holds today** — the guarantee is over the
+ * `actions` array `row()` receives, and `panel.test.ts` is the only thing that
+ * observes it.
+ *
+ * **Once S1b-2's `checkProjection` exists** (it does not yet — there is no such
+ * function in the tree), the same filter becomes non-silent at the marker
+ * level: a painter that declares an action unsupported and paints it anyway
+ * will paint one `[data-nc-row-action]` too many, and one that declares it
+ * supported and skips it one too few, and *that* is what will go red. Even
+ * then, "painting an unsupported *control*" is not the claim, because a painter
+ * may draw an extra control with no marker at all.
  *
  * What the filter cannot close is a table that contradicts itself —
  * `supported: true` next to an `undefined` callback. That is deliberately
@@ -178,19 +185,24 @@ export type RowPainter<T> = Readonly<{
  * called: a row is handed only the actions the painter says it supports. That
  * is what makes an unsupported action's `why` mean anything — the table now
  * decides what the painter sees, instead of being a declaration nobody reads.
- * The guarantee stops exactly there: it constrains **the actions passed to
- * `row()`**, so painting one `[data-nc-action]` too many or too few goes red.
- * It does *not* say "an unsupported control cannot be drawn" — a painter may
- * still draw a control that carries no marker, and may put a marker on a
- * disabled element or one with no handler (§6.3, §5.26-27).
+ * **The guarantee stops exactly at the call boundary**: it constrains the
+ * `actions` array passed to `row()`, and nothing more. Once S1b-2's
+ * `checkProjection` lands, that same constraint is what will make painting one
+ * `[data-nc-row-action]` too many or too few go red; until then there is no
+ * marker-level carrier at all, and the only observer is `panel.test.ts`. It
+ * does *not* say "an unsupported control cannot be drawn" — a painter may still
+ * draw a control that carries no marker, and may put a marker on a disabled
+ * element or one with no handler (§6.3, §5.26-27).
  *
- * **Two gaps stay open on purpose**, and both are the projection check's:
+ * **Three gaps stay open on purpose:**
  *
+ *  - The projection check itself does not exist yet (S1b-2), so none of the
+ *    marker-level claims above have a carrier in this tree today.
  *  - Nothing forces a renderer to *call* this, or `paintPanel`, at all. Both
  *    surfaces still compose their modules by hand; "both renderers are on the
  *    one branch" is a goal, not a fact this file can enforce (§6.10).
  *  - Whether a supported action is actually wired to a live handler is not
- *    checked anywhere — see `ActionSupport`.
+ *    checked anywhere, and will not be even after S1b-2 — see `ActionSupport`.
  */
 export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T {
   const paintRow = (row: PanelRow): T => painter.row({
@@ -211,8 +223,9 @@ export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T
  *
  * **The mobile surface is not this.** Mobile drills down into one module at a
  * time, so on mobile the module sequence is a *navigation* structure rather
- * than a DOM sequence: each mobile page calls `paintModule` once, and there is
- * nothing for `paintPanel` to do there.
+ * than a DOM sequence: each mobile page will call `paintModule` once when S1b-4
+ * wires it, and there is nothing for `paintPanel` to do there. Today the mobile
+ * surface calls neither.
  *
  * **Nothing forces the desktop component to call this.** The desktop can still
  * hand-compose its two modules and this function would never notice; that gap
@@ -224,10 +237,17 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
 }
 
 /**
- * The DOM marker attribute names the projection check reads.
+ * The DOM marker attribute names — **reserved here for S1b-2/3/4**, and read by
+ * nothing in production yet.
  *
- * They live here — in the one platform-independent module both surfaces
- * already depend on — because a marker name is exactly the kind of fact that
+ * To be precise about the present: `checkProjection` (S1b-2) does not exist,
+ * the desktop painter (S1b-3) and the mobile painter (S1b-4) are not written,
+ * and no `.tsx` or `.css` in the tree spells any of these names by way of this
+ * table. Today the only reader is `panel.test.ts`, which pins the table as a
+ * whole. Do not read this as "both surfaces already depend on these".
+ *
+ * They are declared now, in the one platform-independent module both surfaces
+ * will depend on, because a marker name is exactly the kind of fact that
  * drifts: the stylesheet keys off one spelling, the checker off another, and a
  * painter writes a third, with every side green on its own (§3.4). Constants,
  * not types: a type would let two different strings both satisfy it.
@@ -251,8 +271,17 @@ export const MARKER = Object.freeze({
   /** Value is the badge id; the element's text domain is the badge text. */
   badge: 'data-nc-badge',
   /** A host annotation, not a content marker: it does not take part in text
-   *  subtraction, and `label` / `hint` are read off `aria-label` / `title`. */
-  action: 'data-nc-action',
+   *  subtraction, and `label` / `hint` are read off `aria-label` / `title`.
+   *
+   *  **Not `data-nc-action`**, which is already taken and is a *styling*
+   *  protocol: `styles/base.css:207` gives every `[data-nc-action]` a button
+   *  geometry (inline-flex, `--control-h`, border, pointer cursor) and
+   *  `:225-248` freezes its value domain to `primary | secondary | tertiary |
+   *  destructive` (`styles/README.md:33`). A row painter writing
+   *  `data-nc-action="open-card"` would silently inherit button styling on a
+   *  desktop control and on a mobile `<li>`, and hand the frozen vocabulary a
+   *  fifth value. The row-scoped marker therefore gets its own name. */
+  action: 'data-nc-row-action',
   /** Value is `RowStatus.token`; the element's `title` is `RowStatus.phrase`. */
   status: 'data-nc-status',
   /** A content marker whose value names which field the element carries; its

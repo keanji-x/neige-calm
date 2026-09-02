@@ -6,11 +6,16 @@
 // `kind` condition, the ownership badge, the `statusDetail` join), S1a would be
 // self-consistent and green and S1b would be the slice that exploded.
 //
-// **What this suite is, and is not.** It checks that every *observable* field
-// the derivation produces is present in what the desktop panel actually
-// renders. That is a coarse claim for the text fields, on purpose: it catches a
-// rule that was **understood wrongly**, not a field that was left out and not a
-// field that landed in the wrong carrier.
+// **What this suite is, and is not.** It checks that the **S1a text and status
+// fields** the derivation produces are present in what the desktop panel
+// actually renders. That is a coarse claim for the text fields, on purpose: it
+// catches a rule that was **understood wrongly**, not a field that was left out
+// and not a field that landed in the wrong carrier.
+//
+// It is **not** "every observable field". Since S1b-1, `RowAction` carries
+// `label` and `hint` — two more observable fields, in `aria-label` / `title` —
+// and this suite covers neither. Their carrier check is S1b-2's
+// `checkProjection` against S1b-3's markers; see the exclusions below.
 //
 //  - **A dropped field is not this suite's job.** The text assertions are
 //    occurrence *lower bounds*, and deleting a derived field only removes an
@@ -53,14 +58,19 @@
 //    `card.id` / `task.blockId`) and every action *payload* reach only React
 //    keys and callbacks (`public.tsx:516,638`), so asserting them would fail
 //    against a correct page.
-//  - **Action labels — excluded, and this is S1b's opening item.** The page
-//    writes four sentences that no `RowAction` carries: `Delete card ${…}`
-//    (`:536`), `Delete card` (`:537`), `Show ${task.key} in the report`
-//    (`:642`), `Open the worker card for ${task.key}` (`:747`). `RowAction` is
-//    a `kind` plus an id and has no label field, so **S1b's two painters will
-//    each re-invent all four** — which is precisely the failure mode
-//    `taskStatusPhrase` was in until this slice, one wording written twice and
-//    drifting. Naming an action is wording, and wording belongs in `core`.
+//  - **Action labels — excluded, and still excluded after S1b-1.** The page
+//    writes four sentences: `Delete card ${…}` (`:536`), `Delete card`
+//    (`:537`), `Show ${task.key} in the report` (`:642`), `Open the worker card
+//    for ${task.key}` (`:747`). As of S1b-1 `RowAction` **does** carry all four,
+//    in its `label` / `hint` fields — the wording moved into `core` for the same
+//    reason `taskStatusPhrase` did, so that S1b's two painters do not each
+//    re-invent it. What has *not* moved is any check that the page's copies and
+//    `core`'s agree: these are `aria-label` / `title` values, and this suite
+//    reads `textContent` only (see the paragraph above). The correspondence
+//    between a `RowAction`'s wording and the attribute that carries it is
+//    S1b-2's `checkProjection`, against S1b-3's markers. Until then the wording
+//    is held by `core/view/wave-page.test.ts`'s expected values plus manual
+//    comparison with `public.tsx`, and `public.tsx` keeps its own copies.
 //  - **`badge.struck` — excluded, S1b's.** It is only a class difference
 //    (`taskWithdrawn` vs `taskNote`, `:663-665`); neither `textContent` nor any
 //    marker this page carries distinguishes them.
@@ -139,10 +149,17 @@ function renderedRows(container: Element, key: RowModuleView['key']): readonly E
     : [...container.querySelectorAll('[data-nc-task-inventory] > li')];
 }
 
-/** What a reader sees, and nothing a renderer says *about* it: `aria-label` and
- *  `title` are the page's own chrome (`Status: `, `Delete card`, `Show ... in
- *  the report`), and letting a derived field match inside one of those
- *  sentences is how two real mutations stayed green. See the file head. */
+/** What a reader sees, and nothing a renderer says *about* it: `textContent`
+ *  only, never `aria-label` / `title`. Letting a derived text field match
+ *  inside one of those attribute sentences is how two real mutations stayed
+ *  green (see the file head), so they are out of the count.
+ *
+ *  Note what that exclusion no longer means. `Status: ` is still renderer
+ *  chrome, but since S1b-1 `Delete card ${…}` / `Delete card` / `Show … in the
+ *  report` / `Open the worker card for …` are **`RowAction.label` / `.hint`,
+ *  owned by `core`** — not page-authored chrome. They are skipped here because
+ *  this suite counts visible text, not because nobody owns them; their carrier
+ *  check belongs to S1b-2/3. */
 function visibleText(root: Element): string {
   return root.textContent ?? '';
 }

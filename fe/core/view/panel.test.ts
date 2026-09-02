@@ -95,9 +95,12 @@ describe('paintModule', () => {
  * `delete-card` unsupported and paint one anyway with nothing to notice.
  *
  * The guarantee is deliberately narrow — it constrains the actions handed to
- * `row()`, and therefore how many `[data-nc-action]` markers a faithful
- * painter emits. It does **not** say an unsupported control cannot be drawn: a
- * painter may draw an extra control that carries no marker at all.
+ * `row()`, and that is the whole of what this suite (or anything else in the
+ * tree today) observes. Once S1b-2's `checkProjection` exists it will follow
+ * that how many `[data-nc-row-action]` markers a faithful painter emits is
+ * constrained too; there is no such check yet. Even then it will **not** say an
+ * unsupported control cannot be drawn: a painter may draw an extra control that
+ * carries no marker at all.
  */
 describe('paintModule action filtering', () => {
   /*
@@ -182,9 +185,15 @@ describe('paintModule action filtering', () => {
  * (§6.10), not this suite's.
  */
 describe('paintPanel', () => {
+  /* `c1` carries actions on purpose. With an actionless row here, `paintPanel`
+     could be rewritten to walk the modules itself — calling `painter.row`
+     directly and skipping `paintModule`'s capability filter entirely — and
+     every assertion in this block would stay green, because the only row would
+     get `actions: []` either way. The capability filter must not be reachable
+     only through `paintModule`'s own tests. */
   const view: WavePageView = {
     rowModules: [
-      { key: 'cards', title: 'Cards', rows: [row('c1', 'One')], empty: 'No cards yet.' },
+      { key: 'cards', title: 'Cards', rows: [row('c1', 'One', [OPEN, DELETE])], empty: 'No cards yet.' },
       { key: 'tasks', title: 'Tasks', rows: [], empty: 'No tasks declared yet.' },
     ],
   };
@@ -198,6 +207,21 @@ describe('paintPanel', () => {
       'module:cards(row:c1)',
       'module:tasks(empty:No tasks declared yet.)',
     ]);
+  });
+
+  /* The capability filter is not bypassable by going through `paintPanel`.
+     A `paintPanel` that inlined the traversal instead of delegating to
+     `paintModule` would hand `row()` the unfiltered `[OPEN, DELETE]`, and this
+     is the only assertion in the suite that would notice. */
+  it('applies the painter’s capability filter on the `paintPanel` path too', () => {
+    const { painter, calls } = recordingPainter({
+      ...ALL_SUPPORTED,
+      'delete-card': { supported: false, why: 'this host passed no delete handler' },
+    });
+    paintPanel(painter, view);
+
+    expect(calls.rows).toEqual(['c1']);
+    expect(calls.actions).toEqual([[OPEN]]);
   });
 
   it('paints nothing for a view with no row modules', () => {
@@ -221,7 +245,7 @@ describe('DOM marker vocabulary', () => {
       module: 'data-nc-module',
       row: 'data-nc-row',
       badge: 'data-nc-badge',
-      action: 'data-nc-action',
+      action: 'data-nc-row-action',
       status: 'data-nc-status',
       field: 'data-nc-field',
     });

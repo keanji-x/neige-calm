@@ -2,9 +2,24 @@
 //
 // Every rule below is taken from the **desktop** panel as it stands in
 // `web/src/features/wave/page/public.tsx`; the desktop side is the richer of
-// the two surfaces, so it is the oracle. `view-characterization.test.tsx` holds
-// that correspondence against the unmodified page — this file is not allowed to
-// be self-consistent and wrong.
+// the two surfaces, so it is the oracle.
+//
+// **What holds that correspondence, and over what.** Two different things, and
+// they cover different fields:
+//
+//  - **The S1a text and status rules** — `row.title`, `row.kind`, `badge.text`,
+//    `module.title`, `module.empty`, and `status.token` / `status.phrase`
+//    against the page's `[data-nc-task-status]` node — are held by
+//    `web/src/features/wave/page/view-characterization.test.tsx` against the
+//    unmodified page. For those, this file is not allowed to be self-consistent
+//    and wrong.
+//  - **The action wording added in S1b-1** — `RowAction.label` / `.hint`, the
+//    four sentences below — is **not** in that suite. It reads `textContent`
+//    only, and these live in `aria-label` / `title`. Today their oracle is
+//    `wave-page.test.ts`'s expected strings plus a human comparing them with the
+//    cited `public.tsx` lines; the machine-checked carrier arrives with S1b-2's
+//    `checkProjection` over S1b-3's markers. Until then, a wording that drifts
+//    from the page here is caught by review, not by a gate.
 //
 // **Signature note.** The design writes `deriveWavePageView(wave, cards, tasks)`
 // because a later slice adds the report outline, which needs the wave. Neither
