@@ -150,20 +150,26 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
  *  - only the route body rendering *that* location ever sees it — no other
  *    body can redeem it, and none can clear it either;
  *  - redemption `disarm()`s by replacing the entry without the marker, so once
- *    the drawer has been opened for it, that entry is an ordinary one for good.
+ *    that body has run for it — whether or not there was a card to open — the
+ *    entry is an ordinary one for good.
  *
  * ── What the intent is attached to, stated so it can be checked ─────────────
  *
- * The intent belongs to **that one history entry**. It is redeemed the first
- * time the entry is displayed with the wave's spec card in hand, and struck off
- * the moment it is. It is *not* scoped to a span of the reader's attention: it
+ * The intent belongs to **that one history entry**. It is consumed the first
+ * time the entry's route body mounts at all — that is, the first time the wave
+ * detail lands — and struck off unconditionally at that moment; if the detail
+ * in hand has a spec card, the same pass opens it. So "no spec card" is not a
+ * reason to keep the mark: the entry has been displayed, the create has been
+ * answered as well as it can be, and a card that arrives on a later read of the
+ * same entry finds nothing armed (`wave-untitled.test.tsx` pins exactly that).
+ * The intent is *not* scoped to a span of the reader's attention either: it
  * does not expire because they walked away, because walking away only means
  * they are standing on a different entry.
  *
- * So an entry that never redeemed the mark still carries it. The reachable case
- * is the failed landing — the detail read errors, `WaveRoute` renders the error
- * box, and the body that would redeem the mark never mounts — and that entry
- * arms again when it is displayed again, whether that is a reload, the Retry
+ * So an entry that never displayed its body still carries the mark. The
+ * reachable case is the failed landing — the detail read errors, `WaveRoute`
+ * renders the error box, and the body that consumes the mark never mounts —
+ * and that entry arms again when it is displayed again, whether a reload, the Retry
  * button, or the Back button. The first two are the point: the create asked for
  * this conversation and the landing finally worked. Back reaches the same entry
  * and gets the same answer, which is what owning the intent per-entry costs.
