@@ -7,6 +7,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use calm_server::db::RepoRead;
+use calm_server::wave_report::WaveReportPayload;
 use calm_server::{
     card_role_cache::CardRoleCache,
     db::{Repo, RepoOutOfDomain, sqlite::SqlxRepo},
@@ -1047,5 +1048,223 @@ async fn shared_managed_path_is_reported_as_a_violation() {
     assert!(
         violations[0].1.contains(&first_id) && violations[0].1.contains(&second_id),
         "the report must name both waves: {violations:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// #1253 PR1 — the read-only resolve (`GET /api/today/launchpad`) and the
+// `is_unique_constraint` fix.
+// ─────────────────────────────────────────────────────────────────────────
+
+async fn resolve(app: axum::Router) -> (StatusCode, Value) {
+    let response = app
+        .oneshot(
+            Request::get("/api/today/launchpad")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+async fn count(b: &Boot, sql: &str) -> i64 {
+    sqlx::query_scalar(sql)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn report_card_id(b: &Boot, wave_id: &str) -> String {
+    sqlx::query_scalar("SELECT id FROM cards WHERE wave_id=?1 AND kind='wave-report'")
+        .bind(wave_id)
+        .fetch_one(b.repo.pool())
+        .await
+        .unwrap()
+}
+
+async fn write_report_payload(b: &Boot, card_id: &str, payload: &Value) {
+    sqlx::query("UPDATE cards SET payload=?2 WHERE id=?1")
+        .bind(card_id)
+        .bind(payload.to_string())
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+}
+
+/// INV-TODAYDOC-001 — the page-load path is a *read*. Before any launchpad
+/// exists it answers 404 (the frontend's empty state) and leaves the database
+/// and the workspace root exactly as it found them: no cove, no wave, no card,
+/// and above all no `spec-harness-start` operation, because submitting one is
+/// what would make Today's first paint depend on codex being up.
+#[tokio::test]
+async fn resolve_is_a_pure_read_and_404s_before_the_launchpad_exists() {
+    let b = boot().await;
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM waves").await, 0);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM coves").await, 0);
+    assert_eq!(count(&b, "SELECT COUNT(*) FROM operations").await, 0);
+    assert!(
+        !b.workspace_root.exists(),
+        "the resolve must not materialize a workspace: {:?}",
+        b.workspace_root
+    );
+}
+
+/// INV-TODAYDOC-003 (positive) — a launchpad whose report is the canonical
+/// freshly-minted one reports `report_has_noninitial_content: false`, so the
+/// page renders an empty state rather than the four empty H1s the initial body
+/// carries. And INV-TODAYDOC-001 again: resolving submits no new operation.
+#[tokio::test]
+async fn resolve_reports_a_freshly_minted_report_as_unwritten() {
+    let b = boot().await;
+    let (status, ensured) = ensure(b.app.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "body={ensured}");
+    let operations_after_ensure = count(&b, "SELECT COUNT(*) FROM operations").await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["wave_id"], ensured["wave_id"]);
+    assert_eq!(
+        body["report_has_noninitial_content"],
+        Value::Bool(false),
+        "the canonical initial report has not been written by anyone: {body}"
+    );
+    // The narrow DTO is exactly two fields — `report_card_id` deliberately is
+    // not one of them (§5.1), and neither is anything `ensure` returns.
+    let object = body.as_object().unwrap();
+    let mut keys: Vec<&str> = object.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["report_has_noninitial_content", "wave_id"]);
+    assert_eq!(
+        count(&b, "SELECT COUNT(*) FROM operations").await,
+        operations_after_ensure,
+        "the resolve must not submit an operation"
+    );
+}
+
+/// INV-TODAYDOC-003, the **reverse direction** the design calls out by name.
+///
+/// `report_startup_read_required` compares `summary` + `body` and deliberately
+/// ignores `doc_rev` and `blocks`. A canonical initial report that CRDT has
+/// already materialised — non-zero `docRev`, a populated `blocks` array — is
+/// still an unwritten report, and must still yield the empty state. An earlier
+/// revision of this design got exactly this cell wrong.
+#[tokio::test]
+async fn a_crdt_materialized_canonical_report_still_reads_as_unwritten() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    let mut payload = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    payload["docRev"] = serde_json::json!(7);
+    payload["blocks"] = serde_json::json!([
+        {"id": "b1", "kind": "prose", "rev": 3, "payload": {"markdown": "# 概要\n"}}
+    ]);
+    write_report_payload(&b, &card, &payload).await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        body["report_has_noninitial_content"],
+        Value::Bool(false),
+        "docRev/blocks must not flip the predicate: {body}"
+    );
+}
+
+/// The other half of INV-TODAYDOC-003: once `summary` or `body` differs from
+/// the canonical initial, the document is what the page shows.
+#[tokio::test]
+async fn a_written_report_reads_as_having_content() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    let mut payload = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    payload["body"] = serde_json::json!("# 概要\n\n今天合了两个 PR。\n");
+    write_report_payload(&b, &card, &payload).await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
+
+    // A summary alone is enough, with the body left canonical.
+    let mut summary_only = serde_json::to_value(WaveReportPayload::initial()).unwrap();
+    summary_only["summary"] = serde_json::json!("两个 PR");
+    write_report_payload(&b, &card, &summary_only).await;
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
+}
+
+/// §5.1 — a launchpad wave with no report card is a 404.
+///
+/// This state is **not** reachable in production (wave and report card are
+/// created in one transaction), which is why the endpoint gets no repair path:
+/// the test pins the fail-closed answer, not a supported state.
+#[tokio::test]
+async fn resolve_404s_when_the_launchpad_has_no_report_card() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    sqlx::query("DELETE FROM cards WHERE id=?1")
+        .bind(&card)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={body}");
+}
+
+/// A payload this build cannot parse is not the canonical initial payload, so
+/// it reads as content and the document is shown. The alternative — reading it
+/// as "empty" — would let one bad row silently hide a real report.
+#[tokio::test]
+async fn an_unreadable_report_payload_reads_as_having_content() {
+    let b = boot().await;
+    let (_, ensured) = ensure(b.app.clone()).await;
+    let card = report_card_id(&b, ensured["wave_id"].as_str().unwrap()).await;
+    write_report_payload(&b, &card, &serde_json::json!({"schemaVersion": 3})).await;
+
+    let (status, body) = resolve(b.app.clone()).await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["report_has_noninitial_content"], Value::Bool(true));
+}
+
+/// The `is_unique_constraint` fix, exercised on the route path rather than on
+/// the helper.
+///
+/// Both `ensure` calls read `cove_get_system()` — `None` for both — before
+/// either opens a write transaction, so both try to mint the system cove and
+/// the loser hits `idx_coves_one_system`. SQLite words that as
+/// `UNIQUE constraint failed: coves.kind`, so while this module matched on the
+/// *index* name the retry arm was dead code and the loser returned 500. The
+/// assertion is therefore about the losing request's status, not about the
+/// singleton (which the index enforces either way and which was already true
+/// before the fix).
+///
+/// `is_unique_constraint_for_test` deliberately is not used here: feeding a
+/// hand-built `CalmError` to the helper tests the helper, and the helper was
+/// never the defect — the call sites were.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_ensure_retries_the_system_cove_race() {
+    let b = boot().await;
+    let (first, second) = tokio::join!(ensure(b.app.clone()), ensure(b.app.clone()));
+    for (status, body) in [&first, &second] {
+        assert!(
+            status.is_success(),
+            "a concurrent first ensure must retry the system-cove race, not 500: {status} {body}"
+        );
+    }
+    assert_eq!(first.1["wave_id"], second.1["wave_id"]);
+    assert_eq!(
+        count(&b, "SELECT COUNT(*) FROM coves WHERE kind='system'").await,
+        1
+    );
+    assert_eq!(
+        count(&b, "SELECT COUNT(*) FROM waves WHERE purpose='launchpad'").await,
+        1
     );
 }

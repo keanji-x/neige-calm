@@ -24,7 +24,7 @@ use axum::{
     Json, Router,
     extract::{FromRef, State},
     http::StatusCode,
-    routing::post,
+    routing::{get, post},
 };
 use serde::Serialize;
 use sqlx::{Sqlite, Transaction};
@@ -35,7 +35,9 @@ use utoipa::ToSchema;
 use crate::workspace_materialize::workspace_key_digest;
 
 pub fn router() -> Router<AppState> {
-    Router::new().route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
+    Router::new()
+        .route("/api/today/launchpad/ensure", post(ensure_today_launchpad))
+        .route("/api/today/launchpad", get(resolve_today_launchpad))
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -44,6 +46,43 @@ pub struct TodayLaunchpad {
     pub spec_card_id: String,
     pub terminal_card_id: String,
     pub terminal_id: String,
+}
+
+/// #1253 §5.1 — what the Today **page load** reads.
+///
+/// A deliberately narrow, read-only DTO. It is not [`TodayLaunchpad`] and it
+/// does not grow into it: `ensure`'s shape is the bootstrap's, this one is the
+/// reader's, and the two answer different questions.
+///
+/// There is no `report_card_id` here on purpose. The wave detail already
+/// returns the wave's cards and the frontend locates the report by
+/// `kind == "wave-report"` (`fe/core/domain/report.ts::readWaveReport`), so
+/// such a field would have no consumer.
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub struct TodayLaunchpadResolved {
+    pub wave_id: String,
+    /// Whether this report's `summary`/`body` differ from the canonical
+    /// freshly-minted report — i.e. **has anyone ever written it**.
+    ///
+    /// It is computed server-side by
+    /// [`WaveReportPayload::report_startup_read_required`], the kernel's one
+    /// canonical "has this been written" predicate. It is deliberately NOT
+    /// named `report_started`, and the difference is not cosmetic (design D7):
+    ///
+    /// * It answers "has anyone written this report", not "has today's summary
+    ///   run". A user hand-editing the document flips it to `true` just as a
+    ///   summary agent would, and once true it never returns to false — a
+    ///   stale document still reads as content. Anything that really needs
+    ///   "did the summary run" needs a durable marker or event, not this.
+    /// * It compares `summary + body` only; `doc_rev` and `blocks` are
+    ///   deliberately ignored, so a canonical placeholder that CRDT has
+    ///   already materialised still reads `false`.
+    ///
+    /// The frontend must not re-derive this by looking at the report body:
+    /// `readWaveReport` returns non-null for the canonical initial report
+    /// (its body carries the maintenance-contract comment and four H1s), so a
+    /// null-check there renders four empty headings instead of an empty state.
+    pub report_has_noninitial_content: bool,
 }
 
 struct EnsureTxResult {
@@ -63,11 +102,77 @@ struct EnsureTxResult {
     repointed: bool,
 }
 
+/// Does `error` carry SQLite's unique-violation message for `constraint`?
+///
+/// **`constraint` is a COLUMN list, never an index name.** SQLite words a
+/// unique violation as `UNIQUE constraint failed: <table>.<column>[, …]` — it
+/// names the index only for a unique index over *expressions*. Both indexes
+/// this module races on (`idx_coves_one_system` on `coves(kind)`,
+/// `idx_waves_one_launchpad` on `waves(purpose)`) are partial indexes over
+/// plain columns, so their messages read `coves.kind` and `waves.purpose` and
+/// contain no index name at all. Passing the index name here matches nothing:
+/// the arm becomes dead code and the race surfaces as a 500 instead of the
+/// retry it was written to perform. `routes::waves` has always used the column
+/// form (`waves.cove_id`); this module did not until #1253 PR1.
 fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
     let CalmError::Db(sqlx::Error::Database(error)) = error else {
         return false;
     };
     error.is_unique_violation() && error.message().contains(constraint)
+}
+
+/// #1253 §5.1 — the read-only resolve the Today page load uses.
+///
+/// **This handler must never reach the harness.** `ensure_today_launchpad`
+/// materializes a workspace and then submits `spec-harness-start` and
+/// `.wait()`s on it; putting that on the page-load path would make the whole
+/// Today route fail hard whenever codex is unavailable, which is strictly
+/// worse than the Today page this replaces (it needed nothing to render). So
+/// this endpoint reads two rows and returns. It does not call `ensure`, does
+/// not materialize a workspace, and submits no operation — `ensure` hangs off
+/// an explicit user action only (INV-TODAYDOC-001).
+///
+/// **404 twice, and the second one needs its reason stated correctly.** No
+/// launchpad wave is a 404, and the frontend renders that as an empty state
+/// rather than an error. A launchpad wave with no `wave-report` card is
+/// *also* a 404 — but not because that state is reachable: the wave and its
+/// report card are created in **one transaction**
+/// (`today_launchpad_ensure_tx`), and the adopt-legacy branch has not yet
+/// written `purpose = 'launchpad'` when it commits, so a `purpose`-keyed read
+/// cannot observe a half-built launchpad. 404 is chosen because it is cheap
+/// and fail-closed, **not** because the intermediate state occurs.
+#[utoipa::path(get, path = "/api/today/launchpad", tag = "waves", responses(
+    (status = 200, description = "The launchpad wave and whether its report has been written", body = TodayLaunchpadResolved),
+    (status = 404, description = "No launchpad wave yet (page renders an empty state), or it carries no report card", body = ErrorBody)
+))]
+pub(crate) async fn resolve_today_launchpad(
+    State(app): State<AppState>,
+    _actor: Actor,
+) -> Result<Json<TodayLaunchpadResolved>> {
+    let wave = app
+        .repo
+        .wave_get_launchpad()
+        .await?
+        .ok_or_else(|| CalmError::NotFound("today launchpad".into()))?;
+    let report = app
+        .repo
+        .cards_by_wave(wave.id.as_str())
+        .await?
+        .into_iter()
+        .find(|card| card.kind == "wave-report")
+        .ok_or_else(|| CalmError::NotFound("today launchpad report card".into()))?;
+    // A payload this build cannot parse is, by construction, not the canonical
+    // initial payload, so `true` ("someone wrote something here") is the honest
+    // answer and it shows the document rather than hiding it behind an empty
+    // state. The alternative — treating an unreadable payload as empty — would
+    // let one bad row silently swallow a real report.
+    let has_noninitial_content = serde_json::from_value::<WaveReportPayload>(report.payload)
+        .map(|payload| payload.report_startup_read_required())
+        .unwrap_or(true);
+    Ok(Json(TodayLaunchpadResolved {
+        wave_id: wave.id.to_string(),
+        report_has_noninitial_content: has_noninitial_content,
+    }))
 }
 
 /// #1147 — the launchpad wave's workspace. `Managed`, under the workspace
@@ -350,11 +455,15 @@ pub(crate) async fn ensure_today_launchpad(
         .await;
         match minted {
             Ok((c, _)) => c,
-            Err(e) if is_unique_constraint(&e, "idx_coves_one_system") => app
-                .repo
-                .cove_get_system()
-                .await?
-                .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?,
+            // The COLUMN form, not `idx_coves_one_system`: see
+            // `is_unique_constraint`. Until #1253 PR1 this arm never matched,
+            // so the loser of the first-concurrent-mint race got a 500.
+            Err(e) if is_unique_constraint(&e, "coves.kind") => {
+                app.repo
+                    .cove_get_system()
+                    .await?
+                    .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?
+            }
             Err(e) => return Err(e),
         }
     };
@@ -373,7 +482,9 @@ pub(crate) async fn ensure_today_launchpad(
     .await;
     let out = match attempt {
         Ok(v) => v,
-        Err(e) if is_unique_constraint(&e, "idx_waves_one_launchpad") => {
+        // The COLUMN form, not `idx_waves_one_launchpad`: see
+        // `is_unique_constraint`.
+        Err(e) if is_unique_constraint(&e, "waves.purpose") => {
             // A concurrent inserter won the partial unique index; retry selects it.
             let route = RouteState::from_ref(&app);
             let cove_id = cove.id.to_string();

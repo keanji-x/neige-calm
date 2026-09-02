@@ -36,6 +36,8 @@ pub trait ServerRepoReadExt {
     async fn cove_folder_get(&self, id: i64) -> Result<Option<CoveFolder>>;
     async fn waves_by_cove(&self, cove_id: &str) -> Result<Vec<Wave>>;
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>>;
+    /// #1253 PR1 — the Today launchpad wave, or `None` before it exists.
+    async fn wave_get_launchpad(&self) -> Result<Option<Wave>>;
     async fn wave_detail(&self, id: &str) -> Result<Option<WaveDetail>>;
     async fn waves_window(
         &self,
@@ -154,6 +156,11 @@ where
     }
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         calm_truth::db::RepoRead::wave_get(self, id)
+            .await
+            .map_err(Into::into)
+    }
+    async fn wave_get_launchpad(&self) -> Result<Option<Wave>> {
+        calm_truth::db::RepoRead::wave_get_launchpad(self)
             .await
             .map_err(Into::into)
     }

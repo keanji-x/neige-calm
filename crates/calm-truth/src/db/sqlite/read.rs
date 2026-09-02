@@ -128,6 +128,19 @@ impl RepoRead for SqlxRepo {
         Ok(rows.into_iter().map(Wave::from).collect())
     }
 
+    async fn wave_get_launchpad(&self) -> Result<Option<Wave>> {
+        // Same predicate as `today_launchpad_ensure_tx`'s first SELECT, and
+        // single-valued by migration 0064's partial unique index. `LIMIT 1`
+        // is belt-and-braces so a database whose index was dropped by hand
+        // still answers deterministically rather than erroring.
+        let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
+            "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE purpose = 'launchpad' LIMIT 1"
+        ))
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(Wave::from))
+    }
+
     async fn wave_get(&self, id: &str) -> Result<Option<Wave>> {
         let row = sqlx::query_as::<_, crate::db::rows::WaveRow>(&format!(
             "SELECT {WAVE_SELECT_COLUMNS} FROM waves WHERE id = ?1"
