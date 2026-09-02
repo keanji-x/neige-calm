@@ -44,6 +44,8 @@ export type SettingsPageProps = Readonly<{
   onThemeModeChange: (mode: ThemeMode) => void;
   /** Tests shorten the confirmation window; production uses the default. */
   savedNoticeMs?: number;
+  /** Opens Settings › Templates (#1230). */
+  onOpenTemplates: () => void;
 }>;
 
 const THEME_MODES = Object.freeze(['light', 'dark', 'system'] as const);
@@ -70,7 +72,7 @@ function buildPatch(draft: Draft, seed: Draft): SettingsPatch {
 
 export function SettingsPage({
   settings, loadError, saving, saveError, savedAt, onSave, onRetryLoad, onOpenToday,
-  themeMode, onThemeModeChange, savedNoticeMs = SAVED_NOTICE_MS,
+  themeMode, onThemeModeChange, savedNoticeMs = SAVED_NOTICE_MS, onOpenTemplates,
 }: SettingsPageProps) {
   const loaded = settings !== undefined;
   const incoming: Draft = {
@@ -173,6 +175,26 @@ export function SettingsPage({
                   {saveError !== null && <p className={styles.error} role="alert">{saveError}</p>}
                 </>
               ) : null}
+          </section>
+        </AstryxCard>
+
+        <AstryxCard className={styles.sectionCard} padding={4} data-nc-settings-card="">
+          <section className={styles.section} aria-labelledby="nc-settings-templates">
+            <h2 className={styles.sectionLabel} id="nc-settings-templates">Templates</h2>
+            {/*
+              * A row that drills in, not the editor inlined (#1230). Settings
+              * stays readable at any number of templates, and the editor
+              * becomes a place Back can leave — it is a route, not page state.
+              */}
+            <p className={styles.hint}>What a new wave starts from.</p>
+            <div className={styles.actions}>
+              <AstryxButton
+                label="Edit templates"
+                variant="secondary"
+                size="lg"
+                onClick={onOpenTemplates}
+              />
+            </div>
           </section>
         </AstryxCard>
 

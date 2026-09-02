@@ -30,6 +30,7 @@ import {
 import { mintIdempotencyKey } from './idempotency-key.ts';
 import { CovePage } from '../../features/cove/page/public.tsx';
 import { SettingsPage, type ThemeMode as SettingsThemeMode } from '../../features/settings/public.tsx';
+import { TemplateEditorPage, TemplateListPage } from '../../features/settings/templates.tsx';
 import { TodayPage } from '../../features/today/public.tsx';
 import { WaveList } from '../../features/wave/list/public.tsx';
 import { WaveRow } from '../../features/wave/row/public.tsx';
@@ -66,7 +67,8 @@ import { useReducer, useState } from '../../ui/state/public.ts';
 import {
   ApiError, coveConversationsQueryOptions, harnessItemsQueryOptions, prefetchCoveList,
   settingsQueryOptions, specRunQueryOptions, useCoveConversationMutations, useCoveMutations,
-  useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations, useWorkspace,
+  useSettingsMutation, useSpecMutations, useWaveConversationMutations, useWaveMutations,
+  useWaveTemplateMutation, useWaveTemplates, useWorkspace,
   waveBacklinksQueryOptions, waveConversationsQueryOptions, waveDetailQueryOptions,
   waveTaskVerdictsQueryOptions,
 } from '../providers/queries.ts';
@@ -848,7 +850,21 @@ export function createRouteTree({ transport, unauthorized, client, onSignOut, ca
     component: () => <SettingsRoute transport={transport} unauthorized={unauthorized} />,
   });
 
-  return rootRoute.addChildren([indexRoute, coveRoute, waveRoute, settingsRoute]);
+  const templateListRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/templates',
+    component: () => <TemplateListRoute transport={transport} unauthorized={unauthorized} />,
+  });
+
+  const templateEditorRoute = createRoute({
+    getParentRoute: () => rootRoute,
+    path: '/settings/templates/$templateId',
+    component: () => <TemplateEditorRoute transport={transport} unauthorized={unauthorized} />,
+  });
+
+  return rootRoute.addChildren([
+    indexRoute, coveRoute, waveRoute, settingsRoute, templateListRoute, templateEditorRoute,
+  ]);
 }
 
 export function createAppRouter(deps: AppRouterDeps) {
@@ -2436,10 +2452,10 @@ function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPor
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
-
   return (
     <SettingsPage
       settings={settings.data?.settings}
+      onOpenTemplates={() => go({ name: 'settings-templates' })}
       loadError={settings.error instanceof Error ? settings.error.message : null}
       onRetryLoad={() => { void settings.refetch(); }}
       saving={saving}
@@ -2455,6 +2471,92 @@ function SettingsRoute({ transport, unauthorized }: { transport: ApiTransportPor
         setSaving(true);
         setSaveError(null);
         return save(patch)
+          .then(() => { setSavedAt(Date.now()); })
+          .catch((error: unknown) => {
+            setSaveError(error instanceof Error ? error.message : 'Save failed.');
+          })
+          .finally(() => { setSaving(false); });
+      }}
+    />
+  );
+}
+
+/**
+ * Settings › Templates (#1230). Two routes rather than page-local state, so
+ * Back leaves the editor instead of leaving Settings, and one template's
+ * editor is a URL.
+ *
+ * Both read the **template list** — the same read the New wave picker uses.
+ * There is no per-template endpoint: the list already carries `id` / `title` /
+ * `tasks[{key, goal}]`, and a second read would be a second authority for the
+ * same facts plus an N+1 whose failure modes have to be reasoned about apart
+ * from the list's.
+ */
+function TemplateListRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const go = useGo();
+  const templates = useWaveTemplates(transport, unauthorized);
+  return (
+    <TemplateListPage
+      templates={templates.loaded ? templates.templates : undefined}
+      loadError={templates.error}
+      onRetryLoad={templates.refetch}
+      onOpenSettings={() => go({ name: 'settings' })}
+      onEdit={(templateId) => go({ name: 'settings-template', templateId })}
+    />
+  );
+}
+
+function TemplateEditorRoute({ transport, unauthorized }: { transport: ApiTransportPort; unauthorized: UnauthorizedChannel }) {
+  const templateId = useRouteParam('/settings/templates/');
+  /*
+   * Keyed on the id: `saving` / `saveError` / `savedAt` are per-template facts,
+   * and this route component is reused across ids (same route, same instance).
+   * Without the key, one template's "Saved." and error banner render over the
+   * next template's editor, and an in-flight save suppresses the re-seed so
+   * template A's rows show under template B's title.
+   */
+  return (
+    <TemplateEditorSave
+      key={templateId ?? ''}
+      templateId={templateId}
+      transport={transport}
+      unauthorized={unauthorized}
+    />
+  );
+}
+
+function TemplateEditorSave({ templateId, transport, unauthorized }: {
+  templateId: string | undefined;
+  transport: ApiTransportPort;
+  unauthorized: UnauthorizedChannel;
+}) {
+  const go = useGo();
+  const templates = useWaveTemplates(transport, unauthorized);
+  const saveTemplate = useWaveTemplateMutation(transport, unauthorized);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const template = templates.loaded
+    ? templates.templates.find((entry) => entry.id === templateId)
+    : undefined;
+  return (
+    <TemplateEditorPage
+      template={template}
+      /* An id that names no template is a load failure for this route, not an
+         empty editor: blank fields for a template that does not exist would
+         invite a save against nothing. */
+      loadError={templates.loaded && template === undefined
+        ? `No template named ${templateId ?? ''}.`
+        : templates.error}
+      onRetryLoad={templates.refetch}
+      saving={saving}
+      saveError={saveError}
+      savedAt={savedAt}
+      onOpenTemplates={() => go({ name: 'settings-templates' })}
+      onSave={(save) => {
+        setSaving(true);
+        setSaveError(null);
+        return saveTemplate(save)
           .then(() => { setSavedAt(Date.now()); })
           .catch((error: unknown) => {
             setSaveError(error instanceof Error ? error.message : 'Save failed.');

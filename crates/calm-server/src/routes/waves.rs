@@ -452,7 +452,7 @@ static WORKFLOW_TEMPLATE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 /// Lazy get-or-create of the three system-cove template waves. Called from
 /// matching `POST /api/waves`, not from `AppState::new`, so ordinary boots
 /// and tests that never bind a template key stay unchanged.
-async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
+pub(crate) async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
     let _guard = WORKFLOW_TEMPLATE_SEED_LOCK.lock().await;
     let system_cove = ensure_system_cove(s).await?;
     for template in &WORKFLOW_TEMPLATES {
@@ -493,7 +493,7 @@ async fn ensure_system_cove(s: &RouteState) -> Result<crate::model::Cove> {
     }
 }
 
-async fn lookup_workflow_template_wave(
+pub(crate) async fn lookup_workflow_template_wave(
     s: &RouteState,
     template_key: &str,
 ) -> Result<Option<String>> {
