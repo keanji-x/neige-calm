@@ -428,10 +428,16 @@ pub(crate) fn apply_report_op(
                     )
                 })?;
                 check_rev(doc, id, expected)?;
-                // #1269 — the block-level entrance. `ReportDoc::
+                // #1269 — defence in depth at the op layer. `ReportDoc::
                 // upsert_block` fence-checks only NON-prose content, so
-                // prose would otherwise carry a ```neige-block fence
-                // straight in. The rule here is the surfaces' rule
+                // a direct `apply_report_op` call with `kind: "prose"`
+                // would otherwise carry a ```neige-block fence straight
+                // in. Not a user-reachable hole — the MCP (#971) and
+                // REST (#990) block surfaces have each run
+                // `check_prose_markdown` on their own argument since
+                // long before this; the point is that the op stops
+                // depending on them to do so. The rule here is the
+                // surfaces' rule
                 // (`check_prose_markdown`), not the weaker
                 // `validate_body_fences`: the op layer must not be weaker
                 // than the invariant `guard_task_declarations` /
@@ -455,7 +461,7 @@ pub(crate) fn apply_report_op(
                 })?;
                 check_doc_rev(doc, expected)?;
                 // #1269 — same check on the create arm; leaving either
-                // arm open would leave the entrance open.
+                // arm unchecked would leave the op-layer gap open.
                 validate_prose_block_content(kind, content)?;
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position

@@ -94,7 +94,11 @@
 //! `validate_prose_block_content` in the prose `UpsertBlock` arms, and
 //! `guard_task_declarations` after the match on every op that got that far —
 //! are plain control flow inside `wave_report::apply_report_op` today, with no
-//! parameter that can switch any of them off. Modelling them as booleans would
+//! parameter that can switch any of them off. (Which content rule applies is
+//! selected by the op's own `kind` — `validate_prose_block_content` defers to
+//! `ReportDoc::upsert_block`'s check for non-prose kinds — but that is the op's
+//! data, not a caller-supplied switch: no origin can ask for *less* checking of
+//! the same content.) Modelling them as booleans would
 //! reduce "turn a guard off" to writing `false` — and an exemption that can be
 //! expressed will eventually be used. Per-origin differences in CAS input
 //! belong on the *constructor signatures* of step 2 (its fork constructor will

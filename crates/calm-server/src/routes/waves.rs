@@ -1853,13 +1853,17 @@ fn prepare_fork_report(
             // was false at the time): its production call sites are
             // `wave_report::apply_report_op`'s two whole-body arms —
             // `ReportDocOp::Replace` and `::WriteMarkdown` — plus this fork
-            // exit. The prose `UpsertBlock` entrance, which this note used to
-            // record as still open, is closed since #1269 by a *different*
-            // and stricter check: `wave_report_guard::
+            // exit. The prose `UpsertBlock` arm, which this note used to
+            // record as an open *op-layer* gap, is covered since #1269 by a
+            // *different* and stricter check: `wave_report_guard::
             // validate_prose_block_content`, which forbids any fence in
             // prose. `ReportDoc::upsert_block` itself fence-checks only
             // non-prose content (`if kind != KIND_PROSE`), which is why the
-            // prose case has to be checked in the op arm.
+            // prose case has to be checked in the op arm. To be exact about
+            // what that gap ever was: it was reachable only by calling
+            // `apply_report_op` directly, never by a user — the MCP (#971)
+            // and REST (#990) block surfaces have refused fenced prose at
+            // their own argument since well before #1269.
             //
             // Deliberately only the fence check here: the fork exit does not
             // additionally run `validate_payload` on the prose block's own
@@ -3534,8 +3538,10 @@ mod tests {
     /// A malformed ```` ```neige-block ```` fence in prose is refused by
     /// `wave_report_guard::validate_body_fences` at the whole-body write
     /// ends (`ReportDocOp::Replace` / `::WriteMarkdown`), and since #1269
-    /// the prose `::UpsertBlock` entrance refuses it too — via the stricter
-    /// `validate_prose_block_content`. Forking is a write end as well.
+    /// the prose `::UpsertBlock` arm refuses it at the op layer too — via
+    /// the stricter `validate_prose_block_content`, behind MCP/REST
+    /// surfaces that already refused it (#971 / #990). Forking is a write
+    /// end as well.
     #[test]
     fn fork_rejects_malformed_neige_fence_in_a_prose_block() {
         let prose = ReportBlock {

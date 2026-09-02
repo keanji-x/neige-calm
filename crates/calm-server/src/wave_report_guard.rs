@@ -16,10 +16,20 @@
 //! * [`validate_prose_block_content`] — since #1269, the prose
 //!   `UpsertBlock` arm (both the create `id: None` and the replace
 //!   `id: Some(..)` branch). It defers to
-//!   `calm_types::report_blocks::check_prose_markdown`, the same rule the
-//!   MCP and REST block surfaces apply, which is *stricter* than
-//!   `validate_body_fences`: prose may not carry a `neige-block` fence at
-//!   all, well-formed or not.
+//!   `calm_types::report_blocks::check_prose_markdown`, which is
+//!   *stricter* than `validate_body_fences`: prose may not carry a
+//!   `neige-block` fence at all, well-formed or not.
+//!
+//!   This is **defence in depth at the op layer, not a user-reachable
+//!   hole being closed**. Both surfaces that mint a prose block have
+//!   called `check_prose_markdown` on their own argument since well
+//!   before #1269 — `mcp_server::tools::wave_report_blocks` since #971
+//!   and `routes::wave_report_blocks` since #990 — so no user-reachable
+//!   path ever accepted a fenced prose block. What #1269 changes is that
+//!   the op layer no longer *depends* on those two surfaces getting it
+//!   right: a direct `apply_report_op` call (a future surface, a test
+//!   fixture, an in-process caller) used to land the fence verbatim, and
+//!   now cannot.
 //! * [`guard_non_prose_stomp`] — only the `Replace` shim: it may not
 //!   modify or delete a non-prose block; a whole-document rewrite
 //!   that carries every fence through byte-for-byte passes.
@@ -68,11 +78,17 @@ pub(crate) fn validate_body_fences(body: &str) -> Result<(), CalmError> {
     Ok(())
 }
 
-/// #1269 — the prose `UpsertBlock` entrance. For `kind == "prose"`,
-/// apply the surfaces' prose rule verbatim by calling
+/// #1269 — the prose `UpsertBlock` arm **at the op layer**. For
+/// `kind == "prose"`, apply the surfaces' prose rule verbatim by calling
 /// [`calm_types::report_blocks::check_prose_markdown`]: prose may not
 /// embed a `neige-block` fence at all. Non-prose kinds are left to
 /// `ReportDoc::upsert_block`'s own canonical-fence check.
+///
+/// Not a user-reachable hole: the MCP surface (#971) and the REST
+/// surface (#990) have both refused fenced prose on their own arguments
+/// since long before this. This makes the op itself refuse it, so the
+/// invariant no longer rests on every present and future caller
+/// remembering to check first.
 ///
 /// Deliberately stricter than [`validate_body_fences`], which tolerates
 /// a well-formed, schema-valid fence. The op layer must not be weaker
@@ -101,11 +117,11 @@ pub(crate) fn guard_non_prose_stomp(doc: &ReportDoc, body: &str) -> Result<(), C
     let current = doc
         .blocks_snapshot()
         .map_err(|e| CalmError::Internal(format!("wave_report: snapshot for stomp guard: {e}")))?;
-    if current.iter().all(|block| block.kind == "prose") {
+    if current.iter().all(|block| block.kind == KIND_PROSE) {
         return Ok(());
     }
     let aligned = reassign_ids(&current, &split_body(body));
-    for old in current.iter().filter(|block| block.kind != "prose") {
+    for old in current.iter().filter(|block| block.kind != KIND_PROSE) {
         let preserved = aligned.iter().any(|new| {
             new.id == old.id && new.kind == old.kind && flat_text(new) == flat_text(old)
         });
@@ -263,10 +279,16 @@ mod tests {
         assert_eq!(doc.project().unwrap().1, "# A\n", "nothing landed");
     }
 
-    /// #1269 — the block-level entrance. `ReportDoc::upsert_block`
-    /// fence-checks only NON-prose content, so a prose upsert carrying a
-    /// ```` ```neige-block ```` fence used to land verbatim. Both arms are
-    /// covered: creating a block (`id: None`) and replacing an existing one
+    /// #1269 — the block-level arm, **at the op layer**. `ReportDoc::
+    /// upsert_block` fence-checks only NON-prose content, so a direct
+    /// `apply_report_op` call with `kind: "prose"` carrying a
+    /// ```` ```neige-block ```` fence used to land it verbatim. No *user*
+    /// could get here: the MCP surface (#971) and the REST surface (#990)
+    /// both run `check_prose_markdown` on their own argument first — see
+    /// the end-to-end `upsert_prose_rejects_embedded_neige_fences` in
+    /// `tests/cases/mcp_wave_report_blocks.rs`. This test covers the op
+    /// itself, so the rule holds without them. Both arms are covered:
+    /// creating a block (`id: None`) and replacing an existing one
     /// (`id: Some(..)` + `if_rev`).
     ///
     /// All three fence shapes are refused, because the op layer applies the
@@ -360,11 +382,21 @@ mod tests {
     }
 
     /// The scope fence for the check above: it must refuse `neige-block`
-    /// fences, not ordinary markdown. Headings, lists and a plain
+    /// *fences*, not ordinary markdown. Headings, lists and a plain
     /// ```` ```rust ```` code fence still land on both arms.
+    ///
+    /// The body deliberately mentions `` `neige-block` `` inline, which
+    /// `check_prose_markdown` accepts: only a fence *opener* counts, and
+    /// an inline code span is not one. Documentation prose that names the
+    /// fence — exactly what someone writing up this feature would type —
+    /// must keep landing. This is what separates the real rule from a
+    /// `content.contains("neige-block")` substring reject, which would
+    /// pass every other assertion in this module.
     #[test]
     fn fence_free_prose_upsert_still_lands_on_both_arms() {
-        let body = "# Notes\n\n- alpha\n- beta\n\n```rust\nfn main() { println!(\"hi\"); }\n```\n";
+        let body = "# Notes\n\n- alpha\n- beta — a data block is written with a `neige-block` \
+                    fence, but naming it here is prose\n\n```rust\nfn main() { \
+                    println!(\"hi\"); }\n```\n";
 
         // Create arm.
         let mut doc = ReportDoc::from_payload(&WaveReportPayload::new("s", "# A\n\nalpha\n"));
