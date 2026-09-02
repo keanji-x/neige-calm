@@ -30,7 +30,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use calm_server::auth::Principal;
-use calm_server::db::RepoRead;
+use calm_server::db::{RepoOutOfDomain, RepoRead};
 use calm_server::{
     card_role_cache::CardRoleCache,
     db::{Repo, sqlite::SqlxRepo},
@@ -479,5 +479,86 @@ async fn a_real_report_edit_and_a_real_lifecycle_change_are_both_counted_as_acti
         status,
         StatusCode::OK,
         "a real `wave.lifecycle_changed` must count as activity: {body}"
+    );
+}
+
+/// A dormant harness is recovered by re-submitting `spec-harness-start`, and
+/// the conversation's transcript survives it.
+///
+/// D5 makes this mandatory, and the reason is that with one long-lived
+/// conversation a single dormant session would kill the button for good: there
+/// is no other route back to a live harness, so the button would answer 409
+/// forever until a human pressed Reset.
+///
+/// **What must NOT happen is the easy fix.** `reset_spec_harness_card` — the
+/// `/spec/reset` path — hard-codes `reset_harness_items: true`, which erases
+/// the card's harness items. Those items *are* the conversation the user asked
+/// for, so recovering through reset would answer 200 while deleting the thing
+/// the feature exists to produce. Nothing about that shows up in a status code,
+/// which is why the assertion below is on the item count and not on the
+/// response.
+#[tokio::test]
+async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
+    let b = boot().await;
+    let wave_id = b.user_wave("dormant").await;
+    b.edit_report(&wave_id, "something happened").await;
+
+    let (status, first) = b.summary(None).await;
+    assert_eq!(status, StatusCode::OK, "body={first}");
+    let card_id = first["card_id"].as_str().unwrap().to_string();
+    let launchpad = first["wave_id"].as_str().unwrap().to_string();
+
+    // A turn's worth of transcript, so "did the recovery keep it?" has an
+    // answer. Written through the repo the harness itself writes with.
+    b.repo
+        .harness_item_insert(
+            "runtime-x",
+            &card_id,
+            &launchpad,
+            "thread-x",
+            Some("turn"),
+            Some("item"),
+            Some("agent_message"),
+            "item/completed",
+            "{}",
+        )
+        .await
+        .unwrap();
+    let items_before = b
+        .scalar(&format!(
+            "SELECT COUNT(*) FROM harness_items WHERE card_id = '{card_id}'"
+        ))
+        .await;
+    assert_eq!(items_before, 1);
+
+    // Dormancy, in the shape `ensure_live_spec_harness` actually tests for: no
+    // session row in an active state for this card. That is trigger B of #649 —
+    // the state a failed start or a crashed session leaves behind.
+    sqlx::query("UPDATE worker_sessions SET state = 'exited' WHERE card_id = ?1")
+        .bind(&card_id)
+        .execute(b.repo.pool())
+        .await
+        .unwrap();
+
+    let (status, second) = b.summary(None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "a dormant harness must be restarted rather than surfaced: {second}"
+    );
+    assert_eq!(second["card_id"], json!(card_id), "and on the same card");
+    assert_eq!(
+        b.scalar(&format!(
+            "SELECT COUNT(*) FROM harness_items WHERE card_id = '{card_id}'"
+        ))
+        .await,
+        items_before,
+        "the recovery must not erase the transcript — that is the difference \
+         between re-submitting a start and going through `/spec/reset`"
+    );
+    assert_eq!(
+        b.enqueued_char_counts().await.len(),
+        3,
+        "and the summary the trigger was for must actually have been sent"
     );
 }
