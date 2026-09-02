@@ -1,6 +1,6 @@
 # Today 文档化 + AI 今日进度
 
-> 状态：设计 **r9**（七轮双通道 review 后收敛）。Issue：#1253。
+> 状态：设计 **r10 —— 已收敛**。七轮双通道 review；最后一轮两个通道均判零 BLOCKER（各自指出的唯一一条已在 r9 修掉，两边都确认）。Issue：#1253。
 > review 存档：`docs/_1253-design-review-{codex,subagent}[-r2|…|-r7].md`。
 > 关联：#951（launchpad wave 与它的 report 卡；两写者约束已留注记）、#120（定时汇总与日程队列）、#1045、#1234。
 
@@ -200,14 +200,16 @@ POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，�
 
 **key 必须是裸 `today-summary`，_不_ 掺 workspace digest——r6 在这里判反了，r8 改回来。** 创建路径把整个 `SpecHarnessStartOperationPayload` 送进 `stable_payload_hash`，其中含 `actor` 与 `cwd: wave.workspace.path`；`insert_operation` 对「同 key + 不同 payload_hash」**硬 409，而 `operations` 全仓无 pruner ⇒ 永久**。这正是 `today.rs` 里逐字记过的事故（*"409, on every request, forever"*），当时的解法是把 workspace digest 掺进 key。r6 照搬了那个解法——**但它搬不过来**：`derive_wave_conversation_keys` 用同一个 digest 同时喂 **card_id 和 operation_key**（`conversation_keys.rs` 的 doc comment 写死：card 是 `conv-{digest[..32]}`，operation key 是 `wave-conversation-{digest}`）。所以 key 掺了 cwd，**card id 也跟着变**：一次 re-point 就派生出第二张会话卡，直接推翻「全生命周期一条汇总 conversation」；而伪码若按裸 key 查卡、用 digest key 创建，创建出来的又不是查的那张。`today.rs` 的 key 不承担 conversation identity，这里的承担——所以那个解法在这条路径上是错的。
 
-**正确的解法是把 payload 里的变量消掉，而不是把变量塞进 key。** `SpecHarnessStartOperationPayload` 有 **11 个字段**（穷举，别只数前几个）：`wave_id` 固定；`spec_card_id` 由裸 key 派生因而固定；`report_card_id` / `sort` / `goal` 是 `None`；`reset_harness_items: false`、`force_new_thread: true`、`profile: Assistant`、`create_card`（内含同一个裸 key）都是常量。所以只剩**三个**变量——
+**正确的解法是把 payload 里的变量消掉，而不是把变量塞进 key。** `SpecHarnessStartOperationPayload` 有 **12 个字段**（穷举，别只数前几个）：`wave_id` 固定；`spec_card_id` 由裸 key 派生因而固定；`report_card_id` / `sort` / `goal` 是 `None`；`reset_harness_items: false`、`force_new_thread: true`、`profile: Assistant`、`create_card`（内含同一个裸 key）都是常量。所以只剩**三个**变量——
 
 1. **`actor` 固定为单一值**，但理由要说准：`Actor::to_actor_id()` 把 `"user"` **和一切非 `ai:codex` 的值**都映射成 `ActorId::User`，而中间件只放行 `user` / `ai:<id>`。所以「owner/dev 两个人类账号各点一次」根本到不了——两者同为 `ActorId::User`。**真正的变量通道是客户端自带的 `X-Calm-Actor: ai:<id>`**，服务端合成路径不透传它即可消掉。
-   **实现约束**：若要按 kernel 归属，**不能**经 `Actor::to_actor_id()`（它会把 kernel 也压成 `User`），必须直接构造 `ActorId`。这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决。
+   **实现约束**：若要按 kernel 归属，**不能**经 `Actor::to_actor_id()`（`Actor("kernel").to_actor_id()` 会降为 `User`），必须直接构造 `ActorId::Kernel`。这条汇总记在谁头上，按 `identity_migration_attribution_scope` 裁决。
 2. **`cwd` 只在 workspace re-point 时变**，而 re-point 之后我们**不会再调 create**——分支判据是 `card_get(derived.card_id)`，卡已存在就直接走 spec input，且那张卡 `deletable: false` 不会消失（`plan_compensation` 的注释逐字写明：补偿第一次出错就 `Stuck`、不再重驱，遗留的卡带 `deletable: false`）。所以「succeeded 之后 payload 变了」这个永久 409 的触发条件在本路径上到不了。
 3. **`first_message_sha256`** —— 它由 D5 上一段的「bootstrap 文本必须逐字节静态」管住。这一条要和上面两条一起读：**三个变量各有各的约束，缺一条这个论证就不成立**。
 
-**残余窗口**（写在明处）：create 尝试过但**没有成功**（`Stuck`，arm (c) 持续 500），期间又发生了 re-point——此时同 key 不同 hash 会 409。`retryable_operation_key` 的 `#N` 逃逸只在 `phase == Failed` 时给，`Stuck` 不给。这个窗口窄且已是 fail-closed 的已知态，接受；实现时把它写进错误文案，别让人误以为是 bug。
+**残余窗口**（写在明处，且比初稿更窄）：create 尝试过但**没有成功**（`Stuck`，arm (c) 持续 500）、**且补偿没有留下派生卡**，期间又发生了 re-point——此时同 key 不同 hash 会 409。`retryable_operation_key` 的 `#N` 逃逸只在 `phase == Failed` 时给，`Stuck` 不给。
+
+> 「且没有留下卡」这个限定是必要的：若 `Stuck` 已经留下那张 `deletable:false` 的卡，`card_get` 分支就直接绕过 create 转入 dormant 恢复，根本不会再去比较旧 payload hash。所以真正的窗口是「Stuck ∧ 无卡 ∧ 期间 re-point」，窄且是 fail-closed 的已知态，接受；实现时写进错误文案，别让人误以为是 bug。
 
 兜底仍然保留：**创建返回 409 conflict ⇒ resolve 派生卡 ⇒ 转 spec input**（若卡存在）。
 
@@ -219,7 +221,7 @@ POST /api/cards/{card_id}/spec/input            ← 唯一的 prompt 通道，�
 
 **触发不保证一轮一 turn。** `run_loop::maybe_issue_turn` 一次 `drain` 把整个 pending 队列拼成一条 `joined_observation_text` 只发**一个** `turn_start`。所以连点多次的典型结果是 turn 被合并。设计**接受合并**，INV-010 因此改证「每次触发都留下一条永久的 `harness.user_message.enqueued`」，而不是数 turn（见 §5.2）。
 
-> **`UserMessage` 是 hard-fire，绕过 250ms/5s 去抖**（r6 把去抖写成了合并的原因，那是错的）。合不合并只取决于两条消息有没有赶在同一次 50ms tick 前入队。所以**首次触发有可能先跑一个 bootstrap-only 的 turn**。因此 bootstrap 文本必须写成「待命，收到指令前不要动 report」——一个无害的空转，而不是让 agent 在没有素材时先写一版。这条和 INV-007 是同一个目的。
+> **`UserMessage` 是 hard-fire，绕过 250ms/5s 去抖**（r6 把去抖写成了合并的原因，那是错的）。合并的真正条件是**两条消息在同一次「可发起的 drain」时仍共同排队**——不限于同一次 50ms tick：harness 被状态阻塞时，跨多个 tick 的消息照样会被合并。反过来，若第一条赶在下一次可发起 drain 之前独自入队，**首次触发就会先跑一个 bootstrap-only 的 turn**。因此 bootstrap 文本必须写成「待命，收到指令前不要动 report」——一个无害的空转，而不是让 agent 在没有素材时先写一版。这条和 INV-007 是同一个目的。
 
 > 还有一个更坏的模式要防：pending 队列满 256 且折叠后超过 `MAX_FOLDED_USER_MESSAGE_CHARS`（4×32768）时，观测会被**直接丢弃**，只留一条 warn 日志——「点了，什么都没发生，且没有错误返回」。这与 INV-010 要防的是同一类，实现时要让它至少可观测。
 
