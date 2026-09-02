@@ -5027,7 +5027,7 @@
     the dialog away; the fix was an `initialFocusRef` aimed at the task input. Deleting that input
     without re-aiming the ref restores the same defect by omission, which is why the prop is
     required and why it was renamed rather than dropped.
-  source: fe/web/src/features/cove/new-wave/public.tsx:213-227,406-413
+  source: fe/web/src/features/cove/new-wave/public.tsx:213-227,405-410
   authoritative_test: fe/web/src/app/shell/public.test.tsx:161
   owner_slice: features/wave/create
   intentional_omission: false
@@ -5051,7 +5051,7 @@
     explicit per-caller prop and not the shared primitive's default. The already-blank case is
     arithmetic, not policy — there is no state change to request.
     The legacy front-end's opposite rule is E2E-INV-RENAME-009 above.
-  source: fe/web/src/ui/editable-title/public.tsx:34-52,100-113; fe/web/src/features/wave/page/public.tsx:293-300
+  source: fe/web/src/ui/editable-title/public.tsx:36-52,99-113; fe/web/src/features/wave/page/public.tsx:293-300
   authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:372
   owner_slice: ui/editable-title
   intentional_omission: false
@@ -5110,7 +5110,7 @@
     entry do the same thing. The last is the price of the first, and both are pinned rather than
     left to be discovered.
   source: fe/web/src/app/shell/public.tsx:338; fe/web/src/app/router/navigation.ts:53,98-110,174-200;
-    fe/web/src/app/router/public.tsx:1510,1926-1932; fe/web/src/features/chat/thread/public.tsx:1800
+    fe/web/src/app/router/public.tsx:1510,1926-1932; fe/web/src/features/chat/thread/public.tsx:1801
   authoritative_test: fe/web/src/app/router/wave-untitled.test.tsx:194
   owner_slice: app/router
   intentional_omission: false
