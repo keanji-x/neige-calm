@@ -1,0 +1,2 @@
+Documentation example outside the Rust/SQL source types:
+CREATE TABLE runtimes (id TEXT PRIMARY KEY);

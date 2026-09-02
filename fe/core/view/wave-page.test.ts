@@ -118,7 +118,9 @@ describe('deriveWavePageView cards', () => {
    * ended up with no status wording at all.
    *
    * `label` and `hint` are asserted **separately and on both sides of null**,
-   * because they are two channels on purpose (WCAG 2.5.3, `public.tsx:743`):
+   * because they are two channels on purpose (WCAG 2.5.3; the painter's
+   * `wording` in `wave/page/desktop-painter.tsx` emits each one separately, and
+   * emits neither for a null):
    * a control with visible text must get no `aria-label`, and asserting only
    * "some string reaches the control" would not see the two channels swapped.
    */
@@ -141,7 +143,9 @@ describe('deriveWavePageView cards', () => {
   });
 
   /* The delete label uses the name the row actually prints — for an untitled
-     card that is the kind, exactly as `public.tsx:536`'s `title ?? card.kind`. */
+     card that is the kind, which is exactly the `title ?? card.kind` the wave
+     page's Cards row printed before this slice and that `cardRow` here derives
+     into `row.title` now. */
   it('falls back to the printed name — the kind — when the card has no title', () => {
     const [row] = cardsModule([card({ title: null, kind: 'harness', deletable: true })]).rows;
     const remove = row.actions[1];
@@ -192,7 +196,8 @@ describe('deriveWavePageView tasks', () => {
   });
 
   /*
-   * Both Task-row controls wrap visible text (`public.tsx:642`, `:747`), so
+   * Both Task-row controls wrap visible text — the reveal button and the kind
+   * button in `wave/page/desktop-painter.tsx`'s `taskRow` — so
    * neither may carry an `aria-label`; each carries only a pointer `title`
    * naming its destination.
    */
@@ -234,7 +239,8 @@ describe('deriveWavePageView tasks', () => {
    * withdrawn/unreadable/tombstoned and gives those states a null
    * `workerCardId`, so this input is production-unreachable. It is asserted
    * anyway because the rule being copied is the page's two-level condition
-   * (`public.tsx:741-751`), not the upstream's invariant — a derivation that
+   * (`kind !== null` **and** a worker card, now `taskRow`'s two conditions in
+   * `wave/page/desktop-painter.tsx`), not the upstream's invariant — a derivation that
    * only tested `workerCardId` would be right by coincidence and would hand
    * S1b's painters an action the page never draws.
    */
