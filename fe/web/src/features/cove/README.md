@@ -68,7 +68,7 @@ Legacy `web/` `NewTaskForm` is unchanged and still sends a full body.
 Cut from the legacy NewTaskForm on purpose; do not re-add without a slice:
 
 - The GitHub issue-dev workflow variant.
-- The raw `workflow_input` JSON escape hatch.
+- The raw `template_input` JSON escape hatch.
 - The debounced `GET /api/coves/resolve` auto-match that pre-selects a cove from
   the typed directory. **Not** re-added by #1147 S3: its only effect was
   choosing `attach_folder: false` when some cove already covered the path, and

@@ -9,9 +9,10 @@
 //
 // This module holds the vocabulary of that view model plus `paintModule` /
 // `paintPanel`, the traversals S1b's renderers are meant to share. Today the
-// only callers are `paintPanel` and `panel.test.ts`; renderers are wired in
-// S1b-3 (desktop) and S1b-4 (mobile). See `paintModule`'s docstring for what
-// that does and does not buy. Everything here is data and pure functions;
+// callers are `paintPanel`, `panel.test.ts` and S1b-2's `checkProjection`
+// (`tools/projection/public.ts`); **no production renderer calls them yet** —
+// that is S1b-3 (desktop) and S1b-4 (mobile). See `paintModule`'s docstring for
+// what that does and does not buy. Everything here is data and pure functions;
 // `core` may not import React or touch the DOM (`fe/core/AGENTS.md`), so a
 // renderer supplies its own leaf constructors through `RowPainter<T>`.
 //
@@ -115,19 +116,19 @@ export type WavePageView = Readonly<{ rowModules: readonly RowModuleView[] }>;
  * omitted, and is required so that an **explicitly declared** unsupported
  * action must state why.
  *
- * **`paintModule` now reads this table**: it filters a row's actions by it
- * before calling `row()`, so the table decides what a painter is even handed.
- * **That, and only that, is what holds today** — the guarantee is over the
- * `actions` array `row()` receives, and `panel.test.ts` is the only thing that
- * observes it.
+ * **`paintModule` reads this table**: it filters a row's actions by it before
+ * calling `row()`, so the table decides what a painter is even handed. The
+ * guarantee is over the `actions` array `row()` receives; `panel.test.ts`
+ * observes it directly.
  *
- * **Once S1b-2's `checkProjection` exists** (it does not yet — there is no such
- * function in the tree), the same filter becomes non-silent at the marker
- * level: a painter that declares an action unsupported and paints it anyway
- * will paint one `[data-nc-row-action]` too many, and one that declares it
- * supported and skips it one too few, and *that* is what will go red. Even
- * then, "painting an unsupported *control*" is not the claim, because a painter
- * may draw an extra control with no marker at all.
+ * **S1b-2's `checkProjection` has landed** (`tools/projection/public.ts`), and
+ * makes the same filter non-silent at the marker level: a painter that declares
+ * an action unsupported and paints it anyway paints one `[data-nc-row-action]`
+ * too many, one that declares it supported and skips it one too few, and either
+ * is `action-sequence`. **No production painter is wired to it yet** — S1b-3/4
+ * do that — so today only synthetic painters are checked. And even wired, the
+ * claim is not "an unsupported *control* cannot be drawn": a painter may draw an
+ * extra control carrying no marker at all.
  *
  * What the filter cannot close is a table that contradicts itself —
  * `supported: true` next to an `undefined` callback. That is deliberately
@@ -170,9 +171,9 @@ export type RowPainter<T> = Readonly<{
 
 /**
  * Paint one module: the traversal both of S1b's renderers are to go through,
- * and which will then be their single shared one. Today the only callers are
- * `paintPanel` and this module's own unit tests; the renderers are wired in
- * S1b-3 (desktop) and S1b-4 (mobile).
+ * and which will then be their single shared one. Today the callers are
+ * `paintPanel`, this module's own unit tests, and S1b-2's `checkProjection`;
+ * the production renderers are wired in S1b-3 (desktop) and S1b-4 (mobile).
  *
  * **The empty state is exclusive** (#1234 §5.20): `empty()` is called when the
  * module has zero rows and *only* then, and `row()` is called for every row and
@@ -186,23 +187,24 @@ export type RowPainter<T> = Readonly<{
  * is what makes an unsupported action's `why` mean anything — the table now
  * decides what the painter sees, instead of being a declaration nobody reads.
  * **The guarantee stops exactly at the call boundary**: it constrains the
- * `actions` array passed to `row()`, and nothing more. Once S1b-2's
- * `checkProjection` lands, that same constraint is what will make painting one
- * `[data-nc-row-action]` too many or too few go red; until then there is no
- * marker-level carrier at all, and the only observer is `panel.test.ts`. It
- * does *not* say "an unsupported control cannot be drawn" — a painter may still
- * draw a control that carries no marker, and may put a marker on a disabled
- * element or one with no handler (§6.3, §5.26-27).
+ * `actions` array passed to `row()`, and nothing more. S1b-2's
+ * `checkProjection` turns that same constraint into a marker-level red
+ * (`action-sequence`) for painters it is run over. It does *not* say "an
+ * unsupported control cannot be drawn" — a painter may still draw a control
+ * that carries no marker, and may put a marker on a disabled element or one
+ * with no handler (§6.3, §5.26-27).
  *
  * **Three gaps stay open on purpose:**
  *
- *  - The projection check itself does not exist yet (S1b-2), so none of the
- *    marker-level claims above have a carrier in this tree today.
+ *  - The projection check exists, but **no production painter is run through
+ *    it**: its only subjects today are the synthetic painters in
+ *    `projection-contract.test.tsx`. S1b-3/4 supply the real ones.
  *  - Nothing forces a renderer to *call* this, or `paintPanel`, at all. Both
  *    surfaces still compose their modules by hand; "both renderers are on the
  *    one branch" is a goal, not a fact this file can enforce (§6.10).
  *  - Whether a supported action is actually wired to a live handler is not
- *    checked anywhere, and will not be even after S1b-2 — see `ActionSupport`.
+ *    checked anywhere, and is not checked by S1b-2 either — see
+ *    `ActionSupport`.
  */
 export function paintModule<T>(painter: RowPainter<T>, module: RowModuleView): T {
   const paintRow = (row: PanelRow): T => painter.row({
@@ -237,14 +239,17 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
 }
 
 /**
- * The DOM marker attribute names — **reserved here for S1b-2/3/4**, and read by
- * nothing in production yet.
+ * The DOM marker attribute names — **read by the checker, and by nothing in
+ * production yet.**
  *
- * To be precise about the present: `checkProjection` (S1b-2) does not exist,
- * the desktop painter (S1b-3) and the mobile painter (S1b-4) are not written,
- * and no `.tsx` or `.css` in the tree spells any of these names by way of this
- * table. Today the only reader is `panel.test.ts`, which pins the table as a
- * whole. Do not read this as "both surfaces already depend on these".
+ * To be precise about the present: `checkProjection` (S1b-2) exists and reads
+ * this table in full — every marker here has a selector in
+ * `tools/projection/public.ts`, and `FIELD` below is its closed value domain.
+ * What is still absent is production: the desktop painter (S1b-3) and the
+ * mobile painter (S1b-4) are not written, and no `.tsx` or `.css` in the tree
+ * spells any of these names by way of this table. The other reader is
+ * `panel.test.ts`, which pins the table as a whole. Do not read this as "both
+ * surfaces already depend on these".
  *
  * They are declared now, in the one platform-independent module both surfaces
  * will depend on, because a marker name is exactly the kind of fact that
@@ -289,7 +294,9 @@ export const MARKER = Object.freeze({
   field: 'data-nc-field',
 } as const);
 
-/** The permitted values of `MARKER.field` — one carrier per field. */
+/** The permitted values of `MARKER.field` — one carrier per field. **Closed, and
+ *  checked as closed**: `checkProjection` reports any `data-nc-field` whose
+ *  value is not one of these as `field-domain`. */
 export const FIELD = Object.freeze({
   /** `PanelRow.title`. Exactly one per row. */
   title: 'title',

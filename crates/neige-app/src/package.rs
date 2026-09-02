@@ -299,12 +299,29 @@ fn compatibility_from_kernel(calm_server: &Path) -> anyhow::Result<Compatibility
     })
 }
 
+/// Whole-product compatibility major stamped into the release manifest.
+///
+/// The default is the real value; `NEIGE_PRODUCT_MAJOR` only overrides it. That
+/// matters: `compute_verdict` short-circuits to
+/// `Breaking { ProductMajorChanged }` on a change here, so if the bump lived
+/// only in a packaging instruction ("remember to export NEIGE_PRODUCT_MAJOR"),
+/// one forgotten export would silently produce a `Preserving` verdict and the
+/// decision would have no effect at all.
+///
+/// 0 -> 1: issue #1209 declares the template/workflow unification plus the
+/// `POST /api/waves` request-body rename a whole-product break. The pin for
+/// this default is the package smoke test below
+/// (`package_directory_contains_v2_manifest_and_hashes`), which runs with
+/// `NEIGE_PRODUCT_MAJOR` removed from the environment and therefore really does
+/// take this branch. Note that `manifest.rs`'s `v2_manifest_parses_with_per_crate_units`
+/// is *not* a pin: it deserializes a hardcoded byte string and never calls this
+/// function.
 fn product_major() -> anyhow::Result<u32> {
     match std::env::var("NEIGE_PRODUCT_MAJOR") {
         Ok(value) => value
             .parse()
             .with_context(|| format!("parse NEIGE_PRODUCT_MAJOR={value:?} as u32")),
-        Err(std::env::VarError::NotPresent) => Ok(0),
+        Err(std::env::VarError::NotPresent) => Ok(1),
         Err(err) => Err(err).context("read NEIGE_PRODUCT_MAJOR"),
     }
 }
@@ -543,7 +560,10 @@ mod tests {
         .expect("parse manifest");
         assert_eq!(manifest.release_id, "smoke");
         assert_eq!(manifest.schema_version, 2);
-        assert_eq!(manifest.product_major, 0);
+        // Pins the `product_major()` default (#1209 bumped it 0 -> 1). This
+        // assertion is load-bearing only because the whole test body runs
+        // inside `with_env_removed("NEIGE_PRODUCT_MAJOR", ..)` above.
+        assert_eq!(manifest.product_major, 1);
         assert_eq!(manifest.compatibility.terminal_frame_version, 4);
         assert_eq!(manifest.compatibility.terminal_protocol_version, 4);
         assert_eq!(manifest.compatibility.api_version, "1");

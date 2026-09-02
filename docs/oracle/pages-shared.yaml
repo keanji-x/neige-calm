@@ -3539,7 +3539,7 @@
   kind: invariant
   family: new-task-form
   statement: >
-    issue-dev 变体硬编码 workflow_id = 'issue-development';v1 刻意没有 `GET /api/workflows` 发现端点。
+    issue-dev 变体硬编码 template_id = 'issue-development';v1 刻意没有 `GET /api/workflows` 发现端点。
   why: >
     源码注释(#891 design §6 F5):"If the git-forge plugin isn't running, the create POST 400s with a
     readable message that the normal submit-error path surfaces."
@@ -3574,7 +3574,7 @@
   kind: invariant
   family: new-task-form
   statement: >
-    issue-dev 表单不提供 `notes` 输入控件,由结构化字段派生的 `derivedWorkflowInput` 对象字面量也
+    issue-dev 表单不提供 `notes` 输入控件,由结构化字段派生的 `derivedTemplateInput` 对象字面量也
     只有 `issue_url`、`repo`、`issue_number`、`merge_policy` 四个键、不含该键;唯一能发 notes 的
     路径是 `rawJsonText` 这个 raw JSON 逃生口。
   why: >
@@ -3583,11 +3583,11 @@
     覆盖派生字段、且只有它能带 notes」(payload 层)。source 从 JSDoc(369-373 全是 trivia,会被剥掉)
     扩到 374-382 的对象字面量本身,那里才是「不含该键」的真正载体。#1148 第二轮:三个分句里只有
     「派生对象只有四个键」一句有载体,于是补上另外两段 —— 456-470 是提交分支
-    (`workflow_input` 要么是 `JSON.parse(rawJson)` 要么是 `derivedWorkflowInput`,别无第三个来源,
+    (`template_input` 要么是 `JSON.parse(rawJson)` 要么是 `derivedTemplateInput`,别无第三个来源,
     这就是「raw JSON 是唯一能送 notes 的路径」的正面载体),757-781 是那个 raw JSON textarea 本身。
     「表单不提供 notes 控件」是证明不存在类,锚不住是正常的,由 authoritative_test:77 钉住。
     #1148 第三轮:补登 174-203 —— :277 只证明 raw JSON 能带 notes,不锁「派生对象恰有四键、不含
-    notes」;174-203 用 `toEqual` 钉死整个 create body(含 `workflow_input` 的四个键),才是这一句的
+    notes」;174-203 用 `toEqual` 钉死整个 create body(含 `template_input` 的四个键),才是这一句的
     精确断言。
   source: web/src/shared/components/NewTaskForm.tsx:369-382,386-387,456-470,757-781
   authoritative_test: web/src/shared/components/NewTaskForm.issueDev.test.tsx:77,174-203,277

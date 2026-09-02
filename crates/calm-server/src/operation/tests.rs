@@ -34,12 +34,12 @@ async fn legacy_compensation_harness(
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         repo.as_ref(),
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "legacy compensation".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -501,12 +501,12 @@ async fn operation_event_append_creates_wave_vcs_commit() {
         .unwrap();
     let wave = sqlx_repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "wave".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
@@ -848,12 +848,12 @@ async fn recover_on_boot_reclaims_non_recoverable_workspace_lease_from_old_boot(
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         &sqlx_repo,
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "lease reclaim".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -966,12 +966,12 @@ async fn recover_on_boot_releases_workspace_lease_row_without_dir_cleanup() {
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         &sqlx_repo,
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "lease reclaim removal failure".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -1101,12 +1101,12 @@ async fn recover_on_boot_keeps_non_recoverable_workspace_lease_from_same_boot() 
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         &sqlx_repo,
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "lease same boot".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -1220,12 +1220,12 @@ async fn recover_on_boot_keeps_recoverable_workspace_lease_from_old_boot() {
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         &sqlx_repo,
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "lease recoverable".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),
@@ -1387,12 +1387,12 @@ async fn recover_on_boot_finishes_releasing_workspace_lease() {
     let wave = crate::db::RepoSyncDomainRaw::wave_create(
         &sqlx_repo,
         crate::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "lease releasing".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: crate::routes::theme::RequestTheme::default_dark(),

@@ -80,12 +80,12 @@ async fn boot() -> Boot {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "report wave".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -416,12 +416,12 @@ async fn backlinks_returns_source_wave_and_unknown_wave_is_not_found() {
     let target_wave = boot
         .repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: source_wave.cove_id.clone(),
             title: "target wave".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -1127,12 +1127,12 @@ async fn seed_spec_wave_without_report_card(repo: &SqlxRepo) -> WaveId {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "report invariant wave".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

@@ -181,7 +181,7 @@ pub async fn wave_create_tx(
     // whole-tree bound vacuous.
     sqlx::query(
         r#"INSERT INTO waves
-           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, workflow_id, plugin_scope, purpose, workflow_input, terminal_at, tree_task_budget, created_at, updated_at)
+           (id, cove_id, title, sort, archived_at, pinned_at, lifecycle, template_id, plugin_scope, purpose, template_input, terminal_at, tree_task_budget, created_at, updated_at)
            VALUES (?1, ?2, ?3, ?4, NULL, NULL, ?5, ?6, ?7, ?8, ?9, NULL, NULL, ?10, ?11)"#,
     )
     .bind(&id)
@@ -189,10 +189,10 @@ pub async fn wave_create_tx(
     .bind(&p.title)
     .bind(sort)
     .bind(lifecycle.as_db_str())
-    .bind(p.workflow_id.as_deref())
+    .bind(p.template_id.as_deref())
     .bind(p.plugin_scope.as_deref())
     .bind(purpose)
-    .bind(p.workflow_input.as_ref().map(|v| v.to_string()))
+    .bind(p.template_input.as_ref().map(|v| v.to_string()))
     .bind(now)
     .bind(now)
     .execute(&mut **tx)
@@ -248,10 +248,10 @@ pub async fn wave_create_tx(
         pinned_at: None,
         lifecycle,
         cwd_wire_alias: workspace.path.clone(),
-        workflow_id: p.workflow_id,
+        template_id: p.template_id,
         plugin_scope: p.plugin_scope,
         purpose: purpose.map(str::to_owned),
-        workflow_input: p.workflow_input,
+        template_input: p.template_input,
         terminal_at: None,
         workspace,
         created_at: now,

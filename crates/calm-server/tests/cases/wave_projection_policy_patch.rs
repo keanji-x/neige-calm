@@ -27,12 +27,12 @@ async fn boot() -> (AppState, String, Arc<dyn Repo>) {
         .unwrap();
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "policy".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -154,8 +154,8 @@ const WAVE_PERSISTENT_COLUMNS: &[&str] = &[
     "task_budget",
     "require_task_gates",
     "root_session_id",
-    "workflow_id",
-    "workflow_input",
+    "template_id",
+    "template_input",
     "purpose",
     "spec_task_ceiling",
     "automation_policy",
@@ -531,7 +531,7 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
     // Root-only: a child wave refuses the patch and keeps its NULL.
     let child = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: repo
                 .wave_get(&wave_id)
                 .await
@@ -542,7 +542,7 @@ async fn tree_task_budget_patch_matches_the_spec_task_ceiling_surface() {
             title: "child".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -681,12 +681,12 @@ async fn tightening_root_tree_budget_culls_descendant_pending_before_it_can_be_c
     let root = repo.wave_get(&root_id).await.unwrap().unwrap();
     let child = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: root.cove_id,
             title: "child".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -730,12 +730,12 @@ async fn tightening_root_tree_budget_below_inflight_inventory_is_rejected_atomic
     let root = repo.wave_get(&root_id).await.unwrap().unwrap();
     let child = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: root.cove_id,
             title: "child".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

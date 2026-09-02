@@ -97,12 +97,12 @@ async fn seed_rooted_wave(repo: &SqlxRepo) {
         .expect("create reset cove");
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id,
             title: "reset rooted wave".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),
@@ -319,7 +319,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "replay-terminal".into(),
             sort: None,
@@ -328,7 +328,7 @@ async fn replay_router_terminal_card_create_persists_without_supervisor() {
             // in an empty one. Production waves always have a path; so does
             // this fixture.
             cwd: "/neige-fixture-workspace".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

@@ -1111,12 +1111,12 @@ async fn four_db_diagnostics_delete_rows_and_are_visible_on_mcp_and_rest_reads()
     let other_wave = boot
         .repo
         .wave_create(calm_server::model::NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: other_cove.id,
             title: "other".into(),
             sort: None,
             cwd: String::new(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

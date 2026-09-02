@@ -3,11 +3,11 @@ use crate::db::RepoRead;
 use crate::model::{NewCove, NewWave, RequestTheme};
 use serde_json::json;
 
-/// #891 — `workflow_input` INSERT → SELECT round-trip: the JSON blob
+/// #891 — `template_input` INSERT → SELECT round-trip: the JSON blob
 /// persists verbatim (TEXT column, `#[sqlx(json(nullable))]` decode) and
 /// a `None` input stays `None`.
 #[tokio::test]
-async fn wave_create_round_trips_workflow_input() {
+async fn wave_create_round_trips_template_input() {
     let repo = SqlxRepo::open("sqlite::memory:").await.expect("open repo");
     let mut tx = repo.pool().begin().await.expect("begin tx");
     let cove = cove_create_tx(
@@ -32,9 +32,9 @@ async fn wave_create_round_trips_workflow_input() {
             title: "with input".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: Some("issue-development".into()),
+            template_id: Some("issue-development".into()),
             plugin_scope: None,
-            workflow_input: Some(input.clone()),
+            template_input: Some(input.clone()),
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
@@ -44,7 +44,7 @@ async fn wave_create_round_trips_workflow_input() {
     )
     .await
     .expect("create wave with input");
-    assert_eq!(with_input.workflow_input.as_ref(), Some(&input));
+    assert_eq!(with_input.template_input.as_ref(), Some(&input));
     let without_input = wave_create_tx(
         &mut tx,
         NewWave {
@@ -52,9 +52,9 @@ async fn wave_create_round_trips_workflow_input() {
             title: "without input".into(),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
@@ -71,7 +71,7 @@ async fn wave_create_round_trips_workflow_input() {
         .await
         .expect("get wave")
         .expect("wave exists");
-    assert_eq!(stored.workflow_input.as_ref(), Some(&input));
+    assert_eq!(stored.template_input.as_ref(), Some(&input));
     assert_eq!(stored.purpose.as_deref(), Some("cove-chat"));
 
     let stored_none = repo
@@ -79,5 +79,5 @@ async fn wave_create_round_trips_workflow_input() {
         .await
         .expect("get wave")
         .expect("wave exists");
-    assert_eq!(stored_none.workflow_input, None);
+    assert_eq!(stored_none.template_input, None);
 }
