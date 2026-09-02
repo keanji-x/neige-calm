@@ -40,16 +40,22 @@ import { makeMobilePainter, paintMobileModule } from './mobile-painter.tsx';
 import styles from './page.module.css';
 
 /**
- * The four mobile drill-down pages.
+ * The mobile drill-down pages: two that are not row modules, plus one per row
+ * module the view model names.
  *
- * **Two of them are named by the view model, and are spelled that way** (Δ2):
- * `RowModuleView['key']` rather than `'cards' | 'tasks'`, so a row module the
- * derivation gains or renames is a type error here instead of a menu entry that
- * quietly opens nothing. The other two are not row modules — `Outline` reads the
- * report's anchors and `Conversations` is a router-composed slot — and they are
- * written out, because pushing them into `rowModules` to make one loop out of
- * four entries would let this page's navigation decide the view model's
- * contents.
+ * **The row-module half is spelled from the view model** (Δ2):
+ * `RowModuleView['key']` rather than `'cards' | 'tasks'`, so this type widens
+ * with the derivation instead of being a second list to keep in step. The other
+ * two are not row modules — `Outline` reads the report's anchors and
+ * `Conversations` is a router-composed slot — and they are written out, because
+ * pushing them into `rowModules` to make one loop out of every entry would let
+ * this page's navigation decide the view model's contents.
+ *
+ * The renderer below is written the same way round, and that is load-bearing:
+ * it special-cases exactly those two and sends **every other member** through
+ * `paintMobileModule`, so a row module the derivation gains reaches the painter
+ * here without an edit. Dispatching per known key instead — with a trailing
+ * `else` — is what would let a new module quietly open the Conversations page.
  */
 type MobilePanelKind = 'outline' | RowModuleView['key'] | 'conversations';
 
@@ -517,43 +523,7 @@ export function WavePage({
                   ])}
                 </MobileList>
               </MobileListPage>
-            ) : mobilePanelKind === 'cards' ? (
-              /*
-                ── The mobile Cards page goes through `core/view` (#1234 S1b-4a) ──
-                *
-                * One derivation, one painter, one module. What this branch used
-                * to do — walk `cards` itself and spell each row inline — is the
-                * half of the drift the desktop's own slice could not reach: an
-                * untitled card printed its kind twice here and nowhere else,
-                * `kernel-owned` was missing, and the row opened a detail page
-                * the desktop has no counterpart for.
-                *
-                * **One module, not the panel**: mobile drills into a module at
-                * a time, so this is `paintModule` (Δ2), and the module sequence
-                * lives in the navigation menu above.
-                *
-                * The two card actions are gone by decision, not by
-                * omission — see `mobile-painter.tsx`'s capability table.
-              */
-              paintMobileModule(mobilePainter, rowModule(panelView, 'cards'))
-            ) : mobilePanelKind === 'tasks' ? (
-              /*
-                ── The mobile Tasks page goes through `core/view` (#1234 S1b-4b) ──
-                *
-                * The other half of the drift, and the louder one: this branch
-                * used to re-word `task.state` into four declaration words of its
-                * own, so a ready task carried one here and none on the desktop,
-                * and a dispatched one carried its readiness word here while the
-                * desktop showed the run. Both rules are `deriveReportTasks`' and
-                * now arrive through the derivation — a visible change, on the
-                * record as D8.
-                *
-                * The four words are deliberately not quoted anywhere in this
-                * file: `mobile-projection.test.tsx`'s wording hygiene guard
-                * scans this source for them.
-              */
-              paintMobileModule(mobilePainter, rowModule(panelView, 'tasks'))
-            ) : (
+            ) : mobilePanelKind === 'conversations' ? (
               <MobileListPage
                 title="Conversations"
                 backLabel="Report"
@@ -564,6 +534,42 @@ export function WavePage({
                   {conversationList ?? <p>No conversations yet.</p>}
                 </div>
               </MobileListPage>
+            ) : (
+              /*
+                ── Every row module goes through `core/view` (#1234 S1b-4a/4b) ──
+                *
+                * One derivation, one painter, one module — and **one branch for
+                * all of them**. `Outline` and `Conversations` are handled above
+                * because they are not row modules; what is left of
+                * `MobilePanelKind` is exactly `RowModuleView['key']`, so this
+                * arm needs no key of its own and a module the derivation gains
+                * arrives here already painted. The shape it replaced dispatched
+                * on `'cards'` and `'tasks'` and let everything else fall into
+                * the Conversations page, which `tsc` had no reason to complain
+                * about — `public.test.tsx`'s "every derived row module drills
+                * into its own painted module page" is what holds this now.
+                *
+                * What each of the two branches used to do by hand is the drift
+                * the whole issue is about. Cards: an untitled card printed its
+                * kind twice here and nowhere else, `kernel-owned` was missing,
+                * and the row opened a detail page the desktop has no
+                * counterpart for. Tasks, the louder half: it re-worded
+                * `task.state` into four declaration words of its own, so a ready
+                * task carried one here and none on the desktop, and a dispatched
+                * one carried its readiness word here while the desktop showed
+                * the run. Both rules are `deriveReportTasks`' and now arrive
+                * through the derivation — a visible change, on the record as D8.
+                * Those four words are deliberately not quoted anywhere in this
+                * file: `mobile-projection.test.tsx`'s wording hygiene guard
+                * scans this source for them.
+                *
+                * **One module, not the panel**: mobile drills into a module at a
+                * time, so this is `paintModule` (Δ2), and the module sequence
+                * lives in the navigation menu above. The two card actions are
+                * gone by decision, not by omission — see `mobile-painter.tsx`'s
+                * capability table.
+              */
+              paintMobileModule(mobilePainter, rowModule(panelView, mobilePanelKind))
             ))}
           </div>
           <div

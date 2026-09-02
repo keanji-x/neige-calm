@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
 import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
-import { WavePage } from './public.tsx';
+import { WavePage, type WavePageProps } from './public.tsx';
 import { card, renderPage, wave } from './test-fixtures.tsx';
 
 afterEach(cleanup);
@@ -462,6 +462,37 @@ describe('WavePage card inventory', () => {
       expect(painted?.getAttribute('data-nc-module'), `menu entry ${index}`).toBe(module.key);
       cleanup();
     }
+  });
+
+  /*
+   * ── The drill-down dispatch has no default arm (#1234 S1b-4b review) ──────
+   *
+   * **The case above cannot see this.** It walks the modules the derivation has
+   * *today*, and both of them are named by a branch of their own, so it stays
+   * green whether the renderer dispatches per key or sends everything it does
+   * not recognise to the painter. The defect it misses is a `MobilePanelKind`
+   * that is neither `outline` nor `conversations` and has no branch: with a
+   * trailing `else` for Conversations — which is what this file's renderer used
+   * to have — a row module the derivation gains, and the painter already
+   * supports, opens the Conversations page from a menu entry labelled with the
+   * module's title. `tsc` has nothing to say about it: the `else` is total.
+   *
+   * So the property asserted here is the *shape* of the dispatch rather than
+   * either of today's keys: a kind the renderer does not special-case must
+   * reach `paintMobileModule`. The cast is the one thing a future
+   * `RowModuleView['key']` member would remove — `MobilePanelKind` widens with
+   * the derivation, so this is that widening arriving early, and the assertion
+   * survives it unchanged.
+   *
+   * What proves it arrived at the painter is `rowModule`'s own error: the view
+   * model has no `future` module, and reaching that lookup at all is only
+   * possible through the painter arm. A renderer that fell through to
+   * Conversations would render a heading instead of throwing.
+   */
+  it('sends a panel kind it does not special-case to the painter, not to Conversations', () => {
+    const future = 'future' as NonNullable<WavePageProps['panel']>;
+    expect(() => renderPage({ cards: MENU_CARDS, tasks: MENU_TASKS, panel: future }))
+      .toThrow('the wave page view has no future module');
   });
 
   it('moves the mobile Outline into its own list and returns to the selected report anchor', async () => {
