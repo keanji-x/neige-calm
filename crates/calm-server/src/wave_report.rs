@@ -252,7 +252,9 @@ fn require_tree_budget_postcondition(
     Ok(())
 }
 use crate::wave_report_edit_guard::{guard_task_declarations, normalize_report_op};
-use crate::wave_report_guard::{guard_non_prose_stomp, validate_body_fences};
+use crate::wave_report_guard::{
+    guard_non_prose_stomp, validate_body_fences, validate_prose_block_content,
+};
 use std::sync::Arc;
 
 // #679 PR1 — `WaveReportPayload` moved to `calm_types::wave_report`
@@ -426,6 +428,22 @@ pub(crate) fn apply_report_op(
                     )
                 })?;
                 check_rev(doc, id, expected)?;
+                // #1269 — defence in depth at the op layer. `ReportDoc::
+                // upsert_block` fence-checks only NON-prose content, so
+                // a direct `apply_report_op` call with `kind: "prose"`
+                // would otherwise carry a ```neige-block fence straight
+                // in. No user request *can* reach this arm carrying one:
+                // the MCP (#971) and REST (#990) block surfaces each run
+                // `check_prose_markdown` on their own argument first;
+                // the point is that the op stops depending on them to do
+                // so. Why the surfaces' rule (`check_prose_markdown`)
+                // rather than the weaker `validate_body_fences`, and how
+                // much of the prose entrance this does and does not
+                // close — a fence carried whole in one block, yes; a
+                // fence split across two adjacent prose blocks, no — is
+                // written up once on `validate_prose_block_content`
+                // rather than restated here.
+                validate_prose_block_content(kind, content)?;
                 let (id, rev) = doc
                     .upsert_block(Some(id), kind, content)
                     .map_err(internal)?;
@@ -436,6 +454,9 @@ pub(crate) fn apply_report_op(
                     CalmError::BadRequest("if_doc_rev is required when creating a block".into())
                 })?;
                 check_doc_rev(doc, expected)?;
+                // #1269 — same check on the create arm; leaving either
+                // arm unchecked would leave the op-layer gap open.
+                validate_prose_block_content(kind, content)?;
                 let len = doc.block_index().map_err(internal)?.len();
                 if let Some(position) = position
                     && *position > len
