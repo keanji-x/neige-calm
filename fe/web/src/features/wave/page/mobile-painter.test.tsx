@@ -159,6 +159,65 @@ const tasksModule: RowModuleView = {
 };
 const emptyTasks: RowModuleView = { ...tasksModule, rows: [] };
 
+/* ── Three boundaries of `PanelRow` the fixtures above cannot reach ──────────
+ *
+ * **Written at the painter level, and deliberately not as `deriveReportTasks`
+ * output.** This file checks the painter against `PanelRow`, and `PanelRow` is
+ * the contract it is handed — a fixture set that only ever contains shapes
+ * today's derivation happens to emit makes the painter correct by an upstream
+ * invariant rather than by consuming its input (the same defect `reveal()`'s
+ * missing `label` was). Each row below is one boundary, and each has a mutation
+ * that only it can see.
+ */
+
+/** **`phrase === token`** — a run the kernel gave no reason for. Every derived
+ *  fixture above with a status has a `statusDetail`, so a painter that stopped
+ *  writing `title` whenever the phrase added nothing would be green across all
+ *  of them, and the row would lose its tooltip on the majority case. */
+const bareStatus: PanelRow = {
+  id: 'block-7',
+  title: 'eta-run',
+  kind: 'terminal',
+  badges: [],
+  status: { token: 'running', phrase: 'running' },
+  actions: [{ kind: 'reveal-block', blockId: 'block-7', label: null, hint: 'Show eta-run in the report' }],
+};
+
+/** **A badge and a status at once.** `deriveWavePageView` reads `declaration`
+ *  and `status` independently and says so, so the combination is inside the
+ *  contract even though D8's wording rule keeps it out of today's derived rows.
+ *  Without it, a painter that dropped the badges of any row carrying a run is
+ *  green: every other fixture has at most one of the two. */
+const declaredAndRunning: PanelRow = {
+  id: 'block-8',
+  title: 'theta-check',
+  kind: null,
+  badges: [{ id: 'declaration', text: 'Not ready', struck: false }],
+  status: { token: 'failed', phrase: 'failed — the worker exited before it reported' },
+  actions: [{ kind: 'reveal-block', blockId: 'block-8', label: null, hint: 'Show theta-check in the report' }],
+};
+
+/** **An empty token.** `deriveReportTasks` folds `''` into `null` today, but
+ *  `RowStatus` permits it and the projection's own generic checker exercises it
+ *  (`desktop-projection.test.tsx` carries the same row), so the painter's
+ *  contract fixture owes it one: an emptiness test in front of the status
+ *  carrier would drop the element and nothing here would notice. The `phrase` is
+ *  kept non-empty on purpose — it keeps `status-token` and `status-phrase`
+ *  separable on this row rather than letting one empty string satisfy both. */
+const emptyToken: PanelRow = {
+  id: 'block-9',
+  title: 'iota-probe',
+  kind: 'claude',
+  badges: [],
+  status: { token: '', phrase: 'the kernel has not named this state' },
+  actions: [{ kind: 'reveal-block', blockId: 'block-9', label: null, hint: 'Show iota-probe in the report' }],
+};
+
+const boundaryTasks: RowModuleView = {
+  ...tasksModule,
+  rows: [bareStatus, declaredAndRunning, emptyToken],
+};
+
 const painter = () => makeMobilePainter({ backLabel: 'Report', onBack: vi.fn() });
 
 describe('the mobile painter’s capability table', () => {
@@ -263,6 +322,11 @@ describe('the mobile painter is a faithful projection of a Tasks module', () => 
     expect(checkProjection(painter(), [emptyTasks], mount)).toEqual([]);
   });
 
+  /* The three `PanelRow` boundaries no derived fixture reaches. */
+  it('across a bare status, a badge beside a run, and an empty token', () => {
+    expect(checkProjection(painter(), [boundaryTasks], mount)).toEqual([]);
+  });
+
   /* The label channel, which no derived fixture reaches: `action-label` is
      checked on both sides, so a painter that dropped `RowAction.label` fails
      here and only here. */
@@ -280,6 +344,40 @@ describe('the mobile painter is a faithful projection of a Tasks module', () => 
  * `ariaLabel: undefined` passes the first and fails nothing — so the pair is
  * written against the same host element.
  */
+/*
+ * The three boundaries, each read off the DOM as well as through the projection.
+ *
+ * The projection case above would catch all three, but it reports one list of
+ * violation codes for the whole module — these say which row is which, so a
+ * mutation names the boundary it broke.
+ */
+describe('what the painted Tasks module does at PanelRow’s boundaries', () => {
+  const paint = (module: RowModuleView) =>
+    render(<>{paintMobileModule(painter(), module)}</>).container;
+
+  it('still writes the title when the phrase adds nothing to the token', () => {
+    const status = paint(boundaryTasks).querySelector('[data-nc-row="block-7"] [data-nc-status]');
+    expect(status?.getAttribute('data-nc-status')).toBe('running');
+    /* Equal to the token, and still present: the tooltip is the phrase, not the
+       part of the phrase the token did not already say. */
+    expect(status?.getAttribute('title')).toBe('running');
+  });
+
+  it('keeps a declaration badge on a row that also carries a run', () => {
+    const row = paint(boundaryTasks).querySelector('[data-nc-row="block-8"]');
+    expect(row?.querySelector('[data-nc-badge="declaration"]')?.textContent).toBe('Not ready');
+    expect(row?.querySelector('[data-nc-status]')?.getAttribute('data-nc-status')).toBe('failed');
+  });
+
+  it('draws a status carrier for an empty token rather than dropping it', () => {
+    const row = paint(boundaryTasks).querySelector('[data-nc-row="block-9"]');
+    const status = row?.querySelector('[data-nc-status]');
+    expect(status, 'an empty token is still a status').not.toBeNull();
+    expect(status?.getAttribute('data-nc-status')).toBe('');
+    expect(status?.getAttribute('title')).toBe('the kernel has not named this state');
+  });
+});
+
 describe('the mobile Task row’s action label', () => {
   const paint = (module: RowModuleView) =>
     render(<>{paintMobileModule(painter(), module)}</>).container;
