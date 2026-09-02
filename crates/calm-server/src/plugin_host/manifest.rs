@@ -105,7 +105,12 @@ pub struct Manifest {
     /// `POST /api/waves` admits an id **iff it is in that roster** — plugin
     /// declarations do not widen the set. An id outside the roster is
     /// therefore inert: it is parsed, it is not rejected here, and it can
-    /// never be bound, because the create that would bind it is a 400. Before
+    /// never be bound **through `POST /api/waves`** — the only production
+    /// writer of `waves.workflow_id` — because that create is a 400. The
+    /// repo-layer `wave_create` takes `workflow_id` / `plugin_scope`
+    /// verbatim and enforces nothing; its non-route callers are all test
+    /// fixtures passing `None` today, and a future in-process writer that
+    /// wanted this guarantee would have to call the admission itself. Before
     /// #1209 a running trusted plugin *could* make an arbitrary id creatable;
     /// that is the capability this field no longer has. Plugin-contributed
     /// templates (which would need a title, tasks and a report) are a separate
