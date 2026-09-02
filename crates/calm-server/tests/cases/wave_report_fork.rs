@@ -169,9 +169,9 @@ async fn boot() -> Boot {
             title: "source".into(),
             sort: None,
             cwd: tmp.path().to_string_lossy().into_owned(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: routes::theme::RequestTheme::default_dark(),
         })

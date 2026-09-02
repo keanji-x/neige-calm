@@ -83,16 +83,16 @@ pub struct Manifest {
     #[serde(default)]
     pub exposes_tools: Vec<ExposedTool>,
 
-    /// Wave `workflow_input` contract (#891 / #1110 S2). One plugin, one
+    /// Wave `template_input` contract (#891 / #1110 S2). One plugin, one
     /// input shape — sibling of `exposes_tools`, not of a workflow
-    /// descriptor. Same JSON-Schema subset as `plugin_host::workflow_input`.
-    /// Absent: the plugin does not accept `workflow_input`.
+    /// descriptor. Same JSON-Schema subset as `plugin_host::template_input`.
+    /// Absent: the plugin does not accept `template_input`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
 
     /// Trusted forge plugins may claim **kernel wave-template ids**. Wave
-    /// create binds `workflow_id` to one of these so the kernel can copy the
-    /// owning plugin into `plugin_scope` and validate `workflow_input` against
+    /// create binds `template_id` to one of these so the kernel can copy the
+    /// owning plugin into `plugin_scope` and validate `template_input` against
     /// this Manifest's `input_schema` (#1110 S2/S5). Untrusted plugins'
     /// ids are ignored by the binding layer; the parser still checks id
     /// shape so broken entries fail close to the authoring point.
@@ -106,8 +106,8 @@ pub struct Manifest {
     /// declarations do not widen the set. An id outside the roster is
     /// therefore inert: it is parsed, it is not rejected here, and it can
     /// never be bound **through `POST /api/waves`** — the only production
-    /// writer of `waves.workflow_id` — because that create is a 400. The
-    /// repo-layer `wave_create` takes `workflow_id` / `plugin_scope`
+    /// writer of `waves.template_id` — because that create is a 400. The
+    /// repo-layer `wave_create` takes `template_id` / `plugin_scope`
     /// verbatim and enforces nothing; its non-route callers are all test
     /// fixtures passing `None` today, and a future in-process writer that
     /// wanted this guarantee would have to call the admission itself. Before
@@ -740,11 +740,11 @@ impl Manifest {
             view.validate(i)?;
         }
 
-        // #1110 S2 — wave `workflow_input` lives on the Manifest, not a
+        // #1110 S2 — wave `template_input` lives on the Manifest, not a
         // workflow descriptor. Error paths are `input_schema…` (no
         // `workflows[i].` prefix).
         if let Some(schema) = self.input_schema.as_ref() {
-            crate::plugin_host::workflow_input::validate_input_schema(schema)
+            crate::plugin_host::template_input::validate_input_schema(schema)
                 .map_err(|e| ManifestError::invalid(e.path, e.reason))?;
         }
 
@@ -849,7 +849,7 @@ impl Manifest {
         if self.input_schema.is_some() {
             return Err(ManifestError::invalid(
                 "input_schema",
-                only_app("declares no workflow, so there is no `workflow_input` to shape"),
+                only_app("declares no workflow, so there is no `template_input` to shape"),
             ));
         }
         if !self.permissions.grants_nothing() {
@@ -1626,26 +1626,26 @@ mod tests {
         // This independent, fully populated fixture is a legal final state for
         // the shipped schema and keeps every required and optional field in the
         // full-prompt contract.
-        let workflow_input = json!({
+        let template_input = json!({
             "issue_url": "https://github.com/neige-calm/neige-calm/issues/985",
             "repo": "neige-calm/neige-calm",
             "issue_number": 985,
             "merge_policy": "auto-merge",
             "notes": "Full golden fixture covers every shipped workflow input field."
         });
-        crate::plugin_host::workflow_input::validate_workflow_input(
+        crate::plugin_host::template_input::validate_template_input(
             manifest
                 .input_schema
                 .as_ref()
                 .expect("shipped git-forge Manifest.input_schema"),
-            &workflow_input,
+            &template_input,
         )
-        .expect("full golden workflow_input satisfies the shipped schema");
+        .expect("full golden template_input satisfies the shipped schema");
         let rendered =
             crate::operation::spec_harness_start_adapter::render_spec_developer_instructions(
                 "wave-golden-985",
                 Some(workflow),
-                Some(&workflow_input),
+                Some(&template_input),
             );
 
         if std::env::var_os("REGEN_SPEC_PROMPT_GOLDEN").is_some() {
@@ -1712,7 +1712,7 @@ mod tests {
 
     /// #891 / #1110 S2 — the subset validator runs at manifest parse;
     /// exhaustive keyword/coherence coverage lives in
-    /// `plugin_host::workflow_input` (this pins the top-level
+    /// `plugin_host::template_input` (this pins the top-level
     /// `input_schema…` field-path wiring).
     #[test]
     fn manifest_rejects_out_of_subset_input_schema() {

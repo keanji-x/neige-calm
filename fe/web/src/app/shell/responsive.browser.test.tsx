@@ -29,6 +29,18 @@ function MobileNavigationProbe() {
 afterEach(() => { document.body.replaceChildren(); });
 
 describe('responsive shell layout', () => {
+  it('renders the brand mark as a crisp theme-owned square mask', () => {
+    render(<span data-testid="brand-mark" className={styles.brandMark} />);
+    const mark = document.querySelector('[data-testid="brand-mark"]')!;
+    const box = mark.getBoundingClientRect();
+    const style = getComputedStyle(mark);
+
+    expect(box.width).toBe(16);
+    expect(box.height).toBe(16);
+    expect(style.maskImage).not.toBe('none');
+    expect(style.backgroundColor).toBe(style.color);
+  });
+
   it('uses one content column below the compact boundary and preserves desktop rail choices above it', async () => {
     render(<><ShellProbe state="auto" /><ShellProbe state="expanded" /><ShellProbe state="collapsed" /></>);
 

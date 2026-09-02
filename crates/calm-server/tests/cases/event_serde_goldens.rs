@@ -123,10 +123,10 @@ fn wave_min() -> Wave {
         pinned_at: None,
         lifecycle: WaveLifecycle::Draft,
         cwd_wire_alias: String::new(),
-        workflow_id: None,
+        template_id: None,
         plugin_scope: None,
         purpose: None,
-        workflow_input: None,
+        template_input: None,
         terminal_at: None,
         workspace: WaveWorkspace::default(),
         created_at: 1000,
@@ -214,6 +214,46 @@ golden_test!(
     wave_updated_min,
     "wave_updated.min.json",
     Event::WaveUpdated(WaveUpdatedPayload::new(wave_min(), None))
+);
+
+// #1209 PR-2 (design §3.4 / test #14, Rust leg) — the event log is the one
+// place that must keep reading the pre-rename spelling. `Wave` is
+// `#[serde(flatten)]`-ed into `WaveUpdatedPayload`, so every historical
+// `wave.updated` row on disk still says `workflow_id` / `workflow_input`. The
+// reader is `Event::from_kind_and_payload`, called from `events_since`, whose
+// error arm *skips the whole row* — which is why the fix is a `serde(alias)`
+// beside the retained `serde(default)`, and not the removal of `default`.
+//
+// The `wire`/`canonical` split is exactly the machine judgement this needs:
+// step 1 proves the old key still deserializes, and step 3 (canonical is a
+// serde fixed point) proves the alias is deserialize-only, i.e. the wire has
+// exactly one output spelling. Do NOT "fix" a fixed-point failure by putting
+// the old spelling into `canonical` or by deleting these cases — that would
+// delete the only fail-open defence this rename has.
+//
+// Two files, one per aliased field, so a half-reverted alias reds exactly one.
+golden_test!(
+    wave_updated_legacy_template_id,
+    "wave_updated.legacy_template_id.json",
+    Event::WaveUpdated(WaveUpdatedPayload::new(
+        Wave {
+            template_id: Some("small-change".into()),
+            ..wave_min()
+        },
+        None,
+    ))
+);
+
+golden_test!(
+    wave_updated_legacy_template_input,
+    "wave_updated.legacy_template_input.json",
+    Event::WaveUpdated(WaveUpdatedPayload::new(
+        Wave {
+            template_input: Some(json!({ "issue": 1209 })),
+            ..wave_min()
+        },
+        None,
+    ))
 );
 
 golden_test!(
@@ -1201,7 +1241,7 @@ fn goldens_cover_every_event_variant() {
         covered.insert(ev);
     }
     assert_eq!(
-        files, 73,
+        files, 75,
         "golden file count changed — update the per-variant tests"
     );
     for tag in ALL_KIND_TAGS {

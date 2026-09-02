@@ -16,10 +16,27 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 /// Diagnostic only; clients gate on web and sync-event compatibility instead.
-pub const API_VERSION: &str = "1";
+///
+/// #1209 PR-2 bumped `"1"` -> `"2"`: the `POST /api/waves` request body renamed
+/// its two template fields to `template_id` / `template_input`. Despite
+/// the "diagnostic only" wording above, `neige-app`'s `compute_verdict` really
+/// does compare this string against the installed release (it is one of the
+/// nine compatibility fields), so leaving it at `"1"` across a REST body rename
+/// would be a contract constant contradicted by behaviour.
+pub const API_VERSION: &str = "2";
 
 /// Monotonically increasing frontend compatibility floor.
-pub const WEB_COMPAT_VERSION: u32 = 16;
+///
+/// This value must equal `WEB_COMPAT_VERSION` in **both** bundles —
+/// `web/src/api/version.ts` and `fe/web/src/app/providers/public.tsx`. Nothing
+/// in the type system relates the three; the `web compat version lockstep gate
+/// (#1209 PR-2)` step in `.github/workflows/ci.yml` compares them textually.
+/// Before that gate existed all three drift directions were CI-green.
+///
+/// #1209 PR-2 bumped 16 -> 17 so cached bundles at 16 get the hard refresh
+/// curtain instead of sending the pre-rename wave-create field spellings and
+/// taking a 400 on every attempt.
+pub const WEB_COMPAT_VERSION: u32 = 17;
 
 /// Kernel compatibility values sourced from live constants.
 #[derive(Debug, Clone, Serialize)]

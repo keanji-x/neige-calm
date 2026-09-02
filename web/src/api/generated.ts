@@ -805,6 +805,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/wave-templates/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["update_wave_template"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/waves": {
         parameters: {
             query?: never;
@@ -1344,6 +1360,8 @@ export interface components {
             fork_report_from?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            template_input?: Record<string, never> | null;
             theme: components["schemas"]["RequestTheme"];
             /**
              * @description Issue #1211 — on this user-driven create path the title is no longer
@@ -1357,8 +1375,6 @@ export interface components {
              *     server applies no non-empty validation.
              */
             title?: string;
-            workflow_id?: string | null;
-            workflow_input?: Record<string, never> | null;
         };
         DeleteReportBlockBody: {
             /** Format: int32 */
@@ -1731,6 +1747,18 @@ export interface components {
             plugin_scope?: string | null;
             /** Format: double */
             sort?: number | null;
+            template_id?: string | null;
+            /**
+             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
+             *     accepted when `template_id` names a running trusted workflow whose
+             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
+             *     route validates the value against that schema before any DB write. The
+             *     kernel never interprets the blob — it is persisted verbatim and injected
+             *     into the spec harness developer instructions at thread-mint time.
+             *     `#[serde(default)]` keeps the field purely additive under
+             *     `deny_unknown_fields`.
+             */
+            template_input?: Record<string, never> | null;
             /**
              * @description Host browser's current theme RGB (#177). Required end-to-end so
              *     the auto-minted spec card's terminal renderer answers codex's
@@ -1748,18 +1776,6 @@ export interface components {
              */
             theme: components["schemas"]["RequestTheme"];
             title: string;
-            workflow_id?: string | null;
-            /**
-             * @description Issue #891 / #1110 S2 — JSON input for the bound workflow. Only
-             *     accepted when `workflow_id` names a running trusted workflow whose
-             *     owning plugin Manifest declares an `input_schema`; the `POST /api/waves`
-             *     route validates the value against that schema before any DB write. The
-             *     kernel never interprets the blob — it is persisted verbatim and injected
-             *     into the spec harness developer instructions at thread-mint time.
-             *     `#[serde(default)]` keeps the field purely additive under
-             *     `deny_unknown_fields`.
-             */
-            workflow_input?: Record<string, never> | null;
         };
         /** @description Body of `POST /api/waves/{wave_id}/conversations`: the first message. */
         NewWaveConversationBody: {
@@ -2181,6 +2197,19 @@ export interface components {
             /** Format: double */
             sort: number;
             /**
+             * @description Template this wave was created from.
+             *
+             *     The `serde(alias)` below is a deserialization-only compatibility read
+             *     for pre-#1209 event-log rows; serialization emits only this name.
+             */
+            template_id?: string | null;
+            /**
+             * @description Template input is validated at creation and otherwise remains opaque.
+             *
+             *     Carries the same deserialization-only alias as `template_id`.
+             */
+            template_input?: Record<string, never> | null;
+            /**
              * Format: int64
              * @description Issue #250 PR 2 — unix-ms timestamp the wave most recently
              *     entered a terminal lifecycle state (Done / Canceled / Failed),
@@ -2204,9 +2233,6 @@ export interface components {
             title: string;
             /** Format: int64 */
             updated_at: number;
-            workflow_id?: string | null;
-            /** @description Workflow input is validated at creation and otherwise remains opaque. */
-            workflow_input?: Record<string, never> | null;
             workspace?: components["schemas"]["WaveWorkspace"];
         };
         /** @description A report link from another wave that targets this wave. */
@@ -2520,29 +2546,49 @@ export interface components {
          * @description One selectable starting point for a new wave.
          *
          *     "Blank" is not in this list and never will be: it is the *absence* of a
-         *     template (`POST /api/waves` with no `workflow_id`), so the client renders it
+         *     template (`POST /api/waves` with no `template_id`), so the client renders it
          *     as its own default option rather than the server minting a pseudo-row for
          *     something that has no key, no title source, and no report to fork.
          */
         WaveTemplate: {
             /**
-             * @description Template key. Passed back verbatim as `workflow_id` on
+             * @description Template key. Passed back verbatim as `template_id` on
              *     `POST /api/waves` — see the seam note on this module.
              */
             id: string;
             /**
-             * @description JSON Schema for `workflow_input`, from the manifest of the running
+             * @description JSON Schema for `template_input`, from the manifest of the running
              *     trusted plugin bound to `id`. Absent means the template takes no input;
-             *     sending `workflow_input` for it is a 400 on create.
+             *     sending `template_input` for it is a 400 on create.
              */
             input_schema?: unknown;
             /**
-             * @description The tasks this template pre-sets, in plan order. Always present and
-             *     never empty for a real template — a template *is* its task list — so the
-             *     client can show it without a "no tasks" branch that could never render.
+             * @description The tasks this template pre-sets, in plan order.
+             *
+             *     Always present; **not** always non-empty. That was true while this came
+             *     from the constants, but the projection drops tombstones, so retiring
+             *     every task of a template (through the ordinary report block DELETE)
+             *     leaves this empty. A client must render that state rather than assume it
+             *     away.
              */
             tasks: components["schemas"]["WaveTemplateTask"][];
             title: string;
+        };
+        /**
+         * @description One `(key, goal)` pair — the only two facts the editor may state about a
+         *     task. Everything else about a task block is the server's.
+         *
+         *     `deny_unknown_fields` is the load-bearing part, not decoration. The whole
+         *     safety argument for this endpoint is "privileged task vocabulary has nowhere
+         *     to go in the request"; without this attribute serde would quietly ignore
+         *     extra keys, the guarantee would rest on nobody ever adding a
+         *     `#[serde(flatten)]` here, and
+         *     `privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing
+         *     while the property it names had stopped holding.
+         */
+        WaveTemplateGoalEdit: {
+            goal: string;
+            key: string;
         };
         /**
          * @description One pre-set task, projected from the template's own `PlanTaskInput`.
@@ -2557,6 +2603,50 @@ export interface components {
             goal: string;
             /** @description The task block's `key` in the seeded report. */
             key: string;
+        };
+        /**
+         * @description A template edit from Settings — a **diff**, never a task list.
+         *
+         *     ## Why the client cannot send task payloads (#1230 review round 2)
+         *
+         *     The first two cuts took the whole task list back. Both leaked, in ways that
+         *     were fixed one at a time and kept reappearing in a new shape:
+         *
+         *     * a client that simply **omitted** a task erased it. For a live task the
+         *       guard refused the write, but for a **tombstone** it did not —
+         *       `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`
+         *       — so omitting a tombstone silently reversed a #1179-governed deletion, and
+         *       re-appending the key resurrected it.
+         *     * a client could put privileged vocabulary into a payload the server then
+         *       stored verbatim. Measured, not argued: `released_by_user: true` and
+         *       `spawn: "sub-wave"` were both accepted and persisted.
+         *
+         *     Both are the same root cause — the editor was a second author of task
+         *     blocks on a document whose invariants assume one — and neither is fixable by
+         *     adding checks, because the check list has to anticipate every field the task
+         *     vocabulary will ever grow.
+         *
+         *     So the write side no longer accepts blocks at all. It accepts *what changed*:
+         *     a title, goals for keys that already exist, and tasks to append. The server
+         *     reads the stored payloads, edits them in place and constructs appended ones
+         *     itself. Omission is not expressible, privileged fields are not expressible,
+         *     and a rename is not expressible — all three are structurally impossible
+         *     rather than rejected.
+         */
+        WaveTemplateUpdate: {
+            /** @description Tasks to add, in the order they should appear after the existing ones. */
+            appends?: components["schemas"]["WaveTemplateGoalEdit"][];
+            /**
+             * @description New goals for tasks that already exist, keyed by the task's `key`.
+             *     A key the template does not declare is a 400, not a silent create.
+             */
+            edits?: components["schemas"]["WaveTemplateGoalEdit"][];
+            /**
+             * @description The new title. Trimmed; must not be empty — a template with a blank
+             *     title is unpickable in the New wave dialog, which lists templates by
+             *     title and nothing else.
+             */
+            title: string;
         };
         /** @description A wave's typed workspace. `path` is its single stored path. */
         WaveWorkspace: {
@@ -4977,6 +5067,60 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["WaveTemplate"][];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_wave_template: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Template key */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WaveTemplateUpdate"];
+            };
+        };
+        responses: {
+            /** @description The template as stored after the edit */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WaveTemplate"];
+                };
+            };
+            /** @description Invalid title, unknown key, or duplicate append */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            /** @description Unknown template key */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             /** @description Internal error */

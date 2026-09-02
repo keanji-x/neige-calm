@@ -324,6 +324,12 @@ describe('user menu', () => {
 });
 
 describe('collapse toggle', () => {
+  it('places the mark with the wordmark in the expanded rail', () => {
+    renderSidebar();
+    const brand = screen.getByRole('button', { name: 'neige · calm' });
+    expect(brand.querySelector('[aria-hidden="true"]')).toBeTruthy();
+  });
+
   /*
    * The rail does not own `collapsed` — `AppShell` does, because collapsing
    * changes the *shell grid column*, not just what the rail draws. A version of
@@ -357,7 +363,9 @@ describe('collapse toggle', () => {
     const item = screen.getByRole('button', { name: 'Work' });
     expect(item.textContent).toBe('W');
     expect(screen.getByRole('button', { name: 'Account menu for You' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Expand sidebar' }).getAttribute('aria-expanded')).toBe('false');
+    const expand = screen.getByRole('button', { name: 'Expand sidebar' });
+    expect(expand.getAttribute('aria-expanded')).toBe('false');
+    expect(expand.querySelector('[aria-hidden="true"]')).toBeTruthy();
 
     update({ collapsed: false });
     expect(screen.getByRole('heading', { name: 'Coves' })).toBeTruthy();

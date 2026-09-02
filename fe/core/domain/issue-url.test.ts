@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { parseGitHubIssueUrl } from './issue-url.js';
 
 describe('parseGitHubIssueUrl — accepted', () => {
-  it('parses the canonical shape into the three workflow_input fields', () => {
+  it('parses the canonical shape into the three template_input fields', () => {
     expect(parseGitHubIssueUrl('https://github.com/keanji-x/neige-calm/issues/1209')).toEqual({
       repo: 'keanji-x/neige-calm',
       issue_number: 1209,

@@ -173,7 +173,7 @@ export type NewWaveBody = Readonly<{
   attach_folder?: boolean;
   /**
    * The chosen template's key (#1209). Read as `template.id` from
-   * `GET /api/wave-templates`; the write side still spells it `workflow_id`
+   * `GET /api/wave-templates`; the write side still spells it `template_id`
    * because on this field that name is accurate — it is what the kernel's
    * plugin-binding path resolves. #1209 records the seam and the decision not
    * to add a `template_id` alias.
@@ -183,13 +183,13 @@ export type NewWaveBody = Readonly<{
    * `deny_unknown_fields`-strict, so the only spelling of "no template" is
    * absence.
    */
-  workflow_id?: string;
+  template_id?: string;
   /**
    * Only accepted when the chosen template is bound to a running trusted
    * plugin — i.e. exactly when `GET /api/wave-templates` returned an
    * `input_schema` for it. Sending it otherwise is a 400.
    */
-  workflow_input?: Readonly<Record<string, unknown>>;
+  template_input?: Readonly<Record<string, unknown>>;
 }>;
 
 /**
@@ -223,6 +223,39 @@ export type WaveTemplate = z.infer<typeof waveTemplateSchema>;
 
 export function waveTemplatesOperation(): ApiOperation<WaveTemplate[]> {
   return { method: 'GET', path: '/api/wave-templates', responseSchema: z.array(waveTemplateSchema) };
+}
+
+/**
+ * A template edit (#1230) — a **diff**, not a task list.
+ *
+ * The client states two facts about a task, `key` and `goal`, and nothing else;
+ * the server owns every other field of a task block. Review round 2 measured
+ * what happens when the client may send blocks: `released_by_user: true` and
+ * `spawn: "sub-wave"` were accepted and stored, and omitting a tombstone
+ * erased it. Under this shape none of that is expressible.
+ *
+ * There is no per-template read: `waveTemplatesOperation` already returns
+ * `id` / `title` / `tasks[{key, goal}]` for every template, which is exactly
+ * what the editor needs. A second endpoint would be a second authority for the
+ * same facts, and an N+1 read whose failure modes have to be reasoned about
+ * separately from the list's.
+ */
+export type WaveTemplateGoalEdit = Readonly<{ key: string; goal: string }>;
+
+export function putWaveTemplateOperation(
+  id: string,
+  body: Readonly<{
+    title: string;
+    edits: readonly WaveTemplateGoalEdit[];
+    appends: readonly WaveTemplateGoalEdit[];
+  }>,
+): ApiOperation<WaveTemplate> {
+  return {
+    method: 'PUT',
+    path: `/api/wave-templates/${encodeURIComponent(id)}`,
+    body,
+    responseSchema: waveTemplateSchema,
+  };
 }
 
 export type WavePatchBody = Readonly<{

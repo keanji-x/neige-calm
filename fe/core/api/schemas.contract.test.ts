@@ -135,7 +135,7 @@ describe('wireEventSchema', () => {
         pinned_at: null,
         lifecycle: 'dispatching',
         cwd: '/repo',
-        workflow_id: null,
+        template_id: null,
         terminal_at: null,
         created_at: 1,
         updated_at: 2,
@@ -146,15 +146,15 @@ describe('wireEventSchema', () => {
     if (parsed.ev === 'wave.updated') {
       expect(parsed.data.agent_message).toBe('moving to dispatch');
       expect(parsed.data.lifecycle).toBe('dispatching');
-      // Pre-#891 payload: no `workflow_input` key — hydrates to the null
+      // Pre-#891 payload: no `template_input` key — hydrates to the null
       // default rather than failing the parse.
-      expect(parsed.data.workflow_input).toBeNull();
+      expect(parsed.data.template_input).toBeNull();
       expect(parsed.data.plugin_scope).toBeNull();
     }
   });
 
-  it('preserves workflow_input on wave.updated payloads (#891)', () => {
-    const workflowInput = { issue_url: 'https://github.com/o/r/issues/1', issue_number: 1 };
+  it('preserves template_input on wave.updated payloads (#891)', () => {
+    const templateInput = { issue_url: 'https://github.com/o/r/issues/1', issue_number: 1 };
     const parsed = wireEventSchema.parse({
       ev: 'wave.updated',
       data: {
@@ -166,9 +166,9 @@ describe('wireEventSchema', () => {
         pinned_at: null,
         lifecycle: 'dispatching',
         cwd: '/repo',
-        workflow_id: 'issue-development',
+        template_id: 'issue-development',
         plugin_scope: 'dev.neige.git-forge',
-        workflow_input: workflowInput,
+        template_input: templateInput,
         terminal_at: null,
         created_at: 1,
         updated_at: 2,
@@ -176,7 +176,7 @@ describe('wireEventSchema', () => {
     });
     expect(parsed.ev).toBe('wave.updated');
     if (parsed.ev === 'wave.updated') {
-      expect(parsed.data.workflow_input).toEqual(workflowInput);
+      expect(parsed.data.template_input).toEqual(templateInput);
     }
   });
 
@@ -989,5 +989,66 @@ describe('#955: proposal events', () => {
         },
       }).success,
     ).toBe(false);
+  });
+});
+
+// #1209 PR-2 test #14 (design §3.4) — historical `wave.updated` rows and REST
+// replays still spell the template fields with the pre-rename keys. The Rust
+// side keeps a deserialize-only `#[serde(alias)]`; this reader keeps the
+// matching one-way normalize. Without it the schema's `.default(null)` would
+// hydrate every historical row as `template_id: null` — silently.
+//
+// One of THREE independent copies of this normalize (the other two live in
+// `web/src/api/schemas.ts` and `web/src/wave-fs-viewers/schemas.ts`). They are deliberately not
+// factored into a shared helper: "only the third reader was missed" has to be a
+// red test, not a green one.
+describe('#1209 pre-rename template keys on the wave shape', () => {
+  const legacyWave = {
+    id: 'w1',
+    cove_id: 'c1',
+    title: 't',
+    sort: 0,
+    archived_at: null,
+    workflow_id: 'small-change',
+    workflow_input: { issue: 1209 },
+    created_at: 1,
+    updated_at: 2,
+  };
+
+  it('recovers `template_id` from a legacy `workflow_id` key', () => {
+    expect(waveSchema.parse(legacyWave).template_id).toBe('small-change');
+  });
+
+  it('recovers `template_input` from a legacy `workflow_input` key', () => {
+    expect(waveSchema.parse(legacyWave).template_input).toEqual({ issue: 1209 });
+  });
+
+  it('does not let a legacy key overwrite a present new key', () => {
+    const parsed = waveSchema.parse({
+      ...legacyWave,
+      template_id: 'investigation',
+      template_input: { issue: 1 },
+    });
+    expect(parsed.template_id).toBe('investigation');
+    expect(parsed.template_input).toEqual({ issue: 1 });
+  });
+
+  it('normalizes inside a `wave.updated` event payload too', () => {
+    const parsed = wireEventSchema.parse({
+      ev: 'wave.updated',
+      data: { ...legacyWave, agent_message: 'hi' },
+    });
+    if (parsed.ev !== 'wave.updated') throw new Error('wrong variant');
+    expect(parsed.data.template_id).toBe('small-change');
+    expect(parsed.data.template_input).toEqual({ issue: 1209 });
+  });
+
+  it('still hydrates a payload that carries neither spelling', () => {
+    const bare = { ...legacyWave } as Record<string, unknown>;
+    delete bare.workflow_id;
+    delete bare.workflow_input;
+    const parsed = waveSchema.parse(bare);
+    expect(parsed.template_id).toBeNull();
+    expect(parsed.template_input).toBeNull();
   });
 });

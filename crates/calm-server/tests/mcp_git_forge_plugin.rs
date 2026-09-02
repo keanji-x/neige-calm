@@ -239,12 +239,12 @@ async fn boot_fixture() -> Fixture {
         .expect("create cove");
     let wave = repo
         .wave_create(NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: "mcp-git-forge-plugin".into(),
             sort: None,
             cwd: wave_cwd.display().to_string(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: calm_server::routes::theme::RequestTheme::default_dark(),

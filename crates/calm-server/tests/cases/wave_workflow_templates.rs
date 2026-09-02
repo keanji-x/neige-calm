@@ -1,6 +1,6 @@
 //! #1110 S6 — seed workflow template waves; auto-fork on create.
 //!
-//! Matching `workflow_id` lazily seeds three system-cove template waves
+//! Matching `template_id` lazily seeds three system-cove template waves
 //! (overlay `template_key`) and forks that report when `fork_report_from`
 //! is omitted. Lists still hide templates; detail returns them. Explicit
 //! `fork_report_from` is not overwritten.
@@ -117,6 +117,30 @@ async fn post(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) 
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     (status, json)
+}
+
+/// Like [`post`], but returns the body as raw text.
+///
+/// Extractor-level rejections (`#1209` test #16) are produced by axum, not by
+/// this crate's `CalmError`, so they are `text/plain` and not the usual
+/// `{"error": ...}` envelope. Parsing them as JSON yields `null` and throws the
+/// message away, which would leave the assertions unable to tell an
+/// unknown-field rejection from any other 4xx.
+async fn post_text(app: axum::Router, uri: &str, body: Value) -> (StatusCode, String) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, String::from_utf8_lossy(&bytes).into_owned())
 }
 
 async fn get(app: axum::Router, uri: &str) -> (StatusCode, Value) {
@@ -256,7 +280,7 @@ fn task_blocks(payload: &WaveReportPayload) -> Vec<&Value> {
 }
 
 #[tokio::test]
-async fn matching_workflow_id_seeds_one_wave_per_template_key() {
+async fn matching_template_id_seeds_one_wave_per_template_key() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app.clone(),
@@ -264,7 +288,7 @@ async fn matching_workflow_id_seeds_one_wave_per_template_key() {
         create_body(
             &boot.cove_id,
             "first-issue-dev",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
@@ -355,7 +379,7 @@ async fn matching_workflow_id_seeds_one_wave_per_template_key() {
         create_body(
             &boot.cove_id,
             "second-issue-dev",
-            json!({ "workflow_id": SMALL_CHANGE }),
+            json!({ "template_id": SMALL_CHANGE }),
         ),
     )
     .await;
@@ -373,12 +397,12 @@ async fn issue_development_create_forks_inspect_issue_not_ready() {
         create_body(
             &boot.cove_id,
             "forked-issue-dev",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "body={body}");
-    assert_eq!(body["workflow_id"], ISSUE_DEVELOPMENT);
+    assert_eq!(body["template_id"], ISSUE_DEVELOPMENT);
     assert!(
         body["plugin_scope"].is_null(),
         "empty plugin registry leaves plugin_scope null, body={body}"
@@ -473,7 +497,7 @@ async fn explicit_fork_report_from_is_not_overwritten() {
             &boot.cove_id,
             "explicit-fork",
             json!({
-                "workflow_id": ISSUE_DEVELOPMENT,
+                "template_id": ISSUE_DEVELOPMENT,
                 "fork_report_from": source_id,
             }),
         ),
@@ -506,12 +530,12 @@ async fn investigation_and_small_change_auto_fork_without_plugin() {
             create_body(
                 &boot.cove_id,
                 &format!("forked-{key}"),
-                json!({ "workflow_id": key }),
+                json!({ "template_id": key }),
             ),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "key={key} body={body}");
-        assert_eq!(body["workflow_id"], key);
+        assert_eq!(body["template_id"], key);
         assert!(body["plugin_scope"].is_null());
         let wave_id = body["id"].as_str().unwrap();
         let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
@@ -587,7 +611,7 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
         create_body(
             &boot.cove_id,
             "after-stolen-key",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
@@ -616,7 +640,7 @@ async fn stolen_user_cove_template_key_does_not_hijack_auto_fork() {
 }
 
 #[tokio::test]
-async fn unknown_workflow_id_still_400s() {
+async fn unknown_template_id_still_400s() {
     let boot = boot().await;
     let (status, body) = post(
         boot.app,
@@ -624,7 +648,7 @@ async fn unknown_workflow_id_still_400s() {
         create_body(
             &boot.cove_id,
             "unknown-workflow",
-            json!({ "workflow_id": "missing-workflow" }),
+            json!({ "template_id": "missing-workflow" }),
         ),
     )
     .await;
@@ -651,8 +675,8 @@ async fn unknown_workflow_id_still_400s() {
 ///
 /// 1. **No `input_schema`.** Copying the stub in
 ///    `tests/cases/wave_templates_read.rs` verbatim brings one along, and its
-///    `required` list makes a create *without* `workflow_input` fail the
-///    required-input check (`validate_workflow_input_binding`) — a 400 that
+///    `required` list makes a create *without* `template_input` fail the
+///    required-input check (`validate_template_input_binding`) — a 400 that
 ///    arrives no matter what the admission rule is. Test #8 would then be green
 ///    even with the pre-#1209 plugin fallback restored, i.e. green precisely
 ///    when the thing it exists to detect is back.
@@ -660,7 +684,7 @@ async fn unknown_workflow_id_still_400s() {
 ///    `create_accepts_exactly_the_listed_templates` depends on that (see its
 ///    doc comment). Merging the two fixtures would break that test for reasons
 ///    that have nothing to do with admission.
-async fn boot_with_trusted_plugin(declared_workflow_ids: &[&str]) -> Boot {
+async fn boot_with_trusted_plugin(declared_template_ids: &[&str]) -> Boot {
     let tmp = TempDir::new().expect("tempdir");
     let repo: Arc<dyn Repo> = Arc::new(
         SqlxRepo::open("sqlite::memory:")
@@ -703,7 +727,7 @@ async fn boot_with_trusted_plugin(declared_workflow_ids: &[&str]) -> Boot {
     )
     .expect("symlink stub plugin");
 
-    let workflows: Vec<Value> = declared_workflow_ids
+    let workflows: Vec<Value> = declared_template_ids
         .iter()
         .map(|id| json!({ "id": id }))
         .collect();
@@ -801,7 +825,7 @@ async fn boot_with_trusted_plugin(declared_workflow_ids: &[&str]) -> Boot {
 /// spelling). It then goes red on the **status code**, not on wording.
 /// Restoring only the old wording turns leg 2 of the error assertion red.
 #[tokio::test]
-async fn plugin_declared_non_template_workflow_id_is_rejected() {
+async fn plugin_declared_non_template_id_is_rejected() {
     const NOT_A_TEMPLATE: &str = "not-a-template";
     let boot = boot_with_trusted_plugin(&[NOT_A_TEMPLATE, ISSUE_DEVELOPMENT]).await;
 
@@ -815,7 +839,7 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
         create_body(
             &boot.cove_id,
             "bound-control",
-            json!({ "workflow_id": ISSUE_DEVELOPMENT }),
+            json!({ "template_id": ISSUE_DEVELOPMENT }),
         ),
     )
     .await;
@@ -833,7 +857,7 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
         create_body(
             &boot.cove_id,
             "plugin-declared-non-template",
-            json!({ "workflow_id": NOT_A_TEMPLATE }),
+            json!({ "template_id": NOT_A_TEMPLATE }),
         ),
     )
     .await;
@@ -845,7 +869,7 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
     let error = body["error"].as_str().unwrap_or("");
     assert!(error.contains("known wave template"), "body={body}");
     assert!(
-        !error.contains("requires `workflow_input`"),
+        !error.contains("requires `template_input`"),
         "rejected for input validation, not admission — the fixture's stub must \
          not declare an input_schema; body={body}"
     );
@@ -868,12 +892,12 @@ async fn plugin_declared_non_template_workflow_id_is_rejected() {
 ///
 /// **Premise, and it is load-bearing:** `boot()` starts no plugins. With no
 /// running trusted plugin, `resolve_trusted_workflow` is `None` for every id,
-/// so `validate_workflow_input_binding(None, None)` short-circuits `Ok(())` and
+/// so `validate_template_input_binding(None, None)` short-circuits `Ok(())` and
 /// `issue-development` never reaches the required-input arm. That is what makes
 /// `== 201` correct for *every* listed id. If this harness ever grows a plugin
 /// fixture, this case must keep using the no-plugin one; if the premise has to
 /// be relaxed, widen the assertion to an explicit allowance
-/// (`201 || (400 && "requires `workflow_input`")`) — do **not** weaken it to
+/// (`201 || (400 && "requires `template_input`")`) — do **not** weaken it to
 /// "the body does not say `known wave template`". That weaker form is green for
 /// a re-worded special case such as
 /// `if id == "investigation" { return Err(BadRequest("investigation is disabled")) }`,
@@ -906,7 +930,7 @@ async fn create_accepts_exactly_the_listed_templates() {
             create_body(
                 &boot.cove_id,
                 &format!("listed-{id}"),
-                json!({ "workflow_id": id }),
+                json!({ "template_id": id }),
             ),
         )
         .await;
@@ -924,7 +948,7 @@ async fn create_accepts_exactly_the_listed_templates() {
             create_body(
                 &boot.cove_id,
                 &format!("absent-{absent}"),
-                json!({ "workflow_id": absent }),
+                json!({ "template_id": absent }),
             ),
         )
         .await;
@@ -985,7 +1009,7 @@ async fn listing_wave_templates_does_not_materialize_seed_state() {
         create_body(
             &boot.cove_id,
             "seed-for-inv-1209",
-            json!({ "workflow_id": SMALL_CHANGE }),
+            json!({ "template_id": SMALL_CHANGE }),
         ),
     )
     .await;
@@ -1005,7 +1029,7 @@ async fn listing_wave_templates_does_not_materialize_seed_state() {
     );
 }
 
-/// #1209 test #12 — a whitespace-only `workflow_id` is rejected **by
+/// #1209 test #12 — a whitespace-only `template_id` is rejected **by
 /// admission**.
 ///
 /// #1209 deleted the dedicated `trim().is_empty()` guard: whitespace is simply
@@ -1015,12 +1039,12 @@ async fn listing_wave_templates_does_not_materialize_seed_state() {
 ///
 /// The mutation this catches is the guard coming back as a *skip* —
 /// `if id.trim().is_empty() { /* treat as no template chosen */ }`, yielding
-/// 201, a null `plugin_scope` and no fork. `unknown_workflow_id_still_400s`
+/// 201, a null `plugin_scope` and no fork. `unknown_template_id_still_400s`
 /// sends `missing-workflow` and stays green through that change; this one does
 /// not. The request deliberately carries a valid `cove_id`, no `cwd` and no
-/// `workflow_input`, so no other validation can supply the 400.
+/// `template_input`, so no other validation can supply the 400.
 #[tokio::test]
-async fn blank_workflow_id_is_rejected() {
+async fn blank_template_id_is_rejected() {
     let boot = boot().await;
     let before = db_snapshot(&boot.repo).await;
     let (status, body) = post(
@@ -1030,7 +1054,7 @@ async fn blank_workflow_id_is_rejected() {
             "cove_id": boot.cove_id,
             "title": "blank workflow id",
             "theme": theme(),
-            "workflow_id": "   ",
+            "template_id": "   ",
         }),
     )
     .await;
@@ -1096,7 +1120,7 @@ async fn pre_transaction_404_unknown_cove_with_template_does_not_seed() {
             "cove_id": "cove_does_not_exist",
             "title": "unknown cove",
             "theme": theme(),
-            "workflow_id": SMALL_CHANGE,
+            "template_id": SMALL_CHANGE,
         }),
         StatusCode::NOT_FOUND,
     )
@@ -1113,7 +1137,7 @@ async fn pre_transaction_400_relative_cwd_with_template_does_not_seed() {
             "cwd": "relative/not/absolute",
             "attach_folder": false,
             "theme": theme(),
-            "workflow_id": SMALL_CHANGE,
+            "template_id": SMALL_CHANGE,
         }),
         StatusCode::BAD_REQUEST,
     )
@@ -1135,9 +1159,1098 @@ async fn pre_transaction_400_non_repo_cwd_with_template_does_not_seed() {
             "cwd": non_repo.path().display().to_string(),
             "attach_folder": false,
             "theme": theme(),
-            "workflow_id": SMALL_CHANGE,
+            "template_id": SMALL_CHANGE,
         }),
         StatusCode::BAD_REQUEST,
+    )
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// #1230 — editable templates, via a diff write endpoint.
+//
+// The write side takes `{title, edits:[{key,goal}], appends:[{key,goal}]}` and
+// never a task list. Review round 2 found that accepting blocks let a client
+// erase a tombstone by omission and store `released_by_user` / `spawn`
+// verbatim; the diff shape makes both unexpressible rather than rejected, which
+// is what these tests are here to hold.
+// ---------------------------------------------------------------------------
+
+async fn put(app: axum::Router, uri: &str, body: Value) -> (StatusCode, Value) {
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(uri)
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "user")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
+
+fn listed_template<'a>(body: &'a Value, id: &str) -> &'a Value {
+    body.as_array()
+        .expect("array body")
+        .iter()
+        .find(|entry| entry["id"] == id)
+        .unwrap_or_else(|| panic!("template `{id}` missing from {body}"))
+}
+
+fn task_keys(template: &Value) -> Vec<&str> {
+    template["tasks"]
+        .as_array()
+        .expect("tasks array")
+        .iter()
+        .map(|task| task["key"].as_str().expect("key"))
+        .collect()
+}
+
+/// Acceptance 2 — a read of the picker must not mint the template waves.
+///
+/// The count assertion is the whole test: returning the right constants proves
+/// nothing on its own, because the seeding path would also return the right
+/// values. What must hold is that the read left the database as it found it.
+#[tokio::test]
+async fn listing_templates_returns_constants_without_seeding_anything() {
+    let boot = boot().await;
+    assert!(
+        seeded_templates(&boot.repo).await.is_empty(),
+        "precondition: nothing seeded before the read"
+    );
+
+    let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(
+        listed_template(&body, SMALL_CHANGE)["title"],
+        "Small change"
+    );
+    assert_eq!(
+        task_keys(listed_template(&body, SMALL_CHANGE))[0],
+        "inspect"
+    );
+
+    assert!(
+        seeded_templates(&boot.repo).await.is_empty(),
+        "a GET must never trigger the lazy seed"
+    );
+}
+
+/// Acceptance 1 — edit a goal, then check *both* readers: the picker and the
+/// wave the create path actually produces. Asserting only one would pass while
+/// the other drifted, which is the pre-#1230 state.
+#[tokio::test]
+async fn an_edited_goal_reaches_the_picker_and_the_forked_wave() {
+    let boot = boot().await;
+    const NEW_GOAL: &str = "Read the request and write down what it touches, then stop.";
+    const NEW_TITLE: &str = "Tiny change";
+
+    let (status, saved) = put(
+        boot.app.clone(),
+        &format!("/api/wave-templates/{SMALL_CHANGE}"),
+        json!({ "title": NEW_TITLE, "edits": [{ "key": "inspect", "goal": NEW_GOAL }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={saved}");
+    assert_eq!(saved["title"], NEW_TITLE);
+
+    // Reader 1: the picker.
+    let (status, body) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let listed = listed_template(&body, SMALL_CHANGE);
+    assert_eq!(listed["title"], NEW_TITLE);
+    assert_eq!(listed["tasks"][0]["goal"], NEW_GOAL);
+    assert_eq!(
+        listed_template(&body, INVESTIGATION)["title"],
+        "Investigation"
+    );
+
+    // Reader 2: the wave the create path produces.
+    let (status, created) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "forked-after-edit",
+            json!({ "template_id": SMALL_CHANGE }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let wave_id = created["id"].as_str().expect("wave id");
+    let (status, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    assert_eq!(status, StatusCode::OK, "body={detail}");
+    let payload = report_card_payload(&detail);
+    let goals: Vec<&str> = task_blocks(&payload)
+        .iter()
+        .map(|block| block["goal"].as_str().expect("goal string"))
+        .collect();
+    assert!(
+        goals.contains(&NEW_GOAL),
+        "the forked wave must carry the edited goal, got {goals:?}"
+    );
+}
+
+/// A goal edit must leave every other field of that task exactly as it was.
+///
+/// The editor states two facts about a task; the other eight fields of the
+/// block are the server's, and a save that flattened them would produce a
+/// template whose forked waves have no acceptance criteria and no dependency
+/// graph.
+#[tokio::test]
+async fn editing_a_goal_leaves_every_other_field_untouched() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{ISSUE_DEVELOPMENT}");
+    // Seed by saving a no-op-shaped edit, then read the stored blocks directly.
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Issue development", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let before = template_task_blocks(&boot, ISSUE_DEVELOPMENT).await;
+    assert!(
+        before
+            .iter()
+            .any(|task| task.get("acceptance").is_some() && task.get("context").is_some()),
+        "fixture must actually carry the fields we claim to preserve: {before:?}"
+    );
+
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Issue development", "edits": [{ "key": "inspect-issue", "goal": "Read the issue." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let after = template_task_blocks(&boot, ISSUE_DEVELOPMENT).await;
+
+    assert_eq!(before.len(), after.len());
+    for (was, now) in before.iter().zip(&after) {
+        for (field, value) in was.as_object().expect("task object") {
+            if field == "goal" && was["key"] == "inspect-issue" {
+                continue;
+            }
+            assert_eq!(
+                now.get(field),
+                Some(value),
+                "field `{field}` changed on task {}: was={was} now={now}",
+                was["key"]
+            );
+        }
+        assert_eq!(
+            was.as_object().unwrap().len(),
+            now.as_object().unwrap().len(),
+            "a field appeared or vanished on task {}",
+            was["key"]
+        );
+    }
+    assert_eq!(
+        after
+            .iter()
+            .find(|task| task["key"] == "inspect-issue")
+            .expect("task")["goal"],
+        "Read the issue."
+    );
+}
+
+/// Read the template wave's *stored* task blocks, not the endpoint's projection
+/// — the projection is `key` + `goal`, and these tests are about the fields it
+/// deliberately hides.
+async fn template_task_blocks(boot: &Boot, key: &str) -> Vec<Value> {
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(template_key, _)| template_key == key)
+        .map(|(_, wave_id)| wave_id)
+        .unwrap_or_else(|| panic!("template `{key}` is not seeded"));
+    let (_, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let payload = report_card_payload(&detail);
+    task_blocks(&payload).into_iter().cloned().collect()
+}
+
+/// Appending is the one structural change the write endpoint allows.
+#[tokio::test]
+async fn a_task_can_be_appended_and_reaches_a_forked_wave() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{INVESTIGATION}");
+    let (status, saved) = put(
+        boot.app.clone(),
+        &uri,
+        json!({
+            "title": "Investigation",
+            "appends": [{ "key": "hand-off", "goal": "Summarize the findings." }],
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={saved}");
+    assert_eq!(
+        task_keys(&saved),
+        vec!["gather-facts", "write-findings", "hand-off"]
+    );
+
+    // The appended block carries the server's own shape, not a bare pair.
+    let blocks = template_task_blocks(&boot, INVESTIGATION).await;
+    let appended = blocks
+        .iter()
+        .find(|task| task["key"] == "hand-off")
+        .expect("appended block");
+    assert_eq!(appended["declared_by"], "user");
+    assert_eq!(appended["ready"], false);
+    assert!(
+        appended["no_gate_reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "an appended task without a no_gate_reason reads as scheduled work missing a gate: {appended}"
+    );
+
+    let (status, created) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "forked-after-append",
+            json!({ "template_id": INVESTIGATION }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "body={created}");
+    let wave_id = created["id"].as_str().expect("wave id");
+    let (_, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let payload = report_card_payload(&detail);
+    let forked: Vec<&str> = task_blocks(&payload)
+        .iter()
+        .map(|block| block["key"].as_str().expect("key"))
+        .collect();
+    assert!(forked.contains(&"hand-off"), "got {forked:?}");
+}
+
+/// The write endpoint refuses what would render a broken plan. The last case is the
+/// positive control, so these are not passing because it refuses everything.
+#[tokio::test]
+async fn a_save_that_would_render_a_broken_plan_is_refused() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    for (case, body, expected) in [
+        (
+            "blank title",
+            json!({ "title": "   ", "edits": [] }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "blank goal",
+            json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "  " }] }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "edit names a key the template does not declare",
+            json!({ "title": "Small change", "edits": [{ "key": "nope", "goal": "x" }] }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "append collides with an existing key",
+            json!({ "title": "Small change", "appends": [{ "key": "inspect", "goal": "x" }] }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "append key is malformed",
+            json!({ "title": "Small change", "appends": [{ "key": "Not A Key", "goal": "x" }] }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "two appends collide with each other",
+            json!({ "title": "Small change", "appends": [
+                { "key": "twice", "goal": "a" }, { "key": "twice", "goal": "b" },
+            ] }),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            "positive control: a plain goal edit",
+            json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Look." }] }),
+            StatusCode::OK,
+        ),
+    ] {
+        let (status, response) = put(boot.app.clone(), &uri, body).await;
+        assert_eq!(status, expected, "{case}: body={response}");
+    }
+
+    let (status, response) = put(
+        boot.app.clone(),
+        "/api/wave-templates/not-a-template",
+        json!({ "title": "x", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "body={response}");
+}
+
+/// Review round 2, measured rather than argued.
+///
+/// With the old list-shaped body these were **accepted and persisted**:
+/// `released_by_user: true` and `spawn: "sub-wave"`. Under the diff shape they
+/// are not rejected — they are unexpressible, because the request has nowhere
+/// to put them. This test pins that by sending them anyway and asserting they
+/// reach no stored block.
+#[tokio::test]
+async fn privileged_task_vocabulary_is_refused_by_the_request_shape() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+
+    // The guarantee is "there is nowhere to put these", so the request must be
+    // *rejected*, not sanitised. Asserting only that the stored block came out
+    // clean was the weaker claim: `ready` / `declared_by` are restamped
+    // unconditionally, so two of those assertions were green regardless of the
+    // request, and the rest rested on a struct whose closedness nothing tested.
+    for (case, body) in [
+        (
+            "privileged vocabulary on an edit",
+            json!({ "title": "Small change", "edits": [
+                { "key": "inspect", "goal": "Look.", "released_by_user": true },
+            ] }),
+        ),
+        (
+            "spawn on an append",
+            json!({ "title": "Small change", "appends": [
+                { "key": "sneaky", "goal": "Do.", "spawn": "sub-wave" },
+            ] }),
+        ),
+        (
+            "a tombstone smuggled into an append",
+            json!({ "title": "Small change", "appends": [
+                { "key": "sneaky", "goal": "Do.", "tombstone": { "reason": null } },
+            ] }),
+        ),
+        (
+            "an unknown top-level field",
+            json!({ "title": "Small change", "edits": [], "tasks": [] }),
+        ),
+    ] {
+        let (status, response) = put(boot.app.clone(), &uri, body).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{case}: the request shape must refuse this outright: body={response}"
+        );
+    }
+
+    // Positive control: the same request without the extra key is accepted, so
+    // the refusals are about the extra field and not about the shape at large.
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Look." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "positive control: body={response}");
+
+    // And nothing privileged reached a stored block either.
+    for task in template_task_blocks(&boot, SMALL_CHANGE).await {
+        assert_ne!(task["released_by_user"], json!(true), "task={task}");
+        assert_ne!(task["spawn"], json!("sub-wave"), "task={task}");
+        assert_eq!(task["declared_by"], "user", "task={task}");
+        assert_eq!(task["ready"], false, "task={task}");
+    }
+}
+
+/// A tombstone must survive every save, and the retired key must stay retired.
+///
+/// The old list-shaped body let a client erase a tombstone by omitting it —
+/// `guard_task_declarations`' removal check is gated on `!is_tombstone(old)`, so
+/// nothing refused it — and then re-append the key, reversing a #1179-governed
+/// deletion. The diff shape cannot express an omission at all.
+#[tokio::test]
+async fn a_tombstone_survives_saves_and_its_key_stays_retired() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed: body={body}");
+
+    // Retire `verify` the way the ordinary report editor would: a user delete,
+    // which `normalize_report_op` rewrites into an in-place tombstone.
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(key, _)| key == SMALL_CHANGE)
+        .map(|(_, id)| id)
+        .expect("seeded");
+    tombstone_task(&boot, &wave_id, "verify").await;
+    assert!(
+        template_task_blocks(&boot, SMALL_CHANGE)
+            .await
+            .iter()
+            .any(|task| task["key"] == "verify" && task.get("tombstone").is_some()),
+        "precondition: `verify` is tombstoned"
+    );
+
+    // A save that does not mention it at all must not remove it.
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Renamed", "edits": [{ "key": "inspect", "goal": "Look harder." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    let blocks = template_task_blocks(&boot, SMALL_CHANGE).await;
+    let tomb = blocks
+        .iter()
+        .find(|task| task["key"] == "verify")
+        .unwrap_or_else(|| panic!("the tombstone was erased by an unrelated save: {blocks:?}"));
+    assert!(
+        tomb.get("tombstone").is_some(),
+        "resurrected in place: {tomb}"
+    );
+    assert_eq!(tomb["tombstoned_by"], "user");
+
+    // The picker must not advertise it…
+    let (_, listed) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert!(!task_keys(listed_template(&listed, SMALL_CHANGE)).contains(&"verify"));
+
+    // …and the key must stay retired: an append may not reuse it.
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Renamed", "appends": [{ "key": "verify", "goal": "Back from the dead." }] }),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "a retired key must not be reusable: body={response}"
+    );
+}
+
+/// Retire a task through the **production** delete path, not by hand-writing a
+/// tombstone: `DELETE /api/waves/{id}/report/blocks/{block_id}`, which
+/// `normalize_report_op` rewrites into an in-place tombstone for a `User`
+/// author. A hand-made tombstone would prove nothing about the shape the
+/// system actually produces.
+async fn tombstone_task(boot: &Boot, wave_id: &str, key: &str) {
+    // This harness applies only `actor_middleware`, so the report routes'
+    // `Principal` extractor has nothing to read. Inject one rather than
+    // hand-writing a tombstone fence: the shape a tombstone has is exactly what
+    // is under test, and `normalize_report_op` is the only thing that should
+    // decide it.
+    let authed = authed_router(boot);
+
+    let (status, report) = get(authed.clone(), &format!("/api/waves/{wave_id}/report")).await;
+    assert_eq!(status, StatusCode::OK, "read report: {report}");
+    let block = report["blocks"]
+        .as_array()
+        .unwrap_or_else(|| panic!("report has no blocks array: {report}"))
+        .iter()
+        .find(|block| block["kind"] == "task" && block["payload"]["key"] == key)
+        .unwrap_or_else(|| panic!("no task block for `{key}` in {report}"));
+    let block_id = block["id"].as_str().expect("block id").to_string();
+    let rev = block["rev"].as_u64().expect("block rev");
+
+    let resp = authed
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/waves/{wave_id}/report/blocks/{block_id}"))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "user")
+                .body(Body::from(json!({ "ifBlockRev": rev }).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "delete block: {body}");
+}
+
+/// Round-3 finding, reproduced before any fix: the save rewrites the whole body
+/// with `WriteMarkdown` and emits **no `<!-- neige:b_xxxx -->` markers**, so
+/// block identity is decided by `align.rs`'s similarity heuristic even though
+/// the handler knows exactly which stored block each payload came from.
+///
+/// Editing two goals in one save — which the editor's single Save button makes
+/// the ordinary case — with one of them replaced by much longer text drops the
+/// similarity below the reuse threshold, the old block goes unassigned, and the
+/// guard reports it as a deletion.
+#[tokio::test]
+async fn editing_two_goals_at_once_with_a_long_replacement_is_savable() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed: body={body}");
+
+    // Several shapes, each an ordinary thing a person does in this editor.
+    for (case, edits) in [
+        (
+            "two adjacent goals, one replaced by much longer text",
+            json!([
+                { "key": "inspect", "goal": "x".repeat(2000) },
+                { "key": "implement", "goal": "Implement it and commit." },
+            ]),
+        ),
+        (
+            "all three goals replaced with unrelated short text",
+            json!([
+                { "key": "inspect", "goal": "a" },
+                { "key": "implement", "goal": "b" },
+                { "key": "verify", "goal": "c" },
+            ]),
+        ),
+        (
+            "two adjacent goals swapped in content",
+            json!([
+                { "key": "inspect", "goal": "Run the repository's standard tests and record the result." },
+                { "key": "implement", "goal": "Read the requested change and the current code that it touches." },
+            ]),
+        ),
+    ] {
+        let (status, response) = put(
+            boot.app.clone(),
+            &uri,
+            json!({ "title": "Small change", "edits": edits }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{case}: body={response}");
+    }
+}
+
+/// Round-3 finding: rebuilding the body from the task fences alone dropped
+/// every other block. The rebuild now walks the report's **blocks** and
+/// re-emits each with its `<!-- neige:b_xxxx -->` marker, so nothing is lost
+/// and the aligner is handed identity rather than made to guess it.
+#[tokio::test]
+async fn a_save_preserves_blocks_it_does_not_edit() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    // Seed through wave *creation*, not through `PUT`. Seeding with a save
+    // would run the very code under test before `before` is captured, and then
+    // `before == after` holds no matter what the save does — the first version
+    // of this test did exactly that and both mutations passed it.
+    let (status, created) = post(
+        boot.app.clone(),
+        "/api/waves",
+        create_body(
+            &boot.cove_id,
+            "seed-for-preserve",
+            json!({ "template_id": SMALL_CHANGE }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "seed: body={created}");
+
+    let before = template_blocks(&boot, SMALL_CHANGE).await;
+    let kinds_before: Vec<String> = before
+        .iter()
+        .map(|b| b["kind"].as_str().unwrap().to_string())
+        .collect();
+    let ids_before: Vec<String> = before
+        .iter()
+        .map(|b| b["id"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        kinds_before.iter().any(|kind| kind != "task"),
+        "fixture must carry a non-task block or this proves nothing: {kinds_before:?}"
+    );
+
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Look." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let after = template_blocks(&boot, SMALL_CHANGE).await;
+    assert_eq!(
+        after
+            .iter()
+            .map(|b| b["kind"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        kinds_before,
+        "a save dropped or added a block"
+    );
+    // Ids preserved is the marker's whole job: without it the aligner re-derives
+    // identity from text similarity and can mint new ids for edited blocks.
+    assert_eq!(
+        after
+            .iter()
+            .map(|b| b["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        ids_before,
+        "block ids changed across a save — the markers are not doing their job"
+    );
+}
+
+/// Editing a retired task used to return 200 and do nothing: the projection
+/// drops tombstones, so no client could tell success from silent no-op.
+#[tokio::test]
+async fn editing_a_retired_task_is_refused_rather_than_silently_dropped() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed: body={body}");
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(key, _)| key == SMALL_CHANGE)
+        .map(|(_, id)| id)
+        .expect("seeded");
+    tombstone_task(&boot, &wave_id, "verify").await;
+
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "verify", "goal": "back" }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={response}");
+
+    // Positive control: a live key in the same shape is accepted, so the
+    // refusal is about retirement and not about edits in general.
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Look." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={response}");
+}
+
+/// The same key edited twice in one request is a client bug, not a last-wins.
+#[tokio::test]
+async fn the_same_key_edited_twice_in_one_save_is_refused() {
+    let boot = boot().await;
+    let (status, response) = put(
+        boot.app.clone(),
+        &format!("/api/wave-templates/{SMALL_CHANGE}"),
+        json!({ "title": "Small change", "edits": [
+            { "key": "inspect", "goal": "a" }, { "key": "inspect", "goal": "b" },
+        ] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={response}");
+}
+
+/// Read the template wave's blocks with ids and kinds.
+async fn template_blocks(boot: &Boot, key: &str) -> Vec<Value> {
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(template_key, _)| template_key == key)
+        .map(|(_, wave_id)| wave_id)
+        .unwrap_or_else(|| panic!("template `{key}` is not seeded"));
+    let (_, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    let card = detail["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["kind"] == "wave-report")
+        .expect("wave-report card");
+    card["payload"]["blocks"]
+        .as_array()
+        .expect("blocks")
+        .clone()
+}
+
+/// Round-4 self-check: the write endpoint and the create path must agree on which ids
+/// are templates. #1209 PR-1 made `workflow_template()` the single roster
+/// lookup; this asserts the two callers actually land on the same answer rather
+/// than each keeping a private judgement.
+#[tokio::test]
+async fn the_write_endpoint_and_create_admit_exactly_the_same_ids() {
+    let boot = boot().await;
+    let (status, listed) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(status, StatusCode::OK, "body={listed}");
+    let ids: Vec<String> = listed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|entry| entry["id"].as_str().expect("id").to_string())
+        .collect();
+    assert!(
+        !ids.is_empty(),
+        "the read endpoint listed nothing to compare"
+    );
+
+    for id in &ids {
+        let (write, _) = put(
+            boot.app.clone(),
+            &format!("/api/wave-templates/{id}"),
+            json!({ "title": "t", "edits": [] }),
+        )
+        .await;
+        assert_eq!(
+            write,
+            StatusCode::OK,
+            "listed id `{id}` refused by the write endpoint"
+        );
+    }
+
+    // …and an id neither knows is refused by both, with the same 404-vs-400
+    // split each path documents.
+    for unknown in ["not-a-template", "issue-development-x", ""] {
+        let (write, _) = put(
+            boot.app.clone(),
+            &format!("/api/wave-templates/{unknown}"),
+            json!({ "title": "t", "edits": [] }),
+        )
+        .await;
+        assert!(
+            write == StatusCode::NOT_FOUND || write == StatusCode::METHOD_NOT_ALLOWED,
+            "unknown id `{unknown}` reached the write endpoint with {write}"
+        );
+        let (create, _) = post(
+            boot.app.clone(),
+            "/api/waves",
+            create_body(
+                &boot.cove_id,
+                &format!("unknown-{unknown}"),
+                json!({ "template_id": unknown }),
+            ),
+        )
+        .await;
+        assert_ne!(
+            create,
+            StatusCode::CREATED,
+            "create accepted unknown id `{unknown}`"
+        );
+    }
+}
+
+/// Round-4 self-check: a title is user text and lands in the report *summary*,
+/// not the body — but assert it rather than assume, because a title that could
+/// reach the body could close the contract comment (`-->`) or forge a block id
+/// marker.
+#[tokio::test]
+async fn a_hostile_title_cannot_reach_the_report_body() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let hostile = "--> <!-- neige:b_dead --> # 概要";
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": hostile, "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+
+    let blocks = template_blocks(&boot, SMALL_CHANGE).await;
+    for block in &blocks {
+        let text = serde_json::to_string(block).expect("block json");
+        assert!(
+            !text.contains("b_dead"),
+            "a title reached a block and could forge an id: {block}"
+        );
+    }
+    // The title is the summary, and it is stored verbatim there.
+    let (_, listed) = get(boot.app.clone(), "/api/wave-templates").await;
+    assert_eq!(listed_template(&listed, SMALL_CHANGE)["title"], hostile);
+}
+
+/// Round-4 self-check: duplicate live keys are representable in a report
+/// (`dup_keys` is a diagnostic, not a write-time refusal), and an edit naming
+/// one used to rewrite **both** blocks with a single goal — a coincidence, not
+/// a decision. It is now refused.
+#[tokio::test]
+async fn an_edit_on_an_ambiguous_duplicate_key_is_refused() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed: body={body}");
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(key, _)| key == SMALL_CHANGE)
+        .map(|(_, id)| id)
+        .expect("seeded");
+
+    // A second live block declaring `inspect`, created through the real block
+    // write路 — not hand-written into the body, because whether the system can
+    // even *produce* this state is part of what the test is about.
+    add_duplicate_task_block(&boot, &wave_id, "inspect").await;
+
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "inspect", "goal": "Which one?" }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body={response}");
+
+    // Positive control: an unambiguous key in the same request shape still works.
+    let (status, response) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [{ "key": "implement", "goal": "Do it." }] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={response}");
+}
+
+/// Create a second live `task` block declaring `key`, through the report block
+/// write path (`POST /api/waves/{id}/report/blocks`).
+async fn add_duplicate_task_block(boot: &Boot, wave_id: &str, key: &str) {
+    let authed = authed_router(boot);
+    let (status, report) = get(authed.clone(), &format!("/api/waves/{wave_id}/report")).await;
+    assert_eq!(status, StatusCode::OK, "read report: {report}");
+    let doc_rev = report["docRev"]
+        .as_u64()
+        .or_else(|| report["doc_rev"].as_u64())
+        .unwrap_or_else(|| panic!("no doc rev in {report}"));
+
+    let resp = authed
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/waves/{wave_id}/report/blocks"))
+                .header("content-type", "application/json")
+                .header("X-Calm-Actor", "user")
+                .body(Body::from(
+                    json!({
+                        "kind": "task",
+                        "payload": {
+                            "key": key, "kind": "codex", "goal": "A second declaration.",
+                            "ready": false, "declared_by": "user",
+                        },
+                        "ifDocRev": doc_rev,
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert_eq!(status, StatusCode::OK, "create duplicate block: {body}");
+}
+
+/// The test router with a `Principal` in request extensions.
+///
+/// This harness applies only `actor_middleware`, so the report routes'
+/// `Principal` extractor has nothing to read. Injecting one lets these tests
+/// drive the **real** block write/delete routes rather than hand-writing the
+/// block shapes under test — `normalize_report_op` is the only thing that
+/// should decide what a tombstone looks like.
+fn authed_router(boot: &Boot) -> axum::Router {
+    routes::router()
+        .layer(axum::middleware::from_fn(
+            calm_server::actor::actor_middleware,
+        ))
+        .layer(axum::middleware::from_fn(
+            |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
+                request
+                    .extensions_mut()
+                    .insert(calm_server::auth::Principal {
+                        user_id: "owner".into(),
+                        display_name: "Owner".into(),
+                        role: "owner".into(),
+                        session_id: "test-session".into(),
+                    });
+                next.run(request).await
+            },
+        ))
+        .with_state(boot.state.clone())
+}
+
+/// Round-4 finding: a save must be **idempotent**. The rebuild emits
+/// `marker + text` per block, and each block's text already carries its own
+/// separator — an extra unconditional newline made the body grow by one byte
+/// per block on every save, including one that changes nothing, churning every
+/// block's `rev` and turning the single blank line between two fences into a
+/// widening gap.
+#[tokio::test]
+async fn a_no_op_save_leaves_the_body_byte_identical() {
+    let boot = boot().await;
+    let uri = format!("/api/wave-templates/{SMALL_CHANGE}");
+    let (status, body) = put(
+        boot.app.clone(),
+        &uri,
+        json!({ "title": "Small change", "edits": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "seed: body={body}");
+
+    let before = template_report_body(&boot, SMALL_CHANGE).await;
+    for round in 0..3 {
+        let (status, body) = put(
+            boot.app.clone(),
+            &uri,
+            json!({ "title": "Small change", "edits": [] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "round {round}: body={body}");
+        let after = template_report_body(&boot, SMALL_CHANGE).await;
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "round {round}: the body grew by {} bytes on a save that changed nothing",
+            after.len() as i64 - before.len() as i64
+        );
+        assert_eq!(
+            after, before,
+            "round {round}: the body changed on a no-op save"
+        );
+    }
+}
+
+async fn template_report_body(boot: &Boot, key: &str) -> String {
+    let wave_id = seeded_templates(&boot.repo)
+        .await
+        .into_iter()
+        .find(|(template_key, _)| template_key == key)
+        .map(|(_, wave_id)| wave_id)
+        .unwrap_or_else(|| panic!("template `{key}` is not seeded"));
+    let (_, detail) = get(boot.app.clone(), &format!("/api/waves/{wave_id}")).await;
+    report_card_payload(&detail).body
+}
+
+// ---------------------------------------------------------------------------
+// #1209 PR-2 test #16 — the write side knows exactly one spelling.
+// ---------------------------------------------------------------------------
+
+/// Shared body of the three legs below. Asserts the request is rejected at the
+/// **serde extractor**: `CreateWaveRequest` carries
+/// `#[serde(deny_unknown_fields)]`, so the pre-rename key is an unknown field
+/// and the handler is never entered — `admit_template` does not run.
+///
+/// **Status is 422, not 400.** The #1209 design predicted 400; the observed
+/// behaviour is axum's `JsonRejection::JsonDataError`, which is
+/// `422 Unprocessable Entity` with a plain-text body. The ruling the design
+/// actually makes still holds — "reject loudly at the serde layer, do not
+/// declare the old key as a field" — and the status code is a consequence of
+/// the extractor, not something this slice chose. It is pinned here rather
+/// than customised, because customising it would mean declaring `workflow_id`
+/// on `CreateWaveRequest`, i.e. reintroducing the writeable alias #1209
+/// rejects.
+///
+/// The assertions therefore look for serde's own wording and explicitly
+/// require the admission wording to be **absent**: an admission-flavoured
+/// error would mean the old key had become a declared field again.
+async fn assert_old_spelling_is_an_unknown_field(leg: &str, body_json: Value, unknown_key: &str) {
+    let boot = boot().await;
+    let before = db_snapshot(&boot.repo).await;
+    let (status, text) = post_text(boot.app.clone(), "/api/waves", body_json).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{leg}: body={text}"
+    );
+    assert!(
+        text.contains("unknown field"),
+        "{leg}: expected a serde unknown-field rejection, body={text}"
+    );
+    assert!(
+        text.contains(unknown_key),
+        "{leg}: rejection must name `{unknown_key}`, body={text}"
+    );
+    assert!(
+        !text.contains("known wave template"),
+        "{leg}: the old spelling must not reach `admit_template` — reaching it \
+         means `CreateWaveRequest` declares the old key again, body={text}"
+    );
+    assert_eq!(
+        db_snapshot(&boot.repo).await,
+        before,
+        "{leg}: a rejected create must not write"
+    );
+}
+
+/// #1209 PR-2 (design §3.5, matrix row 18) — the pre-rename `template_id`
+/// spelling.
+///
+/// This is the only pin on the whole rejection policy: the request body is a
+/// live contract, so the old spelling must fail loudly rather than be silently
+/// accepted through an alias. Mutation: give `CreateWaveRequest` back a
+/// `workflow_id` field — even as a bare `#[serde(alias)]` — and this goes red
+/// (the request would then be accepted, so both the status and the body
+/// assertion fail).
+///
+/// Three separate tests, not a loop over three bodies: a loop stops at the
+/// first failure, so the later legs would never be shown to discriminate.
+#[tokio::test]
+async fn old_template_id_spelling_is_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "row 18: workflow_id alone",
+        json!({
+            "cove_id": "",
+            "title": "old id spelling",
+            "attach_folder": false,
+            "theme": theme(),
+            "workflow_id": SMALL_CHANGE,
+        }),
+        "workflow_id",
+    )
+    .await;
+}
+
+/// #1209 PR-2 (design §3.5, matrix row 19) — the pre-rename `template_input`
+/// spelling, paired with the *new* `template_id`. Half-migrated callers must
+/// fail too; accepting this shape would be the "partially works" outcome
+/// `docs/upgrade-stability.md` forbids.
+#[tokio::test]
+async fn old_template_input_spelling_is_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "row 19: new template_id + old workflow_input",
+        json!({
+            "cove_id": "",
+            "title": "old input spelling",
+            "attach_folder": false,
+            "theme": theme(),
+            "template_id": SMALL_CHANGE,
+            "workflow_input": { "issue_url": "https://example.invalid/1" },
+        }),
+        "workflow_input",
+    )
+    .await;
+}
+
+/// #1209 PR-2 (design §3.5, matrix row 20) — both spellings at once.
+///
+/// This leg is what pins "the write side knows exactly ONE name". Rows 18/19
+/// would both stay green under an implementation that accepted either spelling
+/// but not both; only this one fails if the rejected option B (a writeable
+/// alias) comes back through the side door.
+#[tokio::test]
+async fn both_spellings_together_are_an_unknown_field() {
+    assert_old_spelling_is_an_unknown_field(
+        "row 20: template_id and workflow_id together",
+        json!({
+            "cove_id": "",
+            "title": "both spellings",
+            "attach_folder": false,
+            "theme": theme(),
+            "template_id": SMALL_CHANGE,
+            "workflow_id": SMALL_CHANGE,
+        }),
+        "workflow_id",
     )
     .await;
 }

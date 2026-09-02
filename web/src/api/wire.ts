@@ -93,17 +93,30 @@ export type NewCoveBody   = Schemas['NewCove'];
 export type CovePatchBody = Schemas['CovePatch'];
 
 /**
- * `workflow_input` override mirrors `NewCardBody.payload` below: the Rust
+ * #1209 PR-2 — `Omit<T, 'k'>` takes a plain string literal, so when the field
+ * below was renamed the literal would have kept compiling while omitting
+ * nothing at all: the `template_input?: unknown` override would degrade into a
+ * stray extra property and the generated `Record<string, never>` would come
+ * back. That is a silent type-level failure, not a compile error. Routing the
+ * key through this constrained alias turns it into one.
+ */
+type KeyOf<T, K extends keyof T> = K;
+
+/**
+ * `template_input` override mirrors `NewCardBody.payload` below: the Rust
  * side is `Option<serde_json::Value>` (kernel validates it against the bound
  * workflow's `input_schema` at create time, #891), which utoipa's
  * `value_type = Option<Object>` emits as `Record<string, never>` — an empty
  * object no caller could actually populate. The read side needs no override:
- * `Wave.workflow_input` reaches the UI via `generated-events.ts` (ts-rs,
+ * `Wave.template_input` reaches the UI via `generated-events.ts` (ts-rs,
  * `#[ts(type = "unknown")]` → `unknown`) and no consumer reads it off the
  * OpenAPI `Wave` shape today.
  */
-export type NewWaveBody   = Omit<Schemas['CreateWaveRequest'], 'workflow_input'> & {
-  workflow_input?: unknown;
+export type NewWaveBody   = Omit<
+  Schemas['CreateWaveRequest'],
+  KeyOf<Schemas['CreateWaveRequest'], 'template_input'>
+> & {
+  template_input?: unknown;
 };
 export type WavePatchBody = Schemas['WavePatch'];
 

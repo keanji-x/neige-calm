@@ -55,7 +55,7 @@ use crate::operation::workspace_lease::{
 };
 use crate::operation::{OperationKey, OperationOutcome};
 use crate::plugin_host::manifest::Manifest;
-use crate::plugin_host::workflow_input::validate_workflow_input;
+use crate::plugin_host::template_input::validate_template_input;
 use crate::report_backlinks;
 use crate::routes::cards::interrupt_shared_card_active_turn;
 use crate::routes::codex_cards::default_cwd;
@@ -216,10 +216,10 @@ pub struct CreateWaveRequest {
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
-    pub workflow_id: Option<String>,
+    pub template_id: Option<String>,
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
-    pub workflow_input: Option<serde_json::Value>,
+    pub template_input: Option<serde_json::Value>,
     #[serde(default)]
     pub attach_folder: bool,
     pub theme: RequestTheme,
@@ -245,9 +245,9 @@ impl CreateWaveRequest {
                 title: self.title,
                 sort: self.sort,
                 cwd: self.cwd.unwrap_or_else(default_cwd),
-                workflow_id: self.workflow_id,
+                template_id: self.template_id,
                 plugin_scope: None,
-                workflow_input: self.workflow_input,
+                template_input: self.template_input,
                 attach_folder: if cwd_omitted {
                     false
                 } else {
@@ -452,7 +452,7 @@ static WORKFLOW_TEMPLATE_SEED_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 /// Lazy get-or-create of the three system-cove template waves. Called from
 /// matching `POST /api/waves`, not from `AppState::new`, so ordinary boots
 /// and tests that never bind a template key stay unchanged.
-async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
+pub(crate) async fn ensure_workflow_templates(s: &RouteState) -> Result<()> {
     let _guard = WORKFLOW_TEMPLATE_SEED_LOCK.lock().await;
     let system_cove = ensure_system_cove(s).await?;
     for template in &WORKFLOW_TEMPLATES {
@@ -493,7 +493,7 @@ async fn ensure_system_cove(s: &RouteState) -> Result<crate::model::Cove> {
     }
 }
 
-async fn lookup_workflow_template_wave(
+pub(crate) async fn lookup_workflow_template_wave(
     s: &RouteState,
     template_key: &str,
 ) -> Result<Option<String>> {
@@ -543,9 +543,9 @@ async fn seed_workflow_template_wave(
             title: title.into(),
             sort: None,
             cwd: cwd.clone(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
-            workflow_input: None,
+            template_input: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),
         },
@@ -770,7 +770,7 @@ pub(crate) async fn create_wave(
     //    #1209 — what "short-circuits before any DB write" actually covers.
     //    Every 4xx this handler can decide *before opening the transaction*
     //    (cwd shape, attached-workspace validation, cove 404, unknown
-    //    template, the `workflow_input` binding matrix) lands before any DB
+    //    template, the `template_input` binding matrix) lands before any DB
     //    write. The ones decided later do not: the in-transaction 400s for an
     //    explicit `fork_report_from` (source missing / cross-cove), the
     //    folder-claim 409 and in-transaction 500s all happen after template
@@ -785,10 +785,10 @@ pub(crate) async fn create_wave(
     // attribute of it, not a second way in. Roster membership is the whole
     // admission test: whether some plugin claims the id, and whether that
     // plugin is running and trusted, cannot change the answer.
-    let admission = match p.workflow_id.as_deref() {
-        Some(workflow_id) => Some(admit_template(&s, workflow_id).await.ok_or_else(|| {
+    let admission = match p.template_id.as_deref() {
+        Some(template_id) => Some(admit_template(&s, template_id).await.ok_or_else(|| {
             CalmError::BadRequest(format!(
-                "wave create: `workflow_id` must reference a known wave template; got `{workflow_id}`"
+                "wave create: `template_id` must reference a known wave template; got `{template_id}`"
             ))
         })?),
         None => None,
@@ -796,12 +796,12 @@ pub(crate) async fn create_wave(
     // The binding is read off the admitted template; the route no longer digs
     // through the registry a second time.
     let bound_plugin = admission.as_ref().and_then(|a| a.binding.as_ref());
-    // #891 / #1110 S2 — `workflow_input` is only accepted against a bound
+    // #891 / #1110 S2 — `template_input` is only accepted against a bound
     // workflow whose owning plugin Manifest declares an `input_schema`;
     // validated here, before any DB write, so the inner writer persists
-    // the blob verbatim. Still requires `workflow_id` this slice
+    // the blob verbatim. Still requires `template_id` this slice
     // (S5 deletes the workflow entity).
-    validate_workflow_input_binding(bound_plugin, p.workflow_input.as_ref())?;
+    validate_template_input_binding(bound_plugin, p.template_input.as_ref())?;
     // #1110 S4 — copy the owning plugin id into `plugin_scope` in the same
     // insert. Unbound create leaves it None. Not a request field.
     p.plugin_scope = bound_plugin.map(|manifest| manifest.id.clone());
@@ -965,7 +965,7 @@ pub(crate) struct TemplateAdmission {
     pub binding: Option<Manifest>,
 }
 
-/// Admit a caller-supplied `workflow_id`.
+/// Admit a caller-supplied `template_id`.
 ///
 /// Roster membership is the only admission test; the binding is resolved
 /// afterwards purely to be carried along. There is deliberately no fallback
@@ -981,14 +981,14 @@ pub(crate) async fn admit_template(s: &RouteState, id: &str) -> Option<TemplateA
     })
 }
 
-/// Resolve `workflow_id` to the owning plugin Manifest iff a running
+/// Resolve `template_id` to the owning plugin Manifest iff a running
 /// **trusted** plugin registers it — same filter as
 /// `bound_workflow_descriptor` on the spec harness side. `None` covers
 /// unknown, stopped, and untrusted workflows alike (the route
 /// deliberately does not distinguish them in the 400).
 pub(crate) async fn resolve_trusted_workflow(
     s: &RouteState,
-    workflow_id: &str,
+    template_id: &str,
 ) -> Option<Manifest> {
     let running_plugin_ids = s.plugin.running_plugin_ids().await;
     s.plugin.registry().list().into_iter().find(|manifest| {
@@ -997,24 +997,24 @@ pub(crate) async fn resolve_trusted_workflow(
             && manifest
                 .workflows
                 .iter()
-                .any(|workflow| workflow.id == workflow_id)
+                .any(|workflow| workflow.id == template_id)
     })
 }
 
-/// #891 / #1110 S2 — create-time `workflow_input` validation matrix.
+/// #891 / #1110 S2 — create-time `template_input` validation matrix.
 /// Fail-closed: input is only accepted when the bound plugin Manifest
 /// declares an `input_schema`, and a schema with required fields makes
 /// input mandatory. The kernel never applies schema `default`s — the
 /// value persists exactly as the caller sent it. Workflow-level
 /// `input_schema` is never consulted.
-fn validate_workflow_input_binding(
+fn validate_template_input_binding(
     plugin: Option<&Manifest>,
     input: Option<&serde_json::Value>,
 ) -> Result<()> {
     let Some(plugin) = plugin else {
         if input.is_some() {
             return Err(CalmError::BadRequest(
-                "wave create: `workflow_input` requires `workflow_id`".into(),
+                "wave create: `template_input` requires `template_id`".into(),
             ));
         }
         return Ok(());
@@ -1024,7 +1024,7 @@ fn validate_workflow_input_binding(
         (None, None) => Ok(()),
         (None, Some(_)) => Err(CalmError::BadRequest(format!(
             "wave create: plugin `{plugin_id}` does not declare an input_schema; \
-             `workflow_input` is not accepted"
+             `template_input` is not accepted"
         ))),
         (Some(schema), None) => {
             let required: Vec<&str> = schema
@@ -1036,12 +1036,12 @@ fn validate_workflow_input_binding(
                 Ok(())
             } else {
                 Err(CalmError::BadRequest(format!(
-                    "wave create: plugin `{plugin_id}` requires `workflow_input` \
+                    "wave create: plugin `{plugin_id}` requires `template_input` \
                      (required: {required:?})"
                 )))
             }
         }
-        (Some(schema), Some(input)) => validate_workflow_input(schema, input)
+        (Some(schema), Some(input)) => validate_template_input(schema, input)
             .map_err(|reason| CalmError::BadRequest(format!("wave create: {reason}"))),
     }
 }
@@ -1353,9 +1353,9 @@ pub(crate) async fn ensure_cove_chat_wave_inner(
         title: "Cove chat".into(),
         sort: None,
         cwd: cwd.clone(),
-        workflow_id: None,
+        template_id: None,
         plugin_scope: None,
-        workflow_input: None,
+        template_input: None,
         attach_folder: false,
         theme: RequestTheme::default_dark(),
     };
@@ -3597,9 +3597,9 @@ mod tests {
                 title: "fork helper".into(),
                 sort: None,
                 cwd: "/tmp/fork-helper".into(),
-                workflow_id: None,
+                template_id: None,
                 plugin_scope: None,
-                workflow_input: None,
+                template_input: None,
                 attach_folder: false,
                 theme: RequestTheme::default_dark(),
             })
@@ -3709,12 +3709,12 @@ mod tests {
         assert!(positions.contains_key("report-1"));
     }
 
-    /// #891 / #1110 S2 — the create-time `workflow_input` validation
+    /// #891 / #1110 S2 — the create-time `template_input` validation
     /// matrix. Schema-conformance details are pinned in
-    /// `plugin_host::workflow_input`; this covers the binding combinations
+    /// `plugin_host::template_input`; this covers the binding combinations
     /// against the owning plugin Manifest.
-    mod workflow_input_binding {
-        use super::super::validate_workflow_input_binding;
+    mod template_input_binding {
+        use super::super::validate_template_input_binding;
         use crate::error::CalmError;
         use crate::plugin_host::manifest::Manifest;
         use serde_json::{Value, json};
@@ -3751,7 +3751,7 @@ mod tests {
         }
 
         fn expect_bad_request(plugin: Option<&Manifest>, input: Option<&Value>, needle: &str) {
-            match validate_workflow_input_binding(plugin, input) {
+            match validate_template_input_binding(plugin, input) {
                 Err(CalmError::BadRequest(message)) => {
                     assert!(message.contains(needle), "message `{message}` ∌ `{needle}`");
                 }
@@ -3760,13 +3760,13 @@ mod tests {
         }
 
         #[test]
-        fn input_without_workflow_id_is_rejected() {
-            expect_bad_request(None, Some(&json!({ "x": 1 })), "requires `workflow_id`");
+        fn input_without_template_id_is_rejected() {
+            expect_bad_request(None, Some(&json!({ "x": 1 })), "requires `template_id`");
         }
 
         #[test]
         fn no_workflow_no_input_is_ok() {
-            validate_workflow_input_binding(None, None).expect("plain wave create unchanged");
+            validate_template_input_binding(None, None).expect("plain wave create unchanged");
         }
 
         #[test]
@@ -3779,26 +3779,26 @@ mod tests {
         #[test]
         fn schema_less_binding_without_input_stays_valid() {
             let p = plugin(None);
-            validate_workflow_input_binding(Some(&p), None).expect("bound create unchanged");
+            validate_template_input_binding(Some(&p), None).expect("bound create unchanged");
         }
 
         #[test]
         fn missing_input_with_required_schema_is_rejected() {
             let p = plugin(Some(schema(json!(["issue_url"]))));
-            expect_bad_request(Some(&p), None, "requires `workflow_input`");
+            expect_bad_request(Some(&p), None, "requires `template_input`");
             expect_bad_request(Some(&p), None, "issue_url");
         }
 
         #[test]
         fn missing_input_with_no_required_fields_is_ok() {
             let p = plugin(Some(schema(json!([]))));
-            validate_workflow_input_binding(Some(&p), None).expect("optional input omitted");
+            validate_template_input_binding(Some(&p), None).expect("optional input omitted");
         }
 
         #[test]
         fn input_is_validated_against_the_plugin_schema() {
             let p = plugin(Some(schema(json!(["issue_url"]))));
-            validate_workflow_input_binding(
+            validate_template_input_binding(
                 Some(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "auto-merge" })),
             )
@@ -3807,17 +3807,17 @@ mod tests {
             expect_bad_request(
                 Some(&p),
                 Some(&json!({ "merge_policy": "auto-merge" })),
-                "workflow_input.issue_url",
+                "template_input.issue_url",
             );
             expect_bad_request(
                 Some(&p),
                 Some(&json!({ "issue_url": "u", "ghost": true })),
-                "workflow_input.ghost",
+                "template_input.ghost",
             );
             expect_bad_request(
                 Some(&p),
                 Some(&json!({ "issue_url": "u", "merge_policy": "yolo" })),
-                "workflow_input.merge_policy",
+                "template_input.merge_policy",
             );
         }
     }

@@ -28,12 +28,12 @@ async fn seed_worker_card(repo: &SqlxRepo, label: &str) -> WorkerCardHome {
     let wave = wave_create_tx(
         &mut tx,
         NewWave {
-            workflow_input: None,
+            template_input: None,
             cove_id: cove.id.clone(),
             title: format!("hp1-b-i {label}"),
             sort: None,
             cwd: "/tmp".into(),
-            workflow_id: None,
+            template_id: None,
             plugin_scope: None,
             attach_folder: false,
             theme: RequestTheme::default_dark(),

@@ -4411,7 +4411,7 @@ textarea.new-task-form-input { font-family: inherit; resize: vertical; }
   color: var(--text-3);
 }
 
-/* Raw workflow_input JSON escape hatch — collapsed <details> at the
+/* Raw template_input JSON escape hatch — collapsed <details> at the
    bottom of the issue-dev form. */
 .new-task-form-rawjson {
   display: flex;
