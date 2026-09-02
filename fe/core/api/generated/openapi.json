@@ -7596,7 +7596,7 @@
             "items": {
               "$ref": "#/components/schemas/WaveTemplateTask"
             },
-            "description": "The tasks this template pre-sets, in plan order. Always present and\nnever empty for a real template — a template *is* its task list — so the\nclient can show it without a \"no tasks\" branch that could never render."
+            "description": "The tasks this template pre-sets, in plan order.\n\nAlways present; **not** always non-empty. That was true while this came\nfrom the constants, but the projection drops tombstones, so retiring\nevery task of a template (through the ordinary report block DELETE)\nleaves this empty. A client must render that state rather than assume it\naway."
           },
           "title": {
             "type": "string"
@@ -7605,7 +7605,7 @@
       },
       "WaveTemplateGoalEdit": {
         "type": "object",
-        "description": "One `(key, goal)` pair — the only two facts the editor may state about a\ntask. Everything else about a task block is the server's.\n\n`deny_unknown_fields` is the load-bearing part, not decoration. The whole\nsafety argument for this endpoint is \"privileged task vocabulary has nowhere\nto go in the request\"; without this attribute serde would quietly ignore\nextra keys, the guarantee would rest on nobody ever adding a\n`#[serde(flatten)]` here, and\n`privileged_task_vocabulary_cannot_reach_a_stored_block` would keep passing\nwhile the property it names had stopped holding.",
+        "description": "One `(key, goal)` pair — the only two facts the editor may state about a\ntask. Everything else about a task block is the server's.\n\n`deny_unknown_fields` is the load-bearing part, not decoration. The whole\nsafety argument for this endpoint is \"privileged task vocabulary has nowhere\nto go in the request\"; without this attribute serde would quietly ignore\nextra keys, the guarantee would rest on nobody ever adding a\n`#[serde(flatten)]` here, and\n`privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing\nwhile the property it names had stopped holding.",
         "required": [
           "key",
           "goal"

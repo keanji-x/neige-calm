@@ -2542,9 +2542,13 @@ export interface components {
              */
             input_schema?: unknown;
             /**
-             * @description The tasks this template pre-sets, in plan order. Always present and
-             *     never empty for a real template — a template *is* its task list — so the
-             *     client can show it without a "no tasks" branch that could never render.
+             * @description The tasks this template pre-sets, in plan order.
+             *
+             *     Always present; **not** always non-empty. That was true while this came
+             *     from the constants, but the projection drops tombstones, so retiring
+             *     every task of a template (through the ordinary report block DELETE)
+             *     leaves this empty. A client must render that state rather than assume it
+             *     away.
              */
             tasks: components["schemas"]["WaveTemplateTask"][];
             title: string;
@@ -2558,7 +2562,7 @@ export interface components {
          *     to go in the request"; without this attribute serde would quietly ignore
          *     extra keys, the guarantee would rest on nobody ever adding a
          *     `#[serde(flatten)]` here, and
-         *     `privileged_task_vocabulary_cannot_reach_a_stored_block` would keep passing
+         *     `privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing
          *     while the property it names had stopped holding.
          */
         WaveTemplateGoalEdit: {

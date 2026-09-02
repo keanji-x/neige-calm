@@ -75,7 +75,7 @@
 //! the summary, and this endpoint reads only the summary. Keeping the wave row
 //! out of it means an edit is one write to one authority.
 //!
-//! ### The write口 is a diff, and that is the whole safety argument
+//! ### The write endpoint is a diff, and that is the whole safety argument
 //!
 //! `PUT /api/wave-templates/{id}` takes `{title, edits:[{key,goal}],
 //! appends:[{key,goal}]}` — never task blocks. Two earlier shapes accepted
@@ -178,9 +178,13 @@ pub struct WaveTemplate {
     /// sending `workflow_input` for it is a 400 on create.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub input_schema: Option<Value>,
-    /// The tasks this template pre-sets, in plan order. Always present and
-    /// never empty for a real template — a template *is* its task list — so the
-    /// client can show it without a "no tasks" branch that could never render.
+    /// The tasks this template pre-sets, in plan order.
+    ///
+    /// Always present; **not** always non-empty. That was true while this came
+    /// from the constants, but the projection drops tombstones, so retiring
+    /// every task of a template (through the ordinary report block DELETE)
+    /// leaves this empty. A client must render that state rather than assume it
+    /// away.
     pub tasks: Vec<WaveTemplateTask>,
 }
 
@@ -280,7 +284,7 @@ async fn current_definition(s: &RouteState, key: &str) -> Result<Definition> {
 /// #1209 PR-1 made `workflow_template()` the single fallible roster lookup and
 /// deleted the second roster array it replaced. This goes through it rather
 /// than re-deriving membership, so there is exactly one answer to "is this a
-/// template" and the write口 cannot drift from the create path's admission.
+/// template" and the write endpoint cannot drift from the create path's admission.
 fn known_template(id: &str) -> Result<()> {
     workflow_template(id)
         .map(|_| ())
@@ -338,7 +342,7 @@ pub struct WaveTemplateUpdate {
 /// to go in the request"; without this attribute serde would quietly ignore
 /// extra keys, the guarantee would rest on nobody ever adding a
 /// `#[serde(flatten)]` here, and
-/// `privileged_task_vocabulary_cannot_reach_a_stored_block` would keep passing
+/// `privileged_task_vocabulary_is_refused_by_the_request_shape` would keep passing
 /// while the property it names had stopped holding.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
@@ -415,7 +419,11 @@ pub(crate) async fn update_wave_template(
 
     // Every key a stored *live* task block declares, and separately the retired
     // ones. An append may reuse neither.
-    let mut live: BTreeSet<&str> = BTreeSet::new();
+    // A task block with no string `key` lands in neither set. It is not
+    // editable (nothing can name it) and not collidable (an append compares by
+    // key), and the rebuild below re-emits it untouched with its marker — so it
+    // survives rather than being quietly dropped.
+    let mut live: BTreeMap<&str, usize> = BTreeMap::new();
     let mut retired: BTreeSet<&str> = BTreeSet::new();
     for block in &blocks {
         if block.kind != KIND_TASK {
@@ -431,7 +439,7 @@ pub(crate) async fn update_wave_template(
         {
             retired.insert(key);
         } else {
-            live.insert(key);
+            *live.entry(key).or_insert(0) += 1;
         }
     }
 
@@ -444,11 +452,25 @@ pub(crate) async fn update_wave_template(
                 edit.key
             )));
         }
-        if !live.contains(edit.key.as_str()) {
-            return Err(CalmError::BadRequest(format!(
-                "wave template: no task named `{}` in this template",
-                edit.key
-            )));
+        match live.get(edit.key.as_str()) {
+            None => {
+                return Err(CalmError::BadRequest(format!(
+                    "wave template: no task named `{}` in this template",
+                    edit.key
+                )));
+            }
+            // Duplicate keys are representable in a report (`dup_keys` is a
+            // diagnostic, not a write-time refusal). Editing "that task" would
+            // then rewrite both blocks with one goal — a coincidence, not a
+            // decision. Refuse instead of guessing which one was meant.
+            Some(&count) if count > 1 => {
+                return Err(CalmError::BadRequest(format!(
+                    "wave template: `{}` is declared by {count} live task blocks, so an edit \
+                     cannot say which one it means; resolve the duplicate in the wave report first",
+                    edit.key
+                )));
+            }
+            Some(_) => {}
         }
     }
     let mut edited = BTreeSet::new();
@@ -483,10 +505,14 @@ pub(crate) async fn update_wave_template(
         } else {
             body.push_str(&flat_text(block));
         }
+        // A marker must start a line, so close an unterminated block — but do
+        // not add a separator of our own. Each block's text already carries the
+        // whitespace that separates it from the next, and appending one made a
+        // save grow the body by a byte per block *every time*, including a save
+        // that changed nothing: `a_no_op_save_leaves_the_body_byte_identical`.
         if !body.ends_with('\n') {
             body.push('\n');
         }
-        body.push('\n');
     }
 
     let mut appended = BTreeSet::new();
@@ -497,7 +523,7 @@ pub(crate) async fn update_wave_template(
                 append.key
             )));
         }
-        if live.contains(append.key.as_str())
+        if live.contains_key(append.key.as_str())
             || retired.contains(append.key.as_str())
             || !appended.insert(append.key.clone())
         {

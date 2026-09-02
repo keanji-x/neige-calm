@@ -335,10 +335,21 @@ function NewTaskRow({ existingKeys, onAdd }: {
   const [goal, setGoal] = useState('');
   const trimmedKey = key.trim();
   const trimmedGoal = goal.trim();
-  // Mirrors `report_blocks::tasks::key_is_valid`. Duplicated shapes drift, so
-  // this is the *client* half of a check the server still performs — it exists
-  // to keep the user out of a round trip, never as the authority.
-  const keyShapeOk = /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(trimmedKey);
+  /*
+   * Mirrors `calm_types::report_blocks::tasks::key_is_valid`, and the mirror
+   * has to be exact in **both** directions. The first cut used
+   * `^[a-z0-9]+(?:-[a-z0-9]+)*$`, which was wrong twice over: it rejected
+   * `run.tests` and `run_tests`, which the server accepts (so the Add button
+   * sat disabled on a perfectly good key), and it accepted keys past the
+   * 64-byte cap, which the server then 400s.
+   *
+   * The server stays the authority — this exists only to keep the user out of a
+   * round trip. `mirrors key_is_valid in both directions` pins the two
+   * directions against the cases that were wrong.
+   */
+  const keyShapeOk = trimmedKey.length > 0
+    && new TextEncoder().encode(trimmedKey).length <= 64
+    && /^[a-z0-9][a-z0-9._-]*$/.test(trimmedKey);
   const duplicate = existingKeys.includes(trimmedKey);
   const status = trimmedKey === '' || (keyShapeOk && !duplicate)
     ? undefined

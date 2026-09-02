@@ -197,6 +197,31 @@ describe('Template editor', () => {
     expect(Object.keys(sent.appends[0]).sort()).toEqual(['goal', 'key']);
   });
 
+  /**
+   * The client key check mirrors `key_is_valid`, so it must agree in both
+   * directions: nothing the server accepts may be blocked here, and nothing the
+   * server refuses may be offered.
+   */
+  it('mirrors key_is_valid in both directions', async () => {
+    render(<TemplateEditorPage {...editorProps()} />);
+    await userEvent.type(screen.getByLabelText('Goal'), 'Something.');
+    const add = () => screen.getByRole('button', { name: 'Add task' });
+    const key = () => screen.getByLabelText('Key');
+
+    // Accepted by the server, so they must be offered here.
+    for (const valid of ['run.tests', 'run_tests', 'a', '9lives', 'a'.repeat(64)]) {
+      await userEvent.clear(key());
+      await userEvent.type(key(), valid);
+      expect(add().hasAttribute('disabled')).toBe(false);
+    }
+    // Refused by the server, so they must not be offered.
+    for (const invalid of ['-leading', '.leading', 'UPPER', 'has space', 'a'.repeat(65)]) {
+      await userEvent.clear(key());
+      await userEvent.type(key(), invalid);
+      expect(add().hasAttribute('disabled')).toBe(true);
+    }
+  });
+
   it('blocks an add whose key is malformed or already taken, and says which', async () => {
     render(<TemplateEditorPage {...editorProps()} />);
     await userEvent.type(screen.getByLabelText('Goal'), 'Something.');
