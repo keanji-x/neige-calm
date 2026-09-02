@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { HarnessItem } from '../api/generated/wire.js';
 import {
-  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL,
+  PLAN_LIST_TOOL, REPORT_READ_TOOLS, REPORT_WRITE_TOOLS, TASK_VERDICT_TOOL, WAVE_RENAME_TOOL,
+  WAVE_TOOL_PREFIX,
 } from '../keys/mcp-tools.js';
 
 import type { ApiFailure } from '../api/types.js';
@@ -388,6 +389,34 @@ describe('harnessItemToActivity', () => {
     expect(harnessItemToActivity(row({
       item_type: 'mcpToolCall', params: JSON.stringify({ item: { tool } }),
     }))?.verb).toBe(done);
+  });
+
+  // #1211 S3 — `calm.wave.rename` is the first `calm.wave.*` tool that WRITES.
+  // It used to fall into the prefix bucket and read out as "Read the wave",
+  // which is exactly backwards on the one line a user scans to find out who
+  // named their wave.
+  it('renders the wave rename as a write, not as a look at the wave', () => {
+    expect(WAVE_RENAME_TOOL.startsWith(WAVE_TOOL_PREFIX)).toBe(true);
+    const started = harnessItemToActivity(row({
+      item_type: 'mcpToolCall', method: 'item/started',
+      params: JSON.stringify({ item: { tool: WAVE_RENAME_TOOL } }),
+    }));
+    const done = harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ item: { tool: WAVE_RENAME_TOOL, status: 'completed' } }),
+    }));
+    expect(started).toMatchObject({ verb: 'Naming the wave', target: null, state: 'running' });
+    expect(done).toMatchObject({ verb: 'Named the wave', target: null, state: 'done' });
+    for (const activity of [started, done]) {
+      expect(activity?.verb).not.toMatch(/read/i);
+    }
+  });
+
+  it('still reads the other `calm.wave.*` tools as looks', () => {
+    expect(harnessItemToActivity(row({
+      item_type: 'mcpToolCall',
+      params: JSON.stringify({ item: { tool: `${WAVE_TOOL_PREFIX}state`, status: 'completed' } }),
+    }))).toMatchObject({ verb: 'Read the wave', state: 'done' });
   });
 
   it('is running while only `item/started` has arrived', () => {

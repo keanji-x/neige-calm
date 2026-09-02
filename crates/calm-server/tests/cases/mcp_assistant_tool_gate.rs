@@ -61,6 +61,9 @@ const ASSISTANT_DENIED_TOOLS_SPEC_REACHABLE: &[&str] = &[
     // Wave state + verdict.
     "calm.wave.state",
     "calm.task.verdict",
+    // #1211 S3 — naming the wave is a spec judgement about what the track is;
+    // an assistant has no plan of its own to name.
+    "calm.wave.rename",
     // Wave filesystem + history drill-ins (Spec|Worker, never Assistant).
     "calm.wave.ls",
     "calm.wave.cat",

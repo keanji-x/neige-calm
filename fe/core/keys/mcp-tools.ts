@@ -29,8 +29,7 @@ export const REPORT_DELETE_TOOL = 'calm.report.blocks.delete';
 export const TASK_VERDICT_TOOL = 'calm.task.verdict';
 export const PLAN_LIST_TOOL = 'calm.plan.list';
 
-/** Reads — of the report, and of the wave's tree and history. Every one of
- *  these is a look, never a change. */
+/** Reads — of the report. Every one of these is a look, never a change. */
 export const REPORT_READ_TOOLS: readonly string[] = Object.freeze([
   'calm.report.read',
   'calm.report.blocks.kinds',
@@ -38,3 +37,9 @@ export const REPORT_READ_TOOLS: readonly string[] = Object.freeze([
 ]);
 
 export const WAVE_TOOL_PREFIX = 'calm.wave.';
+
+/** #1211 S3 — the first `calm.wave.*` tool that is a WRITE. It names the wave,
+ *  once, and the event row it leaves behind is what says the agent (not the
+ *  user) chose that name; the transcript has to say so too. Keep it out of the
+ *  `WAVE_TOOL_PREFIX` read bucket. */
+export const WAVE_RENAME_TOOL = 'calm.wave.rename';
