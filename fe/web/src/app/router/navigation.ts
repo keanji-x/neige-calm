@@ -149,15 +149,36 @@ export function useGo(): (target: NavTarget, options?: GoOptions) => void {
  *
  *  - only the route body rendering *that* location ever sees it — no other
  *    body can redeem it, and none can clear it either;
- *  - walking away is not a cleanup problem: the reader is on another entry and
- *    the intent is simply not part of where they are;
- *  - redemption `disarm()`s by replacing the entry without the marker, so
- *    coming back to it — including with the Back button — is an ordinary
- *    visit.
+ *  - redemption `disarm()`s by replacing the entry without the marker, so once
+ *    the drawer has been opened for it, that entry is an ordinary one for good.
  *
- * `armed` is deliberately also gated on the location naming `waveId`: a caller
- * asks about its own wave, and a marker on some other wave's entry is not
- * theirs to read.
+ * ── What the intent is attached to, stated so it can be checked ─────────────
+ *
+ * The intent belongs to **that one history entry**. It is redeemed the first
+ * time the entry is displayed with the wave's spec card in hand, and struck off
+ * the moment it is. It is *not* scoped to a span of the reader's attention: it
+ * does not expire because they walked away, because walking away only means
+ * they are standing on a different entry.
+ *
+ * So an entry that never redeemed the mark still carries it. The reachable case
+ * is the failed landing — the detail read errors, `WaveRoute` renders the error
+ * box, and the body that would redeem the mark never mounts — and that entry
+ * arms again when it is displayed again, whether that is a reload, the Retry
+ * button, or the Back button. The first two are the point: the create asked for
+ * this conversation and the landing finally worked. Back reaches the same entry
+ * and gets the same answer, which is what owning the intent per-entry costs.
+ * A *fresh* navigation to the same wave is a different entry and carries no
+ * mark, so an ordinary later visit stays ordinary. Both directions are pinned
+ * in `wave-untitled.test.tsx`.
+ *
+ * `armed` is additionally gated on the location naming `waveId`. That is a belt
+ * over the braces and not the mechanism — what keeps one wave from redeeming
+ * another's mark is that the mark lives on an entry only one route body renders
+ * — and in the app it cannot be observed false: `WaveRoute` builds the body
+ * only once the detail in hand is that wave's, and renders nothing in between.
+ * It stays because this hook is exported and takes its wave id from the caller,
+ * and a caller asking about a wave the location does not name should be told
+ * `false` rather than handed somebody else's marker.
  */
 export type SpecOpenIntent = Readonly<{ armed: boolean; disarm: () => void }>;
 

@@ -203,12 +203,20 @@ describe('creating a wave lands in its spec conversation', () => {
    *
    * The rail's per-cove `+` is rendered by `AppShell`, above the route outlet,
    * so it is on screen on every route — "read one wave, start another" is an
-   * ordinary move, and it is the move a *global* intent slot cannot survive:
-   * the wave being left is still mounted when the intent is stated, and it
-   * gets a render before the route changes.
+   * ordinary move, and no layer covered it before this slice.
    *
-   * Red when the intent can be seen, and therefore consumed or discarded, by
-   * any route body other than the one the navigation is going to.
+   * **What this case is and is not.** It was written to reproduce a specific
+   * defect in the replaced shape — a global intent slot that the *departing*
+   * wave's route body could clear before the new route mounted — and it did
+   * not reproduce it: both review channels and this run agree the old code was
+   * green here, because the provider update and the navigation sat in one
+   * Promise continuation and React 19 batches them, so no commit ever rendered
+   * the old wave with the request already stated. It is therefore a
+   * characterization test — it pins the outcome of a path that had none, on
+   * the shape that is shipping — and not evidence that a bug was fixed.
+   *
+   * Red when the create started from the rail stops landing the reader in the
+   * new wave's spec conversation, whatever the reason.
    */
   it('opens the spec conversation of the new wave when the create started on another wave', async () => {
     const { router } = setup({ created: OTHER_WAVE, createdCards: [OTHER_SPEC_CARD] });
@@ -225,16 +233,19 @@ describe('creating a wave lands in its spec conversation', () => {
   });
 
   /*
-   * ── An intent that never landed must not lie in wait ─────────────────────
+   * ── A fresh visit to the wave carries no intent ──────────────────────────
    *
    * The detail read fails, so `WaveRoute` returns the error box and the body
-   * that would redeem the intent never mounts. The reader gives up and walks
-   * back to the cove. Whatever is holding "open the spec conversation" has to
-   * have died with that navigation: coming back to the wave later is an
-   * ordinary visit, and an ordinary visit does not spring the drawer open and
-   * take the caret.
+   * that would redeem the intent never mounts. The reader gives up, walks back
+   * to the cove, and later opens the wave again — a *new* navigation, so a new
+   * history entry, and the mark is not on it. An ordinary visit does not spring
+   * the drawer open and take the caret.
    *
-   * Red when the intent outlives the navigation that stated it.
+   * This is the half of the per-entry semantics that says the mark does not
+   * float free; the case below it is the other half, where the reader returns
+   * to the very entry that failed and the mark is still there on purpose.
+   *
+   * Red when the intent is held anywhere that outlives its own history entry.
    */
   it('does not open on a later visit when the landing never reached the wave', async () => {
     const { router, gate } = setup({
@@ -250,6 +261,48 @@ describe('creating a wave lands in its spec conversation', () => {
     await goToWave(router, 'w2');
     await screen.findByRole('button', { name: 'Rename wave' });
     expect(screen.queryByRole('complementary', { name: 'Spec chat' })).toBeNull();
+  });
+
+  /*
+   * ── Returning to the entry that failed arms it again, and that is the deal ─
+   *
+   * Same setup as above, except the reader comes back with Back rather than by
+   * navigating afresh — so this is the *same* history entry, the one the create
+   * made and marked, and its mark was never redeemed because the body that
+   * redeems it never mounted. It is still there, and this time the detail lands
+   * and the conversation opens.
+   *
+   * That is the chosen semantics, not a leak: the mark belongs to the entry,
+   * and the reachable readings of "display that entry again" are a reload and
+   * the Retry button — both of them "the landing finally worked", both of them
+   * wanting exactly this. Back is the same act on the same entry and cannot be
+   * told apart from them without giving the intent a second, time-based owner,
+   * which is the shape that had no owner at all. Pinned here so a later change
+   * that makes the mark expire has to argue with a test rather than with a
+   * comment.
+   *
+   * Red when the mark stops belonging to the entry — cleared on the way out,
+   * or expired by anything other than being redeemed.
+   */
+  it('opens the conversation when Back returns to the entry whose landing had failed', async () => {
+    const { router, gate } = setup({
+      created: OTHER_WAVE, createdCards: [OTHER_SPEC_CARD], createdDetailFails: true,
+    });
+    await createAWave();
+    await screen.findByRole('button', { name: 'Retry' });
+
+    /* A push, so the failed entry stays underneath rather than being replaced. */
+    await act(async () => { await router.navigate({ to: '/cove/$coveId', params: { coveId: 'c1' } }); });
+    await screen.findByRole('button', { name: 'Rename cove' });
+
+    gate.createdDetailFails = false;
+    await act(async () => {
+      router.history.back();
+      await new Promise((resolve) => { setTimeout(resolve, 0); });
+    });
+
+    await waitFor(() => { expect(router.state.location.pathname.endsWith('/wave/w2')).toBe(true); });
+    await screen.findByRole('complementary', { name: 'Spec chat' });
   });
 
   /*
