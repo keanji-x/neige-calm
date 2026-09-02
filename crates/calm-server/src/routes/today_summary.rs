@@ -431,9 +431,8 @@ pub(crate) async fn write_today_summary(
         // a 409 with no card is a conflict about something else and is
         // re-raised unchanged.
         if let Err(error) = created {
-            let recoverable = matches!(error, CalmError::Conflict(_))
-                && s.repo.card_get(&derived.card_id).await?.is_some();
-            if !recoverable {
+            let card_exists = s.repo.card_get(&derived.card_id).await?.is_some();
+            if !create_conflict_is_recoverable(&error, card_exists) {
                 return Err(error);
             }
             app.today_summary_create
@@ -470,6 +469,32 @@ pub(crate) async fn write_today_summary(
         wave_id,
         card_id: derived.card_id,
     }))
+}
+
+/// Is a failed create one this handler may continue past?
+///
+/// Both conjuncts are load-bearing and they fail closed in different
+/// directions. **Only a `conflict`**: every other failure — a 503 from a
+/// shared app-server that is down, a `Stuck` operation's 500, a `BadRequest` —
+/// means the create did not happen and nothing is there to carry on to, so it
+/// has to reach the caller as itself rather than be re-shaped into a 404 from a
+/// send against a card that was never minted. **And only if the card is
+/// there**: a conflict about anything else is still a conflict.
+///
+/// Extracted so the truth table can be pinned
+/// (`create_conflict_is_recoverable_only_for_a_conflict_whose_card_exists`).
+///
+/// **A named gap, stated plainly rather than papered over.** That test binds
+/// this function; it does not bind the *call site*. Replacing the call with a
+/// bare `true` leaves it green — measured, 8/8 — and no behavioural case
+/// catches it either, because the two states that would distinguish it are not
+/// constructible in-process without bypassing the production create route: a
+/// create that fails with a non-conflict *after* the launchpad's own
+/// `spec-harness-start` has already succeeded, and a permanent payload-hash 409
+/// under a key whose card does not exist. Do not claim the concurrency case
+/// covers this; it exercises the recoverable direction only.
+fn create_conflict_is_recoverable(error: &CalmError, card_exists: bool) -> bool {
+    matches!(error, CalmError::Conflict(_)) && card_exists
 }
 
 /// Send the summary, recovering once from a dormant harness.
@@ -591,6 +616,22 @@ mod tests {
             derived.operation_key,
             "wave-conversation-fc3a9cd32d1edca695e58ec734b27ec52f64dcfb2abe0a43a8f192f4ec10917d"
         );
+    }
+
+    /// D5's create-409 fallback is *only* for a conflict whose card is there.
+    ///
+    /// All four cells, because each is a different failure. A non-conflict must
+    /// surface as itself — swallowing a 503 turns "the agent service is down"
+    /// into a 404 from a send against a card that was never minted — and a
+    /// conflict with no card is a conflict about something else.
+    #[test]
+    fn create_conflict_is_recoverable_only_for_a_conflict_whose_card_exists() {
+        let conflict = CalmError::Conflict("card already exists".into());
+        let other = CalmError::ServiceUnavailable("app-server down".into());
+        assert!(create_conflict_is_recoverable(&conflict, true));
+        assert!(!create_conflict_is_recoverable(&conflict, false));
+        assert!(!create_conflict_is_recoverable(&other, true));
+        assert!(!create_conflict_is_recoverable(&other, false));
     }
 
     /// The prompt's length is bounded by reading it, which is what lets D4 drop

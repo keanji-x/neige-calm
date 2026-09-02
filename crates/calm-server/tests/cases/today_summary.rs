@@ -270,12 +270,14 @@ impl Boot {
     /// Watermarked because the card already carries the first trigger's events
     /// by the time the dormancy is staged; without it "some event somewhere is
     /// the kernel's" would be true before the restart ever ran.
-    async fn actors_for_card_after(&self, mark: i64, card_id: &str) -> Vec<String> {
+    async fn actors_for_card_after(&self, mark: i64, card_id: &str, kind: &str) -> Vec<String> {
         sqlx::query_scalar(
-            "SELECT DISTINCT actor FROM events WHERE id > ?1 AND scope_card = ?2 ORDER BY actor",
+            "SELECT DISTINCT actor FROM events \
+              WHERE id > ?1 AND scope_card = ?2 AND kind = ?3 ORDER BY actor",
         )
         .bind(mark)
         .bind(card_id)
+        .bind(kind)
         .fetch_all(self.repo.pool())
         .await
         .unwrap()
@@ -712,19 +714,33 @@ async fn a_dormant_harness_is_restarted_without_erasing_the_conversation() {
      * messages stay the human's (asserted above), so this also pins that the
      * two attributions did not collapse into one.
      */
-    let restart_actors = b.actors_for_card_after(mark, &card_id).await;
-    assert!(
-        restart_actors.contains(&stored(ActorId::Kernel)),
+    /*
+     * `card.updated` specifically, because that is the event
+     * `SpecHarnessStartAdapter` writes under the operation payload's `actor` —
+     * i.e. the one row whose attribution this module chose.
+     *
+     * A first version asked only "is any event about this card since the mark
+     * attributed to the kernel", and that was a fake gate: it stayed green when
+     * the restart was attributed to the user, because unrelated kernel-authored
+     * rows land in the same window. Measured 8/8 green under exactly that
+     * mutation.
+     */
+    let restart_actors = b
+        .actors_for_card_after(mark, &card_id, "card.updated")
+        .await;
+    assert_eq!(
+        restart_actors,
+        vec![stored(ActorId::Kernel)],
         "the dormant recovery's `spec-harness-start` must be attributed to the \
          kernel — it is the one act here no human asked for, and \
          `Actor(\"kernel\").to_actor_id()` silently degrades to User, so it is \
-         also the one place this module builds an `ActorId` by hand; actors \
-         were {restart_actors:?}"
+         also the one place this module builds an `ActorId` by hand"
     );
-    assert!(
-        restart_actors.contains(&stored(ActorId::User)),
-        "…and the messages stay the human's, so the two attributions have not \
-         collapsed into one; actors were {restart_actors:?}"
+    assert_eq!(
+        b.actors_for("harness.user_message.enqueued").await,
+        vec![stored(ActorId::User)],
+        "…while the messages stay the human's: the two attributions must not \
+         collapse into one"
     );
 }
 

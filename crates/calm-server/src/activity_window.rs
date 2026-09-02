@@ -448,18 +448,28 @@ mod tests {
     /// Each allowlisted kind lands in its own field, and a kind outside the
     /// allowlist contributes nothing.
     ///
-    /// The negative is the load-bearing half. Without it, a query that dropped
-    /// the `kind IN (...)` conjunct entirely would still satisfy every positive
-    /// assertion here, and the projection would start counting every event in
-    /// the log — including the high-frequency `harness.item.added`, whose rows
-    /// are pruned after 30 days, which is exactly the decay the allowlist
-    /// exists to prevent.
+    /// The negative is the load-bearing half, and it needs a wave of its own.
+    ///
+    /// The per-kind columns are `SUM(e.kind = ?n)`, so they are indifferent to
+    /// the `kind IN (...)` conjunct — dropping it changes only which rows reach
+    /// `COUNT(DISTINCT w.id)`. A first version of this case put its unlisted
+    /// events on waves that already had listed ones, which made `waves_touched`
+    /// indifferent too: **the mutation that deletes the restriction measured
+    /// 8/8 green.** `wave-3` exists so that deleting it counts a wave whose
+    /// entire day consisted of kinds this projection does not count — and
+    /// `harness.item.added` is deliberately one of them, since it is
+    /// high-frequency AND pruned after 30 days, i.e. exactly the decay the
+    /// allowlist exists to prevent.
     #[tokio::test]
     async fn each_kind_lands_in_its_own_field_and_unlisted_kinds_are_ignored() {
         let f = Fixture::new().await;
         f.cove("cove-user", "user").await;
         f.wave("wave-1", "cove-user").await;
         f.wave("wave-2", "cove-user").await;
+        // The discriminator. It carries ONLY unlisted kinds, so it is the one
+        // wave whose presence in `waves_touched` can distinguish a query that
+        // restricts by kind from one that does not — see the note below.
+        f.wave("wave-3", "cove-user").await;
 
         f.event("wave.lifecycle_changed", "wave-1", 10).await;
         f.event("wave.report_edited", "wave-1", 11).await;
@@ -468,6 +478,8 @@ mod tests {
         f.event("task.failed", "wave-2", 14).await;
         f.event("harness.item.added", "wave-1", 15).await;
         f.event("card.updated", "wave-2", 16).await;
+        f.event("harness.item.added", "wave-3", 17).await;
+        f.event("card.updated", "wave-3", 18).await;
 
         let window = f.window(0, 100).await;
         assert_eq!(
@@ -477,6 +489,8 @@ mod tests {
                 wave_report_edited: 2,
                 task_completed: 1,
                 task_failed: 1,
+                // Two, not three: `wave-3` had a busy day of kinds this
+                // projection does not count, and a day of those is not a day.
                 waves_touched: 2,
             }
         );
