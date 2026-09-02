@@ -24,9 +24,14 @@
 /// instructions for the `wave_state.update` / `wave_state.get` MCP tools
 /// once those land.
 ///
-/// `{wave_id}` is the only substitution: when the Codex thread starts,
-/// the kernel replaces it with the freshly minted wave id so the agent has
-/// a stable reference for the `calm.*` wave-state / report tools.
+/// `{wave_id}`: when the Codex thread starts, the kernel replaces it with
+/// the freshly minted wave id so the agent has a stable reference for the
+/// `calm.*` wave-state / report tools.
+///
+/// `{spec_wake_authors}`: rendered from
+/// [`crate::dispatcher::SPEC_WAKE_AUTHORS`], the dispatcher's own wake set
+/// for `wave.report_edited`. Rendered rather than hand-written so editing
+/// the dispatch rule rewrites the prompt in the same commit.
 ///
 /// Kept short on purpose: the codex CLI prepends this to every turn, so
 /// every additional token is a per-turn cost. The substantive instructions
@@ -78,7 +83,8 @@ turn. Each turn begins with exactly one of:
     with a log tail);
   * an **ungated task completion** (a worker reported `task.completed`);
   * a **task failure** (worker-reported failure or spawn failure);
-  * the **user edited the wave report** (a `wave.report_edited` from the user).
+  * a **report edit made by somebody else** (a `wave.report_edited` whose \
+    `author` is one of {spec_wake_authors}).
 
 On each turn:
 
@@ -221,16 +227,18 @@ READ 当前报告及整文档锚用 `calm.report.read`：响应里的 `body` 是
   * 不要把 `neige state` / `wave_state` 的读取结果、工具调用记录等内核自己\
     就持有的机械事实写进报告。
 
-### Reacting to user edits
+### Reacting to report edits by others
 
-用户可以直接编辑报告。当用户编辑后，内核会用 `wave.report_edited` \
-（author = \"user\"）observation 唤醒你。该 turn 开始时：
+报告不只有你在写：用户可以直接编辑，插件可以在 accept 事务里成批写入，\
+wave assistant 会话也可以写。内核会用 `wave.report_edited` observation \
+唤醒你；会唤醒你的 `author` 只有这几个：{spec_wake_authors}。该 turn 开始时：
 
 1. 调 `calm.report.read` 拿最新 body 和 `docRev`。
-2. 把用户的修改当作 ground truth — 不要覆盖。
+2. 把这次修改当作 ground truth — 不要覆盖。assistant 的编辑和用户的编辑\
+   同一条规则：它来自另一个会话，不是你的草稿的旧版本。
 3. 然后继续你的任务。**不要** 盲目 `report.write` 你之前的草稿。
 
-你不会被自己（`author = \"spec\"`）的编辑唤醒 — 只有用户的会。
+你不会被自己（`author = \"spec\"`）的编辑唤醒。
 
 ## Reading worker outputs (issue #339)
 
@@ -486,11 +494,24 @@ Keep the report's own structure and conventions; you are a guest in a document \
 the spec agent maintains.
 ";
 
-/// Substitute the per-spawn placeholders into a prompt template. Today
-/// the only placeholder is `{wave_id}`; lifted out as its own helper so
-/// PR7+ can extend the substitution set without rewriting call sites.
+/// Render the report-edit authors that wake the spec, straight from the
+/// dispatcher's wake set, in the wire spelling the `wave.report_edited`
+/// payload actually carries (so the prompt names what the agent will see).
+fn spec_wake_authors_prose() -> String {
+    crate::dispatcher::SPEC_WAKE_AUTHORS
+        .iter()
+        .map(|author| format!("`{}`", author.wire_str()))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// Substitute the per-spawn placeholders into a prompt template:
+/// `{wave_id}` and `{spec_wake_authors}`. Lifted out as its own helper so
+/// call sites do not need rewriting when the substitution set grows.
 pub(crate) fn render_system_prompt(template: &str, wave_id: &str) -> String {
-    template.replace("{wave_id}", wave_id)
+    template
+        .replace("{wave_id}", wave_id)
+        .replace("{spec_wake_authors}", &spec_wake_authors_prose())
 }
 
 #[cfg(test)]
@@ -629,6 +650,52 @@ mod tests {
         let worker = render_system_prompt(SeededCardRole::Worker.prompt_template(), "wave-abc");
         assert!(worker.contains("You are a worker agent under spec card on wave `wave-abc`."));
         assert!(worker.contains("neige task-completed"));
+    }
+
+    /// #1252 S0-1: the prompt's wake list is *rendered* from
+    /// `dispatcher::SPEC_WAKE_AUTHORS`, so a change to who the dispatcher
+    /// wakes rewrites the prompt. The expected wire spellings are pinned
+    /// here on purpose: they are the independent statement of the contract
+    /// that catches a silent shrink of the const.
+    #[test]
+    fn spec_prompt_renders_the_dispatcher_report_edit_wake_set() {
+        let p = render_system_prompt(SPEC_SYSTEM_PROMPT_TEMPLATE, "wave-wake");
+
+        assert!(
+            !p.contains("{spec_wake_authors}"),
+            "wake-author placeholder must be substituted; got: {p}"
+        );
+        // The exact rendered sequence, stated independently of the const:
+        // a silent shrink of `SPEC_WAKE_AUTHORS` fails here.
+        let expected_list = "`user` / `plugin` / `assistant`";
+        assert_eq!(
+            spec_wake_authors_prose(),
+            expected_list,
+            "the dispatcher wakes the spec on user/plugin/assistant report edits, \
+             so that is what the prompt must render"
+        );
+        assert_eq!(
+            p.matches(expected_list).count(),
+            2,
+            "both wake-set sites must carry the rendered list; got: {p}"
+        );
+
+        let rendered_list = spec_wake_authors_prose();
+        for excluded in ["spec", "kernel"] {
+            assert!(
+                !rendered_list.contains(excluded),
+                "`{excluded}`-authored edits do not wake the spec, so the rendered \
+                 wake list must not name one; got: {rendered_list}"
+            );
+        }
+        assert!(
+            p.contains("你不会被自己（`author = \"spec\"`）的编辑唤醒。"),
+            "prompt must still state the self-edit exclusion; got: {p}"
+        );
+        assert!(
+            !p.contains("只有用户的会"),
+            "prompt must not claim only user edits wake the spec; got: {p}"
+        );
     }
 
     /// #1211 S3 — the prompt is not the guard and the guard is not the

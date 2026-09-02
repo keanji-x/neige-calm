@@ -118,6 +118,61 @@ async fn events_since_keeps_pre_3b_prime_task_context_frozen_events() {
     ));
 }
 
+/// #1252 S0 R1/F1 — `harness.transcript.cleared` gained three telemetry
+/// fields. Rows written before that carry only `{card_id, runtime_id,
+/// wave_id}` (9 such rows in the live prod db at the time of the fix), and
+/// `events_since` feeds every stored row back through
+/// `Event::from_kind_and_payload`. If the new fields were required, those
+/// rows would fail to deserialize and be silently `continue`d past — while
+/// WS replay still counts their ids toward the client cursor, so a client
+/// that missed a reset would never hear `harness.transcript.cleared` and
+/// would splice the post-reset transcript onto the pre-reset one.
+#[tokio::test]
+async fn events_since_keeps_pre_1252_harness_transcript_cleared_events() {
+    let repo = SqlxRepo::open("sqlite::memory:")
+        .await
+        .expect("open sqlite repo");
+    sqlx::query(
+        r#"INSERT INTO events (kind, payload, actor, at, event_version)
+           VALUES (
+             'harness.transcript.cleared',
+             '{"card_id":"card-old","runtime_id":"rt-old","wave_id":"wave-old"}',
+             'kernel',
+             0,
+             1
+           )"#,
+    )
+    .execute(repo.pool())
+    .await
+    .expect("insert historical transcript reset");
+
+    let rows = repo.events_since(0, 10).await.expect("events_since");
+    assert_eq!(
+        rows.len(),
+        1,
+        "historical transcript reset must not be silently dropped"
+    );
+    // `None`, not `Some(0)`: an unmeasured historical reset must stay
+    // distinguishable from one that measured a genuinely empty transcript.
+    assert!(
+        matches!(
+            &rows[0].3,
+            Event::HarnessTranscriptCleared {
+                runtime_id,
+                card_id,
+                wave_id,
+                cleared_item_count: None,
+                cleared_params_bytes: None,
+                card_age_ms_at_clear: None,
+            } if runtime_id == "rt-old"
+                && card_id.as_str() == "card-old"
+                && wave_id.as_str() == "wave-old"
+        ),
+        "pre-#1252 row must replay with unmeasured telemetry, got {:?}",
+        rows[0].3
+    );
+}
+
 /// #1110 S5 — `Event::WorkflowRegistered` left the enum. Replay of an old
 /// `workflow.registered` envelope must skip the row, not fail the read.
 #[tokio::test]

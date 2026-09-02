@@ -11,7 +11,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::event::RatifyDecision;
+use crate::event::{EditAuthor, RatifyDecision};
 use crate::ids::{CardId, WaveId};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -20,10 +20,30 @@ pub enum Observation {
     WaveGoal {
         text: String,
     },
+    /// A `wave.report_edited` the dispatcher decided warrants waking the
+    /// spec (`dispatcher::SPEC_WAKE_AUTHORS` — `user` / `plugin` /
+    /// `assistant`, never the spec's own writes).
     ReportEdited {
         wave_id: WaveId,
         body_sha256: String,
         body: String,
+        /// #1252 S0 R1/F2 — who made the edit. The spec system prompt tells
+        /// the agent to consider the edit's `author`, so the turn text has
+        /// to carry one; before this it hardcoded "The user edited …" and
+        /// mislabelled every plugin/assistant edit as a user edit.
+        ///
+        /// The `Option` is load-bearing (`#[serde(default)]` below is
+        /// explicit reinforcement of serde's own "absent `Option` is `None`"
+        /// rule, not the mechanism): `Observation` is persisted verbatim
+        /// inside `HarnessSnapshot.pending_queue`
+        /// (`session_projection.handle_state_json`) and read back on boot
+        /// recovery, so a required field would fail to deserialize every
+        /// already-queued observation and wedge the snapshot. `None` means
+        /// "queued before #1252, author unknown" and renders the
+        /// byte-identical old sentence so replayed history does not change.
+        /// The dispatcher always populates it.
+        #[serde(default)]
+        author: Option<EditAuthor>,
     },
     TaskCompleted {
         idempotency_key: String,
@@ -171,9 +191,22 @@ impl Observation {
         match self {
             Observation::WaveGoal { text } => text.clone(),
             Observation::UserMessage { text } => format!("User says:\n{text}"),
-            Observation::ReportEdited { .. } => {
+            // #1252 S0 R1/F2. `None` is only reachable for observations
+            // queued before the `author` field existed; it must render the
+            // byte-identical pre-#1252 sentence so replayed history does
+            // not change under a reader. Everything the dispatcher enqueues
+            // today names its author in the same `author = "..."` spelling
+            // the spec system prompt uses.
+            Observation::ReportEdited { author: None, .. } => {
                 "The user edited the wave report. Re-read the wave state.".to_string()
             }
+            Observation::ReportEdited {
+                author: Some(author),
+                ..
+            } => format!(
+                "The wave report was edited (author = \"{}\"). Re-read the wave state.",
+                author.wire_str()
+            ),
             Observation::TaskCompleted {
                 idempotency_key, ..
             } => format!(
@@ -313,6 +346,62 @@ mod tests {
         assert!(
             text.contains("Did you check Korean refiners?"),
             "raw text missing: {text}"
+        );
+    }
+
+    fn report_edited(author: Option<EditAuthor>) -> Observation {
+        Observation::ReportEdited {
+            wave_id: WaveId::from("wave-1"),
+            body_sha256: "sha".into(),
+            body: "body".into(),
+            author,
+        }
+    }
+
+    /// #1252 S0 R1/F2 — the spec system prompt tells the agent the waking
+    /// `wave.report_edited` carries an `author` of `user` / `plugin` /
+    /// `assistant`. The turn text used to hardcode "The user edited …", so a
+    /// plugin- or assistant-authored edit woke the spec with a sentence that
+    /// contradicted the event and the prompt both.
+    #[test]
+    fn report_edited_turn_text_names_the_real_author() {
+        for author in [EditAuthor::Plugin, EditAuthor::Assistant] {
+            let text = report_edited(Some(author)).to_turn_text();
+            assert!(
+                !text.contains("The user edited"),
+                "{author:?} edit must not be reported as a user edit: {text}"
+            );
+            assert!(
+                text.contains(&format!("author = \"{}\"", author.wire_str())),
+                "{author:?} edit must name its author: {text}"
+            );
+        }
+        let user = report_edited(Some(EditAuthor::User)).to_turn_text();
+        assert!(
+            user.contains("author = \"user\""),
+            "user edit must name its author too: {user}"
+        );
+    }
+
+    /// #1252 S0 R1/F2 — `Observation` is persisted inside
+    /// `HarnessSnapshot.pending_queue` and read back on boot recovery, so a
+    /// `ReportEdited` queued before `author` existed must still deserialize,
+    /// and must render the byte-identical pre-#1252 sentence: replayed
+    /// history may not change under a reader.
+    #[test]
+    fn legacy_report_edited_without_author_deserializes_and_keeps_old_text() {
+        let legacy = serde_json::json!({
+            "type": "report_edited",
+            "wave_id": "wave-1",
+            "body_sha256": "sha",
+            "body": "body",
+        });
+        let obs: Observation =
+            serde_json::from_value(legacy).expect("pre-#1252 queued observation must deserialize");
+        assert_eq!(obs, report_edited(None));
+        assert_eq!(
+            obs.to_turn_text(),
+            "The user edited the wave report. Re-read the wave state."
         );
     }
 

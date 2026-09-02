@@ -7,11 +7,12 @@ use serde_json::{Value, json};
 
 use crate::card_role_cache::CardRoleCache;
 use crate::db::sqlite::{
-    append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx, card_update_tx,
-    harness_items_delete_by_card_tx, session_bind_attribution_tx, session_delete_tx,
-    session_fail_if_active_runtime_tx, session_prepare_deferred_spec_tx,
-    session_projection_active_for_card_tx, session_restore_from_superseded_runtime_tx,
-    session_set_handle_state_tx, session_start_runtime_tx, session_supersede_and_start_tx,
+    HarnessTranscriptMeasure, append_decision_event_in_tx, card_create_with_id_tx, card_delete_tx,
+    card_update_tx, harness_items_delete_by_card_tx, harness_items_measure_by_card_tx,
+    session_bind_attribution_tx, session_delete_tx, session_fail_if_active_runtime_tx,
+    session_prepare_deferred_spec_tx, session_projection_active_for_card_tx,
+    session_restore_from_superseded_runtime_tx, session_set_handle_state_tx,
+    session_start_runtime_tx, session_supersede_and_start_tx,
 };
 use crate::db::{Repo, write_in_tx_typed, write_with_event_typed};
 use crate::error::{CalmError, Result};
@@ -946,7 +947,10 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
         let op_clone = op.clone();
         let output_clone = output.clone();
         let thread_for_tx = thread_id.clone();
-        let ((updated_card, old_runtime_id, old_runtime_status), _id) = write_with_event_typed(
+        // Destructured on the next statement rather than inline: the inline
+        // pattern no longer fits one line, and wrapping it reindents the whole
+        // transaction closure for no semantic reason.
+        let (tx_out, _id) = write_with_event_typed(
             ctx.repo.as_ref(),
             payload.actor,
             scope,
@@ -1022,7 +1026,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     if let Some(hashed) = new_mcp_token_hash.as_ref() {
                         mirror_session_mcp_token(tx, &runtime_id, hashed).await?;
                     }
+                    // #1252 S0-2 — the delete is a hard delete across the
+                    // card's whole history, so measure the transcript here,
+                    // inside the tx and strictly before the delete. After
+                    // this line the evidence is gone for good; the numbers
+                    // ride out on `Event::HarnessTranscriptCleared` below.
+                    let mut cleared_measure = HarnessTranscriptMeasure::default();
                     if reset_harness_items {
+                        cleared_measure = harness_items_measure_by_card_tx(tx, &card_id).await?;
                         harness_items_delete_by_card_tx(tx, &card_id).await?;
                     }
                     let card = card_update_tx(
@@ -1049,13 +1060,19 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                     )
                     .await?;
                     Ok((
-                        (card.clone(), old_runtime_id, old_runtime_status),
+                        (
+                            card.clone(),
+                            old_runtime_id,
+                            old_runtime_status,
+                            cleared_measure,
+                        ),
                         Event::CardUpdated(card),
                     ))
                 })
             },
         )
         .await?;
+        let (updated_card, old_runtime_id, old_runtime_status, cleared_measure) = tx_out;
         drop(mint_lock_guard);
         card = updated_card;
         if let Some(old_runtime_id) = old_runtime_id {
@@ -1081,6 +1098,14 @@ impl ProviderAdapter for SpecHarnessStartAdapter {
                         runtime_id: transcript_runtime_id,
                         card_id: transcript_card_id,
                         wave_id: transcript_wave_id,
+                        // Always `Some(..)` — the `Option` on the event exists
+                        // only so pre-#1252 rows still deserialize on replay.
+                        cleared_item_count: Some(cleared_measure.item_count),
+                        cleared_params_bytes: Some(cleared_measure.params_bytes),
+                        // Card age at reset, from the card row this tx just
+                        // wrote. Clamped at 0: a clock step backwards must
+                        // not report a negative age.
+                        card_age_ms_at_clear: Some((now_ms() - card.created_at).max(0)),
                     },
                 )
                 .await?;

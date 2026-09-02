@@ -98,8 +98,9 @@ describe('paintModule', () => {
  * `row()`, and that is the whole of what *this suite* observes. S1b-2's
  * `checkProjection` now carries the consequence at the marker level: how many
  * `[data-nc-row-action]` markers a painter emits is constrained too, for the
- * painters it is run over — which today are synthetic, since no production
- * painter is wired to it until S1b-3/4. Neither claim says an unsupported
+ * painters it is run over — which since S1b-3b include a production one, the
+ * desktop painter, over the real rendered page. The mobile surface is still
+ * hand-composed and is run over by nothing (S1b-4). Neither claim says an unsupported
  * control cannot be drawn: a painter may draw an extra control that carries no
  * marker at all.
  */
@@ -181,12 +182,18 @@ describe('paintModule action filtering', () => {
  * both modules out in one tree. Mobile drills into one module at a time and
  * will call `paintModule` per page when S1b-4 wires it, so the module sequence
  * there is a navigation structure, not a DOM sequence. Today the mobile surface
- * calls neither: outside this suite, `paintModule`'s callers are `paintPanel`
- * and `checkProjection` (`tools/projection/public.ts`), and no *production
- * renderer* calls either one.
+ * calls neither.
  *
- * Nothing forces the desktop component to call this — that gap is review's
- * (§6.10), not this suite's.
+ * **The desktop does, since S1b-3b.** The production chain is
+ * `wave/page/public.tsx`'s desktop panel card → `paintDesktopPanel` →
+ * `paintPanel` → `paintModule`. So outside this suite `paintPanel`'s callers are
+ * that wrapper and `checkProjection` (`tools/projection/public.ts`).
+ *
+ * Nothing *in this file* forces that chain to exist — this suite would stay
+ * green if the page stopped calling the wrapper tomorrow. What holds it is
+ * `wave/page/desktop-entry.test.tsx`, which mocks `paintDesktopPanel` and
+ * checks the page both calls it and renders what it returns; the residue that
+ * oracle leaves is written down in `tools/projection/public.ts`'s standing list.
  */
 describe('paintPanel', () => {
   /* `c1` carries actions on purpose. With an actionless row here, `paintPanel`

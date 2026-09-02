@@ -93,7 +93,17 @@ describe('parseHarnessItem', () => {
 
   it.each([
     ['A worker card finished a turn with notes', 'Worker turn finished'],
+    // #1252 F2 — both turn-text shapes must land on the same label: the
+    // legacy sentence (pre-#1252 queued observations) and the authored one.
     ['The user edited the wave report body', 'Report edited'],
+    [
+      'The wave report was edited (author = "plugin"). Re-read the wave state.',
+      'Report edited',
+    ],
+    [
+      'The wave report was edited (author = "user"). Re-read the wave state.',
+      'Report edited',
+    ],
     ['A dispatched task completed successfully', 'Task completed'],
     ['A dispatched task failed with an error', 'Task failed'],
   ])('labels system framing: %s', (text, label) => {
