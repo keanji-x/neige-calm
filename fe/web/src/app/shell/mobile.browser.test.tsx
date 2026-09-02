@@ -258,11 +258,13 @@ describe('Wave mobile presentation', () => {
     await settlePaint();
     await page.screenshot({ path: '../../../../test-results/mobile-cards.png' });
 
-    await page.getByRole('button', { name: 'Implementation terminal' }).click();
-    expect(page.getByRole('heading', { name: 'Implementation terminal' })).toBeTruthy();
-    await settlePaint();
-    await page.screenshot({ path: '../../../../test-results/mobile-card-detail.png' });
-    await page.getByRole('button', { name: 'Back to Cards' }).click();
+    /* The card detail page this walk used to push into is gone (#1234 S1b-4a):
+       opening a card is not offered on this viewport, so the row is text. What
+       is asserted instead is that the row's content is on the page and that it
+       is not a control — the same claim, from the other side. */
+    expect(document.querySelector('[data-nc-mobile-panel]')?.textContent)
+      .toContain('Implementation terminal');
+    expect(document.querySelectorAll('[data-nc-mobile-panel] [data-nc-row] button').length).toBe(0);
     await closePanel();
 
     await opener.click();

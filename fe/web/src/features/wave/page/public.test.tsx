@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -451,19 +451,32 @@ describe('WavePage card inventory', () => {
     expect(onOpenCard).toHaveBeenCalledWith('k1');
   });
 
-  it('opens a mobile Card detail page without entering Grid', async () => {
+  /*
+   * REPLACES "opens a mobile Card detail page without entering Grid" (#1234
+   * S1b-4a). The detail page is gone, and so is the row that opened it: opening
+   * a card is not offered on this viewport at all (`mobile-painter.tsx`'s
+   * capability table), so the mobile Cards row is not a control.
+   *
+   * What survives of the old case's intent is its first assertion — the mobile
+   * row must not reach `onOpenCard` — and it is stronger now: there is nothing
+   * to click. The affordance's absence is also asserted structurally in
+   * `mobile-projection.test.tsx`; this case keeps it here, where the desktop's
+   * own `onOpenCard` wiring is asserted one test above, so the two surfaces'
+   * opposite answers to the same prop sit side by side.
+   */
+  it('offers no card control on the mobile page: the row is text, not a landing', async () => {
     const onOpenCard = vi.fn();
     renderPage({ cards: [card({ id: 'k1', title: 'Build log' })], onOpenCard });
     await openCards();
-    const cardRow = screen.getByRole('button', { name: 'Build log' });
-    await userEvent.click(cardRow);
+    const panel = document.querySelector('[data-nc-mobile-panel]');
+    expect(panel?.textContent).toContain('Build log');
+    expect(within(panel as HTMLElement).queryByRole('button', { name: /Build log/ })).toBeNull();
     expect(onOpenCard).not.toHaveBeenCalled();
+    /* Still a pushed page with its own return to Report — that half of the old
+       case is about the panel, not about the card. */
     expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('open');
-    expect(screen.getByRole('heading', { name: 'Build log' })).toBeTruthy();
-    expect(screen.getByText('Card ID').nextElementSibling?.textContent).toBe('k1');
-
-    await userEvent.click(screen.getByRole('button', { name: 'Back to Cards' }));
-    expect(screen.getByRole('heading', { name: 'Cards' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Back to Report' }));
+    expect(document.querySelector('[data-nc-mobile-page]')?.getAttribute('data-nc-mobile-page')).toBe('closed');
   });
 
   it('falls back to the kind when a card has no title', () => {
