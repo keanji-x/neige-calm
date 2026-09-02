@@ -30,21 +30,47 @@
 // test and the app each call the painter factory separately — and it does
 // **not** say `mount` is faithful: a `mount` that ignored `painted` and
 // fabricated a correct tree would pass everything here. Both are trust
-// boundaries, carried by S1b-3/4's real page tests.
+// boundaries. For the **desktop** they are carried by S1b-3b: the page is
+// rendered for real and checked through `checkProjectionIn`, and
+// `desktop-entry.test.tsx` holds that the page calls `paintDesktopPanel` with
+// the whole view and renders what it hands back. That is the best evidence we
+// have that a marked node in that tree came from the painter — not a proof:
+// see the standing list below for the residue it leaves. (The page's
+// marker-literal source scan is a narrower guard beside it, not the carrier;
+// see `checkProjectionIn`.) The mobile surface has no such carrier yet.
 //
 // **Violations are returned, not thrown.** Each carries a stable `code`, so a
 // malicious painter's *isolation* is mechanically assertable
 // (`expect(codes).toEqual(['field-text'])`) rather than "something went red".
 //
-// **Not covered — the standing list.** None of these has a carrier anywhere, and
-// a green `checkProjection` says nothing about them:
+// **Not covered by `checkProjection` itself — the standing list.** A green
+// `checkProjection` says nothing about any of these. Some have no carrier
+// anywhere; others have a **partial** desktop carrier outside this framework,
+// and each entry says which:
 //
 //  - **`mount` fidelity** and **the production painter factory** — the two trust
 //    boundaries named above; S1b-3/4's real page tests carry them.
-//  - **Handler binding.** Whether a marked host runs anything, whether the
-//    action's payload (`cardId` / `blockId`) reaches the *right* callback, and
-//    whether that callback is the one the row's action names. A painter that
-//    wires every action to the same handler is green here.
+//  - **Handler binding — the positive binding *and* the panel's own rival
+//    callback have a desktop carrier; the wider prop surface is not
+//    exhausted.** This framework checks none of it:
+//    whether a marked host runs anything, whether the payload (`cardId` /
+//    `blockId`) reaches the right callback, whether that callback is the one the
+//    row's action names. A painter that wires every action to the same handler
+//    is green here. Outside it, `wave/page/public.test.tsx` drives the real
+//    desktop page and asserts, for each of the three actions that exist today,
+//    that the callback it must reach was called with the right payload —
+//    `onOpenTask` with the block id, `onOpenCard` with the worker card's id,
+//    `onDeleteCard` with the row's wire id exactly once — plus that no delete is
+//    offered without `onDeleteCard` or on a kernel-owned card. **Exclusivity is
+//    covered for the three actions that exist, and for nothing else.** Each of
+//    them pins a second callback as *not* called: the two worker-card cases pin
+//    `onOpenCard` / `onOpenTask` against each other, and the delete case
+//    supplies `onOpenCard` and asserts it was never reached — so a delete that
+//    fires the correct callback **and** opens the card goes red. What remains
+//    unexhausted is the rest of the prop surface: no case enumerates *every*
+//    callback the page takes, so an action that additionally fires some third
+//    prop (`onRenameWave`, say) is still green. A fourth action, or a second
+//    surface, arrives with no cover at all.
 //  - **Interactivity of the host.** §6.3 declines this: a marker may sit on a
 //    `disabled` control, on an element with no role or tab stop, or on a plain
 //    `<span>`. Mobile rows require it — Astryx generates the interactive element
@@ -57,6 +83,22 @@
 //    goes **falsely red** against a non-null `label`. The painters must use
 //    `aria-label`; that constraint is not itself checked, it is imposed by this
 //    checker being the oracle.
+//  - **`RowBadge.struck` — a formal field with no carrier in this framework at
+//    all.** `checkBadges` reads a badge's id, its position in the sequence and
+//    its text, and nothing else: a painter that ignored `struck`, or inverted
+//    it, is green under every code above. Its desktop coverage lives *outside*
+//    the projection — `wave/page/public.test.tsx` asserts the `taskWithdrawn`
+//    class on a withdrawn declaration badge and its absence on an ordinary one.
+//    That is a behavioural class assertion over one painter's stylesheet, not a
+//    projection obligation, and no other surface has even that.
+//  - **The projection is not onto, by design.** Nothing here says the DOM holds
+//    *only* what the view model names. A painter may add unmarked chrome,
+//    wrappers, counters and extra controls freely and stay green — that is a
+//    standing positive case in `projection-contract.test.tsx` ("when the painter
+//    invents chrome of its own"), not an accident. Every code above counts
+//    marked nodes, so an extra affordance carrying no marker is invisible to
+//    all of them; whether the surface shows something it should not is a
+//    question for the behaviour suites.
 //  - **The semantic content of the view model.** That a badge's `text` or a
 //    status's `phrase` is the *right* string is `core/view`'s business. This
 //    checker only proves the DOM says what the view model says.
@@ -64,6 +106,38 @@
 //    `projection-contract.test.tsx` is mechanically *executed*, but its
 //    *contents* — including any field a future `RowBadge` / `RowStatus` grows —
 //    are maintained by hand (§6.9).
+//  - **What the page's source scan does not close.** `public.tsx` may spell no
+//    `MARKER` name, and that stops a marker literal being rewritten in place —
+//    it does not stop one reaching the DOM by a computed property
+//    (`{...{[MARKER.module]: 'cards'}}`), by assembly (`'data-' +
+//    'nc-module'`), through a marker-channel prop (`ui/panel-card` takes
+//    three), or from an imported component that carries its own. The scan is
+//    a hygiene guard; `desktop-entry.test.tsx` is the oracle.
+//  - **What the entry oracle does not close either — content the painter did
+//    not produce.** `desktop-entry.test.tsx` catches the painter's whole return
+//    value being discarded, and catches a bypass that carries markers. Its
+//    `replace` case additionally asserts that the fixture's own module titles
+//    and row text vanish with the painter's output, which catches a *hand-built,
+//    unmarked* second copy of the same **Cards/Tasks row-modules** rendered
+//    beside the real one. But that half is bound to **that fixture's strings**:
+//    a parallel unmarked tree printing different content, or one that only
+//    appears for inputs the fixture does not use, is outside every check we
+//    have. The unproven statement is therefore "**all Cards/Tasks row-module
+//    content comes from the painter**" — deliberately not "all content in the
+//    desktop panel", which is false as an obligation: the panel legitimately
+//    holds `Referenced by` and `Conversations`, composed by the page outside the
+//    painter.
+//  - **The characterization suite is no longer independent.**
+//    `wave/page/view-characterization.test.tsx` compared the derivation against
+//    a hand-written page; since S1b-3b the page renders *from* that derivation,
+//    so a misread rule now makes both sides wrong together and the suite stays
+//    green. It is a same-source regression test now, and its own head says so.
+//  - **No mechanical old-vs-new DOM diff.** That the panel S1b-3b paints is
+//    structurally identical to the one the page hand-composed before it is held
+//    by the surviving behaviour, contract and browser suites plus review — not
+//    by a whole-subtree structural comparison against the pre-slice tree.
+//    Anything those suites do not read (a class name nobody asserts, an
+//    attribute order, a wrapper element) could have changed unseen.
 
 import { FIELD, MARKER, paintModule } from '../../core/view/panel.ts';
 import type { PanelRow, RowModuleView, RowPainter } from '../../core/view/panel.ts';
@@ -223,13 +297,48 @@ function show(values: readonly (string | null)[]): string {
   return JSON.stringify(values);
 }
 
-export function checkProjection<T>(
+/**
+ * Run every obligation against a tree that **already exists** — the entry a real
+ * page's test uses (#1234 S1b-3b): render the production component, take the
+ * surface's own subtree, and hand it here.
+ *
+ * **Honest accounting: this is one step weaker than `checkProjection`.** The
+ * `painter` argument is the *caller's declaration*. Nothing here can prove that
+ * `root` was painted by this painter — or by any painter at all. Two facts are
+ * read off `painter` and both are taken on trust:
+ *
+ *  - its capability table, which decides the expected action sequence
+ *    (`checkActions`, `action-partition`);
+ *  - by implication, that the production surface constructed its painter with
+ *    the same host props the test did.
+ *
+ * A page that hand-composed a correct-looking tree, or that painted with a
+ * *different* painter, is green here. `checkProjection` at least paints with the
+ * painter it checks; this entry does not paint at all.
+ *
+ * **What closes that gap is not in this file**, and on the desktop it is two
+ * things, not one:
+ *
+ *  - `features/wave/page/desktop-entry.test.tsx` mocks `paintDesktopPanel` and
+ *    holds the *call*: the page invokes it once, with the whole derived view,
+ *    and the panel it shows is the value that came back — a marked node in the
+ *    real DOM therefore came from the painter. This is the load-bearing half,
+ *    and it mentions no marker name, so no spelling can go round it.
+ *  - The page's source scan (`desktop-projection.test.tsx`) is the narrower
+ *    guard beside it: `public.tsx` may not spell any of `MARKER`'s attribute
+ *    names, in either the kebab (`data-nc-row`) or the camel (`dataset.ncRow`)
+ *    spelling. Read it as "the page does not rewrite a marker literal in
+ *    place", **not** as a closed proof — a computed property, a concatenation,
+ *    a marker-channel prop or an imported component all reach the DOM without
+ *    one.
+ *
+ * A green result here means nothing without the first of those.
+ */
+export function checkProjectionIn<T>(
   painter: RowPainter<T>,
   modules: readonly RowModuleView[],
-  mount: (painted: readonly T[]) => ProjectionNode,
+  root: ProjectionNode,
 ): readonly Violation[] {
-  const painted: readonly T[] = modules.map((module) => paintModule(painter, module));
-  const root = mount(painted);
   const violations: Violation[] = [];
   const add: Add = (code, detail) => { violations.push({ code, detail }); };
 
@@ -237,6 +346,21 @@ export function checkProjection<T>(
   checkCoHosting(root, add);
   checkTree(root, modules, painter, add);
   return violations;
+}
+
+/**
+ * Paint with `painter`, hand the leaves to the injected `mount`, and check the
+ * resulting tree. Behaviour is unchanged by the `checkProjectionIn` split: this
+ * is the same three checks over the same root, and `projection-contract.test.tsx`
+ * is the safety net that says so.
+ */
+export function checkProjection<T>(
+  painter: RowPainter<T>,
+  modules: readonly RowModuleView[],
+  mount: (painted: readonly T[]) => ProjectionNode,
+): readonly Violation[] {
+  const painted: readonly T[] = modules.map((module) => paintModule(painter, module));
+  return checkProjectionIn(painter, modules, mount(painted));
 }
 
 /**
