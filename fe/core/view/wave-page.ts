@@ -62,8 +62,12 @@ export function taskStatusPhrase(status: string, detail: string | null): string 
 }
 
 /**
- * The Cards module (`wave/page/desktop-painter.tsx`'s `cardRow`; it was
- * `public.tsx:492-546` until S1b-3b moved it).
+ * The Cards module. Its renderer is `wave/page/desktop-painter.tsx`'s
+ * `cardRow`, which is where S1b-3b moved the DOM that `wave/page/public.tsx`
+ * used to spell inline under its `Cards` `PanelModule`.
+ *
+ * (Symbol references, not line numbers: every earlier version of this docstring
+ * cited `public.tsx:NNN`, and every one of them was stale by the next edit.)
  *
  * Two rules are easy to get subtly wrong and are therefore spelled out:
  *
@@ -119,8 +123,9 @@ function cardRow(card: CardWire): PanelRow {
 }
 
 /**
- * The Tasks module (`wave/page/desktop-painter.tsx`'s `taskRow`; it was
- * `public.tsx:580-757` until S1b-3b moved it).
+ * The Tasks module. Its renderer is `wave/page/desktop-painter.tsx`'s
+ * `taskRow`, which is where S1b-3b moved the DOM that `wave/page/public.tsx`
+ * used to spell inline under its `Tasks` `PanelModule`.
  *
  * `declaration` and `status` are read **independently**, and this function
  * imposes no precedence between them. That a dispatched task stops printing its

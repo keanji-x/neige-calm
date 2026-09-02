@@ -1,0 +1,153 @@
+// @vitest-environment jsdom
+//
+// #1234 S1b-3b — the **entry** oracle: the page really goes through
+// `paintDesktopPanel`, and the panel it shows really is what came back.
+//
+// **Why this file exists.** `desktop-projection.test.tsx` checks that the
+// rendered desktop panel is a faithful projection of the view model, and
+// `checkProjectionIn` takes the painter on trust — it cannot prove the DOM it
+// reads came from that painter. The argument that used to close that gap was a
+// **source scan**: `public.tsx` spells none of `MARKER`'s attribute names, so
+// the only writer of those attributes into the panel is the painter. That scan
+// is worth keeping and it is not a closed proof, because it is bound to the
+// *spelling* of the markers rather than to the concept, and at least four ways
+// past it need no literal at all:
+//
+//   * a computed property — `{...{[MARKER.module]: 'cards'}}`;
+//   * assembly — `'data-' + 'nc-module'`;
+//   * a marker-channel prop that spells the attribute somewhere else
+//     (`ui/panel-card`'s `moduleMarker` / `titleFieldMarker` do exactly this,
+//     legitimately);
+//   * importing a component from another file that carries markers of its own.
+//
+// So the scan's honest claim is narrow: **the page does not rewrite a marker
+// literal in place.** What this file adds is an oracle that does not mention a
+// marker name at all — it holds the *call*, so no spelling can go round it.
+//
+// **Two obligations, and the second is the one that bites.** "It was called" is
+// satisfied by a page that calls the painter and then throws the result away
+// and draws its own panel beside it. So the mock's return value is tagged, and
+// the tag has to be *in the desktop panel subtree*; and in the third case the
+// mock returns the tag **instead of** the painted modules, which leaves the
+// subtree with no module and no row marker in it unless something other than
+// the painter put them there.
+//
+// **Why a whole file for it.** `vi.mock` is module-wide, so arming this one in
+// `desktop-projection.test.tsx` would put a mock underneath that suite's
+// faithful-projection cases too. The two files divide the work: the projection
+// suite renders the page with nothing mocked, this one holds the entry.
+
+import { cleanup } from '@testing-library/react';
+import type { ReactNode } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import type { ReportTaskRow } from '../../../../../core/domain/report.ts';
+import type { CardWire } from '../../../../../core/domain/wave.ts';
+import { MARKER } from '../../../../../core/view/panel.ts';
+import type { RowPainter, WavePageView } from '../../../../../core/view/panel.ts';
+import { deriveWavePageView } from '../../../../../core/view/wave-page.ts';
+import type { DesktopLeaf } from './desktop-painter.tsx';
+import { card, renderPage } from './test-fixtures.tsx';
+
+/** Every call the page made, in order. */
+const calls: { painter: RowPainter<DesktopLeaf>; view: WavePageView }[] = [];
+
+/**
+ * What the mock hands back.
+ *
+ *  - `wrap` — the painter's own modules, with the tag in front. The page under
+ *    test is unchanged apart from one extra node.
+ *  - `replace` — the tag **and nothing else**, which is what makes "the page
+ *    draws no panel of its own" observable.
+ */
+let mode: 'wrap' | 'replace' = 'wrap';
+
+vi.mock('./desktop-painter.tsx', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./desktop-painter.tsx')>();
+  return {
+    ...actual,
+    paintDesktopPanel: (painter: RowPainter<DesktopLeaf>, view: WavePageView): readonly ReactNode[] => {
+      calls.push({ painter, view });
+      /* The tag is not a projection marker and deliberately shares no prefix
+         with one: it must not be something `checkProjectionIn`'s selectors or
+         the page's own source scan could ever read as a marker. */
+      const tag = <div key="painted-here" data-entry-oracle-tag="" />;
+      return mode === 'replace' ? [tag] : [tag, ...actual.paintDesktopPanel(painter, view)];
+    },
+  };
+});
+
+afterEach(() => {
+  cleanup();
+  calls.length = 0;
+  mode = 'wrap';
+});
+
+const CARDS: readonly CardWire[] = [
+  card({ id: 'card-1', kind: 'terminal', title: 'Build log', deletable: true }),
+  card({ id: 'card-2', kind: 'harness', title: null, deletable: false }),
+];
+
+const TASKS: readonly ReportTaskRow[] = [
+  {
+    blockId: 'block-1', key: 'alpha-gate', state: 'ready', declaration: null,
+    status: 'running', statusDetail: 'step 2 of 3', kind: 'codex', workerCardId: 'card-1',
+  },
+  {
+    blockId: 'block-2', key: 'beta-gate', state: 'withdrawn', declaration: 'Withdrawn',
+    status: null, statusDetail: null, kind: null, workerCardId: null,
+  },
+];
+
+/** The desktop panel subtree — the same root `desktop-projection.test.tsx`
+ *  scopes to, and for the same reason: the mobile surface is a sibling that is
+ *  in the DOM at the same time. */
+function desktopPanel(container: Element): Element {
+  const root = container.querySelector('[data-nc-desktop-panel]');
+  expect(root, 'the desktop panel surface must be findable').not.toBeNull();
+  return root!;
+}
+
+describe('the page paints its desktop panel through paintDesktopPanel', () => {
+  it('calls it once, with the whole derived view and both modules', () => {
+    renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
+
+    expect(calls.length, 'paintDesktopPanel calls').toBe(1);
+    /* The **whole** view, not a slice of it: an equality against the derivation
+       run independently here catches a page that filtered a module away, or
+       reordered them, or paints from something else entirely. */
+    expect(calls[0].view).toEqual(deriveWavePageView({ cards: CARDS, tasks: TASKS }));
+    /* Spelled out too, because the equality above would also be satisfied by a
+       derivation that had itself lost a module. */
+    expect(calls[0].view.rowModules.map((module) => module.key)).toEqual(['cards', 'tasks']);
+    expect(calls[0].view.rowModules.map((module) => module.rows.length))
+      .toEqual([CARDS.length, TASKS.length]);
+  });
+
+  it('renders what it handed back, inside the desktop panel', () => {
+    const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
+    const root = desktopPanel(container);
+
+    expect(root.querySelectorAll('[data-entry-oracle-tag]').length, 'the painter’s node').toBe(1);
+    /* Not vacuous: in `wrap` the painted modules are there as well, which is
+       the state the `replace` case below removes. */
+    expect(MARKER.module).toBe('data-nc-module');
+    expect(MARKER.row).toBe('data-nc-row');
+    expect(root.querySelectorAll('[data-nc-module]').length).toBe(2);
+    expect(root.querySelectorAll('[data-nc-row]').length).toBe(CARDS.length + TASKS.length);
+  });
+
+  it('and draws no row module of its own beside it', () => {
+    mode = 'replace';
+    const { container } = renderPage({ cards: CARDS, tasks: TASKS, onDeleteCard: vi.fn() });
+    const root = desktopPanel(container);
+
+    expect(root.querySelectorAll('[data-entry-oracle-tag]').length).toBe(1);
+    /* The page composed the panel card out of the painter's return value and
+       nothing else. `Referenced by` / `Conversations` are `PanelModule`s too
+       and are correctly unmarked (`ui/panel-card`'s channels are opt-in), so
+       zero is the right number here and not an accident of scoping. */
+    expect(root.querySelectorAll('[data-nc-module]').length, 'modules the page drew itself').toBe(0);
+    expect(root.querySelectorAll('[data-nc-row]').length, 'rows the page drew itself').toBe(0);
+  });
+});

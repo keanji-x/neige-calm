@@ -22,12 +22,19 @@
 // the status dot, with the kind as a sibling. Deciding between them by sniffing
 // the row (`does it carry a reveal-block action?`) would make this file correct
 // only by an invariant of `wave-page.ts` that nothing states, which is the
-// mistake `wave-page.ts`'s own docstrings warn about twice. So a painted leaf is
-// a *pending* node instead: it is finished once the module it belongs to says
-// which module that is. `slot` is the second half of the same problem —
+// mistake `wave-page.ts`'s own docstrings warn about twice. So a row or empty
+// leaf is a *pending* node instead: it is finished once the module it belongs
+// to says which module that is. `slot` is the second half of the same problem —
 // `paintModule` calls `empty()` exactly when a module has no rows, but the `T`
 // it hands back does not say so, and the desktop wraps rows in a `<ul>` and the
-// empty line in nothing.
+// empty line in nothing. `DesktopLeaf` is therefore a tagged union rather than
+// one shape: a module leaf is already finished, and saying so is what keeps the
+// top level from looking a module's key up a second time (see its docstring).
+//
+// **Symbol references only.** The DOM here came out of `wave/page/public.tsx`,
+// and several docstrings in this issue cited the lines it used to occupy. Every
+// one of them was stale by the next edit; they name functions and components
+// now.
 
 import type { ReactNode } from 'react';
 
@@ -40,16 +47,32 @@ import { PanelEmpty, PanelModule } from '../../../ui/panel-card/public.tsx';
 import styles from './page.module.css';
 
 /**
- * A painted leaf that still needs to know which module it lands in.
- *
- * `paint` is called by `module()` for a row or an empty line, and by
- * `paintDesktopPanel` for a module (which ignores the argument — a module
- * already knows its own key).
+ * A row or an empty line, painted as far as it can be here: it still needs to
+ * know which module it lands in, and `module()` is the only thing that knows.
+ * `paint` is called from there and nowhere else.
  */
-export type DesktopLeaf = Readonly<{
-  slot: 'row' | 'empty' | 'module';
+type PendingLeaf = Readonly<{
+  slot: 'row' | 'empty';
   paint: (moduleKey: RowModuleView['key']) => ReactNode;
 }>;
+
+/**
+ * A module, which needs nothing further: `module()` was handed `parts.key` and
+ * resolved its own children against it there.
+ */
+type ModuleLeaf = Readonly<{ slot: 'module'; node: ReactNode }>;
+
+/**
+ * **A tagged union, and the tag is the difference that matters.** A module leaf
+ * is *finished*; a row or empty leaf is not. Giving both halves the same
+ * `paint(moduleKey)` signature is what made the top level look the key up again
+ * by position (`view.rowModules[i].key`) — re-deriving, off the view's *order*,
+ * a fact `module()` had already captured from `parts.key`. Correct only because
+ * `paintPanel` is order-preserving, and one fact bound to two places. The union
+ * says instead that only one of the two ever needs a key, and that one never
+ * reaches the top level.
+ */
+export type DesktopLeaf = PendingLeaf | ModuleLeaf;
 
 export type DesktopPainterDeps = Readonly<{
   onOpenCard?: (cardId: string) => void;
@@ -99,7 +122,8 @@ function wording(action: Control): Readonly<Record<string, string>> {
 }
 
 /**
- * The status dot (`public.tsx`'s former `:741-749`).
+ * The status dot, moved verbatim out of the wave page's former inline Tasks
+ * module (S1b-3b).
  *
  * Three carriers, unchanged. `data-nc-status` holds the **bare token**, which is
  * what the stylesheet keys colour off — folding the kernel's reason into it
@@ -135,7 +159,8 @@ function cardBadge(badge: RowBadge): ReactNode {
 }
 
 /**
- * A Cards row (`public.tsx`'s former `:531-560`).
+ * A Cards row — the `<li>` the wave page used to spell inline under its `Cards`
+ * `PanelModule`, moved here by S1b-3b.
  *
  * The delete is a **sibling** of the row button, never a child: a `<button>`
  * inside a `<button>` is dropped by every HTML parser, and
@@ -189,7 +214,8 @@ function cardRow(row: PanelRow, deps: DesktopPainterDeps): ReactNode {
 }
 
 /**
- * A Task row (`public.tsx`'s former `:654-769`).
+ * A Task row — the `<li>` the wave page used to spell inline under its `Tasks`
+ * `PanelModule`, moved here by S1b-3b.
  *
  * **Two controls in one row, and the second is a sibling.** The row used to be
  * one `<button>` that decided for the reader which of two landings it took; a
@@ -306,12 +332,12 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
       paint: () => <PanelEmpty key="empty" fieldMarker={FIELD.empty}>{text}</PanelEmpty>,
     }),
 
-    module: (parts) => ({
-      slot: 'module',
-      paint: () => {
-        const children = parts.children.map((leaf) => leaf.paint(parts.key));
-        const rows = parts.children.every((leaf) => leaf.slot === 'row');
-        return (
+    module: (parts) => {
+      const children = parts.children.map((leaf) => finish(leaf, parts.key));
+      const rows = parts.children.every((leaf) => leaf.slot === 'row');
+      return {
+        slot: 'module',
+        node: (
           <PanelModule
             key={parts.key}
             title={parts.title}
@@ -324,21 +350,43 @@ export function makeDesktopPainter(deps: DesktopPainterDeps): RowPainter<Desktop
                 ? <ul className={styles.cards} data-nc-card-inventory="">{children}</ul>
                 : <ul className={styles.tasks} data-nc-task-inventory="">{children}</ul>}
           </PanelModule>
-        );
-      },
-    }),
+        ),
+      };
+    },
   };
 }
 
 /**
- * `paintPanel`, finished into nodes the page can render.
+ * Resolve one of a module's children against the module it landed in.
  *
- * The traversal is `core/view`'s — this only resolves each module leaf, which
- * needs no key of its own beyond the one it already carries.
+ * `paintModule` builds a module's children out of `row()` and `empty()` only,
+ * so the module arm is unreachable — and it throws rather than rendering
+ * nothing, because a module nested inside a module would be a traversal that
+ * has changed shape underneath this file, not a leaf worth silently dropping.
+ */
+function finish(leaf: DesktopLeaf, moduleKey: RowModuleView['key']): ReactNode {
+  if (leaf.slot === 'module') {
+    throw new Error(`paintModule handed the ${moduleKey} module a module leaf as a child`);
+  }
+  return leaf.paint(moduleKey);
+}
+
+/**
+ * `paintPanel`, unwrapped into nodes the page can render.
+ *
+ * The traversal is `core/view`'s, and every leaf it returns is a module that
+ * `module()` already finished against its own `parts.key`. So this unwraps and
+ * does nothing else: it reads no key, and therefore cannot re-bind one to the
+ * view's order.
  */
 export function paintDesktopPanel(
   painter: RowPainter<DesktopLeaf>,
   view: WavePageView,
 ): readonly ReactNode[] {
-  return paintPanel(painter, view).map((leaf, index) => leaf.paint(view.rowModules[index].key));
+  return paintPanel(painter, view).map((leaf) => {
+    if (leaf.slot !== 'module') {
+      throw new Error(`paintPanel returned a ${leaf.slot} leaf where a module was due`);
+    }
+    return leaf.node;
+  });
 }

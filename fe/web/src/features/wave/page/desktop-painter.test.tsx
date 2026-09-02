@@ -7,8 +7,9 @@
 // checks, which is the one thing `checkProjection` guarantees and
 // `checkProjectionIn` cannot. What it says nothing about is whether
 // `public.tsx` renders through this painter at all — that is
-// `desktop-projection.test.tsx`, plus the structural constraint that the page
-// may spell no marker literal of its own.
+// `desktop-entry.test.tsx` (it holds the call and the returned nodes), with
+// `desktop-projection.test.tsx` checking the resulting real DOM against the
+// view model and keeping the page from retyping a marker literal.
 //
 // The capability cases are here rather than there because support is a *painter*
 // fact: `delete-card` is supported when and only when the host passed
@@ -23,10 +24,16 @@ import { checkProjection } from '../../../../../tools/projection/public.ts';
 import type { ProjectionNode } from '../../../../../tools/projection/public.ts';
 import { makeDesktopPainter, type DesktopLeaf } from './desktop-painter.tsx';
 
-/** The one mount every case here uses: it resolves each module leaf and renders
- *  exactly what the painter painted, nothing fabricated. */
+/** The one mount every case here uses: it unwraps each module leaf and renders
+ *  exactly what the painter painted, nothing fabricated. A module leaf is
+ *  already finished (`DesktopLeaf`), so there is no key to supply here — which
+ *  is also why a non-module leaf at this level is a thrown error and not a
+ *  guess. */
 const mount = (painted: readonly DesktopLeaf[]): ProjectionNode =>
-  render(<>{painted.map((leaf) => leaf.paint('cards'))}</>).container;
+  render(<>{painted.map((leaf) => {
+    if (leaf.slot !== 'module') throw new Error(`checkProjection handed back a ${leaf.slot} leaf`);
+    return leaf.node;
+  })}</>).container;
 
 const titled: PanelRow = {
   id: 'card-1',

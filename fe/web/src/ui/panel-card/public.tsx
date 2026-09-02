@@ -16,7 +16,7 @@ import styles from './panel-card.module.css';
  * Marking unconditionally would put four `data-nc-module` elements in a tree
  * whose view model has two, and the module-layer bijection would go red against
  * a faithful painter. Every channel below is absent unless a value is passed,
- * and `panel-card.test.tsx` pins both directions.
+ * and this module's own `public.test.tsx` pins both directions.
  *
  * **Why the attribute names are spelled here rather than imported.**
  * `.dependency-cruiser.cjs`'s `ui-only-core-type-whitelist` lets `ui/**` import

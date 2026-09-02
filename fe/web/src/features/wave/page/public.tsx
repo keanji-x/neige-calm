@@ -137,12 +137,20 @@ export function WavePage({
    *
    * **This file may not spell a projection marker.** Not one of the six
    * attribute names in `core/view/panel.ts`'s `MARKER` table, in either their
-   * attribute spelling or their `dataset` one. That is not style: those
-   * attributes appearing in the rendered panel is the *evidence* the painter
-   * ran, and the evidence is worth nothing if this file can write them itself.
-   * `desktop-projection.test.tsx` asserts the absence mechanically, over this
+   * attribute spelling or their `dataset` one.
+   * `desktop-projection.test.tsx` asserts that absence mechanically, over this
    * file's own source and in both spellings — which is why this comment names
    * none of them.
+   *
+   * **What that scan is, exactly.** It stops this file from *rewriting a marker
+   * literal in place*, which is the cheap way the panel would drift back into
+   * being hand-composed. It is **not** a proof that the painter ran: a marker
+   * can reach the DOM from here with no literal at all — a computed property, a
+   * concatenation, a marker-channel prop (`ui/panel-card` takes three), or a
+   * component imported from a file that carries markers of its own. The claim
+   * that this page goes *through* `paintDesktopPanel` and renders what it hands
+   * back is `desktop-entry.test.tsx`'s, and it is held by holding the call
+   * rather than by any marker's spelling.
    *
    * The page's other markers (`data-nc-wave-page`, `data-nc-role`,
    * `data-nc-panel`, the two inventory markers, …) are this page's own and stay.

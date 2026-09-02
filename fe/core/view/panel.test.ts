@@ -98,8 +98,9 @@ describe('paintModule', () => {
  * `row()`, and that is the whole of what *this suite* observes. S1b-2's
  * `checkProjection` now carries the consequence at the marker level: how many
  * `[data-nc-row-action]` markers a painter emits is constrained too, for the
- * painters it is run over — which today are synthetic, since no production
- * painter is wired to it until S1b-3/4. Neither claim says an unsupported
+ * painters it is run over — which since S1b-3b include a production one, the
+ * desktop painter, over the real rendered page. The mobile surface is still
+ * hand-composed and is run over by nothing (S1b-4). Neither claim says an unsupported
  * control cannot be drawn: a painter may draw an extra control that carries no
  * marker at all.
  */

@@ -17,11 +17,23 @@
 //
 // **What this suite is worth, and what carries the rest.** `checkProjectionIn`
 // takes the painter on trust: it cannot prove this DOM came from that painter,
-// and the painter built here is a second construction, not the page's. The
-// thing that turns a green run into evidence is the last describe below — the
-// page's source may not spell any of `MARKER`'s attribute names, in either
-// spelling — so the only writer of those attributes into this tree is the
-// painter. Delete that describe and this file is back to proving very little.
+// and the painter built here is a second construction, not the page's. What
+// turns a green run into evidence is **`desktop-entry.test.tsx`**, which mocks
+// `paintDesktopPanel` and holds that the page calls it with the whole view and
+// renders the value it hands back. That oracle names no marker, so no spelling
+// of one can go round it.
+//
+// The last describe below is a **second, narrower** guard, and its scope is
+// worth being exact about: the page's source may spell none of `MARKER`'s
+// attribute names, in either face. That stops the panel drifting back to being
+// hand-composed by the cheapest route — someone retyping `data-nc-row` here —
+// and it is **not** a proof that the painter ran. A marker reaches the DOM from
+// this file with no literal in it at all: a computed property
+// (`{...{[MARKER.module]: 'cards'}}`), a concatenation (`'data-' +
+// 'nc-module'`), a marker-channel prop (`ui/panel-card` takes three, and
+// legitimately spells the attribute names itself), or a component imported from
+// a file that carries markers of its own. Read the describe as hygiene, and
+// `desktop-entry.test.tsx` as the oracle.
 
 import { cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -75,7 +87,8 @@ const TASKS: readonly ReportTaskRow[] = [
 ];
 
 /** The painter the page builds for this render, rebuilt here. The duplication is
- *  the trust boundary named in the file head; the source scan closes it. */
+ *  the trust boundary named in the file head; `desktop-entry.test.tsx` closes
+ *  it by holding the call, not the marker spelling. */
 const painter = () => makeDesktopPainter({
   onOpenCard: vi.fn(), onOpenTask: vi.fn(), onDeleteCard: vi.fn(),
 });
@@ -201,6 +214,10 @@ describe('the rendered desktop panel projects its view model faithfully', () => 
 
 describe('the page writes no projection marker of its own', () => {
   /*
+   * A hygiene guard, not the entry oracle — see the file head for what it does
+   * and does not close, and `desktop-entry.test.tsx` for the claim that the
+   * page goes through the painter at all.
+   *
    * Both spellings. Δ5's lesson, paid for once already: an oracle bound to one
    * spelling of an attribute reports zero while `dataset.ncRow` sits in the
    * file, because a DOM attribute has a kebab face (`getAttribute`, CSS) and a

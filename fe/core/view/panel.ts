@@ -202,11 +202,14 @@ export type RowPainter<T> = Readonly<{
  *    desktop one (`desktop-projection.test.tsx`, S1b-3b). The mobile surface is
  *    still hand-composed and is checked by nothing; S1b-4 supplies it.
  *  - Nothing in *this file* forces a renderer to call it. What forces the
- *    desktop is a constraint on the page instead: `wave/page/public.tsx` may
- *    spell none of `MARKER`'s attribute names, so a marked node in the rendered
- *    panel can only have come from the painter. That is a per-surface argument,
- *    not a rule this module can state, and the mobile surface does not have it
- *    yet (§6.10).
+ *    desktop is a per-surface argument: `wave/page/desktop-entry.test.tsx`
+ *    mocks `paintDesktopPanel`, and holds both that the page calls it with the
+ *    whole view and that the panel it shows is the value handed back. (The
+ *    page's marker-literal source scan sits beside that as a narrower guard —
+ *    it stops a literal being rewritten in place, and is not a proof the
+ *    painter ran; markers reach a DOM by other routes than a literal.) That is
+ *    an argument about one surface, not a rule this module can state, and the
+ *    mobile surface does not have it yet (§6.10).
  *  - Whether a supported action is actually wired to a live handler is not
  *    checked anywhere, and is not checked by S1b-2 either — see
  *    `ActionSupport`.
@@ -256,11 +259,22 @@ export function paintPanel<T>(painter: RowPainter<T>, view: WavePageView): reado
  * desktop panel *by way of this table*, never as a literal. The mobile surface
  * still writes none of them.
  *
- * Two spellings outside this table remain, and are named so the coincidence is
- * not mistaken for a dependency: `page.module.css` selects `[data-nc-status]`
- * literally (a stylesheet cannot import a constant), and the desktop test suites
- * query the same literal. `desktop-projection.test.tsx` is what pins the page's
- * rendered markers back to this table.
+ * Spellings outside this table remain, and are named so the coincidence is not
+ * mistaken for a dependency:
+ *
+ *  - `web/src/ui/panel-card/public.tsx` writes `data-nc-module` and
+ *    `data-nc-field` as **production** literals. It cannot import from here —
+ *    `.dependency-cruiser.cjs`'s `ui-only-core-type-whitelist` lets `ui/**`
+ *    read only `core/types/{ids,a11y}.ts` and `core/state/types.ts` — so its
+ *    three marker channels take the marker *value* as a bare string and spell
+ *    the attribute names themselves;
+ *  - `page.module.css` selects `[data-nc-status]` literally (a stylesheet
+ *    cannot import a constant), and the desktop test suites query the same
+ *    literal.
+ *
+ * `desktop-projection.test.tsx` is what pins the page's rendered markers back
+ * to this table: its selectors are built from `MARKER`, so a literal that
+ * disagreed would leave the checker finding no marker at all.
  *
  * They are declared now, in the one platform-independent module both surfaces
  * will depend on, because a marker name is exactly the kind of fact that
