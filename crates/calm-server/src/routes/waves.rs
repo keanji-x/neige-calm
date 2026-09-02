@@ -1862,10 +1862,13 @@ fn prepare_fork_report(
             // `ReportDoc::upsert_block` itself fence-checks only
             // non-prose content (`if kind != KIND_PROSE`), which is why the
             // prose case has to be checked in the op arm. To be exact about
-            // what that gap ever was: it was reachable only by calling
-            // `apply_report_op` directly, never by a user — the MCP (#971)
-            // and REST (#990) block surfaces have refused fenced prose at
-            // their own argument since well before #1269.
+            // the reach of that gap: only a direct `apply_report_op` call
+            // exercises it — no user request can, because the MCP (#971) and
+            // REST (#990) block surfaces both refuse fenced prose at their
+            // own argument. And "fenced prose" there means a fence carried
+            // whole in one block; on the residual that a fence split across
+            // two prose blocks still assembles in the projection, see
+            // `wave_report_guard::validate_prose_block_content`.
             //
             // Deliberately only the fence check here: the fork exit does not
             // additionally run `validate_payload` on the prose block's own

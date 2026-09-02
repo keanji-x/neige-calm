@@ -432,23 +432,17 @@ pub(crate) fn apply_report_op(
                 // upsert_block` fence-checks only NON-prose content, so
                 // a direct `apply_report_op` call with `kind: "prose"`
                 // would otherwise carry a ```neige-block fence straight
-                // in. Not a user-reachable hole — the MCP (#971) and
-                // REST (#990) block surfaces have each run
-                // `check_prose_markdown` on their own argument since
-                // long before this; the point is that the op stops
-                // depending on them to do so. The rule here is the
-                // surfaces' rule
-                // (`check_prose_markdown`), not the weaker
-                // `validate_body_fences`: the op layer must not be weaker
-                // than the invariant `guard_task_declarations` /
-                // `guard_non_prose_stomp` rely on. A *well-formed* fence
-                // smuggled into a prose block is invisible to
-                // `ReportDoc::blocks_snapshot` (prose blocks project as
-                // `{"markdown": text}`, so `is_task` never sees it) and
-                // splinters into a live block of its own on the next
-                // wholesale write — which `guard_non_prose_stomp` cannot
-                // object to, since it early-returns while all *current*
-                // blocks are prose.
+                // in. No user request *can* reach this arm carrying one:
+                // the MCP (#971) and REST (#990) block surfaces each run
+                // `check_prose_markdown` on their own argument first;
+                // the point is that the op stops depending on them to do
+                // so. Why the surfaces' rule (`check_prose_markdown`)
+                // rather than the weaker `validate_body_fences`, and how
+                // much of the prose entrance this does and does not
+                // close — a fence carried whole in one block, yes; a
+                // fence split across two adjacent prose blocks, no — is
+                // written up once on `validate_prose_block_content`
+                // rather than restated here.
                 validate_prose_block_content(kind, content)?;
                 let (id, rev) = doc
                     .upsert_block(Some(id), kind, content)
