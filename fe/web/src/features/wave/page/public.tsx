@@ -546,9 +546,12 @@ export function WavePage({
                 * arrives here already painted. The shape it replaced dispatched
                 * on `'cards'` and `'tasks'` and let everything else fall into
                 * the Conversations page, which `tsc` had no reason to complain
-                * about — `public.test.tsx`'s "sends a panel kind it does not
-                * special-case to the painter, not to Conversations" is what
-                * holds this now.
+                * about. What holds the *shape* of this dispatch is
+                * `public.test.tsx`'s "routes an unrecognised panel value into
+                * the row-module lookup, not Conversations" — a narrow guard: it
+                * proves only that a kind this file does not name reaches the
+                * lookup on this arm rather than the Conversations page, not
+                * that a future module paints correctly once it exists.
                 *
                 * What each of the two branches used to do by hand is the drift
                 * the whole issue is about. Cards: an untitled card printed its
