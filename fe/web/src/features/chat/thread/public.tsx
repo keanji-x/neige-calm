@@ -1828,6 +1828,13 @@ export function ChatComposer({
    * Mount is the right one-shot for this: the caller (`app/router`) renders
    * this composer only while a conversation is open, so it mounts exactly when
    * the drawer opens on a row.
+   *
+   * **Where it is proved.** In `thread.browser.test.tsx`, for the reason the
+   * restore below gives: whether Astryx's editable answers
+   * `[contenteditable="true"]` in the commit this mounts in is a fact about a
+   * real engine, and the failure it decides between — caret in the field, or
+   * caret parked on the perch with a request that nothing on this path will
+   * rerun — looks identical in jsdom, which resolves the selector at once.
    */
   focusOnMount?: boolean;
 }) {

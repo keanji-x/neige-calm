@@ -452,6 +452,60 @@ describe('sending, with the disabled prop the router actually passes', () => {
 });
 
 /*
+ * ── `focusOnMount`, in an engine that renders Astryx for real (#1211 S2) ───
+ *
+ * The landing a just-created wave gets: the drawer opens on the spec
+ * conversation and the caret has to be *in the message field*, because the
+ * reader's first sentence is the wave's intent.
+ *
+ * This is the same machinery the send-restore above uses, and it is here for
+ * the same reason that one is: the effect finds the field with
+ * `[contenteditable="true"], textarea`, and whether Astryx's editable carries
+ * that attribute in the commit the composer mounts in is a question about
+ * Astryx and about a real DOM. jsdom resolves the selector immediately and so
+ * cannot tell "the caret reached the field" from "the caret is parked on the
+ * composer's box with the request still standing" — and on that second
+ * outcome the request never clears, because the effect's `[sendCount,
+ * disabled]` deps do not move on this path. The reader would be left one Tab
+ * away from the only control the page exists for, and the drawer no longer
+ * pulls focus back to itself either (`ui/drawer`'s guard).
+ *
+ * The assertions are identities against the field, not "somewhere inside the
+ * composer": the perch *is* inside the composer, and it is the failure.
+ */
+describe('the caret a just-created wave lands with', () => {
+  it('lands in the message field itself, not on the composer’s perch', async () => {
+    await page.viewport(1400, 900);
+    render(
+      <div style={{ inlineSize: 396 }}>
+        <ChatComposer focusOnMount onSend={vi.fn()} onNewConversation={vi.fn()} />
+      </div>,
+    );
+
+    expect(document.activeElement).toBe(field());
+    expect(document.activeElement).not.toBe(composer());
+  });
+
+  /*
+   * And through the seam it actually arrives by: the composer is the drawer's
+   * `footer`, and the drawer's own open effect runs *after* it. Wired this way
+   * because the two focus policies meet here and nowhere else — a drawer that
+   * still pulled focus to its container would leave the caret on the panel,
+   * with this composer's request standing and nothing left to rerun it.
+   */
+  it('keeps the caret in the field when the drawer opens around it', async () => {
+    await page.viewport(1400, 900);
+    render(
+      <Drawer open title="Spec chat" onClose={() => undefined} footer={<ChatComposer focusOnMount onSend={vi.fn()} />}>
+        <p>the transcript</p>
+      </Drawer>,
+    );
+
+    expect(document.activeElement).toBe(field());
+  });
+});
+
+/*
  * ── The exchange rail, against a real scrollport ──────────────────────────
  *
  * Three of the rail's claims are invisible to the web-dom tier and to any
