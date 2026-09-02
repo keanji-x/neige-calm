@@ -23,6 +23,7 @@
 
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useLayoutEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import styles from './mobile-list.module.css';
@@ -219,6 +220,126 @@ describe('MobileListItem accessible description', () => {
     const { container } = render(row({ accessibleDescription: 'failed — not a git repository' }));
     expect(container.querySelector('button')).toBeNull();
     expect(describedText(container.querySelector('li'))).toBe('failed — not a git repository');
+  });
+});
+
+/*
+ * #1234 S1b-4b — **the description and its carrier have to arrive and leave in
+ * the same commit.**
+ *
+ * The carrier `<span id>` is declarative, so React puts it in the DOM during the
+ * commit; the IDREF that points at it is written from an effect. If that effect
+ * is *passive*, the two halves are apart for a window: a row that just gained a
+ * description paints with the span present and no `aria-describedby`, and a row
+ * that just lost one paints with the attribute still naming a node React has
+ * already removed — a dangling IDREF, which a reader resolves to nothing.
+ * Concurrent rendering can stretch that window arbitrarily.
+ *
+ * **Why the cases above cannot see it.** `render()` and `rerender()` run inside
+ * `act`, which flushes passive effects before returning, so every assertion made
+ * after them sees the converged state whichever effect tier wrote it. The window
+ * is real and the whole existing block is blind to it.
+ *
+ * So these cases observe from *inside the commit*: `CommitProbe` is a later
+ * sibling of the row, and React runs layout effects in tree order, so its
+ * `useLayoutEffect` fires in the same commit, right after the row's own. What it
+ * records is the DOM as the browser would first paint it. A passive effect has
+ * not run at that point; a layout effect has.
+ */
+describe('MobileListItem accessible description, mid-commit', () => {
+  type Snapshot = Readonly<{
+    hostTag: string | null;
+    describedText: string | null;
+    hostCount: number;
+    carrierCount: number;
+  }>;
+
+  /** The DOM as it stands at this instant: who is described, by what, and how
+   *  many of each exist. */
+  const snapshot = (): Snapshot => {
+    const host = document.body.querySelector('[aria-describedby]');
+    const id = host?.getAttribute('aria-describedby') ?? null;
+    return {
+      hostTag: host === null ? null : host.tagName.toLowerCase(),
+      describedText: id === null ? null : document.getElementById(id)?.textContent ?? null,
+      hostCount: document.body.querySelectorAll('[aria-describedby]').length,
+      /* The carrier is the only node inside a row that has an `id`. */
+      carrierCount: document.body.querySelectorAll('li [id]').length,
+    };
+  };
+
+  /* No dependency array on purpose: every commit is recorded, so the assertions
+     can read the last one rather than guessing which commit mattered. */
+  function CommitProbe({ record }: Readonly<{ record: (seen: Snapshot) => void }>) {
+    useLayoutEffect(() => { record(snapshot()); });
+    return null;
+  }
+
+  const probed = (
+    props: Partial<Parameters<typeof MobileListItem>[0]>,
+    record: (seen: Snapshot) => void,
+  ) => (
+    <MobileList>
+      <MobileListItem title="Build log" {...props} />
+      <CommitProbe record={record} />
+    </MobileList>
+  );
+
+  const onSelect = vi.fn();
+  const phrase = 'failed — not a git repository';
+
+  it('attaches the reference in the commit that adds the carrier', () => {
+    const seen: Snapshot[] = [];
+    const { rerender } = render(probed({ onSelect }, seen.push.bind(seen)));
+    expect(seen.at(-1)?.hostTag).toBeNull();
+    rerender(probed({ onSelect, accessibleDescription: phrase }, seen.push.bind(seen)));
+    /* Not "eventually": at this point in the commit the span already exists, so
+       a control without the attribute is a row a reader would have read
+       undescribed. */
+    expect(seen.at(-1)?.hostTag).toBe('button');
+    expect(seen.at(-1)?.describedText).toBe(phrase);
+  });
+
+  it('removes the reference in the commit that removes the carrier', () => {
+    const seen: Snapshot[] = [];
+    const { rerender } = render(probed({ onSelect, accessibleDescription: phrase }, seen.push.bind(seen)));
+    expect(seen.at(-1)?.describedText).toBe(phrase);
+    rerender(probed({ onSelect }, seen.push.bind(seen)));
+    /* A dangling IDREF is worse than no description: the attribute is there and
+       resolves to nothing. */
+    expect(seen.at(-1)?.hostTag).toBeNull();
+    expect(seen.at(-1)?.hostCount).toBe(0);
+    expect(seen.at(-1)?.carrierCount).toBe(0);
+  });
+
+  /* Making a described row non-interactive destroys the control the reference
+     was on and moves the host to the `<li>`. Both halves are asserted: the new
+     host is described, and there is exactly one described element — a stale
+     attribute left on a detached button would be invisible to the first
+     assertion alone. */
+  it('moves the reference to the li when the row stops being interactive', () => {
+    const seen: Snapshot[] = [];
+    const { container, rerender } = render(
+      probed({ onSelect, accessibleDescription: phrase }, seen.push.bind(seen)),
+    );
+    expect(seen.at(-1)?.hostTag).toBe('button');
+    rerender(probed({ accessibleDescription: phrase }, seen.push.bind(seen)));
+    expect(container.querySelector('button')).toBeNull();
+    expect(seen.at(-1)?.hostTag).toBe('li');
+    expect(seen.at(-1)?.describedText).toBe(phrase);
+    expect(seen.at(-1)?.hostCount).toBe(1);
+  });
+
+  it('moves the reference to the control when the row becomes interactive', () => {
+    const seen: Snapshot[] = [];
+    const { rerender } = render(probed({ accessibleDescription: phrase }, seen.push.bind(seen)));
+    expect(seen.at(-1)?.hostTag).toBe('li');
+    rerender(probed({ onSelect, accessibleDescription: phrase }, seen.push.bind(seen)));
+    expect(seen.at(-1)?.hostTag).toBe('button');
+    expect(seen.at(-1)?.describedText).toBe(phrase);
+    /* The `<li>` is still in the tree, so a cleanup that forgot it would leave
+       two described elements rather than a detached one. */
+    expect(seen.at(-1)?.hostCount).toBe(1);
   });
 });
 

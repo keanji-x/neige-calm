@@ -1,5 +1,5 @@
 import { List as AstryxList, ListItem as AstryxListItem } from '@astryxdesign/core/List';
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useId, useLayoutEffect, useRef, type ReactNode } from 'react';
 
 import { MobileHeader } from '../mobile-header/public.tsx';
 import styles from './mobile-list.module.css';
@@ -189,7 +189,22 @@ export function MobileListItem({
   const rootRef = useRef<HTMLLIElement | null>(null);
   const descriptionId = `${useId()}mobile-row-description`;
   const interactive = onSelect !== undefined;
-  useEffect(() => {
+  /*
+   * A **layout** effect, and the tier is the point rather than a habit.
+   *
+   * The carrier span is rendered declaratively, so it is in the DOM the moment
+   * the commit lands; the IDREF that points at it is written from here. A
+   * passive `useEffect` runs *after* that commit — and under concurrent
+   * rendering it can be deferred further — so between the two there is a paint
+   * in which the two halves disagree: a row that just gained a description has
+   * the span but no `aria-describedby`, and a row that just lost one has an
+   * attribute still naming a span React already removed. A layout effect runs
+   * inside the commit, before the browser paints, so the pair is never
+   * observable apart. Nothing here reads layout, so the usual cost argument
+   * against the tier does not apply; and the app has no SSR path (a single
+   * `createRoot`, no `hydrateRoot`), so there is no server render to warn.
+   */
+  useLayoutEffect(() => {
     if (accessibleDescription === undefined) return undefined;
     const root = rootRef.current;
     if (root === null) return undefined;
