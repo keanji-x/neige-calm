@@ -41,7 +41,9 @@
 //! ureq's own clock. There are two bounds above this one:
 //!
 //! * `PluginHost::spawn_mcp_http` wraps ONE connector's bring-up in a
-//!   `tokio::time::timeout` of `2 × bringup_timeout_ms + slack` — a multiple,
+//!   `tokio::time::timeout` of `2 × bringup_timeout_ms + CONNECTOR_BRINGUP_SLACK`
+//!   (that constant lives in `plugin_host::mod`, and it is NOT the separate
+//!   500 ms margin the connector-phase ceiling carries) — a multiple,
 //!   because the configured value is per-REQUEST and this path makes two
 //!   requests. Since `bringup_timeout_ms` has a validated ceiling, this
 //!   product has one too;
@@ -261,7 +263,8 @@ pub const CONNECT_TIMEOUT_FLOOR: Duration = Duration::from_secs(10);
 pub struct HttpCredential(String);
 
 impl HttpCredential {
-    /// The four rules, each tied to a concrete failure of the redaction layer:
+    /// The five rules, each tied to a concrete failure of the redaction layer
+    /// and each with an `if` of its own below, in this order:
     ///
     /// * **non-empty** — an empty value registers `""` as a scrub pattern, and
     ///   `"".replace("", "<redacted>")` inserts the marker at EVERY character
@@ -610,10 +613,25 @@ impl HttpMcpClient {
             // case-insensitive percent matcher that briefly lived here was
             // reverted on measurement (991 ms vs 9.8 ms on a clean 4 MiB body).
             //
-            // Longest first, so scrubbing an encoded form is not pre-empted by a
-            // shorter raw substring match (the encoded form is never shorter
-            // than the raw one — `percent_encode` either copies a byte or
-            // expands it to three).
+            // Longest first, so scrubbing the encoded form is not pre-empted by
+            // a shorter raw substring match. The encoded form is never shorter
+            // than the raw one (`percent_encode` either copies a byte or expands
+            // it to three), so this sort puts the encoded form first whenever the
+            // two differ.
+            //
+            // Round 5 argued this ordering is decorative on the grounds that the
+            // raw form can never occur INSIDE the encoded one — `R ≠ E` implies
+            // `R` holds a reserved character, and a reserved character is not in
+            // `E`. That argument is wrong for exactly one character: `%` is
+            // reserved, and `percent_encode` emits `%` itself. Witness:
+            // `R = "abcde%25"` (a credential `HttpCredential::parse` accepts)
+            // encodes to `E = "abcde%2525"`, of which `R` is a PREFIX. On a body
+            // echoing `E` back, raw-first would yield `<redacted>25` — the
+            // encoded literal chewed in half, with the tail no longer matching
+            // any registered form. Longest-first yields `<redacted>`. So keep
+            // the sort; it is load-bearing for real inputs, not for the theorem
+            // on `scrub_with` (which quantifies over the whole form list and
+            // does not depend on the order).
             //
             // The dedupe + `is_empty` filter are the braces to
             // `HttpCredential`'s belt. Empty: an empty pattern turns `scrub`
@@ -1079,29 +1097,33 @@ const REDACTED: &str = "<redacted>";
 /// > `scrub_with` pass contains no registered form.** Hence
 /// > `scrub_with(f, scrub_with(f, x)) == scrub_with(f, x)`.
 ///
+/// Two forms can be registered, and only ONE of them is a value
+/// [`HttpCredential::parse`] ever inspected: the raw credential. The other is
+/// the percent-encoding, which is derived after the check. So establish it
+/// first, before the induction leans on it. Either the encoding equals the raw
+/// credential (no reserved characters — and then the dedupe in `new` collapses
+/// the two), or it contains a `%` triplet, and in every case [`percent_encode`]
+/// emits `<` and `>` as `%3C`/`%3E`. A form with no `<` and no `>` cannot begin
+/// with a suffix of `<redacted>` (all of which end in `>`), cannot end with a
+/// prefix of it (all of which begin with `<`), and cannot contain it; the one
+/// marker-family substring free of both characters is `redacted`-shaped text,
+/// which the encoding of a credential can only be if the credential already is
+/// that text — refused. **Both** registered forms therefore satisfy all four
+/// refusals, which is what the induction below quantifies over.
+///
 /// Proof, by induction over the forms in order. After the pass for form `Fₖ`,
 /// the string is carried-over text with the marker `M` spliced in. No
 /// occurrence of `Fₖ` can lie wholly inside carried text — `replace`'s scan is
 /// exhaustive left to right, so a full occurrence at a position it did not
 /// consume is a contradiction — therefore any surviving occurrence intersects
 /// an inserted `M`, which forces one of the four relationships enumerated on
-/// [`overlaps_redaction_marker`], all four of which
-/// [`HttpCredential::parse`] refuses. Earlier forms `F₁…Fₖ₋₁` were already
-/// absent from this pass's input by the induction hypothesis, and a substring of
-/// a string that lacks `Fᵢ` still lacks it, so the only new occurrences they
-/// could gain are ones intersecting the `M`s this pass inserted — refused by the
-/// same four cases.
-///
-/// The second registered form is the percent-encoding, which
-/// [`HttpCredential::parse`] never sees; it needs no rule of its own. Either it
-/// equals the raw credential (no reserved characters — and then the dedupe in
-/// `new` collapses the two), or it contains a `%` triplet, and in every case
-/// [`percent_encode`] emits `<` and `>` as `%3C`/`%3E`. A form with no `<` and
-/// no `>` cannot begin with a suffix of `<redacted>` (all of which end in `>`),
-/// cannot end with a prefix of it (all of which begin with `<`), and cannot
-/// contain it; the one marker-family substring free of both characters is
-/// `redacted`-shaped text, which the encoding of a credential can only be if the
-/// credential already is that text — refused.
+/// [`overlaps_redaction_marker`], all four of which are refused for BOTH
+/// registered forms (for the raw credential by [`HttpCredential::parse`]; for
+/// the percent-encoding by the paragraph above). Earlier forms `F₁…Fₖ₋₁` were
+/// already absent from this pass's input by the induction hypothesis, and a
+/// substring of a string that lacks `Fᵢ` still lacks it, so the only new
+/// occurrences they could gain are ones intersecting the `M`s this pass
+/// inserted — refused by the same four cases, on the same two grounds.
 ///
 /// The scope of the theorem is exactly "form lists `new` builds". This is a free
 /// function taking an arbitrary `&[String]`, and tests pass hand-built lists
@@ -1731,12 +1753,29 @@ mod tests {
     /// asserted exactly rather than as `<= 3` on purpose: if disambiguation is
     /// ever reintroduced, this must go red and be re-read, not pass silently
     /// under a changed contract.
+    ///
+    /// The form list is the PRODUCTION one — built by `HttpMcpClient::new` from
+    /// a credential `HttpCredential::parse` accepts — not a hand-rolled `vec!`:
+    /// a fixture that mints its own literals could keep asserting the collapse
+    /// after the constructor stopped producing the pair that causes it.
     #[test]
     fn two_keys_redacting_to_the_same_marker_collapse_into_one_entry() {
         let key = "sk-a/b+c-8213";
+        let block: McpHttpBlock = serde_json::from_value(serde_json::json!({
+            "url": "https://mcp.example.com/mcp",
+            "api_key_secret": "K",
+            "api_key_in": "query:api_key",
+        }))
+        .unwrap();
+        let client = HttpMcpClient::new("c", &block, Some(&cred(key)));
+        let forms = client.secret_forms.clone();
         let encoded = percent_encode(key);
         assert_ne!(encoded, key, "fixture needs two distinct literals");
-        let forms = vec![encoded.clone(), key.to_string()];
+        assert_eq!(
+            forms,
+            vec![encoded.clone(), key.to_string()],
+            "the constructor must register both spellings, longest first"
+        );
 
         let mut obj = serde_json::Map::new();
         obj.insert(key.to_string(), serde_json::json!(1));
