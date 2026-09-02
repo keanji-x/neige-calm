@@ -636,6 +636,8 @@ pub mod wave_report;
 pub mod wave_report_doc;
 mod wave_report_edit_guard;
 mod wave_report_guard;
+/// #1252 S1 step 1 — write-origin vocabulary. Not wired into production yet.
+pub mod wave_report_origin;
 pub mod wave_report_read;
 pub mod wave_vcs;
 pub mod ws;
