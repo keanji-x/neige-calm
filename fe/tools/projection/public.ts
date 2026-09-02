@@ -223,13 +223,38 @@ function show(values: readonly (string | null)[]): string {
   return JSON.stringify(values);
 }
 
-export function checkProjection<T>(
+/**
+ * Run every obligation against a tree that **already exists** — the entry a real
+ * page's test uses (#1234 S1b-3b): render the production component, take the
+ * surface's own subtree, and hand it here.
+ *
+ * **Honest accounting: this is one step weaker than `checkProjection`.** The
+ * `painter` argument is the *caller's declaration*. Nothing here can prove that
+ * `root` was painted by this painter — or by any painter at all. Two facts are
+ * read off `painter` and both are taken on trust:
+ *
+ *  - its capability table, which decides the expected action sequence
+ *    (`checkActions`, `action-partition`);
+ *  - by implication, that the production surface constructed its painter with
+ *    the same host props the test did.
+ *
+ * A page that hand-composed a correct-looking tree, or that painted with a
+ * *different* painter, is green here. `checkProjection` at least paints with the
+ * painter it checks; this entry does not paint at all.
+ *
+ * **What closes that gap is not in this file.** It is S1b-3b's structural
+ * constraint on the page: `features/wave/page/public.tsx` may not spell any of
+ * `MARKER`'s attribute names, in either the kebab (`data-nc-row`) or the camel
+ * (`dataset.ncRow`) spelling. The only writer of those attributes into the
+ * desktop panel is therefore the painter, and a marked node in the real DOM is
+ * evidence the painter ran. That constraint is asserted mechanically by the
+ * page's own suite; a green result here means nothing without it.
+ */
+export function checkProjectionIn<T>(
   painter: RowPainter<T>,
   modules: readonly RowModuleView[],
-  mount: (painted: readonly T[]) => ProjectionNode,
+  root: ProjectionNode,
 ): readonly Violation[] {
-  const painted: readonly T[] = modules.map((module) => paintModule(painter, module));
-  const root = mount(painted);
   const violations: Violation[] = [];
   const add: Add = (code, detail) => { violations.push({ code, detail }); };
 
@@ -237,6 +262,21 @@ export function checkProjection<T>(
   checkCoHosting(root, add);
   checkTree(root, modules, painter, add);
   return violations;
+}
+
+/**
+ * Paint with `painter`, hand the leaves to the injected `mount`, and check the
+ * resulting tree. Behaviour is unchanged by the `checkProjectionIn` split: this
+ * is the same three checks over the same root, and `projection-contract.test.tsx`
+ * is the safety net that says so.
+ */
+export function checkProjection<T>(
+  painter: RowPainter<T>,
+  modules: readonly RowModuleView[],
+  mount: (painted: readonly T[]) => ProjectionNode,
+): readonly Violation[] {
+  const painted: readonly T[] = modules.map((module) => paintModule(painter, module));
+  return checkProjectionIn(painter, modules, mount(painted));
 }
 
 /**
