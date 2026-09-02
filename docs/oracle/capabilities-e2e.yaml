@@ -4998,7 +4998,8 @@
   kind: capability
   family: wave-rename
   statement: >
-    The new-wave dialog must collect no text at all, and its `NewWaveDraft` must carry no title
+    The new-wave dialog must collect no task or title text — the template's own inputs, such as
+    issue development's Issue URL, are untouched — and its `NewWaveDraft` must carry no title
     key — absence, not the empty string — so the create POST omits it and the kernel stores the
     empty title that `calm.wave.rename` is allowed to fill in.
   why: >
