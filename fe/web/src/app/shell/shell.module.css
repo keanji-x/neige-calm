@@ -275,8 +275,10 @@
   }
 
   .brand {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
     min-inline-size: 0;
-    overflow: hidden;
     font-size: var(--text-base);
     font-weight: var(--weight-medium);
     /* --leading-tight, never --leading-none, on any clipped text: this element
@@ -288,9 +290,30 @@
        buttons, badges), not for a line of prose that clips itself. */
     line-height: var(--leading-tight);
     color: var(--text-2);
+    cursor: pointer;
+  }
+
+  /*
+   * The source SVG remains a transparent, standalone brand asset. Here it is
+   * a mask so the rail owns the ink: `--text-2` in the expanded wordmark and
+   * `--text-3` in the collapsed control both adapt to the active theme without
+   * baking a second dark-mode SVG into the bundle.
+   */
+  .brandMark {
+    display: block;
+    flex: 0 0 auto;
+    inline-size: var(--glyph);
+    block-size: var(--glyph);
+    background: currentcolor;
+    -webkit-mask: url('./neige-mark.svg') center / contain no-repeat;
+    mask: url('./neige-mark.svg') center / contain no-repeat;
+  }
+
+  .brandText {
+    min-inline-size: 0;
+    overflow: hidden;
     white-space: nowrap;
     text-overflow: ellipsis;
-    cursor: pointer;
   }
 
   .brand:hover,

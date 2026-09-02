@@ -187,19 +187,32 @@ export function Sidebar({
       <div className={styles.brandRow}>
         {!collapsed && (
           <button type="button" data-nc-role="row" className={styles.brand} onClick={() => onGo({ name: 'today' })}>
-            neige · calm
+            <span className={styles.brandMark} aria-hidden="true" />
+            <span className={styles.brandText}>neige · calm</span>
           </button>
         )}
-        <button
-          type="button"
-          data-nc-role="icon"
-          className={`${styles.iconButton} ${collapsed ? '' : styles.spring}`}
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          aria-expanded={!collapsed}
-          onClick={onToggleCollapsed}
-        >
-          <Icon name={collapsed ? 'chevron-right' : 'chevron-left'} />
-        </button>
+        {collapsed ? (
+          <button
+            type="button"
+            className={styles.iconButton}
+            aria-label="Expand sidebar"
+            aria-expanded="false"
+            onClick={onToggleCollapsed}
+          >
+            <span className={styles.brandMark} aria-hidden="true" />
+          </button>
+        ) : (
+          <button
+            type="button"
+            data-nc-role="icon"
+            className={`${styles.iconButton} ${styles.spring}`}
+            aria-label="Collapse sidebar"
+            aria-expanded="true"
+            onClick={onToggleCollapsed}
+          >
+            <Icon name="chevron-left" />
+          </button>
+        )}
       </div>
       {readError !== null && <ErrorBox message={readError} onRetry={onRetryRead} />}
       {activityError !== null && <ErrorBox message={`Wave activity is unavailable: ${activityError}`} onRetry={onRetryRead} />}
