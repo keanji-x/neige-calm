@@ -2521,21 +2521,25 @@ fn the_app_autospawn_wall_is_the_documented_one() {
     use calm_server::plugin_host::{
         APP_AUTOSPAWN_WALL, MAX_CONNECTOR_AUTOSPAWN_WALL, PLUGIN_LIST_WALL, boot_autospawn_ceiling,
     };
-    use calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS;
+    use calm_truth::db::sqlite::{SQLITE_ACQUIRE_TIMEOUT_MS, SQLITE_BUSY_TIMEOUT_MS};
 
-    // One local DB list read: SQLite's own bounded busy wait, pool/connection
-    // setup, and scheduling margin, with boot continuing on expiry.
-    assert_eq!(PLUGIN_LIST_WALL, Duration::from_secs(15));
-    assert!(PLUGIN_LIST_WALL > Duration::from_millis(SQLITE_BUSY_TIMEOUT_MS));
+    // One local DB list read: pool acquisition (including fresh-connection
+    // setup), SQLite's bounded SELECT busy wait, and scheduling margin, with
+    // boot continuing on expiry.
+    assert_eq!(PLUGIN_LIST_WALL, Duration::from_secs(40));
+    assert!(
+        PLUGIN_LIST_WALL
+            > Duration::from_millis(SQLITE_ACQUIRE_TIMEOUT_MS + SQLITE_BUSY_TIMEOUT_MS)
+    );
     // Sized against a local fork/exec + `initialize` handshake + a few
     // persisted events — not against a network round trip.
     assert_eq!(APP_AUTOSPAWN_WALL, Duration::from_secs(30));
     // Pin literal results, not a second copy of the production arithmetic.
-    assert_eq!(boot_autospawn_ceiling(0), Duration::from_millis(46_500));
-    assert_eq!(boot_autospawn_ceiling(1), Duration::from_millis(76_500));
+    assert_eq!(boot_autospawn_ceiling(0), Duration::from_millis(71_500));
+    assert_eq!(boot_autospawn_ceiling(1), Duration::from_millis(101_500));
     assert_eq!(
         boot_autospawn_ceiling(4),
-        Duration::from_millis(166_500),
+        Duration::from_millis(191_500),
         "if a constituent wall moves, change this pinned total deliberately"
     );
     // The ceiling is a real ceiling in both directions: it is never below

@@ -26,6 +26,7 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteConnection, SqlitePoolOptions, SqliteTransactionManager,
 };
 use std::str::FromStr;
+use std::time::Duration;
 
 use super::Repo;
 use crate::card_role_cache::CardRoleCache;
@@ -36,6 +37,14 @@ use calm_types::model::CoveFolder;
 
 /// Per-connection SQLite busy-handler budget installed by [`SqlxRepo::open`].
 pub const SQLITE_BUSY_TIMEOUT_MS: u64 = 5_000;
+
+/// Pool-acquisition budget installed by [`SqlxRepo::open`].
+///
+/// This deliberately equals sqlx 0.8.6's 30 s default, so making it explicit
+/// changes no behavior today; owning the value lets our composition gates pin
+/// it and prevents a future sqlx default change from silently invalidating
+/// those bounds.
+pub const SQLITE_ACQUIRE_TIMEOUT_MS: u64 = 30_000;
 
 // ---------------------------------------------------------------------------
 // Sub-trait impls — thin pool-wrapping wrappers around the `_tx` helpers,
@@ -228,6 +237,7 @@ impl SqlxRepo {
         opts = opts.log_statements(tracing::log::LevelFilter::Debug);
 
         let pool = SqlitePoolOptions::new()
+            .acquire_timeout(Duration::from_millis(SQLITE_ACQUIRE_TIMEOUT_MS))
             // Belt-and-braces: also re-issue the pragmas on every fresh
             // connection in case connect options are silently dropped for
             // some URL forms (e.g. memory).

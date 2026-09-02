@@ -634,24 +634,23 @@ const CONNECTOR_RECONCILE_BUDGET: Duration = Duration::from_millis(500);
 
 /// #1238 — wall-clock fence on boot autospawn's initial plugin enumeration.
 ///
-/// Its 15 s composition covers calm-truth's own bounded SQLite busy-handler
-/// retry ([`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`]), pool acquisition
-/// and fresh-connection `after_connect` pragmas, plus scheduling margin. It must
-/// be strictly greater than the busy timeout: equal timers race when a healthy
-/// store is temporarily held by a writer, and the outer fence can misclassify
-/// that bounded wait as a hang. That would silently skip every plugin because
-/// [`PluginHost::autospawn_enabled`] is called only once and has no retry.
+/// Its 40 s composition covers calm-truth's pool-acquisition budget (including
+/// the three fresh-connection `after_connect` pragmas,
+/// [`calm_truth::db::sqlite::SQLITE_ACQUIRE_TIMEOUT_MS`]), the SELECT's SQLite
+/// busy-handler budget ([`calm_truth::db::sqlite::SQLITE_BUSY_TIMEOUT_MS`]), and
+/// scheduling margin. The fence must be strictly greater than the sum of both
+/// bounded waits: if it fires while the database is still inside its own
+/// healthy bounded wait, every plugin is silently skipped and no process-local
+/// retry exists. Prefer waiting longer over declaring that blackout early.
 ///
-/// The wall remains well below [`APP_AUTOSPAWN_WALL`]: enumeration performs
-/// only bounded local database setup and one list read, while an app iteration
-/// includes process spawn, initialization, and persisted lifecycle events. A
-/// timeout skips all plugin spawning and lets boot continue; waiting
-/// indefinitely would keep the HTTP listener from binding.
+/// The cost is up to 40 s more before the HTTP listener binds in the worst
+/// case. That wait remains bounded, which is the guarantee this issue trades
+/// for; waiting indefinitely would still keep the listener from binding.
 ///
 /// `pub` and pinned by `the_app_autospawn_wall_is_the_documented_one`: the
 /// behavioral test overrides it through [`PluginHost::with_plugin_list_wall`]
 /// so it can prove the fence without waiting out the production allowance.
-pub const PLUGIN_LIST_WALL: Duration = Duration::from_secs(15);
+pub const PLUGIN_LIST_WALL: Duration = Duration::from_secs(40);
 
 /// #1196 S1 review P1-6 — wall-clock fence on ONE `app` plugin's boot autospawn
 /// iteration, the local-child mirror of the connector phase fence.
@@ -1301,6 +1300,8 @@ impl PluginHost {
     /// Auto-spawn every enabled plugin known to the repo. Called from
     /// `AppState::new` after the host is constructed. Per-plugin failures are
     /// logged + swallowed: one broken plugin should not block boot.
+    /// The two enumeration `warn!` message strings below are documentation, not
+    /// a test-pinned contract: merging them into one string is invisible to CI.
     ///
     /// **Connector bring-up stays inline and stays serial**, but the connector
     /// portion as a whole is bounded by
