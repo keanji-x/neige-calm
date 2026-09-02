@@ -112,7 +112,10 @@ red.
 the mark said twice, and the word costs the row a line that reflows every row
 under it each time you leave a field. The word is not gone, though — it moves to
 a visually-hidden live region beside the field, which is what a screen reader
-announces and what the tests and the e2e spec locate. A tick with no accessible
+announces and what the tests and the e2e spec locate. That region is mounted
+**always**, empty, one per row: a live region that arrives in the same mutation
+as its text is commonly not announced at all. Two rows therefore hold two
+regions, so anything locating one has to scope to its row. A tick with no accessible
 name would make the confirmation sighted-only. A *failure* keeps its sentence:
 "something went wrong" is not a thing a mark can say.
 

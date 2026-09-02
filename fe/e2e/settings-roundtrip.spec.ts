@@ -32,11 +32,13 @@ test('persists network and appearance settings across reloads', async ({ page, r
   await page.goto('/next/settings');
   await page.getByLabel('HTTP proxy').fill(proxy);
   // There is no Save button: leaving the field is the commit. The confirmation
-  // is the field's own success status, which astryx renders as `role="status"`
-  // — unambiguous on this pane, which has no buttons to ship empty live
-  // regions of their own.
+  // is that row's own live region — **scoped to the row**, because every proxy
+  // row mounts one of these empty and keeps it mounted (a region that arrives
+  // together with its text is commonly not announced at all). Two rows, two
+  // regions: an unscoped `getByRole('status')` matches both.
   await page.getByLabel('HTTP proxy').blur();
-  await expect(page.getByRole('status')).toContainText('Saved.');
+  const httpRow = page.getByRole('listitem').filter({ has: page.getByLabel('HTTP proxy') });
+  await expect(httpRow.getByRole('status')).toContainText('Saved.');
   expect(await readHttpProxy(request)).toBe(proxy);
 
   await page.reload();
