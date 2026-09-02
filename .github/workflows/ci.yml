@@ -72,71 +72,118 @@ jobs:
 
       - name: harness raw status UPDATE gate (#679 PR3a)
         run: |
-          hits=$(grep -rniE "update[[:space:]]+runtimes" crates/calm-server/src/harness crates/calm-server/src/operation/spec_harness_start_adapter.rs crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs | wc -l)
-          [ "$hits" -eq 0 ] && echo "OK: no raw runtimes UPDATE in harness paths" || { echo "::error::raw UPDATE runtimes survives in harness paths ($hits)"; grep -rniE "update[[:space:]]+runtimes" crates/calm-server/src/harness crates/calm-server/src/operation/spec_harness_start_adapter.rs crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs; exit 1; }
+          set -euo pipefail
+          paths=(
+            crates/calm-server/src/harness
+            crates/calm-server/src/operation/spec_harness_start_adapter.rs
+            crates/calm-server/src/operation/spec_harness_shutdown_adapter.rs
+          )
+          for path in "${paths[@]}"; do
+            [ -e "$path" ] || { echo "::error::required harness scan path does not exist: $path"; exit 1; }
+          done
+          set +e
+          output="$(grep -rniE "update[[:space:]]+runtimes" "${paths[@]}" 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              hits="$(printf '%s\n' "$output" | wc -l)"
+              echo "::error::raw UPDATE runtimes survives in harness paths ($hits)"
+              exit 1
+              ;;
+            1) echo "OK: no raw runtimes UPDATE in harness paths" ;;
+            *)
+              printf '%s\n' "$output"
+              echo "::error::raw UPDATE runtimes harness scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
+
+      - name: install ripgrep for ratchets
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
+
+      - name: runtimes ratchet selftest
+        run: scripts/ci/ratchets/selftest.sh
 
       - name: PR9b-iv runtimes retirement ratchet (#758)
-        run: |
-          set -euo pipefail
-          if rg -n "FROM runtimes\b|INTO runtimes\b|UPDATE runtimes\b|DELETE FROM runtimes\b" crates/ --type=rust --type=sql --glob '!crates/calm-truth/migrations/**'; then
-            echo "::error::runtimes table SQL survived outside historical migrations"
-            exit 1
-          fi
-          if rg -n "worker_sessions_parity|NEIGE_ASSERT_WORKER_SESSIONS_PARITY_ON_BOOT|worker_sessions_parity_divergences|worker-session-parity-drop" crates/; then
-            echo "::error::worker_sessions parity sweep scaffolding survived"
-            exit 1
-          fi
-          if rg -n "runtime_(start|supersede|set_status_for_card|complete_for_card|status_flip|finalize|lease_acquire|lease_release|restore_from_superseded|backfill_worker_sessions_from_runtimes)_tx\b" crates/ --type=rust; then
-            echo "::error::retired runtime write transaction helper survived"
-            exit 1
-          fi
-          echo "OK: PR9b-iv runtimes retirement ratchet clean"
+        run: scripts/ci/ratchets/runtimes_retirement.sh
 
-      # Complements the PR9b-iv ratchet (which forbids only the bare,
-      # unquoted FROM/INTO/UPDATE/DELETE runtimes verbs). The `runtimes`
-      # table was dropped in migration 0055 and must never return. This
-      # step closes the two holes the verb-list ratchet leaves: (a) DDL/JOIN
-      # it never names (CREATE TABLE / CREATE INDEX ... ON / ALTER TABLE /
-      # REPLACE INTO / JOIN), and (b) QUOTED identifiers `"runtimes"` that
-      # slip past every \b-anchored pattern. The 0055 drop-regression test
-      # legitimately re-creates the table to prove the drop, so it is the
-      # single scoped exclusion (alongside historical migrations).
       - name: dropped runtimes table reintroduction ratchet (#679 PR10)
-        run: |
-          set -euo pipefail
-          EXCL=(--type=rust --type=sql
-                --glob '!crates/calm-truth/migrations/**'
-                --glob '!crates/calm-server/tests/migration_0055_drop_runtimes.rs')
-          # (a) DDL / JOIN / REPLACE — bare or quoted — that the verb-list ratchet misses
-          if rg -niP '\b((create\s+(temp(orary)?\s+)?table|alter\s+table|replace\s+into|join)\s+(if\s+not\s+exists\s+)?|create\s+(unique\s+)?index\s+(if\s+not\s+exists\s+)?\S+\s+on\s+)"?runtimes"?\b' crates/ "${EXCL[@]}"; then
-            echo "::error::dropped 'runtimes' table reintroduced via DDL/JOIN/REPLACE (migration 0055 dropped it)"
-            exit 1
-          fi
-          # (b) quoted-identifier DML that bypasses the existing \b-anchored FROM/INTO/UPDATE/DELETE gate
-          if rg -niP '\b(from|update|delete\s+from|insert\s+into)\s+"runtimes"' crates/ "${EXCL[@]}"; then
-            echo "::error::dropped 'runtimes' table reintroduced via quoted-identifier SQL"
-            exit 1
-          fi
-          echo "OK: no dropped-runtimes-table reintroduction (quoted/DDL/JOIN holes closed)"
+        run: scripts/ci/ratchets/dropped_runtimes_table.sh
 
       - name: no parallel operation-event entrance (#679 PR4)
         run: |
-          hits=$(grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/ | wc -l)
-          [ "$hits" -eq 0 ] && echo OK || { echo "::error::parallel operation-event entrance survives"; grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" crates/; exit 1; }
+          set -euo pipefail
+          path=crates/
+          [ -e "$path" ] || { echo "::error::required operation-event scan path does not exist: $path"; exit 1; }
+          set +e
+          output="$(grep -rnE "event_append_for_operation_tx|events_append_for_operation_tx" "$path" 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::parallel operation-event entrance event_append_for_operation_tx/events_append_for_operation_tx survives"
+              exit 1
+              ;;
+            1) echo "OK: no parallel operation-event entrance" ;;
+            *)
+              printf '%s\n' "$output"
+              echo "::error::operation-event entrance scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
 
       - name: token authority audit gate (#679 PR7b-i)
         run: |
           set -euo pipefail
+          paths=(
+            crates/calm-server/src/mcp_server/handshake.rs
+            crates/calm-server/src/mcp_server/transport.rs
+          )
+          for path in "${paths[@]}"; do
+            [ -e "$path" ] || { echo "::error::required token authority scan path does not exist: $path"; exit 1; }
+          done
           grep -q "session_get_by_active_token_hash" crates/calm-server/src/mcp_server/handshake.rs \
             || { echo "::error::handshake must authenticate through active worker_sessions"; exit 1; }
-          if grep -n "card_mcp_token_lookup_by_hash" crates/calm-server/src/mcp_server/handshake.rs; then
-            echo "::error::handshake must not authenticate through card_mcp_tokens"
-            exit 1
-          fi
-          if grep -nE "\.card_get\(|\.card_role_get\(" crates/calm-server/src/mcp_server/transport.rs; then
-            echo "::error::transport auth path must not resolve per-call identity through card_get/card_role_get"
-            exit 1
-          fi
+          set +e
+          output="$(grep -n "card_mcp_token_lookup_by_hash" crates/calm-server/src/mcp_server/handshake.rs 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::handshake must not authenticate through card_mcp_token_lookup_by_hash/card_mcp_tokens"
+              exit 1
+              ;;
+            1) ;;
+            *)
+              printf '%s\n' "$output"
+              echo "::error::card_mcp_token_lookup_by_hash handshake scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
+          set +e
+          output="$(grep -nE "\.card_get\(|\.card_role_get\(" crates/calm-server/src/mcp_server/transport.rs 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::transport auth path must not resolve per-call identity through card_get/card_role_get"
+              exit 1
+              ;;
+            1) ;;
+            *)
+              printf '%s\n' "$output"
+              echo "::error::card_get/card_role_get transport scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
           echo "OK: MCP token authority is session-bound and transport per-call auth is session-derived"
 
       # Soft backstop alongside the cargo-feature gate on
@@ -150,17 +197,33 @@ jobs:
       - name: sanity — no raw_repo escape in production
         run: |
           set -euo pipefail
-          if grep -rn "raw_repo" \
-              crates/calm-server/src/routes/ \
-              crates/calm-server/src/plugin_host/ \
-              crates/calm-server/src/card_fsm.rs \
-              crates/calm-server/src/terminal_sweeper.rs \
-              crates/calm-server/src/replay.rs \
-              2>/dev/null; then
-            echo "::error::raw_repo() used in production module — must go through write_with_event"
-            exit 1
-          fi
-          echo "OK: no raw_repo escape in production"
+          paths=(
+            crates/calm-server/src/routes/
+            crates/calm-server/src/plugin_host/
+            crates/calm-server/src/card_fsm.rs
+            crates/calm-server/src/terminal_sweeper.rs
+            crates/calm-server/src/replay.rs
+          )
+          for path in "${paths[@]}"; do
+            [ -e "$path" ] || { echo "::error::required raw_repo scan path does not exist: $path"; exit 1; }
+          done
+          set +e
+          output="$(grep -rn "raw_repo" "${paths[@]}" 2>&1)"
+          rc=$?
+          set -e
+          case "$rc" in
+            0)
+              printf '%s\n' "$output"
+              echo "::error::raw_repo() used in production module — must go through write_with_event"
+              exit 1
+              ;;
+            1) echo "OK: no raw_repo escape in production" ;;
+            *)
+              printf '%s\n' "$output"
+              echo "::error::raw_repo production scan failed with exit $rc"
+              exit 1
+              ;;
+          esac
 
       - name: pgid escape gate (#1013 T11)
         # The `pgid-escape-probe` feature compiles a module whose only job is to
