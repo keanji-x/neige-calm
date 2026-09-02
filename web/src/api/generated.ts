@@ -2092,8 +2092,13 @@ export interface components {
          */
         TodayLaunchpadResolved: {
             /**
-             * @description Whether this report's `summary`/`body` differ from the canonical
-             *     freshly-minted report — i.e. **has anyone ever written it**.
+             * @description Whether this report's `summary`/`body` differ **right now** from the
+             *     canonical freshly-minted pair.
+             *
+             *     It is NOT "has anyone ever written it": no history is consulted, so
+             *     none can be reported, and restoring the text to the canonical pair
+             *     turns this back to `false`. Do not build a "the summary has run" marker
+             *     on it — see the first bullet below.
              *
              *     It is computed server-side by
              *     [`WaveReportPayload::report_startup_read_required`], the kernel's one

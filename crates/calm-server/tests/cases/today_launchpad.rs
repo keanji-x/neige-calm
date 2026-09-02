@@ -7,6 +7,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use calm_server::db::RepoRead;
+use calm_server::routes::today::{SYSTEM_COVE_MINT_ATTEMPTS, SYSTEM_COVE_MINT_RETRIES};
 use calm_server::wave_report::WaveReportPayload;
 use calm_server::{
     card_role_cache::CardRoleCache,
@@ -20,6 +21,7 @@ use calm_server::{
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
+use std::sync::atomic::Ordering;
 use tempfile::TempDir;
 use tower::ServiceExt;
 
@@ -1250,18 +1252,32 @@ async fn an_unreadable_report_payload_reads_as_having_content() {
 /// never the defect — the call sites were.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_first_ensure_retries_the_system_cove_race() {
-    // ON DISK, not `sqlite::memory:`, and that is what makes this case a gate
-    // rather than a coin flip.
+    // ── This case asserts the MECHANISM, not the outcome. ──
     //
-    // sqlite does not support WAL for in-memory databases, so the shared-cache
-    // memory DB every other case here uses falls back to a journal mode where
-    // a writer takes an exclusive lock and READERS BLOCK. The losing requests'
-    // `cove_get_system()` then waits behind the winner's whole transaction and
-    // returns `Some`, so nobody ever reaches the mint and the unique violation
-    // never happens: measured, the in-memory form passed 10/10 against a
-    // deliberately broken retry arm. On disk `after_connect` really does get
-    // WAL, readers do not block, and every request reads `None` before any of
-    // them writes.
+    // Its previous form checked only that both requests succeeded and that the
+    // singletons held — and every one of those assertions is *also* true when
+    // the race never happens, because then only one request ever mints and the
+    // retry arm is never needed. That is not a hypothetical: the
+    // `sqlite::memory:` ancestor of this case passed 10/10 against a
+    // deliberately broken retry arm, and even on disk nothing orders the two
+    // requests (request A can reuse a warm pool connection and finish the whole
+    // `ensure` while B is still establishing one, after which B reads `Some`).
+    // Green-today was never the property worth having; red-on-regression is.
+    //
+    // So the counters below are the assertion, and the status/singleton checks
+    // are kept only as corroboration.
+    //
+    // On disk rather than `sqlite::memory:` because sqlite has no WAL for
+    // in-memory databases: the shared-cache memory DB every other case here
+    // uses falls back to a journal mode where a writer takes an exclusive lock
+    // and READERS BLOCK, so the losers' `cove_get_system()` waits behind the
+    // winner's whole transaction and returns `Some`. Instrumented, that form
+    // showed one mint attempt per round across six concurrent requests. On disk
+    // `after_connect`'s `PRAGMA journal_mode = WAL` takes effect and readers do
+    // not block — which makes the race *possible*, not *certain*, which is why
+    // the counters are asserted rather than assumed.
+    let attempts_before = SYSTEM_COVE_MINT_ATTEMPTS.load(Ordering::Relaxed);
+    let retries_before = SYSTEM_COVE_MINT_RETRIES.load(Ordering::Relaxed);
     let tmp = TempDir::new().unwrap();
     let database = tmp.path().join("calm.db");
     let repo = Arc::new(
@@ -1277,6 +1293,26 @@ async fn concurrent_first_ensure_retries_the_system_cove_race() {
             "a concurrent first ensure must retry the system-cove race, not 500: {status} {body}"
         );
     }
+    let attempts = SYSTEM_COVE_MINT_ATTEMPTS.load(Ordering::Relaxed) - attempts_before;
+    let retries = SYSTEM_COVE_MINT_RETRIES.load(Ordering::Relaxed) - retries_before;
+    // Both requests read "no system cove" before either wrote — i.e. the race
+    // this case exists for actually occurred. Without this the assertions below
+    // are satisfied by a run in which the second request simply read the first
+    // one's committed row.
+    assert_eq!(
+        attempts, 2,
+        "the race did not happen: {attempts} of the 2 requests found no system \
+         cove, so nothing exercised the retry arm and the assertions below \
+         prove nothing"
+    );
+    // …and exactly one of them lost and went through the retry arm. This is
+    // the assertion that reverting the call site to an index-name literal makes
+    // red; the outcome assertions below all stay green under that mutation.
+    assert_eq!(
+        retries, 1,
+        "expected exactly one loser to take the system-cove retry arm, got \
+         {retries} (attempts={attempts})"
+    );
     assert_eq!(first.1["wave_id"], second.1["wave_id"]);
     assert_eq!(
         count(&b, "SELECT COUNT(*) FROM coves WHERE kind='system'").await,

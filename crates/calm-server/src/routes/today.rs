@@ -29,6 +29,7 @@ use axum::{
 use serde::Serialize;
 use sqlx::{Sqlite, Transaction};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use utoipa::ToSchema;
 // #1147 — one definition of the path digest, shared with the scheduler's
 // child-wave bootstrap key.
@@ -61,8 +62,13 @@ pub struct TodayLaunchpad {
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct TodayLaunchpadResolved {
     pub wave_id: String,
-    /// Whether this report's `summary`/`body` differ from the canonical
-    /// freshly-minted report — i.e. **has anyone ever written it**.
+    /// Whether this report's `summary`/`body` differ **right now** from the
+    /// canonical freshly-minted pair.
+    ///
+    /// It is NOT "has anyone ever written it": no history is consulted, so
+    /// none can be reported, and restoring the text to the canonical pair
+    /// turns this back to `false`. Do not build a "the summary has run" marker
+    /// on it — see the first bullet below.
     ///
     /// It is computed server-side by
     /// [`WaveReportPayload::report_startup_read_required`], the kernel's one
@@ -122,17 +128,63 @@ struct EnsureTxResult {
 /// retry it was written to perform. `routes::waves` has always used the column
 /// form (`waves.cove_id`); this module did not until #1253 PR1.
 /// The `constraint` argument for the system-cove race, and the ONLY place that
-/// string is written. The retry arm passes this, and the test that provokes a
-/// real violation asserts against this — so reverting it to an index name makes
-/// that test red instead of silently making the arm dead again.
+/// string is written.
+///
+/// **What binds it, precisely.** Reverting *this constant* to an index name is
+/// caught by `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`,
+/// which asserts against the constant. Reverting the *call site* to an inline
+/// literal instead is caught by
+/// `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`,
+/// because that case now asserts the retry arm was actually entered
+/// ([`SYSTEM_COVE_MINT_RETRIES`]) rather than only that the outcome looked
+/// right. Both mutations were run; both go red.
 const SYSTEM_COVE_UNIQUE: &str = "coves.kind";
 
-/// The `constraint` argument for the launchpad-wave race. Same single-sourcing
-/// as [`SYSTEM_COVE_UNIQUE`], and it matters more here: this arm is currently
-/// unreachable (see `ensure_today_launchpad`), so this constant plus the test
-/// that reads it are the *only* thing standing between the fix and a silent
-/// return to dead code.
+/// The `constraint` argument for the launchpad-wave race.
+///
+/// **Read this before trusting it, because its guard is weaker than the one
+/// above and the difference is not obvious.** The retry arm it feeds is
+/// unreachable (see `ensure_today_launchpad`), so there is no behavioural case
+/// that can drive it — nothing observes the call site at run time.
+///
+/// * Reverting *this constant* to an index name: caught by
+///   `tests::sqlite_names_the_columns_not_the_indexes_for_both_partial_unique_violations`.
+/// * Reverting the *call site* to an inline literal, leaving this constant
+///   correct: **the test stays green.** The only thing that fails is
+///   `cargo clippy --lib -- -D warnings`, on `dead_code`, because nothing
+///   outside `mod tests` would read the constant any more. Verified by running
+///   both.
+///
+/// So the carrier for the call site is **clippy's `dead_code` on the non-test
+/// target**, not a test. That is thin on purpose-built terms: one
+/// `#[allow(dead_code)]`, or one second non-test reader of this constant, and
+/// the guard goes silent with nothing turning red. Do not add either without
+/// replacing the guard.
 const LAUNCHPAD_UNIQUE: &str = "waves.purpose";
+
+/// How many `ensure` calls found no system cove and therefore tried to mint one.
+///
+/// Test observability for the one race in this module that is reachable, and
+/// **deliberately not `#[cfg(feature = "fixtures")]`**: a case about scheduling
+/// must run the same instructions production runs, and a counter that exists
+/// only in the test build makes the tested binary a different binary. The cost
+/// is one relaxed atomic add on a path taken at most once per process lifetime.
+///
+/// Read as a delta around the request pair, and only sound because nextest runs
+/// each test in its own process; a threaded `cargo test` would let sibling
+/// cases in this module pollute it.
+#[doc(hidden)]
+pub static SYSTEM_COVE_MINT_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+
+/// How many of those mints lost the race and took the retry arm.
+///
+/// This is the number the concurrency case asserts on. Without it that case
+/// asserted only its *outcome* — both requests succeeded, one cove, one
+/// launchpad — and every one of those assertions holds when the race never
+/// happens at all, which is exactly how its `sqlite::memory:` ancestor passed
+/// 10/10 while testing nothing.
+#[doc(hidden)]
+pub static SYSTEM_COVE_MINT_RETRIES: AtomicU64 = AtomicU64::new(0);
 
 fn is_unique_constraint(error: &CalmError, constraint: &str) -> bool {
     let CalmError::Db(sqlx::Error::Database(error)) = error else {
@@ -457,6 +509,10 @@ pub(crate) async fn ensure_today_launchpad(
     let cove = if let Some(c) = app.repo.cove_get_system().await? {
         c
     } else {
+        // The read said "no system cove". Counted before the mint so that a
+        // test can tell "both requests raced" from "the second one simply read
+        // the first one's row".
+        SYSTEM_COVE_MINT_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
         let route = RouteState::from_ref(&app);
         let minted = write_with_event_typed(
             app.repo.as_ref(),
@@ -480,15 +536,21 @@ pub(crate) async fn ensure_today_launchpad(
             // so the loser of the first-concurrent-mint race got a 500.
             //
             // Unlike the launchpad arm below, this one is genuinely reachable:
-            // `cove_get_system()` runs OUTSIDE any transaction, so two cold
-            // page loads can both read `None` and both reach the mint.
+            // `cove_get_system()` runs OUTSIDE any transaction, so two
+            // concurrent `POST /api/today/launchpad/ensure` calls can both read
+            // `None` and both reach the mint. NOT two page loads — a page load
+            // calls only the read-only resolve and never gets here
+            // (INV-TODAYDOC-001); `ensure` has no production caller at all
+            // today, so the race needs two deliberate bootstrap requests.
             // `today_launchpad::concurrent_first_ensure_retries_the_system_cove_race`
-            // drives that race through the route.
-            Err(e) if is_unique_constraint(&e, SYSTEM_COVE_UNIQUE) => app
-                .repo
-                .cove_get_system()
-                .await?
-                .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?,
+            // drives exactly that.
+            Err(e) if is_unique_constraint(&e, SYSTEM_COVE_UNIQUE) => {
+                SYSTEM_COVE_MINT_RETRIES.fetch_add(1, Ordering::Relaxed);
+                app.repo
+                    .cove_get_system()
+                    .await?
+                    .ok_or_else(|| CalmError::Internal("system cove race had no winner".into()))?
+            }
             Err(e) => return Err(e),
         }
     };

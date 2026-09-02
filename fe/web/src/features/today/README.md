@@ -57,8 +57,18 @@ Running and Recent are ambience and live in the panel.
   so `readWaveReport` returns non-null for it and a null-check renders four
   empty headings where the empty state belongs. Reading the body would be
   mirror code for text the kernel owns besides. The predicate is an
-  approximation: it answers "has anyone written this report", flips on a human
-  edit as readily as on an agent's, and never flips back.
+  approximation, and the shape of the approximation matters for PR2: it is a
+  statement about the report's **current content**, not about its history. It
+  consults no history (`WaveReportPayload::report_startup_read_required` is a
+  pure comparison against the canonical pair), so it flips on a human edit as
+  readily as on an agent's, and **it flips back** — restore `summary`/`body`
+  byte-for-byte to canonical and it reads `false` again, `doc_rev` and `blocks`
+  notwithstanding.
+
+  **So it is not a durable "the summary has run" marker, and must not be used
+  as one.** Suppressing a re-run button on it would mean a user reverting the
+  document silently un-suppresses the button. Anything that needs "did the
+  summary run" needs its own persistent marker or event.
 - **No trigger button.** `POST /api/today/summary` lands in #1253 PR2. Until
   then the empty state is text only — not a stub, not a disabled control.
 - **The status bar is capped** (`WAITING_ROW_LIMIT`). Its O(1) height is D7's

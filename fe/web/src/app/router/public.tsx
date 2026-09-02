@@ -1708,10 +1708,15 @@ function TodayRoute({ transport, unauthorized }: { transport: ApiTransportPort; 
       : (
         <ReportDocument
           report={launchpadReport}
-          /* The ONLY remaining reason `report` can be null here: the detail
-             arrived, the server says the report has been written, and this
-             build could not decode the payload. Neither of the other two
-             states reaches this branch any more. */
+          /* The detail has arrived and the server says the report has content,
+             so the in-flight and read-failed states are both behind us. What
+             remains is "this build could not make a report out of what
+             arrived" — almost always an undecodable payload, but also a 200
+             carrying no `kind === 'wave-report'` card at all. That second
+             shape is effectively unreachable (the card is `deletable: false`)
+             and its wording would be slightly off if it happened; it is not
+             worth a third branch, but it is worth not claiming a universal the
+             code does not enforce. */
           empty={<ReportEmpty
             lead="Today's report could not be read."
             hints={[

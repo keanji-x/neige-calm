@@ -347,13 +347,18 @@ function WaitingSection({ waves, render }: {
   render: WaveRowRenderer;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const rowsId = 'today-waiting-rows';
   if (waves.length === 0) return null;
   const hidden = waves.length - WAITING_ROW_LIMIT;
   const shown = expanded ? waves : waves.slice(0, WAITING_ROW_LIMIT);
   return (
     <section className={styles.section}>
       <h2 className={styles.sectionLabel}>Waiting on you</h2>
-      <div className={styles.rows}>
+      {/* `aria-controls` names what `aria-expanded` is talking about: without
+          it the control announces a state with no referent, and a screen
+          reader cannot jump to what just appeared. Today renders one of these
+          per page, so a constant id is not a collision risk. */}
+      <div className={styles.rows} id={rowsId}>
         {shown.map((wave) => (
           <span key={wave.id}>{render(wave, { variant: 'compact' })}</span>
         ))}
@@ -364,6 +369,7 @@ function WaitingSection({ waves, render }: {
           data-nc-action="tertiary"
           className={styles.moreButton}
           aria-expanded={expanded}
+          aria-controls={rowsId}
           onClick={() => setExpanded(!expanded)}
         >
           {expanded ? 'Show fewer' : `+${hidden} more waiting`}
