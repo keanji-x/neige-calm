@@ -497,8 +497,11 @@ mod tests {
     ///    The fragments are a longer road to a state the whole-body arm
     ///    already writes.
     /// 3. The materialising write is where the whole-body check applies:
-    ///    `validate_body_fences` runs on `Replace` / `WriteMarkdown` only,
-    ///    so it never sees the fragments. `guard_task_declarations` does
+    ///    on the op layer `validate_body_fences` runs on `Replace` /
+    ///    `WriteMarkdown` only; the wave-fork exit does run it per prose
+    ///    block, but there it sees each fragment separately and accepts
+    ///    it (neither fragment carries a recognisable `neige-block`
+    ///    opener). `guard_task_declarations` does
     ///    run on every op, the prose upserts included — but there it sees
     ///    prose on both sides of the edit and has nothing to object to.
     ///    It gets something to object to at the write that assembles the
